@@ -7,9 +7,9 @@
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
-    "icons": "electron tools/make_icons.mjs",
+    "icons": "node tools/run_electron.mjs tools/make_icons.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "start": "node build.mjs && electron .",
+    "start": "node build.mjs && node tools/run_electron.mjs .",
     "test": "node --test \"test/**/*.test.js\""
   },
   "author": "Brendan Duncan",

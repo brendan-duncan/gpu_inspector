@@ -152,11 +152,15 @@ renderer holds the object database and capture data for each session it displays
 
 ## Building
 
+Prerequisites and the one-command setup are in the [README](../README.md); `tools/setup.sh` does
+the whole thing on Linux. What the pieces are:
+
 ```
-# layer
-cmake -S layer -B build -G "Visual Studio 18 2026" -A x64     # or -G Ninja on Linux
+# layer + test application
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release        # Linux
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64          # Windows
 cmake --build build --config Release
-# -> build/bin/Release/VkLayer_inspector_capture.dll + VK_LAYER_INSPECTOR_capture.json
+# -> build/bin/{lib,}VkLayer_inspector_capture.{so,dll} + VK_LAYER_INSPECTOR_capture.json
 
 # app
 cd app && npm install && npm start        # builds with esbuild, then launches Electron
@@ -165,17 +169,22 @@ npm run watch                              # rebuild on change
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-cmake -S . -B build -G "Visual Studio 18 2026" -A x64 && cmake --build build --config Release
-build/bin/Release/vkinsp_triangle.exe --frames 600      # window is resizable
+build/bin/vkinsp_triangle --frames 600     # window is resizable
 ```
 
-Debug aids: `npx electron . --launch=<exe> --record-always --debug-capture --screenshot=<png>`
-captures a frame automatically and writes a screenshot (one per window); `--debug-relaunch`,
-`--debug-multi` and `--debug-detach` exercise relaunching, two simultaneous sessions and a session
-window; `--debug-log=<file>` mirrors the session log to a file, the layer log to `<file>.layer.log`
-and any malformed layer message to `<file>.badjson`. (If Electron starts as plain Node, unset
-`ELECTRON_RUN_AS_NODE`.) `python tools/inspector_client.py
---capture --record-always --save out.json` talks to the layer without the UI.
+On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
+finds (`xcb/xcb.h`, `X11/Xlib.h`, `wayland-client.h`); a missing one is reported at configure time
+and only costs that platform's surface arguments. `npm start` goes through
+`app/tools/run_electron.mjs`, which clears `ELECTRON_RUN_AS_NODE` — terminals that are themselves
+Electron apps (VS Code's) set it, and it would make the `electron` binary run as plain Node.
+
+Debug aids: `npm start -- --launch=<exe> --record-always --debug-capture --screenshot=<png>`
+captures a frame automatically and writes a screenshot (one per window), and
+`--quit-after-screenshot` exits once it is written; `--debug-relaunch`, `--debug-multi` and
+`--debug-detach` exercise relaunching, two simultaneous sessions and a session window;
+`--debug-log=<file>` mirrors the session log to a file, the layer log to `<file>.layer.log` and any
+malformed layer message to `<file>.badjson`. `python tools/inspector_client.py --capture
+--record-always --save out.json` talks to the layer without the UI.
 
 Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):
 

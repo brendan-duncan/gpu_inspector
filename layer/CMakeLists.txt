@@ -67,7 +67,25 @@ if(WIN32)
     target_compile_definitions(${LAYER_LIB} PRIVATE VK_USE_PLATFORM_WIN32_KHR NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_compile_options(${LAYER_LIB} PRIVATE /W3 /bigobj)
 elseif(UNIX AND NOT APPLE)
-    target_compile_definitions(${LAYER_LIB} PRIVATE VK_USE_PLATFORM_XCB_KHR VK_USE_PLATFORM_XLIB_KHR VK_USE_PLATFORM_WAYLAND_KHR)
+    # Each windowing system's surface structs are only serialized if its headers are installed
+    # (libxcb1-dev, libx11-dev, libwayland-dev on Debian/Ubuntu). The layer includes their headers
+    # through vulkan.h but links against none of them, so a missing one only costs the surface
+    # arguments of that platform.
+    include(CheckIncludeFileCXX)
+    check_include_file_cxx("xcb/xcb.h" HAVE_XCB_H)
+    check_include_file_cxx("X11/Xlib.h" HAVE_XLIB_H)
+    check_include_file_cxx("wayland-client.h" HAVE_WAYLAND_H)
+    foreach(p XCB XLIB WAYLAND)
+        if(HAVE_${p}_H)
+            target_compile_definitions(${LAYER_LIB} PRIVATE VK_USE_PLATFORM_${p}_KHR)
+        else()
+            message(STATUS "${p} headers not found: ${p} surface arguments will not be serialized")
+        endif()
+    endforeach()
+    if(NOT HAVE_XCB_H AND NOT HAVE_XLIB_H AND NOT HAVE_WAYLAND_H)
+        message(WARNING "No windowing system headers found; install libxcb1-dev, libx11-dev and "
+                        "libwayland-dev for complete surface serialization")
+    endif()
     target_compile_options(${LAYER_LIB} PRIVATE -Wall -Wno-unused-parameter)
     target_link_options(${LAYER_LIB} PRIVATE -Wl,--no-undefined)
     find_package(Threads REQUIRED)
