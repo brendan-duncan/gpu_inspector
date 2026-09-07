@@ -1,0 +1,33 @@
+# build outputs
+build/
+out/
+dist/
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.so
+*.dylib
+
+# node
+node_modules/
+app/dist/
+app/out/
+
+# editors / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# captures
+*.vkcap
+
+# generated from vk.xml by CMake (tools/gen_vulkan.py)
+layer/gen/
+tools/vkgen/__pycache__/

@@ -1,0 +1,23 @@
+{
+  "name": "vulkan-inspector",
+  "version": "0.1.0",
+  "description": "Vulkan graphics inspector: live object inspection and frame capture for any Vulkan application",
+  "main": "dist/main/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "icons": "electron tools/make_icons.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node build.mjs && electron .",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "author": "Brendan Duncan",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^38.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.0.0"
+  }
+}
