@@ -11,9 +11,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AppConfig, ConnectionState, LaunchConfig, LaunchResult, LayerMessage, SessionInfo, ShaderTextMode, ShaderTextResult,
-  UiRequest,
+import {
+  THEMES,
+  type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type SessionInfo,
+  type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
 } from "../shared/protocol.js";
 
 const { app, BrowserWindow, ipcMain, dialog } = electron;
@@ -32,7 +33,7 @@ let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
 //               [--debug-select=<VkType>] [--debug-capture] [--record-always]
-//               [--debug-relaunch] [--debug-multi] [--debug-detach]
+//               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -48,6 +49,7 @@ function cliFlag(name: string): boolean {
 
 interface Settings {
   recents?: LaunchConfig[];
+  theme?: ThemeName;
 }
 
 const MAX_RECENTS = 12;
@@ -552,6 +554,35 @@ function killAllTargets(): void {
 // ------------------------------------------------------------------------------------------
 // Windows
 
+// UI theme: a persisted user setting (Theme picker in the main window). INSPECTOR_THEME in the
+// environment overrides it for the run, which the screenshot test aids use.
+function isTheme(v: unknown): v is ThemeName {
+  return typeof v === "string" && (THEMES as readonly string[]).includes(v);
+}
+
+function appTheme(): ThemeName {
+  const env = process.env.INSPECTOR_THEME;
+  if (isTheme(env)) return env;
+  const saved = loadSettings().theme;
+  return isTheme(saved) ? saved : "dark";
+}
+
+function windowBackground(theme: ThemeName): string {
+  return theme === "light" ? "#ffffff" : "#1e1e1e";
+}
+
+/** Saves the theme and applies it to every open window. */
+function setTheme(theme: ThemeName): void {
+  if (!isTheme(theme)) return;
+  const settings = loadSettings();
+  settings.theme = theme;
+  saveSettings(settings);
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.setBackgroundColor(windowBackground(theme));
+  }
+  broadcast("inspector:theme", theme);
+}
+
 // Window / taskbar icon, rendered from assets/icon.svg by `npm run icons`.
 function appIcon(): string {
   const file = process.platform === "win32" ? "icon.ico" : "icon.png";
@@ -562,7 +593,7 @@ function appIcon(): string {
 const windowPrefs = (): electron.BrowserWindowConstructorOptions => ({
   width: 1500,
   height: 950,
-  backgroundColor: "#1e1e1e",
+  backgroundColor: windowBackground(appTheme()),
   title: "Vulkan Inspector",
   icon: appIcon(),
   webPreferences: {
@@ -578,7 +609,7 @@ const rendererHtml = (): string => path.join(__dirname, "..", "renderer", "index
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow(windowPrefs());
   win.setMenuBarVisibility(false);
-  void win.loadFile(rendererHtml());
+  void win.loadFile(rendererHtml(), { query: { theme: appTheme() } });
   if (process.env.INSPECTOR_DEVTOOLS) win.webContents.openDevTools({ mode: "detach" });
   win.on("closed", () => {
     // The main window is the application: closing it ends every session.
@@ -596,7 +627,7 @@ function openSessionWindow(s: Session): void {
   // The renderer asks for its sessions with getConfig once loaded, so nothing is pushed here.
   s.viewer = win;
   if (previous && !previous.isDestroyed()) previous.webContents.send("inspector:sessionRemoved", s.id);
-  void win.loadFile(rendererHtml(), { query: { session: String(s.id) } });
+  void win.loadFile(rendererHtml(), { query: { session: String(s.id), theme: appTheme() } });
   if (process.env.INSPECTOR_DEVTOOLS) win.webContents.openDevTools({ mode: "detach" });
   win.on("closed", () => {
     // Sessions shown in a closed window return to the main window rather than being killed.
@@ -668,10 +699,15 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
   return {
     recents: loadRecents(),
     layerDir: findLayerDir(),
+    theme: appTheme(),
     windowMode: win === mainWin ? "main" : "session",
     sessions: sessionsOf(win).map((s) => s.info()),
     debug: { select: cliOption("debug-select"), capture: cliFlag("debug-capture"), launchDialog: cliFlag("debug-launch-dialog") },
   };
+});
+ipcMain.handle("inspector:setTheme", (_e, theme: ThemeName) => {
+  setTheme(theme);
+  return true;
 });
 ipcMain.handle("inspector:getRecents", () => loadRecents());
 ipcMain.handle("inspector:removeRecent", (_e, index: number) => {
@@ -784,6 +820,9 @@ void app.whenReady().then(() => {
         }, 3000);
       }
     }
+    // Testing aid: switch the theme through the same path the picker uses.
+    const debugTheme = cliOption("debug-theme");
+    if (isTheme(debugTheme)) setTimeout(() => setTheme(debugTheme), 1000);
     const shot = cliOption("screenshot");
     if (shot) {
       setTimeout(async () => {

@@ -1,10 +1,13 @@
 import type {
   AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  ShaderTextMode, ShaderTextResult, UiRequest,
+  ShaderTextMode, ShaderTextResult, ThemeName, UiRequest,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
   getConfig(): Promise<AppConfig>;
+  /** Persists the theme and applies it to every window. */
+  setTheme(theme: ThemeName): Promise<boolean>;
+  onTheme(cb: (theme: ThemeName) => void): void;
   /** Launches an application in a new session, shown in the main window. */
   launch(config: LaunchConfig): Promise<LaunchResult>;
   /** Connects to an already running application in a new session, shown in the main window. */

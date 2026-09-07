@@ -198,10 +198,16 @@ export interface SessionStatusMessage extends StatusMessage { sessionId: number 
 export interface SessionLogMessage { sessionId: number; line: string }
 export interface SessionMessages { sessionId: number; messages: LayerMessage[] }
 
+/** Built-in UI themes (palettes in renderer/css/theme.css). */
+export const THEMES = ["dark", "light"] as const;
+export type ThemeName = (typeof THEMES)[number];
+
 export interface AppConfig {
   /** Recently launched configurations, most recent first. */
   recents: LaunchConfig[];
   layerDir: string | null;
+  /** The theme in effect (a persisted user setting). */
+  theme: ThemeName;
   /** "main": the launcher window. "session": a window showing sessions moved out of the main window. */
   windowMode: "main" | "session";
   /** Sessions currently assigned to the window that asked. */

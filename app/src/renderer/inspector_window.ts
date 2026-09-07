@@ -6,6 +6,7 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Button } from "./widget/button.js";
 import { TextInput } from "./widget/text_input.js";
+import { Select } from "./widget/select.js";
 import { TabWidget } from "./widget/tab_widget.js";
 import { TabHandle } from "./widget/tab_handle.js";
 import { Dialog } from "./widget/dialog.js";
@@ -13,7 +14,8 @@ import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
 import { SessionPanel } from "./session_panel.js";
 import { LaunchDialog, launchDisplayName } from "./launch_dialog.js";
-import type { AppConfig, LaunchConfig, LaunchResult, SessionInfo } from "../shared/protocol.js";
+import { applyTheme, currentTheme, themeLabel } from "./theme.js";
+import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName } from "../shared/protocol.js";
 
 export class InspectorWindow extends Window {
   private _mode: "main" | "session" = "main";
@@ -28,6 +30,7 @@ export class InspectorWindow extends Window {
   private _lastLaunch: LaunchConfig | null = null;
   private _recentMenu: Div | null = null;
   private _portInput: TextInput | null = null;
+  private _themeSelect: Select | null = null;
   private _debug: AppConfig["debug"] | null = null;
 
   constructor() {
@@ -58,9 +61,11 @@ export class InspectorWindow extends Window {
     });
     window.inspector.onLog((l) => this._sessions.get(l.sessionId)?.appendLog(l.line));
     window.inspector.onRecents((recents) => this._setRecents(recents));
+    window.inspector.onTheme((theme) => this._setTheme(theme));
 
     void window.inspector.getConfig().then((cfg) => {
       this._debug = cfg.debug;
+      this._setTheme(cfg.theme);
       this._setRecents(cfg.recents);
       for (const s of cfg.sessions) this._addSession(s);
       if (this._mode === "main") {
@@ -172,7 +177,26 @@ export class InspectorWindow extends Window {
     new Button(row, { label: "Connect", class: "btn", tooltip: "Connect to an already running application that has the layer enabled", callback: () => {
       void window.inspector.connect(Number(this._portInput?.value));
     }});
+
+    // Theme picker, right-aligned. The choice is saved and applied to every window.
+    const spacer = new Span(row, { class: "launch-spacer" });
+    spacer.style.flexGrow = "1";
+    new Span(row, { text: "Theme", class: "launch-label" });
+    this._themeSelect = new Select(row, {
+      options: THEMES.map((t) => themeLabel(t)),
+      class: "theme-select",
+      value: themeLabel(currentTheme()),
+      onChange: (_value: string, index: number) => {
+        const theme = THEMES[index];
+        if (theme) void window.inspector.setTheme(theme);
+      },
+    });
     this._setRecents([]);
+  }
+
+  private _setTheme(theme: ThemeName): void {
+    applyTheme(theme);
+    if (this._themeSelect) this._themeSelect.select.element.value = themeLabel(theme);
   }
 
   private _setRecents(recents: LaunchConfig[]): void {
@@ -248,4 +272,5 @@ export class InspectorWindow extends Window {
   }
 }
 
+applyTheme(new URLSearchParams(window.location.search).get("theme"));
 new InspectorWindow();

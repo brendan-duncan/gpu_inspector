@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("inspector", {
   getConfig: () => ipcRenderer.invoke("inspector:getConfig"),
+  setTheme: (theme: string) => ipcRenderer.invoke("inspector:setTheme", theme),
+  onTheme: (cb: (theme: string) => void) => ipcRenderer.on("inspector:theme", (_e, t) => cb(t)),
   // Sessions
   launch: (config: unknown) => ipcRenderer.invoke("inspector:launch", config),
   connect: (port: number) => ipcRenderer.invoke("inspector:connect", port),

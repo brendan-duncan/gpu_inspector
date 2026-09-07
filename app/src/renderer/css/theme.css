@@ -1,0 +1,217 @@
+/* Theme tokens. Every color in the UI comes from here: the dark palette is the default on
+   :root, the light palette overrides it when the document has data-theme="light" (set from
+   the ?theme= query parameter, see renderer/theme.ts and main.ts). Stylesheets must not use
+   literal colors. */
+
+:root {
+  /* Surfaces */
+  --bg-primary: #1e1e1e;        /* page background */
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;       /* control bars */
+  --bg-elevated: #333333;       /* menus, submit headers */
+  --bg-hover: #3c3c3c;
+
+  /* Text */
+  --fg-primary: #e0e0e0;
+  --fg-secondary: #a0a0a0;
+  --fg-muted: #b0b0b0;
+  --fg-on-accent: #ffffff;
+
+  /* Accents */
+  --accent-primary: #0078d4;
+  --accent-success: #338329;
+  --accent-warning: #dcdcaa;
+  --accent-error: #f14c4c;
+  --accent-info: #569cd6;
+  --link-color: #7fb5cd;
+  --status-connected: #8fd18f;
+  --error-fg: #f55555;
+  --info-success-bg: rgba(78, 201, 176, 0.15);
+  --info-error-bg: rgba(241, 76, 76, 0.15);
+
+  /* Borders and shadows */
+  --border-color: #3c3c3c;
+  --border-subtle: #2d2d30;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.5);
+
+  /* Collapsible sections (object groups, capture blocks, argument sections) */
+  --title-bar-bg: #4a4a4a;
+  --title-bar-hover: #5a5a5a;
+  --title-bar-fg: #f0f0f0;
+  --title-bar-border: #262626;
+  --collapsible-body-bg: #383838;
+  --collapse-button-fg: #dddddd;
+
+  /* Debug label groups in the capture list, by nesting depth */
+  --group-0-bg: #5c3b3c;
+  --group-1-bg: #5c4b2a;
+  --group-2-bg: #3d5330;
+  --group-3-bg: #2f4f50;
+  --group-4-bg: #4e3a55;
+
+  /* Tabs */
+  --tab-header-bg: #222222;
+  --tab-header-shadow: #111111;
+  --tab-bg: #050505;
+  --tab-fg: #888888;
+  --tab-hover-bg: #777777;
+  --tab-hover-fg: #eeeeee;
+  --tab-selected-bg: #444444;
+  --tab-selected-fg: #dddddd;
+  --tab-content-bg: #222222;
+
+  /* Inputs */
+  --input-bg: #222222;
+  --input-fg: #dddddd;
+  --input-border: #000000;
+  --checkbox-bg: #111111;
+  --checkbox-border: #555555;
+  --checkbox-hover-bg: #555555;
+  --checkbox-checked-bg: #222222;
+  --checkbox-mark: #ffffff;
+  --button-bg: #3c3c3c;
+  --button-fg: #eeeeee;
+  --button-disabled-fg: #888888;
+
+  /* Dialogs */
+  --overlay-bg: rgba(25, 25, 25, 0.65);
+  --dialog-bg: #555555;
+  --dialog-body-bg: #333333;
+  --dialog-footer-bg: #373737;
+  --dialog-border: rgba(255, 255, 255, 0.3);
+  --dialog-divider: #222222;
+  --dialog-fg: #eeeeee;
+  --dialog-title-fg: #dddddd;
+
+  /* Misc widgets */
+  --splitbar-bg: #222222;
+  --splitbar-shadow: #000000;
+  --scrollbar-bg: #222222;
+  --scrollbar-thumb: #777777;
+  --scrollbar-thumb-hover: #666666;
+  --tree-fg: #cccccc;
+  --tree-hover-bg: #444444;
+  --tree-stripe-bg: rgba(0, 0, 0, 0.1);
+  --tree-selected-fg: #eecc66;
+  --tree-semiselected-fg: #aa9966;
+  --checker-a: #333333;
+  --checker-b: #2a2a2a;
+
+  /* Capture list and argument syntax */
+  --drawcall-fg: #dcdcaa;
+  --syntax-key: #9cdcfe;
+  --syntax-enum: #c586c0;
+  --syntax-string: #ce9178;
+  --syntax-number: #b5cea8;
+
+  /* Non-color tokens */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #e9e9e9;
+  --bg-elevated: #fafafa;
+  --bg-hover: #dcdcdc;
+
+  --fg-primary: #1f1f1f;
+  --fg-secondary: #5f5f5f;
+  --fg-muted: #707070;
+  --fg-on-accent: #ffffff;
+
+  --accent-primary: #0067c0;
+  --accent-success: #2e7d32;
+  --accent-warning: #8a6d00;
+  --accent-error: #c62828;
+  --accent-info: #1565c0;
+  --link-color: #0b6bcb;
+  --status-connected: #2e7d32;
+  --error-fg: #c62828;
+  --info-success-bg: rgba(46, 125, 50, 0.10);
+  --info-error-bg: rgba(198, 40, 40, 0.10);
+
+  --border-color: #c8c8c8;
+  --border-subtle: #e2e2e2;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.2);
+
+  --title-bar-bg: #d8d8d8;
+  --title-bar-hover: #c6c6c6;
+  --title-bar-fg: #1f1f1f;
+  --title-bar-border: #b8b8b8;
+  --collapsible-body-bg: #f2f2f2;
+  --collapse-button-fg: #333333;
+
+  --group-0-bg: #f5c0c1;
+  --group-1-bg: #ffd98a;
+  --group-2-bg: #cdeeb6;
+  --group-3-bg: #bfeaea;
+  --group-4-bg: #ebc8f5;
+
+  --tab-header-bg: #e0e0e0;
+  --tab-header-shadow: #c8c8c8;
+  --tab-bg: #cfcfcf;
+  --tab-fg: #555555;
+  --tab-hover-bg: #bdbdbd;
+  --tab-hover-fg: #000000;
+  --tab-selected-bg: #ffffff;
+  --tab-selected-fg: #1f1f1f;
+  --tab-content-bg: #ffffff;
+
+  --input-bg: #ffffff;
+  --input-fg: #1f1f1f;
+  --input-border: #b5b5b5;
+  --checkbox-bg: #ffffff;
+  --checkbox-border: #8a8a8a;
+  --checkbox-hover-bg: #e6e6e6;
+  --checkbox-checked-bg: #0067c0;
+  --checkbox-mark: #ffffff;
+  --button-bg: #e4e4e4;
+  --button-fg: #1f1f1f;
+  --button-disabled-fg: #9a9a9a;
+
+  --overlay-bg: rgba(90, 90, 90, 0.45);
+  --dialog-bg: #f5f5f5;
+  --dialog-body-bg: #ffffff;
+  --dialog-footer-bg: #ececec;
+  --dialog-border: #c0c0c0;
+  --dialog-divider: #d0d0d0;
+  --dialog-fg: #1f1f1f;
+  --dialog-title-fg: #1f1f1f;
+
+  --splitbar-bg: #d0d0d0;
+  --splitbar-shadow: #a0a0a0;
+  --scrollbar-bg: #f0f0f0;
+  --scrollbar-thumb: #c0c0c0;
+  --scrollbar-thumb-hover: #a8a8a8;
+  --tree-fg: #333333;
+  --tree-hover-bg: #e4e4e4;
+  --tree-stripe-bg: rgba(0, 0, 0, 0.04);
+  --tree-selected-fg: #8a5a00;
+  --tree-semiselected-fg: #a07a30;
+  --checker-a: #d0d0d0;
+  --checker-b: #e8e8e8;
+
+  --drawcall-fg: #7a5c00;
+  --syntax-key: #0451a5;
+  --syntax-enum: #af00db;
+  --syntax-string: #a31515;
+  --syntax-number: #098658;
+
+  color-scheme: light;
+}

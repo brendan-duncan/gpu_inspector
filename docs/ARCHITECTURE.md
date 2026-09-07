@@ -95,6 +95,16 @@ VKINSP_LOG=1            (optional, stderr + debugger logging)
   WebGPU Inspector's widget library and helpers; `vulkan/` holds the object model, database and
   texture decoding.
 
+#### Theme
+
+`src/renderer/css/theme.css` defines every color as a token: the dark palette on `:root`, the
+light palette under `:root[data-theme="light"]`. The other stylesheets only use tokens. The
+theme is a user setting (Theme picker in the main window's toolbar, stored in `settings.json`)
+and applies to every open window at once. Each window also gets it as a `?theme=` query parameter
+so the first paint uses the right palette (`renderer/theme.ts`). `INSPECTOR_THEME=light|dark` in
+the environment overrides the setting for one run (used by the screenshot test aids). Adding a
+theme means adding its palette block to `theme.css` and its name to `THEMES` in `protocol.ts`.
+
 #### Sessions
 
 A *session* is one inspected application: the target process (when launched by the inspector),

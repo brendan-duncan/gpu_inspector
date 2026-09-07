@@ -1,4 +1,5 @@
-/* Vulkan Inspector additions on top of the WebGPU Inspector stylesheet. */
+/* Vulkan Inspector panels, on top of the widget styles in inspector.css. Colors come from the
+   tokens in theme.css. */
 
 html, body {
   margin: 0;
@@ -86,7 +87,7 @@ html, body {
 
 .app-title {
   float: right;
-  color: rgb(127 181 205);
+  color: var(--link-color);
   padding: 5px 10px 0 0;
   font-size: 10pt;
 }
@@ -125,7 +126,7 @@ html, body {
   border-radius: var(--radius-sm);
   font-weight: 600;
 }
-.status-connected { color: #8fd18f; }
+.status-connected { color: var(--status-connected); }
 .status-connecting, .status-launched { color: var(--accent-warning); }
 .status-disconnected, .status-exited { color: var(--fg-secondary); }
 .status-error { color: var(--accent-error); }
@@ -158,7 +159,9 @@ html, body {
   text-overflow: ellipsis;
 }
 .object-item:hover { background: var(--bg-hover); }
-.object-item.selected { background: var(--accent-primary); color: white; }
+.object-item.selected { background: var(--accent-primary); color: var(--fg-on-accent); }
+.object-item.selected .object-item-name, .object-item.selected .object-item-type { color: var(--fg-on-accent); }
+.object-item.selected .object-item-type { opacity: 0.85; }
 .object-item-name { color: var(--fg-primary); }
 .object-item-type { color: var(--fg-secondary); font-size: 9pt; }
 .object-item.error .object-item-name { color: var(--accent-error); }
@@ -170,7 +173,7 @@ html, body {
   overflow: auto;
 }
 .dependency-list li { list-style: none; }
-.dependency_link { cursor: pointer; color: rgb(127 181 205); }
+.dependency_link { cursor: pointer; color: var(--link-color); }
 .dependency_link:hover { text-decoration: underline; }
 
 /* Argument tree */
@@ -181,10 +184,10 @@ html, body {
 }
 .args-row { padding-left: 0; line-height: 1.5; }
 .args-children { padding-left: 18px; border-left: 1px solid var(--border-subtle); margin-left: 4px; }
-.args-key { color: #9cdcfe; }
-.args-enum { color: #c586c0; }
-.args-string { color: #ce9178; }
-.args-number { color: #b5cea8; }
+.args-key { color: var(--syntax-key); }
+.args-enum { color: var(--syntax-enum); }
+.args-string { color: var(--syntax-string); }
+.args-number { color: var(--syntax-number); }
 .args-null { color: var(--fg-secondary); font-style: italic; }
 .args-summary { cursor: pointer; color: var(--fg-secondary); display: inline; }
 .args-row details { display: inline; }
@@ -232,10 +235,12 @@ html, body {
 .capture-commands .title_bar { display: flex; align-items: baseline; flex-wrap: wrap; }
 .capture-commands .title_bar .object_type { white-space: nowrap; }
 .capture_command:hover { background: var(--bg-hover); }
-.capture_command_selected { background: var(--accent-primary) !important; color: white; }
+.capture_command_selected { background: var(--accent-primary) !important; color: var(--fg-on-accent); }
+.capture_command_selected .capture_callnum, .capture_command_selected .capture_method_args { color: var(--fg-on-accent); opacity: 0.85; }
+.capture_command_selected .capture_methodName, .capture_command_selected.capture_drawcall .capture_methodName { color: var(--fg-on-accent); }
 .capture_callnum { color: var(--fg-secondary); min-width: 34px; text-align: right; font-family: var(--font-mono); font-size: 8.5pt; }
 .capture_methodName { color: var(--fg-primary); }
-.capture_drawcall .capture_methodName { color: #dcdcaa; font-weight: 600; }
+.capture_drawcall .capture_methodName { color: var(--drawcall-fg); font-weight: 600; }
 .capture_method_args { color: var(--fg-secondary); font-size: 9pt; }
 .capture-note { padding: 2px 8px; font-style: italic; }
 .draw-state { font-family: var(--font-mono); font-size: 9pt; padding: 4px; }
@@ -244,7 +249,7 @@ html, body {
 .capture_frameImages { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px; }
 .capture_pass_texture { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px; max-width: 420px; }
 .capture-texture-title { font-weight: 600; }
-.capture-texture-canvas { display: block; margin-top: 4px; max-width: 400px; max-height: 300px; background: repeating-conic-gradient(#333 0 25%, #2a2a2a 0 50%) 0 0 / 16px 16px; image-rendering: pixelated; }
+.capture-texture-canvas { display: block; margin-top: 4px; max-width: 400px; max-height: 300px; background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px; image-rendering: pixelated; }
 
 /* Launch dialog */
 .launch-dialog { width: 720px; top: 12%; }
