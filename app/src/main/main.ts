@@ -33,7 +33,7 @@ let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
 //               [--debug-select=<VkType>] [--debug-capture] [--record-always]
-//               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>]
+//               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -826,6 +826,17 @@ void app.whenReady().then(() => {
     const shot = cliOption("screenshot");
     if (shot) {
       setTimeout(async () => {
+        // Testing aid: --debug-mouse=x,y moves the mouse over the main window before the shot.
+        const mouse = cliOption("debug-mouse")?.split(",").map(Number);
+        if (mouse && mouse.length === 2 && mainWin) {
+          mainWin.webContents.sendInputEvent({ type: "mouseEnter", x: mouse[0], y: mouse[1] });
+          mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0], y: mouse[1] });
+          await new Promise((r) => setTimeout(r, 100));
+          mainWin.webContents.sendInputEvent({ type: "mouseDown", x: mouse[0], y: mouse[1], button: "left", clickCount: 1 });
+          mainWin.webContents.sendInputEvent({ type: "mouseUp", x: mouse[0], y: mouse[1], button: "left", clickCount: 1 });
+          mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0] + 2, y: mouse[1] + 2 });
+          await new Promise((r) => setTimeout(r, 300));
+        }
         await writeScreenshots(shot);
         if (cliFlag("quit-after-screenshot")) {
           killAllTargets();

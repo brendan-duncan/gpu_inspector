@@ -49,6 +49,8 @@ add_library(${LAYER_LIB} SHARED
     src/resources.cpp
     src/capture.h
     src/capture.cpp
+    src/image_readback.h
+    src/image_readback.cpp
     src/format_info.h
     src/transport.h
     src/transport.cpp

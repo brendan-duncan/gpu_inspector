@@ -85,6 +85,12 @@ EXTRA_HOOKS = {
     "vkCmdEndRendering",
     "vkCmdEndRenderingKHR",
     "vkCmdExecuteCommands",
+    # image layout tracking / live readback
+    "vkCmdPipelineBarrier",
+    "vkCmdPipelineBarrier2",
+    "vkCmdPipelineBarrier2KHR",
+    "vkGetDeviceQueue",
+    "vkGetDeviceQueue2",
 }
 
 # Hand-written pre-call hooks: PreHook_<cmd>(<params by reference>). They run before the

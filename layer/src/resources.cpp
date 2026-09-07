@@ -1,5 +1,7 @@
 #include "resources.h"
 
+#include "image_readback.h"
+
 namespace vkinsp {
 
 ResourceRegistry& ResourceRegistry::Get() {
@@ -80,7 +82,10 @@ bool ResourceRegistry::GetSwapchain(VkSwapchainKHR sc, SwapchainInfo& out) const
 void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
     std::unique_lock lock(_mutex);
     switch (type) {
-        case HT_VkImage: _images.erase(handle); break;
+        case HT_VkImage:
+            _images.erase(handle);
+            LayoutTracker::Get().OnDestroyImage((VkImage)(uintptr_t)handle);
+            break;
         case HT_VkImageView: _views.erase(handle); break;
         case HT_VkBuffer: _buffers.erase(handle); break;
         case HT_VkFramebuffer: _framebuffers.erase(handle); break;

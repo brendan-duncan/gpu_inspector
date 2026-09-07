@@ -252,11 +252,13 @@ export class InspectorWindow extends Window {
   // ---------------------------------------------------------------------------------------
   // Testing aids (--debug-select=<VkType>, --debug-capture)
 
-  private _debugSelect(panel: SessionPanel, type: string): void {
+  // --debug-select=<VkType> or <VkType>:<name substring>
+  private _debugSelect(panel: SessionPanel, spec: string): void {
+    const [type, name] = spec.split(":");
     const tryIt = (): void => {
       if (!this._sessions.has(panel.sessionId)) return;
       const objs = panel.database.getObjectsOfType(type);
-      const first = objs?.values().next().value;
+      const first = name ? [...(objs?.values() ?? [])].find((o) => o.name.includes(name)) : objs?.values().next().value;
       if (first) panel.inspectPanel.revealObject(first);
       else setTimeout(tryIt, 500);
     };

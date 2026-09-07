@@ -1,5 +1,5 @@
-// Minimal VkFormat information needed for readback sizing. Block-compressed and multi-planar
-// formats are not attachment formats and are not handled here yet.
+// Minimal VkFormat information needed for readback sizing: bytes per texel for uncompressed
+// formats and block dimensions for compressed ones. Multi-planar formats are not handled.
 #pragma once
 
 #include <vulkan/vulkan.h>
@@ -91,6 +91,43 @@ inline uint32_t FormatBytesPerTexel(VkFormat f, VkImageAspectFlags aspect) {
         default:
             return 0;
     }
+}
+
+// Block-compressed formats: block extent and bytes per block. width/height are 1 and bytes is
+// the texel size for uncompressed formats; bytes is 0 for unsupported formats.
+struct FormatBlock {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t bytes = 0;
+};
+
+inline FormatBlock FormatBlockInfo(VkFormat f, VkImageAspectFlags aspect) {
+    switch (f) {
+        case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+        case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+        case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+        case VK_FORMAT_EAC_R11_UNORM_BLOCK: case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+            return {4, 4, 8};
+        case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
+        case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK:
+        case VK_FORMAT_BC5_UNORM_BLOCK: case VK_FORMAT_BC5_SNORM_BLOCK:
+        case VK_FORMAT_BC6H_UFLOAT_BLOCK: case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+        case VK_FORMAT_BC7_UNORM_BLOCK: case VK_FORMAT_BC7_SRGB_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+        case VK_FORMAT_EAC_R11G11_UNORM_BLOCK: case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+            return {4, 4, 16};
+        default:
+            break;
+    }
+    if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+        static const uint32_t dims[14][2] = {{4, 4}, {5, 4}, {5, 5}, {6, 5}, {6, 6}, {8, 5}, {8, 6},
+                                             {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
+        uint32_t i = (uint32_t)(f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2;
+        return {dims[i][0], dims[i][1], 16};
+    }
+    return {1, 1, FormatBytesPerTexel(f, aspect)};
 }
 
 } // namespace vkinsp

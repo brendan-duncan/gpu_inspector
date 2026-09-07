@@ -10,6 +10,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { VulkanObject, isHandleRef } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
+import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type { ShaderTextMode } from "../shared/protocol.js";
@@ -64,6 +65,7 @@ export class InspectPanel {
   private _forward: VulkanObject[] = [];
   private _filter = "";
   private _shaderViews = new Map<number, ShaderView>();
+  private _imageView: ImageView | null = null;
 
   private objectsPanel!: Div;
   private groupsContainer!: Div;
@@ -86,6 +88,9 @@ export class InspectPanel {
     db.onObjectInvalidated.addListener((id, o) => this._objectChanged(o));
     db.onObjectUpdated.addListener((id, o) => this._objectUpdated(o));
     db.onObjectBlob.addListener((id, index, data) => this._objectBlob(id, index, data));
+    db.onOtherMessage.addListener((msg) => {
+      if (msg.action === "ImageData") this._imageView?.handleImageData(msg);
+    });
   }
 
   private _build(): void {
@@ -316,7 +321,7 @@ export class InspectPanel {
       new Span(row, { text: "Memory:", style: "margin-right: 4px;" });
       const mem = db.getObject(memory.__id);
       if (mem) objectLink(row, mem, onLink); else new Span(row, { text: "(destroyed)" });
-      new Span(row, { text: ` at offset ${String(object.updates.memoryOffset ?? 0)}` });
+      new Span(row, { text: `at offset ${String(object.updates.memoryOffset ?? 0)}`, style: "margin-left: 4px;" });
     }
 
     if (object.dependencies.size) {
@@ -335,6 +340,11 @@ export class InspectPanel {
     }
 
     if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
+    this._imageView = null;
+    if (object.type === "VkImage" || object.type === "VkImageView") {
+      const grp = new collapsible(this.inspectPanel, { label: "Image", collapsed: false });
+      this._imageView = new ImageView(grp.body, this.window, object);
+    }
 
     const argsGrp = new collapsible(this.inspectPanel, { label: "Arguments", collapsed: false });
     const tree = new Div(argsGrp.body, { class: "args-tree" });

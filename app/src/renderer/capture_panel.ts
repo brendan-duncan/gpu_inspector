@@ -11,7 +11,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { CaptureData, type CapturedTexture } from "./capture_data.js";
-import { decodeTexture } from "./vulkan/texture_decode.js";
+import { decodeImage } from "./vulkan/texture_decode.js";
 import { fmt, isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgObject, ArgValue, CaptureCommand } from "../shared/protocol.js";
@@ -511,7 +511,7 @@ export class CapturePanel {
   }
 
   private _drawTexture(canvas: HTMLCanvasElement, tex: CapturedTexture): void {
-    const decoded = decodeTexture(tex.info, tex.data!);
+    const decoded = decodeImage(tex.info, tex.data!);
     if (!decoded) {
       canvas.width = 64;
       canvas.height = 64;

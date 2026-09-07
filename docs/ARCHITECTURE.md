@@ -83,6 +83,23 @@ VKINSP_LOG=1            (optional, stderr + debugger logging)
 5. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureBufferData` and `CaptureTextureData` messages.
 
+### Live image readback
+
+The Inspect panel shows the contents of a `VkImage` / `VkImageView` (`RequestImage {id, mip,
+layer}` -> `ImageData`). To transition an image for the copy, the layer must know its current
+layout: `LayoutTracker` (`src/image_readback.*`) records the transitions each command buffer
+makes (pipeline barriers, render pass final layouts, dynamic rendering attachment layouts) and
+applies them at submit, keeping one layout per image. Requests are served just before
+`vkQueuePresentKHR` on the presenting queue: barrier to `TRANSFER_SRC`, copy to a host buffer,
+barrier back, fence wait, send. Compressed formats are copied as blocks and decoded in the UI
+(BC1–BC5 today).
+
+The viewer (`renderer/image_view.ts`) follows WebGPU Inspector's texture viewer: decoding is
+split into raw texel values (`decodeTexels`) and a display pass (`displayTexels`) that applies
+channel selection, exposure, auto range and sRGB encoding of linear data. Hovering the canvas
+shows the texel coordinates and values; clicking pins them in the info line; Ctrl + wheel zooms;
+Copy puts the displayed image on the clipboard as PNG. Display settings are remembered per image.
+
 ### app/ — Electron UI
 
 * `src/shared/protocol.ts` — typed definitions of every message (layer <-> UI, main <-> renderer).

@@ -51,6 +51,12 @@ struct DeviceData {
     VkPhysicalDeviceProperties properties{};
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
+    // Queue -> queue family (from vkGetDeviceQueue), and transient command pools per family used
+    // for live image readback (see image_readback.cpp).
+    std::mutex queueMutex;
+    std::unordered_map<VkQueue, uint32_t> queueFamilies;
+    std::unordered_map<uint32_t, VkCommandPool> readbackPools;
+
     // Command recorders for buffers begun during a frame capture (see capture.cpp).
     std::shared_mutex recorderMutex;
     std::unordered_map<VkCommandBuffer, std::unique_ptr<CommandRecorder>> recorders;

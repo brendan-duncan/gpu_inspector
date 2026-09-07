@@ -3,6 +3,7 @@
 #include "hooks.h"
 
 #include "capture.h"
+#include "image_readback.h"
 #include "layer.h"
 #include "resources.h"
 #include "tracker.h"
@@ -53,6 +54,7 @@ void PreHook_vkCreateSwapchainKHR(VkDevice& device, const VkSwapchainCreateInfoK
 
 void PreHook_vkBeginCommandBuffer(VkCommandBuffer& commandBuffer, const VkCommandBufferBeginInfo*& pBeginInfo) {
     CaptureManager::Get().OnBeginCommandBuffer(GetDeviceData(commandBuffer), commandBuffer);
+    LayoutTracker::Get().OnBeginCommandBuffer(commandBuffer);
 }
 
 void PreHook_vkResetCommandBuffer(VkCommandBuffer& commandBuffer, VkCommandBufferResetFlags& flags) {
@@ -317,26 +319,100 @@ void Hook_vkEndCommandBuffer(VkCommandBuffer commandBuffer) {
 void Hook_vkFreeCommandBuffers(VkDevice device, VkCommandPool commandPool, uint32_t commandBufferCount,
                                const VkCommandBuffer* pCommandBuffers) {
     DeviceData* dev = GetDeviceData(device);
-    for (uint32_t i = 0; pCommandBuffers && i < commandBufferCount; ++i)
+    for (uint32_t i = 0; pCommandBuffers && i < commandBufferCount; ++i) {
         CaptureManager::Get().OnFreeCommandBuffer(dev, pCommandBuffers[i]);
+        LayoutTracker::Get().OnFreeCommandBuffer(pCommandBuffers[i]);
+    }
+}
+
+void Hook_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue) {
+    if (!pQueue || !*pQueue) return;
+    DeviceData* dev = GetDeviceData(device);
+    std::lock_guard lock(dev->queueMutex);
+    dev->queueFamilies[*pQueue] = queueFamilyIndex;
+}
+
+void Hook_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue) {
+    if (!pQueueInfo || !pQueue || !*pQueue) return;
+    DeviceData* dev = GetDeviceData(device);
+    std::lock_guard lock(dev->queueMutex);
+    dev->queueFamilies[*pQueue] = pQueueInfo->queueFamilyIndex;
+}
+
+// Image layout tracking (see image_readback.h): barriers and render pass final layouts.
+void Hook_vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask,
+                               VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags,
+                               uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers,
+                               uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers,
+                               uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers) {
+    for (uint32_t i = 0; pImageMemoryBarriers && i < imageMemoryBarrierCount; ++i)
+        LayoutTracker::Get().NoteTransition(commandBuffer, pImageMemoryBarriers[i].image, pImageMemoryBarriers[i].newLayout);
+}
+
+void Hook_vkCmdPipelineBarrier2(VkCommandBuffer commandBuffer, const VkDependencyInfo* pDependencyInfo) {
+    if (!pDependencyInfo) return;
+    for (uint32_t i = 0; pDependencyInfo->pImageMemoryBarriers && i < pDependencyInfo->imageMemoryBarrierCount; ++i)
+        LayoutTracker::Get().NoteTransition(commandBuffer, pDependencyInfo->pImageMemoryBarriers[i].image,
+                                            pDependencyInfo->pImageMemoryBarriers[i].newLayout);
+}
+
+void Hook_vkCmdPipelineBarrier2KHR(VkCommandBuffer commandBuffer, const VkDependencyInfo* pDependencyInfo) {
+    Hook_vkCmdPipelineBarrier2(commandBuffer, pDependencyInfo);
+}
+
+static void NotePassFinalLayouts(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* info) {
+    if (!info) return;
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    FramebufferInfo fb;
+    RenderPassInfo rp;
+    if (!reg.GetFramebuffer(info->framebuffer, fb) || !reg.GetRenderPass(info->renderPass, rp)) return;
+    std::vector<VkImageView> views = fb.attachments;
+    if (fb.imageless) {
+        for (auto* n = static_cast<const VkBaseInStructure*>(info->pNext); n; n = n->pNext) {
+            if (n->sType == VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO) {
+                auto* ab = reinterpret_cast<const VkRenderPassAttachmentBeginInfo*>(n);
+                views.assign(ab->pAttachments, ab->pAttachments + ab->attachmentCount);
+            }
+        }
+    }
+    for (size_t i = 0; i < views.size() && i < rp.attachments.size(); ++i) {
+        ImageViewInfo vi;
+        if (reg.GetImageView(views[i], vi))
+            LayoutTracker::Get().NoteTransition(commandBuffer, vi.image, rp.attachments[i].finalLayout);
+    }
+}
+
+static void NoteRenderingLayouts(VkCommandBuffer commandBuffer, const VkRenderingInfo* info) {
+    if (!info) return;
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    auto note = [&](const VkRenderingAttachmentInfo* a) {
+        ImageViewInfo vi;
+        if (a && a->imageView && reg.GetImageView(a->imageView, vi))
+            LayoutTracker::Get().NoteTransition(commandBuffer, vi.image, a->imageLayout);
+    };
+    for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) note(&info->pColorAttachments[i]);
+    note(info->pDepthAttachment);
+    note(info->pStencilAttachment);
 }
 
 void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
-    if (!CaptureManager::Get().IsCapturing()) return;
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; ++j) cbs.push_back(pSubmits[i].pCommandBuffers[j]);
+    LayoutTracker::Get().OnSubmit((uint32_t)cbs.size(), cbs.data());
+    if (!CaptureManager::Get().IsCapturing()) return;
     JsonWriter w(&Tracker::Get());
     ArgsToJson_vkQueueSubmit(w, queue, submitCount, pSubmits, fence);
     CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit", std::move(w.str()), 0, cbs);
 }
 
 void Hook_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence) {
-    if (!CaptureManager::Get().IsCapturing()) return;
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferInfoCount; ++j)
             cbs.push_back(pSubmits[i].pCommandBufferInfos[j].commandBuffer);
+    LayoutTracker::Get().OnSubmit((uint32_t)cbs.size(), cbs.data());
+    if (!CaptureManager::Get().IsCapturing()) return;
     JsonWriter w(&Tracker::Get());
     ArgsToJson_vkQueueSubmit2(w, queue, submitCount, pSubmits, fence);
     CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit2", std::move(w.str()), 0, cbs);
@@ -349,12 +425,14 @@ void Hook_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitI
 void Hook_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                VkSubpassContents contents) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
 }
 
 void Hook_vkCmdBeginRenderPass2(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                 const VkSubpassBeginInfo* pSubpassBeginInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
 }
 
@@ -365,6 +443,7 @@ void Hook_vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRender
 
 void Hook_vkCmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo* pRenderingInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    NoteRenderingLayouts(commandBuffer, pRenderingInfo);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRendering(dev, rec, pRenderingInfo);
 }
 
@@ -387,6 +466,7 @@ void Hook_vkCmdEndRenderingKHR(VkCommandBuffer commandBuffer) { EndPass(commandB
 void Hook_vkCmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBufferCount,
                                const VkCommandBuffer* pCommandBuffers) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    LayoutTracker::Get().OnExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers);
     CommandRecorder* rec = dev->RecorderFor(commandBuffer);
     if (!rec || !pCommandBuffers) return;
     std::string extra = ",\"children\":[";

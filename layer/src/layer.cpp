@@ -10,6 +10,7 @@
 #include "json_parse.h"
 #include "tracker.h"
 #include "transport.h"
+#include "image_readback.h"
 #include "vk_commands.gen.h"
 #include "vk_serialize.gen.h"
 
@@ -125,7 +126,10 @@ static void HandleUiMessage(const std::string& text) {
         if (blob) Transport::Get().SendBinary(std::move(w.str()), blob->data(), blob->size());
         else Transport::Get().SendJson(std::move(w.str()));
     }
-    else if (action == "RequestSnapshot") {
+    else if (action == "RequestImage") {
+        ImageReadback::Get().Request((uint64_t)msg.GetNumber("id"), (uint32_t)msg.GetNumber("mip"),
+                                     (uint32_t)msg.GetNumber("layer"));
+    } else if (action == "RequestSnapshot") {
         // A UI window that picked up an already-connected session rebuilds its object list.
         Tracker::Get().SendSnapshot();
     } else if (action == "Settings") {
@@ -385,6 +389,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkDebugMarkerSetObjectNameEXT(VkDevice devi
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceData* data = GetDeviceData(queue);
+    // Live image readbacks go on this queue before the present, while the frame's images are in
+    // their tracked layouts and the swapchain image is still owned by the application.
+    ImageReadback::Get().OnPresent(data, queue);
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
     data->frameIndex++;
     CaptureManager::Get().OnPresent(data, queue, pPresentInfo, res);

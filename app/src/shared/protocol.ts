@@ -109,6 +109,27 @@ export interface CaptureTextureInfo {
 
 export interface CaptureTextureFramesMessage { action: "CaptureTextureFrames"; count: number; textures: CaptureTextureInfo[] }
 
+/** What the texture decoder needs to know about a block of pixel data. */
+export interface ImageDataInfo {
+  format: string;
+  aspect: "color" | "depth" | "stencil";
+  width: number;
+  height: number;
+}
+
+/** Reply to RequestImage: one mip level / array layer of a live image (all depth slices for 3D). */
+export interface ImageDataMessage extends ImageDataInfo {
+  action: "ImageData";
+  id: number;
+  mip: number;
+  layer: number;
+  depth: number;
+  layers: number;
+  size: number;
+  error?: string;
+  __binary?: Uint8Array;
+}
+
 export interface CaptureTextureDataMessage {
   action: "CaptureTextureData";
   id: number;
@@ -132,7 +153,8 @@ export type LayerMessage =
   | CaptureFrameResultsMessage
   | CaptureFrameCommandsMessage
   | CaptureTextureFramesMessage
-  | CaptureTextureDataMessage;
+  | CaptureTextureDataMessage
+  | ImageDataMessage;
 
 // ------------------------------------------------------------------------------------------
 // UI -> Layer
@@ -141,6 +163,8 @@ export interface PingRequest { action: "Ping" }
 /** Asks the layer to resend the live object snapshot (a window picking up a running session). */
 export interface RequestSnapshotRequest { action: "RequestSnapshot" }
 export interface RequestBlobRequest { action: "RequestBlob"; id: number; index: number }
+/** Asks the layer to read back one subresource of a live VkImage (answered by ImageData). */
+export interface RequestImageRequest { action: "RequestImage"; id: number; mip: number; layer: number }
 export interface SettingsRequest { action: "Settings"; recordAlways?: boolean }
 export interface CaptureRequest {
   action: "Capture";
@@ -150,7 +174,7 @@ export interface CaptureRequest {
   captureTextures?: boolean;
 }
 
-export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | SettingsRequest | CaptureRequest;
+export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | SettingsRequest | CaptureRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer

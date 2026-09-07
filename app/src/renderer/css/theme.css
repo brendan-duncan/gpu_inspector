@@ -98,6 +98,8 @@
   --tree-semiselected-fg: #aa9966;
   --checker-a: #333333;
   --checker-b: #2a2a2a;
+  --tooltip-bg: rgba(225, 225, 170, 0.96);
+  --tooltip-fg: #101010;
 
   /* Capture list and argument syntax */
   --drawcall-fg: #dcdcaa;
@@ -206,6 +208,8 @@
   --tree-semiselected-fg: #a07a30;
   --checker-a: #d0d0d0;
   --checker-b: #e8e8e8;
+  --tooltip-bg: rgba(255, 250, 205, 0.97);
+  --tooltip-fg: #101010;
 
   --drawcall-fg: #7a5c00;
   --syntax-key: #0451a5;
