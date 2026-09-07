@@ -105,6 +105,7 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
         }
         sub.commandBuffers.push_back(std::move(scb));
     }
+    Log("capture: %s with %zu command buffers", method.c_str(), commandBuffers.size());
     std::lock_guard lock(_mutex);
     _submissions.push_back(std::move(sub));
 }
@@ -116,6 +117,8 @@ void CaptureManager::OnPresent(DeviceData* dev, VkQueue queue, const VkPresentIn
         return;
     }
     if (_state != State::Capturing) return;
+    Log("capture: present (result %d, %u swapchains) after %zu submissions", (int)result,
+        info ? info->swapchainCount : 0, _submissions.size());
 
     // The present itself is part of the captured frame.
     {
@@ -176,7 +179,7 @@ static void WriteCommandEntry(JsonWriter& w, uint64_t index, const char* method,
     }
     w.Key("args"); if (args.empty()) w.Null(); else w.Raw(args);
     if (result) { w.Key("result"); w.Int(result); }
-    if (!extra.empty()) w.Raw(extra);  // extra starts with a comma-separated key list: ,"children":[...]
+    if (!extra.empty()) w.str() += extra;  // extra is a pre-separated member list: ,"children":[...]
     w.EndObject();
 }
 

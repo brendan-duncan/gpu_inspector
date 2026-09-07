@@ -202,6 +202,16 @@ class Session {
   }
 
   appendLog(line: string): void {
+    // Testing aid: --debug-log=<file> mirrors every session log line to a file.
+    const logFile = cliOption("debug-log");
+    if (logFile) {
+      try {
+        fs.appendFileSync(logFile, `[${this.id}] ${line}
+`);
+      } catch {
+        // ignore
+      }
+    }
     this.log.push(line);
     if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
     this.send("inspector:log", { sessionId: this.id, line });
@@ -337,6 +347,8 @@ function attemptConnect(s: Session): void {
           s.queueMessage(JSON.parse(payload.toString("utf8")) as LayerMessage);
         } catch (e) {
           s.appendLog(`bad JSON from layer: ${e}`);
+          const logFile = cliOption("debug-log");
+          if (logFile) fs.appendFileSync(`${logFile}.badjson`, payload.toString("utf8") + "\n\n");
         }
       } else if (kind === 1) {
         const hl = payload.readUInt32LE(0);
@@ -410,6 +422,12 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
     VK_INSTANCE_LAYERS: process.env.VK_INSTANCE_LAYERS ? `${LAYER_NAME}${path.delimiter}${process.env.VK_INSTANCE_LAYERS}` : LAYER_NAME,
     VKINSP_PORT: String(s.port),
     VKINSP_LOG: config.log ? "1" : "0",
+    // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have
+    // no usable stderr).
+    ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
+    // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have
+    // no usable stderr).
+    ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
     VKINSP_RECORD_ALWAYS: config.recordAlways ? "1" : "0",
   };
   const args = splitArgs(config.args ?? "");

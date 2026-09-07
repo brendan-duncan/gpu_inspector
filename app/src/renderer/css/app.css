@@ -230,6 +230,7 @@ html, body {
 .capture-info { overflow: auto; height: 100%; padding: 8px; }
 .capture-submit > .title_bar { background: var(--bg-elevated); }
 .capture-cmdbuf > .title_bar { background: var(--bg-tertiary); }
+.capture-secondary > .title_bar { background: var(--collapsible-body-bg); font-weight: normal; font-style: italic; }
 .capture_command { display: flex; gap: 8px; padding: 1px 6px; cursor: pointer; white-space: nowrap; align-items: baseline; }
 .capture_command_inline { display: inline-flex; margin-left: 8px; overflow: hidden; }
 .capture-commands .title_bar { display: flex; align-items: baseline; flex-wrap: wrap; }

@@ -9,6 +9,28 @@ export interface CapturedTexture {
   canvas: HTMLCanvasElement | null;   // set by the panel while waiting for data
 }
 
+/**
+ * Inlines the commands of secondary command buffers right after the vkCmdExecuteCommands that
+ * ran them, so the command list, draw-state reconstruction and pass lookup see one stream per
+ * primary command buffer (engines such as Unity record every draw in secondaries). Inlined
+ * commands keep the primary as their `object` and note the secondary in `secondary`.
+ */
+function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
+  if (!commands.some((c) => c && c.children && c.children.length)) return commands;
+  const out: CaptureCommand[] = [];
+  for (const c of commands) {
+    if (!c) continue;
+    out.push(c);
+    for (const child of c.children ?? []) {
+      for (const cc of child.commands) {
+        out.push({ index: 0, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer, children: cc.children });
+      }
+    }
+  }
+  out.forEach((c, i) => { c.index = i; });
+  return out;
+}
+
 export class CaptureData {
   frame = 0;
   commands: CaptureCommand[] = [];
@@ -44,6 +66,7 @@ export class CaptureData {
       case "CaptureFrameCommands":
         for (const c of msg.commands) this.commands[c.index] = c;
         if (this.commands.length >= this._expectedCommands) {
+          this.commands = flattenSecondaries(this.commands);
           this.onCaptureStatus.emit(`${this.commands.length} commands`);
           this.onCommandsComplete.emit();
         }

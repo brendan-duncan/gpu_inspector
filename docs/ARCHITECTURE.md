@@ -65,6 +65,7 @@ VK_ADD_LAYER_PATH=<dir containing VK_LAYER_INSPECTOR_capture.json>
 VK_LOADER_LAYERS_ENABLE=VK_LAYER_INSPECTOR_capture
 VKINSP_PORT=<port>
 VKINSP_LOG=1            (optional, stderr + debugger logging)
+VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such as Unity players have no stderr)
 ```
 
 ### Frame capture
@@ -82,6 +83,8 @@ VKINSP_LOG=1            (optional, stderr + debugger logging)
    is frozen at submit so later re-recording does not disturb the capture.
 5. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureBufferData` and `CaptureTextureData` messages.
+6. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
+   inlines them into the primary's command stream (Unity records every draw in secondaries).
 
 ### Live image readback
 
@@ -166,7 +169,9 @@ build/bin/Release/vkinsp_triangle.exe --frames 600      # window is resizable
 Debug aids: `npx electron . --launch=<exe> --record-always --debug-capture --screenshot=<png>`
 captures a frame automatically and writes a screenshot (one per window); `--debug-relaunch`,
 `--debug-multi` and `--debug-detach` exercise relaunching, two simultaneous sessions and a session
-window. (If Electron starts as plain Node, unset `ELECTRON_RUN_AS_NODE`.) `python tools/inspector_client.py
+window; `--debug-log=<file>` mirrors the session log to a file, the layer log to `<file>.layer.log`
+and any malformed layer message to `<file>.badjson`. (If Electron starts as plain Node, unset
+`ELECTRON_RUN_AS_NODE`.) `python tools/inspector_client.py
 --capture --record-always --save out.json` talks to the layer without the UI.
 
 Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):

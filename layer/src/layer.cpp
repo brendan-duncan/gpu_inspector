@@ -42,6 +42,20 @@ bool LogEnabled() {
     return g_logEnabled == 1;
 }
 
+// VKINSP_LOG_FILE=<path> appends the log to a file as well (GUI applications such as Unity
+// players have no usable stderr).
+static FILE* LogFile() {
+    static FILE* file = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        if (const char* path = getenv("VKINSP_LOG_FILE")) {
+            if (*path) file = fopen(path, "a");
+        }
+    }
+    return file;
+}
+
 void Log(const char* fmt, ...) {
     if (!LogEnabled()) return;
     char buf[2048];
@@ -51,6 +65,10 @@ void Log(const char* fmt, ...) {
     va_end(args);
     fprintf(stderr, "[vkinsp] %s\n", buf);
     fflush(stderr);
+    if (FILE* f = LogFile()) {
+        fprintf(f, "[vkinsp] %s\n", buf);
+        fflush(f);
+    }
 #if defined(_WIN32)
     OutputDebugStringA("[vkinsp] ");
     OutputDebugStringA(buf);

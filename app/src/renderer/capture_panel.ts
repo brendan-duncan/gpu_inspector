@@ -126,7 +126,16 @@ export class CapturePanel {
     let current: Widget = cbBody;
     let drawCount = 0;
 
+    let currentSecondary = 0;      // secondary command buffer whose inlined commands are being listed
+    let secondaryParent: Widget | null = null;
+
+    const closeSecondary = (): void => {
+      if (currentSecondary && secondaryParent) current = secondaryParent;
+      currentSecondary = 0;
+      secondaryParent = null;
+    };
     const closeCommandBuffer = (): void => {
+      closeSecondary();
       stack.length = 0;
       currentCb = -1;
       current = submitBody;
@@ -134,6 +143,16 @@ export class CapturePanel {
 
     for (const cmd of commands) {
       const objId = cmd.object?.__id ?? 0;
+      if ((cmd.secondary ?? 0) !== currentSecondary) {
+        closeSecondary();
+        if (cmd.secondary) {
+          const sec = db.getObject(cmd.secondary);
+          const block = new collapsible(current, { label: `Secondary: ${sec ? sec.name : `CommandBuffer ${cmd.secondary}`}`, collapsed: false, class: "capture-secondary" });
+          secondaryParent = current;
+          currentSecondary = cmd.secondary;
+          current = block.body;
+        }
+      }
       if (SUBMIT_METHODS.has(cmd.method)) {
         closeCommandBuffer();
         const queue = db.getObject(objId);
@@ -168,6 +187,7 @@ export class CapturePanel {
         continue;
       }
       if (PASS_END.has(cmd.method)) {
+        closeSecondary();
         this._addRow(current, cmd);
         current = stack.pop() ?? cbBody;
         continue;
@@ -302,8 +322,14 @@ export class CapturePanel {
     const argsGrp = new collapsible(this._infoPanel, { label: "Arguments", collapsed: false });
     renderArgs(new Div(argsGrp.body, { class: "args-tree" }), cmd.args, db, onLink);
 
+    if (cmd.secondary) {
+      const sec = db.getObject(cmd.secondary);
+      const row = new Div(box, { class: "font-md text-muted" });
+      new Span(row, { text: "Recorded in secondary command buffer:", style: "margin-right: 4px;" });
+      if (sec) objectLink(row, sec, onLink); else new Span(row, { text: String(cmd.secondary) });
+    }
     if (cmd.children) {
-      const grp = new collapsible(this._infoPanel, { label: `Secondary command buffers (${cmd.children.length})`, collapsed: false });
+      const grp = new collapsible(this._infoPanel, { label: `Secondary command buffers (${cmd.children.length})`, collapsed: true });
       for (const child of cmd.children) {
         const cbObj = db.getObject(child.commandBuffer);
         const sub = new collapsible(grp.body, { label: `${cbObj?.name ?? child.commandBuffer}: ${child.commands.length} commands`, collapsed: child.commands.length > 50 });

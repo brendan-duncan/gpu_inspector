@@ -82,6 +82,8 @@ export interface CaptureCommand {
   args: ArgObject | null;
   result?: number;
   children?: CaptureChildBuffer[]; // secondary command buffers of vkCmdExecuteCommands
+  /** Set on commands the UI inlined from a secondary command buffer: that buffer's object id. */
+  secondary?: number;
 }
 
 export interface CaptureFrameCommandsMessage {
