@@ -1,4 +1,4 @@
-/* Vulkan Inspector panels, on top of the widget styles in inspector.css. Colors come from the
+/* GPU Inspector panels, on top of the widget styles in inspector.css. Colors come from the
    tokens in theme.css. */
 
 html, body {
@@ -227,6 +227,8 @@ html, body {
 .capture-bar { flex: 0 0 auto; padding: 6px 10px; margin-bottom: 0; }
 .capture_panel > .split { flex: 1 1 auto; min-height: 0; height: auto; }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
+.capture-frame-tabs { height: 100%; }
+.capture-frame-list { overflow: auto; height: 100%; padding: 4px; }
 .capture-info { overflow: auto; height: 100%; padding: 8px; }
 .capture-submit > .title_bar { background: var(--bg-elevated); }
 .capture-cmdbuf > .title_bar { background: var(--bg-tertiary); }

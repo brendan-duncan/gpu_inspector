@@ -35,6 +35,7 @@ struct SubmittedCommandBuffer {
 
 struct CaptureSubmission {
     uint64_t queueId = 0;
+    uint32_t frame = 0;         // frame ordinal within the capture (0-based)
     std::string method;         // vkQueueSubmit / vkQueueSubmit2 / vkQueuePresentKHR
     std::string args;           // serialized arguments
     int64_t result = 0;
@@ -44,6 +45,7 @@ struct CaptureSubmission {
 // A render target captured at the end of a pass (data lands in a staging buffer).
 struct TextureCapture {
     uint64_t imageId = 0;
+    uint32_t frame = UINT32_MAX;  // frame ordinal, assigned when its command buffer is submitted
     uint64_t commandBufferId = 0;
     uint32_t passIndex = 0;       // per command buffer pass counter
     uint32_t attachment = 0;
@@ -114,6 +116,7 @@ private:
     State _state = State::Idle;
     CaptureOptions _options;
     uint32_t _framesLeft = 0;
+    uint32_t _frameCount = 1;
     uint64_t _frameIndex = 0;
 
     std::vector<CaptureSubmission> _submissions;

@@ -1,7 +1,7 @@
 {
-  "name": "vulkan-inspector",
+  "name": "gpu-inspector",
   "version": "0.1.0",
-  "description": "Vulkan graphics inspector: live object inspection and frame capture for any Vulkan application",
+  "description": "GPU Inspector: native graphics inspector (Vulkan today) with live object inspection and frame capture, companion to WebGPU Inspector",
   "main": "dist/main/main.js",
   "type": "module",
   "scripts": {

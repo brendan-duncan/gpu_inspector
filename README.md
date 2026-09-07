@@ -1,9 +1,10 @@
-# Vulkan Inspector
+# GPU Inspector
 
-A cross-platform (Windows, Linux) graphics inspector for Vulkan applications, modelled after
-[WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector). It intercepts every
-Vulkan call through a layer, so any application works without instrumentation. Unity Vulkan
-players are the primary target.
+A cross-platform (Windows, Linux) graphics inspector for native applications, the native
+counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
+version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
+any application works without instrumentation, and Unity Vulkan players are the primary target.
+The UI and protocol are API-neutral so Metal and Direct3D capture libraries can follow.
 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).

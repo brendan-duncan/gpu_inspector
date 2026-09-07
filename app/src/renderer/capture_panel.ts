@@ -7,6 +7,7 @@ import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Split } from "./widget/split.js";
+import { TabWidget } from "./widget/tab_widget.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
@@ -91,11 +92,12 @@ export class CapturePanel {
     new Div(this._listPanel, { text: "No capture yet. Launch an application and press Capture.", class: "text-muted", style: "padding: 12px;" });
   }
 
-  capture(): void {
+  capture(frames?: number): void {
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return;
     }
+    if (frames && frames > 0) this._frameCountInput.value = String(frames);
     this.data.reset();
     this._listPanel.html = "";
     this._infoPanel.html = "";
@@ -114,12 +116,32 @@ export class CapturePanel {
     this._listPanel.html = "";
     this._infoPanel.html = "";
     this._selectedRow = null;
+    this._drawCount = 0;
+    const frames = this.data.frames;
+    if (frames > 1) {
+      // One tab per captured frame, like WebGPU Inspector.
+      const tabs = new TabWidget(this._listPanel, { class: "capture-frame-tabs tabs-fill" });
+      for (let f = 0; f < frames; f++) {
+        const list = new Div(null, { class: "capture-frame-list" });
+        tabs.addTab(`Frame ${this.data.frame + f}`, list);
+        this._renderFrame(f, list);
+      }
+    } else {
+      this._renderFrame(0, this._listPanel);
+    }
+    this._updateStatus();
+    const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
+    first?.click();
+  }
+
+  /** Builds the command tree of one captured frame into `container`. */
+  private _renderFrame(frame: number, container: Widget): void {
     this._commandBufferPassCounters.clear();
-    const commands = this.data.commands;
+    const commands = this.data.commandsForFrame(frame);
     const db = this.window.database;
 
     // Containers: submit -> command buffer -> render pass / debug label groups.
-    let submitBody: Widget = this._listPanel;
+    let submitBody: Widget = container;
     let cbBody: Widget = submitBody;
     let currentCb = -1;
     const stack: Widget[] = [];     // open pass / label bodies within the command buffer
@@ -156,7 +178,7 @@ export class CapturePanel {
       if (SUBMIT_METHODS.has(cmd.method)) {
         closeCommandBuffer();
         const queue = db.getObject(objId);
-        const block = new collapsible(this._listPanel, { label: `${cmd.method}  ${queue ? queue.name : ""}`, collapsed: false, class: "capture-submit" });
+        const block = new collapsible(container, { label: `${cmd.method}  ${queue ? queue.name : ""}`, collapsed: false, class: "capture-submit" });
         this._addRow(block.titleBar, cmd, true);
         submitBody = block.body;
         current = submitBody;
@@ -212,14 +234,13 @@ export class CapturePanel {
         drawCount++;
       }
     }
-    this._drawCount = drawCount;
-    this._updateStatus();
-    const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
-    first?.click();
+    this._drawCount += drawCount;
   }
 
   private _updateStatus(): void {
-    this._statusLabel.text = `frame ${this.data.frame}: ${this.data.commands.length} commands, ${this._drawCount} draws/dispatches, ${this.data.textures.length} render targets`;
+    const d = this.data;
+    const which = d.frames > 1 ? `frames ${d.frame}-${d.frame + d.frames - 1}` : `frame ${d.frame}`;
+    this._statusLabel.text = `${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${d.textures.length} render targets`;
   }
 
   private _passLabel(cmd: CaptureCommand, passIndex: number): string {
@@ -316,7 +337,7 @@ export class CapturePanel {
     }
     if (PASS_BEGIN.has(cmd.method) || PASS_END.has(cmd.method) || DRAW_METHODS.has(cmd.method)) {
       const pass = this._findPass(cmd);
-      if (pass) this._renderPassTargets(pass.passBegin, pass.passIndex, cmd.object?.__id ?? 0);
+      if (pass) this._renderPassTargets(cmd.frame, pass.passBegin, pass.passIndex, cmd.object?.__id ?? 0);
     }
 
     const argsGrp = new collapsible(this._infoPanel, { label: "Arguments", collapsed: false });
@@ -502,8 +523,8 @@ export class CapturePanel {
   // ---------------------------------------------------------------------------------------
   // Render targets
 
-  private _renderPassTargets(passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void {
-    const textures = this.data.texturesForPass(commandBufferId, passIndex);
+  private _renderPassTargets(frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void {
+    const textures = this.data.texturesForPass(frame, commandBufferId, passIndex);
     const grp = new collapsible(this._infoPanel, { label: `Render Targets (${textures.length})`, collapsed: false });
     if (!textures.length) {
       new Div(grp.body, { text: "No render target data for this pass (pre-recorded command buffer, or readback disabled).", class: "text-muted", style: "padding: 6px;" });

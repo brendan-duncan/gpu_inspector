@@ -1,9 +1,10 @@
-# Vulkan Inspector — Architecture
+# GPU Inspector — Architecture
 
-A cross-platform (Windows, Linux) graphics inspector for Vulkan applications, modelled after
-[WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector). It works with any
-uninstrumented Vulkan application by interposing a Vulkan layer, and it targets Unity Vulkan
-players first.
+A cross-platform (Windows, Linux) graphics inspector for native applications, the native
+counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector). Vulkan is
+the first API: it works with any uninstrumented Vulkan application by interposing a Vulkan layer,
+and it targets Unity Vulkan players first. The UI and protocol are API-neutral (see Multi-API
+below); Metal and Direct3D would be further capture libraries speaking the same protocol.
 
 ## Design decisions
 
@@ -85,6 +86,8 @@ VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such 
    `CaptureFrameCommands`, `CaptureBufferData` and `CaptureTextureData` messages.
 6. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
    inlines them into the primary's command stream (Unity records every draw in secondaries).
+7. Multi-frame captures: every command and render target carries a frame ordinal (a render target
+   belongs to the frame its command buffer was submitted in); the UI shows one tab per frame.
 
 ### Live image readback
 

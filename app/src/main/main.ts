@@ -32,7 +32,7 @@ const KILL_TIMEOUT_MS = 3000;
 let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
-//               [--debug-select=<VkType>] [--debug-capture] [--record-always]
+//               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
@@ -101,6 +101,21 @@ function parseEnvLines(text: string): Record<string, string> {
 
 function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+/** Copies settings saved by the app under its previous name (vulkan-inspector) on first run. */
+function migrateSettings(): void {
+  const current = settingsPath();
+  if (fs.existsSync(current)) return;
+  const previous = path.join(path.dirname(app.getPath("userData")), "vulkan-inspector", "settings.json");
+  try {
+    if (fs.existsSync(previous)) {
+      fs.mkdirSync(path.dirname(current), { recursive: true });
+      fs.copyFileSync(previous, current);
+    }
+  } catch {
+    // start with defaults
+  }
 }
 
 function loadSettings(): Settings {
@@ -478,6 +493,18 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
   return { ok: true, sessionId: s.id, pid: proc.pid, port: s.port };
 }
 
+/** Terminates a process and, on Windows, everything it spawned (Unity's crash handler, launchers). */
+function terminate(proc: ChildProcess): void {
+  if (process.platform === "win32" && proc.pid) {
+    execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+      // If taskkill is unavailable or the process is already gone, fall back to a plain kill.
+      try { proc.kill(); } catch { /* already gone */ }
+    });
+    return;
+  }
+  proc.kill();
+}
+
 /** Terminates the target and resolves once it has exited (or after a timeout). */
 function killTarget(s: Session): Promise<void> {
   const proc = s.target;
@@ -494,7 +521,7 @@ function killTarget(s: Session): Promise<void> {
     proc.once("exit", finish);
     setTimeout(finish, KILL_TIMEOUT_MS);
     try {
-      proc.kill();
+      terminate(proc);
     } catch {
       finish();
     }
@@ -560,7 +587,7 @@ function killAllTargets(): void {
     disconnectSession(s);
     if (s.target) {
       try {
-        s.target.kill();
+        terminate(s.target);
       } catch {
         // already gone
       }
@@ -612,7 +639,7 @@ const windowPrefs = (): electron.BrowserWindowConstructorOptions => ({
   width: 1500,
   height: 950,
   backgroundColor: windowBackground(appTheme()),
-  title: "Vulkan Inspector",
+  title: "GPU Inspector",
   icon: appIcon(),
   webPreferences: {
     preload: path.join(__dirname, "preload.cjs"),
@@ -640,7 +667,7 @@ function createMainWindow(): BrowserWindow {
 /** Moves a session out of its current window into a window of its own. */
 function openSessionWindow(s: Session): void {
   const previous = s.viewer;
-  const win = new BrowserWindow({ ...windowPrefs(), title: `${s.name} - Vulkan Inspector` });
+  const win = new BrowserWindow({ ...windowPrefs(), title: `${s.name} - GPU Inspector` });
   win.setMenuBarVisibility(false);
   // The renderer asks for its sessions with getConfig once loaded, so nothing is pushed here.
   s.viewer = win;
@@ -720,7 +747,12 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
     theme: appTheme(),
     windowMode: win === mainWin ? "main" : "session",
     sessions: sessionsOf(win).map((s) => s.info()),
-    debug: { select: cliOption("debug-select"), capture: cliFlag("debug-capture"), launchDialog: cliFlag("debug-launch-dialog") },
+    debug: {
+      select: cliOption("debug-select"),
+      capture: cliFlag("debug-capture"),
+      captureFrames: Number(cliOption("debug-capture")) || 1,
+      launchDialog: cliFlag("debug-launch-dialog"),
+    },
   };
 });
 ipcMain.handle("inspector:setTheme", (_e, theme: ThemeName) => {
@@ -811,6 +843,7 @@ async function writeScreenshots(file: string): Promise<void> {
 }
 
 void app.whenReady().then(() => {
+  migrateSettings();
   if (process.platform === "darwin") app.dock?.setIcon(appIcon().replace(/[.]ico$/, ".png"));
   mainWin = createMainWindow();
   mainWin.webContents.on("did-finish-load", () => {

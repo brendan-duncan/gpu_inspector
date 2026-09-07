@@ -26,7 +26,7 @@ namespace vkinsp { class CommandRecorder; }
 #endif
 
 #define VKINSP_LAYER_NAME "VK_LAYER_INSPECTOR_capture"
-#define VKINSP_LAYER_DESCRIPTION "Vulkan Inspector capture layer"
+#define VKINSP_LAYER_DESCRIPTION "GPU Inspector Vulkan capture layer"
 #define VKINSP_LAYER_IMPL_VERSION 1
 
 namespace vkinsp {

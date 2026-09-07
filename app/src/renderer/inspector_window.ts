@@ -42,7 +42,7 @@ export class InspectorWindow extends Window {
     if (this._mode === "main") this._buildToolbar();
 
     this._tabs = new TabWidget(this, { class: "main-tabs tabs-fill", displayCloseButton: true });
-    new Widget("span", this._tabs.headerElement, { text: "Vulkan Inspector", class: "app-title" });
+    new Widget("span", this._tabs.headerElement, { text: "GPU Inspector", class: "app-title" });
     this._tabs.onTabClosed.addListener((panel) => this._tabClosed(panel));
 
     this._placeholder = new Div(this, { class: "main-placeholder" });
@@ -269,7 +269,7 @@ export class InspectorWindow extends Window {
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
-      panel.capturePanel.capture();
+      panel.capturePanel.capture(this._debug?.captureFrames);
     }, 1500);
   }
 }

@@ -62,7 +62,7 @@ export interface ObjectBlobMessage {
   __binary?: Uint8Array;
 }
 
-export interface CaptureFrameResultsMessage { action: "CaptureFrameResults"; frame: number; count: number; batches: number }
+export interface CaptureFrameResultsMessage { action: "CaptureFrameResults"; frame: number; frames: number; count: number; batches: number }
 
 export interface CaptureChildCommand {
   method: string;
@@ -77,6 +77,7 @@ export interface CaptureChildBuffer {
 
 export interface CaptureCommand {
   index: number;
+  frame: number;                  // frame ordinal within the capture (0-based)
   method: string;                 // "vkCmdDraw", "vkQueueSubmit", ...
   object: HandleRef | null;       // command buffer or queue
   args: ArgObject | null;
@@ -95,6 +96,7 @@ export interface CaptureFrameCommandsMessage {
 
 export interface CaptureTextureInfo {
   id: number;             // VkImage object id
+  frame: number;          // frame ordinal within the capture
   commandBuffer: number;  // command buffer object id
   passIndex: number;      // pass counter within that command buffer
   attachment: number;
@@ -135,6 +137,7 @@ export interface ImageDataMessage extends ImageDataInfo {
 export interface CaptureTextureDataMessage {
   action: "CaptureTextureData";
   id: number;
+  frame: number;
   commandBuffer: number;
   passIndex: number;
   attachment: number;
@@ -238,7 +241,7 @@ export interface AppConfig {
   windowMode: "main" | "session";
   /** Sessions currently assigned to the window that asked. */
   sessions: SessionInfo[];
-  debug: { select: string | null; capture: boolean; launchDialog: boolean };
+  debug: { select: string | null; capture: boolean; captureFrames: number; launchDialog: boolean };
 }
 
 export interface LaunchResult {

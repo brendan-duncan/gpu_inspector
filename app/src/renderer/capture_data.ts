@@ -23,7 +23,7 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
     out.push(c);
     for (const child of c.children ?? []) {
       for (const cc of child.commands) {
-        out.push({ index: 0, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer, children: cc.children });
+        out.push({ index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer, children: cc.children });
       }
     }
   }
@@ -32,7 +32,9 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
 }
 
 export class CaptureData {
+  /** Frame number of the first captured frame, and how many frames the capture spans. */
   frame = 0;
+  frames = 1;
   commands: CaptureCommand[] = [];
   textures: CapturedTexture[] = [];
   private _expectedCommands = 0;
@@ -44,14 +46,20 @@ export class CaptureData {
 
   reset(): void {
     this.frame = 0;
+    this.frames = 1;
     this.commands = [];
     this.textures = [];
     this._expectedCommands = 0;
   }
 
-  texturesForPass(commandBufferId: number, passIndex: number): CapturedTexture[] {
-    return this.textures.filter((t) => t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
+  texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
+    return this.textures.filter((t) => t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
       .sort((a, b) => a.info.attachment - b.info.attachment);
+  }
+
+  /** The commands of one captured frame (indices stay those of the full list). */
+  commandsForFrame(frame: number): CaptureCommand[] {
+    return this.commands.filter((c) => c.frame === frame);
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -59,6 +67,7 @@ export class CaptureData {
       case "CaptureFrameResults":
         this.reset();
         this.frame = msg.frame;
+        this.frames = Math.max(1, msg.frames ?? 1);
         this._expectedCommands = msg.count;
         this.onCaptureStatus.emit(`receiving ${msg.count} commands...`);
         if (msg.count === 0) this.onCommandsComplete.emit();
@@ -76,7 +85,7 @@ export class CaptureData {
         this.onTexturesAnnounced.emit();
         break;
       case "CaptureTextureData": {
-        const tex = this.textures.find((t) => t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
+        const tex = this.textures.find((t) => t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);

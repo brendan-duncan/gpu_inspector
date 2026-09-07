@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(VulkanInspector CXX)
+project(GpuInspector CXX)
 
 option(VKINSP_BUILD_TESTS "Build the test applications" ON)
 

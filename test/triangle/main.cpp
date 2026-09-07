@@ -196,7 +196,7 @@ struct App {
         RegisterClassA(&wc);
         RECT r{0, 0, (LONG)width, (LONG)height};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-        hwnd = CreateWindowA(wc.lpszClassName, "Vulkan Inspector test: cube", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        hwnd = CreateWindowA(wc.lpszClassName, "GPU Inspector test: cube", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                              CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
                              wc.hInstance, nullptr);
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)this);

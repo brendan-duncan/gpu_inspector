@@ -48,6 +48,7 @@ void CaptureManager::Start(DeviceData* dev) {
     _textures.clear();
     _commandTotal = 0;
     _frameIndex = dev->frameIndex;
+    _frameCount = std::max(1u, _options.frameCount);
     _state = State::Capturing;
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
@@ -96,6 +97,7 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     sub.method = method;
     sub.args = std::move(args);
     sub.result = result;
+    sub.frame = (uint32_t)(dev->frameIndex - _frameIndex);
     for (VkCommandBuffer cb : commandBuffers) {
         SubmittedCommandBuffer scb;
         scb.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
@@ -107,6 +109,16 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     }
     Log("capture: %s with %zu command buffers", method.c_str(), commandBuffers.size());
     std::lock_guard lock(_mutex);
+    // Render targets read back while recording belong to the frame their command buffer runs in.
+    for (auto& tc : _textures) {
+        if (tc.frame != UINT32_MAX) continue;
+        for (auto& scb : sub.commandBuffers) {
+            if (scb.commandBufferId == tc.commandBufferId) {
+                tc.frame = sub.frame;
+                break;
+            }
+        }
+    }
     _submissions.push_back(std::move(sub));
 }
 
@@ -129,6 +141,7 @@ void CaptureManager::OnPresent(DeviceData* dev, VkQueue queue, const VkPresentIn
         sub.method = "vkQueuePresentKHR";
         sub.args = std::move(w.str());
         sub.result = (int64_t)result;
+        sub.frame = (uint32_t)(dev->frameIndex - _frameIndex - 1);  // the present ends the frame
         _submissions.push_back(std::move(sub));
     }
 
@@ -164,10 +177,11 @@ void CaptureManager::Finish(DeviceData* dev) {
     Log("capture sent");
 }
 
-static void WriteCommandEntry(JsonWriter& w, uint64_t index, const char* method, const char* objectClass,
+static void WriteCommandEntry(JsonWriter& w, uint64_t index, uint32_t frame, const char* method, const char* objectClass,
                               uint64_t objectId, const std::string& args, int64_t result, const std::string& extra) {
     w.BeginObject();
     w.Key("index"); w.Uint(index);
+    w.Key("frame"); w.Uint(frame);
     w.Key("method"); w.String(method);
     w.Key("object");
     if (objectId) {
@@ -207,6 +221,7 @@ void CaptureManager::SendCommands() {
         w.BeginObject();
         w.Key("action"); w.String("CaptureFrameResults");
         w.Key("frame"); w.Uint(_frameIndex);
+        w.Key("frames"); w.Uint(_frameCount);
         w.Key("count"); w.Uint(total);
         w.Key("batches"); w.Uint((total + kBatch - 1) / kBatch);
         w.EndObject();
@@ -229,22 +244,22 @@ void CaptureManager::SendCommands() {
         batch.Key("index"); batch.Uint(index);
         batch.Key("commands"); batch.BeginArray();
     };
-    auto emit = [&](const char* method, const char* cls, uint64_t objectId, const std::string& args, int64_t result,
-                    const std::string& extra) {
+    auto emit = [&](uint32_t frame, const char* method, const char* cls, uint64_t objectId, const std::string& args,
+                    int64_t result, const std::string& extra) {
         begin();
-        WriteCommandEntry(batch, index++, method, cls, objectId, args, result, extra);
+        WriteCommandEntry(batch, index++, frame, method, cls, objectId, args, result, extra);
         if (++inBatch >= kBatch) flush();
     };
 
     for (auto& s : submissions) {
-        emit(s.method.c_str(), "VkQueue", s.queueId, s.args, s.result, "");
+        emit(s.frame, s.method.c_str(), "VkQueue", s.queueId, s.args, s.result, "");
         for (auto& cb : s.commandBuffers) {
             if (!cb.commands) {
-                emit("<unrecorded command buffer>", "VkCommandBuffer", cb.commandBufferId, "", 0, "");
+                emit(s.frame, "<unrecorded command buffer>", "VkCommandBuffer", cb.commandBufferId, "", 0, "");
                 continue;
             }
             for (auto& c : *cb.commands) {
-                emit(kVkCommandNames[(int)c.id], "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra);
+                emit(s.frame, kVkCommandNames[(int)c.id], "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra);
             }
         }
     }
@@ -480,6 +495,17 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         }
     }
 
+    // Readbacks recorded into command buffers that were never submitted have no valid data.
+    for (auto& tc : textures) {
+        if (tc.frame == UINT32_MAX) {
+            tc.frame = 0;
+            if (!tc.failed) {
+                tc.failed = true;
+                tc.note = "command buffer was not submitted during the capture";
+            }
+        }
+    }
+
     JsonWriter w;
     w.BeginObject();
     w.Key("action"); w.String("CaptureTextureFrames");
@@ -488,6 +514,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
     for (auto& tc : textures) {
         w.BeginObject();
         w.Key("id"); w.Uint(tc.imageId);
+        w.Key("frame"); w.Uint(tc.frame);
         w.Key("commandBuffer"); w.Uint(tc.commandBufferId);
         w.Key("passIndex"); w.Uint(tc.passIndex);
         w.Key("attachment"); w.Uint(tc.attachment);
@@ -514,6 +541,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         h.BeginObject();
         h.Key("action"); h.String("CaptureTextureData");
         h.Key("id"); h.Uint(tc.imageId);
+        h.Key("frame"); h.Uint(tc.frame);
         h.Key("commandBuffer"); h.Uint(tc.commandBufferId);
         h.Key("passIndex"); h.Uint(tc.passIndex);
         h.Key("attachment"); h.Uint(tc.attachment);
