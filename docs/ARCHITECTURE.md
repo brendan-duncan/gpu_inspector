@@ -178,6 +178,13 @@ and only costs that platform's surface arguments. `npm start` goes through
 `app/tools/run_electron.mjs`, which clears `ELECTRON_RUN_AS_NODE` — terminals that are themselves
 Electron apps (VS Code's) set it, and it would make the `electron` binary run as plain Node.
 
+The window icon takes two paths on Linux. `_NET_WM_ICON`, the icon the window carries, must fit in
+X11's maximum request size (256 KB), so `main.ts` scales `assets/icon.png` down to 128x128 before
+handing it to `BrowserWindow`; at its native 512x512 it is 1 MB and Chromium drops it silently.
+GNOME's dock ignores that property anyway and matches the window's `WM_CLASS` (`gpu-inspector`,
+from the app's package name) against installed `.desktop` files, which is what
+`tools/install_desktop_entry.sh` writes.
+
 Debug aids: `npm start -- --launch=<exe> --record-always --debug-capture --screenshot=<png>`
 captures a frame automatically and writes a screenshot (one per window), and
 `--quit-after-screenshot` exits once it is written; `--debug-relaunch`, `--debug-multi` and

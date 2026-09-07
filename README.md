@@ -79,6 +79,10 @@ tools/setup.sh
 cd app && npm start
 ```
 
+Optionally, `tools/install_desktop_entry.sh` adds GPU Inspector to the desktop's application
+list and dock (with its own icon rather than a placeholder), launching this checkout through
+`tools/gpu-inspector`; `--uninstall` removes it.
+
 `tools/setup.sh` checks the prerequisites, initializes the `Vulkan-Headers` submodule, builds the
 layer and the test application into `build/bin`, and installs the app's node modules. It changes
 nothing outside the checkout unless you pass `--install-deps`, which installs the missing system
@@ -135,6 +139,10 @@ launch dialog to see the layer's own output in the session's Log tab.
 started as plain Node because the terminal exported `ELECTRON_RUN_AS_NODE=1` — VS Code's
 integrated terminal does. `npm start` clears it; running `npx electron .` directly does not, so
 unset the variable in that case.
+
+**The dock or task bar shows a generic icon (a gear on GNOME).** GNOME identifies a window by
+its `WM_CLASS` (`gpu-inspector`) and takes the icon from the matching `.desktop` file, ignoring
+the icon the window itself advertises. Run `tools/install_desktop_entry.sh` to install one.
 
 **Electron fails to start on Linux with a sandbox or user-namespace error.** Recent distributions
 (Ubuntu 23.10+) restrict unprivileged user namespaces, which Chromium's sandbox needs. Either

@@ -17,7 +17,7 @@ import {
   type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
 } from "../shared/protocol.js";
 
-const { app, BrowserWindow, ipcMain, dialog } = electron;
+const { app, BrowserWindow, ipcMain, dialog, nativeImage } = electron;
 type BrowserWindow = electron.BrowserWindow;
 type WebContents = electron.WebContents;
 
@@ -629,10 +629,28 @@ function setTheme(theme: ThemeName): void {
 }
 
 // Window / taskbar icon, rendered from assets/icon.svg by `npm run icons`.
-function appIcon(): string {
+function appIconPath(): string {
   const file = process.platform === "win32" ? "icon.ico" : "icon.png";
   const candidates = [path.join(__dirname, "..", "..", "assets", file), path.join(process.resourcesPath ?? "", "assets", file)];
   return candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
+}
+
+// X11 puts the window icon in the _NET_WM_ICON property, which cannot exceed the server's maximum
+// request size (256 KB). assets/icon.png is 512x512, four bytes a pixel: 1 MB, so Chromium drops
+// it without a word and the desktop falls back to a placeholder icon (a gear, on GNOME). Scale it
+// down for X11; 128x128 (64 KB) is what the taskbar and window list actually display.
+const X11_ICON_SIZE = 128;
+let scaledIcon: electron.NativeImage | null = null;
+
+function appIcon(): string | electron.NativeImage {
+  if (process.platform !== "linux") return appIconPath();
+  if (!scaledIcon) {
+    const image = nativeImage.createFromPath(appIconPath());
+    if (image.isEmpty()) return appIconPath();
+    const { width } = image.getSize();
+    scaledIcon = width > X11_ICON_SIZE ? image.resize({ width: X11_ICON_SIZE, height: X11_ICON_SIZE }) : image;
+  }
+  return scaledIcon;
 }
 
 const windowPrefs = (): electron.BrowserWindowConstructorOptions => ({
@@ -844,7 +862,7 @@ async function writeScreenshots(file: string): Promise<void> {
 
 void app.whenReady().then(() => {
   migrateSettings();
-  if (process.platform === "darwin") app.dock?.setIcon(appIcon().replace(/[.]ico$/, ".png"));
+  if (process.platform === "darwin") app.dock?.setIcon(appIconPath());
   mainWin = createMainWindow();
   mainWin.webContents.on("did-finish-load", () => {
     const exe = cliOption("launch");

@@ -191,4 +191,8 @@ Start the inspector with:
 
 then point the launcher at a Vulkan executable — for example the bundled test application,
 $ROOT/build/bin/vkinsp_triangle — and press Launch, then Capture in the Capture tab.
+
+For an entry in the desktop's application list and dock, with the right icon:
+
+  tools/install_desktop_entry.sh
 EOF

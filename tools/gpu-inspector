@@ -1,0 +1,16 @@
+#!/bin/sh
+# Launches GPU Inspector from this checkout. The desktop entry written by
+# tools/install_desktop_entry.sh runs this, so it must work with the bare environment a desktop
+# launcher provides.
+set -e
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# Terminals that are themselves Electron apps export this; it makes the electron binary start as
+# plain Node. See app/tools/run_electron.mjs.
+unset ELECTRON_RUN_AS_NODE
+
+if command -v npm >/dev/null 2>&1; then
+    exec npm --prefix "$ROOT/app" start -- "$@"
+fi
+# No npm in the launcher's PATH (a nvm-managed Node, say): run what the last build produced.
+exec "$ROOT/app/node_modules/.bin/electron" "$ROOT/app" "$@"
