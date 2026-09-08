@@ -1,6 +1,4 @@
-<div style="background-color:#222; width:100%; display:flex; align-items:center; justify-content:center; font-size:48pt;border-radius:20px; border: 1px solid #aaa;margin-bottom:20px;">
-<img src="app/assets/icon.png" width="250px"><span>GPU Inspector</span>
-</div>
+<p align="center"><img src="docs/images/title.png" alt="GPU Inspector" width="800"></p>
 
 GPU Inspector is a cross-platform (Windows, Linux) graphics inspector for native applications, the native
 counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
