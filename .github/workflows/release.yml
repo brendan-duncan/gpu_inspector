@@ -31,6 +31,33 @@ jobs:
         with:
           submodules: recursive
 
+      # The tag must match app/package.json (a tag v1.2.3 releases version 1.2.3); checked first so a
+      # mismatch fails in seconds rather than after the layer build.
+      - name: Check that the tag matches package.json
+        if: github.ref_type == 'tag'
+        working-directory: app
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${PKG_VERSION}."
+            cat <<MSG
+
+          Tag ${GITHUB_REF_NAME} does not match app/package.json, which says ${PKG_VERSION}.
+          The tag and package.json must agree. To release ${TAG_VERSION}:
+
+            git push --delete origin ${GITHUB_REF_NAME} && git tag -d ${GITHUB_REF_NAME}
+            (cd app && npm version ${TAG_VERSION} --no-git-tag-version)
+            git commit -am "v${TAG_VERSION}"
+            git tag ${GITHUB_REF_NAME} && git push origin main ${GITHUB_REF_NAME}
+
+          Or, to release what package.json says, tag v${PKG_VERSION} instead.
+          MSG
+            exit 1
+          fi
+          echo "Releasing ${PKG_VERSION}"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -60,13 +87,6 @@ jobs:
       - name: Install app dependencies
         working-directory: app
         run: npm ci
-
-      # A tag v1.2.3 releases version 1.2.3, whatever package.json says.
-      - name: Set version from tag
-        if: github.ref_type == 'tag'
-        working-directory: app
-        shell: bash
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
       - name: Type check
         working-directory: app
