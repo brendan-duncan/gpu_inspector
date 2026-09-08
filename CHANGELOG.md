@@ -38,6 +38,13 @@
 - Sampled image read-back covers every mip level of the bound view (the base mip only before):
   the image viewer on a captured binding offers the mips, and the binding says which are held
   ("mips 0-3"). The triangle test application's checker texture has a mip chain.
+- The launch dialog's Package field filters the device's packages as you type ("2 of 28
+  match"); a package of the list shows the whole list again.
+
+### Fixed
+- Android launch reported "adb shell: Stopping: ... Starting: Intent" as an error on a Quest:
+  `am start -W` waited on the headset shell's launch flow past the timeout. The start no
+  longer waits; the process poll does.
 
 ## 0.4.0
 

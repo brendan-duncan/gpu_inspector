@@ -58,6 +58,8 @@ export class LaunchDialog extends Dialog {
   private _pendingDevice = "";
   private _loadingDevices = false;
   private _package: Select;
+  private _packages: string[] = [];
+  private _packageHint: Span;
   private _activity: TextInput;
   private _port: TextInput;
   private _log: Checkbox;
@@ -124,7 +126,12 @@ export class LaunchDialog extends Dialog {
       const row = new Div(this._androidRows, { class: "launch-dialog-row" });
       new Span(row, { text: "Package", class: "launch-dialog-label" });
       this._package = new Select(row, { options: [], editable: true, class: "launch-dialog-package",
-        tooltip: "The application's package name. It must be debuggable (a Unity Development Build) for Android to load the layer." });
+        tooltip: "The application's package name; typing filters the list. It must be debuggable (a Unity Development Build) for Android to load the layer." });
+      // Typing narrows the dropdown to the packages containing the text.
+      const edit = this._package.selectEdit!;
+      edit.placeholder = "type to filter the device's packages";
+      edit.element.addEventListener("input", () => this._filterPackages());
+      this._packageHint = new Span(row, { text: "", class: "launch-dialog-count" });
     }
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
     this._activity.tooltip = "Activity to start, as com.example.Activity or .Activity; empty for the launcher activity";
@@ -239,9 +246,24 @@ export class LaunchDialog extends Dialog {
     }
     const packages = await window.inspector.androidPackages(device.serial);
     if (this._devices[this._device.index] !== device) return;  // changed meanwhile
+    this._packages = packages;
     setOptions(this._package, packages);
     // Keep what the user typed or a recent configuration filled in; otherwise offer the first.
     this._package.value = typed || packages[0] || "";
+    this._filterPackages();
+  }
+
+  /** The dropdown lists the device's packages containing the typed text (all of them when the
+   *  text is a package of the list, so the neighbors stay reachable). */
+  private _filterPackages(): void {
+    const text = this._package.value.trim().toLowerCase();
+    const shown = text && !this._packages.some((p) => p.toLowerCase() === text)
+      ? this._packages.filter((p) => p.toLowerCase().includes(text)) : this._packages;
+    setOptions(this._package, shown);
+    const i = shown.findIndex((p) => p.toLowerCase() === text);
+    this._package.index = i >= 0 ? i : shown.length ? 0 : -1;
+    this._packageHint.text = !this._packages.length ? "" : shown.length === this._packages.length
+      ? `${shown.length} packages` : `${shown.length} of ${this._packages.length} match`;
   }
 
   private _updateCaptureFields(): void {

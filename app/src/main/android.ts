@@ -248,7 +248,10 @@ export class AndroidTarget {
     if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
     if (activity) {
       log(`starting ${activity}`);
-      const out = await shell(adbPath, serial, `am start -S -W -n ${activity}`, START_TIMEOUT_MS);
+      // Not -W: waiting for the launch to complete can outlast the timeout on a headset (the
+      // shell's launch flow) and report a started application as an error; the pid poll below
+      // waits for the process instead.
+      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
       const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
       if (error) throw new Error(`${error.trim()} (activity ${activity})`);
     } else {

@@ -544,7 +544,8 @@ export interface AppConfig {
   version: string;
   /** Whether this build can update itself (installed builds only, not `npm start`). */
   canUpdate: boolean;
-  /** launchDialog: open the launch dialog at startup, on the "native" or "android" target (testing aid). */
+  /** launchDialog: open the launch dialog at startup, on the "native" or "android" target
+   *  ("android:<text>" prefills the package field) (testing aid). */
   debug: {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
     /** --debug-capture-stacks: the debug capture records command stack traces. */
