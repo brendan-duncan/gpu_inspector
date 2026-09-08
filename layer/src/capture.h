@@ -206,6 +206,9 @@ private:
         VkDeviceMemory memory = VK_NULL_HANDLE;
     };
     std::vector<ResolveImage> _resolveImages;
+    // Views of a depth resolve (depth_resolve.h), freed with the staging.
+    std::vector<VkImageView> _resolveViews;
+    bool PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p);
 
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};

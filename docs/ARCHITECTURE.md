@@ -135,7 +135,16 @@ much slower than on the desktop.
    `TRANSFER_SRC`. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
    a temporary single-sampled image owned by the capture before the copy; dynamic rendering's
    resolve targets are captured too. `RecordImageCopy` in `capture.cpp` records the barriers,
-   resolve and copy for every image read-back, including the live one.
+   resolve and copy for every image read-back, including the live one. Depth cannot go through
+   `vkCmdResolveImage`: `src/depth_resolve.*` resolves it with an empty dynamic rendering pass
+   (the multisampled image as depth attachment, loadOp LOAD, the temporary image as its
+   resolve target with `VK_RESOLVE_MODE_SAMPLE_ZERO_BIT`, which every implementation supports)
+   through image views owned by the capture. For that the layer enables dynamic rendering at
+   device creation when the physical device offers it: the feature alone on 1.3, plus
+   `VK_KHR_dynamic_rendering` below 1.3 and its `VK_KHR_depth_stencil_resolve` /
+   `VK_KHR_create_renderpass2` dependencies below 1.2 (a device the application created with
+   its own `VkPhysicalDeviceVulkan13Features` or dynamic rendering feature struct is left as is
+   and used when the flag is on). Stencil is not resolved.
 4. Bound buffers are read back too, like WebGPU Inspector captures the buffers of each bind group
    and vertex/index binding. `vkCmdBindDescriptorSets` (and push descriptors) gets a
    `descriptors` snapshot of every bound set, taken from the descriptor tracker: per binding the

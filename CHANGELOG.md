@@ -31,6 +31,11 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Multisampled depth read-back: depth attachments and images are resolved by a render pass
+  (dynamic rendering with a depth resolve attachment, sample zero) into the temporary image
+  before the copy, in captures and in the live image viewer. The layer enables dynamic
+  rendering for the application at device creation when the driver offers it (core on 1.3,
+  `VK_KHR_dynamic_rendering` and its dependencies on 1.1 and 1.2 applications).
 - Captures in windows of their own: "Open in New Window" on a capture file's tab moves the file
   to a new window (and "Move to Main Window" brings it back), and on a capture tab of a live
   session opens a copy of the capture in a new window (through a temporary file removed when

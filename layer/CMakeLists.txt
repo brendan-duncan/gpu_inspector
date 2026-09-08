@@ -57,6 +57,8 @@ add_library(${LAYER_LIB} SHARED
     src/validation.cpp
     src/refresh_rate.h
     src/refresh_rate.cpp
+    src/depth_resolve.h
+    src/depth_resolve.cpp
     src/capture.h
     src/capture.cpp
     src/image_readback.h

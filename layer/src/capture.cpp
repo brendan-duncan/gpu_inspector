@@ -1,5 +1,7 @@
 #include "capture.h"
 
+#include "depth_resolve.h"
+
 #include "image_readback.h"
 #include "layer.h"
 #include "resources.h"
@@ -543,8 +545,10 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     };
     tc.samples = (uint32_t)img.samples;
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
-        return fail("multisampled depth/stencil image (vkCmdResolveImage resolves color only)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_STENCIL_BIT)
+        return fail("multisampled stencil image (no stencil resolve)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
+        return fail("multisampled depth image (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
         if (!LayoutTracker::Get().GetLayout(vi.image, layout) || layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown image layout");
     }
@@ -582,6 +586,15 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     p.staging = staging;
     p.stagingOffset = offset;
     p.size = tc.size;
+    p.format = img.format;
+    if (resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) {
+        std::lock_guard lock(_mutex);
+        TextureCapture& t = _textures[id - 1];
+        t.failed = true;
+        t.recorded = true;
+        t.note = "depth resolve views could not be created";
+        return id;
+    }
     rec->pendingImages().push_back(p);
     if (!rec->InsidePass()) FlushImageCopies(dev, rec);
     return id;
@@ -842,6 +855,8 @@ bool CreateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uin
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
     ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // Depth is resolved by a render pass into the image (depth_resolve.h).
+    if (FormatAspects(img.format) & VK_IMAGE_ASPECT_DEPTH_BIT) ici.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (d.CreateImage(dev->device, &ici, nullptr, image) != VK_SUCCESS) return false;
@@ -886,6 +901,36 @@ void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy
 
     VkImage source = p.image;
     VkImageSubresourceLayers sub{p.copyAspect, p.range.baseMipLevel, p.range.baseArrayLayer, p.range.layerCount};
+    if (p.resolve && p.srcView) {
+        // Multisampled depth: a render pass resolves it (the barrier above is undone first: the
+        // resolve needs the attachment layout, and leaves the image in p.layout again).
+        VkImageMemoryBarrier undo = toSrc;
+        undo.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        undo.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        undo.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        undo.newLayout = p.layout;
+        d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &undo);
+        RecordDepthResolve(dev, cb, p);
+        source = p.resolve;
+        sub = {p.copyAspect, 0, 0, p.range.layerCount};
+        // The image is already back in p.layout; the copy below reads the resolve image only.
+        VkBufferImageCopy region{};
+        region.bufferOffset = p.stagingOffset;
+        region.imageSubresource = sub;
+        region.imageExtent = p.extent;
+        d.CmdCopyImageToBuffer(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.staging, 1, &region);
+        VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostRead.buffer = p.staging;
+        hostRead.offset = p.stagingOffset;
+        hostRead.size = p.size;
+        d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                             0, nullptr, 1, &hostRead, 0, nullptr);
+        return;
+    }
     if (p.resolve) {
         // Multisampled: resolve into the single-sampled image, then copy from that.
         VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -946,6 +991,15 @@ bool CaptureManager::AllocateResolveImage(DeviceData* dev, const ImageInfo& img,
     return true;
 }
 
+bool CaptureManager::PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p) {
+    if (!CanResolveDepth(dev)) return false;
+    if (!CreateDepthResolveViews(dev, p, &p.srcView, &p.dstView)) return false;
+    std::lock_guard lock(_mutex);
+    _resolveViews.push_back(p.srcView);
+    _resolveViews.push_back(p.dstView);
+    return true;
+}
+
 void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex,
                                        VkImageView view, VkImageLayout layout, bool resolveTarget) {
     ResourceRegistry& reg = ResourceRegistry::Get();
@@ -978,8 +1032,8 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
         _textures.push_back(tc);
     };
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
-        return fail("multisampled depth attachment (vkCmdResolveImage resolves color only)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
+        return fail("multisampled depth attachment (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown final layout");
 
     uint32_t bpp = FormatBytesPerTexel(img.format, tc.aspect);
@@ -1010,6 +1064,8 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     p.stagingOffset = offset;
     p.size = tc.size;
     p.resolve = resolve;
+    p.format = img.format;
+    if (resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) return fail("depth resolve views could not be created");
     RecordImageCopy(dev, rec->commandBuffer(), p);
 
     std::lock_guard lock(_mutex);
@@ -1162,6 +1218,8 @@ void CaptureManager::ReleaseStaging(DeviceData* dev) {
         dev->dispatch.FreeMemory(dev->device, c.memory, nullptr);
     }
     _staging.clear();
+    for (VkImageView v : _resolveViews) dev->dispatch.DestroyImageView(dev->device, v, nullptr);
+    _resolveViews.clear();
     for (auto& r : _resolveImages) {
         dev->dispatch.DestroyImage(dev->device, r.image, nullptr);
         dev->dispatch.FreeMemory(dev->device, r.memory, nullptr);

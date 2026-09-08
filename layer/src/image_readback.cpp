@@ -1,6 +1,7 @@
 #include "image_readback.h"
 
 #include "capture.h"
+#include "depth_resolve.h"
 
 #include "format_info.h"
 #include "layer.h"
@@ -179,8 +180,10 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
                               : VK_IMAGE_ASPECT_COLOR_BIT;
     FormatBlock block = FormatBlockInfo(img.format, aspect);
     if (block.bytes == 0) return Fail(r, "unsupported format for readback");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
-        return Fail(r, "multisampled depth/stencil image (vkCmdResolveImage resolves color only)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect == VK_IMAGE_ASPECT_STENCIL_BIT)
+        return Fail(r, "multisampled stencil image (no stencil resolve)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
+        return Fail(r, "multisampled depth image (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
     const VkDeviceSize size = (VkDeviceSize)((width + block.width - 1) / block.width) *
                               ((height + block.height - 1) / block.height) * depth * block.bytes;
     if (size > (256ull << 20)) return Fail(r, "image is larger than 256 MB");
@@ -232,9 +235,12 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
     // Multisampled images are resolved into a temporary single-sampled image first.
     VkImage resolve = VK_NULL_HANDLE;
     VkDeviceMemory resolveMemory = VK_NULL_HANDLE;
+    VkImageView srcView = VK_NULL_HANDLE, dstView = VK_NULL_HANDLE;
     auto cleanup = [&]() {
         d.DestroyBuffer(dev->device, buffer, nullptr);
         d.FreeMemory(dev->device, memory, nullptr);
+        if (srcView) d.DestroyImageView(dev->device, srcView, nullptr);
+        if (dstView) d.DestroyImageView(dev->device, dstView, nullptr);
         if (resolve) d.DestroyImage(dev->device, resolve, nullptr);
         if (resolveMemory) d.FreeMemory(dev->device, resolveMemory, nullptr);
     };
@@ -271,6 +277,17 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
     copy.stagingOffset = 0;
     copy.size = size;
     copy.resolve = resolve;
+    copy.format = img.format;
+    if (resolve && aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
+        if (!CreateDepthResolveViews(dev, copy, &srcView, &dstView)) {
+            d.EndCommandBuffer(cb);
+            d.FreeCommandBuffers(dev->device, pool, 1, &cb);
+            cleanup();
+            return Fail(r, "depth resolve views could not be created");
+        }
+        copy.srcView = srcView;
+        copy.dstView = dstView;
+    }
     RecordImageCopy(dev, cb, copy);
     d.EndCommandBuffer(cb);
 

@@ -79,6 +79,10 @@ struct PendingImageCopy {
     VkDeviceSize size = 0;
     // Multisampled images are resolved into this single-sampled image (mip 0, layers 0..) first.
     VkImage resolve = VK_NULL_HANDLE;
+    // Multisampled depth: resolved through a render pass (depth_resolve.h) with these views.
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageView srcView = VK_NULL_HANDLE;
+    VkImageView dstView = VK_NULL_HANDLE;
 };
 
 class CommandRecorder {

@@ -60,6 +60,8 @@ struct DeviceData {
     // Refresh-period sources the layer enabled at device creation (see refresh_rate.h).
     bool presentTiming = false;   // VK_EXT_present_timing
     bool displayTiming = false;   // VK_GOOGLE_display_timing
+    // Dynamic rendering usable on the device (see depth_resolve.h): multisampled depth read-back.
+    bool dynamicRendering = false;
 
     // Queue -> queue family (from vkGetDeviceQueue), and transient command pools per family used
     // for live image readback (see image_readback.cpp).
