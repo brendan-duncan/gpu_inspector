@@ -17,6 +17,62 @@ export interface VertexFormat {
 
 const cache = new Map<string, VertexFormat | null>();
 
+/** Storage size of a VkFormat: bytes per block and the block's texel dimensions (1x1 unless compressed). */
+export interface FormatBlock { bytes: number; width: number; height: number }
+
+const blockCache = new Map<string, FormatBlock | null>();
+
+const FIXED_BLOCKS: Record<string, number> = {
+  VK_FORMAT_D16_UNORM: 2, VK_FORMAT_X8_D24_UNORM_PACK32: 4, VK_FORMAT_D32_SFLOAT: 4, VK_FORMAT_S8_UINT: 1,
+  VK_FORMAT_D16_UNORM_S8_UINT: 4, VK_FORMAT_D24_UNORM_S8_UINT: 4, VK_FORMAT_D32_SFLOAT_S8_UINT: 8,
+  VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: 4, VK_FORMAT_B10G11R11_UFLOAT_PACK32: 4,
+};
+
+/** Estimates a format's storage; null for formats it does not know (multi-planar video formats). */
+export function formatBlock(name: string): FormatBlock | null {
+  const hit = blockCache.get(name);
+  if (hit !== undefined) return hit;
+  const b = parseBlock(name);
+  blockCache.set(name, b);
+  return b;
+}
+
+function parseBlock(name: string): FormatBlock | null {
+  const fixed = FIXED_BLOCKS[name];
+  if (fixed) return { bytes: fixed, width: 1, height: 1 };
+  let m = /^VK_FORMAT_BC(\d)/.exec(name);
+  if (m) return { bytes: m[1] === "1" || m[1] === "4" ? 8 : 16, width: 4, height: 4 };
+  if (/^VK_FORMAT_ETC2_R8G8B8A8|^VK_FORMAT_EAC_R11G11/.test(name)) return { bytes: 16, width: 4, height: 4 };
+  if (/^VK_FORMAT_ETC2_|^VK_FORMAT_EAC_/.test(name)) return { bytes: 8, width: 4, height: 4 };
+  m = /^VK_FORMAT_ASTC_(\d+)x(\d+)/.exec(name);
+  if (m) return { bytes: 16, width: Number(m[1]), height: Number(m[2]) };
+  m = /^VK_FORMAT_PVRTC\d_(\d)BPP/.exec(name);
+  if (m) return { bytes: 8, width: m[1] === "2" ? 8 : 4, height: 4 };
+  m = /_PACK(8|16|32)$/.exec(name);
+  if (m) return { bytes: Number(m[1]) / 8, width: 1, height: 1 };
+  m = /^VK_FORMAT_((?:[RGBAEXDS]\d+)+)_[A-Z0-9_]+$/.exec(name);
+  if (m) {
+    let bits = 0;
+    for (const c of m[1].matchAll(/[RGBAEXDS](\d+)/g)) bits += Number(c[1]);
+    return bits ? { bytes: bits / 8, width: 1, height: 1 } : null;
+  }
+  return null;
+}
+
+/** Estimated memory of an image with the given format, size, mip and layer counts and sample count. */
+export function estimateImageBytes(format: string, width: number, height: number, depth: number, mips: number, layers: number, samples: number): number {
+  const block = formatBlock(format);
+  if (!block) return 0;
+  let total = 0;
+  for (let m = 0; m < Math.max(1, mips); m++) {
+    const w = Math.max(1, width >> m);
+    const h = Math.max(1, height >> m);
+    const d = Math.max(1, depth >> m);
+    total += Math.ceil(w / block.width) * Math.ceil(h / block.height) * d * block.bytes;
+  }
+  return total * Math.max(1, layers) * Math.max(1, samples);
+}
+
 interface Channel { name: string; bits: number }
 
 function convert(raw: number, bits: number, numeric: string): number {

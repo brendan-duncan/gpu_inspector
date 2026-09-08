@@ -817,6 +817,16 @@ li.tree-item.hidden, li.tree-item.filtered {
 .capture_debugGroup3 > .title_bar { background-color: var(--group-3-bg); }
 .capture_debugGroup4 > .title_bar { background-color: var(--group-4-bg); }
 
+/* The commands inside a group take the group's color (its body); nested groups, passes and
+   secondaries inside it keep their own bars but their commands show the innermost group. */
+.capture_debugGroup0 > .collapsible_body { background-color: var(--group-0-body-bg); }
+.capture_debugGroup1 > .collapsible_body { background-color: var(--group-1-body-bg); }
+.capture_debugGroup2 > .collapsible_body { background-color: var(--group-2-body-bg); }
+.capture_debugGroup3 > .collapsible_body { background-color: var(--group-3-body-bg); }
+.capture_debugGroup4 > .collapsible_body { background-color: var(--group-4-body-bg); }
+.capture_debugGroup .capture_renderpass_block > .collapsible_body,
+.capture_debugGroup .capture-secondary > .collapsible_body { background-color: transparent; }
+
 .capture_debugGroup > .title_bar:hover {
   filter: brightness(1.15);
 }

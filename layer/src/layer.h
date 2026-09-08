@@ -65,6 +65,8 @@ struct DeviceData {
     std::chrono::steady_clock::time_point lastPresent{};
     std::chrono::steady_clock::time_point lastReport{};
     double frameTimeAccumMs = 0;
+    double frameTimeMinMs = 0;
+    double frameTimeMaxMs = 0;
     uint32_t frameTimeCount = 0;
 
     // Returns the recorder for a command buffer that is being captured, else nullptr.

@@ -63,6 +63,9 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     port: Number(c.port) || DEFAULT_PORT,
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
+    capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
+      ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
+      : { mode: "none", value: 0 },
   };
 }
 
@@ -872,6 +875,10 @@ void app.whenReady().then(() => {
         args: cliOption("args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),
+        // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
+        capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
+          : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }
+          : { mode: "none", value: 0 },
       });
       setTimeout(() => void launch(config), 300);
       // Testing aids for the session handling.

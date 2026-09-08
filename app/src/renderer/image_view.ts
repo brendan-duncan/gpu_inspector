@@ -19,6 +19,10 @@ import type { ImageDataMessage } from "../shared/protocol.js";
 
 const CHANNEL_MODES: [string, ChannelMode][] = [["RGB", "rgb"], ["Red", "r"], ["Green", "g"], ["Blue", "b"], ["Alpha", "a"], ["Luminance", "luminance"]];
 
+// Toolbar icons (inline SVG, drawn in the button's text color).
+const ICON_REFRESH = '<svg viewBox="0 0 16 16" aria-label="Refresh"><path d="M13.2 9.2A5.3 5.3 0 1 1 12 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13.6 1.8v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_COPY = '<svg viewBox="0 0 16 16" aria-label="Copy"><rect x="5.5" y="5.5" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+
 /** Display settings are remembered per image across selections, like WebGPU Inspector does. */
 const displayByImage = new Map<number, DisplaySettings & { zoom: number }>();
 
@@ -99,7 +103,7 @@ export class ImageView {
 
     let display = displayByImage.get(this.imageId);
     if (!display) {
-      display = { channels: "rgb", exposure: 1, autoRange: isDepth, zoom: 0 };
+      display = { channels: "rgb", exposure: 1, autoRange: isDepth, zoom: 100 };
       displayByImage.set(this.imageId, display);
     }
     this._display = display;
@@ -174,8 +178,8 @@ export class ImageView {
     } });
     this._smoothCheck = new Checkbox(bar, { label: "Smooth", checked: false, tooltip: "Filter when scaling instead of showing texels" });
     this._smoothCheck.input.onchange = () => this._canvas.classList.toggle("smooth", this._smoothCheck.checked);
-    new Button(bar, { label: "Refresh", class: "btn btn-sm", tooltip: "Read the image again from the application", callback: () => this.request() });
-    new Button(bar, { label: "Copy", class: "btn btn-sm", tooltip: "Copy the displayed image as PNG", callback: () => void this._copy() });
+    new Button(bar, { html: ICON_REFRESH, class: "btn btn-sm btn-icon", tooltip: "Refresh: read the image again from the application", callback: () => this.request() });
+    new Button(bar, { html: ICON_COPY, class: "btn btn-sm btn-icon", tooltip: "Copy the displayed image as PNG", callback: () => void this._copy() });
 
     const info = new Div(parent, { class: "image-view-toolbar" });
     this._status = new Span(info, { text: "", class: "image-view-status" });

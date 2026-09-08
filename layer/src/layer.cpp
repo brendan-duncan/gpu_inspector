@@ -7,6 +7,7 @@
 
 #include "layer.h"
 #include "capture.h"
+#include "descriptors.h"
 #include "json_parse.h"
 #include "tracker.h"
 #include "transport.h"
@@ -144,7 +145,26 @@ static void HandleUiMessage(const std::string& text) {
         if (blob) Transport::Get().SendBinary(std::move(w.str()), blob->data(), blob->size());
         else Transport::Get().SendJson(std::move(w.str()));
     }
-    else if (action == "RequestImage") {
+    else if (action == "RequestDescriptorSet") {
+        // Live contents of a descriptor set for the Inspect panel, as an ObjectUpdate the UI
+        // merges into the object ("bindings", same shape as a capture's descriptor snapshot).
+        uint64_t id = (uint64_t)msg.GetNumber("id");
+        TrackedObject obj;
+        DescriptorSetContents contents;
+        bool tracked = Tracker::Get().FindById(id, obj) && obj.type == HT_VkDescriptorSet &&
+                       DescriptorTracker::Get().GetSet((VkDescriptorSet)(uintptr_t)obj.handle, contents);
+        JsonWriter w(&Tracker::Get());
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(id);
+        w.Key("tracked"); w.Bool(tracked);
+        w.Key("layout"); w.Handle(HT_VkDescriptorSetLayout, "VkDescriptorSetLayout", (uint64_t)(uintptr_t)contents.layout);
+        w.Key("bindings");
+        uint32_t dynamicIndex = 0;
+        WriteDescriptorBindingsJson(w, contents, nullptr, 0, dynamicIndex, nullptr);
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
+    } else if (action == "RequestImage") {
         ImageReadback::Get().Request((uint64_t)msg.GetNumber("id"), (uint32_t)msg.GetNumber("mip"),
                                      (uint32_t)msg.GetNumber("layer"));
     } else if (action == "RequestSnapshot") {
@@ -155,6 +175,7 @@ static void HandleUiMessage(const std::string& text) {
     } else if (action == "Capture") {
         CaptureOptions o;
         o.frameCount = (uint32_t)msg.GetNumber("frameCount", 1);
+        if (const JsonValue* v = msg.Get("atFrame")) { if (v->kind == JsonValue::Number && v->num >= 0) o.atFrame = (uint64_t)v->num; }
         if (const JsonValue* v = msg.Get("maxBufferSize")) o.maxBufferSize = (uint64_t)v->num;
         if (const JsonValue* v = msg.Get("maxTextureSize")) o.maxTextureSize = (uint64_t)v->num;
         if (const JsonValue* v = msg.Get("maxBufferTotal")) o.maxBufferTotal = (uint64_t)v->num;
@@ -416,20 +437,31 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     data->frameIndex++;
     CaptureManager::Get().OnPresent(data, queue, pPresentInfo, res);
 
-    // Frame timing, reported a few times per second.
+    // Frame timing, reported ten times per second: average, shortest and longest frame of the
+    // interval (the UI's frame time meter plots the average and the longest).
     using clock = std::chrono::steady_clock;
     auto now = clock::now();
     if (data->lastPresent.time_since_epoch().count() != 0) {
         double ms = std::chrono::duration<double, std::milli>(now - data->lastPresent).count();
+        if (data->frameTimeCount == 0) {
+            data->frameTimeMinMs = ms;
+            data->frameTimeMaxMs = ms;
+        } else {
+            if (ms < data->frameTimeMinMs) data->frameTimeMinMs = ms;
+            if (ms > data->frameTimeMaxMs) data->frameTimeMaxMs = ms;
+        }
         data->frameTimeAccumMs += ms;
         data->frameTimeCount++;
         double sinceReport = std::chrono::duration<double, std::milli>(now - data->lastReport).count();
-        if (sinceReport >= 250.0 && Transport::Get().Connected()) {
+        if (sinceReport >= 100.0 && Transport::Get().Connected()) {
             JsonWriter w;
             w.BeginObject();
             w.Key("action"); w.String("FrameStats");
             w.Key("frame"); w.Uint(data->frameIndex);
             w.Key("frameTimeMs"); w.Double(data->frameTimeAccumMs / data->frameTimeCount);
+            w.Key("minMs"); w.Double(data->frameTimeMinMs);
+            w.Key("maxMs"); w.Double(data->frameTimeMaxMs);
+            w.Key("frames"); w.Uint(data->frameTimeCount);
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;

@@ -51,7 +51,8 @@ export interface DeleteObjectsMessage { action: "DeleteObjects"; ids: number[] }
 export interface ObjectSetLabelMessage { action: "ObjectSetLabel"; id: number; label: string }
 export interface ObjectBlobsMessage { action: "ObjectBlobs"; id: number; blobs: BlobInfo[] }
 export interface ObjectUpdateMessage { action: "ObjectUpdate"; id: number; [key: string]: ArgValue | string | number }
-export interface FrameStatsMessage { action: "FrameStats"; frame: number; frameTimeMs: number }
+/** Frame timing over the last reporting interval (about 100 ms): average, extremes, frame count. */
+export interface FrameStatsMessage { action: "FrameStats"; frame: number; frameTimeMs: number; minMs?: number; maxMs?: number; frames?: number }
 export interface PongMessage { action: "Pong" }
 
 export interface ObjectBlobMessage {
@@ -235,10 +236,14 @@ export interface RequestSnapshotRequest { action: "RequestSnapshot" }
 export interface RequestBlobRequest { action: "RequestBlob"; id: number; index: number }
 /** Asks the layer to read back one subresource of a live VkImage (answered by ImageData). */
 export interface RequestImageRequest { action: "RequestImage"; id: number; mip: number; layer: number }
+/** Asks for the current contents of a VkDescriptorSet (answered by an ObjectUpdate carrying `bindings`). */
+export interface RequestDescriptorSetRequest { action: "RequestDescriptorSet"; id: number }
 export interface SettingsRequest { action: "Settings"; recordAlways?: boolean }
 export interface CaptureRequest {
   action: "Capture";
   frameCount: number;
+  /** Frame (the layer's present counter) to start at; omitted = the next frame. A frame already passed captures the next one. */
+  atFrame?: number;
   /** Bytes captured per bound buffer range (longer ranges are truncated). */
   maxBufferSize?: number;
   /** Total buffer bytes captured per capture; further buffers are reported as errors. */
@@ -249,10 +254,17 @@ export interface CaptureRequest {
   captureBuffers?: boolean;
 }
 
-export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | SettingsRequest | CaptureRequest;
+export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest | SettingsRequest | CaptureRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer
+
+/** A capture taken automatically once the launched application connects. */
+export interface QueuedCapture {
+  /** "frame": capture frame `value` (0 = the first frame); "time": capture `value` seconds after connecting. */
+  mode: "none" | "frame" | "time";
+  value: number;
+}
 
 export interface LaunchConfig {
   exe: string;
@@ -263,6 +275,7 @@ export interface LaunchConfig {
   port: number;
   log: boolean;
   recordAlways: boolean;
+  capture: QueuedCapture;
 }
 
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "launched" | "exited" | "error";

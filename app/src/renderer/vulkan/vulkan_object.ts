@@ -3,6 +3,7 @@
 // Unlike WebGPU Inspector's per-class object model, Vulkan objects are represented by one
 // generic class plus a per-type summary table: the layer sends the creating call's full
 // argument list as the descriptor, so everything the UI needs is in `args`.
+import { estimateImageBytes } from "./vk_format.js";
 import type { AddObjectMessage, ArgObject, ArgValue, BlobInfo, HandleRef } from "../../shared/protocol.js";
 
 export interface ObjectLookup {
@@ -132,6 +133,34 @@ export class VulkanObject {
       default:
         return "";
     }
+  }
+}
+
+/**
+ * Bytes an object occupies on the GPU: a VkDeviceMemory's allocation, a VkBuffer's size, and an
+ * estimate for a VkImage from its format, size, mips, layers and samples (swapchain images from
+ * their swapchain). 0 for everything else.
+ */
+export function objectMemoryBytes(o: VulkanObject, db: ObjectLookup | null): number {
+  const d = o.descriptor;
+  switch (o.type) {
+    case "VkDeviceMemory":
+      return num(d?.allocationSize);
+    case "VkBuffer":
+      return num(d?.size);
+    case "VkImage": {
+      if (o.cmd === "vkGetSwapchainImagesKHR") {
+        const sd = db?.getObject(o.parentId)?.descriptor;
+        const e = sd && isObject(sd.imageExtent) ? sd.imageExtent : null;
+        return sd ? estimateImageBytes(str(sd.imageFormat), num(e?.width), num(e?.height), 1, 1, num(sd.imageArrayLayers) || 1, 1) : 0;
+      }
+      if (!d) return 0;
+      const e = isObject(d.extent) ? d.extent : null;
+      const samples = Number(/VK_SAMPLE_COUNT_(\d+)_BIT/.exec(str(d.samples))?.[1] ?? 1);
+      return estimateImageBytes(str(d.format), num(e?.width), num(e?.height), num(e?.depth) || 1, num(d.mipLevels) || 1, num(d.arrayLayers) || 1, samples);
+    }
+    default:
+      return 0;
   }
 }
 

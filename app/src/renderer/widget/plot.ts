@@ -41,17 +41,20 @@ export class PlotData {
       return;
     }
     const oldData = this.data;
-    const copyCount = Math.min(this.count, value);
+    const copyCount = Math.min(this.count, value, oldData.length);
     this._size = value;
     this.data = new Float32Array(value);
     this.data.set(oldData.subarray(0, copyCount));
     this.count = copyCount;
-    if (this.index >= value) {
-      this.index = 0;
+    if (!(this.index < value)) {
+      this.index = copyCount < value ? copyCount : 0;
     }
   }
 
   add(value: number): void {
+    // A plot that has not been laid out yet (hidden tab) has no room; drop the sample rather
+    // than corrupting the ring index.
+    if (this._size === 0) return;
     this.data[this.index] = value;
     this.index = (this.index + 1) % this._size;
 

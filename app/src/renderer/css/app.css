@@ -141,6 +141,16 @@ html, body {
   height: 100%;
   overflow: hidden;
 }
+.inspector_panel > .split { flex: 1 1 auto; min-height: 0; height: auto; }
+
+/* Meters at the top of the Inspect tab: stats line, frame time and object count plots */
+.inspect-meters { flex: 0 0 auto; padding: 4px 10px 6px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-secondary); }
+.inspect-meter-texts { display: flex; flex-wrap: wrap; gap: 18px; font-size: 10pt; color: var(--fg-secondary); margin-bottom: 4px; white-space: pre; }
+.inspect-meter-plots { display: flex; align-items: stretch; gap: 8px; height: 30px; overflow: hidden; }
+.inspect-meter-legend { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 10pt; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.inspect-meter-plot { flex: 1 1 0; min-width: 80px; height: 30px; }
+.inspect-meter-select { flex: 0 0 auto; align-self: center; }
+.inspect-meter-select select { height: 20px; font-size: 9pt; }
 .inspect-objects {
   font-size: 10pt;
   overflow: auto;
@@ -207,6 +217,8 @@ html, body {
 /* Shader views */
 .shader-toolbar { display: flex; gap: 4px; padding: 4px; }
 .btn-sm { padding: 2px 8px; font-size: 9pt; }
+button.btn-icon { padding: 3px 6px; line-height: 0; }
+.btn-icon svg { width: 14px; height: 14px; display: block; }
 .btn.active { outline: 1px solid var(--accent-primary); }
 .shader-text {
   font-family: var(--font-mono);
@@ -228,7 +240,18 @@ html, body {
 .capture-tabs { flex: 1 1 auto; min-height: 0; }
 .capture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-view > .split { flex: 1 1 auto; min-height: 0; height: auto; }
+.capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
+.capture-left > .capture-commands { flex: 1 1 auto; min-height: 0; height: auto; }
+.inspector-filter-panel { margin: 0 6px 6px 6px; }
+.inspector-filter-panel > .title_bar { font-weight: normal; }
+.inspector-filter-panel .collapsible_body { padding: 4px 8px 8px 8px; }
+.inspector-filter-group { margin: 4px 0; }
+.inspector-filter-group > .title_bar { font-weight: normal; background: transparent; border: none; padding: 2px 0; }
+.inspector-filter-field { display: flex; align-items: center; gap: 4px; }
+.inspector-filter-label-sm { color: var(--fg-muted); font-size: 10pt; }
+.inspector-filter-input-sm { width: 90px; background-color: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border); padding-left: 5px; height: 18px; }
 .capture-frame-tabs { height: 100%; }
 .capture-frame-list { overflow: auto; height: 100%; padding: 4px; }
 .capture-info { overflow: auto; height: 100%; padding: 8px; }
@@ -273,6 +296,9 @@ html, body {
 .buffer-matrix-row { white-space: pre; }
 .buffer-type { color: var(--fg-muted); font-style: italic; }
 .buffer-offset { color: var(--fg-muted); }
+.buffer-beyond { font-style: italic; margin-top: 4px; }
+.descriptor-contents { margin: 4px 0; padding-left: 18px; font-size: 10pt; }
+.descriptor-contents li { list-style: none; line-height: 1.6; }
 .buffer-array-filter { display: flex; align-items: center; gap: 6px; padding: 2px 0 4px 0; font-family: var(--font-family); }
 .buffer-array-filter .dragger { flex: 0 0 auto; max-width: 90px; }
 .buffer-array-filter .inputfield { width: 70px; }
@@ -373,6 +399,7 @@ html, body {
   font-size: 9pt;
 }
 .launch-dialog-select select { min-width: 300px; }
+.launch-dialog-capture-mode select { min-width: 190px; }
 .launch-dialog-options { gap: 14px; }
 .launch-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 

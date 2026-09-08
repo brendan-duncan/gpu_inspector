@@ -289,7 +289,15 @@ void WriteDescriptorSetJson(JsonWriter& w, uint32_t setIndex, VkDescriptorSet se
     w.Key("set"); w.Uint(setIndex);
     w.Key("descriptorSet"); w.Handle(HT_VkDescriptorSet, "VkDescriptorSet", (uint64_t)(uintptr_t)set);
     w.Key("layout"); w.Handle(HT_VkDescriptorSetLayout, "VkDescriptorSetLayout", (uint64_t)(uintptr_t)contents.layout);
-    w.Key("bindings"); w.BeginArray();
+    w.Key("bindings");
+    WriteDescriptorBindingsJson(w, contents, dynamicOffsets, dynamicOffsetCount, dynamicIndex, dataIds);
+    w.EndObject();
+}
+
+void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& contents, const uint32_t* dynamicOffsets,
+                                 uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
+                                 const std::vector<std::vector<uint32_t>>* dataIds) {
+    w.BeginArray();
     for (size_t bi = 0; bi < contents.bindings.size(); ++bi) {
         const DescriptorBinding& b = contents.bindings[bi];
         w.BeginObject();
@@ -333,7 +341,6 @@ void WriteDescriptorSetJson(JsonWriter& w, uint32_t setIndex, VkDescriptorSet se
         w.EndObject();
     }
     w.EndArray();
-    w.EndObject();
 }
 
 } // namespace vkinsp

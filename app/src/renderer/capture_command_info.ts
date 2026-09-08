@@ -636,6 +636,12 @@ export class CommandInfoView {
     const captured = this.panel.data.buffer(d.data);
     const key = `${state.pipeline?.id ?? 0}:${set.set}:${binding.binding}`;
     const kind = binding.type.includes("STORAGE") ? "storage" : "uniform";
+    if (captured && !captured.info.error && captured.info.size < num(d.range)) {
+      const bufSize = num(buf?.descriptor?.size);
+      new Div(body, { class: "inspect_info_error", text:
+        `Capture is shorter than the bound range: captured ${captured.info.size} bytes at buffer offset ${captured.info.offset}, ` +
+        `descriptor offset ${num(d.offset)} + dynamic offset ${num(d.dynamicOffset)}, range ${num(d.range)}, buffer size ${bufSize}, capture id ${captured.info.id}` });
+    }
     this._renderBufferContents(body, key, kind, res, captured);
   }
 
@@ -660,13 +666,13 @@ export class CommandInfoView {
 
     const head = new Div(body, { class: "buffer-head" });
     const label = res
-      ? `${kindLabel(res.kind)}${res.kind === "storage" ? (res.readOnly ? " (read-only)" : "") : ""}: ${res.name}: ${override ? override.type.name : res.typeName}`
+      ? `${kindLabel(res.kind)}${res.kind === "storage" ? (res.readOnly ? " (read-only)" : "") : ""}: ${res.name || "(unnamed)"}: ${override ? override.type.name : res.typeName || "block"}`
       : `${kind === "storage" ? "STORAGE" : "UNIFORM"}: ${override ? override.type.name : "(no shader type: raw view)"}`;
     new Span(head, { text: label, class: "buffer-label" });
     const blockSize = type && type.kind !== "opaque" ? type.size : 0;
     new Span(head, { text: `  ${data.byteLength} bytes captured${captured.info.originalSize ? ` of ${captured.info.originalSize} (truncated to the capture limit)` : ""}${blockSize ? `, block is ${blockSize} bytes` : ""}`, class: "text-muted font-sm" });
     if (blockSize && data.byteLength < blockSize && !captured.info.originalSize) {
-      new Div(body, { text: `The bound range (${captured.info.size} bytes at offset ${captured.info.offset}) is shorter than the shader's block; members past it show as out of range.`, class: "text-muted font-sm" });
+      new Div(body, { text: `The bound range (${captured.info.size} bytes at offset ${captured.info.offset}) covers only part of the declared ${blockSize}-byte block: the shader reads just the members inside it. The rest are listed at the end.`, class: "text-muted font-sm" });
     }
     const dataUi = new Div(body, { class: "buffer-data" });
     const bufferKind = kind;

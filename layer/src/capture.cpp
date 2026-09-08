@@ -32,7 +32,9 @@ void CaptureManager::Request(const CaptureOptions& options) {
     _options = options;
     _framesLeft = std::max(1u, options.frameCount);
     _state = State::Armed;
-    Log("capture armed (%u frames)", _framesLeft);
+    _armedAtFrame.store(options.atFrame, std::memory_order_release);
+    if (options.atFrame == UINT64_MAX) Log("capture armed (%u frames)", _framesLeft);
+    else Log("capture armed (%u frames) for frame %llu", _framesLeft, (unsigned long long)options.atFrame);
 }
 
 void CaptureManager::SetRecordAlways(bool on) {
@@ -53,6 +55,7 @@ void CaptureManager::Start(DeviceData* dev) {
     _frameIndex = dev->frameIndex;
     _frameCount = std::max(1u, _options.frameCount);
     _state = State::Capturing;
+    _armedAtFrame.store(UINT64_MAX, std::memory_order_release);
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
     Log("capture started at frame %llu", (unsigned long long)_frameIndex);
@@ -68,6 +71,12 @@ CommandRecorder* CaptureManager::RecorderFor(DeviceData* dev, VkCommandBuffer cb
 }
 
 void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, VkCommandBufferUsageFlags flags) {
+    // A capture queued for a specific frame starts with that frame's first command buffer, so
+    // frame 0 (before any present) can be captured whole. Later frames start at the present.
+    if (_armedAtFrame.load(std::memory_order_acquire) == dev->frameIndex) {
+        std::lock_guard lock(_mutex);
+        if (_state == State::Armed) Start(dev);
+    }
     if (!IsCapturing() && !RecordAlways()) return;
     std::unique_lock lock(dev->recorderMutex);
     auto& slot = dev->recorders[cb];
@@ -137,7 +146,8 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
 void CaptureManager::OnPresent(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result) {
     std::unique_lock lock(_mutex);
     if (_state == State::Armed) {
-        Start(dev);
+        // frameIndex was advanced by this present: the frame that starts now is `frameIndex`.
+        if (_options.atFrame == UINT64_MAX || dev->frameIndex >= _options.atFrame) Start(dev);
         return;
     }
     if (_state != State::Capturing) return;

@@ -22,6 +22,9 @@ struct DeviceData;
 
 struct CaptureOptions {
     uint32_t frameCount = 1;
+    // Frame to start at (the device's present counter); UINT64_MAX = the next frame. A frame
+    // that has already passed captures the next one.
+    uint64_t atFrame = UINT64_MAX;
     uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range (longer ranges are truncated)
     uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
@@ -144,6 +147,9 @@ private:
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};
     std::atomic<bool> _recordAlways{false};
+    // Frame an armed capture waits for (UINT64_MAX when not armed or waiting for the next present),
+    // checked cheaply at every vkBeginCommandBuffer so frame 0 can be captured from its first command.
+    std::atomic<uint64_t> _armedAtFrame{UINT64_MAX};
     State _state = State::Idle;
     CaptureOptions _options;
     uint32_t _framesLeft = 0;

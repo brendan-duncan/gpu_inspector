@@ -87,6 +87,12 @@ void WriteDescriptorSetJson(JsonWriter& w, uint32_t setIndex, VkDescriptorSet se
                             const uint32_t* dynamicOffsets, uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
                             const std::vector<std::vector<uint32_t>>* dataIds);
 
+// Writes just the bindings array of a set (the value of "bindings" above). Used for the live
+// contents of a set shown in the Inspect panel, where there are no dynamic offsets or captures.
+void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& contents, const uint32_t* dynamicOffsets,
+                                 uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
+                                 const std::vector<std::vector<uint32_t>>* dataIds);
+
 // Effective range of a buffer descriptor (VK_WHOLE_SIZE resolved against the buffer's size).
 VkDeviceSize DescriptorBufferRange(const DescriptorEntry& e);
 

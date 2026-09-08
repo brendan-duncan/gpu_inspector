@@ -25,6 +25,10 @@ export interface SessionContext {
 
 const MAX_LOG_LINES = 2000;
 
+// Session bar icons (inline SVG in the button's text color).
+const ICON_STOP = '<svg viewBox="0 0 16 16" aria-label="Stop"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>';
+const ICON_RELAUNCH = '<svg viewBox="0 0 16 16" aria-label="Relaunch"><path d="M13.2 9.2A5.3 5.3 0 1 1 12 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13.6 1.8v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.8 6.2v3.6l3-1.8z" fill="currentColor"/></svg>';
+
 export class SessionPanel extends Div implements SessionContext {
   readonly sessionId: number;
   info: SessionInfo;
@@ -42,6 +46,9 @@ export class SessionPanel extends Div implements SessionContext {
   private _stopButton!: Button;
   private _restartButton!: Button;
   private _recordAlwaysCheck!: Checkbox;
+  /** The launch configuration's queued capture has been taken (or scheduled) for this run. */
+  private _queuedCaptureDone = false;
+  private _queuedCaptureTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(info: SessionInfo) {
     super(null, { class: "session-panel" });
@@ -87,12 +94,30 @@ export class SessionPanel extends Div implements SessionContext {
     this._recordAlwaysCheck.input.onchange = () => {
       void this.send({ action: "Settings", recordAlways: this._recordAlwaysCheck.checked });
     };
-    this._stopButton = new Button(row, { label: "Stop", class: "btn btn-danger", tooltip: "Terminate the application", callback: () => {
+    this._stopButton = new Button(row, { html: ICON_STOP, class: "btn btn-danger btn-icon", tooltip: "Stop: terminate the application", callback: () => {
       void window.inspector.kill(this.sessionId);
     }});
-    this._restartButton = new Button(row, { label: "Relaunch", class: "btn", tooltip: "Terminate the application and launch it again", callback: () => {
+    this._restartButton = new Button(row, { html: ICON_RELAUNCH, class: "btn btn-icon", tooltip: "Relaunch: terminate the application and launch it again", callback: () => {
       void window.inspector.restart(this.sessionId);
     }});
+  }
+
+  /** Takes the launch configuration's queued capture once the application is connected. */
+  private _scheduleQueuedCapture(): void {
+    const capture = this.info.config?.capture;
+    if (!capture || capture.mode === "none" || this._queuedCaptureDone) return;
+    this._queuedCaptureDone = true;
+    if (capture.mode === "frame") {
+      this.showCaptureTab();
+      this.capturePanel.capture(undefined, capture.value);
+    } else {
+      this._queuedCaptureTimer = setTimeout(() => {
+        this._queuedCaptureTimer = null;
+        if (!this.connected) return;
+        this.showCaptureTab();
+        this.capturePanel.capture();
+      }, capture.value * 1000);
+    }
   }
 
   get name(): string {
@@ -123,8 +148,18 @@ export class SessionPanel extends Div implements SessionContext {
   }
 
   setStatus(s: StatusMessage): void {
+    const wasConnected = this.info.state === "connected";
     this.info = { ...this.info, state: s.state, detail: s.detail };
     const running = s.state === "launched" || s.state === "connecting" || s.state === "connected";
+    if (s.state === "launched") {
+      // A new run of the application: its queued capture applies again.
+      this._queuedCaptureDone = false;
+      if (this._queuedCaptureTimer) {
+        clearTimeout(this._queuedCaptureTimer);
+        this._queuedCaptureTimer = null;
+      }
+    }
+    if (s.state === "connected" && !wasConnected) this._scheduleQueuedCapture();
     this._statusLabel.text = s.detail ? `${s.state}: ${s.detail}` : s.state;
     this._statusLabel.element.className = `launch-status status-${s.state}`;
     if (s.state !== "connected") this._frameLabel.text = "";

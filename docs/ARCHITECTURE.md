@@ -59,7 +59,10 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
   kind 0 is UTF-8 JSON, kind 1 is `u32 headerLength, JSON header, raw bytes`.
 * `src/descriptors.*` — descriptor set contents: follows `vkCreateDescriptorSetLayout`,
   `vkAllocateDescriptorSets`, `vkUpdateDescriptorSets`, update templates and push descriptors, so
-  a bind command during a capture can carry a snapshot of what each bound set contained.
+  a bind command during a capture can carry a snapshot of what each bound set contained. The
+  Inspect panel asks for a set's current contents with `RequestDescriptorSet {id}`, answered by
+  an `ObjectUpdate` carrying `bindings` (updates are not streamed: engines rewrite thousands of
+  sets per frame).
 * `src/capture.*` — frame capture (see below).
 
 Enabling the layer for a process (what the app does when launching):
@@ -74,7 +77,12 @@ VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such 
 
 ### Frame capture
 
-1. The UI sends `Capture {frameCount}`; the layer arms at the next `vkQueuePresentKHR`.
+1. The UI sends `Capture {frameCount, atFrame?}`; the layer arms at the next `vkQueuePresentKHR`,
+   or, with `atFrame`, when the device's present counter reaches that frame (frame 0 starts with
+   its first `vkBeginCommandBuffer`, so the very first frame can be captured whole). The launch
+   dialog's "Queued Capture" uses this (or a timer in the UI for "after N seconds") to capture
+   automatically once the application connects; `--capture-frame=N` / `--capture-after=S` do the
+   same from the command line.
 2. During the captured frame every `vkBeginCommandBuffer` attaches a `CommandRecorder`; the
    generated forwarders serialize each `vkCmd*` call's arguments into it.
 3. At `vkCmdEndRenderPass` / `vkCmdEndRendering` the layer appends its own commands to the
@@ -154,6 +162,15 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
   ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds the object model,
   database, texture decoding, SPIR-V reflection, vertex format decoding and the buffer layout
   parser.
+
+#### Meters
+
+The Inspect tab's top row follows WebGPU Inspector's meters: a frame time plot (average and
+longest frame of each 100 ms `FrameStats` interval the layer reports), an object count plot with
+a type selector, and memory totals. Vulkan makes memory explicit, so "Device Memory" is the sum
+of the live `VkDeviceMemory` allocations (what the application actually holds), while the image
+and buffer figures are estimates from their formats and sizes (`objectMemoryBytes` in
+`vulkan_object.ts`), the way WebGPU Inspector estimates texture and buffer memory.
 
 #### Theme
 

@@ -4,7 +4,7 @@
 // dependency graph and destroy-invalidation cascade, driven by generic {__id} references found
 // in each object's serialized creation arguments instead of per-class knowledge.
 import { Signal } from "../utils/signal.js";
-import { VulkanObject, isHandleRef, type ObjectLookup } from "./vulkan_object.js";
+import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage } from "../../shared/protocol.js";
 
 // Vulkan lets most objects be destroyed once the objects created from them exist (shader
@@ -28,6 +28,10 @@ export class ObjectDatabase implements ObjectLookup {
   frameIndex = 0;
   frameTimeMs = 0;
   inspectedObject: VulkanObject | null = null;
+  /** Ids of the objects referenced by the most recent capture (for the object list filter). */
+  capturedObjects = new Set<number>();
+  /** Memory totals of the live objects (see objectMemoryBytes): allocations, buffers, images. */
+  memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -41,6 +45,28 @@ export class ObjectDatabase implements ObjectLookup {
   readonly onObjectBlob = new Signal<(id: number, index: number, data: Uint8Array | null) => void>();
   /** Messages not handled here (capture data) are forwarded to whoever listens. */
   readonly onOtherMessage = new Signal<(msg: LayerMessage) => void>();
+  readonly onCapturedObjectsChanged = new Signal<() => void>();
+
+  /** Records the objects a capture referenced (every {__id} in its commands). */
+  setCapturedObjects(ids: Set<number>): void {
+    this.capturedObjects = ids;
+    this.onCapturedObjectsChanged.emit();
+  }
+
+  /** Every {__id} reference inside a value, recursively. */
+  collectReferences(value: unknown, into: Set<number>): void {
+    if (value === null || value === undefined || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const v of value) this.collectReferences(v, into);
+      return;
+    }
+    const rec = value as Record<string, unknown>;
+    if (typeof rec.__id === "number") {
+      into.add(rec.__id);
+      return;
+    }
+    for (const key in rec) this.collectReferences(rec[key], into);
+  }
 
   reset(): void {
     this.allObjects = new Map();
@@ -50,7 +76,21 @@ export class ObjectDatabase implements ObjectLookup {
     this.frameIndex = 0;
     this.frameTimeMs = 0;
     this.inspectedObject = null;
+    this.capturedObjects = new Set();
+    this.memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
     this._snapshotRemaining = 0;
+  }
+
+  private _accountMemory(o: VulkanObject, sign: 1 | -1): void {
+    const bytes = objectMemoryBytes(o, this);
+    if (o.type === "VkDeviceMemory") {
+      this.memory.device += sign * bytes;
+      this.memory.allocations += sign;
+    } else if (o.type === "VkBuffer") {
+      this.memory.buffers += sign * bytes;
+    } else if (o.type === "VkImage") {
+      this.memory.images += sign * bytes;
+    }
   }
 
   getObject(id: number | undefined | null): VulkanObject | null {
@@ -137,6 +177,7 @@ export class ObjectDatabase implements ObjectLookup {
     }
     map.set(o.id, o);
     this.objectsByHandle.set(`${o.type}:${o.handle}`, o);
+    this._accountMemory(o, 1);
 
     // Dependencies: every {__id} reference in the creation arguments.
     this._collectReferences(o.args, (id) => {
@@ -169,6 +210,7 @@ export class ObjectDatabase implements ObjectLookup {
     const o = this.allObjects.get(id);
     if (!o) return;
     o.isDeleted = true;
+    this._accountMemory(o, -1);
     this.allObjects.delete(id);
     this.objectsByType.get(o.type)?.delete(id);
     if (this.objectsByHandle.get(`${o.type}:${o.handle}`) === o) this.objectsByHandle.delete(`${o.type}:${o.handle}`);

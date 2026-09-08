@@ -113,8 +113,15 @@ function renderInto(ui: Widget, type: ReflType, view: DataView, offset: number, 
     }
     case "struct": {
       const list = new Widget("ul", ui, { class: "buffer-struct" });
+      // Members entirely past the captured bytes are summarized in one line: a Vulkan binding may
+      // cover only the part of a block the shader reads (Unity binds constant buffers that way).
+      const beyond: string[] = [];
       for (const m of type.members) {
         const memberOffset = offset + m.offset;
+        if (memberOffset >= view.byteLength) {
+          beyond.push(m.name);
+          continue;
+        }
         const one = inlineValue(m.type, view, memberOffset, radix);
         if (one !== null) {
           const li = new Widget("li", list);
@@ -129,6 +136,10 @@ function renderInto(ui: Widget, type: ReflType, view: DataView, offset: number, 
           const sub = new Widget("ul", li);
           renderInto(sub, m.type, view, memberOffset, radix);
         }
+      }
+      if (beyond.length) {
+        const names = beyond.length > 6 ? `${beyond.slice(0, 6).join(", ")}, ...` : beyond.join(", ");
+        new Widget("li", list, { text: `${beyond.length} member${beyond.length === 1 ? "" : "s"} past the ${view.byteLength - offset} bound bytes (not read by this shader): ${names}`, class: "text-muted buffer-beyond" });
       }
       return;
     }

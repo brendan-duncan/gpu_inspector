@@ -8,13 +8,15 @@ import { Checkbox } from "./widget/checkbox.js";
 import { Select } from "./widget/select.js";
 import { TextArea } from "./widget/text_area.js";
 import { TextInput } from "./widget/text_input.js";
-import type { LaunchConfig } from "../shared/protocol.js";
+import type { LaunchConfig, QueuedCapture } from "../shared/protocol.js";
 
 const DEFAULT_PORT = 47531;
 
 export function emptyLaunchConfig(): LaunchConfig {
-  return { exe: "", args: "", cwd: "", env: "", port: DEFAULT_PORT, log: true, recordAlways: false };
+  return { exe: "", args: "", cwd: "", env: "", port: DEFAULT_PORT, log: true, recordAlways: false, capture: { mode: "none", value: 0 } };
 }
+
+const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", "none"], ["Capture frame", "frame"], ["Capture after seconds", "time"]];
 
 export function launchDisplayName(c: LaunchConfig): string {
   const base = c.exe.replace(/\\/g, "/").split("/").pop() || c.exe;
@@ -31,6 +33,9 @@ export class LaunchDialog extends Dialog {
   private _port: TextInput;
   private _log: Checkbox;
   private _recordAlways: Checkbox;
+  private _captureMode: Select;
+  private _captureValue: TextInput;
+  private _captureValueLabel: Span;
 
   constructor(recents: LaunchConfig[], initial: LaunchConfig | null, onLaunch: (config: LaunchConfig) => void) {
     super({ title: "Launch Application", width: 720, windowClass: "dialog launch-dialog" });
@@ -74,6 +79,15 @@ export class LaunchDialog extends Dialog {
       new Span(row, { text: "Port", class: "launch-dialog-label launch-dialog-label-inline" });
       this._port = new TextInput(row, { value: String(DEFAULT_PORT), class: "launch-dialog-input launch-dialog-port" });
     }
+    {
+      // Queued capture: taken automatically once the application connects.
+      const row = new Div(body, { class: "launch-dialog-row launch-dialog-options" });
+      new Span(row, { text: "Queued Capture", class: "launch-dialog-label" });
+      this._captureMode = new Select(row, { options: CAPTURE_MODES.map((m) => m[0]), class: "launch-dialog-capture-mode", onChange: () => this._updateCaptureFields() });
+      this._captureValueLabel = new Span(row, { text: "Frame", class: "launch-dialog-label launch-dialog-label-inline" });
+      this._captureValue = new TextInput(row, { value: "0", class: "launch-dialog-input launch-dialog-port",
+        tooltip: "Frame number to capture (0 = the first frame the inspector sees), or seconds to wait after connecting" });
+    }
 
     const footer = new Div(this, { class: "dialog-footer launch-dialog-footer" });
     new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
@@ -107,7 +121,16 @@ export class LaunchDialog extends Dialog {
     return input;
   }
 
+  private _updateCaptureFields(): void {
+    const mode = CAPTURE_MODES[this._captureMode.index]?.[1] ?? "none";
+    const show = mode !== "none";
+    this._captureValueLabel.text = mode === "time" ? "Seconds" : "Frame";
+    this._captureValueLabel.style.display = show ? "" : "none";
+    this._captureValue.style.display = show ? "" : "none";
+  }
+
   get config(): LaunchConfig {
+    const mode = CAPTURE_MODES[this._captureMode.index]?.[1] ?? "none";
     return {
       exe: this._exe.value.trim(),
       args: this._args.value,
@@ -116,6 +139,7 @@ export class LaunchDialog extends Dialog {
       port: Number(this._port.value) || DEFAULT_PORT,
       log: this._log.checked,
       recordAlways: this._recordAlways.checked,
+      capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
   }
 
@@ -127,5 +151,9 @@ export class LaunchDialog extends Dialog {
     this._port.value = String(c.port || DEFAULT_PORT);
     this._log.checked = c.log ?? true;
     this._recordAlways.checked = c.recordAlways ?? false;
+    const mode = c.capture?.mode ?? "none";
+    this._captureMode.index = Math.max(0, CAPTURE_MODES.findIndex((m) => m[1] === mode));
+    this._captureValue.value = String(c.capture?.value ?? 0);
+    this._updateCaptureFields();
   }
 }

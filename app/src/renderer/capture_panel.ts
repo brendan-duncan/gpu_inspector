@@ -26,6 +26,8 @@ import type { ArgValue, CaptureCommand, LayerMessage } from "../shared/protocol.
 
 interface CommandRow extends Widget {
   command: CaptureCommand;
+  /** Lower-case text the command list filter matches against (method and argument summary). */
+  filterText: string;
 }
 
 export class CapturePanel {
@@ -83,13 +85,18 @@ export class CapturePanel {
     this._updatePlaceholder();
   }
 
-  capture(frames?: number): void {
+  /**
+   * Requests a capture in a new tab. `atFrame` captures that frame of the application (0 = the
+   * first frame; a frame already passed captures the next one) instead of the next frame.
+   */
+  capture(frames?: number, atFrame?: number): void {
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return;
     }
     if (frames && frames > 0) this._frameCountInput.value = String(frames);
     const view = new CaptureView(this.window, ++this._captureCount);
+    if (atFrame !== undefined) view.status = `waiting for frame ${atFrame}...`;
     this._views.push(view);
     const handle = this._tabs.addTab(view.label, view.root);
     this._handles.set(view, handle);
@@ -103,11 +110,12 @@ export class CapturePanel {
     this._tabs.setHandleActive(handle);
     this._live = view;
     this._updatePlaceholder();
-    this._statusLabel.text = "capturing...";
+    this._statusLabel.text = view.status;
     const maxKb = Math.max(1, Number(this._bufferSizeInput.value) || 128);
     void this.window.send({
       action: "Capture",
       frameCount: Math.max(1, Number(this._frameCountInput.value) || 1),
+      ...(atFrame !== undefined ? { atFrame: Math.max(0, Math.floor(atFrame)) } : {}),
       captureTextures: this._texturesCheck.checked,
       captureBuffers: this._buffersCheck.checked,
       maxBufferSize: maxKb * 1024,
@@ -173,6 +181,9 @@ export class CaptureView implements CaptureHost {
 
   private _listPanel: Div;
   private _infoPanel: Div;
+  private _filterInput: TextInput;
+  private _filter = "";
+  private _rows: CommandRow[] = [];
   private _selectedRow: CommandRow | null = null;
   private _drawCount = 0;
   private _commandBufferPassCounters = new Map<number, number>();
@@ -186,7 +197,15 @@ export class CaptureView implements CaptureHost {
 
     const split = new Split(this.root, { direction: Split.Horizontal, position: 520 });
     const pane1 = new Span(split);
-    this._listPanel = new Div(pane1, { class: "capture-commands" });
+    const left = new Div(pane1, { class: "capture-left" });
+    const filterRow = new Div(left, { class: "capture-filter-row" });
+    new Span(filterRow, { text: "Filter", class: "inspector-filter-label" });
+    this._filterInput = new TextInput(filterRow, { placeholder: "command name, object, index...", class: "inspector-filter-input", style: "width: 260px;" });
+    this._filterInput.element.oninput = () => {
+      this._filter = this._filterInput.value.trim().toLowerCase();
+      this._applyCommandFilter();
+    };
+    this._listPanel = new Div(left, { class: "capture-commands" });
     const pane2 = new Span(split, { style: "flex-grow: 1; overflow: hidden;" });
     this._infoPanel = new Div(pane2, { class: "capture-info" });
     new Div(this._listPanel, { text: "Capturing...", class: "text-muted", style: "padding: 12px;" });
@@ -232,7 +251,18 @@ export class CaptureView implements CaptureHost {
     this._listPanel.html = "";
     this._infoPanel.html = "";
     this._selectedRow = null;
+    this._rows = [];
     this._drawCount = 0;
+    // Objects this capture references, for the Inspect panel's "used in last capture" filter.
+    const db = this.window.database;
+    const referenced = new Set<number>();
+    for (const c of this.data.commands) {
+      if (c.object) referenced.add(c.object.__id);
+      if (c.secondary) referenced.add(c.secondary);
+      db.collectReferences(c.args, referenced);
+      db.collectReferences(c.descriptors, referenced);
+    }
+    db.setCapturedObjects(referenced);
     const frames = this.data.frames;
     if (frames > 1) {
       // One sub-tab per captured frame.
@@ -247,8 +277,18 @@ export class CaptureView implements CaptureHost {
     }
     this.onLabelChanged.emit();
     this._updateStatus();
+    this._applyCommandFilter();
     const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
     first?.click();
+  }
+
+  /** Hides the command rows that do not match the filter text (containers stay, like WebGPU Inspector). */
+  private _applyCommandFilter(): void {
+    const f = this._filter;
+    for (const row of this._rows) {
+      const show = !f || row.filterText.includes(f) || String(row.command.index) === f;
+      row.element.style.display = show ? "" : "none";
+    }
   }
 
   /** Builds the command tree of one captured frame into `container`. */
@@ -384,13 +424,16 @@ export class CaptureView implements CaptureHost {
   private _addRow(parent: Widget, cmd: CaptureCommand, inline = false): CommandRow {
     const row = new Div(parent, { class: inline ? "capture_command capture_command_inline" : "capture_command" }) as CommandRow;
     row.command = cmd;
+    const summary = this._summarizeArgs(cmd);
+    row.filterText = `${cmd.method} ${summary}`.toLowerCase();
     new Span(row, { text: `${cmd.index}`, class: "capture_callnum" });
     new Span(row, { text: cmd.method.replace(/^vk(Cmd)?/, ""), class: "capture_methodName" });
-    new Span(row, { text: this._summarizeArgs(cmd), class: "capture_method_args" });
+    new Span(row, { text: summary, class: "capture_method_args" });
     row.element.onclick = (e: MouseEvent) => {
       e.stopPropagation();
       this._selectRow(row);
     };
+    this._rows.push(row);
     return row;
   }
 
