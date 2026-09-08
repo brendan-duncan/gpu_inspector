@@ -14,6 +14,13 @@
   layer reports them (type counts and the objects with their names); the Inspect tab lists them
   in a Leaked Objects group, the session bar counts them, and the Log tab records the summary.
   The triangle test application's `--leak` option leaves a sampler and a buffer alive.
+- Static shader analysis on SPIR-V: every shader payload in the Inspect tab gets a Shader Cost
+  section (modeled ALU, special-function, texture and memory cost per entry point and function,
+  loops weighted) and a Performance Analysis section (texture samples, expensive builtins,
+  non-constant division, atomics, barriers and storage access inside loops; derivatives in
+  branches; discard; integer division), with findings linked to source lines when the module
+  has debug information. "Analyze Shaders" in a capture reports the same for every shader the
+  frame's draws and dispatches used, worst first, with per-shader cost and use counts.
 
 ### Changed
 - Shader Reflection sections are collapsed by default.

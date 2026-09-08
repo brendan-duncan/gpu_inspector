@@ -456,6 +456,40 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Loaded thumbnails keep their aspect; small textures are scaled up so texels stay visible. */
 .capture-thumb.loaded { width: auto; height: auto; min-width: 64px; }
 .capture-image-box { margin: 4px 0; }
+/* Shader analysis (Inspect > Shader, Capture > Analyze Shaders) */
+.shader-analysis { margin: 0 4px 6px 4px; }
+.perf-section > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
+.perf-section.perf-title-high > .title_bar .object_type { color: var(--accent-error); }
+.perf-section.perf-title-medium > .title_bar .object_type { color: var(--accent-warning); }
+.perf-note { padding: 4px 6px; }
+.perf-filter-row { display: flex; align-items: center; gap: 12px; padding: 4px 6px; }
+.perf-findings { font-size: 10pt; }
+.perf-finding { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); white-space: normal; }
+.perf-finding.perf-lowconf { opacity: 0.8; }
+.perf-finding-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.perf-badge { display: inline-block; border-radius: 3px; padding: 1px 6px; font-size: 8pt; font-weight: 700; color: var(--fg-on-accent); }
+.perf-badge.perf-high { background-color: var(--accent-error); }
+.perf-badge.perf-medium { background-color: var(--accent-warning); color: #000; }
+.perf-badge.perf-low { background-color: var(--accent-info); }
+.perf-badge.perf-info { background-color: var(--bg-hover); color: var(--fg-primary); }
+.perf-rule { font-family: var(--font-mono); font-size: 9pt; }
+.perf-msg { margin-top: 3px; }
+.perf-findings.perf-hide-high .perf-row-high, .perf-findings.perf-hide-medium .perf-row-medium,
+.perf-findings.perf-hide-low .perf-row-low, .perf-findings.perf-hide-info .perf-row-info { display: none; }
+.perf-cost { font-family: var(--font-mono); font-size: 9pt; padding: 4px; }
+.perf-cost-row { display: flex; align-items: baseline; gap: 6px; line-height: 1.6; }
+.perf-cost-head { color: var(--fg-secondary); border-bottom: 1px solid var(--border-subtle); }
+.perf-cost-entry { font-weight: 600; }
+.perf-cost-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perf-cost-fn { padding-left: 12px; }
+.perf-cost-cell { flex: 0 0 64px; text-align: right; }
+.perf-cost-total { font-weight: 600; }
+.perf-dim-alu { color: #5b9bd5; }
+.perf-dim-sfu { color: #e0a060; }
+.perf-dim-texture { color: #e06c75; }
+.perf-dim-memory { color: #b48ead; }
+.perf-report { padding: 8px; }
+.perf-inspect-link { padding: 2px 6px; }
 .affected-by { margin: 4px 0; }
 .affected-by > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
 .affected-by-list { max-height: 160px; overflow: auto; }

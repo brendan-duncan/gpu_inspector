@@ -337,6 +337,23 @@ outputs, the resources by set and binding with struct members, offsets and sizes
 constant block. It is the same `reflectSpirv` result the capture view uses per draw, rendered by
 `renderer/shader_reflection_view.ts`, so a module explains what it expects without a capture.
 
+#### Shader analysis
+
+WebGPU Inspector analyzes WGSL source; here the same questions are answered from the SPIR-V
+the layer holds (`renderer/vulkan/spirv_analysis.ts`), so no shader source is needed. One pass
+over the module classifies every instruction of every function into ALU, special-function
+(divisions, transcendentals from `GLSL.std.450`), texture and memory operations (loads and
+stores whose pointer's storage class is a buffer, image or workgroup memory, traced through
+access chains), weights them by the loop nesting the structured control flow gives
+(`OpLoopMerge` / `OpSelectionMerge` and their merge blocks; unknown trip counts count as 8),
+and sums them up the call graph per entry point. The same walk raises findings for the patterns
+WebGPU Inspector's analyzer flags (texture samples, expensive builtins, non-constant division,
+atomics, barriers and storage accesses inside loops, derivatives inside branches, discards,
+integer division), located to a source line through the debug information when there is one.
+`renderer/shader_analysis_view.ts` shows the result as the Shader Cost and Performance Analysis
+sections of a shader payload in the Inspect tab, and as the capture's "Analyze Shaders" report,
+which resolves the pipeline bound for each draw and dispatch to count uses per shader.
+
 #### Shader source maps
 
 WebGPU shaders are their own source; SPIR-V is not, but compilers can embed the source and a

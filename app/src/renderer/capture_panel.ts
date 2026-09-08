@@ -16,14 +16,17 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
-import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, serializeCapture, type LoadedCapture } from "./capture_file.js";
+import { CAPTURE_FILE_FILTERS, captureFileName, fetchBlob, parseCaptureFile, serializeCapture, type LoadedCapture } from "./capture_file.js";
+import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_view.js";
+import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
+import { pipelineStages, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
-import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
+import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgValue, CaptureCommand, LayerMessage } from "../shared/protocol.js";
@@ -314,6 +317,7 @@ export class CaptureView implements CaptureHost {
       this._applyCommandFilter();
     };
     new Button(filterRow, { label: "Frame Stats", class: "btn btn-sm", tooltip: "Statistics of the captured frame: commands, passes, pipelines, bindings, memory traffic, geometry", callback: () => this._showStats() });
+    new Button(filterRow, { label: "Analyze Shaders", class: "btn btn-sm", tooltip: "Static performance analysis of every shader the frame's draws and dispatches used, worst first", callback: () => void this._analyzeShaders() });
     // GPU pass timeline (Profile passes): stays at 0 height until timestamp data arrives.
     this._timeline = new TimelineWidget(left);
     this._listPanel = new Div(left, { class: "capture-commands" });
@@ -719,6 +723,56 @@ export class CaptureView implements CaptureHost {
   }
 
   /** Replaces the command details with the capture's statistics (WebGPU Inspector's Frame Stats). */
+  /**
+   * "Analyze Shaders": the pipelines the frame's draws and dispatches used (bound pipeline per
+   * command stream and bind point), each stage's SPIR-V analyzed statically (see
+   * renderer/vulkan/spirv_analysis.ts), reported worst first in the details panel.
+   */
+  private async _analyzeShaders(): Promise<void> {
+    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
+    this._selectedRow = null;
+    this._infoPanel.html = "";
+    if (!this.data.commands.length) {
+      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    const status = new Div(this._infoPanel, { text: "Analyzing shaders...", class: "text-muted", style: "padding: 12px;" });
+    const db = this.window.database;
+    // Uses per pipeline: the pipeline bound on the stream and bind point of each action.
+    const bound = new Map<string, number>();
+    const uses = new Map<number, number>();
+    for (const c of this.data.commands) {
+      if (!c || SUBMIT_METHODS.has(c.method)) continue;
+      const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
+      if (c.method === "vkCmdBindPipeline" && c.args) {
+        const id = refId(c.args.pipeline);
+        if (id !== null) bound.set(`${stream}:${str(c.args.pipelineBindPoint)}`, id);
+      } else if (isAction(c.method)) {
+        const id = bound.get(`${stream}:${bindPointOf(c.method)}`);
+        if (id !== undefined) uses.set(id, (uses.get(id) ?? 0) + 1);
+      }
+    }
+    const reports: FrameShaderReport[] = [];
+    for (const [pipelineId, count] of uses) {
+      const pipeline = db.getObject(pipelineId);
+      if (!pipeline) continue;
+      for (const source of pipelineStages(pipeline, db)) {
+        const data = await fetchBlob(this.window, source.object, source.blobIndex);
+        reports.push({
+          label: `${pipeline.name}: ${stageLabel(source.stage)} ${source.entryPoint}`, objectId: source.object.id, stage: source.stage, uses: count,
+          analysis: data ? analyzeSpirvCached(data) : null,
+        });
+      }
+    }
+    status.remove();
+    if (this._selectedRow) return;   // the user moved on while shaders were fetched
+    if (!reports.length) {
+      new Div(this._infoPanel, { text: "No pipelines were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    renderFrameReport(this._infoPanel, reports, (id) => this.window.showObject(id));
+  }
+
   private _showStats(): void {
     if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
     this._selectedRow = null;

@@ -20,6 +20,8 @@ import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
+import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
+import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
@@ -77,6 +79,8 @@ interface ShaderView {
   fileBar: Div | null;
   /** The Reflection section of the payload, filled when its SPIR-V arrives. */
   reflection: collapsible;
+  /** Shader Cost and Performance Analysis sections, filled with the reflection. */
+  analysis: Div;
   /** The payload's section (its label carries the "[edited]" mark). */
   group: collapsible;
 }
@@ -1000,13 +1004,14 @@ export class InspectPanel {
       const view: ShaderView = {
         index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
         editButton: new Button(null), editor: null, body: grp.body, debug: null, sourceFile: 0, disText: "",
-        summary: new Div(null), fileBar: null, reflection: new collapsible(null), group: grp,
+        summary: new Div(null), fileBar: null, reflection: new collapsible(null), analysis: new Div(null), group: grp,
       };
       // Reflection (entry points, interface, resources, push constants) from the SPIR-V itself,
       // so a module or pipeline explains what it expects without a capture.
       view.group = grp;
       view.reflection = new collapsible(grp.body, { label: "Reflection", collapsed: true, class: "shader-reflection" });
       new Div(view.reflection.body, { text: "Loading...", class: "text-muted font-sm" });
+      view.analysis = new Div(grp.body, { class: "shader-analysis" });
       // Source: the text the compiler embedded in the SPIR-V (shown once the payload says it has one).
       view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The original source embedded in the SPIR-V by the compiler", callback: () => void this._showShader(index, "source") });
       view.buttons.source.style.display = "none";
@@ -1044,6 +1049,23 @@ export class InspectPanel {
     renderReflection(info, reflection, { entryPoint, showStage: true });
     const entries = entryPoint ? 1 : reflection.entryPoints.length;
     view.reflection.label.text = `Reflection: ${entries} entry point${entries === 1 ? "" : "s"}, ${reflection.resources.length} resource${reflection.resources.length === 1 ? "" : "s"}${reflection.pushConstants.length ? ", push constants" : ""}`;
+  }
+
+  /** Shader Cost and Performance Analysis of a payload (static analysis of its SPIR-V). */
+  private _fillAnalysis(view: ShaderView, data: Uint8Array): void {
+    view.analysis.html = "";
+    const analysis = analyzeSpirvCached(data);
+    if (!analysis) return;
+    const sep = view.blobName.indexOf(":");
+    const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : undefined;
+    renderCostSection(view.analysis, analysis, entryPoint);
+    renderAnalysisSection(view.analysis, analysis, (file, line) => {
+      // Findings name a source file and line: show that line in the Source view.
+      const files = view.debug?.files ?? [];
+      let index = files.findIndex((f) => f.text !== null && f.name.replace(/^.*[\\/]/, "") === file);
+      if (index < 0) index = files.findIndex((f) => f.text !== null);
+      if (index >= 0) this._jumpToSource(view, index, line);
+    });
   }
 
   private _setShaderMode(view: ShaderView, mode: ShaderViewMode): void {
@@ -1092,6 +1114,7 @@ export class InspectPanel {
     view.data = data;
     view.disText = "";
     this._fillReflection(view, data);
+    this._fillAnalysis(view, data);
     view.debug = parseSpirvDebugInfo(data);
     const info = view.debug;
     if (info) {

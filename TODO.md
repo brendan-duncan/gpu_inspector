@@ -33,6 +33,8 @@ interpreter and re-created pipelines.
   pipelines, syntax highlighting.
 - Shader source maps: embedded source (OpSource / NonSemantic DebugInfo) as a Source view, SPIR-V
   disassembly annotated and linked to source lines, editing from the embedded source.
+- Static shader analysis on SPIR-V: modeled Shader Cost per entry point and function, a
+  Performance Analysis findings list per shader, and "Analyze Shaders" over a capture's frame.
 - Validation messages: the layer's debug-utils messenger forwards validation layer output (with
   repeat counts and object links); "Validation layer" in the launch dialog enables the Khronos
   layer; Inspect lists the messages, marks the objects, the session bar counts them.
@@ -61,8 +63,10 @@ interpreter and re-created pipelines.
 - [ ] Theme-aware timeline widget colors.
 
 ### Shaders
-- [ ] Static shader analysis on SPIR-V (op mix per function, texture/memory op counts, expensive
-      builtins in loops) as "Analyze Shaders" and per-shader "Shader Cost".
+- [ ] Shader flame graph: the frame's GPU time split by pass, pipeline and function using the
+      modeled costs, once per-draw timing exists (WebGPU Inspector's Shader Flame Graph).
+- [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables),
+      loop-invariant detection, and per-statement cost through the source map.
 - [ ] Shader editor: line numbers, find, and compile error lines linked into the editor.
 - [ ] Source maps from outside the module: a user-configured source root (file name from
       `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
