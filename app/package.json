@@ -2,22 +2,40 @@
   "name": "gpu-inspector",
   "version": "0.1.0",
   "description": "GPU Inspector: native graphics inspector (Vulkan today) with live object inspection and frame capture, companion to WebGPU Inspector",
+  "author": {
+    "name": "Brendan Duncan",
+    "email": "brendanduncan@gmail.com"
+  },
+  "homepage": "https://github.com/brendan-duncan/gpu_inspector",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brendan-duncan/gpu_inspector.git"
+  },
+  "license": "MIT",
   "main": "dist/main/main.js",
   "type": "module",
+  "desktopName": "gpu-inspector.desktop",
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "icons": "node tools/run_electron.mjs tools/make_icons.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "start": "node build.mjs && node tools/run_electron.mjs .",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "stage:layer": "node tools/stage_layer.mjs",
+    "pack": "npm run build && npm run stage:layer && electron-builder --dir",
+    "dist": "npm run build && npm run stage:layer && electron-builder",
+    "dist:win": "npm run build && npm run stage:layer && electron-builder --win",
+    "dist:linux": "npm run build && npm run stage:layer && electron-builder --linux"
   },
-  "author": "Brendan Duncan",
-  "license": "MIT",
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^38.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

@@ -5,6 +5,7 @@
 // connecting to a running one, live here in the main process, and are displayed by exactly one
 // window at a time: the main window by default, or a window of their own ("Open in New Window").
 import electron from "electron";
+import updater from "electron-updater";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import fs from "node:fs";
@@ -15,9 +16,11 @@ import {
   THEMES,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
+  type UpdateStatus,
 } from "../shared/protocol.js";
 
 const { app, BrowserWindow, ipcMain, dialog, nativeImage } = electron;
+const { autoUpdater } = updater;
 type BrowserWindow = electron.BrowserWindow;
 type WebContents = electron.WebContents;
 
@@ -600,6 +603,65 @@ function killAllTargets(): void {
 }
 
 // ------------------------------------------------------------------------------------------
+// Self-update (electron-updater)
+//
+// Installed builds check the GitHub releases of the repository named in electron-builder.yml
+// (electron-builder writes the provider into resources/app-update.yml) shortly after startup,
+// and again when the user clicks the version label. Downloads only start when the user asks;
+// a downloaded update is installed on quit or when the user asks to restart.
+
+const UPDATE_CHECK_DELAY_MS = 3000;
+const canUpdate = app.isPackaged;
+
+function sendUpdate(status: UpdateStatus): void {
+  broadcast("inspector:update", status);
+}
+
+function configureUpdater(): void {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("checking-for-update", () => sendUpdate({ state: "checking" }));
+  autoUpdater.on("update-available", (info) => sendUpdate({ state: "available", version: info.version }));
+  autoUpdater.on("update-not-available", (info) => sendUpdate({ state: "up-to-date", version: info.version }));
+  autoUpdater.on("download-progress", (p) => sendUpdate({ state: "downloading", percent: p.percent }));
+  autoUpdater.on("update-downloaded", (info) => sendUpdate({ state: "downloaded", version: info.version }));
+  autoUpdater.on("error", (err) => sendUpdate({ state: "error", message: err.message }));
+}
+
+async function checkForUpdates(): Promise<boolean> {
+  if (!canUpdate) {
+    sendUpdate({ state: "error", message: "Updates are only available in installed builds." });
+    return false;
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+    return true;
+  } catch (e) {
+    // The "error" event already reported it to the windows.
+    console.error("update check failed:", e);
+    return false;
+  }
+}
+
+async function downloadUpdate(): Promise<boolean> {
+  if (!canUpdate) return false;
+  try {
+    await autoUpdater.downloadUpdate();
+    return true;
+  } catch (e) {
+    console.error("update download failed:", e);
+    return false;
+  }
+}
+
+function installUpdate(): boolean {
+  if (!canUpdate) return false;
+  // before-quit stops the inspected applications.
+  autoUpdater.quitAndInstall(false, true);
+  return true;
+}
+
+// ------------------------------------------------------------------------------------------
 // Windows
 
 // UI theme: a persisted user setting (Theme picker in the main window). INSPECTOR_THEME in the
@@ -838,6 +900,8 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
     theme: appTheme(),
     windowMode: win === mainWin ? "main" : "session",
     sessions: sessionsOf(win).map((s) => s.info()),
+    version: app.getVersion(),
+    canUpdate,
     debug: {
       select: cliOption("debug-select"),
       capture: cliFlag("debug-capture"),
@@ -850,6 +914,9 @@ ipcMain.handle("inspector:setTheme", (_e, theme: ThemeName) => {
   setTheme(theme);
   return true;
 });
+ipcMain.handle("inspector:checkForUpdates", () => checkForUpdates());
+ipcMain.handle("inspector:downloadUpdate", () => downloadUpdate());
+ipcMain.handle("inspector:installUpdate", () => installUpdate());
 ipcMain.handle("inspector:getRecents", () => loadRecents());
 ipcMain.handle("inspector:removeRecent", (_e, index: number) => {
   const recents = loadRecents();
@@ -935,6 +1002,10 @@ async function writeScreenshots(file: string): Promise<void> {
 
 void app.whenReady().then(() => {
   migrateSettings();
+  if (canUpdate) {
+    configureUpdater();
+    setTimeout(() => void checkForUpdates(), UPDATE_CHECK_DELAY_MS);
+  }
   if (process.platform === "darwin") app.dock?.setIcon(appIconPath());
   mainWin = createMainWindow();
   mainWin.webContents.on("did-finish-load", () => {

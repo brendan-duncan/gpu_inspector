@@ -519,3 +519,24 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .launch-dialog .dialog-body { overflow: visible; }
 .launch-dialog-row > .launch-dialog-input, .launch-dialog-row > .launch-dialog-textarea { min-width: 0; }
 .launch-dialog-row > button { flex: 0 0 auto; }
+
+/* Version label (launch bar) and self-update bar */
+button.btn.version-label {
+  color: var(--fg-secondary);
+  font-size: 9pt;
+  padding: 2px 6px;
+  background: none;
+}
+button.btn.version-label:hover { color: var(--link-color); filter: none; }
+.update-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 10pt;
+}
+.update-bar.update-error .update-text { color: var(--accent-error); }
+.update-text { flex: 1 1 auto; }
+.update-buttons { display: flex; gap: 6px; }

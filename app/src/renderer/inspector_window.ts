@@ -14,7 +14,7 @@ import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js"
 import { SessionPanel } from "./session_panel.js";
 import { LaunchDialog, launchDisplayName } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
-import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName } from "../shared/protocol.js";
+import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";
 
 // Theme icons (inline SVG in the button's text color): a moon for dark, a sun for light.
 const THEME_ICONS: Record<ThemeName, string> = {
@@ -41,6 +41,13 @@ export class InspectorWindow extends Window {
   private _themeButton: Button | null = null;
   private _themeMenu: Div | null = null;
   private _debug: AppConfig["debug"] | null = null;
+  private _versionLabel: Button | null = null;
+  private _updateBar: Div | null = null;
+  private _updateText: Span | null = null;
+  private _updateButtons: Div | null = null;
+  private _updateTimer = 0;
+  /** Set when the user asked for the check, so "up to date" and errors are shown; startup checks stay silent. */
+  private _manualCheck = false;
 
   constructor() {
     super();
@@ -48,7 +55,10 @@ export class InspectorWindow extends Window {
     const params = new URLSearchParams(window.location.search);
     this._mode = params.has("session") ? "session" : "main";
 
-    if (this._mode === "main") this._buildToolbar();
+    if (this._mode === "main") {
+      this._buildToolbar();
+      this._buildUpdateBar();
+    }
 
     this._tabs = new TabWidget(this, { class: "main-tabs tabs-fill", displayCloseButton: true });
     new Widget("span", this._tabs.headerElement, { text: "GPU Inspector", class: "app-title" });
@@ -71,11 +81,13 @@ export class InspectorWindow extends Window {
     window.inspector.onLog((l) => this._sessions.get(l.sessionId)?.appendLog(l.line));
     window.inspector.onRecents((recents) => this._setRecents(recents));
     window.inspector.onTheme((theme) => this._setTheme(theme));
+    window.inspector.onUpdate((status) => this._setUpdateStatus(status));
 
     void window.inspector.getConfig().then((cfg) => {
       this._debug = cfg.debug;
       this._setTheme(cfg.theme);
       this._setRecents(cfg.recents);
+      this._setVersion(cfg.version, cfg.canUpdate);
       for (const s of cfg.sessions) this._addSession(s);
       if (this._mode === "main") {
         if (cfg.debug?.launchDialog) this.showLaunchDialog();
@@ -204,7 +216,84 @@ export class InspectorWindow extends Window {
     document.addEventListener("mousedown", (e) => {
       if (!themeMenu.element.contains(e.target as Node)) this._themeMenu?.classList.remove("open");
     });
+
+    // Version label; clicking it checks for updates (installed builds).
+    this._versionLabel = new Button(row, { label: "", class: "btn version-label", callback: () => {
+      this._manualCheck = true;
+      void window.inspector.checkForUpdates();
+    }});
     this._setRecents([]);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Self-update (main window). A bar below the toolbar reports the state and offers the next
+  // step: download, then restart. The main process drives it (see main.ts, "Self-update").
+
+  private _buildUpdateBar(): void {
+    this._updateBar = new Div(this, { class: "update-bar" });
+    this._updateText = new Span(this._updateBar, { class: "update-text" });
+    this._updateButtons = new Div(this._updateBar, { class: "update-buttons" });
+    this._updateBar.style.display = "none";
+  }
+
+  private _setVersion(version: string, canUpdate: boolean): void {
+    if (!this._versionLabel) return;
+    this._versionLabel.text = `v${version}`;
+    this._versionLabel.tooltip = canUpdate ? `GPU Inspector ${version}. Click to check for updates.`
+      : `GPU Inspector ${version} (development build; updates are only available in installed builds)`;
+  }
+
+  private _setUpdateStatus(status: UpdateStatus): void {
+    const bar = this._updateBar;
+    const text = this._updateText;
+    const buttons = this._updateButtons;
+    if (!bar || !text || !buttons) return;
+    clearTimeout(this._updateTimer);
+    buttons.html = "";
+    bar.classList.toggle("update-error", status.state === "error");
+    const show = (message: string, hideAfterMs = 0): void => {
+      text.text = message;
+      bar.style.display = "";
+      if (hideAfterMs) this._updateTimer = window.setTimeout(() => this._hideUpdateBar(), hideAfterMs);
+    };
+    const later = (): Button => new Button(buttons, { label: "Later", class: "btn", callback: () => this._hideUpdateBar() });
+    switch (status.state) {
+      case "checking":
+        if (this._manualCheck) show("Checking for updates...");
+        break;
+      case "available":
+        show(`GPU Inspector ${status.version} is available.`);
+        new Button(buttons, { label: "Download", class: "btn btn-success", callback: () => void window.inspector.downloadUpdate() });
+        later();
+        break;
+      case "up-to-date":
+        if (this._manualCheck) show("GPU Inspector is up to date.", 4000);
+        else this._hideUpdateBar();
+        break;
+      case "downloading":
+        show(`Downloading update... ${status.percent.toFixed(0)}%`);
+        break;
+      case "downloaded":
+        show(`GPU Inspector ${status.version} is ready and will be installed when the app closes.`);
+        new Button(buttons, { label: "Restart and Install", class: "btn btn-success",
+          tooltip: "Stops the inspected applications, installs the update and restarts",
+          callback: () => void window.inspector.installUpdate() });
+        later();
+        break;
+      case "error":
+        // Startup checks fail quietly (offline, no release yet); a user-requested check reports it.
+        if (this._manualCheck) {
+          show(status.message.split("\n")[0], 8000);
+          later();
+        } else this._hideUpdateBar();
+        break;
+    }
+    if (status.state !== "checking") this._manualCheck = false;
+  }
+
+  private _hideUpdateBar(): void {
+    clearTimeout(this._updateTimer);
+    if (this._updateBar) this._updateBar.style.display = "none";
   }
 
   private _setTheme(theme: ThemeName): void {

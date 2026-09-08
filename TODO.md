@@ -101,6 +101,11 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Push descriptors with templates in descriptor snapshots.
 - [ ] Ray tracing pipelines: shader groups in pipeline state, acceleration structure objects.
 
+## Distribution
+- [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).
+- [ ] AppImage / rpm targets next to the .deb (electron-updater supports both).
+- [ ] macOS build (needs an .icns icon and signing/notarization; the layer has no Metal side yet).
+
 ## Tooling
 - [ ] Claude Code plugin / MCP server over saved captures (needs the capture file format).
 - [ ] Automated screenshot tests of the panels against the triangle app and the Unity player.

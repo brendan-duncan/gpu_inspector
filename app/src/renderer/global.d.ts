@@ -1,6 +1,6 @@
 import type {
   AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest,
+  CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -8,6 +8,12 @@ export interface InspectorApi {
   /** Persists the theme and applies it to every window. */
   setTheme(theme: ThemeName): Promise<boolean>;
   onTheme(cb: (theme: ThemeName) => void): void;
+  /** Self-update: progress arrives through onUpdate. Installed builds only (AppConfig.canUpdate). */
+  checkForUpdates(): Promise<boolean>;
+  downloadUpdate(): Promise<boolean>;
+  /** Quits and installs a downloaded update. */
+  installUpdate(): Promise<boolean>;
+  onUpdate(cb: (status: UpdateStatus) => void): void;
   /** Launches an application in a new session, shown in the main window. */
   launch(config: LaunchConfig): Promise<LaunchResult>;
   /** Connects to an already running application in a new session, shown in the main window. */

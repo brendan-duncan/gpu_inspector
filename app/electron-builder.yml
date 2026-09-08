@@ -1,0 +1,81 @@
+# Installer configuration (electron-builder). See docs/RELEASING.md.
+# Run `npm run dist` after building the layer; `npm run pack` produces an unpacked directory
+# in release/ for a quick check of the packaged layout.
+appId: com.brendanduncan.gpu-inspector
+productName: GPU Inspector
+copyright: Copyright © 2025 Brendan Duncan
+
+directories:
+  output: release
+  # Not the CMake build directory at the repository root (app/installer holds nothing today).
+  buildResources: installer
+
+asar: true
+files:
+  - dist/**/*
+  - "!dist/**/*.map"
+  - "!dist/layer/**"
+  - package.json
+
+# The app looks for the layer in resources/layer and its icons in resources/assets
+# (findLayerDir and appIconPath in src/main/main.ts).
+extraResources:
+  - from: dist/layer
+    to: layer
+  - from: assets
+    to: assets
+    filter:
+      - icon.ico
+      - icon.png
+  - from: ../LICENSE
+    to: LICENSE
+  - from: ../THIRD_PARTY_LICENSES.md
+    to: THIRD_PARTY_LICENSES.md
+
+win:
+  target:
+    - nsis
+  icon: assets/icon.ico
+  artifactName: GPU-Inspector-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  license: ../LICENSE
+
+linux:
+  target:
+    - deb
+  icon: assets/icon.png
+  executableName: gpu-inspector
+  # The .desktop file is gpu-inspector.desktop with StartupWMClass=gpu-inspector, matching the
+  # desktopName in package.json that Electron uses as the window's WM_CLASS.
+  syncDesktopName: true
+  category: Development
+  synopsis: Graphics inspector for native Vulkan applications
+  desktop:
+    entry:
+      Keywords: Vulkan;GPU;Graphics;Debugger;Profiler;
+
+deb:
+  artifactName: gpu-inspector_${version}_amd64.${ext}
+  # electron-builder's defaults for an Electron app, plus the Vulkan loader.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libvulkan1
+
+publish:
+  provider: github
+  owner: brendan-duncan
+  repo: gpu_inspector
+  releaseType: release

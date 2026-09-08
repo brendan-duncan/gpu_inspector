@@ -5,6 +5,11 @@ contextBridge.exposeInMainWorld("inspector", {
   getConfig: () => ipcRenderer.invoke("inspector:getConfig"),
   setTheme: (theme: string) => ipcRenderer.invoke("inspector:setTheme", theme),
   onTheme: (cb: (theme: string) => void) => ipcRenderer.on("inspector:theme", (_e, t) => cb(t)),
+  // Self-update (installed builds)
+  checkForUpdates: () => ipcRenderer.invoke("inspector:checkForUpdates"),
+  downloadUpdate: () => ipcRenderer.invoke("inspector:downloadUpdate"),
+  installUpdate: () => ipcRenderer.invoke("inspector:installUpdate"),
+  onUpdate: (cb: (status: unknown) => void) => ipcRenderer.on("inspector:update", (_e, s) => cb(s)),
   // Sessions
   launch: (config: unknown) => ipcRenderer.invoke("inspector:launch", config),
   connect: (port: number) => ipcRenderer.invoke("inspector:connect", port),

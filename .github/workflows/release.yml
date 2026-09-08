@@ -1,0 +1,114 @@
+name: Release
+
+# Builds the Windows installer and the Linux .deb and publishes them, with the auto-update
+# manifests, to a GitHub release for the tag. See docs/RELEASING.md.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 2022 pins the runner that ships the "Visual Studio 17 2022" generator used below.
+          - os: windows-2022
+            target: win
+          # 22.04 rather than latest: the layer's .so links against the runner's glibc, so an
+          # older runner keeps the .deb installable on older distributions.
+          - os: ubuntu-22.04
+            target: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libxcb1-dev libx11-dev libwayland-dev
+
+      # The layer: tests are off so the build needs neither the Vulkan SDK nor glslc.
+      - name: Configure layer (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DVKINSP_BUILD_TESTS=OFF
+      - name: Configure layer (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVKINSP_BUILD_TESTS=OFF
+      - name: Build layer
+        run: cmake --build build --config Release --parallel
+
+      - name: Install app dependencies
+        working-directory: app
+        run: npm ci
+
+      # A tag v1.2.3 releases version 1.2.3, whatever package.json says.
+      - name: Set version from tag
+        if: github.ref_type == 'tag'
+        working-directory: app
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - name: Type check
+        working-directory: app
+        run: npm run typecheck
+
+      - name: Build and publish installer
+        working-directory: app
+        shell: bash
+        # A manual run builds without publishing; the installers are attached to the workflow run.
+        run: npm run dist:${{ matrix.target }} -- --publish ${{ github.ref_type == 'tag' && 'always' || 'never' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: installer-${{ matrix.target }}
+          path: |
+            app/release/*.exe
+            app/release/*.deb
+            app/release/*.yml
+            app/release/*.blockmap
+
+  release-notes:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write download links into the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          cat > notes.md <<NOTES
+          # GPU Inspector ${VERSION}
+
+          ## Downloads
+
+          - **Windows**: [GPU-Inspector-Setup-${VERSION}.exe](${BASE}/GPU-Inspector-Setup-${VERSION}.exe)
+          - **Linux (Debian/Ubuntu)**: [gpu-inspector_${VERSION}_amd64.deb](${BASE}/gpu-inspector_${VERSION}_amd64.deb)
+
+          Installed builds update themselves: the app checks this repository's releases on startup.
+          NOTES
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --draft=false --latest

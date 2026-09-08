@@ -21,7 +21,9 @@ const targets = [
     outfile: path.join(outdir, "main/main.js"),
     platform: "node",
     format: "esm",
-    external: ["electron"],
+    // electron-updater is CommonJS with its own dependency tree: leave it in node_modules, which
+    // electron-builder packages (it is a runtime dependency in package.json).
+    external: ["electron", "electron-updater"],
   },
   {
     ...common,

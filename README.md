@@ -23,6 +23,15 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current 
 project, and [TODO.md](TODO.md) for what is planned. Third-party code and licenses are listed in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
+## Install
+
+Installers for each release are on the [releases page](https://github.com/brendan-duncan/gpu_inspector/releases):
+`GPU-Inspector-Setup-<version>.exe` for Windows and `gpu-inspector_<version>_amd64.deb` for
+Debian and Ubuntu (`sudo apt install ./gpu-inspector_<version>_amd64.deb`). Installed builds check
+for updates at startup and offer to download them; the version label at the right of the launch
+bar checks on demand. The installers contain the layer, so nothing below is needed unless you
+want to build from source. How releases are made is in [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Prerequisites
 
 Both platforms need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
@@ -130,6 +139,8 @@ Other useful commands, from `app/`:
 npm run typecheck    # tsc
 npm run watch        # rebuild the UI on change
 npm run icons        # re-render assets/icon.{ico,png} from assets/icon.svg
+npm run pack         # unpacked packaged app in app/release (needs the Release layer build)
+npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
 ```
 
 ## Troubleshooting

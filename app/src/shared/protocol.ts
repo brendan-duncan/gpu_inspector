@@ -366,8 +366,21 @@ export interface AppConfig {
   windowMode: "main" | "session";
   /** Sessions currently assigned to the window that asked. */
   sessions: SessionInfo[];
+  /** The application version (package.json). */
+  version: string;
+  /** Whether this build can update itself (installed builds only, not `npm start`). */
+  canUpdate: boolean;
   debug: { select: string | null; capture: boolean; captureFrames: number; launchDialog: boolean };
 }
+
+/** Progress of the application's self-update (main -> renderer, "inspector:update"). */
+export type UpdateStatus =
+  | { state: "checking" }
+  | { state: "available"; version: string }
+  | { state: "up-to-date"; version: string }
+  | { state: "downloading"; percent: number }
+  | { state: "downloaded"; version: string }
+  | { state: "error"; message: string };
 
 export interface LaunchResult {
   ok: boolean;

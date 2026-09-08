@@ -15,6 +15,7 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
 | Targets | Local machine only for now. The layer and UI talk over TCP, so remote targets can be added later without changing the protocol. |
 | Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux. |
 | UI | Electron, written in TypeScript throughout (esbuild bundles, `tsc` type-checks), including the widget library ported from WebGPU Inspector. |
+| Distribution | electron-builder installers (Windows NSIS, Linux .deb) bundling the layer under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
 | Handles | Pass-through. The layer never wraps Vulkan handles; it keeps side tables keyed by handle and uses the loader's dispatch pointer (first word of each dispatchable handle) to find its per-instance/per-device state. This is what RenderDoc's `vk_dispatchtables.cpp` does for tables, and it avoids RenderDoc's 20k+ lines of handle unwrapping. |
 | Code generation | Everything mechanical is generated from `vk.xml` (Vulkan-Headers submodule): dispatch tables, forwarding entry points, object create/destroy hooks, and JSON serializers for every struct, enum, bitmask and command signature. |
 | Multi-API | Vulkan first. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources). Another API is another capture library speaking the same protocol. |
@@ -278,6 +279,7 @@ cmake --build build --config Release
 cd app && npm install && npm start        # builds with esbuild, then launches Electron
 npm run typecheck                          # tsc
 npm run watch                              # rebuild on change
+npm run dist                               # installer (electron-builder), see docs/RELEASING.md
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
