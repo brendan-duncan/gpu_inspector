@@ -16,6 +16,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, type CapturedTexture } from "./capture_data.js";
+import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, serializeCapture, type LoadedCapture } from "./capture_file.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -32,6 +33,9 @@ interface CommandRow extends Widget {
   filterText: string;
 }
 
+// Capture bar icon (inline SVG in the button's text color): a floppy disk for Save.
+const ICON_SAVE = '<svg viewBox="0 0 16 16" aria-label="Save"><path d="M2.5 2.5h8.6l2.4 2.4v8.6h-11z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 2.5v3.5h5v-3.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4.5" y="9" width="7" height="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+
 export class CapturePanel {
   readonly window: SessionContext;
   readonly parent: Widget;
@@ -42,6 +46,9 @@ export class CapturePanel {
   private _buffersCheck!: Checkbox;
   private _profileCheck!: Checkbox;
   private _bufferSizeInput!: TextInput;
+  private _saveButton!: Button;
+  /** The live-capture controls of the bar, hidden for capture files. */
+  private _captureControls: Widget[] = [];
   private _tabs!: TabWidget;
   private _placeholder!: Div;
   private _views: CaptureView[] = [];
@@ -68,17 +75,26 @@ export class CapturePanel {
     return this._live?.data ?? this.activeView?.data ?? null;
   }
 
+  /** A session showing a capture file: nothing to capture, only save and inspect. */
+  setFileMode(): void {
+    for (const w of this._captureControls) w.style.display = "none";
+  }
+
   private _build(): void {
     const bar = new Div(this.parent, { class: "control-bar capture-bar" });
     const row = new Div(bar, { class: "launch-row" });
-    new Button(row, { label: "Capture", class: "btn btn-success", callback: () => this.capture() });
-    new Span(row, { text: "Frames", class: "launch-label" });
+    const c = this._captureControls;
+    c.push(new Button(row, { label: "Capture", class: "btn btn-success", callback: () => this.capture() }));
+    c.push(new Span(row, { text: "Frames", class: "launch-label" }));
     this._frameCountInput = new TextInput(row, { value: "1", class: "launch-input launch-input-narrow" });
     this._texturesCheck = new Checkbox(row, { label: "Render targets", checked: true, tooltip: "Read back render pass attachments at the end of each pass" });
     this._buffersCheck = new Checkbox(row, { label: "Buffers", checked: true, tooltip: "Read back the buffers bound by descriptor sets, vertex and index bindings and indirect draws" });
     this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
-    new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" });
+    c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._profileCheck);
+    c.push(new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" }));
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
+    c.push(this._bufferSizeInput);
+    this._saveButton = new Button(row, { html: ICON_SAVE, class: "btn btn-icon", tooltip: "Save the capture in the active tab to a file (.gpucap)", disabled: true, callback: () => void this.saveActive() });
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
 
     this._tabs = new TabWidget(this.parent, { class: "capture-tabs tabs-fill", displayCloseButton: true });
@@ -101,19 +117,8 @@ export class CapturePanel {
     if (frames && frames > 0) this._frameCountInput.value = String(frames);
     const view = new CaptureView(this.window, ++this._captureCount, this._profileCheck.checked);
     if (atFrame !== undefined) view.status = `waiting for frame ${atFrame}...`;
-    this._views.push(view);
-    const handle = this._tabs.addTab(view.label, view.root);
-    this._handles.set(view, handle);
-    view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
-    view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
-    handle.element.oncontextmenu = (e: MouseEvent) => {
-      e.preventDefault();
-      this._tabs.setHandleActive(handle);
-      showContextMenu(e.clientX, e.clientY, this._tabMenu(view));
-    };
-    this._tabs.setHandleActive(handle);
+    this._addView(view);
     this._live = view;
-    this._updatePlaceholder();
     this._statusLabel.text = view.status;
     const maxKb = Math.max(1, Number(this._bufferSizeInput.value) || 128);
     void this.window.send({
@@ -127,6 +132,62 @@ export class CapturePanel {
     });
   }
 
+  /** Opens a loaded capture (a file, or a copy of another tab) in a new tab. */
+  openLoaded(capture: LoadedCapture, label?: string): CaptureView {
+    const view = new CaptureView(this.window, ++this._captureCount, capture.passTimings.size > 0);
+    if (label) view.customLabel = label;
+    this._addView(view);
+    view.loadCapture(capture);
+    this._updateStatus();
+    return view;
+  }
+
+  private _addView(view: CaptureView): void {
+    this._views.push(view);
+    const handle = this._tabs.addTab(view.label, view.root);
+    this._handles.set(view, handle);
+    view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
+    view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
+    handle.element.oncontextmenu = (e: MouseEvent) => {
+      e.preventDefault();
+      this._tabs.setHandleActive(handle);
+      showContextMenu(e.clientX, e.clientY, this._tabMenu(view));
+    };
+    this._tabs.setHandleActive(handle);
+    this._updatePlaceholder();
+  }
+
+  /** Saves the active tab's capture; `path` skips the dialog (testing aid). */
+  async saveActive(path?: string): Promise<string | null> {
+    const view = this.activeView;
+    if (!view || !view.data.commands.length) {
+      this._statusLabel.text = "nothing to save";
+      return null;
+    }
+    const bytes = await this._serialize(view);
+    if (!bytes) return null;
+    const defaultPath = captureFileName(this.window.name, view.data.frame, view.data.frames);
+    const saved = await window.inspector.saveFile({ title: "Save capture", defaultPath, filters: CAPTURE_FILE_FILTERS, ...(path ? { path } : {}) }, bytes);
+    this._statusLabel.text = saved ? `saved ${saved} (${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB)` : view.status;
+    return saved;
+  }
+
+  private async _serialize(view: CaptureView): Promise<Uint8Array | null> {
+    try {
+      return await serializeCapture(this.window, view.data, (text) => { this._statusLabel.text = text; });
+    } catch (e) {
+      this._statusLabel.text = `save failed: ${(e as Error).message}`;
+      return null;
+    }
+  }
+
+  /** Copies a tab through the file format into a new, independent tab. */
+  private async _openInNewTab(view: CaptureView): Promise<void> {
+    const bytes = await this._serialize(view);
+    if (!bytes) return;
+    this.openLoaded(parseCaptureFile(bytes), `${view.label} (copy)`);
+  }
+
   private _handleMessage(msg: LayerMessage): void {
     if (msg.action === "ImageData") {
       // Live image readbacks (descriptor set thumbnails) may be waited for by any capture.
@@ -137,7 +198,11 @@ export class CapturePanel {
   }
 
   private _tabMenu(view: CaptureView): ContextMenuItem[] {
+    const empty = !view.data.commands.length;
     return [
+      { label: "Save Capture...", disabled: empty, callback: () => void this.saveActive() },
+      { label: "Open in New Tab", disabled: empty, callback: () => void this._openInNewTab(view) },
+      { separator: true },
       { label: "Close", callback: () => this._close(view) },
       { label: "Close Others", disabled: this._views.length < 2, callback: () => { for (const v of [...this._views]) if (v !== view) this._close(v); } },
       { label: "Close All", callback: () => { for (const v of [...this._views]) this._close(v); } },
@@ -166,7 +231,9 @@ export class CapturePanel {
   }
 
   private _updateStatus(): void {
-    this._statusLabel.text = this.activeView?.status ?? "";
+    const view = this.activeView;
+    this._statusLabel.text = view?.status ?? "";
+    this._saveButton.disabled = !view || !view.data.commands.length;
   }
 }
 
@@ -180,6 +247,10 @@ export class CaptureView implements CaptureHost {
   readonly captureIndex: number;
   readonly root: Div;
   status = "capturing...";
+  /** Tab label override (a copied tab); the frame label otherwise. */
+  customLabel: string | null = null;
+  /** Filled from a capture file or a copied tab rather than streamed by the layer. */
+  loaded = false;
 
   readonly onStatus = new Signal<() => void>();
   readonly onLabelChanged = new Signal<() => void>();
@@ -293,14 +364,23 @@ export class CaptureView implements CaptureHost {
 
   /** Tab label: the captured frame number(s) once known. */
   get label(): string {
+    if (this.customLabel) return this.customLabel;
     const d = this.data;
     if (!d.commands.length && !d.frame) return `Capture ${this.captureIndex}`;
     return d.frames > 1 ? `Frames ${d.frame}-${d.frame + d.frames - 1}` : `Frame ${d.frame}`;
   }
 
   handleMessage(msg: LayerMessage): void {
+    if (this.loaded) return;
     this.data.handleMessage(msg);
     if (msg.action === "CaptureFrameResults") this.onLabelChanged.emit();
+  }
+
+  /** Shows a capture from a file or a copied tab (see capture_file.ts). */
+  loadCapture(capture: LoadedCapture): void {
+    this.loaded = true;
+    this.data.load(capture);
+    this.onLabelChanged.emit();
   }
 
   private _setStatus(text: string): void {

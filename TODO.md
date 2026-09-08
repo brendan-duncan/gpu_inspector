@@ -24,13 +24,17 @@ interpreter and re-created pipelines.
   pipelines, syntax highlighting.
 - Shader source maps: embedded source (OpSource / NonSemantic DebugInfo) as a Source view, SPIR-V
   disassembly annotated and linked to source lines, editing from the embedded source.
+- Capture files (`.gpucap`): save from the capture bar or tab menu, open from the launch bar or by
+  drag and drop into a session of their own with the object graph, shaders, buffers, render
+  targets and timings; "Open in New Tab" copies a capture in memory.
 
 ## Next
 
 ### Captures
-- [ ] Save and load captures (binary container: JSON metadata + raw payloads, like `.wgpuc`).
-      Prerequisite for sharing, comparison and any offline tooling.
-- [ ] Open a capture in a new tab / new window.
+- [ ] Open a capture in a new window (the file session exists only in the window that opened it;
+      a session window would need the file path handed over and reopened there).
+- [ ] Capture files: include the current contents of sampled images (descriptor previews are
+      live read-backs today, so a loaded capture has none), and a recent-files list.
 - [ ] "At frame" field in the capture bar (the layer already supports `atFrame`).
 - [ ] Render-pass thumbnail strip beside the command list; clicking selects the pass.
 - [ ] Captured render targets in the full image viewer (hover values, zoom, channels) instead of
@@ -111,6 +115,8 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] macOS build (needs an .icns icon and signing/notarization; the layer has no Metal side yet).
 
 ## Tooling
-- [ ] Claude Code plugin / MCP server over saved captures (needs the capture file format).
+- [ ] Claude Code plugin / MCP server over saved `.gpucap` files (the format is in
+      `app/src/renderer/capture_file.ts`; the parser has no DOM dependency and can move to a
+      shared module).
 - [ ] Automated screenshot tests of the panels against the triangle app and the Unity player.
 - [ ] Help links to docs from the panels.

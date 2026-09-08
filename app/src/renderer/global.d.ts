@@ -1,6 +1,6 @@
 import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus,
+  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -39,7 +39,13 @@ export interface InspectorApi {
   onStatus(cb: (status: SessionStatusMessage) => void): void;
   onLog(cb: (line: SessionLogMessage) => void): void;
 
-  chooseFile(opts?: { title?: string; directory?: boolean }): Promise<string | null>;
+  chooseFile(opts?: OpenFileOptions): Promise<string | null>;
+  /** Writes `data` to the file the user picks (or to opts.path); returns the path, null when cancelled or failed. */
+  saveFile(opts: SaveFileOptions, data: Uint8Array): Promise<string | null>;
+  /** Reads a whole file; null when it cannot be read. */
+  readFile(path: string): Promise<Uint8Array | null>;
+  /** The filesystem path of a File dropped onto the window. */
+  pathForFile(file: File): string;
   getRecents(): Promise<LaunchConfig[]>;
   removeRecent(index: number): Promise<LaunchConfig[]>;
   clearRecents(): Promise<LaunchConfig[]>;

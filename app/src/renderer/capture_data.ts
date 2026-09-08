@@ -2,6 +2,7 @@
 // descriptors and their pixel data, then the buffer ranges that were bound during the frame and
 // their contents. Follows WebGPU Inspector's capture_data.js.
 import { Signal } from "./utils/signal.js";
+import type { LoadedCapture } from "./capture_file.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
@@ -96,6 +97,24 @@ export class CaptureData {
 
   get buffersLoading(): boolean {
     return this._pendingBuffers > 0;
+  }
+
+  /** Takes over a capture file's contents, emitting the signals a streamed capture would. */
+  load(c: LoadedCapture): void {
+    this.reset();
+    this.frame = c.manifest.frame;
+    this.frames = Math.max(1, c.manifest.frames ?? 1);
+    this.commands = c.commands;          // saved after flattenSecondaries: already one stream per primary
+    this.textures = c.textures;
+    this.buffers = c.buffers;
+    this.passTimings = c.passTimings;
+    this.onCaptureStatus.emit(`${this.commands.length} commands`);
+    this.onCommandsComplete.emit();
+    this.onTexturesAnnounced.emit();
+    for (const t of this.textures) if (t.data) this.onTextureLoaded.emit(t);
+    this.onBuffersAnnounced.emit();
+    this.onBuffersComplete.emit();
+    if (this.passTimings.size) this.onPassTimings.emit();
   }
 
   handleMessage(msg: LayerMessage): void {

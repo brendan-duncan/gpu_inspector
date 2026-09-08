@@ -327,7 +327,8 @@ export interface LaunchConfig {
   capture: QueuedCapture;
 }
 
-export type ConnectionState = "disconnected" | "connecting" | "connected" | "launched" | "exited" | "error";
+/** "file": a capture loaded from disk; the session has no application behind it. */
+export type ConnectionState = "disconnected" | "connecting" | "connected" | "launched" | "exited" | "error" | "file";
 
 export interface StatusMessage {
   state: ConnectionState;
@@ -398,7 +399,25 @@ export interface AppConfig {
   /** Whether this build can update itself (installed builds only, not `npm start`). */
   canUpdate: boolean;
   /** launchDialog: open the launch dialog at startup, on the "native" or "android" target (testing aid). */
-  debug: { select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null };
+  debug: {
+    select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
+    /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
+    openCapture: string | null; saveCapture: string | null;
+  };
+}
+
+/** Options of the save-file dialog (InspectorApi.saveFile); `path` writes without a dialog. */
+export interface SaveFileOptions {
+  title?: string;
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+  path?: string;
+}
+
+export interface OpenFileOptions {
+  title?: string;
+  directory?: boolean;
+  filters?: { name: string; extensions: string[] }[];
 }
 
 /** Progress of the application's self-update (main -> renderer, "inspector:update"). */

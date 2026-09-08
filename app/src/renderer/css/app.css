@@ -317,6 +317,7 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Capture panel */
 .capture_panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-bar { flex: 0 0 auto; padding: 6px 10px; margin-bottom: 0; }
+.launch-status.status-file { color: var(--accent-primary); }
 .capture-tabs { flex: 1 1 auto; min-height: 0; }
 .capture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-view > .split { flex: 1 1 auto; min-height: 0; height: auto; }

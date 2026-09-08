@@ -10,12 +10,15 @@ import { ObjectDatabase } from "./vulkan/object_database.js";
 import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
+import type { LoadedCapture } from "./capture_file.js";
 import type { LayerMessage, SessionInfo, StatusMessage, UiRequest } from "../shared/protocol.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
 export interface SessionContext {
   readonly database: ObjectDatabase;
   readonly connected: boolean;
+  /** Display name of the session (the application, or the capture file). */
+  readonly name: string;
   /** SPIR-V reflection of the session's shaders, fetched from the layer on first use. */
   readonly shaders: ShaderReflectionCache;
   send(msg: UiRequest): Promise<boolean>;
@@ -188,5 +191,55 @@ export class SessionPanel extends Div implements SessionContext {
   private _renderLog(): void {
     this._log.text = this._logLines.join("\n");
     this._log.element.scrollTop = this._log.element.scrollHeight;
+  }
+
+  /** Bar of a session that shows a capture file: no application to stop, relaunch or configure. */
+  protected setFileMode(path: string): void {
+    this._nameLabel.text = this.info.name;
+    this._nameLabel.tooltip = path;
+    this._statusLabel.text = "capture file";
+    this._statusLabel.element.className = "launch-status status-file";
+    this._statusLabel.tooltip = path;
+    this._frameLabel.text = "";
+    this._recordAlwaysCheck.style.display = "none";
+    this._stopButton.style.display = "none";
+    this._restartButton.style.display = "none";
+  }
+}
+
+/**
+ * A session showing a capture loaded from a file (capture_file.ts): its object database comes
+ * from the file, its Capture tab holds the loaded capture, and requests that only a running
+ * application could answer (image read-back, descriptor contents, shader edits) are declined.
+ * Shader payloads are answered from the file, so reflection, shader views and the source view
+ * work as they do live.
+ */
+export class FileSessionPanel extends SessionPanel {
+  readonly path: string;
+
+  constructor(info: SessionInfo, capture: LoadedCapture, path: string) {
+    super(info);
+    this.path = path;
+    this.setFileMode(path);
+    const m = capture.manifest;
+    this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0 });
+    this.appendLog(`loaded ${path}: ${capture.commands.length} commands, ${capture.objects.length} objects, saved ${m.savedAt} from ${m.source?.name ?? "?"}`);
+    this.capturePanel.setFileMode();
+    this.capturePanel.openLoaded(capture);
+    this.showCaptureTab();
+  }
+
+  override get connected(): boolean {
+    return false;
+  }
+
+  override send(msg: UiRequest): Promise<boolean> {
+    if (msg.action === "RequestBlob") {
+      const data = this.database.blobData.get(`${msg.id}:${msg.index}`) ?? null;
+      // Answered asynchronously, as the layer would, so callers finish registering first.
+      setTimeout(() => this.database.handleMessage({ action: "ObjectBlob", id: msg.id, index: msg.index, size: data?.byteLength ?? 0, ...(data ? { __binary: data } : {}) }), 0);
+      return Promise.resolve(true);
+    }
+    return Promise.resolve(false);
   }
 }

@@ -11,7 +11,8 @@ import { TabHandle } from "./widget/tab_handle.js";
 import { Dialog } from "./widget/dialog.js";
 import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
-import { SessionPanel } from "./session_panel.js";
+import { FileSessionPanel, SessionPanel } from "./session_panel.js";
+import { CAPTURE_FILE_EXTENSION, CAPTURE_FILE_FILTERS, parseCaptureFile } from "./capture_file.js";
 import { LaunchDialog, emptyLaunchConfig, launchDisplayName } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";
@@ -41,6 +42,8 @@ export class InspectorWindow extends Window {
   private _themeButton: Button | null = null;
   private _themeMenu: Div | null = null;
   private _debug: AppConfig["debug"] | null = null;
+  /** Ids of the sessions showing capture files (negative, so they never collide with the main process's). */
+  private _nextFileSession = -1;
   private _versionLabel: Button | null = null;
   private _updateBar: Div | null = null;
   private _updateText: Span | null = null;
@@ -69,6 +72,17 @@ export class InspectorWindow extends Window {
       ? "No application is being inspected. Use Launch... to start one, Recent to relaunch a previous one, or Connect to attach to a running application with the layer enabled."
       : "No sessions in this window.", class: "text-muted" });
 
+    // Capture files can be dropped onto the window.
+    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("drop", (e) => {
+      e.preventDefault();
+      for (const file of Array.from(e.dataTransfer?.files ?? [])) {
+        const path = window.inspector.pathForFile(file);
+        if (path.toLowerCase().endsWith(`.${CAPTURE_FILE_EXTENSION}`)) void this.openCaptureFile(path);
+        else this._showMessage("Not a capture file", `${file.name} is not a GPU Inspector capture (.${CAPTURE_FILE_EXTENSION}).`);
+      }
+    });
+
     window.inspector.onSessionAdded((info) => this._addSession(info));
     window.inspector.onSessionRemoved((id) => this._removeSession(id));
     window.inspector.onMessages((batch) => this._sessions.get(batch.sessionId)?.handleMessages(batch.messages));
@@ -91,7 +105,8 @@ export class InspectorWindow extends Window {
       for (const s of cfg.sessions) this._addSession(s);
       if (this._mode === "main") {
         if (cfg.debug?.launchDialog) this.showLaunchDialog(cfg.debug.launchDialog === "android" ? { ...emptyLaunchConfig(), target: "android" } : null);
-        if (!cfg.layerDir) this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");
+        if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
+        if (!cfg.layerDir && !cfg.debug?.openCapture) this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");
       }
       this._updatePlaceholder();
     });
@@ -120,6 +135,46 @@ export class InspectorWindow extends Window {
       if (this._debug?.capture) this._debugCapture(panel);
     }
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Capture files: each opens as a session of its own (FileSessionPanel), with the file's object
+  // graph in its Inspect tab and the capture in its Capture tab.
+
+  async openCaptureFile(path: string): Promise<void> {
+    const bytes = await window.inspector.readFile(path);
+    if (!bytes) {
+      this._showMessage("Cannot open capture", `${path} could not be read.`);
+      return;
+    }
+    let capture;
+    try {
+      capture = parseCaptureFile(bytes);
+    } catch (e) {
+      this._showMessage("Cannot open capture", `${path}: ${(e as Error).message}`);
+      return;
+    }
+    const id = this._nextFileSession--;
+    const name = path.replace(/^.*[\\/]/, "");
+    const info: SessionInfo = { id, name, config: null, port: 0, pid: null, state: "file", detail: path, recordAlways: false, log: [] };
+    const panel = new FileSessionPanel(info, capture, path);
+    this._sessions.set(id, panel);
+    const handle = this._tabs.addTab(name, panel);
+    handle.tooltip = `${path}\nsaved ${capture.manifest.savedAt} from ${capture.manifest.source?.name ?? "?"}`;
+    handle.element.oncontextmenu = (e: MouseEvent) => {
+      e.preventDefault();
+      this._tabs.setHandleActive(handle);
+      showContextMenu(e.clientX, e.clientY, [{ label: "Close", callback: () => this._closeSession(id) }]);
+    };
+    this._handles.set(id, handle);
+    this._tabs.setHandleActive(handle);
+    this._updatePlaceholder();
+    if (this._debug?.select) this._debugSelect(panel, this._debug.select);
+  }
+
+  private async _openCaptureDialog(): Promise<void> {
+    const path = await window.inspector.chooseFile({ title: "Open capture", filters: CAPTURE_FILE_FILTERS });
+    if (path) await this.openCaptureFile(path);
   }
 
   private _sessionMenu(panel: SessionPanel): ContextMenuItem[] {
@@ -158,7 +213,8 @@ export class InspectorWindow extends Window {
     if (!(panel instanceof SessionPanel)) return;
     if (this._removingSession === panel.sessionId) return;
     this._forgetSession(panel.sessionId);
-    void window.inspector.closeSession(panel.sessionId);
+    // A capture file's session exists only in this window.
+    if (!(panel instanceof FileSessionPanel)) void window.inspector.closeSession(panel.sessionId);
   }
 
   private _closeSession(id: number): void {
@@ -195,6 +251,7 @@ export class InspectorWindow extends Window {
     new Button(row, { label: "Connect", class: "btn", tooltip: "Connect to an already running application that has the layer enabled", callback: () => {
       void window.inspector.connect(Number(this._portInput?.value));
     }});
+    new Button(row, { label: "Open Capture...", class: "btn", tooltip: `Open a saved capture file (.${CAPTURE_FILE_EXTENSION}); files can also be dropped onto the window`, callback: () => void this._openCaptureDialog() });
 
     // Theme picker, right-aligned (margin-left: auto). The choice is saved and applied to every
     // window. The button shows the current theme's icon; the menu lists every theme.
@@ -365,7 +422,7 @@ export class InspectorWindow extends Window {
       if (!this._sessions.has(panel.sessionId)) return;
       const objs = panel.database.getObjectsOfType(type);
       const first = name ? [...(objs?.values() ?? [])].find((o) => o.name.includes(name)) : objs?.values().next().value;
-      if (first) panel.inspectPanel.revealObject(first);
+      if (first) panel.showObject(first.id);
       else setTimeout(tryIt, 500);
     };
     setTimeout(tryIt, 1000);
@@ -376,6 +433,13 @@ export class InspectorWindow extends Window {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
       panel.capturePanel.capture(this._debug?.captureFrames);
+      // --debug-save=<file>: save the capture once its data has had time to arrive.
+      const save = this._debug?.saveCapture;
+      if (save) {
+        setTimeout(() => {
+          void panel.capturePanel.saveActive(save).then((p) => console.log(p ? `capture saved: ${p}` : "capture save failed"));
+        }, 4000);
+      }
     }, 1500);
   }
 }

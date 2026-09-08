@@ -1,5 +1,5 @@
 // Exposes a small, explicit API to the renderer (see renderer/global.d.ts for the typed surface).
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("inspector", {
   getConfig: () => ipcRenderer.invoke("inspector:getConfig"),
@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld("inspector", {
   onLog: (cb: (line: unknown) => void) => ipcRenderer.on("inspector:log", (_e, line) => cb(line)),
   // Recents, files, tools
   chooseFile: (opts: unknown) => ipcRenderer.invoke("inspector:chooseFile", opts),
+  saveFile: (opts: unknown, data: Uint8Array) => ipcRenderer.invoke("inspector:saveFile", opts, data),
+  readFile: (path: string) => ipcRenderer.invoke("inspector:readFile", path),
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
   getRecents: () => ipcRenderer.invoke("inspector:getRecents"),
   removeRecent: (index: number) => ipcRenderer.invoke("inspector:removeRecent", index),
   clearRecents: () => ipcRenderer.invoke("inspector:clearRecents"),

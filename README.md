@@ -16,7 +16,8 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
   and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
   with the parsed contents of its uniform and storage buffers, the decoded vertex and index
-  buffers, push constants and the pass's read-back render targets.
+  buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
+  files that reopen anywhere without the application, for bug reports and comparisons.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
 project, and [TODO.md](TODO.md) for what is planned. Third-party code and licenses are listed in
@@ -130,7 +131,9 @@ Use the generator name of the Visual Studio you installed (`"Visual Studio 18 20
 Point the launcher at a Vulkan executable — for example the bundled test application,
 `build/bin/vkinsp_triangle` (`build\bin\Release\vkinsp_triangle.exe` on Windows) — and press
 **Launch**, then **Capture** in the Capture tab. The inspector sets the layer environment
-variables for the process it launches, so nothing is registered system-wide.
+variables for the process it launches, so nothing is registered system-wide. The save button of
+the capture bar writes the capture to a `.gpucap` file; **Open Capture...** (or dropping the file
+on the window) reopens it later, on any machine, without the application.
 
 Other useful commands, from `app/`:
 

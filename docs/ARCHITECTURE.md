@@ -222,6 +222,31 @@ memory traffic (update/fill/copy bytes, and what the capture read back), and geo
 triangle, line and point counts follow each draw's bound pipeline's topology; indirect draws
 count from their captured argument buffers.
 
+#### Capture files
+
+A capture can be saved (the Save button of the capture bar, or the tab's context menu) and
+reopened without the application (Open Capture... in the launch bar, or by dropping the file on
+the window), the way WebGPU Inspector saves `.wgpuc` files. `renderer/capture_file.ts` defines
+the `.gpucap` format: an ASCII `GPUCAP 1` header line, a u32 manifest length, a JSON manifest,
+then the raw payloads (render target pixels, buffer ranges, SPIR-V) the manifest references as
+`[offset, length]`; the header and manifest are readable in a text editor, and the payloads stay
+binary so large captures do not grow by a third as base64. The manifest carries the objects the
+capture references, closed over their dependencies and owners so every link resolves (their
+creation arguments, labels, updates such as memory bindings and descriptor contents, and whether
+they had already been destroyed), the command list with the secondaries inlined, the render
+targets, the buffer ranges, the pass timings, and the frame and submit times behind the Frame
+Bound card. Saving fetches the SPIR-V of the referenced pipelines and modules from the layer
+first (`RequestBlob`, cached in `ObjectDatabase.blobData`).
+
+A loaded file becomes a session of its own (`FileSessionPanel`): its object database is built
+from the manifest with the same snapshot path as a live connection, and its Capture tab holds the
+loaded capture. Its `send()` answers `RequestBlob` from the file, so shader views, reflection,
+parsed buffer contents and the source view work as they do live; anything only a running
+application could answer (image read-back, descriptor contents, shader edits) is declined and
+the panels say so. "Open in New Tab" on a capture tab goes through the same serialization in
+memory and opens an independent copy. `--debug-save=<file>` after `--debug-capture` and
+`--debug-open=<file>` exercise the round trip unattended.
+
 #### Shader editor
 
 The Edit button on a shader payload (Inspect > VkPipeline or VkShaderModule > Shader) edits the

@@ -16,7 +16,7 @@ import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, li
 import {
   THEMES,
   type AndroidDeviceList,
-  type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type SessionInfo,
+  type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type OpenFileOptions, type SaveFileOptions, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
   type UpdateStatus,
 } from "../shared/protocol.js";
@@ -1008,6 +1008,8 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       capture: cliFlag("debug-capture"),
       captureFrames: Number(cliOption("debug-capture")) || 1,
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
+      openCapture: cliOption("debug-open"),
+      saveCapture: cliOption("debug-save"),
     },
   };
 });
@@ -1090,15 +1092,44 @@ ipcMain.handle("inspector:send", (_e, id: number, msg: UiRequest) => {
   return sendJson(s, msg);
 });
 ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode) => shaderText(spirv, mode));
-ipcMain.handle("inspector:chooseFile", async (e, opts?: { title?: string; directory?: boolean }) => {
+ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   const win = windowOf(e.sender) ?? mainWin;
   if (!win) return null;
+  const defaultFilters = process.platform === "win32" ? [{ name: "Executables", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }] : [];
   const r = await dialog.showOpenDialog(win, {
     title: opts?.title ?? "Choose executable",
     properties: opts?.directory ? ["openDirectory"] : ["openFile"],
-    filters: opts?.directory ? [] : (process.platform === "win32" ? [{ name: "Executables", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }] : []),
+    filters: opts?.directory ? [] : opts?.filters ?? defaultFilters,
   });
   return r.canceled ? null : r.filePaths[0];
+});
+
+// Capture files (renderer/capture_file.ts): the renderer serializes, the main process owns the
+// dialogs and the filesystem.
+ipcMain.handle("inspector:saveFile", async (e, opts: SaveFileOptions, data: Uint8Array): Promise<string | null> => {
+  let target = opts.path ?? null;
+  if (!target) {
+    const win = windowOf(e.sender) ?? mainWin;
+    if (!win) return null;
+    const r = await dialog.showSaveDialog(win, { title: opts.title ?? "Save", defaultPath: opts.defaultPath, filters: opts.filters });
+    if (r.canceled || !r.filePath) return null;
+    target = r.filePath;
+  }
+  try {
+    fs.writeFileSync(target, Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+    return target;
+  } catch (err) {
+    console.error(`saveFile ${target}: ${err}`);
+    return null;
+  }
+});
+ipcMain.handle("inspector:readFile", (_e, file: string): Uint8Array | null => {
+  try {
+    return new Uint8Array(fs.readFileSync(file));
+  } catch (err) {
+    console.error(`readFile ${file}: ${err}`);
+    return null;
+  }
 });
 
 // ------------------------------------------------------------------------------------------

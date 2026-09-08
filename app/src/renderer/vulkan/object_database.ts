@@ -6,6 +6,7 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage } from "../../shared/protocol.js";
+import type { CaptureFileObject } from "../capture_file.js";
 
 // Vulkan lets most objects be destroyed once the objects created from them exist (shader
 // modules after pipelines, descriptor set layouts after pipeline layouts, ...). Only these
@@ -34,6 +35,8 @@ export class ObjectDatabase implements ObjectLookup {
   capturedObjects = new Set<number>();
   /** Memory totals of the live objects (see objectMemoryBytes): allocations, buffers, images. */
   memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
+  /** Binary payloads received (ObjectBlob) or loaded from a capture file, keyed "id:index". */
+  blobData = new Map<string, Uint8Array>();
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -80,7 +83,53 @@ export class ObjectDatabase implements ObjectLookup {
     this.inspectedObject = null;
     this.capturedObjects = new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
+    this.blobData = new Map();
     this._snapshotRemaining = 0;
+  }
+
+  /**
+   * Populates the database from a capture file's object graph (see capture_file.ts): the same
+   * path as a live snapshot, then the objects destroyed before the save become ghosts without
+   * the destroy cascade, so every link of the loaded capture still resolves.
+   */
+  loadObjects(objects: CaptureFileObject[], blobs: Map<string, Uint8Array>, stats: { frame: number; frameTimeMs: number; submitMs: number }): void {
+    this.reset();
+    this._snapshotRemaining = objects.length;
+    this.onReset.emit();
+    this.onSnapshotBegin.emit(objects.length);
+    for (const rec of objects) {
+      this._addObject({
+        action: "AddObject", id: rec.id, parent: rec.parent, type: rec.type, cmd: rec.cmd, index: rec.index, handle: rec.handle,
+        label: rec.label, args: rec.args, blobs: rec.blobs.map((b) => ({ name: b.name, size: b.size })),
+      });
+      const o = this.allObjects.get(rec.id);
+      if (!o) continue;
+      o.updates = rec.updates ?? {};
+      this._collectReferences(o.updates as ArgValue, (id) => {
+        const dep = this.getObject(id);
+        if (dep && dep !== o) {
+          o.dependencies.add(dep);
+          dep.dependents.add(o);
+        }
+      });
+    }
+    for (const rec of objects) {
+      if (!rec.deleted) continue;
+      const o = this.allObjects.get(rec.id);
+      if (!o) continue;
+      o.isDeleted = true;
+      this._accountMemory(o, -1);
+      this.allObjects.delete(o.id);
+      this.objectsByType.get(o.type)?.delete(o.id);
+      if (this.objectsByHandle.get(`${o.type}:${o.handle}`) === o) this.objectsByHandle.delete(`${o.type}:${o.handle}`);
+      this.destroyedObjects.set(o.id, o);
+      this.onDeleteObject.emit(o.id, o);
+    }
+    for (const [key, data] of blobs) this.blobData.set(key, data);
+    this.frameIndex = stats.frame;
+    this.frameTimeMs = stats.frameTimeMs;
+    this.submitMs = stats.submitMs;
+    this.onFrameStats.emit({ action: "FrameStats", frame: stats.frame, frameTimeMs: stats.frameTimeMs, submitMs: stats.submitMs });
   }
 
   private _accountMemory(o: VulkanObject, sign: 1 | -1): void {
@@ -137,6 +186,7 @@ export class ObjectDatabase implements ObjectLookup {
         this.onFrameStats.emit(msg);
         break;
       case "ObjectBlob":
+        if (msg.__binary) this.blobData.set(`${msg.id}:${msg.index ?? 0}`, msg.__binary);
         this.onObjectBlob.emit(msg.id, msg.index ?? 0, msg.__binary ?? null);
         break;
       case "ObjectBlobs": {
