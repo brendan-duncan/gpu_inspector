@@ -39,6 +39,7 @@ struct ActivePass {
     VkRect2D renderArea{};
     uint32_t layerCount = 1;
     uint32_t passIndex = 0;                  // index of this pass within the command buffer
+    uint32_t query = UINT32_MAX;             // timestamp query pair (begin, begin + 1) when profiling
 };
 
 // A buffer range queued for readback (see CaptureManager::QueueBufferCapture). The copy into
@@ -92,6 +93,8 @@ public:
     bool InsidePass() const { return _pass.active || _renderPassContinue; }
     bool renderPassContinue() const { return _renderPassContinue; }
     std::vector<PendingBufferCopy>& pendingCopies() { return _pendingCopies; }
+    // Query pair written by the pass-begin pre-hook, claimed by the pass when it starts.
+    uint32_t pendingQuery = UINT32_MAX;
 
     VkDevice device() const { return _device; }
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }

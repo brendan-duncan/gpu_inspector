@@ -10,14 +10,17 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
 * **Shader editing** — edit a pipeline's shader as GLSL, HLSL or SPIR-V assembly, compile it with
   the Vulkan SDK's compilers and see the running application use it; restore the original at any
-  time.
+  time. Shaders compiled with debug information (`-g`, `-fspv-debug=vulkan-with-source`) show
+  their embedded source, linked line by line to the SPIR-V, and are edited as that source.
+* **Profiling** — GPU timestamps around every render pass of a capture: pass durations, a pass
+  timeline, and a Frame Bound card comparing GPU and CPU submit time with the frame interval.
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
   and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
   with the parsed contents of its uniform and storage buffers, the decoded vertex and index
   buffers, push constants and the pass's read-back render targets.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
-project. Third-party code and licenses are listed in
+project, and [TODO.md](TODO.md) for what is planned. Third-party code and licenses are listed in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Prerequisites

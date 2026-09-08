@@ -68,6 +68,8 @@ struct DeviceData {
     double frameTimeMinMs = 0;
     double frameTimeMaxMs = 0;
     uint32_t frameTimeCount = 0;
+    // CPU time spent inside vkQueueSubmit* since the last report (the "CPU submit" meter line).
+    std::atomic<uint64_t> submitNanos{0};
 
     // Returns the recorder for a command buffer that is being captured, else nullptr.
     // Cheap when no capture is active: a single relaxed atomic load.

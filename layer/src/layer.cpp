@@ -224,6 +224,7 @@ static void HandleUiMessage(const std::string& text) {
         if (const JsonValue* v = msg.Get("maxBufferTotal")) o.maxBufferTotal = (uint64_t)v->num;
         o.captureTextures = msg.GetBool("captureTextures", true);
         o.captureBuffers = msg.GetBool("captureBuffers", true);
+        o.profilePasses = msg.GetBool("profilePasses", true);
         CaptureManager::Get().Request(o);
     }
 }
@@ -506,6 +507,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             w.Key("minMs"); w.Double(data->frameTimeMinMs);
             w.Key("maxMs"); w.Double(data->frameTimeMaxMs);
             w.Key("frames"); w.Uint(data->frameTimeCount);
+            uint64_t submitNanos = data->submitNanos.exchange(0, std::memory_order_relaxed);
+            w.Key("submitMs"); w.Double((double)submitNanos / 1e6 / data->frameTimeCount);
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;

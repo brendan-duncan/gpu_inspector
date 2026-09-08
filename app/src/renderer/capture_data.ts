@@ -2,7 +2,7 @@
 // descriptors and their pixel data, then the buffer ranges that were bound during the frame and
 // their contents. Follows WebGPU Inspector's capture_data.js.
 import { Signal } from "./utils/signal.js";
-import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
+import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
   info: CaptureTextureInfo;
@@ -48,6 +48,8 @@ export class CaptureData {
   commands: CaptureCommand[] = [];
   textures: CapturedTexture[] = [];
   buffers = new Map<number, CapturedBuffer>();
+  /** GPU pass timings (Profile passes), keyed "frame:commandBuffer:passIndex". */
+  passTimings = new Map<string, PassTiming>();
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -59,6 +61,7 @@ export class CaptureData {
   readonly onBufferLoaded = new Signal<(buffer: CapturedBuffer) => void>();
   /** Every announced buffer's data has arrived (or failed). */
   readonly onBuffersComplete = new Signal<() => void>();
+  readonly onPassTimings = new Signal<() => void>();
 
   reset(): void {
     this.frame = 0;
@@ -66,8 +69,13 @@ export class CaptureData {
     this.commands = [];
     this.textures = [];
     this.buffers = new Map();
+    this.passTimings = new Map();
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
+  }
+
+  passTiming(frame: number, commandBufferId: number, passIndex: number): PassTiming | null {
+    return this.passTimings.get(`${frame}:${commandBufferId}:${passIndex}`) ?? null;
   }
 
   texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
@@ -129,6 +137,11 @@ export class CaptureData {
         }
         this.onBuffersAnnounced.emit();
         if (this._pendingBuffers === 0) this.onBuffersComplete.emit();
+        break;
+      case "CapturePassTimings":
+        this.passTimings = new Map();
+        for (const p of msg.passes ?? []) this.passTimings.set(`${p.frame}:${p.commandBuffer}:${p.passIndex}`, p);
+        this.onPassTimings.emit();
         break;
       case "CaptureBufferData": {
         const buf = this.buffers.get(msg.id);

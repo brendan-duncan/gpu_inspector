@@ -111,7 +111,15 @@ VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such 
    inlines them into the primary's command stream (Unity records every draw in secondaries).
 8. Multi-frame captures: every command and render target carries a frame ordinal (a render target
    belongs to the frame its command buffer was submitted in); the UI shows one tab per frame.
-9. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
+9. Profile passes: with `profilePasses` the layer creates a timestamp `VkQueryPool` for the
+   capture and brackets every render pass with `vkCmdResetQueryPool` + `vkCmdWriteTimestamp`
+   (top of pipe, before the pass, in a pre-hook since resets are not allowed inside a pass) and
+   `vkCmdWriteTimestamp` (bottom of pipe, after it). Results are read at finish and sent as
+   `CapturePassTimings` (start and duration in ms, using `timestampPeriod`). The UI shows them as
+   pass durations in the command tree, the pass timeline above the list, and the Frame Bound card
+   and Pass Timings of Frame Stats. `FrameStats` also carries the CPU time inside `vkQueueSubmit`
+   per frame (`submitMs`, measured by pre/post hooks), the "submit" line of the frame time meter.
+10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
    comparison until their tab is closed. Layer messages go to the most recently requested capture.
 
@@ -190,10 +198,33 @@ may still reference them. Editing a module applies to every pipeline that uses i
 buffers recorded before the edit keep binding the original until they are re-recorded, and
 graphics pipeline libraries are not supported.
 
+#### Shader source maps
+
+WebGPU shaders are their own source; SPIR-V is not, but compilers can embed the source and a
+line mapping as debug information, in one of two forms: the core `OpSource` / `OpSourceContinued`
+text with `OpLine` per instruction (glslc / glslangValidator `-g`), or the
+`NonSemantic.Shader.DebugInfo.100` extended instruction set with `DebugSource` /
+`DebugSourceContinued` and `DebugLine` (dxc `-fspv-debug=vulkan-with-source`, glslang `-gVS`;
+glslang's `-gV` alone embeds only the file name and the line mapping).
+`renderer/vulkan/spirv_debug.ts` parses both into one model: the embedded files, the language,
+generator and `OpModuleProcessed` strings, and for every instruction of the module the source
+line it came from. The Inspect panel then adds a **Source** view (the embedded text with line
+numbers, one button per file when includes were embedded, and the default view when a source is
+present), annotates the SPIR-V disassembly with `; file:line  <source line>` wherever the line
+changes, and links the two: clicking an instruction shows its source line, clicking a source line
+highlights its instructions. The mapping ties the module's instruction ordinals to `spirv-dis`
+output, which prints one instruction per statement in module order (an `OpSource` text spans
+several lines of one statement, which the splitter tracks by its string literal). Editing from
+the Source view compiles the embedded GLSL or HLSL with its original entry point instead of
+`spirv-cross` output; other embedded languages (Slang, WGSL, ...) are shown but not compiled.
+Applications that strip debug information (release builds, most engines) get the summary line
+saying so and the flags that embed it.
+
 #### Meters
 
 The Inspect tab's top row follows WebGPU Inspector's meters: a frame time plot (average and
-longest frame of each 100 ms `FrameStats` interval the layer reports), an object count plot with
+longest frame of each 100 ms `FrameStats` interval the layer reports, plus the CPU time inside
+`vkQueueSubmit` per frame), an object count plot with
 a type selector, and memory totals. Vulkan makes memory explicit, so "Device Memory" is the sum
 of the live `VkDeviceMemory` allocations (what the application actually holds), while the image
 and buffer figures are estimates from their formats and sizes (`objectMemoryBytes` in

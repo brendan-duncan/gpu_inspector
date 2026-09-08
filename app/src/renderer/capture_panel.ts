@@ -17,7 +17,8 @@ import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, type CapturedTexture } from "./capture_data.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
-import { CaptureStatistics, renderFrameStats } from "./capture_statistics.js";
+import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
+import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
@@ -39,6 +40,7 @@ export class CapturePanel {
   private _frameCountInput!: TextInput;
   private _texturesCheck!: Checkbox;
   private _buffersCheck!: Checkbox;
+  private _profileCheck!: Checkbox;
   private _bufferSizeInput!: TextInput;
   private _tabs!: TabWidget;
   private _placeholder!: Div;
@@ -74,6 +76,7 @@ export class CapturePanel {
     this._frameCountInput = new TextInput(row, { value: "1", class: "launch-input launch-input-narrow" });
     this._texturesCheck = new Checkbox(row, { label: "Render targets", checked: true, tooltip: "Read back render pass attachments at the end of each pass" });
     this._buffersCheck = new Checkbox(row, { label: "Buffers", checked: true, tooltip: "Read back the buffers bound by descriptor sets, vertex and index bindings and indirect draws" });
+    this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
     new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" });
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
@@ -96,7 +99,7 @@ export class CapturePanel {
       return;
     }
     if (frames && frames > 0) this._frameCountInput.value = String(frames);
-    const view = new CaptureView(this.window, ++this._captureCount);
+    const view = new CaptureView(this.window, ++this._captureCount, this._profileCheck.checked);
     if (atFrame !== undefined) view.status = `waiting for frame ${atFrame}...`;
     this._views.push(view);
     const handle = this._tabs.addTab(view.label, view.root);
@@ -119,6 +122,7 @@ export class CapturePanel {
       ...(atFrame !== undefined ? { atFrame: Math.max(0, Math.floor(atFrame)) } : {}),
       captureTextures: this._texturesCheck.checked,
       captureBuffers: this._buffersCheck.checked,
+      profilePasses: this._profileCheck.checked,
       maxBufferSize: maxKb * 1024,
     });
   }
@@ -185,15 +189,20 @@ export class CaptureView implements CaptureHost {
   private _filterInput: TextInput;
   private _filter = "";
   private _rows: CommandRow[] = [];
+  private _timeline: TimelineWidget;
+  private _profile: boolean;
+  /** Pass blocks of the command tree, keyed "frame:commandBuffer:passIndex", for durations and the timeline. */
+  private _passBlocks = new Map<string, { block: collapsible; row: CommandRow; label: string; frame: number }>();
   private _selectedRow: CommandRow | null = null;
   private _drawCount = 0;
   private _commandBufferPassCounters = new Map<number, number>();
   private _refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(win: SessionContext, captureIndex: number) {
+  constructor(win: SessionContext, captureIndex: number, profile = true) {
     this.root = new Div(null, { class: "capture-view" });
     this.window = win;
     this.captureIndex = captureIndex;
+    this._profile = profile;
     this.info = new CommandInfoView(this);
 
     const split = new Split(this.root, { direction: Split.Horizontal, position: 520 });
@@ -207,6 +216,8 @@ export class CaptureView implements CaptureHost {
       this._applyCommandFilter();
     };
     new Button(filterRow, { label: "Frame Stats", class: "btn btn-sm", tooltip: "Statistics of the captured frame: commands, passes, pipelines, bindings, memory traffic, geometry", callback: () => this._showStats() });
+    // GPU pass timeline (Profile passes): stays at 0 height until timestamp data arrives.
+    this._timeline = new TimelineWidget(left);
     this._listPanel = new Div(left, { class: "capture-commands" });
     const pane2 = new Span(split, { style: "flex-grow: 1; overflow: hidden;" });
     this._infoPanel = new Div(pane2, { class: "capture-info" });
@@ -227,6 +238,57 @@ export class CaptureView implements CaptureHost {
       this._updateStatus();
       this._refreshSelection();
     });
+    this.data.onPassTimings.addListener(() => this._applyPassTimings());
+  }
+
+  /** Pass durations into the pass headers and the timeline (Profile passes). */
+  private _applyPassTimings(): void {
+    const timed: TimelinePassCommand[] = [];
+    for (const [key, p] of this._passBlocks) {
+      const parts = key.split(":").map(Number);
+      const t = this.data.passTiming(parts[0], parts[1], parts[2]);
+      if (!t) {
+        p.block.label.text = p.label;
+        continue;
+      }
+      p.block.label.text = `${p.label}  ${t.durationMs.toFixed(3)} ms`;
+      timed.push({
+        method: "beginRenderPass", startTime: t.startMs, endTime: t.startMs + t.durationMs, duration: t.durationMs,
+        args: [{ label: p.label.replace(/^(Render Pass|Rendering|Pass) \d+: ?/, "") || p.label }], _passIndex: parts[2], header: p.row,
+      });
+    }
+    if (!timed.length) {
+      if (this._profile && this.data.commands.length) this._timeline.showPlaceholder("Profile passes: no GPU timestamps were received (timestamps unsupported, or the passes' command buffers were not submitted)");
+      else this._timeline.clear();
+      return;
+    }
+    timed.sort((a, b) => a.startTime - b.startTime);
+    this._timeline.setData({ commands: timed, firstTime: timed[0].startTime, budgetMs: this.window.database.frameTimeMs });
+  }
+
+  /** GPU timing summary of the capture for Frame Stats: span, sum, and the passes sorted by cost. */
+  timingSummary(): FrameTimingInfo | null {
+    const passes: FrameTimingInfo["passes"] = [];
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    let total = 0;
+    for (const [key, p] of this._passBlocks) {
+      const parts = key.split(":").map(Number);
+      const t = this.data.passTiming(parts[0], parts[1], parts[2]);
+      if (!t) continue;
+      minStart = Math.min(minStart, t.startMs);
+      maxEnd = Math.max(maxEnd, t.startMs + t.durationMs);
+      total += t.durationMs;
+      const row = p.row;
+      passes.push({ label: p.label, durationMs: t.durationMs, startMs: t.startMs, onJump: () => {
+        row.element.scrollIntoView({ block: "center" });
+        row.element.click();
+      } });
+    }
+    if (!passes.length) return null;
+    passes.sort((a, b) => b.durationMs - a.durationMs);
+    const db = this.window.database;
+    return { frameMs: db.frameTimeMs, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
   }
 
   /** Tab label: the captured frame number(s) once known. */
@@ -254,6 +316,7 @@ export class CaptureView implements CaptureHost {
     this._infoPanel.html = "";
     this._selectedRow = null;
     this._rows = [];
+    this._passBlocks.clear();
     this._drawCount = 0;
     // Objects this capture references, for the Inspect panel's "used in last capture" filter.
     const db = this.window.database;
@@ -280,6 +343,8 @@ export class CaptureView implements CaptureHost {
     this.onLabelChanged.emit();
     this._updateStatus();
     this._applyCommandFilter();
+    if (this.data.passTimings.size) this._applyPassTimings();
+    else if (this._profile) this._timeline.showPlaceholder("Profile passes: waiting for GPU timestamps...");
     const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
     first?.click();
   }
@@ -363,6 +428,7 @@ export class CaptureView implements CaptureHost {
         const block = new collapsible(current, { label, collapsed: false, class: "capture_renderpass_block" });
         const row = this._addRow(block.titleBar, cmd, true);
         row.element.dataset.passIndex = String(passIndex);
+        this._passBlocks.set(`${frame}:${objId}:${passIndex}`, { block, row, label, frame });
         stack.push(current);
         current = block.body;
         continue;
@@ -505,7 +571,7 @@ export class CaptureView implements CaptureHost {
       new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
-    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, this.window.database));
+    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, this.window.database), this.timingSummary());
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */

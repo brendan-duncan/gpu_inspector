@@ -51,6 +51,9 @@ void CaptureManager::Start(DeviceData* dev) {
     _buffers.clear();
     _bufferBytes = 0;
     _nextBufferId = 1;
+    _passTimings.clear();
+    _queriesUsed.store(0, std::memory_order_relaxed);
+    if (_options.profilePasses) EnsureQueryPool(dev);
     _commandTotal = 0;
     _frameIndex = dev->frameIndex;
     _frameCount = std::max(1u, _options.frameCount);
@@ -140,6 +143,15 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
             }
         }
     }
+    for (auto& pt : _passTimings) {
+        if (pt.frame != UINT32_MAX) continue;
+        for (auto& scb : sub.commandBuffers) {
+            if (scb.commandBufferId == pt.commandBufferId) {
+                pt.frame = sub.frame;
+                break;
+            }
+        }
+    }
     _submissions.push_back(std::move(sub));
 }
 
@@ -188,7 +200,9 @@ void CaptureManager::Finish(DeviceData* dev) {
     SendCommands();
     SendTextures(dev);
     SendBuffers(dev);
+    SendPassTimings(dev);
     ReleaseStaging(dev);
+    ReleaseQueryPool(dev);
 
     if (!RecordAlways()) {
         std::unique_lock lock(dev->recorderMutex);
@@ -198,6 +212,7 @@ void CaptureManager::Finish(DeviceData* dev) {
     _submissions.clear();
     _textures.clear();
     _buffers.clear();
+    _passTimings.clear();
     _state = State::Idle;
     Log("capture sent");
 }
@@ -294,6 +309,49 @@ void CaptureManager::SendCommands() {
 // ---------------------------------------------------------------------------------------------
 // Render pass attachments
 
+// ---------------------------------------------------------------------------------------------
+// Pass profiling
+
+void CaptureManager::EnsureQueryPool(DeviceData* dev) {
+    if (_queryPool && _queryDevice == dev->device) return;
+    if (_queryPool) ReleaseQueryPool(dev);
+    if (!dev->properties.limits.timestampComputeAndGraphics) {
+        Log("pass profiling: timestamps not supported on all queues; skipped");
+        return;
+    }
+    VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    ci.queryCount = 16384;   // 8192 passes per capture
+    if (dev->dispatch.CreateQueryPool(dev->device, &ci, nullptr, &_queryPool) != VK_SUCCESS) {
+        _queryPool = VK_NULL_HANDLE;
+        Log("pass profiling: vkCreateQueryPool failed");
+        return;
+    }
+    _queryDevice = dev->device;
+    _queryCount = ci.queryCount;
+}
+
+void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
+    if (!_queryPool) return;
+    DeviceData* d = _queryDevice == dev->device ? dev : GetDeviceData(_queryDevice);
+    if (d) d->dispatch.DestroyQueryPool(_queryDevice, _queryPool, nullptr);
+    _queryPool = VK_NULL_HANDLE;
+    _queryDevice = VK_NULL_HANDLE;
+    _queryCount = 0;
+}
+
+void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
+    rec->pendingQuery = UINT32_MAX;
+    if (!IsCapturing() || !_options.profilePasses || !_queryPool || _queryDevice != dev->device) return;
+    if (rec->renderPassContinue()) return;   // secondaries inside a pass: the primary times the pass
+    uint32_t q = _queriesUsed.fetch_add(2, std::memory_order_relaxed);
+    if (q + 2 > _queryCount) return;         // pool exhausted: later passes go untimed
+    VkCommandBuffer cb = rec->commandBuffer();
+    dev->dispatch.CmdResetQueryPool(cb, _queryPool, q, 2);
+    dev->dispatch.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _queryPool, q);
+    rec->pendingQuery = q;
+}
+
 void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info) {
     ActivePass& p = rec->pass();
     p = ActivePass{};
@@ -302,6 +360,8 @@ void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, co
     p.framebuffer = info->framebuffer;
     p.renderArea = info->renderArea;
     p.passIndex = rec->NextPassIndex();
+    p.query = rec->pendingQuery;
+    rec->pendingQuery = UINT32_MAX;
 
     FramebufferInfo fb;
     if (ResourceRegistry::Get().GetFramebuffer(info->framebuffer, fb)) {
@@ -332,6 +392,8 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
     p.renderArea = info->renderArea;
     p.layerCount = info->layerCount;
     p.passIndex = rec->NextPassIndex();
+    p.query = rec->pendingQuery;
+    rec->pendingQuery = UINT32_MAX;
     auto add = [&](const VkRenderingAttachmentInfo* a) {
         if (!a || !a->imageView) return;
         p.attachments.push_back(a->imageView);
@@ -355,6 +417,16 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
         }
     }
     p.active = false;
+    // The pass's end timestamp: after every command of the pass has completed.
+    if (p.query != UINT32_MAX && _queryPool && _queryDevice == dev->device) {
+        dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, p.query + 1);
+        PassTiming pt;
+        pt.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
+        pt.passIndex = p.passIndex;
+        pt.query = p.query;
+        std::lock_guard lock(_mutex);
+        _passTimings.push_back(pt);
+    }
     // Buffers bound during the pass are copied now that transfer commands are allowed again.
     FlushBufferCopies(dev, rec);
 }
@@ -754,6 +826,59 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         h.EndObject();
         t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c.mapped) + tc.stagingOffset, (size_t)tc.size);
     }
+}
+
+void CaptureManager::SendPassTimings(DeviceData* dev) {
+    std::vector<PassTiming> timings;
+    {
+        std::lock_guard lock(_mutex);
+        timings = _passTimings;
+    }
+    if (!_queryPool || _queryDevice != dev->device) return;
+    uint32_t used = std::min(_queriesUsed.load(std::memory_order_relaxed), _queryCount);
+    if (!used) return;
+    // Each query: 64-bit value then 64-bit availability (0 when the command buffer never ran).
+    std::vector<uint64_t> results((size_t)used * 2, 0);
+    VkResult res = dev->dispatch.GetQueryPoolResults(dev->device, _queryPool, 0, used, results.size() * sizeof(uint64_t),
+                                                     results.data(), 2 * sizeof(uint64_t),
+                                                     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (res != VK_SUCCESS && res != VK_NOT_READY) {
+        Log("pass profiling: vkGetQueryPoolResults failed (%d)", (int)res);
+        return;
+    }
+    const double period = dev->properties.limits.timestampPeriod;   // nanoseconds per tick
+    uint64_t earliest = UINT64_MAX;
+    for (auto& pt : timings) {
+        if (pt.frame == UINT32_MAX || pt.query + 1 >= used) continue;
+        if (results[(size_t)pt.query * 2 + 1] && results[((size_t)pt.query + 1) * 2 + 1]) {
+            earliest = std::min(earliest, results[(size_t)pt.query * 2]);
+        }
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("CapturePassTimings");
+    w.Key("timestampPeriodNs"); w.Double(period);
+    w.Key("passes"); w.BeginArray();
+    uint32_t sent = 0;
+    for (auto& pt : timings) {
+        if (pt.frame == UINT32_MAX || pt.query + 1 >= used) continue;
+        uint64_t begin = results[(size_t)pt.query * 2];
+        uint64_t end = results[((size_t)pt.query + 1) * 2];
+        if (!results[(size_t)pt.query * 2 + 1] || !results[((size_t)pt.query + 1) * 2 + 1] || end < begin) continue;
+        w.BeginObject();
+        w.Key("frame"); w.Uint(pt.frame);
+        w.Key("commandBuffer"); w.Uint(pt.commandBufferId);
+        w.Key("passIndex"); w.Uint(pt.passIndex);
+        w.Key("startMs"); w.Double((double)(begin - earliest) * period / 1e6);
+        w.Key("durationMs"); w.Double((double)(end - begin) * period / 1e6);
+        w.EndObject();
+        sent++;
+    }
+    w.EndArray();
+    w.Key("count"); w.Uint(sent);
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+    Log("pass profiling: %u of %zu passes timed", sent, timings.size());
 }
 
 void CaptureManager::ReleaseStaging(DeviceData* dev) {

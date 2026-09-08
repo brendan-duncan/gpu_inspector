@@ -347,11 +347,79 @@ export class CaptureStatistics {
   }
 }
 
+/** GPU pass timings of a capture (Profile passes) with the live frame and submit times for the Frame Bound card. */
+export interface FrameTimingInfo {
+  frameMs: number;       // live frame interval (the budget, as no refresh rate is known)
+  submitMs: number;      // CPU time per frame inside vkQueueSubmit
+  gpuSpanMs: number;     // first pass start to last pass end
+  gpuTotalMs: number;    // sum of pass durations
+  frames: number;
+  passes: { label: string; durationMs: number; startMs: number; onJump: () => void }[];
+}
+
+/**
+ * "Frame Bound" card: compares the GPU span of the captured passes and the CPU submit time
+ * against the frame interval and names the likely bottleneck, like WebGPU Inspector's card.
+ */
+function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
+  const budget = t.frameMs > 0 ? t.frameMs : Math.max(t.gpuSpanMs, t.submitMs);
+  if (!(budget > 0)) return;
+  const gpu = t.frames > 1 ? t.gpuSpanMs / t.frames : t.gpuSpanMs;
+  let verdict: string;
+  let cls: string;
+  if (gpu / budget > 0.8) {
+    verdict = "GPU bound";
+    cls = "frame-bound-gpu";
+  } else if (t.submitMs / budget > 0.8) {
+    verdict = "CPU bound (submit)";
+    cls = "frame-bound-cpu";
+  } else {
+    verdict = "Present / CPU bound outside submit: the GPU has headroom";
+    cls = "frame-bound-idle";
+  }
+  const card = new Div(root, { class: "frame-stats-section" });
+  new Div(card, { text: "Frame Bound", class: "frame-stats-heading" });
+  const body = new Div(card, { class: "frame-stats-list" });
+  new Div(body, { text: verdict, class: `frame-bound-verdict ${cls}` });
+  const bar = (label: string, ms: number, color: string): void => {
+    const row = new Div(body, { class: "frame-bound-row" });
+    new Div(row, { text: label, class: "frame-bound-label" });
+    const track = new Div(row, { class: "frame-bound-track" });
+    const fill = new Div(track, { class: "frame-bound-fill" });
+    fill.style.width = `${Math.min(100, (ms / budget) * 100).toFixed(1)}%`;
+    fill.style.background = color;
+    new Div(row, { text: `${ms.toFixed(2)} ms  (${((ms / budget) * 100).toFixed(0)}% of ${budget.toFixed(2)} ms)`, class: "frame-bound-value" });
+  };
+  bar("GPU (pass span)", gpu, "#4a8db8");
+  bar("CPU (submit)", t.submitMs, "#5fd08a");
+  new Div(body, { text: "The budget is the live frame interval (no display refresh rate is known). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.", class: "text-muted font-sm" });
+}
+
+function renderPassTimings(root: Widget, t: FrameTimingInfo): void {
+  const card = new Div(root, { class: "frame-stats-section" });
+  new Div(card, { text: `Pass Timings (${t.passes.length} passes, ${t.gpuTotalMs.toFixed(3)} ms GPU, ${t.gpuSpanMs.toFixed(3)} ms span)`, class: "frame-stats-heading" });
+  const list = new Div(card, { class: "frame-stats-list" });
+  const shown = t.passes.slice(0, 40);
+  for (const p of shown) {
+    const row = new Div(list, { class: "frame-stats-row frame-stats-pass" });
+    new Div(row, { text: p.label, class: "frame-stats-label" });
+    const pct = t.gpuTotalMs > 0 ? (p.durationMs / t.gpuTotalMs) * 100 : 0;
+    new Div(row, { text: `${p.durationMs.toFixed(3)} ms  (${pct.toFixed(1)}%)`, class: "frame-stats-value" });
+    row.element.onclick = p.onJump;
+    row.element.title = "Jump to the pass in the command list";
+  }
+  if (t.passes.length > shown.length) new Div(list, { text: `... ${t.passes.length - shown.length} more`, class: "text-muted font-sm" });
+}
+
 /** Renders the statistics as WebGPU Inspector's Frame Stats view: one card per section. */
-export function renderFrameStats(container: Widget, stats: CaptureStatistics): void {
+export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null): void {
   const root = new Div(container, { class: "frame-stats" });
   new Div(root, { text: "Frame Statistics", class: "frame-stats-title" });
   if (stats.frames > 1) new Div(root, { text: `Totals over ${stats.frames} captured frames.`, class: "text-muted font-sm" });
+  if (timing) {
+    renderFrameBound(root, timing);
+    renderPassTimings(root, timing);
+  }
   for (const section of stats.sections()) {
     const card = new Div(root, { class: "frame-stats-section" });
     new Div(card, { text: section.title, class: "frame-stats-heading" });

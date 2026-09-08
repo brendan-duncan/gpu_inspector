@@ -30,6 +30,16 @@ struct CaptureOptions {
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
     bool captureTextures = true;
     bool captureBuffers = true;
+    // Write GPU timestamps around every render pass (VkQueryPool), reported as CapturePassTimings.
+    bool profilePasses = true;
+};
+
+// GPU timing of one pass: a timestamp query pair, read back when the capture finishes.
+struct PassTiming {
+    uint32_t frame = UINT32_MAX;
+    uint64_t commandBufferId = 0;
+    uint32_t passIndex = 0;
+    uint32_t query = 0;            // begin query; end is query + 1
 };
 
 // One command buffer executed by a submit, with its frozen command list.
@@ -105,6 +115,9 @@ public:
     void OnPresent(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result);
 
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
+    // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
+    // pass's begin timestamp, which must happen outside the render pass.
+    void OnBeforePass(DeviceData* dev, CommandRecorder* rec);
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
@@ -128,8 +141,11 @@ private:
     void SendCommands();
     void SendTextures(DeviceData* dev);
     void SendBuffers(DeviceData* dev);
+    void SendPassTimings(DeviceData* dev);
     void ReleaseStaging(DeviceData* dev);
     void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
+    void EnsureQueryPool(DeviceData* dev);
+    void ReleaseQueryPool(DeviceData* dev);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
     struct StagingChunk {
@@ -161,6 +177,13 @@ private:
     std::vector<BufferCapture> _buffers;
     uint64_t _bufferBytes = 0;
     uint32_t _nextBufferId = 1;
+
+    // Pass profiling: one timestamp query pool per capture (created on the capturing device).
+    VkQueryPool _queryPool = VK_NULL_HANDLE;
+    VkDevice _queryDevice = VK_NULL_HANDLE;
+    uint32_t _queryCount = 0;
+    std::atomic<uint32_t> _queriesUsed{0};
+    std::vector<PassTiming> _passTimings;
     std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;
 };

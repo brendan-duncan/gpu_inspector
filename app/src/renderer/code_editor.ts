@@ -88,7 +88,7 @@ const RULES: Record<HighlightLanguage, Rule[]> = {
   "spirv-asm": SPIRV_RULES,
 };
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -116,6 +116,41 @@ export function highlight(text: string, language: HighlightLanguage): string {
       pos++;
     }
   }
+  return out;
+}
+
+/**
+ * Highlighted HTML per text line. Tokens that span lines (block comments) are closed at the
+ * newline and reopened on the next line, so each entry is self-contained.
+ */
+export function highlightLines(text: string, language: HighlightLanguage): string[] {
+  const html = highlight(text, language);
+  const out: string[] = [];
+  let line = "";
+  let open: string | null = null;
+  const parts = html.split(/(<span class="[^"]*">|<\/span>)/);
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith("<span")) {
+      open = part;
+      line += part;
+    } else if (part === "</span>") {
+      open = null;
+      line += part;
+    } else {
+      const segs = part.split("\n");
+      for (let i = 0; i < segs.length; i++) {
+        if (i > 0) {
+          if (open) line += "</span>";
+          out.push(line);
+          line = open ?? "";
+        }
+        line += segs[i];
+      }
+    }
+  }
+  if (open) line += "</span>";
+  out.push(line);
   return out;
 }
 

@@ -13,7 +13,8 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
-import { CodeEditor, highlight } from "./code_editor.js";
+import { CodeEditor, escapeHtml, highlight, highlightLines } from "./code_editor.js";
+import { describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
 import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
@@ -52,17 +53,26 @@ interface ObjectItem extends Widget {
   group: ObjectGroup;
 }
 
+/** The views of a shader payload: the SDK conversions plus the source embedded in the SPIR-V. */
+type ShaderViewMode = ShaderTextMode | "source";
+
 interface ShaderView {
   index: number;
   blobName: string;
   pre: Widget;
-  mode: ShaderTextMode;
+  mode: ShaderViewMode;
   data: Uint8Array | null;
   text: string;                  // the converted text currently shown
-  buttons: Partial<Record<ShaderTextMode, Button>>;
+  buttons: Partial<Record<ShaderViewMode, Button>>;
   editButton: Button;
   editor: Div | null;
   body: Widget;
+  /** Debug information of the SPIR-V (embedded source, line mapping), parsed when the blob arrives. */
+  debug: SpirvDebugInfo | null;
+  sourceFile: number;            // file shown by the Source view
+  disText: string;               // cached spirv-dis output
+  summary: Div;
+  fileBar: Div | null;
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
@@ -92,7 +102,7 @@ const STAGE_FLAG: Record<string, string> = {
   intersection: "VK_SHADER_STAGE_INTERSECTION_BIT_KHR", callable: "VK_SHADER_STAGE_CALLABLE_BIT_KHR",
 };
 
-const LANGUAGE_OF_MODE: Record<ShaderTextMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null };
+const LANGUAGE_OF_MODE: Record<ShaderViewMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null, source: null };
 const LANGUAGE_LABEL: Record<ShaderLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)" };
 
 /** Object list filters, after WebGPU Inspector's inspect panel filter panel. */
@@ -169,6 +179,7 @@ export class InspectPanel {
   private _frameTimePlot!: Plot;
   private _frameTimeData!: PlotData;
   private _frameTimeMaxData!: PlotData;
+  private _submitData!: PlotData;
   private _objectCountPlot!: Plot;
   private _objectCountData!: PlotData;
   private _objectCountType = "";     // "" = all objects
@@ -194,7 +205,7 @@ export class InspectPanel {
     db.onCapturedObjectsChanged.addListener(() => {
       if (this._filters.onlyInLastCapture) this._applyFilter();
     });
-    db.onFrameStats.addListener((m) => this._updateMeters(m.frameTimeMs, m.maxMs ?? m.frameTimeMs));
+    db.onFrameStats.addListener((m) => this._updateMeters(m.frameTimeMs, m.maxMs ?? m.frameTimeMs, m.submitMs ?? 0));
   }
 
   // ---------------------------------------------------------------------------------------
@@ -211,10 +222,12 @@ export class InspectPanel {
     new Span(frameLabel, { text: "Frame Time", class: "text-muted" });
     new Span(frameLabel, { text: "■ avg", style: "color: #cccccc;", class: "font-sm" });
     new Span(frameLabel, { text: "■ max", style: "color: #e0a060;", class: "font-sm" });
+    new Span(frameLabel, { text: "■ submit", style: "color: #5fd08a;", class: "font-sm", tooltip: "CPU time per frame spent inside vkQueueSubmit" });
     this._frameTimePlot = new Plot(plots, { precision: 2, suffix: "ms", sharedScale: true, minValue: 0, class: "plot-container inspect-meter-plot" });
     this._frameTimeData = this._frameTimePlot.addData("Frame Time", "#cccccc");
     this._frameTimeMaxData = this._frameTimePlot.addData("Longest", "#e0a060");
-    this._frameTimePlot.tooltip = "Frame time per 100 ms reporting interval: average and longest frame";
+    this._submitData = this._frameTimePlot.addData("Submit", "#5fd08a");
+    this._frameTimePlot.tooltip = "Frame time per 100 ms reporting interval: average and longest frame, and the CPU time inside vkQueueSubmit";
 
     const options = ["All objects", ...TYPE_ORDER.map((t) => typeLabel(t))];
     new Select(plots, { options, index: 0, class: "inspect-meter-select", onChange: (_v: string, index: number) => {
@@ -227,12 +240,13 @@ export class InspectPanel {
     this._objectCountPlot.tooltip = "Number of live objects of the selected type";
   }
 
-  private _updateMeters(frameTimeMs: number, maxMs: number): void {
+  private _updateMeters(frameTimeMs: number, maxMs: number, submitMs: number): void {
     const db = this.database;
-    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)`;
+    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms`;
     this._updateMemoryLabel();
     this._frameTimeData.add(frameTimeMs);
     this._frameTimeMaxData.add(maxMs);
+    this._submitData.add(submitMs);
     this._frameTimePlot.draw();
     const count = this._objectCountType ? db.getObjectsOfType(this._objectCountType)?.size ?? 0 : db.allObjects.size;
     this._objectCountData.add(count);
@@ -775,34 +789,58 @@ export class InspectPanel {
       const bar = new Div(grp.body, { class: "shader-toolbar" });
       const view: ShaderView = {
         index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
-        editButton: new Button(null), editor: null, body: grp.body,
+        editButton: new Button(null), editor: null, body: grp.body, debug: null, sourceFile: 0, disText: "",
+        summary: new Div(null), fileBar: null,
       };
+      // Source: the text the compiler embedded in the SPIR-V (shown once the payload says it has one).
+      view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The original source embedded in the SPIR-V by the compiler", callback: () => void this._showShader(index, "source") });
+      view.buttons.source.style.display = "none";
       const modes: [ShaderTextMode, string][] = [["dis", "SPIR-V"], ["glsl", "GLSL"], ["hlsl", "HLSL"]];
       for (const [mode, label] of modes) {
         view.buttons[mode] = new Button(bar, { label, class: "btn btn-sm", callback: () => void this._showShader(index, mode) });
       }
       view.editButton = new Button(bar, { label: edit?.applied ? "Edit (edited)" : "Edit", class: "btn btn-sm shader-edit-button", disabled: true,
         tooltip: "Edit the shown text and compile it into the running application", callback: () => this._openShaderEditor(object, view) });
+      view.summary = new Div(grp.body, { class: "shader-debug-summary text-muted font-sm" });
       view.pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
       this._shaderViews.set(index, view);
       void this.window.send({ action: "RequestBlob", id: object.id, index });
     });
   }
 
-  private async _showShader(index: number, mode: ShaderTextMode): Promise<void> {
+  private _setShaderMode(view: ShaderView, mode: ShaderViewMode): void {
+    view.mode = mode;
+    for (const m of Object.keys(view.buttons) as ShaderViewMode[]) view.buttons[m]?.element.classList.toggle("active", m === mode);
+    if (view.fileBar) view.fileBar.style.display = mode === "source" ? "" : "none";
+  }
+
+  private async _showShader(index: number, mode: ShaderViewMode): Promise<void> {
     const view = this._shaderViews.get(index);
     if (!view || !view.data) return;
-    view.mode = mode;
-    for (const m of Object.keys(view.buttons) as ShaderTextMode[]) view.buttons[m]?.element.classList.toggle("active", m === mode);
-    view.pre.text = "Converting...";
-    const r = await window.inspector.shaderText(view.data, mode);
-    if (view.mode === mode) {
-      view.text = r.text;
-      const language = LANGUAGE_OF_MODE[mode];
-      if (r.ok && language) view.pre.html = highlight(r.text, language);
-      else view.pre.text = r.text;
-      view.editButton.disabled = !r.ok || !this.window.connected;
+    this._setShaderMode(view, mode);
+    if (mode === "source") {
+      this._renderSourceView(view, 0);
+      return;
     }
+    let r: { ok: boolean; text: string };
+    if (mode === "dis" && view.disText) {
+      r = { ok: true, text: view.disText };
+    } else {
+      view.pre.text = "Converting...";
+      r = await window.inspector.shaderText(view.data, mode);
+    }
+    if (view.mode !== mode) return;
+    view.text = r.text;
+    const language = LANGUAGE_OF_MODE[mode];
+    if (r.ok && mode === "dis") {
+      view.disText = r.text;
+      this._renderDisassembly(view, null);
+    } else if (r.ok && language) {
+      view.pre.html = highlight(r.text, language);
+    } else {
+      view.pre.text = r.text;
+    }
+    view.editButton.disabled = !r.ok || !this.window.connected;
   }
 
   private _objectBlob(id: number, index: number, data: Uint8Array | null): void {
@@ -814,7 +852,155 @@ export class InspectPanel {
       return;
     }
     view.data = data;
-    void this._showShader(index, view.mode);
+    view.disText = "";
+    view.debug = parseSpirvDebugInfo(data);
+    const info = view.debug;
+    if (info) {
+      view.summary.text = describeDebugInfo(info);
+      if (!hasEmbeddedSource(info)) {
+        view.summary.text += ". To embed the source, compile with -g (glslc, glslangValidator), -gVS (glslangValidator, NonSemantic form) or -fspv-debug=vulkan-with-source (dxc).";
+      }
+    }
+    if (info && hasEmbeddedSource(info)) {
+      view.buttons.source!.style.display = "";
+      view.sourceFile = info.mainFile >= 0 ? info.mainFile : info.files.findIndex((f) => f.text !== null);
+      const withText = info.files.filter((f) => f.text !== null);
+      if (withText.length > 1) {
+        // Several files (includes): one button each.
+        const fileBar = new Div(null, { class: "shader-toolbar shader-file-bar" });
+        view.body.insertBefore(fileBar, view.pre);
+        info.files.forEach((f, i) => {
+          if (f.text === null) return;
+          const b = new Button(fileBar, { label: f.name, class: "btn btn-sm", tooltip: `${f.text.split("\n").length} lines`, callback: () => {
+            view.sourceFile = i;
+            this._renderSourceView(view, 0);
+          } });
+          b.element.dataset.file = String(i);
+        });
+        view.fileBar = fileBar;
+      }
+      void this._showShader(index, "source");
+    } else {
+      void this._showShader(index, view.mode === "source" ? "dis" : view.mode);
+    }
+  }
+
+  /** The embedded source of `view.sourceFile` with line numbers; lines that instructions map to jump to them. */
+  private _renderSourceView(view: ShaderView, activeLine: number): void {
+    const info = view.debug;
+    const file = info?.files[view.sourceFile];
+    if (!info || !file || file.text === null) {
+      view.pre.text = "No embedded source.";
+      view.editButton.disabled = true;
+      return;
+    }
+    if (view.fileBar) {
+      for (const b of Array.from(view.fileBar.element.querySelectorAll("button"))) b.classList.toggle("active", b.dataset.file === String(view.sourceFile));
+    }
+    const language = sourceLanguageOf(info);
+    view.text = file.text;
+    const map = sourceLineMap(file.text);
+    const lines = language ? highlightLines(file.text, language) : file.text.split("\n").map(escapeHtml);
+    while (lines.length > map.lines.length) lines.pop();
+    const mapped = new Set<number>();
+    for (const loc of info.locations) if (loc && loc.file === view.sourceFile) mapped.add(loc.line);
+    const width = String(Math.max(...map.lineOf, 1)).length;
+    let html = "";
+    for (let i = 0; i < lines.length; i++) {
+      const n = map.lineOf[i];
+      const isMapped = n > 0 && mapped.has(n);
+      const cls = `code-line${isMapped ? " code-line-mapped" : ""}${n > 0 && n === activeLine ? " code-line-active" : ""}${n ? "" : " code-line-unnumbered"}`;
+      const title = isMapped ? ' title="Show the SPIR-V instructions of this line"' : "";
+      html += `<span class="${cls}" data-line="${n}"${title}><span class="code-lineno">${(n ? String(n) : "").padStart(width)}</span>${lines[i]}</span>\n`;
+    }
+    view.pre.html = html;
+    view.pre.element.onclick = (e) => {
+      const el = (e.target as HTMLElement).closest(".code-line-mapped") as HTMLElement | null;
+      if (el) void this._jumpToDisassembly(view, view.sourceFile, Number(el.dataset.line));
+    };
+    if (activeLine) view.pre.element.querySelector(".code-line-active")?.scrollIntoView({ block: "center" });
+    view.editButton.disabled = !language || !this.window.connected;
+    view.editButton.tooltip = language
+      ? "Edit the embedded source and compile it into the running application"
+      : `The shader editor cannot compile ${info.language}; edit the GLSL, HLSL or SPIR-V view instead`;
+  }
+
+  /**
+   * The spirv-dis output. With line information every instruction is wrapped in a span that
+   * names its source line, annotated with the source text where the line changes, and clicking
+   * it shows that line in the Source view.
+   */
+  private _renderDisassembly(view: ShaderView, active: { file: number; line: number } | null): void {
+    const text = view.disText;
+    const info = view.debug;
+    const html = highlightLines(text, "spirv-asm");
+    if (!info || info.form === "none") {
+      view.pre.html = html.join("\n");
+      view.pre.element.onclick = null;
+      return;
+    }
+    const textLines = text.split("\n");
+    const instructions = disassemblyInstructions(textLines);
+    const prefix = new Array<string>(textLines.length).fill("");
+    const suffix = new Array<string>(textLines.length).fill("");
+    if (instructions.length === info.locations.length) {
+      const fileMaps = info.files.map((f) => (f.text === null ? null : sourceLineMap(f.text)));
+      let prev: DebugLocation | null = null;
+      let firstActive = -1;
+      instructions.forEach((ls, k) => {
+        const loc = info.locations[k];
+        if (!loc) {
+          prev = null;
+          return;
+        }
+        const isActive = !!active && active.file === loc.file && active.line === loc.line;
+        if (isActive && firstActive < 0) firstActive = ls[0];
+        const name = info.files[loc.file]?.name ?? "?";
+        prefix[ls[0]] = `<span class="code-line code-line-mapped${isActive ? " code-line-active" : ""}" data-file="${loc.file}" data-line="${loc.line}" title="${escapeHtml(name)}:${loc.line}">`;
+        let close = "</span>";
+        if (!prev || prev.file !== loc.file || prev.line !== loc.line) {
+          const fm = fileMaps[loc.file];
+          const phys = fm?.physicalOf.get(loc.line);
+          const src = fm && phys !== undefined ? fm.lines[phys].trim() : "";
+          close = `  <span class="tok-srcmap">; ${escapeHtml(name)}:${loc.line}${src ? `  ${escapeHtml(src)}` : ""}</span>${close}`;
+        }
+        suffix[ls[ls.length - 1]] = close;
+        prev = loc;
+      });
+    } else {
+      console.warn(`spirv-dis printed ${instructions.length} instructions, the module has ${info.locations.length}; line mapping disabled`);
+    }
+    view.pre.html = html.map((h, i) => prefix[i] + h + suffix[i]).join("\n");
+    view.pre.element.onclick = (e) => {
+      const el = (e.target as HTMLElement).closest(".code-line-mapped") as HTMLElement | null;
+      if (el && hasEmbeddedSource(info)) this._jumpToSource(view, Number(el.dataset.file), Number(el.dataset.line));
+    };
+    if (active) view.pre.element.querySelector(".code-line-active")?.scrollIntoView({ block: "center" });
+  }
+
+  private _jumpToSource(view: ShaderView, file: number, line: number): void {
+    if (view.debug?.files[file]?.text === null) return;
+    view.sourceFile = file;
+    this._setShaderMode(view, "source");
+    this._renderSourceView(view, line);
+  }
+
+  private async _jumpToDisassembly(view: ShaderView, file: number, line: number): Promise<void> {
+    if (!view.data) return;
+    this._setShaderMode(view, "dis");
+    if (!view.disText) {
+      view.pre.text = "Converting...";
+      const r = await window.inspector.shaderText(view.data, "dis");
+      if (view.mode !== "dis") return;
+      if (!r.ok) {
+        view.pre.text = r.text;
+        return;
+      }
+      view.disText = r.text;
+    }
+    view.text = view.disText;
+    this._renderDisassembly(view, { file, line });
+    view.editButton.disabled = !this.window.connected;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -857,7 +1043,7 @@ export class InspectPanel {
       return;
     }
     const key = `${object.id}:${view.index}`;
-    const language = LANGUAGE_OF_MODE[view.mode];
+    const language = view.mode === "source" ? sourceLanguageOf(view.debug) : LANGUAGE_OF_MODE[view.mode];
     if (!language) return;
     const targets = this._editTargets(object, view);
     const existing = this._shaderEdits.get(key);
@@ -867,15 +1053,19 @@ export class InspectPanel {
     view.editor = editor;
 
     const head = new Div(editor, { class: "shader-editor-head" });
-    new Span(head, { text: `Editing as ${LANGUAGE_LABEL[language]}`, class: "font-md" });
+    const fromSource = view.mode === "source" && view.debug;
+    new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${LANGUAGE_LABEL[language]}` : `Editing as ${LANGUAGE_LABEL[language]}`, class: "font-md" });
     if (targets) {
       const where = object.type === "VkPipeline" ? "this pipeline" : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
       new Span(head, { text: `  ${stageLabel(targets.stage)} stage, entry ${targets.entryPoint}, applies to ${where}`, class: "text-muted font-sm" });
     } else {
       new Span(head, { text: "  Cannot determine the stage of this code; edits cannot be applied.", class: "inspect_info_error" });
     }
-    if (object.type === "VkPipeline" && targets && LANGUAGE_OF_MODE[view.mode] === "glsl") {
+    if (object.type === "VkPipeline" && targets && view.mode === "glsl") {
       new Div(editor, { text: "Tip: names the application stripped appear as _m0, _m1... in the decompiled source; that is fine, the layout is what matters.", class: "text-muted font-sm" });
+    }
+    if (fromSource && view.debug!.files.filter((f) => f.text !== null).length > 1) {
+      new Div(editor, { text: "Note: the compiler is given only this file; #include directives cannot be resolved, so paste the included code in if the compile needs it.", class: "text-muted font-sm" });
     }
 
     const source = existing && existing.language === language ? existing.source : view.text;

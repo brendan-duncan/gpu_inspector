@@ -12,6 +12,7 @@
 #include "transport.h"
 #include "vk_serialize.gen.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -67,6 +68,39 @@ void PreHook_vkResetCommandBuffer(VkCommandBuffer& commandBuffer, VkCommandBuffe
 void PreHook_vkCmdBindPipeline(VkCommandBuffer& commandBuffer, VkPipelineBindPoint& pipelineBindPoint, VkPipeline& pipeline) {
     pipeline = ShaderEditor::Get().Resolve(pipeline);
 }
+
+// Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
+static void BeforePass(VkCommandBuffer commandBuffer) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec);
+}
+void PreHook_vkCmdBeginRenderPass(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, VkSubpassContents& contents) {
+    BeforePass(commandBuffer);
+}
+void PreHook_vkCmdBeginRenderPass2(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
+    BeforePass(commandBuffer);
+}
+void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
+    BeforePass(commandBuffer);
+}
+void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
+    BeforePass(commandBuffer);
+}
+void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
+    BeforePass(commandBuffer);
+}
+
+// CPU submit time: the wall-clock time the application spends inside vkQueueSubmit*, accumulated
+// per device for the frame stats.
+static thread_local std::chrono::steady_clock::time_point t_submitStart;
+static void SubmitBegin() { t_submitStart = std::chrono::steady_clock::now(); }
+static void SubmitEnd(VkQueue queue) {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_submitStart).count();
+    if (DeviceData* dev = GetDeviceData(queue)) dev->submitNanos.fetch_add((uint64_t)ns, std::memory_order_relaxed);
+}
+void PreHook_vkQueueSubmit(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo*& pSubmits, VkFence& fence) { SubmitBegin(); }
+void PreHook_vkQueueSubmit2(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
+void PreHook_vkQueueSubmit2KHR(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
 
 // =============================================================================================
 // Resource registry
@@ -457,6 +491,7 @@ static void NoteRenderingLayouts(VkCommandBuffer commandBuffer, const VkRenderin
 }
 
 void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
+    SubmitEnd(queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; ++j) cbs.push_back(pSubmits[i].pCommandBuffers[j]);
@@ -468,6 +503,7 @@ void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo*
 }
 
 void Hook_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence) {
+    SubmitEnd(queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferInfoCount; ++j)

@@ -27,6 +27,8 @@ export class ObjectDatabase implements ObjectLookup {
   objectsByHandle = new Map<string, VulkanObject>();   // "VkImage:0x..." -> most recent object
   frameIndex = 0;
   frameTimeMs = 0;
+  /** CPU time per frame inside vkQueueSubmit, from the last FrameStats. */
+  submitMs = 0;
   inspectedObject: VulkanObject | null = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = new Set<number>();
@@ -131,6 +133,7 @@ export class ObjectDatabase implements ObjectLookup {
       case "FrameStats":
         this.frameIndex = msg.frame;
         this.frameTimeMs = msg.frameTimeMs;
+        this.submitMs = msg.submitMs ?? 0;
         this.onFrameStats.emit(msg);
         break;
       case "ObjectBlob":

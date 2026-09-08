@@ -20,7 +20,8 @@ foreach(s ${SHADERS})
     list(APPEND SPV_FILES "${spv}")
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
-        COMMAND ${GLSLC} "${CMAKE_CURRENT_SOURCE_DIR}/${s}" -o "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
+        # -g embeds the GLSL source and line information (the inspector's shader source maps).
+        COMMAND ${GLSLC} -g "${CMAKE_CURRENT_SOURCE_DIR}/${s}" -o "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${s}"
         COMMENT "Compiling ${s}"
         VERBATIM)

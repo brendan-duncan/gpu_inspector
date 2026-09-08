@@ -128,6 +128,16 @@ PRE_HOOKS = {
     "vkResetCommandBuffer",
     # live shader editing: bind the replacement pipeline instead of the original
     "vkCmdBindPipeline",
+    # pass profiling: timestamp before the pass begins (must be outside the render pass)
+    "vkCmdBeginRenderPass",
+    "vkCmdBeginRenderPass2",
+    "vkCmdBeginRenderPass2KHR",
+    "vkCmdBeginRendering",
+    "vkCmdBeginRenderingKHR",
+    # CPU submit time
+    "vkQueueSubmit",
+    "vkQueueSubmit2",
+    "vkQueueSubmit2KHR",
 }
 
 SKIP_COMMANDS = {"vkNegotiateLoaderLayerInterfaceVersion"}

@@ -238,6 +238,16 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
   white-space: pre;
   color: var(--fg-primary);
 }
+.shader-debug-summary { padding: 0 8px 4px 8px; }
+.shader-file-bar { padding-top: 0; }
+/* Source maps: one span per source line / SPIR-V instruction, clickable when mapped. */
+.shader-text .code-line { display: inline-block; min-width: 100%; box-sizing: border-box; }
+.shader-text .code-line-mapped { cursor: pointer; }
+.shader-text .code-line-mapped:hover { background: var(--bg-hover); }
+.shader-text .code-line-active { background: var(--bg-selected, rgba(74, 141, 184, 0.25)); outline: 1px solid var(--accent-primary); }
+.shader-text .code-lineno { display: inline-block; margin-right: 1.5ch; color: var(--fg-muted); user-select: none; }
+.shader-text .code-line-unnumbered { opacity: 0.6; }
+.shader-text .tok-srcmap { color: var(--code-comment); opacity: 0.85; font-style: italic; }
 .dependency_ghost { color: var(--fg-secondary); font-style: italic; }
 
 /* Shader editor (Inspect > Shader > Edit) */
@@ -319,6 +329,17 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-stats-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 10pt; line-height: 1.4; }
 .frame-stats-label { color: var(--fg-primary); }
 .frame-stats-value { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.frame-stats-pass { cursor: pointer; }
+.frame-stats-pass:hover { background: var(--bg-hover); }
+.frame-bound-verdict { font-size: 11pt; font-weight: 600; padding: 4px 0 8px 0; }
+.frame-bound-gpu { color: #4a8db8; }
+.frame-bound-cpu { color: #c08040; }
+.frame-bound-idle { color: var(--accent-success); }
+.frame-bound-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 10pt; }
+.frame-bound-label { flex: 0 0 120px; }
+.frame-bound-track { flex: 1 1 auto; height: 10px; background: var(--bg-primary); border-radius: 5px; overflow: hidden; }
+.frame-bound-fill { height: 100%; border-radius: 5px; }
+.frame-bound-value { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 .capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }

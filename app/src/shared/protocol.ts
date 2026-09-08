@@ -52,7 +52,16 @@ export interface ObjectSetLabelMessage { action: "ObjectSetLabel"; id: number; l
 export interface ObjectBlobsMessage { action: "ObjectBlobs"; id: number; blobs: BlobInfo[] }
 export interface ObjectUpdateMessage { action: "ObjectUpdate"; id: number; [key: string]: ArgValue | string | number }
 /** Frame timing over the last reporting interval (about 100 ms): average, extremes, frame count. */
-export interface FrameStatsMessage { action: "FrameStats"; frame: number; frameTimeMs: number; minMs?: number; maxMs?: number; frames?: number }
+export interface FrameStatsMessage {
+  action: "FrameStats";
+  frame: number;
+  frameTimeMs: number;
+  minMs?: number;
+  maxMs?: number;
+  frames?: number;
+  /** CPU time per frame spent inside vkQueueSubmit. */
+  submitMs?: number;
+}
 export interface PongMessage { action: "Pong" }
 
 export interface ObjectBlobMessage {
@@ -209,6 +218,18 @@ export interface CaptureBufferDataMessage {
   __binary?: Uint8Array;
 }
 
+/** GPU time of one render pass, from timestamp queries the layer wrote around it. */
+export interface PassTiming {
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+  /** Start relative to the earliest timed pass of the capture. */
+  startMs: number;
+  durationMs: number;
+}
+
+export interface CapturePassTimingsMessage { action: "CapturePassTimings"; timestampPeriodNs: number; count: number; passes: PassTiming[] }
+
 /** Answer to ReplaceShader / RestoreShader: whether the pipeline was rebuilt with the edit. */
 export interface ShaderReplacedMessage {
   action: "ShaderReplaced";
@@ -236,6 +257,7 @@ export type LayerMessage =
   | CaptureTextureDataMessage
   | CaptureBuffersMessage
   | CaptureBufferDataMessage
+  | CapturePassTimingsMessage
   | ShaderReplacedMessage
   | ImageDataMessage;
 
@@ -264,6 +286,8 @@ export interface CaptureRequest {
   captureTextures?: boolean;
   /** Read back the buffers bound by descriptor sets, vertex/index bindings and indirect draws. */
   captureBuffers?: boolean;
+  /** Write GPU timestamps around every render pass (CapturePassTimings). */
+  profilePasses?: boolean;
 }
 
 /** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */

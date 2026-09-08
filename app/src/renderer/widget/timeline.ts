@@ -212,7 +212,8 @@ export class TimelineWidget extends Widget {
       scaleText += ` - ${pct.toFixed(0)}% of ${budgetMs.toFixed(2)}ms budget`;
     }
     this._scale.element.textContent = scaleText;
-    this.element.style.height = (stripHeightPx + 14) + "px";
+    // Strip plus the scale line (14px line height and 2px padding above and below).
+    this.element.style.height = (stripHeightPx + 18) + "px";
   }
 
   private _jumpTo(command: TimelinePassCommand): void {
