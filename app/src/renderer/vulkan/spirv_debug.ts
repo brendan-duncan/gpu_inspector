@@ -248,6 +248,23 @@ export function sourceLineMap(text: string): SourceLineMap {
   return { lines, lineOf, physicalOf };
 }
 
+/**
+ * The embedded text as a compiler accepts it: glslang prefixes it with `// OpModuleProcessed`
+ * comments and a `#line 1` directive, and `#version` must be the first directive of a GLSL
+ * shader, so everything before the `#version` line is dropped when it is only comments, blank
+ * lines and `#line` directives.
+ */
+export function compilableSource(text: string): string {
+  const lines = text.split("\n");
+  const version = lines.findIndex((l) => /^\s*#\s*version\b/.test(l));
+  if (version <= 0) return text;
+  for (let i = 0; i < version; i++) {
+    const l = lines[i].trim();
+    if (l && !l.startsWith("//") && !/^#\s*line\b/.test(l)) return text;
+  }
+  return lines.slice(version).join("\n");
+}
+
 /** True when at least one embedded file carries source text. */
 export function hasEmbeddedSource(info: SpirvDebugInfo | null): boolean {
   return !!info && info.files.some((f) => f.text !== null);

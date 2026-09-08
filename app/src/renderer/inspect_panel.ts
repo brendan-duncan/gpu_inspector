@@ -14,7 +14,7 @@ import { Widget } from "./widget/widget.js";
 import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { CodeEditor, escapeHtml, highlight, highlightLines } from "./code_editor.js";
-import { describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
+import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
 import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
@@ -76,6 +76,8 @@ interface ShaderView {
   fileBar: Div | null;
   /** The Reflection section of the payload, filled when its SPIR-V arrives. */
   reflection: collapsible;
+  /** The payload's section (its label carries the "[edited]" mark). */
+  group: collapsible;
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
@@ -164,7 +166,7 @@ export class InspectPanel {
   /** Shader edits by "<object id>:<blob index>"; the layer holds the applied state. */
   private _shaderEdits = new Map<string, ShaderEdit>();
   /** The editor currently open, to route ShaderReplaced answers to its status line. */
-  private _openEditor: { key: string; targets: EditTargets; status: Div } | null = null;
+  private _openEditor: { key: string; targets: EditTargets; status: Div; view: ShaderView } | null = null;
   private _imageView: ImageView | null = null;
   /** Descriptor sets whose contents have been requested from the layer (avoids re-asking on every re-render). */
   private _descriptorRequested = new Set<number>();
@@ -942,11 +944,12 @@ export class InspectPanel {
       const view: ShaderView = {
         index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
         editButton: new Button(null), editor: null, body: grp.body, debug: null, sourceFile: 0, disText: "",
-        summary: new Div(null), fileBar: null, reflection: new collapsible(null),
+        summary: new Div(null), fileBar: null, reflection: new collapsible(null), group: grp,
       };
       // Reflection (entry points, interface, resources, push constants) from the SPIR-V itself,
       // so a module or pipeline explains what it expects without a capture.
-      view.reflection = new collapsible(grp.body, { label: "Reflection", collapsed: false, class: "shader-reflection" });
+      view.group = grp;
+      view.reflection = new collapsible(grp.body, { label: "Reflection", collapsed: true, class: "shader-reflection" });
       new Div(view.reflection.body, { text: "Loading...", class: "text-muted font-sm" });
       // Source: the text the compiler embedded in the SPIR-V (shown once the payload says it has one).
       view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The original source embedded in the SPIR-V by the compiler", callback: () => void this._showShader(index, "source") });
@@ -1248,12 +1251,14 @@ export class InspectPanel {
       new Div(editor, { text: "Note: the compiler is given only this file; #include directives cannot be resolved, so paste the included code in if the compile needs it.", class: "text-muted font-sm" });
     }
 
-    const source = existing && existing.language === language ? existing.source : view.text;
+    // Embedded source carries the compiler's own prefix (comments, a #line directive before
+    // #version) that a compiler will not take back; edit the clean text.
+    const source = existing && existing.language === language ? existing.source : fromSource ? compilableSource(view.text) : view.text;
     const text = new CodeEditor(editor, { value: source, language, class: "shader-editor-text" });
     const buttons = new Div(editor, { class: "shader-toolbar" });
     const status = new Div(editor, { class: "shader-editor-status text-muted font-sm" });
     const log = new Widget("pre", editor, { class: "shader-editor-log", style: "display: none;" });
-    this._openEditor = targets ? { key, targets, status } : null;
+    this._openEditor = targets ? { key, targets, status, view } : null;
     if (existing?.results.size) status.text = [...existing.results.values()].join("\n");
 
     new Button(buttons, { label: "Compile & Apply", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length, callback: () => {
@@ -1316,15 +1321,20 @@ export class InspectPanel {
     open.status.text = [...edit.results.values()].join("\n");
     open.status.classList.toggle("inspect_info_error", !msg.ok);
 
-    // Mark the pipeline (and the module the edit came from) in the object list.
+    // Mark the pipeline (and the module the edit came from) in the object list and in the open
+    // section, without re-rendering the panel: the editor stays open with its text.
+    const inspected = this.inspectedObject;
     if (msg.ok && pipeline) {
       pipeline.edited = !!msg.replacement;
-      this._objectChanged(pipeline);
+      if (pipeline.widget) this._fillItem(pipeline, pipeline.widget as Widget);
     }
-    const source = this.inspectedObject;
-    if (source && source.type === "VkShaderModule") {
-      source.edited = open.targets.pipelines.some((p) => p.edited);
-      this._objectChanged(source);
+    if (inspected && inspected.type === "VkShaderModule") {
+      inspected.edited = open.targets.pipelines.some((p) => p.edited);
+      if (inspected.widget) this._fillItem(inspected, inspected.widget as Widget);
     }
+    const view = open.view;
+    const blob = inspected?.blobs[view.index];
+    view.group.label.text = `Shader: ${view.blobName}${blob ? ` (${blob.size} bytes)` : ""}${edit.applied ? "  [edited]" : ""}`;
+    view.editButton.text = edit.applied ? "Edit (edited)" : "Edit";
   }
 }

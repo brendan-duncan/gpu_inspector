@@ -332,7 +332,9 @@ highlights its instructions. The mapping ties the module's instruction ordinals 
 output, which prints one instruction per statement in module order (an `OpSource` text spans
 several lines of one statement, which the splitter tracks by its string literal). Editing from
 the Source view compiles the embedded GLSL or HLSL with its original entry point instead of
-`spirv-cross` output; other embedded languages (Slang, WGSL, ...) are shown but not compiled.
+`spirv-cross` output, minus glslang's `// OpModuleProcessed` and `#line` prefix, which a
+compiler rejects ahead of `#version`; other embedded languages (Slang, WGSL, ...) are shown but
+not compiled.
 Applications that strip debug information (release builds, most engines) get the summary line
 saying so and the flags that embed it.
 
