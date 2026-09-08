@@ -37,11 +37,23 @@ export interface Finding {
   count: number;
 }
 
+/** The cost charged to one source line of a function (modules with line information). */
+export interface LineCost {
+  file: string;
+  line: number;
+  cost: CostVec;
+  weighted: number;
+  dominant: CostDimension;
+  instructions: number;
+}
+
 export interface FunctionAnalysis {
   id: number;
   name: string;
   /** Own cost of one execution, loops weighted by LOOP_TRIPS per nesting level. */
   cost: CostVec;
+  /** The own cost split by source line, costliest first (empty without line information). */
+  lines: LineCost[];
   /** Own cost plus the cost of every function it calls (recursion cut). */
   inclusive: CostVec;
   instructions: number;
@@ -260,6 +272,7 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
   const functions = new Map<number, FunctionAnalysis>();
   const entries: { name: string; stage: ShaderStage; functionId: number }[] = [];
   const findings = new Map<string, Finding>();
+  const lineCosts = new Map<number, Map<string, LineCost>>();   // function id -> "file:line" -> cost
   const totals: AnalysisTotals = { instructions: 0, functions: 0, loops: 0, branches: 0, textureOps: 0, memoryOps: 0, sfuOps: 0, atomics: 0, barriers: 0, derivatives: 0, discards: 0 };
   let glslSet = 0;
   let fn: FunctionAnalysis | null = null;
@@ -283,9 +296,27 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
     if (loc) hasLines = true;
   };
   const depthSeverity = (base: Severity, deeper: Severity): Severity => (loopStack.length >= 2 ? deeper : base);
+  // Charges a cost to the current function, and to the source line of the current instruction.
+  let ordinal = 0;
+  const lineOf = (): LineCost | null => {
+    const loc = fn ? locations[ordinal] : null;
+    if (!fn || !loc) return null;
+    const byLine = lineCosts.get(fn.id)!;
+    const key = `${loc.file}:${loc.line}`;
+    let entry = byLine.get(key);
+    if (!entry) {
+      entry = { file: fileName(loc), line: loc.line, cost: emptyCost(), weighted: 0, dominant: "alu", instructions: 0 };
+      byLine.set(key, entry);
+    }
+    return entry;
+  };
+  const charge = (c: CostVec, s: number): void => {
+    addCost(fn!.cost, c, s);
+    const entry = lineOf();
+    if (entry) addCost(entry.cost, c, s);
+  };
 
   let i = 5;
-  let ordinal = 0;
   while (i < words.length) {
     const w = words[i];
     const op = w & 0xffff;
@@ -327,7 +358,8 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
       }
       case Op.Function: {
         const id = words[a + 1];
-        fn = { id, name: names.get(id) ?? `function_${id}`, cost: emptyCost(), inclusive: emptyCost(), instructions: 0, loops: 0, branches: 0, calls: [] };
+        fn = { id, name: names.get(id) ?? `function_${id}`, cost: emptyCost(), inclusive: emptyCost(), instructions: 0, loops: 0, branches: 0, calls: [], lines: [] };
+        lineCosts.set(id, new Map());
         functions.set(id, fn);
         totals.functions++;
         loopStack.length = 0;
@@ -353,6 +385,8 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
     if (fn && op !== Op.Function && op !== Op.FunctionEnd && op !== Op.Label) {
       fn.instructions++;
       totals.instructions++;
+      const lineEntry = lineOf();
+      if (lineEntry) { lineEntry.instructions++; hasLines = true; }
       switch (op) {
         case Op.LoopMerge:
           fn.loops++;
@@ -365,7 +399,7 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
         case Op.BranchConditional: case Op.Switch:
           fn.branches++;
           totals.branches++;
-          addCost(fn.cost, ALU, scale);
+          charge(ALU, scale);
           break;
         case Op.FunctionCall:
           fn.calls.push(words[a + 2]);
@@ -374,20 +408,20 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
           const cls = idClass.get(op === Op.Load ? words[a + 2] : words[a]);
           if (cls === StorageClass.Uniform || cls === StorageClass.StorageBuffer || cls === StorageClass.PhysicalStorageBuffer ||
               cls === StorageClass.Workgroup || cls === StorageClass.Image) {
-            addCost(fn.cost, MEMORY_COST, scale);
+            charge(MEMORY_COST, scale);
             totals.memoryOps++;
             if (inLoop && (cls === StorageClass.StorageBuffer || cls === StorageClass.PhysicalStorageBuffer)) {
               finding("storage-access-in-loop", depthSeverity("low", "medium"), "medium",
                 `${op === Op.Load ? "Storage buffer read" : "Storage buffer write"} inside a loop: memory traffic scales with the trip count; load once outside the loop when the address does not change.`, ordinal);
             }
           } else if (cls === StorageClass.PushConstant) {
-            addCost(fn.cost, ALU, scale);
+            charge(ALU, scale);
           }
           break;
         }
         case Op.FDiv: case Op.FRem: case Op.FMod: case Op.UDiv: case Op.SDiv: case Op.UMod: case Op.SRem: case Op.SMod: {
           const integer = op === Op.UDiv || op === Op.SDiv || op === Op.UMod || op === Op.SRem || op === Op.SMod;
-          addCost(fn.cost, integer ? IDIV : op === Op.FDiv ? FDIV : FMOD, scale);
+          charge(integer ? IDIV : op === Op.FDiv ? FDIV : FMOD, scale);
           totals.sfuOps++;
           const divisorConstant = constants.has(words[a + 3]);
           if (inLoop && !divisorConstant) {
@@ -398,52 +432,52 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
           }
           break;
         }
-        case Op.Dot: addCost(fn.cost, { alu: 3, sfu: 0, texture: 0, memory: 0 }, scale); break;
-        case Op.VectorTimesScalar: addCost(fn.cost, ALU, scale); break;
+        case Op.Dot: charge({ alu: 3, sfu: 0, texture: 0, memory: 0 }, scale); break;
+        case Op.VectorTimesScalar: charge(ALU, scale); break;
         case Op.MatrixTimesScalar: case Op.VectorTimesMatrix: case Op.MatrixTimesVector: case Op.OuterProduct: case Op.Transpose:
-          addCost(fn.cost, { alu: 4, sfu: 0, texture: 0, memory: 0 }, scale);
+          charge({ alu: 4, sfu: 0, texture: 0, memory: 0 }, scale);
           break;
-        case Op.MatrixTimesMatrix: addCost(fn.cost, { alu: 16, sfu: 0, texture: 0, memory: 0 }, scale); break;
+        case Op.MatrixTimesMatrix: charge({ alu: 16, sfu: 0, texture: 0, memory: 0 }, scale); break;
         case Op.ExtInst: {
           if (words[a + 2] === glslSet) {
             const info = GLSL_EXT[words[a + 3]];
             if (info) {
-              addCost(fn.cost, info.cost, scale);
+              charge(info.cost, scale);
               if (info.cost.sfu) totals.sfuOps++;
               if (inLoop && info.tier >= 2) {
                 finding("expensive-builtin-in-loop", info.tier === 3 ? depthSeverity("medium", "high") : depthSeverity("low", "medium"), "high",
                   `${info.name}() inside a loop${loopStack.length > 1 ? ` (depth ${loopStack.length})` : ""}: a special-function-unit operation repeated every iteration; hoist it out or replace it with cheaper arithmetic.`, ordinal);
               }
             } else {
-              addCost(fn.cost, ALU, scale);
+              charge(ALU, scale);
             }
           } else {
-            addCost(fn.cost, ALU, scale);
+            charge(ALU, scale);
           }
           break;
         }
         case Op.ControlBarrier: case Op.MemoryBarrier:
-          addCost(fn.cost, BARRIER_COST, scale);
+          charge(BARRIER_COST, scale);
           totals.barriers++;
           if (inLoop) finding("barrier-in-loop", "medium", "high", "A barrier inside a loop serializes the workgroup every iteration.", ordinal);
           break;
         case Op.ImageQuerySizeLod: case Op.ImageQuerySize: case Op.ImageQueryLod: case Op.ImageQueryLevels: case Op.ImageQuerySamples:
-          addCost(fn.cost, TEXTURE_QUERY_COST, scale);
+          charge(TEXTURE_QUERY_COST, scale);
           break;
         default:
           if (isTextureOp(op)) {
-            addCost(fn.cost, TEXTURE_SAMPLE_COST, scale);
+            charge(TEXTURE_SAMPLE_COST, scale);
             totals.textureOps++;
             if (inLoop) {
               finding("texture-sample-in-loop", "high", "high",
                 `${op === Op.ImageWrite ? "Image store" : isSample(op) ? "Texture sample" : "Image load"} inside a loop${loopStack.length > 1 ? ` (depth ${loopStack.length})` : ""}: ${LOOP_TRIPS}+ texture operations per invocation; sample once outside the loop or reduce the iteration count.`, ordinal);
             }
           } else if (isAtomic(op)) {
-            addCost(fn.cost, ATOMIC_COST, scale);
+            charge(ATOMIC_COST, scale);
             totals.atomics++;
             if (inLoop) finding("atomic-in-loop", "medium", "high", "An atomic operation inside a loop: a contention point repeated every iteration; accumulate locally and issue one atomic.", ordinal);
           } else if (isDerivative(op)) {
-            addCost(fn.cost, DERIVATIVE_COST, scale);
+            charge(DERIVATIVE_COST, scale);
             totals.derivatives++;
             if (selectionStack.length) finding("derivative-in-branch", "medium", "medium", "A derivative (dFdx / dFdy / fwidth, or an implicit-LOD sample) inside a branch: undefined where neighbouring invocations take a different path, and it forces quad-wide execution.", ordinal);
           } else if (isSample(op) && selectionStack.length) {
@@ -452,7 +486,7 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
             totals.discards++;
             finding("discard", "low", "medium", "discard / demote in a fragment shader disables early depth and stencil testing on many GPUs for every draw using it; prefer alpha blending or a depth pre-pass when the discard is rare.", ordinal);
           } else if (isAlu(op)) {
-            addCost(fn.cost, ALU, scale);
+            charge(ALU, scale);
           }
           break;
       }
@@ -472,7 +506,13 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
     stack.delete(id);
     return total;
   };
-  for (const f of functions.values()) f.inclusive = inclusive(f.id, new Set());
+  for (const f of functions.values()) {
+    f.inclusive = inclusive(f.id, new Set());
+    f.lines = [...(lineCosts.get(f.id)?.values() ?? [])]
+      .map((l) => ({ ...l, weighted: weighCost(l.cost), dominant: dominantDimension(l.cost) }))
+      .filter((l) => l.weighted > 0)
+      .sort((x, y) => y.weighted - x.weighted);
+  }
 
   const entryPoints: EntryPointAnalysis[] = entries.map((e) => {
     const reachable = new Set<number>();

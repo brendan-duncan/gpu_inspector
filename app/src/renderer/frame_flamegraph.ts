@@ -55,12 +55,13 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
       if (n.durationMs != null) lines.push(`Pass GPU time: ${n.durationMs.toFixed(3)} ms`);
       if (n.confidence) lines.push(`Invocation count: ${n.confidence}`);
       if (n.dimension) lines.push(`Dominant cost: ${n.dimension.toUpperCase()}`);
+      if (n.kind === "line") lines.push("Own cost of this source line's instructions (loops weighted).");
       if (n.estimated) lines.push("Includes modeled assumptions.");
       return lines.join("\n");
     },
     onSelect: (n) => {
       if ((n.kind === "item" || n.kind === "pass") && n.command && o.onSelectCommand) o.onSelectCommand(n.command.index);
-      else if ((n.kind === "stage" || n.kind === "function") && n.objectId !== undefined && o.onInspect && !n.children.length) o.onInspect(n.objectId);
+      else if ((n.kind === "stage" || n.kind === "function" || n.kind === "line") && n.objectId !== undefined && o.onInspect && !n.children.length) o.onInspect(n.objectId);
     },
   });
   const notes = new Div(root, { class: "flame-notes" });

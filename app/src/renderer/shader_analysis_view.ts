@@ -9,7 +9,7 @@ import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import {
   COST_DIMENSIONS, COST_WEIGHTS, LOOP_TRIPS, SEVERITY_RANK, severitySummary, weighCost, worstSeverity,
-  type CostDimension, type Finding, type Severity, type ShaderAnalysis,
+  type CostDimension, type CostVec, type Finding, type LineCost, type Severity, type ShaderAnalysis,
 } from "./vulkan/spirv_analysis.js";
 import { stageLabel } from "./shader_cache.js";
 
@@ -84,7 +84,7 @@ function costCells(row: Widget, cost: { alu: number; sfu: number; texture: numbe
 }
 
 /** The "Shader Cost" section: per entry point, the modeled cost by dimension and by function. */
-export function renderCostSection(parent: Widget, analysis: ShaderAnalysis, entryPoint?: string): collapsible {
+export function renderCostSection(parent: Widget, analysis: ShaderAnalysis, entryPoint?: string, onLine?: LineHandler): collapsible {
   const entries = entryPoint ? analysis.entryPoints.filter((e) => e.name === entryPoint) : analysis.entryPoints;
   const top = entries.reduce((best, e) => (e.weighted > (best?.weighted ?? -1) ? e : best), entries[0] ?? null);
   const label = top ? `Shader Cost (modeled): ${Math.round(top.weighted)} units, ${DIMENSION_LABEL[top.dominant]} dominant` : "Shader Cost (modeled)";
@@ -114,7 +114,34 @@ export function renderCostSection(parent: Widget, analysis: ShaderAnalysis, entr
     }
   }
   if (!entries.length) new Div(body, { text: "No entry point.", class: "text-muted" });
+  // The costliest source lines over the entry's functions (modules with line information).
+  const lines: (LineCost & { fn: string })[] = [];
+  for (const e of entries) for (const f of e.functions) for (const l of f.lines) lines.push({ ...l, fn: f.name });
+  if (lines.length) {
+    lines.sort((x, y) => y.weighted - x.weighted);
+    const total = lines.reduce((acc, l) => acc + l.weighted, 0);
+    new Div(body, { text: "Costliest lines (own cost of the line's instructions, loops weighted):", class: "text-muted font-sm perf-lines-head" });
+    const list = new Div(body, { class: "perf-lines" });
+    for (const l of lines.slice(0, 12)) {
+      const row = new Div(list, { class: "perf-cost-row perf-line-row" });
+      const where = `${l.file ? `${l.file}:` : "line "}${l.line}`;
+      if (onLine) {
+        const link = new Span(row, { text: where, class: "perf-line-link perf-cost-name" });
+        link.element.onclick = () => onLine(l.file, l.line);
+      } else {
+        new Span(row, { text: where, class: "perf-cost-name" });
+      }
+      const share = total > 0 ? ` ${((l.weighted / total) * 100).toFixed(0)}%` : "";
+      new Span(row, { text: `${Math.round(l.weighted)}${share}`, class: "perf-cost-cell perf-cost-total", tooltip: `${l.instructions} instruction${l.instructions === 1 ? "" : "s"} in ${l.fn}: ${costText(l.cost)}` });
+      new Span(row, { text: DIMENSION_LABEL[l.dominant], class: `perf-cost-cell perf-dim-${l.dominant}` });
+    }
+    if (lines.length > 12) new Div(list, { text: `and ${lines.length - 12} more lines`, class: "text-muted font-sm" });
+  }
   return grp;
+}
+
+function costText(c: CostVec): string {
+  return `ALU ${Math.round(c.alu)}, SFU ${Math.round(c.sfu)}, texture ${Math.round(c.texture)}, memory ${Math.round(c.memory)}`;
 }
 
 /** One shader of the frame report: what it is, how often it ran, and its findings. */

@@ -1,6 +1,10 @@
 ## 0.5.0
 
 ### Added
+- Shader cost per source line: modules with line information get their modeled cost split by
+  the line each instruction came from. The Shader Cost section lists the costliest lines with
+  their share, clickable to the line in the Source view (Inspect tab and captured draws), and
+  the Shader Flame Graph shows a function's own cost as line frames under it.
 - Sampled image read-back covers every mip level of the bound view (the base mip only before):
   the image viewer on a captured binding offers the mips, and the binding says which are held
   ("mips 0-3"). The triangle test application's checker texture has a mip chain.

@@ -471,6 +471,11 @@ integer division), located to a source line through the debug information when t
 sections of a shader payload in the Inspect tab, and as the capture's "Analyze Shaders" report,
 which resolves the pipeline bound for each draw and dispatch to count uses per shader.
 
+Every own-cost charge of the analysis is also charged to the source line of the instruction
+(`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):
+the Shader Cost section's "Costliest lines" list and the flame graph's line frames under a
+function come from it.
+
 #### Shader source maps
 
 WebGPU shaders are their own source; SPIR-V is not, but compilers can embed the source and a

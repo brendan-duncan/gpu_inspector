@@ -696,3 +696,7 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .flamegraph-canvas { position: relative; width: 100%; }
 .flamegraph-frame { position: absolute; border-radius: 2px; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #fff; font-size: 10px; padding: 0 4px; cursor: pointer; border-right: 1px solid var(--timeline-bg); }
 .flamegraph-frame:hover { filter: brightness(1.3); }
+
+/* Costliest lines in the Shader Cost section. */
+.perf-lines-head { margin-top: 6px; }
+.perf-line-row .perf-cost-name { flex: 1 1 auto; }

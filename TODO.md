@@ -60,11 +60,10 @@ interpreter and re-created pipelines.
       `VK_GOOGLE_display_timing` fall back to the frame-interval estimate).
 
 ### Shaders
-- [ ] Shader flame graph: statement-level frames (the SPIR-V cost model stops at functions, and
-      glslc inlines everything into `main`), per-draw GPU timing (replay), and measured fragment
-      counts instead of the scissor-area estimate.
-- [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables),
-      loop-invariant detection, and per-statement cost through the source map.
+- [ ] Shader flame graph: per-draw GPU timing (replay) and measured fragment counts instead of
+      the scissor-area estimate.
+- [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables) and
+      loop-invariant detection.
 - [ ] Source maps from outside the module: a user-configured source root (file name from
       `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
       but without embedded text, and `#include` resolution for the editor from the same root.

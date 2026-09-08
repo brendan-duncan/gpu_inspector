@@ -537,15 +537,16 @@ export class CommandInfoView {
       const view = renderEmbeddedSource(sourceGrp.body, data);
       const analysis = analyzeSpirvCached(data);
       if (analysis) {
-        renderCostSection(details, analysis, source.entryPoint);
-        renderAnalysisSection(details, analysis, (file, line) => {
+        const jump = (file: string | undefined, line: number): void => {
           const files = view.info?.files ?? [];
           let index = files.findIndex((f) => f.text !== null && f.name.replace(/^.*[\/]/, "") === file);
           if (index < 0) index = files.findIndex((f) => f.text !== null);
           if (index < 0) return;
           sourceGrp.expand();
           view.show(index, line);
-        });
+        };
+        renderCostSection(details, analysis, source.entryPoint, jump);
+        renderAnalysisSection(details, analysis, jump);
       }
     };
     if (!grp.collapsed) void load(); else grp.onExpanded.addListener(() => void load());

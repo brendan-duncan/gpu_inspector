@@ -38,8 +38,11 @@ export interface StageModel {
   workgroupSize: [number, number, number] | null;
 }
 
+/** Line frames kept per function in the flame graph; the rest fold into one frame. */
+const MAX_LINE_FRAMES = 16;
+
 export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
-  kind: "frame" | "pass" | "item" | "stage" | "function" | "more";
+  kind: "frame" | "pass" | "item" | "stage" | "function" | "line" | "more";
   selfCost: number;
   children: FlameNode[];
   /** What dominates the cost (frame color). */
@@ -56,6 +59,9 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   durationMs?: number | null;
   /** Stage frames that carry no weight: why. */
   reason?: string;
+  /** Line frames: the source line (and file) the cost belongs to. */
+  line?: number;
+  file?: string;
 }
 
 export interface CostTreeOptions {
@@ -337,6 +343,21 @@ function functionTree(fn: FunctionAnalysis, byId: Map<number, FunctionAnalysis>,
     }
     path.delete(fn.id);
   }
+  // The function's own cost by source line (modules with line information): the costliest
+  // lines as frames, the rest folded into one.
+  if (fn.lines.length) {
+    const shown = fn.lines.slice(0, MAX_LINE_FRAMES);
+    for (const l of shown) {
+      const ln = node("line", `${l.file ? `${l.file}:` : "line "}${l.line}`, l.weighted * factor);
+      ln.selfCost = ln.totalCost;
+      ln.dimension = l.dominant;
+      ln.line = l.line;
+      ln.file = l.file;
+      n.children.push(ln);
+    }
+    const rest = fn.lines.slice(MAX_LINE_FRAMES).reduce((acc, l) => acc + l.weighted, 0);
+    if (rest > 0) n.children.push(node("more", `+ ${fn.lines.length - MAX_LINE_FRAMES} more lines`, rest * factor));
+  }
   // Children cannot exceed the parent: a call counted more than once in the inclusive cost
   // (loops) is squeezed proportionally so the graph stays consistent.
   const sum = n.children.reduce((s, c) => s + c.totalCost, 0);
@@ -441,6 +462,8 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         n.command = bucket.items[0].command;
         if (root) {
           const tree = functionTree(root, byId, s.invocations, new Set(), 0);
+          const tag = (c: FlameNode): void => { c.objectId = s.model.objectId; for (const cc of c.children) tag(cc); };
+          for (const c of tree.children) tag(c);
           n.children = tree.children;
           n.selfCost = tree.selfCost;
           // The entry's own cost is the stage cost; its subtree must not exceed it.
@@ -490,7 +513,7 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
 
 /** The color of a cost dimension (also the legend). */
 export const DIMENSION_COLORS: Record<CostDimension, string> = { alu: "#4a8db8", sfu: "#c98a3a", texture: "#c0504d", memory: "#7b62c9" };
-export const KIND_COLORS: Record<FlameNode["kind"], string> = { frame: "#3f7f5f", pass: "#3f7f5f", item: "#6c7a89", stage: "#4a8db8", function: "#4a8db8", more: "#555b62" };
+export const KIND_COLORS: Record<FlameNode["kind"], string> = { frame: "#3f7f5f", pass: "#3f7f5f", item: "#6c7a89", stage: "#4a8db8", function: "#4a8db8", line: "#4a8db8", more: "#555b62" };
 
 export function costVecText(c: CostVec): string {
   return `ALU ${c.alu.toFixed(0)}, SFU ${c.sfu.toFixed(0)}, texture ${c.texture.toFixed(0)}, memory ${c.memory.toFixed(0)}`;

@@ -1077,13 +1077,16 @@ export class InspectPanel {
     if (!analysis) return;
     const sep = view.blobName.indexOf(":");
     const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : undefined;
-    renderCostSection(view.analysis, analysis, entryPoint);
-    renderAnalysisSection(view.analysis, analysis, (file, line) => {
-      // Findings name a source file and line: show that line in the Source view.
+    // Findings and costliest lines name a source file and line: show that line in the Source view.
+    const jump = (file: string | undefined, line: number): void => {
       const files = view.debug?.files ?? [];
       let index = files.findIndex((f) => f.text !== null && f.name.replace(/^.*[\\/]/, "") === file);
       if (index < 0) index = files.findIndex((f) => f.text !== null);
       if (index >= 0) this._jumpToSource(view, index, line);
+    };
+    renderCostSection(view.analysis, analysis, entryPoint, jump);
+    renderAnalysisSection(view.analysis, analysis, (file, line) => {
+      jump(file, line);
     });
   }
 
