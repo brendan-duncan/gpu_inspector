@@ -47,8 +47,7 @@ interpreter and re-created pipelines.
 ### Captures
 - [ ] Multisampled stencil read-back (the depth resolve covers the depth aspect; stencil would
       need a stencil resolve attachment), and multisampled read-back on Vulkan 1.0 devices.
-- [ ] Sampled image read-back: every mip of a view (only the base mip is copied today), and
-      sampled images bound through descriptor buffers / shader objects.
+- [ ] Sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect
 - [ ] Validation messages raised at submit or execution time (synchronization validation, GPU

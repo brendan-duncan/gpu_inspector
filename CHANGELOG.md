@@ -1,3 +1,10 @@
+## 0.5.0
+
+### Added
+- Sampled image read-back covers every mip level of the bound view (the base mip only before):
+  the image viewer on a captured binding offers the mips, and the binding says which are held
+  ("mips 0-3"). The triangle test application's checker texture has a mip chain.
+
 ## 0.4.0
 
 ### Added

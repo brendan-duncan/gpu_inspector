@@ -115,6 +115,9 @@ std::string ExeDir() {
 #endif
 }
 
+// Mip levels of the checker texture (8x8 -> 1x1).
+constexpr uint32_t kTextureMips = 4;
+
 struct App {
     uint32_t width = 640, height = 480;
     int maxFrames = -1;
@@ -702,11 +705,11 @@ struct App {
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = VK_FORMAT_R8G8B8A8_UNORM;
         ici.extent = {ts, ts, 1};
-        ici.mipLevels = 1;
+        ici.mipLevels = kTextureMips;   // a mip chain, blitted from level 0 (the inspector reads every mip back)
         ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         CHECK(vkCreateImage(device, &ici, nullptr, &texture));
         VkMemoryRequirements req;
@@ -724,18 +727,41 @@ struct App {
         b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = texture;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kTextureMips, 0, 1};
         b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(upload, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {ts, ts, 1};
         vkCmdCopyBufferToImage(upload, staging, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(upload, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+        // Each level is a blit of the previous one (level i-1 goes to TRANSFER_SRC first).
+        for (uint32_t level = 1; level < kTextureMips; ++level) {
+            VkImageMemoryBarrier toSrc = b;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toSrc.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 1, 0, 1};
+            vkCmdPipelineBarrier(upload, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
+            blit.srcOffsets[1] = {(int32_t)std::max(1u, ts >> (level - 1)), (int32_t)std::max(1u, ts >> (level - 1)), 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            blit.dstOffsets[1] = {(int32_t)std::max(1u, ts >> level), (int32_t)std::max(1u, ts >> level), 1};
+            vkCmdBlitImage(upload, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        }
+        // Levels 0..n-2 are TRANSFER_SRC now, the last one TRANSFER_DST: all to shader read.
+        VkImageMemoryBarrier toRead[2] = {b, b};
+        toRead[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toRead[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kTextureMips - 1, 0, 1};
+        toRead[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toRead[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, kTextureMips - 1, 1, 0, 1};
+        for (auto& t : toRead) {
+            t.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            t.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+            t.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        }
+        vkCmdPipelineBarrier(upload, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, toRead);
         EndOneShot(upload);
         vkDestroyBuffer(device, staging, nullptr);
         vkFreeMemory(device, stagingMem, nullptr);
@@ -744,13 +770,14 @@ struct App {
         vci.image = texture;
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kTextureMips, 0, 1};
         CHECK(vkCreateImageView(device, &vci, nullptr, &textureView));
         VkSamplerCreateInfo smci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         smci.magFilter = VK_FILTER_NEAREST;
         smci.minFilter = VK_FILTER_NEAREST;
+        smci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         smci.addressModeU = smci.addressModeV = smci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        smci.maxLod = 1.0f;
+        smci.maxLod = (float)kTextureMips;
         CHECK(vkCreateSampler(device, &smci, nullptr, &sampler));
 
         // Descriptors

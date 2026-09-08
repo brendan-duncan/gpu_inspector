@@ -554,8 +554,20 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     }
     FormatBlock block = FormatBlockInfo(img.format, tc.aspect);
     if (block.bytes == 0) return fail("unsupported format for readback");
-    tc.size = (VkDeviceSize)((tc.width + block.width - 1) / block.width) * ((tc.height + block.height - 1) / block.height) *
-              tc.depth * tc.layers * block.bytes;
+    // Every mip of the view, back to back (each mip: its layers), so the viewer can show them.
+    uint32_t mips = vi.range.levelCount == VK_REMAINING_MIP_LEVELS ? img.mipLevels - tc.mip : vi.range.levelCount;
+    if (tc.mip >= img.mipLevels) mips = 1;
+    else if (tc.mip + mips > img.mipLevels) mips = img.mipLevels - tc.mip;
+    tc.mips = std::max(1u, mips);
+    std::vector<VkDeviceSize> mipSizes(tc.mips);
+    tc.size = 0;
+    for (uint32_t m = 0; m < tc.mips; ++m) {
+        const uint32_t w = std::max(1u, img.extent.width >> (tc.mip + m));
+        const uint32_t h = std::max(1u, img.extent.height >> (tc.mip + m));
+        const uint32_t d = std::max(1u, img.extent.depth >> (tc.mip + m));
+        mipSizes[m] = (VkDeviceSize)((w + block.width - 1) / block.width) * ((h + block.height - 1) / block.height) * d * tc.layers * block.bytes;
+        tc.size += mipSizes[m];
+    }
     if (tc.size > _options.maxTextureSize) return fail("exceeds max texture size");
     bool overBudget = false;
     {
@@ -575,27 +587,32 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     tc.stagingOffset = offset;
     uint32_t id = add();
 
-    PendingImageCopy p;
-    p.resolve = resolve;
-    p.captureId = id;
-    p.image = vi.image;
-    p.layout = layout;
-    p.range = {aspects, tc.mip, 1, tc.baseLayer, tc.layers};
-    p.copyAspect = tc.aspect;
-    p.extent = {tc.width, tc.height, tc.depth};
-    p.staging = staging;
-    p.stagingOffset = offset;
-    p.size = tc.size;
-    p.format = img.format;
-    if (resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) {
-        std::lock_guard lock(_mutex);
-        TextureCapture& t = _textures[id - 1];
-        t.failed = true;
-        t.recorded = true;
-        t.note = "depth resolve views could not be created";
-        return id;
+    VkDeviceSize mipOffset = 0;
+    for (uint32_t m = 0; m < tc.mips; ++m) {
+        PendingImageCopy p;
+        p.resolve = m == 0 ? resolve : VK_NULL_HANDLE;   // multisampled images have one mip
+        p.captureId = id;
+        p.image = vi.image;
+        p.layout = layout;
+        p.range = {aspects, tc.mip + m, 1, tc.baseLayer, tc.layers};
+        p.copyAspect = tc.aspect;
+        p.extent = {std::max(1u, img.extent.width >> (tc.mip + m)), std::max(1u, img.extent.height >> (tc.mip + m)),
+                    std::max(1u, img.extent.depth >> (tc.mip + m))};
+        p.staging = staging;
+        p.stagingOffset = offset + mipOffset;
+        p.size = mipSizes[m];
+        p.format = img.format;
+        mipOffset += mipSizes[m];
+        if (p.resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) {
+            std::lock_guard lock(_mutex);
+            TextureCapture& t = _textures[id - 1];
+            t.failed = true;
+            t.recorded = true;
+            t.note = "depth resolve views could not be created";
+            return id;
+        }
+        rec->pendingImages().push_back(p);
     }
-    rec->pendingImages().push_back(p);
     if (!rec->InsidePass()) FlushImageCopies(dev, rec);
     return id;
 }
@@ -1121,6 +1138,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         w.Key("depth"); w.Uint(tc.depth);
         w.Key("layers"); w.Uint(tc.layers);
         w.Key("mip"); w.Uint(tc.mip);
+        if (tc.mips > 1) { w.Key("mips"); w.Uint(tc.mips); }
         w.Key("size"); w.Uint(tc.failed ? 0 : tc.size);
         if (tc.samples > 1) { w.Key("samples"); w.Uint(tc.samples); }
         if (tc.resolveTarget) { w.Key("resolve"); w.Boolean(true); }

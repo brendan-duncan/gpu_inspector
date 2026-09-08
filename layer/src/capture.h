@@ -75,6 +75,7 @@ struct TextureCapture {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     uint32_t width = 0, height = 0, depth = 1, layers = 1, mip = 0;
+    uint32_t mips = 1;            // sampled images: mip levels copied (mip .. mip + mips - 1), back to back
     VkDeviceSize size = 0;
     uint32_t samples = 1;         // > 1: a multisampled image, read back through a resolve
     bool resolveTarget = false;   // dynamic rendering: the attachment's resolve target

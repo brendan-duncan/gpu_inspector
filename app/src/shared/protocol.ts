@@ -203,6 +203,8 @@ export interface CaptureTextureInfo {
   depth: number;
   layers: number;
   mip: number;
+  /** Sampled images: mip levels in the data (mip .. mip + mips - 1, each with all layers, back to back); absent = 1. */
+  mips?: number;
   size: number;
   error?: string;
   /** Multisampled images (> 1): read back through a resolve. */

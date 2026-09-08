@@ -223,7 +223,9 @@ with `RequestBlob`). The type can be overridden per binding with GLSL struct dec
 Format button takes WGSL. Images bound in descriptor sets are read back by the capture too
 (`CaptureManager::QueueImageCapture`): when a bind or push descriptor command is recorded, every
 sampled / storage / input-attachment image view it binds is queued once per view per capture
-(its base mip, all its layers, block-compressed formats included) under a byte budget
+(every mip of the view back to back, each with all its layers, block-compressed formats
+included; `mips` in the texture entry, and the viewer cuts the selected mip out of the data)
+under a byte budget
 (`maxImageTotal`, 256 MB), and the copy is recorded when the pass ends, like the buffer copies,
 with the layout the descriptor promised (the layout tracker's when it says UNDEFINED). The
 descriptor carries the texture capture id in `data`, the texture entry says `kind: "sampled"`,

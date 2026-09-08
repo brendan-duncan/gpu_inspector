@@ -10,7 +10,7 @@ import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import type { Widget } from "./widget/widget.js";
 import {
-  decodeTexels, displayTexels, formatFloat, formatTexel, isFormatSupported,
+  decodeTexels, displayTexels, formatFloat, formatTexel, isFormatSupported, sliceBytes,
   type ChannelMode, type DisplaySettings, type TexelData,
 } from "./vulkan/texture_decode.js";
 import { isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
@@ -83,10 +83,12 @@ export class ImageView {
     let image: VulkanObject | null = object;
     let isDepth = false;
     if (captured) {
-      // A captured render target: one mip, the layers the capture read back, no live request.
+      // Captured pixels: the mips and layers the capture read back, no live request.
       const info = captured.info;
       this.imageId = info.id;
       this._layerCount = Math.max(1, info.layers || 1);
+      this._baseMip = info.mip;
+      this._mipCount = info.mip + Math.max(1, info.mips ?? 1);
       isDepth = info.aspect === "depth";
     } else {
       // Resolve the image and the subresource range this object covers.
@@ -125,8 +127,8 @@ export class ImageView {
         captured = { info: t.info, data: t.data };
         this.captured = captured;
         this._is3D = false;
-        this._mipCount = 1;
-        this._baseMip = 0;
+        this._baseMip = t.info.mip;
+        this._mipCount = t.info.mip + Math.max(1, t.info.mips ?? 1);
         this._baseLayer = 0;
         this._layerCount = Math.max(1, t.info.layers || 1);
         this._fromCapture = true;
@@ -145,17 +147,41 @@ export class ImageView {
     this._canvas = document.createElement("canvas");
     this._build(parent, image);
     if (captured) {
-      const info = captured.info;
-      this._data = {
-        action: "ImageData", id: info.id, mip: info.mip, layer: 0, depth: info.depth, layers: info.layers, size: info.size,
-        format: info.format, aspect: info.aspect, width: info.width, height: info.height, __binary: captured.data,
-      };
-      this._decode();
+      this._showCapturedMip();
     } else if (image) {
       this.request();
     } else {
       this._status.text = "image not available";
     }
+  }
+
+  /**
+   * Captured pixels hold the read-back mips back to back, each with all its layers (or 3D
+   * slices): the selected mip is cut out and decoded as if it had arrived from the layer.
+   */
+  private _showCapturedMip(): void {
+    const captured = this.captured;
+    if (!captured) return;
+    const info = captured.info;
+    const mip = Math.min(Math.max(this._mip, info.mip), info.mip + Math.max(1, info.mips ?? 1) - 1);
+    const dims = (m: number): { width: number; height: number; depth: number } => ({
+      width: Math.max(1, info.width >> (m - info.mip)), height: Math.max(1, info.height >> (m - info.mip)), depth: Math.max(1, (info.depth || 1) >> (m - info.mip)),
+    });
+    const layers = Math.max(1, info.layers || 1);
+    const bytesOf = (m: number): number => {
+      const d = dims(m);
+      return sliceBytes({ format: info.format, aspect: info.aspect, width: d.width, height: d.height }) * Math.max(d.depth, layers);
+    };
+    let offset = 0;
+    for (let m = info.mip; m < mip; m++) offset += bytesOf(m);
+    const d = dims(mip);
+    const size = bytesOf(mip);
+    const data = captured.data ? captured.data.subarray(offset, offset + size) : undefined;
+    this._data = {
+      action: "ImageData", id: info.id, mip, layer: 0, depth: d.depth, layers, size,
+      format: info.format, aspect: info.aspect, width: d.width, height: d.height, __binary: data,
+    };
+    this._decode();
   }
 
   /** Layers (or 3D slices) arrive together and are picked locally rather than requested. */
@@ -177,7 +203,7 @@ export class ImageView {
       for (let i = this._baseMip; i < this._mipCount; i++) options.push(this._mipLabel(image, i));
       new Select(bar, { options, onChange: (_v: string, index: number) => {
         this._mip = this._baseMip + index;
-        this.request();
+        if (this.captured) this._showCapturedMip(); else this.request();
       } });
     }
     if (this._layerCount > 1) {
