@@ -154,6 +154,8 @@ html, body {
 .validation-count { color: var(--fg-secondary); font-size: 9pt; flex: 0 0 auto; }
 .validation-message { white-space: pre-wrap; font-family: var(--font-mono); font-size: 9pt; margin: 6px; user-select: text; }
 .validation-object-row { padding: 2px 0; cursor: pointer; }
+.validation-object-row > .validation-sev { margin-right: 4px; }
+.validation-object-row > .validation-count { margin-left: 4px; }
 .info-box-warning { background-color: rgba(220, 200, 90, 0.12); border: 1px solid var(--accent-warning); }
 .launch-frame {
   margin-left: 12px;
@@ -657,3 +659,7 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .update-bar.update-error .update-text { color: var(--accent-error); }
 .update-text { flex: 1 1 auto; }
 .update-buttons { display: flex; gap: 6px; }
+
+/* Validation marker on a captured command's row (after the call number). */
+.capture_validation_mark { flex: 0 0 auto; }
+.capture_command_validation > .capture_methodName { text-decoration: underline dotted; text-underline-offset: 3px; }

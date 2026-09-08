@@ -30,9 +30,13 @@ import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN,
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
+import type { ValidationEntry } from "./vulkan/object_database.js";
+import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 
 interface CommandRow extends Widget {
   command: CaptureCommand;
+  /** The validation marker, once the command has messages. */
+  validationMark?: Span;
   /** Lower-case text the command list filter matches against (method and argument summary). */
   filterText: string;
 }
@@ -288,6 +292,7 @@ export class CaptureView implements CaptureHost {
   private _filterInput: TextInput;
   private _filter = "";
   private _rows: CommandRow[] = [];
+  private _validationListener: (entry: ValidationEntry) => void;
   private _timeline: TimelineWidget;
   private _profile: boolean;
   private _thumbStrip: Div;
@@ -311,6 +316,16 @@ export class CaptureView implements CaptureHost {
     this.captureIndex = captureIndex;
     this._profile = profile;
     this.info = new CommandInfoView(this);
+    // Messages can arrive after the list is built (the layer resends a message whose command
+    // reference moved to the captured recording at the next frame tick).
+    this._validationListener = (entry: ValidationEntry) => {
+      if (!entry.command) return;
+      for (const row of this._rows) {
+        const c = row.command;
+        if ((c.secondary ?? c.object?.__id) === entry.command.commandBuffer && c.slot === entry.command.slot) this._markValidation(row);
+      }
+    };
+    win.database.onValidationMessage.addListener(this._validationListener);
 
     const split = new Split(this.root, { direction: Split.Horizontal, position: 700 });
     const pane1 = new Span(split);
@@ -659,6 +674,7 @@ export class CaptureView implements CaptureHost {
     const summary = this._summarizeArgs(cmd);
     row.filterText = `${cmd.method} ${summary}`.toLowerCase();
     new Span(row, { text: `${cmd.index}`, class: "capture_callnum" });
+    this._markValidation(row);
     new Span(row, { text: cmd.method.replace(/^vk(Cmd)?/, ""), class: "capture_methodName" });
     new Span(row, { text: summary, class: "capture_method_args" });
     row.element.onclick = (e: MouseEvent) => {
@@ -667,6 +683,19 @@ export class CaptureView implements CaptureHost {
     };
     this._rows.push(row);
     return row;
+  }
+
+  /** Marks a row whose command raised validation messages (the marker sits after the call number). */
+  private _markValidation(row: CommandRow): void {
+    const cmd = row.command;
+    const msgs = this.window.database.validationForCommand(cmd.secondary ?? cmd.object?.__id, cmd.slot);
+    if (!msgs.length || row.validationMark) return;
+    const sev = worstSeverity(msgs);
+    const mark = new Span(null, { text: severityMark(sev), class: `capture_validation_mark validation-sev validation-sev-${sev}` });
+    mark.tooltip = msgs.map((m) => validationItemText(m)).join("\n");
+    row.element.insertBefore(mark.element, row.element.children[1] ?? null);
+    row.validationMark = mark;
+    row.classList.add("capture_command_validation");
   }
 
   private _selectRow(row: CommandRow): void {

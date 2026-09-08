@@ -31,6 +31,13 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Validation messages on captured commands: a message raised while a command was being recorded
+  is attached to that command. The capture's command list marks it (the severity glyph after
+  the call number, the message as tooltip), and the command's details open with a Validation
+  section whose entries jump to the message in the Inspect tab. Capture files keep the link.
+  The launcher lifts the validation layer's duplicate-message limit (10 by default), since the
+  inspector's layer counts repeats itself and the link needs the occurrence of the captured
+  frame.
 - Multisampled render targets and images are read back: the layer resolves them into a temporary
   single-sampled image before the copy, in captures (attachments and images bound by descriptor
   sets) and in the live image viewer. The capture labels them "4x MSAA". Dynamic rendering's

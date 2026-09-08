@@ -25,6 +25,7 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
+import { validationItemText } from "./validation_text.js";
 import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears.
@@ -302,14 +303,7 @@ export class InspectPanel {
   }
 
   private _validationItemText(entry: ValidationEntry): string {
-    // The validation layer's first line is "Validation Error: [ VUID ] Object 0: handle = ...;
-    // | MessageID = ... | <what went wrong>": the last "|" segment is the readable part.
-    let first = entry.message.split("\n")[0].replace(/^Validation (Error|Warning|Performance Warning): \[[^\]]*\]\s*/, "");
-    const segments = first.split(" | ");
-    if (segments.length > 1) first = segments[segments.length - 1].trim();
-    const head = entry.idName ? `${entry.idName}: ` : "";
-    const text = `${head}${first}`;
-    return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+    return validationItemText(entry);
   }
 
   private _validationMessage(entry: ValidationEntry, isNew: boolean): void {
@@ -320,7 +314,7 @@ export class InspectPanel {
       new Span(item, { text: this._validationItemText(entry), class: "validation-text" });
       new Span(item, { text: entry.count > 1 ? `×${entry.count}` : "", class: "validation-count" });
       item.tooltip = entry.message;
-      item.element.onclick = () => this._selectValidation(entry);
+      item.element.onclick = () => this.selectValidation(entry);
       this._validationItems.set(entry.key, item);
       // Objects the message names show the error in the list and in their details.
       for (const o of entry.objects ?? []) {
@@ -347,7 +341,8 @@ export class InspectPanel {
     g.element.scrollIntoView({ block: "nearest" });
   }
 
-  private _selectValidation(entry: ValidationEntry): void {
+  /** Selects a validation message in the list and shows it (from the session bar, captures). */
+  selectValidation(entry: ValidationEntry): void {
     const prev = this._selectedObject?.widget as ObjectItem | null;
     if (prev) prev.element.classList.remove("selected");
     this._selectedObject = null;
@@ -870,7 +865,7 @@ export class InspectPanel {
         new Span(row, { text: v.severity === "error" ? "✖ " : "⚠ ", class: `validation-sev validation-sev-${v.severity}` });
         new Span(row, { text: this._validationItemText(v), class: "validation-text dependency_link" });
         if (v.count > 1) new Span(row, { text: ` ×${v.count}`, class: "validation-count" });
-        row.element.onclick = () => this._selectValidation(v);
+        row.element.onclick = () => this.selectValidation(v);
         row.tooltip = v.message;
       }
     }

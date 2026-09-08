@@ -33,7 +33,7 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
       for (const cc of child.commands) {
         out.push({
           index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer,
-          children: cc.children, descriptors: cc.descriptors, bufferData: cc.bufferData,
+          children: cc.children, descriptors: cc.descriptors, bufferData: cc.bufferData, slot: cc.slot,
         });
       }
     }

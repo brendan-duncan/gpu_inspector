@@ -53,9 +53,9 @@ interpreter and re-created pipelines.
       sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect
-- [ ] Validation messages in captures: attach the messages raised while a command was recorded
-      to that command in the capture list (the layer's messenger sees the message during the
-      vkCmd call, before or after our hook depending on layer order).
+- [ ] Validation messages raised at submit or execution time (synchronization validation, GPU
+      assisted validation) attached to the commands they name, where the message text carries a
+      command index.
 - [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
 - [ ] Refresh rate from `VK_GOOGLE_display_timing` / `VK_EXT_present_timing` where available,
       instead of the interval-based estimate (which cannot tell a 30 fps app on a 60 Hz display

@@ -657,10 +657,11 @@ void Hook_vkCmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBu
         if (CommandRecorder* sec = dev->RecorderFor(pCommandBuffers[i])) {
             auto snap = sec->Snapshot();
             bool first = true;
+            size_t slot = 0;
             for (auto& c : *snap) {
                 if (!first) extra += ',';
                 first = false;
-                extra += "{\"method\":\"";
+                extra += "{\"slot\":" + std::to_string(slot++) + ",\"method\":\"";
                 extra += kVkCommandNames[(int)c.id];
                 extra += "\",\"args\":";
                 extra += c.args.empty() ? "null" : c.args;

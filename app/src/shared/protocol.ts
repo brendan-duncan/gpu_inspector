@@ -123,6 +123,8 @@ export interface CaptureChildCommand {
   children?: CaptureChildBuffer[];
   descriptors?: CaptureDescriptorSets;
   bufferData?: number[];
+  /** Position in the secondary command buffer's recording. */
+  slot?: number;
 }
 
 export interface CaptureChildBuffer {
@@ -144,6 +146,8 @@ export interface CaptureCommand {
   descriptors?: CaptureDescriptorSets;
   /** vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / indirect draws: CaptureBuffers ids per bound buffer (0 = none). */
   bufferData?: number[];
+  /** Position in its command buffer's recording (what a ValidationMessage's `command` refers to). */
+  slot?: number;
 }
 
 export interface CaptureFrameCommandsMessage {
@@ -289,6 +293,8 @@ export interface ValidationMessage {
   objects: ValidationObjectRef[];
   queueLabels?: string[];
   cmdBufLabels?: string[];
+  /** The command being recorded when the message fired (while the layer was recording it). */
+  command?: { commandBuffer: number; slot: number };
 }
 
 export interface ValidationCountMessage {

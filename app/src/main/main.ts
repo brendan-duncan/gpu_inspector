@@ -542,6 +542,10 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
     // no usable stderr).
     ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
     VKINSP_RECORD_ALWAYS: config.recordAlways ? "1" : "0",
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...(config.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {}),
   };
   const args = splitArgs(config.args ?? "");
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);

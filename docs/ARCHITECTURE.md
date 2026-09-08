@@ -282,6 +282,19 @@ list and in their details, and the session bar counts errors and warnings; messa
 written to the Log tab and saved in capture files. The triangle test application's
 `--bad-scissor` option provokes one for testing.
 
+A message that fires inside a `vkCmd*` call while the layer records that command buffer (a
+capture in progress, or "record always") is attached to the command: the messenger callback runs
+during the call, before the post-hook appends the command, so the command in flight is the
+recorder's current count (`ValidationLog::CurrentCommand`, which only dereferences handles the
+tracker knows). The reference (`command: {commandBuffer, slot}`) travels with the message, and
+every captured command carries its `slot` (its position in the command buffer's recording;
+inlined secondary commands their position in the secondary). A repeat during a capture moves
+the reference to that recording and resends the message in full at the next frame tick, so the
+capture shows the link even for messages first seen long before. The capture's command rows get
+a severity marker and the command details a Validation section (`validationForCommand` in the
+object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
+validation layer: its default limit (10) would silence the message before the captured frame.
+
 #### Leak report
 
 `vkDestroyDevice` and `vkDestroyInstance` first ask the tracker for the objects still alive

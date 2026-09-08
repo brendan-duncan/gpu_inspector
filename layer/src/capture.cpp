@@ -221,10 +221,13 @@ void CaptureManager::Finish(DeviceData* dev) {
 }
 
 static void WriteCommandEntry(JsonWriter& w, uint64_t index, uint32_t frame, const char* method, const char* objectClass,
-                              uint64_t objectId, const std::string& args, int64_t result, const std::string& extra) {
+                              uint64_t objectId, const std::string& args, int64_t result, const std::string& extra,
+                              int64_t slot) {
     w.BeginObject();
     w.Key("index"); w.Uint(index);
     w.Key("frame"); w.Uint(frame);
+    // Position within the command buffer's recording: what validation messages refer to.
+    if (slot >= 0) { w.Key("slot"); w.Uint((uint64_t)slot); }
     w.Key("method"); w.String(method);
     w.Key("object");
     if (objectId) {
@@ -288,9 +291,9 @@ void CaptureManager::SendCommands() {
         batch.Key("commands"); batch.BeginArray();
     };
     auto emit = [&](uint32_t frame, const char* method, const char* cls, uint64_t objectId, const std::string& args,
-                    int64_t result, const std::string& extra) {
+                    int64_t result, const std::string& extra, int64_t slot = -1) {
         begin();
-        WriteCommandEntry(batch, index++, frame, method, cls, objectId, args, result, extra);
+        WriteCommandEntry(batch, index++, frame, method, cls, objectId, args, result, extra, slot);
         if (++inBatch >= kBatch) flush();
     };
 
@@ -301,8 +304,9 @@ void CaptureManager::SendCommands() {
                 emit(s.frame, "<unrecorded command buffer>", "VkCommandBuffer", cb.commandBufferId, "", 0, "");
                 continue;
             }
+            int64_t slot = 0;
             for (auto& c : *cb.commands) {
-                emit(s.frame, kVkCommandNames[(int)c.id], "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra);
+                emit(s.frame, kVkCommandNames[(int)c.id], "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra, slot++);
             }
         }
     }

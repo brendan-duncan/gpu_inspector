@@ -64,7 +64,20 @@ private:
         std::vector<std::string> cmdBufLabels;
         uint64_t count = 0;
         bool dirty = false;   // count changed since it was last sent
+        // The command being recorded when the message fired: the command buffer's tracked id
+        // and the command's position in its recording (see CommandRef), 0 / -1 when none.
+        uint64_t cmdBufferId = 0;
+        int64_t cmdSlot = -1;
+        bool resend = false;  // the command reference changed during a capture: send it again
     };
+
+    struct CommandRef {
+        uint64_t cmdBufferId = 0;
+        int64_t slot = -1;
+    };
+    // The command in flight on the command buffer the message names, if the layer is recording
+    // it (a capture is in progress or "record always" is on).
+    static CommandRef CurrentCommand(const VkDebugUtilsMessengerCallbackDataEXT* data);
 
     std::string MessageJson(const Entry& e) const;
 

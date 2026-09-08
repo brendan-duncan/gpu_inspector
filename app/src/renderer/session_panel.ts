@@ -6,7 +6,7 @@ import { Button } from "./widget/button.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { TabWidget } from "./widget/tab_widget.js";
 import { Widget } from "./widget/widget.js";
-import { ObjectDatabase } from "./vulkan/object_database.js";
+import { ObjectDatabase, type ValidationEntry } from "./vulkan/object_database.js";
 import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
@@ -25,6 +25,8 @@ export interface SessionContext {
   send(msg: UiRequest): Promise<boolean>;
   /** Reveals an object in the Inspect tab. */
   showObject(objectId: number): void;
+  /** Shows a validation message in the Inspect tab. */
+  showValidation(entry: ValidationEntry): void;
   /** Contents of an image read back by a capture (a sampled image or render target), when one has it. */
   capturedImage(imageId: number): CapturedTexture | null;
 }
@@ -173,6 +175,11 @@ export class SessionPanel extends Div implements SessionContext {
     if (!o) return;
     this._tabs.activeTab = 0;
     this.inspectPanel.revealObject(o);
+  }
+
+  showValidation(entry: ValidationEntry): void {
+    this._tabs.activeTab = 0;
+    this.inspectPanel.selectValidation(entry);
   }
 
   showCaptureTab(): void {

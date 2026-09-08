@@ -28,6 +28,7 @@ import { vertexFormat } from "./vulkan/vk_format.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { stageLabel, type StageSource } from "./shader_cache.js";
 import { kindLabel, renderReflection } from "./shader_reflection_view.js";
+import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -186,6 +187,7 @@ export class CommandInfoView {
       new Span(row, { text: "Recorded in secondary command buffer:", style: "margin-right: 4px;" });
       if (sec) objectLink(row, sec, this._link); else new Span(row, { text: String(cmd.secondary) });
     }
+    this._renderValidation(box, cmd);
 
     if (isAction(method)) {
       const state = this.drawState(cmd);
@@ -678,6 +680,24 @@ export class CommandInfoView {
       }
     }
     return out;
+  }
+
+  /** The validation messages that fired while the command was recorded; clicking one shows it in the Inspect tab. */
+  private _renderValidation(box: Div, cmd: CaptureCommand): void {
+    const msgs = this.db.validationForCommand(cmd.secondary ?? cmd.object?.__id, cmd.slot);
+    if (!msgs.length) return;
+    const sev = worstSeverity(msgs);
+    box.classList.remove("info-box-success");
+    box.classList.add(sev === "error" ? "info-box-error" : "info-box-warning");
+    const grp = new collapsible(box, { label: `Validation (${msgs.length})`, collapsed: false });
+    for (const v of msgs) {
+      const row = new Div(grp.body, { class: "validation-object-row" });
+      new Span(row, { text: `${severityMark(v.severity)} `, class: `validation-sev validation-sev-${v.severity}` });
+      new Span(row, { text: validationItemText(v), class: "validation-text dependency_link" });
+      if (v.count > 1) new Span(row, { text: ` \u00d7${v.count}`, class: "validation-count" });
+      row.tooltip = v.message;
+      row.element.onclick = () => this.panel.window.showValidation(v);
+    }
   }
 
   private _renderAffectedBy(body: Widget, bufferId: number): void {

@@ -1,5 +1,7 @@
 #include "validation.h"
 
+#include "capture.h"
+#include "command_recorder.h"
 #include "json_writer.h"
 #include "layer.h"
 #include "tracker.h"
@@ -88,12 +90,35 @@ void ValidationLog::DestroyMessenger(InstanceData* inst) {
     inst->messenger = VK_NULL_HANDLE;
 }
 
+ValidationLog::CommandRef ValidationLog::CurrentCommand(const VkDebugUtilsMessengerCallbackDataEXT* data) {
+    CommandRef ref;
+    if (!g_captureActive.load(std::memory_order_relaxed)) return ref;
+    for (uint32_t i = 0; i < data->objectCount; ++i) {
+        const VkDebugUtilsObjectNameInfoEXT& o = data->pObjects[i];
+        if (o.objectType != VK_OBJECT_TYPE_COMMAND_BUFFER || !o.objectHandle) continue;
+        // Only a tracked (live) handle is safe to dereference for its dispatch key.
+        uint64_t id = Tracker::Get().Resolve(HT_VkCommandBuffer, o.objectHandle);
+        if (!id) continue;
+        VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)o.objectHandle;
+        DeviceData* dev = GetDeviceData(cb);
+        CommandRecorder* rec = dev ? CaptureManager::Get().RecorderFor(dev, cb) : nullptr;
+        // The message fires inside the vkCmd call, before the layer's post-hook appends the
+        // command, so the command in flight is at the current count.
+        if (!rec || rec->ended()) continue;
+        ref.cmdBufferId = id;
+        ref.slot = (int64_t)rec->commandCount();
+        break;
+    }
+    return ref;
+}
+
 void ValidationLog::OnMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types,
                               const VkDebugUtilsMessengerCallbackDataEXT* data) {
     if (!data || !data->pMessage) return;
     // The message text names the handles involved, so the same mistake on another object is a
     // message of its own; the same mistake on the same object every frame is one message counted.
     std::string dedupe = std::to_string(data->messageIdNumber) + "|" + data->pMessage;
+    CommandRef cmd = CurrentCommand(data);
 
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _keys.find(dedupe);
@@ -101,6 +126,13 @@ void ValidationLog::OnMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, V
         Entry& e = _entries[it->second - 1];
         e.count++;
         e.dirty = true;
+        // A repeat while a capture records the command buffer: point the message at this
+        // recording, which is the one the capture will show.
+        if (cmd.cmdBufferId && (cmd.cmdBufferId != e.cmdBufferId || cmd.slot != e.cmdSlot)) {
+            e.cmdBufferId = cmd.cmdBufferId;
+            e.cmdSlot = cmd.slot;
+            e.resend = true;
+        }
         _anyDirty = true;
         return;
     }
@@ -136,6 +168,8 @@ void ValidationLog::OnMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, V
     for (uint32_t i = 0; i < data->cmdBufLabelCount; ++i)
         if (data->pCmdBufLabels[i].pLabelName) e.cmdBufLabels.push_back(data->pCmdBufLabels[i].pLabelName);
     e.count = 1;
+    e.cmdBufferId = cmd.cmdBufferId;
+    e.cmdSlot = cmd.slot;
     _keys.emplace(std::move(dedupe), e.key);
     _entries.push_back(std::move(e));
     const Entry& added = _entries.back();
@@ -181,6 +215,12 @@ std::string ValidationLog::MessageJson(const Entry& e) const {
         for (auto& l : e.cmdBufLabels) w.String(l);
         w.EndArray();
     }
+    if (e.cmdBufferId && e.cmdSlot >= 0) {
+        w.Key("command"); w.BeginObject();
+        w.Key("commandBuffer"); w.Uint(e.cmdBufferId);
+        w.Key("slot"); w.Uint((uint64_t)e.cmdSlot);
+        w.EndObject();
+    }
     w.EndObject();
     return std::move(w.str());
 }
@@ -189,6 +229,13 @@ void ValidationLog::Flush() {
     if (!_anyDirty || !Transport::Get().Connected()) return;
     std::lock_guard<std::mutex> lock(_mutex);
     if (!_anyDirty) return;
+    // Messages whose command reference moved go out in full; the rest as counts.
+    for (Entry& e : _entries) {
+        if (!e.resend) continue;
+        Transport::Get().SendJson(MessageJson(e));
+        e.resend = false;
+        e.dirty = false;
+    }
     JsonWriter w;
     w.BeginObject();
     w.Key("action"); w.String("ValidationCount");
@@ -213,6 +260,7 @@ void ValidationLog::SendSnapshot() {
     for (Entry& e : _entries) {
         Transport::Get().SendJson(MessageJson(e));
         e.dirty = false;
+        e.resend = false;
     }
     if (_dropped) {
         JsonWriter w;

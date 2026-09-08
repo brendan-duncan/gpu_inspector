@@ -49,6 +49,8 @@ export class ObjectDatabase implements ObjectLookup {
   validation: ValidationEntry[] = [];
   validationByKey = new Map<number, ValidationEntry>();
   validationByObject = new Map<number, ValidationEntry[]>();
+  /** Messages by the command they fired on: "commandBuffer:slot" (see validationForCommand). */
+  validationByCommand = new Map<string, ValidationEntry[]>();
   /** Unique messages the layer dropped after its cap. */
   validationDropped = 0;
   /** Leak reports (objects alive when their device or instance was destroyed), in arrival order. */
@@ -92,15 +94,41 @@ export class ObjectDatabase implements ObjectLookup {
     return this.validationByObject.get(id) ?? [];
   }
 
+  /** Validation messages that fired while a command was recorded: the command buffer's id and the command's slot. */
+  validationForCommand(commandBufferId: number | undefined, slot: number | undefined): ValidationEntry[] {
+    if (commandBufferId === undefined || slot === undefined) return [];
+    return this.validationByCommand.get(`${commandBufferId}:${slot}`) ?? [];
+  }
+
+  private _indexByCommand(msg: ValidationEntry, add: boolean): void {
+    if (!msg.command) return;
+    const key = `${msg.command.commandBuffer}:${msg.command.slot}`;
+    const list = this.validationByCommand.get(key) ?? [];
+    if (add) {
+      if (!list.includes(msg)) list.push(msg);
+      this.validationByCommand.set(key, list);
+    } else {
+      const i = list.indexOf(msg);
+      if (i >= 0) list.splice(i, 1);
+    }
+  }
+
   private _addValidation(msg: ValidationMessage): void {
     const existing = this.validationByKey.get(msg.key);
     if (existing) {
       existing.count = msg.count;
+      // A resend carries a moved command reference (the recording a capture shows).
+      if (msg.command && (existing.command?.commandBuffer !== msg.command.commandBuffer || existing.command?.slot !== msg.command.slot)) {
+        this._indexByCommand(existing, false);
+        existing.command = msg.command;
+        this._indexByCommand(existing, true);
+      }
       this.onValidationMessage.emit(existing, false);
       return;
     }
     this.validation.push(msg);
     this.validationByKey.set(msg.key, msg);
+    this._indexByCommand(msg, true);
     for (const o of msg.objects ?? []) {
       if (!o.object || !isHandleRef(o.object)) continue;
       const list = this.validationByObject.get(o.object.__id) ?? [];
@@ -155,6 +183,7 @@ export class ObjectDatabase implements ObjectLookup {
     this.validation = [];
     this.validationByKey = new Map();
     this.validationByObject = new Map();
+    this.validationByCommand = new Map();
     this.validationDropped = 0;
     this.leaks = [];
     this._snapshotRemaining = 0;
