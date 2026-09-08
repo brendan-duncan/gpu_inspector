@@ -43,6 +43,7 @@
   --title-bar-border: #262626;
   --collapsible-body-bg: #383838;
   --collapse-button-fg: #dddddd;
+  --compute-pass-bg: #3a4a5a;
 
   /* Debug label groups in the capture list, by nesting depth: title bar, and the body that
      tints the commands inside the group (like WebGPU Inspector). */
@@ -176,6 +177,7 @@
   --title-bar-border: #b8b8b8;
   --collapsible-body-bg: #f2f2f2;
   --collapse-button-fg: #333333;
+  --compute-pass-bg: #c8d8e8;
 
   --group-0-bg: #f5c0c1;
   --group-1-bg: #ffd98a;

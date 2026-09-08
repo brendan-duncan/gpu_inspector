@@ -18,8 +18,8 @@ interpreter and re-created pipelines.
   and storage buffers (Format editor, radix, array paging), vertex/index/indirect data, push
   constants, render targets.
 - Frame Stats (API activity, passes, pipelines, bindings, memory, geometry).
-- Profile passes: GPU timestamps per render pass, pass durations in headers, pass timeline,
-  Frame Bound card and pass timings in Frame Stats.
+- Profile passes: GPU timestamps per render pass and per run of dispatches (compute passes),
+  pass durations in headers, pass timeline, Frame Bound card and pass timings in Frame Stats.
 - Shader editing: edit as GLSL / HLSL / SPIR-V assembly, compile with the SDK, live replacement
   pipelines, syntax highlighting.
 - Shader source maps: embedded source (OpSource / NonSemantic DebugInfo) as a Source view, SPIR-V
@@ -44,8 +44,6 @@ interpreter and re-created pipelines.
       plain canvases.
 - [ ] "Affected By" on a buffer: earlier copies/updates/fills targeting it and dispatches that
       bind it as writable storage.
-- [ ] Compute pass timings: timestamps around dispatch groups (WebGPU has compute passes; Vulkan
-      has none, so bracket runs of dispatches between barriers).
 - [ ] Multisampled render target read-back (resolve into a temporary image).
 - [ ] Sampled image read-back at capture time for descriptor previews (currently live thumbnails
       on demand).

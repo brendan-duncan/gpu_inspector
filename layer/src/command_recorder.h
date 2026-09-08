@@ -42,6 +42,15 @@ struct ActivePass {
     uint32_t query = UINT32_MAX;             // timestamp query pair (begin, begin + 1) when profiling
 };
 
+// A run of dispatches outside a render pass, timed as one "compute pass": from the first dispatch
+// to the next barrier, event wait, render pass, debug label, secondary execution or the end of
+// the command buffer (see CaptureManager::OnBeforeDispatch / OnEndComputePass).
+struct ActiveComputePass {
+    bool active = false;
+    uint32_t index = 0;                      // index of this compute pass within the command buffer
+    uint32_t query = UINT32_MAX;             // timestamp query pair when profiling
+};
+
 // A buffer range queued for readback (see CaptureManager::QueueBufferCapture). The copy into
 // staging is recorded when the pending list is flushed: at once outside a render pass, at the
 // end of the pass otherwise (transfer commands are not allowed inside one).
@@ -83,6 +92,8 @@ public:
         _commands = std::make_shared<CommandList>();
         _pass = ActivePass{};
         _passCount = 0;
+        _compute = ActiveComputePass{};
+        _computeCount = 0;
         _ended = false;
         _renderPassContinue = renderPassContinue;
         _pendingCopies.clear();
@@ -100,6 +111,8 @@ public:
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }
     ActivePass& pass() { return _pass; }
     uint32_t NextPassIndex() { return _passCount++; }
+    ActiveComputePass& compute() { return _compute; }
+    uint32_t NextComputeIndex() { return _computeCount++; }
     bool ended() const { return _ended; }
     void MarkEnded() { _ended = true; }
     size_t commandCount() const { return _commands->size(); }
@@ -112,6 +125,8 @@ private:
     std::shared_ptr<CommandList> _commands = std::make_shared<CommandList>();
     ActivePass _pass;
     uint32_t _passCount = 0;
+    ActiveComputePass _compute;
+    uint32_t _computeCount = 0;
     bool _ended = false;
     bool _renderPassContinue = false;
     std::vector<PendingBufferCopy> _pendingCopies;

@@ -42,6 +42,18 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
   return out;
 }
 
+/** Key of a pass in CaptureData.passTimings: "frame:commandBuffer:index" for render passes, "...:cN" for compute. */
+export function passKey(frame: number, commandBufferId: number, passIndex: number, compute = false): string {
+  return `${frame}:${commandBufferId}:${compute ? "c" : ""}${passIndex}`;
+}
+
+/** The parts of a pass key (see passKey). */
+export function parsePassKey(key: string): { frame: number; commandBuffer: number; passIndex: number; compute: boolean } {
+  const [f, cb, p] = key.split(":");
+  const compute = p.startsWith("c");
+  return { frame: Number(f), commandBuffer: Number(cb), passIndex: Number(compute ? p.slice(1) : p), compute };
+}
+
 export class CaptureData {
   /** Frame number of the first captured frame, and how many frames the capture spans. */
   frame = 0;
@@ -75,8 +87,8 @@ export class CaptureData {
     this._pendingBuffers = 0;
   }
 
-  passTiming(frame: number, commandBufferId: number, passIndex: number): PassTiming | null {
-    return this.passTimings.get(`${frame}:${commandBufferId}:${passIndex}`) ?? null;
+  passTiming(frame: number, commandBufferId: number, passIndex: number, compute = false): PassTiming | null {
+    return this.passTimings.get(passKey(frame, commandBufferId, passIndex, compute)) ?? null;
   }
 
   texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
@@ -159,7 +171,7 @@ export class CaptureData {
         break;
       case "CapturePassTimings":
         this.passTimings = new Map();
-        for (const p of msg.passes ?? []) this.passTimings.set(`${p.frame}:${p.commandBuffer}:${p.passIndex}`, p);
+        for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
         break;
       case "CaptureBufferData": {

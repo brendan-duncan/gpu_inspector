@@ -340,16 +340,43 @@ void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
     _queryCount = 0;
 }
 
-void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
-    rec->pendingQuery = UINT32_MAX;
-    if (!IsCapturing() || !_options.profilePasses || !_queryPool || _queryDevice != dev->device) return;
-    if (rec->renderPassContinue()) return;   // secondaries inside a pass: the primary times the pass
+uint32_t CaptureManager::BeginTimestamp(DeviceData* dev, CommandRecorder* rec) {
+    if (!IsCapturing() || !_options.profilePasses || !_queryPool || _queryDevice != dev->device) return UINT32_MAX;
+    if (rec->renderPassContinue()) return UINT32_MAX;   // secondaries inside a pass: the primary times the pass
     uint32_t q = _queriesUsed.fetch_add(2, std::memory_order_relaxed);
-    if (q + 2 > _queryCount) return;         // pool exhausted: later passes go untimed
+    if (q + 2 > _queryCount) return UINT32_MAX;         // pool exhausted: later passes go untimed
     VkCommandBuffer cb = rec->commandBuffer();
     dev->dispatch.CmdResetQueryPool(cb, _queryPool, q, 2);
     dev->dispatch.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _queryPool, q);
-    rec->pendingQuery = q;
+    return q;
+}
+
+void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
+    OnEndComputePass(dev, rec);
+    rec->pendingQuery = BeginTimestamp(dev, rec);
+}
+
+void CaptureManager::OnBeforeDispatch(DeviceData* dev, CommandRecorder* rec) {
+    ActiveComputePass& c = rec->compute();
+    if (c.active || rec->pass().active) return;
+    c.active = true;
+    c.index = rec->NextComputeIndex();
+    c.query = BeginTimestamp(dev, rec);
+}
+
+void CaptureManager::OnEndComputePass(DeviceData* dev, CommandRecorder* rec) {
+    ActiveComputePass& c = rec->compute();
+    if (!c.active) return;
+    c.active = false;
+    if (c.query == UINT32_MAX || !_queryPool || _queryDevice != dev->device) return;
+    dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, c.query + 1);
+    PassTiming pt;
+    pt.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
+    pt.passIndex = c.index;
+    pt.compute = true;
+    pt.query = c.query;
+    std::lock_guard lock(_mutex);
+    _passTimings.push_back(pt);
 }
 
 void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info) {
@@ -869,6 +896,7 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         w.Key("frame"); w.Uint(pt.frame);
         w.Key("commandBuffer"); w.Uint(pt.commandBufferId);
         w.Key("passIndex"); w.Uint(pt.passIndex);
+        w.Key("kind"); w.String(pt.compute ? "compute" : "render");
         w.Key("startMs"); w.Double((double)(begin - earliest) * period / 1e6);
         w.Key("durationMs"); w.Double((double)(end - begin) * period / 1e6);
         w.EndObject();

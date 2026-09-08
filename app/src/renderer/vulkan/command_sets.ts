@@ -22,6 +22,16 @@ export const BIND_INDEX_METHODS = new Set(["vkCmdBindIndexBuffer", "vkCmdBindInd
 export const PUSH_CONSTANT_METHODS = new Set(["vkCmdPushConstants", "vkCmdPushConstants2", "vkCmdPushConstants2KHR"]);
 export const INDIRECT_METHODS = new Set(["vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDispatchIndirect"]);
 
+/**
+ * Commands that end a compute pass (a run of dispatches outside a render pass) in the layer's
+ * bracketing: barriers and event waits, secondary execution. Render pass begins, debug labels
+ * and the end of the command buffer end one too (handled where those are processed).
+ */
+export const COMPUTE_PASS_END = new Set([
+  "vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR",
+  "vkCmdWaitEvents", "vkCmdWaitEvents2", "vkCmdWaitEvents2KHR", "vkCmdExecuteCommands",
+]);
+
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */
 export function isAction(method: string): boolean {
   return DRAW_METHODS.has(method) || DISPATCH_METHODS.has(method) || TRACE_METHODS.has(method);

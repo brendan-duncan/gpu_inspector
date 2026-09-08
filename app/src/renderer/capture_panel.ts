@@ -15,14 +15,14 @@ import { TabWidget } from "./widget/tab_widget.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
-import { CaptureData, type CapturedTexture } from "./capture_data.js";
+import { CaptureData, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
 import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, serializeCapture, type LoadedCapture } from "./capture_file.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
-import { LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
+import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgValue, CaptureCommand, LayerMessage } from "../shared/protocol.js";
@@ -262,11 +262,16 @@ export class CaptureView implements CaptureHost {
   private _rows: CommandRow[] = [];
   private _timeline: TimelineWidget;
   private _profile: boolean;
-  /** Pass blocks of the command tree, keyed "frame:commandBuffer:passIndex", for durations and the timeline. */
-  private _passBlocks = new Map<string, { block: collapsible; row: CommandRow; label: string; frame: number }>();
+  /**
+   * Pass blocks of the command tree, keyed by passKey(), for durations and the timeline. `row`
+   * is the header the timeline scrolls to: the begin command's row for render passes, the block
+   * label for compute passes (no command begins one).
+   */
+  private _passBlocks = new Map<string, { block: collapsible; row: Widget; label: string; frame: number }>();
   private _selectedRow: CommandRow | null = null;
   private _drawCount = 0;
   private _commandBufferPassCounters = new Map<number, number>();
+  private _computePassCounters = new Map<number, number>();
   private _refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(win: SessionContext, captureIndex: number, profile = true) {
@@ -316,16 +321,16 @@ export class CaptureView implements CaptureHost {
   private _applyPassTimings(): void {
     const timed: TimelinePassCommand[] = [];
     for (const [key, p] of this._passBlocks) {
-      const parts = key.split(":").map(Number);
-      const t = this.data.passTiming(parts[0], parts[1], parts[2]);
+      const k = parsePassKey(key);
+      const t = this.data.passTiming(k.frame, k.commandBuffer, k.passIndex, k.compute);
       if (!t) {
         p.block.label.text = p.label;
         continue;
       }
       p.block.label.text = `${p.label}  ${t.durationMs.toFixed(3)} ms`;
       timed.push({
-        method: "beginRenderPass", startTime: t.startMs, endTime: t.startMs + t.durationMs, duration: t.durationMs,
-        args: [{ label: p.label.replace(/^(Render Pass|Rendering|Pass) \d+: ?/, "") || p.label }], _passIndex: parts[2], header: p.row,
+        method: k.compute ? "beginComputePass" : "beginRenderPass", startTime: t.startMs, endTime: t.startMs + t.durationMs, duration: t.durationMs,
+        args: [{ label: p.label.replace(/^(Render Pass|Rendering|Pass|Compute) \d+: ?/, "") || p.label }], _passIndex: k.passIndex, header: p.row,
       });
     }
     if (!timed.length) {
@@ -344,8 +349,8 @@ export class CaptureView implements CaptureHost {
     let maxEnd = -Infinity;
     let total = 0;
     for (const [key, p] of this._passBlocks) {
-      const parts = key.split(":").map(Number);
-      const t = this.data.passTiming(parts[0], parts[1], parts[2]);
+      const k = parsePassKey(key);
+      const t = this.data.passTiming(k.frame, k.commandBuffer, k.passIndex, k.compute);
       if (!t) continue;
       minStart = Math.min(minStart, t.startMs);
       maxEnd = Math.max(maxEnd, t.startMs + t.durationMs);
@@ -353,7 +358,7 @@ export class CaptureView implements CaptureHost {
       const row = p.row;
       passes.push({ label: p.label, durationMs: t.durationMs, startMs: t.startMs, onJump: () => {
         row.element.scrollIntoView({ block: "center" });
-        row.element.click();
+        if ("command" in row) row.element.click();   // a command row: select it (a label only scrolls)
       } });
     }
     if (!passes.length) return null;
@@ -441,6 +446,7 @@ export class CaptureView implements CaptureHost {
   /** Builds the command tree of one captured frame into `container`. */
   private _renderFrame(frame: number, container: Widget): void {
     this._commandBufferPassCounters.clear();
+    this._computePassCounters.clear();
     const commands = this.data.commandsForFrame(frame);
     const db = this.window.database;
 
@@ -454,8 +460,33 @@ export class CaptureView implements CaptureHost {
 
     let currentSecondary = 0;      // secondary command buffer whose inlined commands are being listed
     let secondaryParent: Widget | null = null;
+    let inRenderPass = false;
+
+    // Compute passes: a run of dispatches outside a render pass, grouped the way the layer times
+    // them (see COMPUTE_PASS_END; render pass begins, labels, secondaries and the end of the
+    // buffer close one too). Each command buffer, secondaries included, counts its own.
+    let compute: { block: collapsible; parent: Widget; dispatches: number; label: string } | null = null;
+    const closeCompute = (): void => {
+      if (!compute) return;
+      compute.block.label.text = `${compute.label}  (${compute.dispatches} dispatch${compute.dispatches === 1 ? "" : "es"})`;
+      const key = [...this._passBlocks.entries()].find(([, v]) => v.block === compute!.block)?.[0];
+      if (key) this._passBlocks.get(key)!.label = compute.block.label.text;
+      current = compute.parent;
+      compute = null;
+    };
+    const openCompute = (cbKey: number): void => {
+      const index = this._computePassCounters.get(cbKey) ?? 0;
+      this._computePassCounters.set(cbKey, index + 1);
+      const label = `Compute ${index}`;
+      const block = new collapsible(current, { label, collapsed: false, class: "capture_computepass_block" });
+      // No command begins a compute pass; the block's label stands in for the header row.
+      this._passBlocks.set(passKey(frame, cbKey, index, true), { block, row: block.label, label, frame });
+      compute = { block, parent: current, dispatches: 0, label };
+      current = block.body;
+    };
 
     const closeSecondary = (): void => {
+      closeCompute();
       if (currentSecondary && secondaryParent) current = secondaryParent;
       currentSecondary = 0;
       secondaryParent = null;
@@ -464,6 +495,7 @@ export class CaptureView implements CaptureHost {
       closeSecondary();
       stack.length = 0;
       currentCb = -1;
+      inRenderPass = false;
       current = submitBody;
     };
 
@@ -502,22 +534,30 @@ export class CaptureView implements CaptureHost {
         }
       }
       if (PASS_BEGIN.has(cmd.method)) {
+        closeCompute();
+        inRenderPass = true;
         const passIndex = this._commandBufferPassCounters.get(objId) ?? 0;
         this._commandBufferPassCounters.set(objId, passIndex + 1);
         const label = this._passLabel(cmd, passIndex);
         const block = new collapsible(current, { label, collapsed: false, class: "capture_renderpass_block" });
         const row = this._addRow(block.titleBar, cmd, true);
         row.element.dataset.passIndex = String(passIndex);
-        this._passBlocks.set(`${frame}:${objId}:${passIndex}`, { block, row, label, frame });
+        this._passBlocks.set(passKey(frame, objId, passIndex), { block, row, label, frame });
         stack.push(current);
         current = block.body;
         continue;
       }
       if (PASS_END.has(cmd.method)) {
         closeSecondary();
+        inRenderPass = false;
         this._addRow(current, cmd);
         current = stack.pop() ?? cbBody;
         continue;
+      }
+      if (COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || LABEL_BEGIN.has(cmd.method) || LABEL_END.has(cmd.method)) closeCompute();
+      if (DISPATCH_METHODS.has(cmd.method) && !inRenderPass) {
+        if (!compute) openCompute(cmd.secondary || objId);
+        compute!.dispatches++;
       }
       if (LABEL_BEGIN.has(cmd.method)) {
         const info = cmd.args && (isObject(cmd.args.pLabelInfo) ? cmd.args.pLabelInfo : isObject(cmd.args.pMarkerInfo) ? cmd.args.pMarkerInfo : null);
@@ -539,6 +579,7 @@ export class CaptureView implements CaptureHost {
         drawCount++;
       }
     }
+    closeCommandBuffer();
     this._drawCount += drawCount;
   }
 

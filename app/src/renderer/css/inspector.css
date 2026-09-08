@@ -802,6 +802,12 @@ li.tree-item.hidden, li.tree-item.filtered {
   margin-bottom: 5px;
 }
 
+/* Compute passes (runs of dispatches, timed by Profile passes) */
+.capture_computepass_block {
+  margin-bottom: 5px;
+}
+.capture_computepass_block > .title_bar { background-color: var(--compute-pass-bg); }
+
 .capture_drawcall {
   color: var(--drawcall-fg);
 }

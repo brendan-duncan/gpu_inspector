@@ -157,9 +157,15 @@ much slower than on the desktop.
    capture and brackets every render pass with `vkCmdResetQueryPool` + `vkCmdWriteTimestamp`
    (top of pipe, before the pass, in a pre-hook since resets are not allowed inside a pass) and
    `vkCmdWriteTimestamp` (bottom of pipe, after it). Results are read at finish and sent as
-   `CapturePassTimings` (start and duration in ms, using `timestampPeriod`). The UI shows them as
-   pass durations in the command tree, the pass timeline above the list, and the Frame Bound card
-   and Pass Timings of Frame Stats. `FrameStats` also carries the CPU time inside `vkQueueSubmit`
+   `CapturePassTimings` (start and duration in ms, using `timestampPeriod`). Vulkan has no
+   compute pass, so runs of dispatches outside a render pass are timed as one "compute pass":
+   a dispatch opens it (pre-hook, begin timestamp before the dispatch) and the next barrier,
+   event wait, render pass begin, debug label, secondary execution or the end of the command
+   buffer closes it (pre-hooks, end timestamp before that command). Each command buffer counts
+   its compute passes separately from its render passes (`kind` in the timing). The UI groups
+   the same runs into "Compute N" blocks by applying the same rule to the command stream. The UI
+   shows timings as pass durations in the command tree, the pass timeline above the list, and
+   the Frame Bound card and Pass Timings of Frame Stats. `FrameStats` also carries the CPU time inside `vkQueueSubmit`
    per frame (`submitMs`, measured by pre/post hooks), the "submit" line of the frame time meter.
 10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for

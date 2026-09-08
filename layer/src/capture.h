@@ -39,6 +39,7 @@ struct PassTiming {
     uint32_t frame = UINT32_MAX;
     uint64_t commandBufferId = 0;
     uint32_t passIndex = 0;
+    bool compute = false;          // a run of dispatches (its own index sequence) rather than a render pass
     uint32_t query = 0;            // begin query; end is query + 1
 };
 
@@ -121,6 +122,11 @@ public:
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
+    // Compute passes: a dispatch outside a render pass opens one (pre-hook, so the begin
+    // timestamp precedes the dispatch); barriers, event waits, render passes, debug labels,
+    // secondary execution and the end of the command buffer close it (pre-hooks as well).
+    void OnBeforeDispatch(DeviceData* dev, CommandRecorder* rec);
+    void OnEndComputePass(DeviceData* dev, CommandRecorder* rec);
     // A primary executing secondaries takes over their pending buffer copies (recorded inside a
     // render pass, they can only be flushed by the primary at the end of that pass).
     void OnExecuteCommands(DeviceData* dev, CommandRecorder* rec, uint32_t count, const VkCommandBuffer* secondaries);
@@ -146,6 +152,8 @@ private:
     void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
     void EnsureQueryPool(DeviceData* dev);
     void ReleaseQueryPool(DeviceData* dev);
+    // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
+    uint32_t BeginTimestamp(DeviceData* dev, CommandRecorder* rec);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
     struct StagingChunk {

@@ -13,7 +13,7 @@ if(NOT GLSLC)
 endif()
 
 set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
-set(SHADERS cube.vert cube.frag)
+set(SHADERS cube.vert cube.frag wave.comp)
 set(SPV_FILES)
 foreach(s ${SHADERS})
     set(spv "$<TARGET_FILE_DIR:vkinsp_triangle>/${s}.spv")

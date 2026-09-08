@@ -223,6 +223,8 @@ export interface PassTiming {
   frame: number;
   commandBuffer: number;
   passIndex: number;
+  /** "compute": a run of dispatches outside a render pass, with its own index sequence. Absent = render. */
+  kind?: "render" | "compute";
   /** Start relative to the earliest timed pass of the capture. */
   startMs: number;
   durationMs: number;

@@ -6,17 +6,21 @@ themselves from the GitHub releases of this repository.
 
 ## Cutting a release
 
+The version lives in one place, `app/package.json`; the tag must match it:
+
 ```
+(cd app && npm version 0.2.0 --no-git-tag-version)
+git commit -am "v0.2.0"
 git tag v0.2.0
-git push origin v0.2.0
+git push origin main v0.2.0
 ```
 
 The workflow then, on a Windows and an Ubuntu 22.04 runner:
 
 1. checks out the repository with the `Vulkan-Headers` submodule,
 2. builds the layer with CMake (`-DVKINSP_BUILD_TESTS=OFF`, so no Vulkan SDK is needed),
-3. sets the app version from the tag (`v0.2.0` releases `0.2.0`; `app/package.json` is not
-   consulted, but keep it in step so `npm start` shows the right number),
+3. checks that the tag matches the `version` in `app/package.json` (`v0.2.0` needs `0.2.0`)
+   and fails with instructions if it does not,
 4. runs `npm run dist:win` / `npm run dist:linux` and uploads the installer, its block map and
    the update manifest (`latest.yml` / `latest-linux.yml`) as workflow artifacts,
 5. once both platforms have built, creates the GitHub release for the tag with all of those

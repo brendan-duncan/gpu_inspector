@@ -13,8 +13,9 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
   the Vulkan SDK's compilers and see the running application use it; restore the original at any
   time. Shaders compiled with debug information (`-g`, `-fspv-debug=vulkan-with-source`) show
   their embedded source, linked line by line to the SPIR-V, and are edited as that source.
-* **Profiling** — GPU timestamps around every render pass of a capture: pass durations, a pass
-  timeline, and a Frame Bound card comparing GPU and CPU submit time with the frame interval.
+* **Profiling** — GPU timestamps around every render pass and every run of compute dispatches
+  of a capture: pass durations, a pass timeline, and a Frame Bound card comparing GPU and CPU
+  submit time with the frame interval.
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
   and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
   with the parsed contents of its uniform and storage buffers, the decoded vertex and index

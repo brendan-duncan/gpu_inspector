@@ -166,6 +166,15 @@ struct App {
     VkDescriptorPool descriptorPool{};
     VkDescriptorSet descriptorSet{};
 
+    // Compute: a wave buffer refreshed every frame (wave.comp), so captures have dispatches.
+    static const uint32_t kWaveCount = 1024;
+    VkBuffer waveBuffer{};
+    VkDeviceMemory waveMemory{};
+    VkDescriptorSetLayout computeSetLayout{};
+    VkPipelineLayout computePipelineLayout{};
+    VkPipeline computePipeline{};
+    VkDescriptorSet computeSet{};
+
     VkCommandPool commandPool{};
     static const int kFramesInFlight = 2;
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
@@ -712,10 +721,11 @@ struct App {
         plci.pPushConstantRanges = &pcr;
         CHECK(vkCreatePipelineLayout(device, &plci, nullptr, &pipelineLayout));
 
-        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+        VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
         VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        dpci.maxSets = 1;
-        dpci.poolSizeCount = 2;
+        dpci.maxSets = 2;
+        dpci.poolSizeCount = 3;
         dpci.pPoolSizes = sizes;
         CHECK(vkCreateDescriptorPool(device, &dpci, nullptr, &descriptorPool));
         VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -834,6 +844,19 @@ struct App {
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         CHECK(vkBeginCommandBuffer(cb, &bi));
 
+        // Compute first: two dispatches refreshing the wave buffer, then a barrier. The inspector
+        // times the run as one compute pass.
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeSet, 0, nullptr);
+        struct { float time; uint32_t count; } wavePush{t, kWaveCount};
+        vkCmdPushConstants(cb, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(wavePush), &wavePush);
+        vkCmdDispatch(cb, kWaveCount / 64, 1, 1);
+        vkCmdDispatch(cb, kWaveCount / 64, 1, 1);
+        VkMemoryBarrier waveBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        waveBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        waveBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &waveBarrier, 0, nullptr, 0, nullptr);
+
         VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
         label.pLabelName = "Main Pass";
         label.color[0] = 0.2f; label.color[1] = 0.6f; label.color[2] = 1.0f; label.color[3] = 1.0f;
@@ -892,8 +915,60 @@ struct App {
         return true;
     }
 
+    void CreateCompute() {
+        VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        CreateBuffer(kWaveCount * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host, waveBuffer, waveMemory, "Wave");
+
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        dslci.bindingCount = 1;
+        dslci.pBindings = &binding;
+        CHECK(vkCreateDescriptorSetLayout(device, &dslci, nullptr, &computeSetLayout));
+        VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(uint32_t)};
+        VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &computeSetLayout;
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges = &pcr;
+        CHECK(vkCreatePipelineLayout(device, &plci, nullptr, &computePipelineLayout));
+
+        VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        dsai.descriptorPool = descriptorPool;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &computeSetLayout;
+        CHECK(vkAllocateDescriptorSets(device, &dsai, &computeSet));
+        VkDescriptorBufferInfo dbi{waveBuffer, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = computeSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &dbi;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+        VkShaderModule cs = LoadShader("wave.comp.spv");
+        VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpci.stage.module = cs;
+        cpci.stage.pName = "main";
+        cpci.layout = computePipelineLayout;
+        CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpci, nullptr, &computePipeline));
+        Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)computePipeline, "Wave compute");
+        vkDestroyShaderModule(device, cs, nullptr);
+    }
+
     void Cleanup() {
         vkDeviceWaitIdle(device);
+        vkDestroyPipeline(device, computePipeline, nullptr);
+        vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, computeSetLayout, nullptr);
+        vkDestroyBuffer(device, waveBuffer, nullptr);
+        vkFreeMemory(device, waveMemory, nullptr);
         for (int i = 0; i < kFramesInFlight; ++i) {
             vkDestroySemaphore(device, imageAvailable[i], nullptr);
             vkDestroySemaphore(device, renderFinished[i], nullptr);
@@ -929,6 +1004,7 @@ struct App {
         CreateRenderPass();
         CreateFramebuffers();
         CreateResources();
+        CreateCompute();
         auto start = std::chrono::steady_clock::now();
         while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
             PumpEvents();

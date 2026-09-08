@@ -138,6 +138,24 @@ PRE_HOOKS = {
     "vkQueueSubmit",
     "vkQueueSubmit2",
     "vkQueueSubmit2KHR",
+    # compute pass timing: a run of dispatches is bracketed from the first dispatch to the next
+    # barrier / event wait / render pass / label / secondary execution / end of the buffer
+    "vkCmdDispatch",
+    "vkCmdDispatchBase",
+    "vkCmdDispatchBaseKHR",
+    "vkCmdDispatchIndirect",
+    "vkCmdPipelineBarrier",
+    "vkCmdPipelineBarrier2",
+    "vkCmdPipelineBarrier2KHR",
+    "vkCmdWaitEvents",
+    "vkCmdWaitEvents2",
+    "vkCmdWaitEvents2KHR",
+    "vkCmdExecuteCommands",
+    "vkEndCommandBuffer",
+    "vkCmdBeginDebugUtilsLabelEXT",
+    "vkCmdEndDebugUtilsLabelEXT",
+    "vkCmdDebugMarkerBeginEXT",
+    "vkCmdDebugMarkerEndEXT",
 }
 
 SKIP_COMMANDS = {"vkNegotiateLoaderLayerInterfaceVersion"}

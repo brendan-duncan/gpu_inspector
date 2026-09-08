@@ -86,6 +86,40 @@ void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRe
 void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
     BeforePass(commandBuffer);
 }
+// Compute pass timing: a dispatch outside a render pass opens a compute pass; barriers, event
+// waits, debug labels, secondary execution and the end of the buffer close it (all before the
+// command runs, so the timestamps bracket exactly the dispatches).
+static void BeforeDispatch(VkCommandBuffer commandBuffer) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforeDispatch(dev, rec);
+}
+static void EndComputePass(VkCommandBuffer commandBuffer) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnEndComputePass(dev, rec);
+}
+void PreHook_vkCmdDispatch(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdDispatchBase(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdDispatchBaseKHR(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdDispatchIndirect(VkCommandBuffer& commandBuffer, VkBuffer&, VkDeviceSize&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdPipelineBarrier(VkCommandBuffer& commandBuffer, VkPipelineStageFlags&, VkPipelineStageFlags&, VkDependencyFlags&, uint32_t&,
+                                  const VkMemoryBarrier*&, uint32_t&, const VkBufferMemoryBarrier*&, uint32_t&, const VkImageMemoryBarrier*&) {
+    EndComputePass(commandBuffer);
+}
+void PreHook_vkCmdPipelineBarrier2(VkCommandBuffer& commandBuffer, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdPipelineBarrier2KHR(VkCommandBuffer& commandBuffer, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdWaitEvents(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, VkPipelineStageFlags&, VkPipelineStageFlags&, uint32_t&,
+                             const VkMemoryBarrier*&, uint32_t&, const VkBufferMemoryBarrier*&, uint32_t&, const VkImageMemoryBarrier*&) {
+    EndComputePass(commandBuffer);
+}
+void PreHook_vkCmdWaitEvents2(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdWaitEvents2KHR(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdExecuteCommands(VkCommandBuffer& commandBuffer, uint32_t&, const VkCommandBuffer*&) { EndComputePass(commandBuffer); }
+void PreHook_vkEndCommandBuffer(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdBeginDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer, const VkDebugUtilsLabelEXT*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdEndDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdDebugMarkerBeginEXT(VkCommandBuffer& commandBuffer, const VkDebugMarkerMarkerInfoEXT*&) { EndComputePass(commandBuffer); }
+void PreHook_vkCmdDebugMarkerEndEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
+
 void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
     BeforePass(commandBuffer);
 }

@@ -8,7 +8,7 @@
 // the manifest, then the raw binary payloads (pixel data, buffer contents, SPIR-V) which the
 // manifest references as [offset, length] into that area. Text editors can read the header and
 // manifest, and payloads are stored as bytes rather than base64 so large captures stay compact.
-import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
+import { passKey, type CaptureData, type CapturedBuffer, type CapturedTexture } from "./capture_data.js";
 import type { SessionContext } from "./session_panel.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, ValidationMessage } from "../shared/protocol.js";
@@ -253,7 +253,7 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const buffers = new Map<number, CapturedBuffer>();
   for (const b of manifest.buffers ?? []) buffers.set(b.info.id, { info: b.info, data: payload(b.payload) });
   const passTimings = new Map<string, PassTiming>();
-  for (const p of manifest.passTimings ?? []) passTimings.set(`${p.frame}:${p.commandBuffer}:${p.passIndex}`, p);
+  for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings };
 }

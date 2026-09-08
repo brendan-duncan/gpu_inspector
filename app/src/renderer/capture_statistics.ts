@@ -4,7 +4,7 @@
 // indirect draws).
 import { Div } from "./widget/div.js";
 import { Widget } from "./widget/widget.js";
-import { DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, PASS_BEGIN, SUBMIT_METHODS, TRACE_METHODS } from "./vulkan/command_sets.js";
+import { COMPUTE_PASS_END, DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, TRACE_METHODS } from "./vulkan/command_sets.js";
 import { fmt, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
@@ -39,6 +39,8 @@ export class CaptureStatistics {
   debugLabels = 0;
 
   renderPasses = 0;
+  /** Runs of dispatches outside render passes (what Profile passes times as compute passes). */
+  computePasses = 0;
   colorAttachments = 0;
   depthStencilAttachments = 0;
   renderTargetsCaptured = 0;
@@ -86,6 +88,9 @@ export class CaptureStatistics {
     const secondaries = new Set<number>();
     // Bound graphics pipeline per command stream (primary, or one inlined secondary).
     const boundPipeline = new Map<string, number>();
+    // Compute pass bracketing per stream, as the layer and the command list do it.
+    const inRenderPass = new Map<string, boolean>();
+    const computeOpen = new Map<string, boolean>();
 
     for (const cmd of data.commands) {
       if (!cmd) continue;
@@ -97,6 +102,9 @@ export class CaptureStatistics {
         this.submits++;
         continue;
       }
+      if (COMPUTE_PASS_END.has(method) || PASS_BEGIN.has(method) || LABEL_BEGIN.has(method) || LABEL_END.has(method) || method === "vkEndCommandBuffer") computeOpen.set(stream, false);
+      if (PASS_BEGIN.has(method)) inRenderPass.set(stream, true);
+      if (PASS_END.has(method)) inRenderPass.set(stream, false);
       if (cmd.object) commandBuffers.add(cmd.object.__id);
       if (cmd.secondary) secondaries.add(cmd.secondary);
 
@@ -108,6 +116,10 @@ export class CaptureStatistics {
         this._geometry(cmd, data, pipeline);
       } else if (DISPATCH_METHODS.has(method)) {
         this.dispatches++;
+        if (!inRenderPass.get(stream) && !computeOpen.get(stream)) {
+          this.computePasses++;
+          computeOpen.set(stream, true);
+        }
       } else if (TRACE_METHODS.has(method)) {
         this.traceRays++;
       } else if (COPY_METHODS.has(method)) {
@@ -318,7 +330,7 @@ export class CaptureStatistics {
         { label: "Copy / clear commands", value: this.copyCommands }, { label: "Barriers and events", value: this.barriers }, { label: "Debug labels", value: this.debugLabels },
       ]),
       s("Passes", [
-        { label: "Render passes", value: this.renderPasses }, { label: "Color attachments", value: this.colorAttachments },
+        { label: "Render passes", value: this.renderPasses }, { label: "Compute passes", value: this.computePasses }, { label: "Color attachments", value: this.colorAttachments },
         { label: "Depth / stencil attachments", value: this.depthStencilAttachments }, { label: "Render targets read back", value: this.renderTargetsCaptured },
       ]),
       s("Pipeline", [
