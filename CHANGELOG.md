@@ -1,6 +1,12 @@
 ## 0.5.0
 
 ### Added
+- Two shader analysis rules: loop-invariant computation (instructions inside a loop whose
+  inputs cannot change in it: constants, values from outside the loop, loads of variables the
+  loop never stores to; reported per line with the op units repeated every iteration) and
+  workgroup memory size (the shared memory of a compute shader, flagged above 16 and 32 KB;
+  also listed in the Shader Cost summary). The triangle test application's compute shader
+  exercises both.
 - Shader cost per source line: modules with line information get their modeled cost split by
   the line each instruction came from. The Shader Cost section lists the costliest lines with
   their share, clickable to the line in the Source view (Inspect tab and captured draws), and

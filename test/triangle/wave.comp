@@ -12,8 +12,16 @@ layout(push_constant) uniform Push {
     uint count;
 } pc;
 
+// Shared memory and a loop with a loop-invariant term: what the inspector's shader analysis
+// reports (workgroup memory size, loop-invariant computation).
+shared float scratch[64];
+
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= pc.count) return;
-    wave.values[i] = sin(pc.time + float(i) * 0.05);
+    float bias = 0.0;
+    for (uint k = 0u; k < 4u; ++k) bias += cos(pc.time) * 0.001;
+    scratch[gl_LocalInvocationID.x] = bias;
+    barrier();
+    wave.values[i] = sin(pc.time + float(i) * 0.05) + scratch[(gl_LocalInvocationID.x + 1u) % 64u];
 }

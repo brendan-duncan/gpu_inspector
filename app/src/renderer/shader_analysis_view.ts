@@ -96,7 +96,7 @@ export function renderCostSection(parent: Widget, analysis: ShaderAnalysis, entr
   });
   const t = analysis.totals;
   new Div(body, {
-    text: `${t.instructions} instructions in ${t.functions} function${t.functions === 1 ? "" : "s"}, ${t.loops} loop${t.loops === 1 ? "" : "s"}, ${t.branches} branch${t.branches === 1 ? "" : "es"}, ${t.textureOps} texture op${t.textureOps === 1 ? "" : "s"}, ${t.memoryOps} memory op${t.memoryOps === 1 ? "" : "s"}, ${t.sfuOps} SFU op${t.sfuOps === 1 ? "" : "s"}${t.atomics ? `, ${t.atomics} atomics` : ""}${t.barriers ? `, ${t.barriers} barriers` : ""}${t.derivatives ? `, ${t.derivatives} derivatives` : ""}${t.discards ? `, ${t.discards} discards` : ""}`,
+    text: `${t.instructions} instructions in ${t.functions} function${t.functions === 1 ? "" : "s"}, ${t.loops} loop${t.loops === 1 ? "" : "s"}, ${t.branches} branch${t.branches === 1 ? "" : "es"}, ${t.textureOps} texture op${t.textureOps === 1 ? "" : "s"}, ${t.memoryOps} memory op${t.memoryOps === 1 ? "" : "s"}, ${t.sfuOps} SFU op${t.sfuOps === 1 ? "" : "s"}${t.atomics ? `, ${t.atomics} atomics` : ""}${t.barriers ? `, ${t.barriers} barriers` : ""}${t.derivatives ? `, ${t.derivatives} derivatives` : ""}${t.discards ? `, ${t.discards} discards` : ""}${t.workgroupBytes ? `, ${t.workgroupBytes >= 1024 ? `${(t.workgroupBytes / 1024).toFixed(1)} KB` : `${t.workgroupBytes} B`} shared memory` : ""}`,
     class: "text-muted font-sm",
   });
   for (const e of entries) {

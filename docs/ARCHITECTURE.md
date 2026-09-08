@@ -471,6 +471,14 @@ integer division), located to a source line through the debug information when t
 sections of a shader payload in the Inspect tab, and as the capture's "Analyze Shaders" report,
 which resolves the pipeline bound for each draw and dispatch to count uses per shader.
 
+Loop-invariant detection records every value-producing instruction with the loops it sits in,
+and every loop's stored variables; after the walk, a candidate inside a loop is invariant when
+all its inputs are constants, global variable addresses, values defined outside the loop, loads
+(through invariant indices) of variables the loop never stores to and that are not storage,
+shared or image memory, or invariant operations themselves (phis and calls never are; cycles
+resolve to variant). The workgroup memory rule sums the sizes of Workgroup variables with a
+scalar layout computed from the type declarations.
+
 Every own-cost charge of the analysis is also charged to the source line of the instruction
 (`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):
 the Shader Cost section's "Costliest lines" list and the flame graph's line frames under a

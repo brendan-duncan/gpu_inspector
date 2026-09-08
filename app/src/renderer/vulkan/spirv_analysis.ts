@@ -85,6 +85,8 @@ export interface AnalysisTotals {
   barriers: number;
   derivatives: number;
   discards: number;
+  /** Bytes of Workgroup (shared) variables, summed over the module (0 without any). */
+  workgroupBytes: number;
 }
 
 export interface ShaderAnalysis {
@@ -145,6 +147,7 @@ export function severitySummary(findings: Finding[]): string {
 
 const enum Op {
   Name = 5, String = 7, ExtInstImport = 11, ExtInst = 12, EntryPoint = 15,
+  TypeBool = 20, TypeInt = 21, TypeFloat = 22, TypeVector = 23, TypeMatrix = 24, TypeArray = 28, TypeRuntimeArray = 29, TypeStruct = 30,
   TypePointer = 32, ConstantTrue = 41, ConstantFalse = 42, Constant = 43, ConstantComposite = 44,
   SpecConstantTrue = 48, SpecConstantFalse = 49, SpecConstant = 50, SpecConstantComposite = 51,
   Function = 54, FunctionEnd = 56, FunctionCall = 57, Variable = 59, Load = 61, Store = 62, Decorate = 71,
@@ -159,12 +162,12 @@ const enum Op {
   OuterProduct = 147, Dot = 148,
   DPdx = 207, DPdy = 208, Fwidth = 209, DPdxFine = 210, DPdyFine = 211, FwidthFine = 212, DPdxCoarse = 213, DPdyCoarse = 214, FwidthCoarse = 215,
   ControlBarrier = 224, MemoryBarrier = 225, AtomicLoad = 227, AtomicXor = 242,
-  LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Switch = 251, Kill = 252,
+  Phi = 245, LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Switch = 251, Kill = 252,
   ImageSparseSampleImplicitLod = 305, ImageSparseRead = 320,
   TerminateInvocation = 4416, DemoteToHelperInvocation = 5380, AtomicFAddEXT = 6035, AtomicFMinEXT = 5614, AtomicFMaxEXT = 5615,
 }
 
-const enum StorageClass { UniformConstant = 0, Uniform = 2, Workgroup = 4, PushConstant = 9, Image = 11, StorageBuffer = 12, PhysicalStorageBuffer = 5349 }
+const enum StorageClass { UniformConstant = 0, Uniform = 2, Workgroup = 4, Private = 6, Function = 7, PushConstant = 9, Image = 11, StorageBuffer = 12, PhysicalStorageBuffer = 5349 }
 const enum Dec { BufferBlock = 3 }
 
 const STAGES: Record<number, ShaderStage> = {
@@ -273,7 +276,30 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
   const entries: { name: string; stage: ShaderStage; functionId: number }[] = [];
   const findings = new Map<string, Finding>();
   const lineCosts = new Map<number, Map<string, LineCost>>();   // function id -> "file:line" -> cost
-  const totals: AnalysisTotals = { instructions: 0, functions: 0, loops: 0, branches: 0, textureOps: 0, memoryOps: 0, sfuOps: 0, atomics: 0, barriers: 0, derivatives: 0, discards: 0 };
+  const totals: AnalysisTotals = { instructions: 0, functions: 0, loops: 0, branches: 0, textureOps: 0, memoryOps: 0, sfuOps: 0, atomics: 0, barriers: 0, derivatives: 0, discards: 0, workgroupBytes: 0 };
+  // Type sizes (a scalar layout: no padding), for the workgroup memory rule.
+  const typeSizes = new Map<number, number>();
+  const typeArrays = new Map<number, [number, number]>();  // array type -> [element type, length constant id]
+  const typeStructs = new Map<number, number[]>();
+  const constantValues = new Map<number, number>();
+  const sizeOf = (type: number, depth = 0): number => {
+    if (depth > 16) return 0;
+    const direct = typeSizes.get(type);
+    if (direct !== undefined) return direct;
+    const arr = typeArrays.get(type);
+    if (arr) return sizeOf(arr[0], depth + 1) * (constantValues.get(arr[1]) ?? 0);
+    const members = typeStructs.get(type);
+    if (members) return members.reduce((acc, m) => acc + sizeOf(m, depth + 1), 0);
+    return 0;
+  };
+  // Loop-invariant detection: what each result id came from, and the variables each loop
+  // stores to; evaluated once the walk is done (stores after a load count too).
+  interface Def { op: number; operands: number[]; loops: number[]; pointer?: number; cost: number; ordinal: number; fnId: number }
+  const defs = new Map<number, Def>();
+  const globalVars = new Map<number, number>();               // variable id -> storage class (outside functions)
+  const storesInLoop = new Map<number, Set<number>>();       // loop merge id -> variables stored inside it
+  const chainBase = new Map<number, number>();               // access chain id -> variable id
+  const candidates: Def[] = [];
   let glslSet = 0;
   let fn: FunctionAnalysis | null = null;
   const loopStack: number[] = [];       // merge block ids of the loops being walked
@@ -335,18 +361,29 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
         pointerClass.set(words[a], words[a + 1]);
         pointee.set(words[a], words[a + 2]);
         break;
+      case Op.TypeBool: typeSizes.set(words[a], 4); break;
+      case Op.TypeInt: case Op.TypeFloat: typeSizes.set(words[a], Math.max(1, words[a + 1] >>> 3)); break;
+      case Op.TypeVector: typeSizes.set(words[a], sizeOf(words[a + 1]) * words[a + 2]); break;
+      case Op.TypeMatrix: typeSizes.set(words[a], sizeOf(words[a + 1]) * words[a + 2]); break;
+      case Op.TypeArray: typeArrays.set(words[a], [words[a + 1], words[a + 2]]); break;
+      case Op.TypeRuntimeArray: typeSizes.set(words[a], 0); break;
+      case Op.TypeStruct: typeStructs.set(words[a], Array.from(words.subarray(a + 1, end))); break;
       case Op.Decorate:
         if (words[a + 1] === Dec.BufferBlock) bufferBlocks.add(words[a]);
         break;
       case Op.Constant: case Op.ConstantTrue: case Op.ConstantFalse: case Op.ConstantComposite:
       case Op.SpecConstant: case Op.SpecConstantTrue: case Op.SpecConstantFalse: case Op.SpecConstantComposite:
         constants.add(words[a + 1]);
+        if (op === Op.Constant && len === 4) constantValues.set(words[a + 1], words[a + 2]);
         break;
       case Op.Variable: {
         // A SPIR-V 1.0 storage buffer is a Uniform variable of a BufferBlock struct.
         let cls = words[a + 2];
         if (cls === StorageClass.Uniform && bufferBlocks.has(pointee.get(words[a]) ?? -1)) cls = StorageClass.StorageBuffer;
         idClass.set(words[a + 1], cls);
+        if (!fn) globalVars.set(words[a + 1], cls);
+        if (cls === StorageClass.Workgroup) totals.workgroupBytes += sizeOf(pointee.get(words[a]) ?? -1);
+        chainBase.set(words[a + 1], words[a + 1]);
         break;
       }
       case Op.AccessChain: case Op.InBoundsAccessChain: case Op.PtrAccessChain: case Op.InBoundsPtrAccessChain: {
@@ -354,6 +391,8 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
         const base = idClass.get(words[a + 2]);
         const cls = base ?? pointerClass.get(words[a]);
         if (cls !== undefined) idClass.set(words[a + 1], cls);
+        chainBase.set(words[a + 1], chainBase.get(words[a + 2]) ?? words[a + 2]);
+        if (fn) defs.set(words[a + 1], { op, operands: Array.from(words.subarray(a + 2, end)), loops: [...loopStack], cost: 0, ordinal, fnId: fn.id });
         break;
       }
       case Op.Function: {
@@ -491,8 +530,93 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
           break;
       }
     }
+    // Loop-invariant bookkeeping: definitions (with the loops they sit in) and stores per loop.
+    if (fn) {
+      if (op === Op.Store) {
+        const v = chainBase.get(words[a]) ?? words[a];
+        for (const loop of loopStack) {
+          let set = storesInLoop.get(loop);
+          if (!set) { set = new Set(); storesInLoop.set(loop, set); }
+          set.add(v);
+        }
+      } else if (op === Op.Load) {
+        defs.set(words[a + 1], { op, operands: [], loops: [...loopStack], pointer: words[a + 2], cost: 0, ordinal, fnId: fn.id });
+      } else if (op === Op.Phi || op === Op.FunctionCall) {
+        defs.set(words[a + 1], { op, operands: [], loops: [...loopStack], cost: 0, ordinal, fnId: fn.id });
+      } else if (op === Op.ExtInst) {
+        const d: Def = { op, operands: Array.from(words.subarray(a + 4, end)), loops: [...loopStack], cost: 1, ordinal, fnId: fn.id };
+        if (words[a + 2] === glslSet) d.cost = weighCost(GLSL_EXT[words[a + 3]]?.cost ?? ALU);
+        defs.set(words[a + 1], d);
+        if (loopStack.length) candidates.push(d);
+      } else if (isAlu(op) || (op >= Op.UDiv && op <= Op.Dot) || op === Op.Transpose) {
+        const cost = op === Op.Dot ? 3 : op === Op.MatrixTimesMatrix ? 16 : (op >= Op.MatrixTimesScalar && op <= Op.OuterProduct) || op === Op.Transpose ? 4
+          : (op >= Op.UDiv && op <= Op.FMod) ? COST_WEIGHTS.sfu : 1;
+        const d: Def = { op, operands: Array.from(words.subarray(a + 2, end)), loops: [...loopStack], cost, ordinal, fnId: fn.id };
+        defs.set(words[a + 1], d);
+        if (loopStack.length) candidates.push(d);
+      }
+    }
     ordinal++;
     i += len;
+  }
+
+  // Loop-invariant computations: an instruction inside a loop whose inputs cannot change in it.
+  // A value is invariant for loop L when it is a constant, a global variable's address, defined
+  // outside L, a load of a variable L never stores to (through invariant indices, not from
+  // storage buffers, shared or image memory), or a pure operation on invariant values.
+  const invariantMemo = new Map<string, boolean>();
+  const invariant = (id: number, loop: number, depth: number): boolean => {
+    if (constants.has(id) || globalVars.has(id)) return true;
+    const d = defs.get(id);
+    if (!d) return false;
+    if (!d.loops.includes(loop)) return true;
+    if (depth > 32) return false;
+    const key = `${id}:${loop}`;
+    const memo = invariantMemo.get(key);
+    if (memo !== undefined) return memo;
+    invariantMemo.set(key, false);   // cycles (phi-fed values) are variant
+    let result = false;
+    if (d.op === Op.Load && d.pointer !== undefined) {
+      const v = chainBase.get(d.pointer) ?? d.pointer;
+      const cls = idClass.get(v);
+      const volatileClass = cls === StorageClass.StorageBuffer || cls === StorageClass.PhysicalStorageBuffer || cls === StorageClass.Workgroup || cls === StorageClass.Image;
+      result = !volatileClass && !(storesInLoop.get(loop)?.has(v)) && invariant(d.pointer, loop, depth + 1);
+    } else if (d.op === Op.Phi || d.op === Op.FunctionCall) {
+      result = false;
+    } else {
+      result = d.operands.every((o) => invariant(o, loop, depth + 1));
+    }
+    invariantMemo.set(key, result);
+    return result;
+  };
+  interface InvariantGroup { fnId: number; loop: number; ordinal: number; count: number; cost: number }
+  const groups = new Map<string, InvariantGroup>();
+  for (const d of candidates) {
+    const loop = d.loops[d.loops.length - 1];
+    if (!d.operands.every((o) => invariant(o, loop, 0))) continue;
+    const loc = locations[d.ordinal] ?? null;
+    const key = `${d.fnId}|${loop}|${loc ? `${loc.file}:${loc.line}` : "-"}`;
+    const g = groups.get(key);
+    if (g) { g.count++; g.cost += d.cost; } else groups.set(key, { fnId: d.fnId, loop, ordinal: d.ordinal, count: 1, cost: d.cost });
+  }
+  for (const g of groups.values()) {
+    fn = functions.get(g.fnId) ?? null;
+    loopStack.length = 0;
+    loopStack.push(g.loop);
+    const severity: Severity = g.cost >= COST_WEIGHTS.sfu ? "medium" : "low";
+    finding("loop-invariant", severity, "medium",
+      `${g.count} instruction${g.count === 1 ? "" : "s"} inside the loop use${g.count === 1 ? "s" : ""} only values that do not change in it (${Math.round(g.cost)} op units repeated every iteration); compute ${g.count === 1 ? "it" : "them"} once before the loop.`, g.ordinal);
+    if (g.count > 1) findings.get(`loop-invariant|${g.fnId}|${(locations[g.ordinal] ?? null) ? `${locations[g.ordinal]!.file}:${locations[g.ordinal]!.line}` : "-"}`)!.count = g.count;
+  }
+  fn = null;
+  loopStack.length = 0;
+
+  // Workgroup (shared) memory: it divides the compute unit's storage among the resident
+  // workgroups, so a large allocation caps occupancy.
+  if (totals.workgroupBytes > 0) {
+    const kb = totals.workgroupBytes / 1024;
+    finding("workgroup-memory", totals.workgroupBytes > 32 * 1024 ? "medium" : totals.workgroupBytes > 16 * 1024 ? "low" : "info", "high",
+      `${kb >= 1 ? `${kb.toFixed(kb >= 10 ? 0 : 1)} KB` : `${totals.workgroupBytes} bytes`} of shared (workgroup) memory per workgroup${totals.workgroupBytes > 16 * 1024 ? ": it limits how many workgroups fit on a compute unit at once; halve it, or use a smaller workgroup, when occupancy matters" : ""}.`, -1);
   }
 
   // Inclusive costs over the call graph (recursion cut at the first repeat).

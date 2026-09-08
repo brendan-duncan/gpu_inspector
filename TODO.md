@@ -62,8 +62,6 @@ interpreter and re-created pipelines.
 ### Shaders
 - [ ] Shader flame graph: per-draw GPU timing (replay) and measured fragment counts instead of
       the scissor-area estimate.
-- [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables) and
-      loop-invariant detection.
 - [ ] Source maps from outside the module: a user-configured source root (file name from
       `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
       but without embedded text, and `#include` resolution for the editor from the same root.
