@@ -306,6 +306,18 @@ may still reference them. Editing a module applies to every pipeline that uses i
 buffers recorded before the edit keep binding the original until they are re-recorded, and
 graphics pipeline libraries are not supported.
 
+#### Device sections
+
+`vkEnumeratePhysicalDevices` has a hook that queries each physical device's properties (with
+its limits), memory heaps and types, queue families, features and extensions and attaches them
+to the `VkPhysicalDevice` object as an `ObjectUpdate` (replayed in snapshots and saved in
+capture files), so a capture from another machine says what that GPU offered.
+`renderer/device_info_view.ts` renders them as sections on the physical device (a filterable
+limits table, memory with sizes and flags, queue families, supported features with a "show all"
+toggle, a filterable extension list), on the device (enabled extensions, queues, and the enabled
+features flattened across `pEnabledFeatures` and every feature struct in the pNext chain, each
+member tagged with its struct), and on the instance (application info, layers, extensions).
+
 #### Shader reflection
 
 Every shader payload in the Inspect tab (a module, or a pipeline stage) has a Reflection section

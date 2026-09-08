@@ -405,6 +405,14 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .draw-state { font-family: var(--font-mono); font-size: 9pt; padding: 4px; }
 .draw-state-row { line-height: 1.6; }
 .draw-state-label { display: inline-block; min-width: 150px; color: var(--fg-secondary); }
+/* Device / physical device / instance sections */
+.device-info { font-size: 9.5pt; padding: 4px; }
+.device-info .draw-state-row { font-family: var(--font-mono); font-size: 9pt; }
+.device-info-label { min-width: 260px; }
+.device-info-value { user-select: text; }
+.device-feature-on .device-feature-mark { color: var(--accent-success); }
+.device-feature-off { color: var(--fg-muted); }
+.device-feature-off .device-feature-mark { color: var(--fg-muted); }
 .capture_frameImages { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px; width: auto; height: auto; }
 .capture_pass_texture { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px; max-width: 420px; }
 .capture-texture-title { font-weight: 600; }

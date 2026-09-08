@@ -373,6 +373,54 @@ static void AttachStage(VkPipeline pipeline, const VkPipelineShaderStageCreateIn
     }
 }
 
+// Physical devices: what the GPU offers (properties and limits, memory heaps and types, queue
+// families, features, extensions), attached to the VkPhysicalDevice object as an update so the
+// Inspect tab (and capture files) can show it without further queries.
+void Hook_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices) {
+    if (!pPhysicalDevices || !pPhysicalDeviceCount) return;
+    InstanceData* inst = GetInstanceData(instance);
+    if (!inst) return;
+    const InstanceDispatch& d = inst->dispatch;
+    Tracker& t = Tracker::Get();
+    for (uint32_t i = 0; i < *pPhysicalDeviceCount; ++i) {
+        VkPhysicalDevice pd = pPhysicalDevices[i];
+        if (!pd) continue;
+        uint64_t id = t.Resolve(HT_VkPhysicalDevice, (uint64_t)(uintptr_t)pd);
+        if (!id) continue;
+        JsonWriter w(&t);
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(id);
+        VkPhysicalDeviceProperties props{};
+        d.GetPhysicalDeviceProperties(pd, &props);
+        w.Key("properties"); ToJson(w, props);
+        VkPhysicalDeviceMemoryProperties mem{};
+        d.GetPhysicalDeviceMemoryProperties(pd, &mem);
+        w.Key("memoryProperties"); ToJson(w, mem);
+        uint32_t familyCount = 0;
+        d.GetPhysicalDeviceQueueFamilyProperties(pd, &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        if (familyCount) d.GetPhysicalDeviceQueueFamilyProperties(pd, &familyCount, families.data());
+        w.Key("queueFamilies"); w.BeginArray();
+        for (uint32_t f = 0; f < familyCount; ++f) ToJson(w, families[f]);
+        w.EndArray();
+        VkPhysicalDeviceFeatures features{};
+        d.GetPhysicalDeviceFeatures(pd, &features);
+        w.Key("features"); ToJson(w, features);
+        uint32_t extCount = 0;
+        w.Key("extensions"); w.BeginArray();
+        if (d.EnumerateDeviceExtensionProperties(pd, nullptr, &extCount, nullptr) == VK_SUCCESS && extCount) {
+            std::vector<VkExtensionProperties> exts(extCount);
+            if (d.EnumerateDeviceExtensionProperties(pd, nullptr, &extCount, exts.data()) >= VK_SUCCESS) {
+                for (uint32_t e = 0; e < extCount; ++e) ToJson(w, exts[e]);
+            }
+        }
+        w.EndArray();
+        w.EndObject();
+        t.Update(id, "properties", w.str());
+    }
+}
+
 void Hook_vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount,
                                     const VkGraphicsPipelineCreateInfo* pCreateInfos,
                                     const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {

@@ -13,6 +13,9 @@ interpreter and re-created pipelines.
 - Texture viewer (mip, layer, channels, exposure, auto range, zoom, hover/pinned values, copy).
 - Descriptor set contents on demand. Shader stage labels. A Reflection section on every shader
   payload (entry points, interface, resources by set and binding, push constants).
+- Device sections: the physical device's properties, limits, memory heaps and types, queue
+  families, features and extensions; the device's enabled extensions, queues and features
+  (across the pNext chain); the instance's application info, layers and extensions.
 - Frame capture: N frames, queued capture at a frame or after a delay (launch dialog and CLI),
   one tab per capture, command filter, debug-group coloring, render target read-back, a
   thumbnail strip of every pass's attachments, and the image viewer (zoom, channels, exposure,
@@ -49,7 +52,6 @@ interpreter and re-created pipelines.
       sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect
-- [ ] Device features, limits, memory heaps and enabled extensions as inspectable sections.
 - [ ] Validation messages in captures: attach the messages raised while a command was recorded
       to that command in the capture list (the layer's messenger sees the message during the
       vkCmd call, before or after our hook depending on layer order).

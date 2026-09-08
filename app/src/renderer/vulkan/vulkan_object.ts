@@ -78,6 +78,10 @@ export class VulkanObject {
         const props = a.properties;
         return isObject(props) ? str(props.deviceName) : "";
       }
+      case "VkPhysicalDevice": {
+        const props = this.updates.properties;
+        return isObject(props) ? `${str(props.deviceName)}  ${fmt(props.deviceType).replace(/^DEVICE_TYPE_/, "").replace(/_GPU$/, "").toLowerCase()}` : "";
+      }
       case "VkImage": {
         if (this.cmd === "vkGetSwapchainImagesKHR") {
           const sd = db?.getObject(this.parentId)?.descriptor;

@@ -58,6 +58,8 @@ EXTRA_HOOKS = {
     "vkBindImageMemory2",
     "vkBindBufferMemory2KHR",
     "vkBindImageMemory2KHR",
+    # physical device capabilities attached to the VkPhysicalDevice object
+    "vkEnumeratePhysicalDevices",
     # resource registry
     "vkCreateImage",
     "vkCreateImageView",

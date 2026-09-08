@@ -33,7 +33,8 @@ Installers for each release are on the [releases page](https://github.com/brenda
 Debian and Ubuntu (`sudo apt install ./gpu-inspector_<version>_amd64.deb`). Installed builds check
 for updates at startup and offer to download them; the version label at the right of the launch
 bar checks on demand. The installers contain the layer, so nothing below is needed unless you
-want to build from source. How releases are made is in [docs/RELEASING.md](docs/RELEASING.md).
+want to build from source. What changed in each release is in [CHANGELOG.md](CHANGELOG.md), and
+how releases are made in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Prerequisites
 

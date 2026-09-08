@@ -6,7 +6,9 @@ themselves from the GitHub releases of this repository.
 
 ## Cutting a release
 
-The version lives in one place, `app/package.json`; the tag must match it:
+The version lives in one place, `app/package.json`; the tag must match it. Before tagging, turn
+the `[Unreleased]` section of `CHANGELOG.md` into the release's section (date it, add the
+compare link) and start a new `[Unreleased]` section:
 
 ```
 (cd app && npm version 0.2.0 --no-git-tag-version)

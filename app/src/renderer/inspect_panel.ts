@@ -20,6 +20,7 @@ import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
+import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import type { CaptureDescriptorBinding, HandleRef, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
@@ -845,6 +846,9 @@ export class InspectPanel {
     }
 
     if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
+    if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
+    if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
+    if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
     if (object.type === "VkDescriptorSet") this._buildDescriptorSetSection(object);
     this._imageView = null;
     if (object.type === "VkImage" || object.type === "VkImageView") {
