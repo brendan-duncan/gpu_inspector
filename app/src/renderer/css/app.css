@@ -286,9 +286,43 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
   background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
 }
+.code-editor { --gutter-width: 4ch; }
+.code-editor-gutter {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: var(--gutter-width);
+  margin: 0;
+  padding: 8px 0 8px 4px;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 9pt;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-subtle);
+  overflow: hidden;
+  user-select: none;
+  white-space: pre;
+}
+.code-editor-lineno-error { color: var(--accent-error); font-weight: 700; }
+.code-editor-line-error { background: rgba(241, 76, 76, 0.18); box-shadow: inset 3px 0 0 var(--accent-error); }
+.code-editor-find {
+  position: absolute; top: 4px; right: 20px; z-index: 2;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md); font-size: 9pt;
+}
+.code-editor-find-input { width: 260px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border); padding: 2px 4px; font-size: 9pt; }
+.code-editor-find-count { color: var(--fg-secondary); min-width: 70px; }
+.code-editor-find-close { cursor: pointer; color: var(--fg-secondary); padding: 0 4px; }
+.code-editor-find-close:hover { color: var(--fg-primary); }
+.shader-log-line { white-space: pre-wrap; font-family: var(--font-mono); font-size: 9pt; }
+.shader-log-link { cursor: pointer; color: var(--link-color); }
+.shader-log-link:hover { text-decoration: underline; }
 .code-editor-highlight, .code-editor-input {
   position: absolute;
   inset: 0;
+  left: var(--gutter-width);
   margin: 0;
   padding: 8px;
   box-sizing: border-box;

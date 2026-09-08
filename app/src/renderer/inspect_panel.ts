@@ -13,7 +13,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
-import { CodeEditor, escapeHtml, highlight, highlightLines } from "./code_editor.js";
+import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors } from "./code_editor.js";
 import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
 import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
@@ -1336,7 +1336,7 @@ export class InspectPanel {
     const text = new CodeEditor(editor, { value: source, language, class: "shader-editor-text" });
     const buttons = new Div(editor, { class: "shader-toolbar" });
     const status = new Div(editor, { class: "shader-editor-status text-muted font-sm" });
-    const log = new Widget("pre", editor, { class: "shader-editor-log", style: "display: none;" });
+    const log = new Div(editor, { class: "shader-editor-log", style: "display: none;" });
     this._openEditor = targets ? { key, targets, status, view } : null;
     if (existing?.results.size) status.text = [...existing.results.values()].join("\n");
 
@@ -1347,12 +1347,22 @@ export class InspectPanel {
       status.text = `Compiling with ${LANGUAGE_LABEL[language]}...`;
       log.style.display = "none";
       void window.inspector.compileShader(text.value, language, targets.stage, targets.entryPoint, targets.spirvVersion).then((r) => {
+        // Errors mark their lines in the editor, and the log's lines jump to them.
+        const errors = r.log ? parseCompileErrors(r.log) : new Map<number, string>();
+        text.setErrors(errors);
+        log.html = "";
         if (r.log) {
-          log.text = r.log;
+          for (const line of r.log.split("\n")) {
+            const lineNo = [...errors.keys()].find((n) => new RegExp(`(^|[^0-9])${n}:`).test(line) && line.includes(errors.get(n) ?? " "));
+            const row = new Div(log, { text: line, class: lineNo !== undefined ? "shader-log-line shader-log-link" : "shader-log-line" });
+            if (lineNo !== undefined) row.element.onclick = () => text.goToLine(lineNo);
+          }
           log.style.display = "";
         }
         if (!r.ok || !r.spirv) {
-          status.text = `${r.tool}: compilation failed.`;
+          status.text = `${r.tool}: compilation failed${errors.size ? ` (${errors.size} line${errors.size === 1 ? "" : "s"} marked in the editor)` : ""}.`;
+          const first = [...errors.keys()].sort((a, b) => a - b)[0];
+          if (first !== undefined) text.goToLine(first);
           return;
         }
         const spirv = encodeBase64(r.spirv);

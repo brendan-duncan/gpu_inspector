@@ -22,6 +22,11 @@
   has debug information. "Analyze Shaders" in a capture reports the same for every shader the
   frame's draws and dispatches used, worst first, with per-shader cost and use counts.
 
+- Shader editor: a line-number gutter, a find bar (Ctrl+F; Enter and Shift+Enter step through
+  matches, Escape closes), and compile errors marked on their lines with the message as a
+  tooltip; the compiler log's error lines jump to the line, and the editor goes to the first
+  error when a compile fails. glslangValidator, dxc and spirv-as messages are understood.
+
 ### Changed
 - Shader Reflection sections are collapsed by default.
 

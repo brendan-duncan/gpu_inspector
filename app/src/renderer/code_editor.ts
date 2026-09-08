@@ -162,18 +162,30 @@ export interface CodeEditorOptions {
 
 /**
  * A code editor: a textarea (transparent text, visible caret) laid over a highlighted copy of
- * its contents, kept in sync on input and scroll. Tab inserts four spaces.
+ * its contents, kept in sync on input and scroll, with a line-number gutter, error marks on
+ * lines (compile errors), a find bar (Ctrl+F, Enter / Shift+Enter, Escape) and goToLine().
+ * Tab inserts four spaces.
  */
 export class CodeEditor extends Div {
   readonly textarea: HTMLTextAreaElement;
   private readonly _code: HTMLElement;
   private readonly _pre: HTMLPreElement;
+  private readonly _gutter: HTMLPreElement;
+  private readonly _findBar: HTMLDivElement;
+  private readonly _findInput: HTMLInputElement;
+  private readonly _findCount: HTMLSpanElement;
   private _language: HighlightLanguage;
   private _pending: ReturnType<typeof setTimeout> | null = null;
+  private _errors = new Map<number, string>();
+  private _lineCount = 0;
 
   constructor(parent: Widget | null, options: CodeEditorOptions) {
     super(parent, { class: `code-editor${options.class ? ` ${options.class}` : ""}` });
     this._language = options.language;
+    this._gutter = document.createElement("pre");
+    this._gutter.className = "code-editor-gutter";
+    this._gutter.setAttribute("aria-hidden", "true");
+    this.element.appendChild(this._gutter);
     this._pre = document.createElement("pre");
     this._pre.className = "code-editor-highlight";
     this._pre.setAttribute("aria-hidden", "true");
@@ -190,9 +202,53 @@ export class CodeEditor extends Div {
     this.textarea.value = options.value;
     this.element.appendChild(this.textarea);
 
-    this.textarea.addEventListener("input", () => this._scheduleHighlight());
+    // Find bar: hidden until Ctrl+F.
+    this._findBar = document.createElement("div");
+    this._findBar.className = "code-editor-find";
+    this._findBar.style.display = "none";
+    this._findInput = document.createElement("input");
+    this._findInput.type = "text";
+    this._findInput.placeholder = "Find (Enter: next, Shift+Enter: previous, Esc: close)";
+    this._findInput.className = "code-editor-find-input";
+    this._findBar.appendChild(this._findInput);
+    this._findCount = document.createElement("span");
+    this._findCount.className = "code-editor-find-count";
+    this._findBar.appendChild(this._findCount);
+    const close = document.createElement("span");
+    close.className = "code-editor-find-close";
+    close.textContent = "✕";
+    close.title = "Close (Esc)";
+    close.onclick = () => this.hideFind();
+    this._findBar.appendChild(close);
+    this.element.appendChild(this._findBar);
+    this._findInput.addEventListener("input", () => this._updateFindCount());
+    this._findInput.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.findNext(!e.shiftKey);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        this.hideFind();
+      }
+    });
+
+    this.textarea.addEventListener("input", () => {
+      if (this._errors.size) {
+        this._errors.clear();   // the text changed: the marks no longer point at the right lines
+      }
+      this._scheduleHighlight();
+    });
     this.textarea.addEventListener("scroll", () => this._syncScroll());
     this.textarea.addEventListener("keydown", (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        this.showFind();
+        return;
+      }
+      if (e.key === "Escape" && this._findBar.style.display !== "none") {
+        this.hideFind();
+        return;
+      }
       if (e.key !== "Tab") return;
       e.preventDefault();
       const t = this.textarea;
@@ -211,6 +267,7 @@ export class CodeEditor extends Div {
 
   set value(v: string) {
     this.textarea.value = v;
+    this._errors.clear();
     this._highlight();
   }
 
@@ -223,6 +280,79 @@ export class CodeEditor extends Div {
     this._highlight();
   }
 
+  /** Marks lines (1-based) with an error message each; an empty map clears the marks. */
+  setErrors(errors: Map<number, string>): void {
+    this._errors = new Map(errors);
+    this._highlight();
+  }
+
+  /** Places the caret on a line (1-based), selects it and scrolls it into view. */
+  goToLine(line: number): void {
+    const lines = this.textarea.value.split("\n");
+    const index = Math.min(Math.max(1, line), lines.length) - 1;
+    let start = 0;
+    for (let i = 0; i < index; i++) start += lines[i].length + 1;
+    const end = start + lines[index].length;
+    this.textarea.focus();
+    this.textarea.setSelectionRange(start, end);
+    this._scrollToLine(index);
+  }
+
+  showFind(): void {
+    this._findBar.style.display = "";
+    const selected = this.textarea.value.substring(this.textarea.selectionStart, this.textarea.selectionEnd);
+    if (selected && !selected.includes("\n")) this._findInput.value = selected;
+    this._findInput.focus();
+    this._findInput.select();
+    this._updateFindCount();
+  }
+
+  hideFind(): void {
+    this._findBar.style.display = "none";
+    this.textarea.focus();
+  }
+
+  /** Selects the next (or previous) occurrence of the find text, wrapping around. */
+  findNext(forward = true): void {
+    const needle = this._findInput.value;
+    if (!needle) return;
+    const text = this.textarea.value;
+    const lower = text.toLowerCase();
+    const n = needle.toLowerCase();
+    let at: number;
+    if (forward) {
+      at = lower.indexOf(n, this.textarea.selectionEnd);
+      if (at < 0) at = lower.indexOf(n);
+    } else {
+      at = lower.lastIndexOf(n, Math.max(0, this.textarea.selectionStart - 1));
+      if (at < 0) at = lower.lastIndexOf(n);
+    }
+    if (at < 0) return;
+    this.textarea.setSelectionRange(at, at + needle.length);
+    this._scrollToLine(text.substring(0, at).split("\n").length - 1);
+    this._updateFindCount();
+  }
+
+  private _updateFindCount(): void {
+    const needle = this._findInput.value.toLowerCase();
+    if (!needle) {
+      this._findCount.textContent = "";
+      return;
+    }
+    let count = 0;
+    let at = -1;
+    const lower = this.textarea.value.toLowerCase();
+    while ((at = lower.indexOf(needle, at + 1)) >= 0) count++;
+    this._findCount.textContent = count ? `${count} match${count === 1 ? "" : "es"}` : "no matches";
+  }
+
+  private _scrollToLine(index: number): void {
+    const lineHeight = this.textarea.scrollHeight / Math.max(1, this._lineCount + 1);
+    const target = index * lineHeight - this.textarea.clientHeight / 2;
+    this.textarea.scrollTop = Math.max(0, target);
+    this._syncScroll();
+  }
+
   private _scheduleHighlight(): void {
     if (this._pending) return;
     this._pending = setTimeout(() => {
@@ -232,13 +362,50 @@ export class CodeEditor extends Div {
   }
 
   private _highlight(): void {
-    // A trailing newline keeps the highlighted block as tall as the textarea's last empty line.
-    this._code.innerHTML = highlight(`${this.textarea.value}\n`, this._language);
+    // One span per line, so error lines can be marked; a trailing newline keeps the block as
+    // tall as the textarea's last empty line.
+    const lines = highlightLines(`${this.textarea.value}\n`, this._language);
+    this._lineCount = Math.max(1, this.textarea.value.split("\n").length);
+    let html = "";
+    let gutter = "";
+    const width = String(this._lineCount).length;
+    for (let i = 0; i < lines.length; i++) {
+      const n = i + 1;
+      const error = this._errors.get(n);
+      html += error ? `<span class="code-editor-line code-editor-line-error" title="${escapeHtml(error)}">${lines[i]}</span>\n` : `${lines[i]}\n`;
+      if (n <= this._lineCount) gutter += error ? `<span class="code-editor-lineno-error" title="${escapeHtml(error)}">${String(n).padStart(width)}</span>\n` : `${String(n).padStart(width)}\n`;
+    }
+    this._code.innerHTML = html;
+    this._gutter.innerHTML = gutter;
+    this.element.style.setProperty("--gutter-width", `${width + 2}ch`);
     this._syncScroll();
   }
 
   private _syncScroll(): void {
     this._pre.scrollTop = this.textarea.scrollTop;
     this._pre.scrollLeft = this.textarea.scrollLeft;
+    this._gutter.scrollTop = this.textarea.scrollTop;
   }
+}
+
+/**
+ * Lines and messages from a compiler log: glslangValidator ("ERROR: file:12: message"), dxc
+ * ("file:12:34: error: message") and spirv-as ("error: 12: 34: message"). The first message of
+ * a line wins; lines outside the source are ignored by the editor.
+ */
+export function parseCompileErrors(log: string): Map<number, string> {
+  const errors = new Map<number, string>();
+  const add = (line: number, message: string): void => {
+    if (line > 0 && !errors.has(line)) errors.set(line, message.trim());
+  };
+  for (const raw of log.split("\n")) {
+    const l = raw.trim();
+    let m = /^ERROR: .*?:(\d+): (.*)$/.exec(l);          // glslang
+    if (m) { add(Number(m[1]), m[2]); continue; }
+    m = /^.*?:(\d+):\d+: (?:error|warning): (.*)$/.exec(l);  // dxc / clang style
+    if (m) { add(Number(m[1]), m[2]); continue; }
+    m = /^error: (\d+): \d+: (.*)$/.exec(l);           // spirv-as
+    if (m) add(Number(m[1]), m[2]);
+  }
+  return errors;
 }

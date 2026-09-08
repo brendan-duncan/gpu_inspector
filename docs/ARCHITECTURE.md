@@ -315,7 +315,11 @@ From then on `vkCmdBindPipeline` (a pre-hook) binds the replacement instead of t
 replacements are destroyed at a later present after `vkDeviceWaitIdle`, since command buffers
 may still reference them. Editing a module applies to every pipeline that uses it. Command
 buffers recorded before the edit keep binding the original until they are re-recorded, and
-graphics pipeline libraries are not supported.
+graphics pipeline libraries are not supported. The editor (`renderer/code_editor.ts`) is a
+textarea over a highlighted copy of its text with a line-number gutter and a find bar; a failed
+compile marks the offending lines (`parseCompileErrors` reads glslangValidator's
+`file:line:`, dxc's `file:line:col: error:` and spirv-as's `error: line: col:` forms), the
+log's lines jump to them, and the editor goes to the first one.
 
 #### Device sections
 

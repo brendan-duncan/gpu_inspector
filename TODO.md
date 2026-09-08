@@ -30,7 +30,7 @@ interpreter and re-created pipelines.
 - Profile passes: GPU timestamps per render pass and per run of dispatches (compute passes),
   pass durations in headers, pass timeline, Frame Bound card and pass timings in Frame Stats.
 - Shader editing: edit as GLSL / HLSL / SPIR-V assembly, compile with the SDK, live replacement
-  pipelines, syntax highlighting.
+  pipelines, syntax highlighting, line numbers, find, compile errors marked on their lines.
 - Shader source maps: embedded source (OpSource / NonSemantic DebugInfo) as a Source view, SPIR-V
   disassembly annotated and linked to source lines, editing from the embedded source.
 - Static shader analysis on SPIR-V: modeled Shader Cost per entry point and function, a
@@ -67,7 +67,6 @@ interpreter and re-created pipelines.
       modeled costs, once per-draw timing exists (WebGPU Inspector's Shader Flame Graph).
 - [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables),
       loop-invariant detection, and per-statement cost through the source map.
-- [ ] Shader editor: line numbers, find, and compile error lines linked into the editor.
 - [ ] Source maps from outside the module: a user-configured source root (file name from
       `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
       but without embedded text, and `#include` resolution for the editor from the same root.
