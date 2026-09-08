@@ -35,6 +35,7 @@ struct ActivePass {
     std::vector<VkImageView> attachments;    // framebuffer or imageless/dynamic attachments
     std::vector<VkImageLayout> layouts;      // layout of each attachment after the pass ends
     std::vector<VkImageView> resolveViews;   // dynamic rendering: resolve targets (may be null)
+    std::vector<VkImageLayout> resolveLayouts;
     uint32_t subpass = 0;
     VkRect2D renderArea{};
     uint32_t layerCount = 1;
@@ -75,6 +76,8 @@ struct PendingImageCopy {
     VkBuffer staging = VK_NULL_HANDLE;
     VkDeviceSize stagingOffset = 0;
     VkDeviceSize size = 0;
+    // Multisampled images are resolved into this single-sampled image (mip 0, layers 0..) first.
+    VkImage resolve = VK_NULL_HANDLE;
 };
 
 class CommandRecorder {

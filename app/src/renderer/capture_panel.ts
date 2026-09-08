@@ -29,7 +29,7 @@ import { ImageView } from "./image_view.js";
 import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
-import type { ArgValue, CaptureCommand, LayerMessage } from "../shared/protocol.js";
+import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
 
 interface CommandRow extends Widget {
   command: CaptureCommand;
@@ -834,9 +834,9 @@ export class CaptureView implements CaptureHost {
     const image = db.getObject(tex.info.id);
     const box = new Div(parent, { class: "capture_pass_texture" });
     const title = new Div(box, { class: "capture-texture-title" });
-    new Span(title, { text: `${tex.info.attachment}: ` });
+    new Span(title, { text: `${tex.info.attachment}${tex.info.resolve ? " (resolve)" : ""}: ` });
     if (image) objectLink(title, image, (o) => this.window.showObject(o.id)); else new Span(title, { text: `Image ${tex.info.id}` });
-    new Div(box, { text: `${fmt(tex.info.format)} ${tex.info.width}x${tex.info.height}${tex.info.layers > 1 ? ` [${tex.info.layers}]` : ""} ${tex.info.aspect}`, class: "text-muted font-sm" });
+    new Div(box, { text: `${fmt(tex.info.format)} ${tex.info.width}x${tex.info.height}${tex.info.layers > 1 ? ` [${tex.info.layers}]` : ""} ${tex.info.aspect}${msaaNote(tex.info)}`, class: "text-muted font-sm" });
     if (tex.info.error) {
       new Div(box, { text: tex.info.error, class: "text-muted font-sm" });
       return;
@@ -926,7 +926,7 @@ export class CaptureView implements CaptureHost {
       const frames = this.data.frames > 1 ? `Frame ${this.data.frame + k.frame}  ` : "";
       new Div(tile, { text: `${frames}${block.label.replace(/^(Render Pass|Rendering) /, "Pass ")}`, class: "capture-thumb-label", tooltip: block.label });
       for (const tex of textures) {
-        new Div(tile, { text: `${tex.info.attachment}: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}`, class: "text-muted font-sm capture-thumb-info" });
+        new Div(tile, { text: `${tex.info.attachment}${tex.info.resolve ? " (resolve)" : ""}: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}${msaaNote(tex.info)}`, class: "text-muted font-sm capture-thumb-info" });
         if (tex.info.error) {
           new Div(tile, { text: tex.info.error, class: "text-muted font-sm" });
           continue;
@@ -942,4 +942,9 @@ export class CaptureView implements CaptureHost {
     }
     strip.style.display = count ? "" : "none";
   }
+}
+
+/** " 4x MSAA" for multisampled captures (the pixels shown are the resolve of the samples). */
+export function msaaNote(info: CaptureTextureInfo): string {
+  return info.samples && info.samples > 1 ? ` ${info.samples}x MSAA` : "";
 }

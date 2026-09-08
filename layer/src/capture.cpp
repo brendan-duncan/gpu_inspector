@@ -429,6 +429,7 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
         p.attachments.push_back(a->imageView);
         p.layouts.push_back(a->imageLayout);
         p.resolveViews.push_back(a->resolveMode != VK_RESOLVE_MODE_NONE ? a->resolveImageView : VK_NULL_HANDLE);
+        p.resolveLayouts.push_back(a->resolveImageLayout);
     };
     for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) add(&info->pColorAttachments[i]);
     add(info->pDepthAttachment);
@@ -444,6 +445,10 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     if (IsCapturing() && _options.captureTextures) {
         for (uint32_t i = 0; i < p.attachments.size(); ++i) {
             CaptureAttachment(dev, rec, i, p.attachments[i], i < p.layouts.size() ? p.layouts[i] : VK_IMAGE_LAYOUT_GENERAL);
+            // Dynamic rendering resolves into a separate target that is not among the attachments
+            // (a render pass lists its resolve attachments in the framebuffer).
+            if (i < p.resolveViews.size() && p.resolveViews[i])
+                CaptureAttachment(dev, rec, i, p.resolveViews[i], p.resolveLayouts[i], true);
         }
     }
     p.active = false;
@@ -531,8 +536,10 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
         tc.note = why;
         return add();
     };
+    tc.samples = (uint32_t)img.samples;
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT) return fail("multisampled image (resolve not implemented yet)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+        return fail("multisampled depth/stencil image (vkCmdResolveImage resolves color only)");
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
         if (!LayoutTracker::Get().GetLayout(vi.image, layout) || layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown image layout");
     }
@@ -552,11 +559,15 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     VkDeviceSize offset = 0;
     VkBuffer staging = VK_NULL_HANDLE;
     if (!AllocateStaging(dev, tc.size, chunkIndex, offset, &staging)) return fail("staging allocation failed");
+    VkImage resolve = VK_NULL_HANDLE;
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && !AllocateResolveImage(dev, img, tc.mip, tc.layers, &resolve))
+        return fail("resolve image allocation failed");
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
     uint32_t id = add();
 
     PendingImageCopy p;
+    p.resolve = resolve;
     p.captureId = id;
     p.image = vi.image;
     p.layout = layout;
@@ -575,38 +586,7 @@ void CaptureManager::FlushImageCopies(DeviceData* dev, CommandRecorder* rec) {
     auto& pending = rec->pendingImages();
     if (pending.empty()) return;
     VkCommandBuffer cb = rec->commandBuffer();
-    for (const PendingImageCopy& p : pending) {
-        VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toSrc.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        toSrc.oldLayout = p.layout;
-        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toSrc.image = p.image;
-        toSrc.subresourceRange = p.range;
-        dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                                         0, nullptr, 0, nullptr, 1, &toSrc);
-        VkBufferImageCopy region{};
-        region.bufferOffset = p.stagingOffset;
-        region.imageSubresource = {p.copyAspect, p.range.baseMipLevel, p.range.baseArrayLayer, p.range.layerCount};
-        region.imageExtent = p.extent;
-        dev->dispatch.CmdCopyImageToBuffer(cb, p.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.staging, 1, &region);
-        VkImageMemoryBarrier back = toSrc;
-        back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        back.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-        back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        back.newLayout = p.layout;
-        VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        hostRead.buffer = p.staging;
-        hostRead.offset = p.stagingOffset;
-        hostRead.size = p.size;
-        dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
-                                         0, nullptr, 1, &hostRead, 1, &back);
-    }
+    for (const PendingImageCopy& p : pending) RecordImageCopy(dev, cb, p);
     uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
     std::lock_guard lock(_mutex);
     for (const PendingImageCopy& p : pending) {
@@ -842,8 +822,127 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
     return true;
 }
 
+bool CreateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* image,
+                        VkDeviceMemory* memory) {
+    const DeviceDispatch& d = dev->dispatch;
+    *image = VK_NULL_HANDLE;
+    *memory = VK_NULL_HANDLE;
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = img.type;
+    ici.format = img.format;
+    ici.extent = {std::max(1u, img.extent.width >> mip), std::max(1u, img.extent.height >> mip),
+                  std::max(1u, img.extent.depth >> mip)};
+    ici.mipLevels = 1;
+    ici.arrayLayers = std::max(1u, layers);
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (d.CreateImage(dev->device, &ici, nullptr, image) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    d.GetImageMemoryRequirements(dev->device, *image, &req);
+    int typeIndex = -1;
+    for (int pass = 0; pass < 2 && typeIndex < 0; ++pass) {
+        VkMemoryPropertyFlags want = pass == 0 ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0;
+        for (uint32_t i = 0; i < dev->memoryProperties.memoryTypeCount; ++i) {
+            if ((req.memoryTypeBits & (1u << i)) && (dev->memoryProperties.memoryTypes[i].propertyFlags & want) == want) {
+                typeIndex = (int)i;
+                break;
+            }
+        }
+    }
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = (uint32_t)std::max(0, typeIndex);
+    if (typeIndex < 0 || d.AllocateMemory(dev->device, &mai, nullptr, memory) != VK_SUCCESS ||
+        d.BindImageMemory(dev->device, *image, *memory, 0) != VK_SUCCESS) {
+        d.DestroyImage(dev->device, *image, nullptr);
+        if (*memory) d.FreeMemory(dev->device, *memory, nullptr);
+        *image = VK_NULL_HANDLE;
+        *memory = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy& p) {
+    const DeviceDispatch& d = dev->dispatch;
+    VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toSrc.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toSrc.oldLayout = p.layout;
+    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.image = p.image;
+    toSrc.subresourceRange = p.range;
+    d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &toSrc);
+
+    VkImage source = p.image;
+    VkImageSubresourceLayers sub{p.copyAspect, p.range.baseMipLevel, p.range.baseArrayLayer, p.range.layerCount};
+    if (p.resolve) {
+        // Multisampled: resolve into the single-sampled image, then copy from that.
+        VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.srcAccessMask = 0;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.srcQueueFamilyIndex = toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = p.resolve;
+        toDst.subresourceRange = {p.copyAspect, 0, 1, 0, p.range.layerCount};
+        d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &toDst);
+        VkImageResolve region{};
+        region.srcSubresource = sub;
+        region.dstSubresource = {p.copyAspect, 0, 0, p.range.layerCount};
+        region.extent = p.extent;
+        d.CmdResolveImage(cb, p.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.resolve, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          1, &region);
+        VkImageMemoryBarrier resolved = toDst;
+        resolved.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        resolved.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        resolved.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        resolved.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &resolved);
+        source = p.resolve;
+        sub = region.dstSubresource;
+    }
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = p.stagingOffset;
+    region.imageSubresource = sub;
+    region.imageExtent = p.extent;
+    d.CmdCopyImageToBuffer(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.staging, 1, &region);
+
+    VkImageMemoryBarrier back = toSrc;
+    back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    back.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    back.newLayout = p.layout;
+    VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    hostRead.buffer = p.staging;
+    hostRead.offset = p.stagingOffset;
+    hostRead.size = p.size;
+    d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                         0, nullptr, 1, &hostRead, 1, &back);
+}
+
+bool CaptureManager::AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out) {
+    ResolveImage ri;
+    if (!CreateResolveImage(dev, img, mip, layers, &ri.image, &ri.memory)) return false;
+    std::lock_guard lock(_mutex);
+    _resolveImages.push_back(ri);
+    *out = ri.image;
+    return true;
+}
+
 void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex,
-                                       VkImageView view, VkImageLayout layout) {
+                                       VkImageView view, VkImageLayout layout, bool resolveTarget) {
     ResourceRegistry& reg = ResourceRegistry::Get();
     ImageViewInfo vi;
     ImageInfo img;
@@ -854,7 +953,9 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     tc.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
     tc.passIndex = rec->pass().passIndex;
     tc.attachment = attachmentIndex;
+    tc.resolveTarget = resolveTarget;
     tc.format = img.format;
+    tc.samples = (uint32_t)img.samples;
     tc.mip = vi.range.baseMipLevel;
     tc.width = std::max(1u, img.extent.width >> tc.mip);
     tc.height = std::max(1u, img.extent.height >> tc.mip);
@@ -872,7 +973,8 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
         _textures.push_back(tc);
     };
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT) return fail("multisampled attachment (resolve not implemented yet)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+        return fail("multisampled depth attachment (vkCmdResolveImage resolves color only)");
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown final layout");
 
     uint32_t bpp = FormatBytesPerTexel(img.format, tc.aspect);
@@ -885,46 +987,25 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     VkDeviceSize offset = 0;
     VkBuffer staging = VK_NULL_HANDLE;
     if (!AllocateStaging(dev, tc.size, chunkIndex, offset, &staging)) return fail("staging allocation failed");
+    VkImage resolve = VK_NULL_HANDLE;
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && !AllocateResolveImage(dev, img, tc.mip, tc.layers, &resolve))
+        return fail("resolve image allocation failed");
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
 
-    VkCommandBuffer cb = rec->commandBuffer();
-    VkImageSubresourceRange range{tc.aspect, tc.mip, 1, vi.range.baseArrayLayer, tc.layers};
+    PendingImageCopy p;
+    p.image = vi.image;
+    p.layout = layout;
+    p.range = {tc.aspect, tc.mip, 1, vi.range.baseArrayLayer, tc.layers};
     if (tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && (FormatAspects(img.format) & VK_IMAGE_ASPECT_STENCIL_BIT))
-        range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;  // barriers must cover both aspects
-
-    VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    toSrc.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    toSrc.oldLayout = layout;
-    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSrc.image = vi.image;
-    toSrc.subresourceRange = range;
-    dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                                     0, nullptr, 0, nullptr, 1, &toSrc);
-
-    VkBufferImageCopy region{};
-    region.bufferOffset = offset;
-    region.imageSubresource = {tc.aspect, tc.mip, vi.range.baseArrayLayer, tc.layers};
-    region.imageExtent = {tc.width, tc.height, tc.depth};
-    dev->dispatch.CmdCopyImageToBuffer(cb, vi.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &region);
-
-    VkImageMemoryBarrier back = toSrc;
-    back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    back.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    back.newLayout = layout;
-    VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    hostRead.buffer = staging;
-    hostRead.offset = offset;
-    hostRead.size = tc.size;
-    dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
-                                     0, nullptr, 1, &hostRead, 1, &back);
+        p.range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;  // barriers must cover both aspects
+    p.copyAspect = tc.aspect;
+    p.extent = {tc.width, tc.height, tc.depth};
+    p.staging = staging;
+    p.stagingOffset = offset;
+    p.size = tc.size;
+    p.resolve = resolve;
+    RecordImageCopy(dev, rec->commandBuffer(), p);
 
     std::lock_guard lock(_mutex);
     _textures.push_back(tc);
@@ -980,6 +1061,8 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         w.Key("layers"); w.Uint(tc.layers);
         w.Key("mip"); w.Uint(tc.mip);
         w.Key("size"); w.Uint(tc.failed ? 0 : tc.size);
+        if (tc.samples > 1) { w.Key("samples"); w.Uint(tc.samples); }
+        if (tc.resolveTarget) { w.Key("resolve"); w.Boolean(true); }
         if (tc.sampled) {
             w.Key("kind"); w.String("sampled");
             w.Key("capture"); w.Uint(tc.captureId);
@@ -1074,6 +1157,11 @@ void CaptureManager::ReleaseStaging(DeviceData* dev) {
         dev->dispatch.FreeMemory(dev->device, c.memory, nullptr);
     }
     _staging.clear();
+    for (auto& r : _resolveImages) {
+        dev->dispatch.DestroyImage(dev->device, r.image, nullptr);
+        dev->dispatch.FreeMemory(dev->device, r.memory, nullptr);
+    }
+    _resolveImages.clear();
 }
 
 } // namespace vkinsp

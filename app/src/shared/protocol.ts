@@ -168,6 +168,10 @@ export interface CaptureTextureInfo {
   mip: number;
   size: number;
   error?: string;
+  /** Multisampled images (> 1): read back through a resolve. */
+  samples?: number;
+  /** Dynamic rendering: this is the resolve target of attachment `attachment`. */
+  resolve?: boolean;
   /** "sampled": an image bound by a descriptor set (read back once per view); absent = a render pass attachment. */
   kind?: "attachment" | "sampled";
   /** Sampled images: the id descriptors reference in `data`, the view, and the view's first layer. */

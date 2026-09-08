@@ -20,6 +20,7 @@
 namespace vkinsp {
 
 struct DeviceData;
+struct ImageInfo;
 
 struct CaptureOptions {
     uint32_t frameCount = 1;
@@ -74,6 +75,8 @@ struct TextureCapture {
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     uint32_t width = 0, height = 0, depth = 1, layers = 1, mip = 0;
     VkDeviceSize size = 0;
+    uint32_t samples = 1;         // > 1: a multisampled image, read back through a resolve
+    bool resolveTarget = false;   // dynamic rendering: the attachment's resolve target
     uint32_t stagingIndex = 0;    // staging chunk
     VkDeviceSize stagingOffset = 0;
     bool failed = false;
@@ -103,6 +106,17 @@ struct BufferCapture {
     bool failed = false;
     std::string note;
 };
+
+// A single-sampled image of the same format as `img`, sized for its mip `mip` with `layers`
+// layers, with TRANSFER_SRC | TRANSFER_DST usage, for resolving a multisampled image before the
+// copy to host memory. Device-local memory; the caller frees both once the GPU is done.
+bool CreateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* image,
+                        VkDeviceMemory* memory);
+
+// Records the copy of one image subresource range into a staging buffer: a barrier to
+// TRANSFER_SRC, the resolve into `p.resolve` for multisampled images, the copy, and barriers back
+// to the image's layout and for host reads of the buffer.
+void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy& p);
 
 class CaptureManager {
 public:
@@ -183,7 +197,14 @@ private:
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
                          VkBuffer* bufferOut = nullptr);
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
-                           VkImageLayout layout);
+                           VkImageLayout layout, bool resolveTarget = false);
+    // Single-sampled images that multisampled captures are resolved into; freed with the staging.
+    bool AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out);
+    struct ResolveImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+    std::vector<ResolveImage> _resolveImages;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};

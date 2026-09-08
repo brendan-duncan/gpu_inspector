@@ -31,6 +31,12 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Multisampled render targets and images are read back: the layer resolves them into a temporary
+  single-sampled image before the copy, in captures (attachments and images bound by descriptor
+  sets) and in the live image viewer. The capture labels them "4x MSAA". Dynamic rendering's
+  resolve targets are captured as well, marked "(resolve)". Multisampled depth still fails with
+  a note (`vkCmdResolveImage` resolves color only). The triangle test application has a
+  `--msaa` option (4x, resolved into the swapchain).
 - Refresh rate and dropped frames: with vsync on (a FIFO present mode) the layer estimates the
   display refresh period from the frame intervals and counts the refreshes that repeated the
   previous frame.
@@ -49,6 +55,9 @@
   directive) to the compiler. The editor now opens the source without it.
 - Compile & Apply on a pipeline re-rendered the details panel and closed the editor; the edit
   result now updates the object list and the section label in place, and the editor stays open.
+- The live image viewer crashed the application when the validation layer was enabled: the
+  layer's read-back command buffer skipped the loader's dispatch-pointer setup that layers below
+  rely on. The layer now sets it itself.
 - Shader payloads in loaded capture files could start at an unaligned byte, which made the
   debug-info parser throw and left the shader section at "Loading..." with no Source view.
 

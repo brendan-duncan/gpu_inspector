@@ -841,7 +841,7 @@ export class CommandInfoView {
     const canvas = this.panel.textureCanvas(tex, "capture-thumb loaded capture-texture-canvas");
     canvas.title = "Contents captured when the pass ended. Click to open in the image viewer";
     box.element.appendChild(canvas);
-    new Div(box, { text: `Captured: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}${tex.info.layers > 1 ? ` [${tex.info.layers} layers]` : ""} mip ${tex.info.mip}`, class: "text-muted font-sm" });
+    new Div(box, { text: `Captured: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}${tex.info.layers > 1 ? ` [${tex.info.layers} layers]` : ""} mip ${tex.info.mip}${tex.info.samples && tex.info.samples > 1 ? ` (${tex.info.samples}x MSAA, resolved)` : ""}`, class: "text-muted font-sm" });
     let viewer: Div | null = null;
     const toggle = (): void => {
       if (!tex.data) return;

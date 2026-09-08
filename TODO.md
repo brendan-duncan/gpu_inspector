@@ -47,7 +47,8 @@ interpreter and re-created pipelines.
 ### Captures
 - [ ] Open a capture in a new window (the file session exists only in the window that opened it;
       a session window would need the file path handed over and reopened there).
-- [ ] Multisampled render target read-back (resolve into a temporary image).
+- [ ] Multisampled depth read-back: `vkCmdResolveImage` handles color only; depth needs a render
+      pass with `VK_KHR_depth_stencil_resolve` (or a compute pass) into the temporary image.
 - [ ] Sampled image read-back: every mip of a view (only the base mip is copied today), and
       sampled images bound through descriptor buffers / shader objects.
 

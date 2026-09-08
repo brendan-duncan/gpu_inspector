@@ -120,6 +120,7 @@ struct App {
     int maxFrames = -1;
     bool badScissor = false;
     bool leak = false;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;  // --msaa: 4x, resolved into the swapchain
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -150,6 +151,9 @@ struct App {
     VkImage depthImage{};
     VkDeviceMemory depthMemory{};
     VkImageView depthView{};
+    VkImage msaaImage{};        // multisampled color target (--msaa)
+    VkDeviceMemory msaaMemory{};
+    VkImageView msaaView{};
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
     VkRenderPass renderPass{};
 
@@ -483,7 +487,7 @@ struct App {
         ici.extent = {width, height, 1};
         ici.mipLevels = 1;
         ici.arrayLayers = 1;
-        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.samples = samples;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -502,20 +506,60 @@ struct App {
         dvci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
         CHECK(vkCreateImageView(device, &dvci, nullptr, &depthView));
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
+
+        // Multisampled color target, resolved into the swapchain image by the render pass.
+        if (samples != VK_SAMPLE_COUNT_1_BIT) {
+            VkImageCreateInfo mci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            mci.imageType = VK_IMAGE_TYPE_2D;
+            mci.format = colorFormat;
+            mci.extent = {width, height, 1};
+            mci.mipLevels = 1;
+            mci.arrayLayers = 1;
+            mci.samples = samples;
+            mci.tiling = VK_IMAGE_TILING_OPTIMAL;
+            mci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            mci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            CHECK(vkCreateImage(device, &mci, nullptr, &msaaImage));
+            VkMemoryRequirements mreq;
+            vkGetImageMemoryRequirements(device, msaaImage, &mreq);
+            VkMemoryAllocateInfo mmai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            mmai.allocationSize = mreq.size;
+            mmai.memoryTypeIndex = FindMemoryType(mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            CHECK(vkAllocateMemory(device, &mmai, nullptr, &msaaMemory));
+            CHECK(vkBindImageMemory(device, msaaImage, msaaMemory, 0));
+            VkImageViewCreateInfo mvci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            mvci.image = msaaImage;
+            mvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            mvci.format = colorFormat;
+            mvci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            CHECK(vkCreateImageView(device, &mvci, nullptr, &msaaView));
+            Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)msaaImage, "MSAA color");
+        }
     }
 
     void CreateRenderPass() {
-        VkAttachmentDescription atts[2]{};
+        // Attachment 0 is the color target (the swapchain image, or with --msaa the multisampled
+        // image resolved into attachment 2, the swapchain image), 1 the depth buffer.
+        const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
+        VkAttachmentDescription atts[3]{};
         atts[0].format = colorFormat;
-        atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        atts[0].samples = samples;
         atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         atts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        atts[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        atts[0].finalLayout = msaa ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        atts[2].format = colorFormat;
+        atts[2].samples = VK_SAMPLE_COUNT_1_BIT;
+        atts[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        atts[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        atts[2].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         atts[1].format = depthFormat;
-        atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        atts[1].samples = samples;
         atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         atts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         atts[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -524,10 +568,12 @@ struct App {
         atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference resolveRef{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkSubpassDescription sp{};
         sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         sp.colorAttachmentCount = 1;
         sp.pColorAttachments = &colorRef;
+        sp.pResolveAttachments = msaa ? &resolveRef : nullptr;
         sp.pDepthStencilAttachment = &depthRef;
         VkSubpassDependency dep{};
         dep.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -536,7 +582,7 @@ struct App {
         dep.dstStageMask = dep.srcStageMask;
         dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        rpci.attachmentCount = 2;
+        rpci.attachmentCount = msaa ? 3 : 2;
         rpci.pAttachments = atts;
         rpci.subpassCount = 1;
         rpci.pSubpasses = &sp;
@@ -549,10 +595,11 @@ struct App {
         const uint32_t count = (uint32_t)swapViews.size();
         framebuffers.resize(count);
         for (uint32_t i = 0; i < count; ++i) {
-            VkImageView views[] = {swapViews[i], depthView};
+            const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
+            VkImageView views[] = {msaa ? msaaView : swapViews[i], depthView, swapViews[i]};
             VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             fci.renderPass = renderPass;
-            fci.attachmentCount = 2;
+            fci.attachmentCount = msaa ? 3 : 2;
             fci.pAttachments = views;
             fci.width = width;
             fci.height = height;
@@ -571,6 +618,12 @@ struct App {
         depthView = VK_NULL_HANDLE;
         depthImage = VK_NULL_HANDLE;
         depthMemory = VK_NULL_HANDLE;
+        if (msaaView) vkDestroyImageView(device, msaaView, nullptr);
+        if (msaaImage) vkDestroyImage(device, msaaImage, nullptr);
+        if (msaaMemory) vkFreeMemory(device, msaaMemory, nullptr);
+        msaaView = VK_NULL_HANDLE;
+        msaaImage = VK_NULL_HANDLE;
+        msaaMemory = VK_NULL_HANDLE;
         for (auto v : swapViews) vkDestroyImageView(device, v, nullptr);
         swapViews.clear();
         swapImages.clear();
@@ -785,7 +838,7 @@ struct App {
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        ms.rasterizationSamples = samples;
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         ds.depthTestEnable = VK_TRUE;
         ds.depthWriteEnable = VK_TRUE;
@@ -1033,6 +1086,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
+        else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
     }
     return app.Run();
 }

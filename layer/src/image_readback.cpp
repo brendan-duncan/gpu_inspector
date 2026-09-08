@@ -1,5 +1,7 @@
 #include "image_readback.h"
 
+#include "capture.h"
+
 #include "format_info.h"
 #include "layer.h"
 #include "resources.h"
@@ -157,7 +159,6 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
     ImageInfo img;
     if (!ResourceRegistry::Get().GetImage(image, img)) return Fail(r, "image is not tracked");
     if (!img.transferSrc) return Fail(r, "image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT) return Fail(r, "multisampled image (resolve not implemented yet)");
 
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!LayoutTracker::Get().GetLayout(image, layout)) {
@@ -178,6 +179,8 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
                               : VK_IMAGE_ASPECT_COLOR_BIT;
     FormatBlock block = FormatBlockInfo(img.format, aspect);
     if (block.bytes == 0) return Fail(r, "unsupported format for readback");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+        return Fail(r, "multisampled depth/stencil image (vkCmdResolveImage resolves color only)");
     const VkDeviceSize size = (VkDeviceSize)((width + block.width - 1) / block.width) *
                               ((height + block.height - 1) / block.height) * depth * block.bytes;
     if (size > (256ull << 20)) return Fail(r, "image is larger than 256 MB");
@@ -226,10 +229,19 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
     }
     d.BindBufferMemory(dev->device, buffer, memory, 0);
 
+    // Multisampled images are resolved into a temporary single-sampled image first.
+    VkImage resolve = VK_NULL_HANDLE;
+    VkDeviceMemory resolveMemory = VK_NULL_HANDLE;
     auto cleanup = [&]() {
         d.DestroyBuffer(dev->device, buffer, nullptr);
         d.FreeMemory(dev->device, memory, nullptr);
+        if (resolve) d.DestroyImage(dev->device, resolve, nullptr);
+        if (resolveMemory) d.FreeMemory(dev->device, resolveMemory, nullptr);
     };
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && !CreateResolveImage(dev, img, mip, 1, &resolve, &resolveMemory)) {
+        cleanup();
+        return Fail(r, "resolve image allocation failed");
+    }
 
     // Record: barrier to TRANSFER_SRC, copy, barrier back to the tracked layout.
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -241,39 +253,25 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
         cleanup();
         return Fail(r, "command buffer allocation failed");
     }
+    // A command buffer allocated from inside a layer skips the loader trampoline that stamps
+    // the dispatch pointer of dispatchable objects; layers below (the validation layer) look
+    // their state up by it, so set it to the device's, as the loader would.
+    *reinterpret_cast<void**>(cb) = *reinterpret_cast<void**>(dev->device);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     d.BeginCommandBuffer(cb, &bi);
 
-    VkImageSubresourceRange range{aspects, mip, 1, layer, 1};
-    VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    toSrc.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
-    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    toSrc.oldLayout = layout;
-    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSrc.image = image;
-    toSrc.subresourceRange = range;
-    d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
-
-    VkBufferImageCopy region{};
-    region.imageSubresource = {aspect, mip, layer, 1};
-    region.imageExtent = {width, height, depth};
-    d.CmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
-
-    VkImageMemoryBarrier back = toSrc;
-    back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    back.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    back.newLayout = layout;
-    VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    hostRead.buffer = buffer;
-    hostRead.size = VK_WHOLE_SIZE;
-    d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
-                         0, nullptr, 1, &hostRead, 1, &back);
+    PendingImageCopy copy;
+    copy.image = image;
+    copy.layout = layout;
+    copy.range = {aspects, mip, 1, layer, 1};
+    copy.copyAspect = aspect;
+    copy.extent = {width, height, depth};
+    copy.staging = buffer;
+    copy.stagingOffset = 0;
+    copy.size = size;
+    copy.resolve = resolve;
+    RecordImageCopy(dev, cb, copy);
     d.EndCommandBuffer(cb);
 
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};

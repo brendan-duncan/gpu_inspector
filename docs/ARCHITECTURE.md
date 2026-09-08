@@ -132,7 +132,10 @@ much slower than on the desktop.
    staging buffer, then barriers back to the pass's final layout. This is the in-process
    equivalent of WebGPU Inspector's pass-end readback. To make it possible, `vkCreateImage` and
    `vkCreateSwapchainKHR` get `TRANSFER_SRC` added to their usage, and `vkCreateBuffer` gets
-   `TRANSFER_SRC`.
+   `TRANSFER_SRC`. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
+   a temporary single-sampled image owned by the capture before the copy; dynamic rendering's
+   resolve targets are captured too. `RecordImageCopy` in `capture.cpp` records the barriers,
+   resolve and copy for every image read-back, including the live one.
 4. Bound buffers are read back too, like WebGPU Inspector captures the buffers of each bind group
    and vertex/index binding. `vkCmdBindDescriptorSets` (and push descriptors) gets a
    `descriptors` snapshot of every bound set, taken from the descriptor tracker: per binding the
@@ -223,7 +226,11 @@ makes (pipeline barriers, render pass final layouts, dynamic rendering attachmen
 applies them at submit, keeping one layout per image. Requests are served just before
 `vkQueuePresentKHR` on the presenting queue: barrier to `TRANSFER_SRC`, copy to a host buffer,
 barrier back, fence wait, send. Compressed formats are copied as blocks and decoded in the UI
-(BC1–BC5 today).
+(BC1–BC5 today). Multisampled images go through a temporary resolve image (color only). The
+command buffer for this is allocated by the layer itself, which bypasses the loader trampoline
+that stamps a new dispatchable object's dispatch pointer, so the layer copies the device's
+pointer onto it: layers below (the validation layer) look their per-object state up by it and
+crash on an unknown one.
 
 The viewer (`renderer/image_view.ts`) follows WebGPU Inspector's texture viewer: decoding is
 split into raw texel values (`decodeTexels`) and a display pass (`displayTexels`) that applies
@@ -460,7 +467,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
