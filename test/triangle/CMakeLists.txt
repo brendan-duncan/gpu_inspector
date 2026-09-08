@@ -32,9 +32,17 @@ add_executable(vkinsp_triangle WIN32 main.cpp ${SPV_OUTPUTS})
 target_link_libraries(vkinsp_triangle PRIVATE Vulkan::Vulkan)
 if(WIN32)
     target_compile_definitions(vkinsp_triangle PRIVATE VK_USE_PLATFORM_WIN32_KHR NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    # Debug information in every configuration, so the inspector's stack traces show functions
+    # and lines of the test application.
+    if(MSVC)
+        target_compile_options(vkinsp_triangle PRIVATE /Zi)
+        target_link_options(vkinsp_triangle PRIVATE /DEBUG)
+    endif()
 else()
     target_compile_definitions(vkinsp_triangle PRIVATE VK_USE_PLATFORM_XCB_KHR)
     target_link_libraries(vkinsp_triangle PRIVATE xcb)
+    # Exported symbols, so dladdr names the test application's functions in stack traces.
+    target_link_options(vkinsp_triangle PRIVATE -rdynamic)
 endif()
 set_target_properties(vkinsp_triangle PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${OUT_DIR}")
 

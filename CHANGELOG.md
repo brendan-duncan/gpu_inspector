@@ -31,6 +31,13 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Stack traces: the layer records the call stack of every object creation ("Stack traces" in
+  the launch dialog, on by default) and, with "Stack traces" in the capture bar, of every
+  command of the captured frame. Object details and command details have a Stack trace section
+  that fetches the symbolized frames (DbgHelp on Windows: functions, files and lines from PDBs
+  next to the modules; dladdr elsewhere), with the frames inside the Vulkan loader, layers and
+  driver folded away. Capture files keep the symbolized stacks of their commands and objects.
+  The triangle test application is built with debug information so its frames resolve.
 - Validation messages on captured commands: a message raised while a command was being recorded
   is attached to that command. The capture's command list marks it (the severity glyph after
   the call number, the message as tooltip), and the command's details open with a Validation

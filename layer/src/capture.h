@@ -38,6 +38,7 @@ struct CaptureOptions {
     bool captureImages = true;
     // Write GPU timestamps around every render pass (VkQueryPool), reported as CapturePassTimings.
     bool profilePasses = true;
+    bool stacktraces = false;   // every recorded command carries the stack it was recorded from
 };
 
 // GPU timing of one pass: a timestamp query pair, read back when the capture finishes.

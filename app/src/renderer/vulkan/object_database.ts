@@ -5,7 +5,7 @@
 // in each object's serialized creation arguments instead of per-class knowledge.
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
-import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_file.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -72,6 +72,12 @@ export class ObjectDatabase implements ObjectLookup {
   /** A validation message arrived (isNew) or its repeat count changed. */
   readonly onValidationMessage = new Signal<(entry: ValidationEntry, isNew: boolean) => void>();
   readonly onLeakReport = new Signal<(report: LeakReportMessage) => void>();
+  /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
+  stacks = new Map<number, StackFrame[]>();
+  stacksAvailable: boolean | null = null;
+  symbols = new Map<string, StackFrame>();
+  readonly onStacktraces = new Signal<() => void>();
+  readonly onSymbols = new Signal<() => void>();
 
   /** Leaked objects over every report. */
   get leakCount(): number {
@@ -185,6 +191,9 @@ export class ObjectDatabase implements ObjectLookup {
     this.validationByObject = new Map();
     this.validationByCommand = new Map();
     this.validationDropped = 0;
+    this.stacks = new Map();
+    this.stacksAvailable = null;
+    this.symbols = new Map();
     this.leaks = [];
     this._snapshotRemaining = 0;
   }
@@ -298,6 +307,15 @@ export class ObjectDatabase implements ObjectLookup {
         break;
       case "ValidationMessage":
         this._addValidation(msg);
+        break;
+      case "Stacktraces":
+        this.stacksAvailable = msg.available;
+        for (const s of msg.stacks ?? []) this.stacks.set(s.id, s.frames ?? []);
+        this.onStacktraces.emit();
+        break;
+      case "Symbols":
+        for (const f of msg.frames ?? []) if (f && f.address) this.symbols.set(f.address, f);
+        this.onSymbols.emit();
         break;
       case "LeakReport":
         this.leaks.push(msg);

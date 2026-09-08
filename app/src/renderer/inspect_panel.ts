@@ -26,6 +26,7 @@ import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSecti
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
+import { renderObjectStack } from "./stacktrace_view.js";
 import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears.
@@ -854,6 +855,14 @@ export class InspectPanel {
     const summary = object.summary(db);
     if (summary) new Div(infoBox, { text: summary, class: "font-md" });
     new Div(infoBox, { text: `Created by ${object.cmd}${object.index ? ` [${object.index}]` : ""}`, class: "font-md text-muted" });
+    // Where the application created it, fetched when the group is opened.
+    const stackGrp = new collapsible(infoBox, { label: "Stack trace", collapsed: true, class: "stack-group" });
+    let stackLoaded = false;
+    stackGrp.onExpanded.addListener(() => {
+      if (stackLoaded) return;
+      stackLoaded = true;
+      void renderObjectStack(stackGrp.body, this.window, object.id);
+    });
     if (object.isInvalid) new Div(infoBox, { text: `Invalid: ${object.invalidReason}`, class: "inspect_info_error" });
     const validation = db.validationFor(object.id);
     if (validation.length) {

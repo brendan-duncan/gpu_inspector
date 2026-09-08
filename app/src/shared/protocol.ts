@@ -71,6 +71,32 @@ export interface FrameStatsMessage {
 }
 export interface PongMessage { action: "Pong" }
 
+/** One symbolized frame of a stack trace. */
+export interface StackFrame {
+  address: string;      // "0x..."
+  module?: string;      // module file name
+  function?: string;
+  file?: string;
+  line?: number;
+  offset: number;       // from the symbol, or from the module base without one
+  /** Inside the Vulkan loader or a layer (hidden by default). */
+  internal?: boolean;
+}
+
+/** Answer to RequestStacktraces: the creation stacks of objects. */
+export interface StacktracesMessage {
+  action: "Stacktraces";
+  /** Whether the layer collects creation stacks (the launch option). */
+  available: boolean;
+  stacks: { id: number; frames: StackFrame[] }[];
+}
+
+/** Answer to RequestSymbols: a frame per requested address, in request order. */
+export interface SymbolsMessage {
+  action: "Symbols";
+  frames: StackFrame[];
+}
+
 export interface ObjectBlobMessage {
   action: "ObjectBlob";
   id: number;
@@ -125,6 +151,7 @@ export interface CaptureChildCommand {
   bufferData?: number[];
   /** Position in the secondary command buffer's recording. */
   slot?: number;
+  stack?: string[];
 }
 
 export interface CaptureChildBuffer {
@@ -148,6 +175,8 @@ export interface CaptureCommand {
   bufferData?: number[];
   /** Position in its command buffer's recording (what a ValidationMessage's `command` refers to). */
   slot?: number;
+  /** Return addresses ("0x...", innermost first) of the call that recorded it (the "Stack traces" capture option). */
+  stack?: string[];
 }
 
 export interface CaptureFrameCommandsMessage {
@@ -339,6 +368,8 @@ export type LayerMessage =
   | ObjectUpdateMessage
   | FrameStatsMessage
   | PongMessage
+  | StacktracesMessage
+  | SymbolsMessage
   | ObjectBlobMessage
   | CaptureFrameResultsMessage
   | CaptureFrameCommandsMessage
@@ -362,6 +393,10 @@ export interface RequestImageRequest { action: "RequestImage"; id: number; mip: 
 /** Asks for the current contents of a VkDescriptorSet (answered by an ObjectUpdate carrying `bindings`). */
 export interface RequestDescriptorSetRequest { action: "RequestDescriptorSet"; id: number }
 export interface SettingsRequest { action: "Settings"; recordAlways?: boolean }
+/** Asks for the symbolized creation stacks of objects (answered by Stacktraces). */
+export interface RequestStacktracesRequest { action: "RequestStacktraces"; ids: number[] }
+/** Asks the layer to symbolize addresses a capture's commands carry (answered by Symbols). */
+export interface RequestSymbolsRequest { action: "RequestSymbols"; addresses: string[] }
 export interface CaptureRequest {
   action: "Capture";
   frameCount: number;
@@ -381,6 +416,8 @@ export interface CaptureRequest {
   maxImageTotal?: number;
   /** Write GPU timestamps around every render pass (CapturePassTimings). */
   profilePasses?: boolean;
+  /** Every recorded command carries the stack it was recorded from. */
+  stacktraces?: boolean;
 }
 
 /** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */
@@ -389,7 +426,8 @@ export interface ReplaceShaderRequest { action: "ReplaceShader"; pipeline: numbe
 export interface RestoreShaderRequest { action: "RestoreShader"; pipeline: number; stage?: string }
 
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
-  | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest;
+  | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
+  | RequestStacktracesRequest | RequestSymbolsRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer
@@ -419,6 +457,8 @@ export interface LaunchConfig {
   recordAlways: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
+  /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */
+  stacktraces: boolean;
   capture: QueuedCapture;
 }
 
@@ -498,6 +538,8 @@ export interface AppConfig {
   /** launchDialog: open the launch dialog at startup, on the "native" or "android" target (testing aid). */
   debug: {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
+    /** --debug-capture-stacks: the debug capture records command stack traces. */
+    captureStacks: boolean;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
   };

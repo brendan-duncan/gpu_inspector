@@ -295,6 +295,24 @@ a severity marker and the command details a Validation section (`validationForCo
 object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
 validation layer: its default limit (10) would silence the message before the captured frame.
 
+#### Stack traces
+
+`src/stacktrace.*` captures raw return addresses in the hot path (`CaptureStackBackTrace` on
+Windows, `_Unwind_Backtrace` elsewhere; 32 frames) and symbolizes them only on request. Every
+tracked object keeps its creation stack when `VKINSP_STACKTRACES` is set (the launch dialog's
+"Stack traces", on by default); with the capture option `stacktraces` every recorded command
+carries its addresses as `stack: ["0x...", ...]` (strings: 64-bit values are not JSON-safe
+numbers). The UI asks for symbols lazily: `RequestStacktraces {ids}` returns the objects'
+symbolized frames (`Stacktraces`, with `available` saying whether the layer collects any), and
+`RequestSymbols {addresses}` resolves a capture's addresses (`Symbols`), both cached in the
+object database and saved in capture files (`symbols`, `stacks`) so a file session answers them
+itself. Symbols come from DbgHelp on Windows (one mutex around it; `SymRefreshModuleList` before
+each batch for modules loaded since) and `dladdr` on Linux/Android (exported names only). A
+symbol further than 64 KB from the address is the nearest export of a module without symbols
+and is dropped for module+offset. Frames from the innermost up to the outermost loader/layer
+frame are marked `internal` (the driver's frames sit between them) and hidden behind a toggle,
+so the first frame shown is the application's call into Vulkan.
+
 #### Leak report
 
 `vkDestroyDevice` and `vkDestroyInstance` first ask the tracker for the objects still alive

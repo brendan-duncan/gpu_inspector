@@ -103,6 +103,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
     validation: c.validation ?? false,
+    stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
       : { mode: "none", value: 0 },
@@ -542,6 +543,7 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
     // no usable stderr).
     ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
     VKINSP_RECORD_ALWAYS: config.recordAlways ? "1" : "0",
+    VKINSP_STACKTRACES: config.stacktraces ? "1" : "0",
     // The validation layer stops reporting a message after a few repeats (its
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.
@@ -1082,6 +1084,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       select: cliOption("debug-select"),
       capture: cliFlag("debug-capture"),
       captureFrames: Number(cliOption("debug-capture")) || 1,
+      captureStacks: cliFlag("debug-capture-stacks"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),

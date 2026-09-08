@@ -88,6 +88,7 @@ void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, V
     auto& slot = dev->recorders[cb];
     if (!slot) slot = std::make_unique<CommandRecorder>(dev->device, cb, &Tracker::Get());
     slot->Reset((flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) != 0);
+    slot->SetCaptureStacks(IsCapturing() && _options.stacktraces);
 }
 
 void CaptureManager::OnEndCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {

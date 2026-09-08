@@ -11,7 +11,8 @@
 import { passKey, type CaptureData, type CapturedBuffer, type CapturedTexture } from "./capture_data.js";
 import type { SessionContext } from "./session_panel.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, ValidationMessage } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
+import { requestStacks, resolveSymbols } from "./stacktrace_view.js";
 
 export const CAPTURE_FILE_EXTENSION = "gpucap";
 export const CAPTURE_FILE_FILTERS = [{ name: "GPU Inspector captures", extensions: [CAPTURE_FILE_EXTENSION] }, { name: "All files", extensions: ["*"] }];
@@ -65,6 +66,10 @@ export interface CaptureFileManifest {
   passTimings: PassTiming[];
   /** Validation messages the session had received when the capture was saved. */
   validation?: ValidationMessage[];
+  /** Symbolized frames of the addresses the commands' stacks carry, by address. */
+  symbols?: Record<string, StackFrame>;
+  /** Creation stacks of the referenced objects, by object id (absent when the layer collected none). */
+  stacks?: Record<string, StackFrame[]>;
 }
 
 /** A parsed capture file, ready for CaptureData.load() and ObjectDatabase.loadObjects(). */
@@ -181,9 +186,28 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
       args: o.args, blobs, updates: o.updates, deleted: o.isDeleted,
     });
   }
+  // Stack traces: the commands' addresses symbolized, and the objects' creation stacks.
+  const db = session.database;
+  const addresses = new Set<string>();
+  for (const c of data.commands) for (const a of c.stack ?? []) addresses.add(a);
+  let symbols: Record<string, StackFrame> | undefined;
+  if (addresses.size) {
+    if (onProgress) onProgress("saving: symbols...");
+    const resolved = await resolveSymbols(session, [...addresses]);
+    symbols = {};
+    for (const [a, f] of resolved) symbols[a] = f;
+  }
+  let stacks: Record<string, StackFrame[]> | undefined;
+  if (db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+    if (onProgress) onProgress("saving: stack traces...");
+    const got = await requestStacks(session, objects.map((o) => o.id));
+    if (got && (db.stacksAvailable as boolean | null) !== false) {  // the answer may have said "none collected"
+      stacks = {};
+      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
+    }
+  }
   if (onProgress) onProgress("saving: writing...");
 
-  const db = session.database;
   const manifest: CaptureFileManifest = {
     format: FORMAT, version: VERSION, api: "vulkan", application: "GPU Inspector", savedAt: new Date().toISOString(),
     source: { name: session.name },
@@ -198,6 +222,8 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...(b.data ? { payload: addPayload(b.data) } : {}) })),
     passTimings: [...data.passTimings.values()],
     validation: db.validation,
+    ...(symbols ? { symbols } : {}),
+    ...(stacks ? { stacks } : {}),
   };
 
   const json = new TextEncoder().encode(JSON.stringify(manifest));

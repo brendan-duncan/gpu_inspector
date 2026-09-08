@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "json_writer.h"
+#include "stacktrace.h"
 #include "vk_commands.gen.h"
 
 namespace vkinsp {
@@ -33,6 +34,8 @@ struct TrackedObject {
     std::vector<std::pair<std::string, std::string>> updates;  // key -> ObjectUpdate message JSON
     // Binary payloads retrievable by the UI (RequestBlob {id, index}): SPIR-V code etc.
     std::vector<std::pair<std::string, std::shared_ptr<std::vector<uint8_t>>>> blobs;
+    // Where the object was created (VKINSP_STACKTRACES), symbolized on request.
+    StackTrace stack;
 };
 
 class Tracker : public HandleResolver {
@@ -64,6 +67,8 @@ public:
     // Attaches named binary data (e.g. SPIR-V) to an object, retrievable by the UI.
     void AddBlob(HandleType type, uint64_t handle, const std::string& name, std::shared_ptr<std::vector<uint8_t>> blob);
     std::shared_ptr<std::vector<uint8_t>> GetBlob(uint64_t id, uint32_t index);
+    // The creation stack of an object (empty when none was captured or the object is unknown).
+    StackTrace GetStack(uint64_t id);
     std::vector<std::pair<std::string, std::shared_ptr<std::vector<uint8_t>>>> GetBlobs(HandleType type, uint64_t handle);
 
     // Copies of tracked state for other layer components.

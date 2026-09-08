@@ -55,6 +55,7 @@ export class CapturePanel {
   private _buffersCheck!: Checkbox;
   private _imagesCheck!: Checkbox;
   private _profileCheck!: Checkbox;
+  private _stacksCheck!: Checkbox;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
   /** The live-capture controls of the bar, hidden for capture files. */
@@ -115,7 +116,8 @@ export class CapturePanel {
     this._buffersCheck = new Checkbox(row, { label: "Buffers", checked: true, tooltip: "Read back the buffers bound by descriptor sets, vertex and index bindings and indirect draws" });
     this._imagesCheck = new Checkbox(row, { label: "Images", checked: true, tooltip: "Read back the images bound by descriptor sets (sampled and storage images, once per image view, up to 256 MB per capture), so the capture shows what the shaders sampled" });
     this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
-    c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._imagesCheck, this._profileCheck);
+    this._stacksCheck = new Checkbox(row, { label: "Stack traces", checked: false, tooltip: "Record the call stack of every command of the captured frame (a Stack trace section in the command's details). Costs CPU time in the target while capturing." });
+    c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._imagesCheck, this._profileCheck, this._stacksCheck);
     c.push(new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" }));
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
@@ -134,12 +136,13 @@ export class CapturePanel {
    * Requests a capture in a new tab. `atFrame` captures that frame of the application (0 = the
    * first frame; a frame already passed captures the next one) instead of the next frame.
    */
-  capture(frames?: number, atFrame?: number): void {
+  capture(frames?: number, atFrame?: number, stacks?: boolean): void {
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return;
     }
     if (frames && frames > 0) this._frameCountInput.value = String(frames);
+    if (stacks !== undefined) this._stacksCheck.checked = stacks;
     if (atFrame === undefined) {
       // The bar's "At frame" field, when filled in; a queued capture passes its own.
       const at = this._atFrameInput.value.trim();
@@ -159,6 +162,7 @@ export class CapturePanel {
       captureBuffers: this._buffersCheck.checked,
       captureImages: this._imagesCheck.checked,
       profilePasses: this._profileCheck.checked,
+      stacktraces: this._stacksCheck.checked,
       maxBufferSize: maxKb * 1024,
     });
   }

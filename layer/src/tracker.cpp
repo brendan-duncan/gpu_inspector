@@ -71,6 +71,7 @@ uint64_t Tracker::OnCreate(HandleType type, uint64_t handle, HandleType parentTy
     o.cmd = cmd;
     o.index = index;
     o.args = args;
+    if (StackTracesEnabled()) o.stack = CaptureStack(1);
     if (parentType < HT_Count) {
         auto pit = _byHandle[parentType].find(parentHandle);
         if (pit != _byHandle[parentType].end()) {
@@ -261,6 +262,12 @@ void Tracker::AddBlob(HandleType type, uint64_t handle, const std::string& name,
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
+}
+
+StackTrace Tracker::GetStack(uint64_t id) {
+    std::shared_lock lock(_mutex);
+    auto it = _byId.find(id);
+    return it == _byId.end() ? StackTrace() : it->second.stack;
 }
 
 std::shared_ptr<std::vector<uint8_t>> Tracker::GetBlob(uint64_t id, uint32_t index) {

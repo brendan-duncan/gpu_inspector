@@ -56,7 +56,8 @@ interpreter and re-created pipelines.
 - [ ] Validation messages raised at submit or execution time (synchronization validation, GPU
       assisted validation) attached to the commands they name, where the message text carries a
       command index.
-- [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
+- [ ] Stack traces: source lines on Linux/Android (addr2line / DWARF; dladdr gives exported
+      names only), and a symbol path setting for PDBs that are not next to the modules.
 - [ ] Refresh rate from `VK_GOOGLE_display_timing` / `VK_EXT_present_timing` where available,
       instead of the interval-based estimate (which cannot tell a 30 fps app on a 60 Hz display
       from a 30 Hz display).

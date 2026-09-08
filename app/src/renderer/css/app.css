@@ -663,3 +663,12 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 /* Validation marker on a captured command's row (after the call number). */
 .capture_validation_mark { flex: 0 0 auto; }
 .capture_command_validation > .capture_methodName { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* Stack traces (object details, captured command details). */
+.stack-frames { display: flex; flex-direction: column; gap: 1px; font-family: var(--font-mono, monospace); font-size: 9pt; }
+.stack-frame { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+.stack-frame-index { color: var(--fg-secondary); flex: 0 0 2em; text-align: right; }
+.stack-frame-function { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.stack-frame-location { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.stack-frame-internal { opacity: 0.6; }
+.stack-frames-toggle { margin-top: 4px; cursor: pointer; }

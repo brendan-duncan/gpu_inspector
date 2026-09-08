@@ -43,6 +43,8 @@ add_library(${LAYER_LIB} SHARED
     src/command_recorder.h
     src/tracker.h
     src/tracker.cpp
+    src/stacktrace.h
+    src/stacktrace.cpp
     src/hooks.h
     src/hooks.cpp
     src/resources.h
@@ -108,7 +110,9 @@ elseif(UNIX AND NOT APPLE)
     target_link_libraries(${LAYER_LIB} PRIVATE Threads::Threads)
 endif()
 if(WIN32)
-    target_link_libraries(${LAYER_LIB} PRIVATE ws2_32)
+    target_link_libraries(${LAYER_LIB} PRIVATE ws2_32 dbghelp)
+else()
+    target_link_libraries(${LAYER_LIB} PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 set_target_properties(${LAYER_LIB} PROPERTIES

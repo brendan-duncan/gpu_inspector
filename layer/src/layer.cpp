@@ -12,6 +12,7 @@
 #include "shader_edit.h"
 #include "tracker.h"
 #include "transport.h"
+#include "stacktrace.h"
 #include "validation.h"
 #include "image_readback.h"
 #include "resources.h"
@@ -261,7 +262,45 @@ static void HandleUiMessage(const std::string& text) {
         o.captureBuffers = msg.GetBool("captureBuffers", true);
         o.captureImages = msg.GetBool("captureImages", true);
         o.profilePasses = msg.GetBool("profilePasses", true);
+        o.stacktraces = msg.GetBool("stacktraces", false);
         CaptureManager::Get().Request(o);
+    } else if (action == "RequestStacktraces") {
+        // Creation stacks of objects, symbolized: {stacks: [{id, frames}]}; `available` says
+        // whether the layer captured any (the launch option).
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("Stacktraces");
+        w.Key("available"); w.Boolean(StackTracesEnabled());
+        w.Key("stacks"); w.BeginArray();
+        if (const JsonValue* ids = msg.Get("ids")) {
+            for (const JsonValue& v : ids->arr) {
+                if (v.kind != JsonValue::Number) continue;
+                uint64_t id = (uint64_t)v.num;
+                StackTrace stack = Tracker::Get().GetStack(id);
+                w.BeginObject();
+                w.Key("id"); w.Uint(id);
+                w.Key("frames"); WriteStackFrames(w, Symbolize(stack));
+                w.EndObject();
+            }
+        }
+        w.EndArray();
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
+    } else if (action == "RequestSymbols") {
+        // Symbolizes the addresses a capture's commands carry: {frames: [...]} in request order.
+        StackTrace addresses;
+        if (const JsonValue* list = msg.Get("addresses")) {
+            for (const JsonValue& v : list->arr) {
+                if (v.kind == JsonValue::String) addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
+                else if (v.kind == JsonValue::Number) addresses.push_back((uint64_t)v.num);
+            }
+        }
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("Symbols");
+        w.Key("frames"); WriteStackFrames(w, Symbolize(addresses));
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
     }
 }
 

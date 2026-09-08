@@ -12,7 +12,7 @@ import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
 import type { LoadedCapture } from "./capture_file.js";
 import type { CapturedTexture } from "./capture_data.js";
-import type { LayerMessage, SessionInfo, StatusMessage, UiRequest } from "../shared/protocol.js";
+import type { LayerMessage, SessionInfo, StackFrame, StatusMessage, UiRequest } from "../shared/protocol.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
 export interface SessionContext {
@@ -273,6 +273,9 @@ export class FileSessionPanel extends SessionPanel {
     const m = capture.manifest;
     this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0, refreshMs: m.refreshMs ?? 0 });
     this.database.loadValidation(capture.validation);
+    for (const [a, f] of Object.entries(m.symbols ?? {})) this.database.symbols.set(a, f);
+    for (const [id, frames] of Object.entries(m.stacks ?? {})) this.database.stacks.set(Number(id), frames);
+    this.database.stacksAvailable = m.stacks !== undefined;
     this.appendLog(`loaded ${path}: ${capture.commands.length} commands, ${capture.objects.length} objects, saved ${m.savedAt} from ${m.source?.name ?? "?"}`);
     this.capturePanel.setFileMode();
     this.capturePanel.openLoaded(capture);
@@ -288,6 +291,18 @@ export class FileSessionPanel extends SessionPanel {
       const data = this.database.blobData.get(`${msg.id}:${msg.index}`) ?? null;
       // Answered asynchronously, as the layer would, so callers finish registering first.
       setTimeout(() => this.database.handleMessage({ action: "ObjectBlob", id: msg.id, index: msg.index, size: data?.byteLength ?? 0, ...(data ? { __binary: data } : {}) }), 0);
+      return Promise.resolve(true);
+    }
+    if (msg.action === "RequestStacktraces") {
+      const db = this.database;
+      const stacks = msg.ids.map((id) => ({ id, frames: db.stacks.get(id) ?? [] }));
+      setTimeout(() => db.handleMessage({ action: "Stacktraces", available: db.stacksAvailable === true, stacks }), 0);
+      return Promise.resolve(true);
+    }
+    if (msg.action === "RequestSymbols") {
+      const db = this.database;
+      const frames = msg.addresses.map((a) => db.symbols.get(a)).filter((f): f is StackFrame => !!f);
+      setTimeout(() => db.handleMessage({ action: "Symbols", frames }), 0);
       return Promise.resolve(true);
     }
     return Promise.resolve(false);

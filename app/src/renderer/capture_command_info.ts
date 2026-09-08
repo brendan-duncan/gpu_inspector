@@ -29,6 +29,7 @@ import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObjec
 import { stageLabel, type StageSource } from "./shader_cache.js";
 import { kindLabel, renderReflection } from "./shader_reflection_view.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
+import { renderCommandStack } from "./stacktrace_view.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -188,6 +189,15 @@ export class CommandInfoView {
       if (sec) objectLink(row, sec, this._link); else new Span(row, { text: String(cmd.secondary) });
     }
     this._renderValidation(box, cmd);
+    if (cmd.stack && cmd.stack.length) {
+      const stackGrp = new collapsible(box, { label: "Stack trace", collapsed: true, class: "stack-group" });
+      let loaded = false;
+      stackGrp.onExpanded.addListener(() => {
+        if (loaded) return;
+        loaded = true;
+        void renderCommandStack(stackGrp.body, this.panel.window, cmd.stack ?? []);
+      });
+    }
 
     if (isAction(method)) {
       const state = this.drawState(cmd);

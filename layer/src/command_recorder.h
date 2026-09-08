@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "json_writer.h"
+#include "stacktrace.h"
 #include "vk_commands.gen.h"
 
 namespace vkinsp {
@@ -92,14 +93,17 @@ public:
     }
 
     void End(JsonWriter& w, int64_t result) {
-        _commands->push_back({_current, result, std::move(w.str()), std::string()});
+        // With stack traces on, the command carries where the application recorded it.
+        _commands->push_back({_current, result, std::move(w.str()), _captureStacks ? StackExtraJson(CaptureStack(0)) : std::string()});
         w.Reset();
     }
 
-    // Attaches extra JSON to the most recently recorded command.
+    // Appends extra JSON (a pre-separated member list) to the most recently recorded command.
     void SetExtraOnLast(std::string extra) {
-        if (!_commands->empty()) _commands->back().extra = std::move(extra);
+        if (!_commands->empty()) _commands->back().extra += extra;
     }
+
+    void SetCaptureStacks(bool on) { _captureStacks = on; }
 
     // Frozen snapshot of the commands recorded so far (shared; the recorder starts a new list
     // only when the command buffer is re-begun).
@@ -147,6 +151,7 @@ private:
     ActiveComputePass _compute;
     uint32_t _computeCount = 0;
     bool _ended = false;
+    bool _captureStacks = false;
     bool _renderPassContinue = false;
     std::vector<PendingBufferCopy> _pendingCopies;
     std::vector<PendingImageCopy> _pendingImages;

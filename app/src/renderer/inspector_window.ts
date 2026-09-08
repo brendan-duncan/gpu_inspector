@@ -464,7 +464,7 @@ export class InspectorWindow extends Window {
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
-      panel.capturePanel.capture(this._debug?.captureFrames);
+      panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
       // --debug-save=<file>: save the capture once its data has had time to arrive.
       const save = this._debug?.saveCapture;
       if (save) {
