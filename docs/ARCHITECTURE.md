@@ -307,6 +307,16 @@ a severity marker and the command details a Validation section (`validationForCo
 object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
 validation layer: its default limit (10) would silence the message before the captured frame.
 
+#### Capture windows
+
+A capture file can be shown in a window of its own: `openCaptureWindow` in `main.ts` opens a
+`BrowserWindow` with `?capture=<path>` (and `temp=1` for a hand-over), and the renderer in that
+window opens the path as a file session with no launcher, as it does for `?session=`. A live
+session's capture tab serializes the capture and hands the bytes over; the main process writes
+them to a temporary `.gpucap` (removed at quit) and opens it. "Move to Main Window" sends the
+path back to the main window (`inspector:openCapture`) and closes the capture window. The file
+session itself is renderer-only, so moving one is reopening the file elsewhere.
+
 #### Source view in captures
 
 `shader_source_view.ts` renders an embedded source file with line numbers and highlighting

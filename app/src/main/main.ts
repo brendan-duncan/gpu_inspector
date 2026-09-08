@@ -943,6 +943,35 @@ function openSessionWindow(s: Session): void {
   });
 }
 
+/**
+ * Opens a capture file in a window of its own (the renderer there opens the path as a file
+ * session and has no launcher). Bytes handed over from a live capture go to a temporary file
+ * that is removed when the application quits; the window is told not to list it as recent.
+ */
+const tempCaptures: string[] = [];
+function openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): boolean {
+  let file = opts.path ?? null;
+  let temp = false;
+  if (!file && opts.data) {
+    const base = (opts.name ?? "capture").replace(/[^\w.-]+/g, "_") || "capture";
+    file = path.join(os.tmpdir(), `vkinsp_${process.pid}_${tempCaptures.length}_${base}.gpucap`);
+    try {
+      fs.writeFileSync(file, Buffer.from(opts.data.buffer, opts.data.byteOffset, opts.data.byteLength));
+    } catch (err) {
+      console.error(`capture window: ${file}: ${err}`);
+      return false;
+    }
+    tempCaptures.push(file);
+    temp = true;
+  }
+  if (!file) return false;
+  const win = new BrowserWindow({ ...windowPrefs(), title: `${path.basename(file)} - GPU Inspector` });
+  win.setMenuBarVisibility(false);
+  void win.loadFile(rendererHtml(), { query: { capture: file, ...(temp ? { temp: "1" } : {}), theme: appTheme() } });
+  if (process.env.INSPECTOR_DEVTOOLS) win.webContents.openDevTools({ mode: "detach" });
+  return true;
+}
+
 function moveSessionToMain(s: Session): void {
   const previous = s.viewer;
   if (!mainWin || mainWin.isDestroyed() || previous === mainWin) return;
@@ -1154,6 +1183,16 @@ ipcMain.handle("inspector:openSessionWindow", (_e, id: number) => {
   openSessionWindow(s);
   return true;
 });
+ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
+// A capture window's "Move to Main Window": the main window opens the file and this one closes.
+ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
+  if (!mainWin || mainWin.isDestroyed()) return false;
+  mainWin.webContents.send("inspector:openCapture", filePath);
+  mainWin.focus();
+  const win = windowOf(e.sender);
+  if (win && win !== mainWin) win.close();
+  return true;
+});
 ipcMain.handle("inspector:moveSessionToMain", (_e, id: number) => {
   const s = getSession(id);
   if (!s) return false;
@@ -1277,6 +1316,9 @@ void app.whenReady().then(() => {
     // Testing aid: switch the theme through the same path the picker uses.
     const debugTheme = cliOption("debug-theme");
     if (isTheme(debugTheme)) setTimeout(() => setTheme(debugTheme), 1000);
+    // Testing aid: --debug-open-window=<file> opens a capture file in a window of its own.
+    const openWindow = cliOption("debug-open-window");
+    if (openWindow) setTimeout(() => openCaptureWindow({ path: openWindow }), 500);
     const shot = cliOption("screenshot");
     if (shot) {
       setTimeout(async () => {
@@ -1303,7 +1345,10 @@ void app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => killAllTargets());
+app.on("before-quit", () => {
+  killAllTargets();
+  for (const f of tempCaptures) { try { fs.unlinkSync(f); } catch { /* already gone */ } }
+});
 
 app.on("window-all-closed", () => {
   killAllTargets();

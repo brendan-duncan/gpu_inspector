@@ -29,6 +29,11 @@ export interface InspectorApi {
   /** Terminates the application and removes the session. */
   closeSession(sessionId: number): Promise<boolean>;
   openSessionWindow(sessionId: number): Promise<boolean>;
+  /** Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file). */
+  openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
+  /** From a capture window: the main window opens the file and this window closes. */
+  openCaptureInMain(path: string): Promise<boolean>;
+  onOpenCapture(cb: (path: string) => void): void;
   moveSessionToMain(sessionId: number): Promise<boolean>;
   /** Asks the layer to resend its live object snapshot. */
   refresh(sessionId: number): Promise<boolean>;

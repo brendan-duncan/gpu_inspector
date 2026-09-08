@@ -220,6 +220,14 @@ export class CapturePanel {
   }
 
   /** Copies a tab through the file format into a new, independent tab. */
+  /** A copy of the capture in a window of its own (serialized, handed to the main process as a temporary file). */
+  private async _openInNewWindow(view: CaptureView): Promise<void> {
+    const bytes = await this._serialize(view);
+    if (!bytes) return;
+    const ok = await window.inspector.openCaptureWindow({ data: bytes, name: captureFileName(this.window.name, view.data.frame, view.data.frames) });
+    this._statusLabel.text = ok ? view.status : "could not open a window for the capture";
+  }
+
   private async _openInNewTab(view: CaptureView): Promise<void> {
     const bytes = await this._serialize(view);
     if (!bytes) return;
@@ -240,6 +248,7 @@ export class CapturePanel {
     return [
       { label: "Save Capture...", disabled: empty, callback: () => void this.saveActive() },
       { label: "Open in New Tab", disabled: empty, callback: () => void this._openInNewTab(view) },
+      { label: "Open in New Window", disabled: empty, callback: () => void this._openInNewWindow(view) },
       { separator: true },
       { label: "Close", callback: () => this._close(view) },
       { label: "Close Others", disabled: this._views.length < 2, callback: () => { for (const v of [...this._views]) if (v !== view) this._close(v); } },

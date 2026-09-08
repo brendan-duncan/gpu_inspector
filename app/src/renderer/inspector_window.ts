@@ -34,6 +34,9 @@ export class InspectorWindow extends Window {
   private _placeholder: Div;
   /** Set while a tab is removed because the main process dropped the session. */
   private _removingSession = 0;
+  /** ?capture=<path>: a window opened on one capture file (temp: a hand-over from a live capture, not a recent). */
+  private _captureParam: string | null = null;
+  private _tempCapture = false;
 
   private _recents: LaunchConfig[] = [];
   private _recentCaptures: string[] = [];
@@ -57,7 +60,10 @@ export class InspectorWindow extends Window {
     super();
     this.classList.add("main-window");
     const params = new URLSearchParams(window.location.search);
-    this._mode = params.has("session") ? "session" : "main";
+    // A window opened for one session or one capture file has no launcher.
+    this._mode = params.has("session") || params.has("capture") ? "session" : "main";
+    this._captureParam = params.get("capture");
+    this._tempCapture = params.has("temp");
 
     if (this._mode === "main") {
       this._buildToolbar();
@@ -98,6 +104,7 @@ export class InspectorWindow extends Window {
     window.inspector.onRecentCaptures((list) => this._setRecentCaptures(list));
     window.inspector.onTheme((theme) => this._setTheme(theme));
     window.inspector.onUpdate((status) => this._setUpdateStatus(status));
+    window.inspector.onOpenCapture((path) => void this.openCaptureFile(path));
 
     void window.inspector.getConfig().then((cfg) => {
       this._debug = cfg.debug;
@@ -106,6 +113,7 @@ export class InspectorWindow extends Window {
       this._setRecents(cfg.recents);
       this._setVersion(cfg.version, cfg.canUpdate);
       for (const s of cfg.sessions) this._addSession(s);
+      if (this._captureParam) void this.openCaptureFile(this._captureParam, { recent: !this._tempCapture });
       if (this._mode === "main") {
         if (cfg.debug?.launchDialog) this.showLaunchDialog(cfg.debug.launchDialog === "android" ? { ...emptyLaunchConfig(), target: "android" } : null);
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
@@ -144,7 +152,7 @@ export class InspectorWindow extends Window {
   // Capture files: each opens as a session of its own (FileSessionPanel), with the file's object
   // graph in its Inspect tab and the capture in its Capture tab.
 
-  async openCaptureFile(path: string): Promise<void> {
+  async openCaptureFile(path: string, opts: { recent?: boolean } = {}): Promise<void> {
     const bytes = await window.inspector.readFile(path);
     if (!bytes) {
       this._showMessage("Cannot open capture", `${path} could not be read.`);
@@ -167,12 +175,16 @@ export class InspectorWindow extends Window {
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
-      showContextMenu(e.clientX, e.clientY, [{ label: "Close", callback: () => this._closeSession(id) }]);
+      // The file moves between windows by being reopened there (the session lives in the renderer).
+      const move = this._mode === "main"
+        ? { label: "Open in New Window", callback: () => void window.inspector.openCaptureWindow({ path }).then((ok) => { if (ok) this._closeSession(id); }) }
+        : { label: "Move to Main Window", callback: () => void window.inspector.openCaptureInMain(path) };
+      showContextMenu(e.clientX, e.clientY, [move, { separator: true }, { label: "Close", callback: () => this._closeSession(id) }]);
     };
     this._handles.set(id, handle);
     this._tabs.setHandleActive(handle);
     this._updatePlaceholder();
-    void window.inspector.addRecentCapture(path);
+    if (opts.recent !== false) void window.inspector.addRecentCapture(path);
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.selectCommand !== null && this._debug?.selectCommand !== undefined) panel.capturePanel.activeView?.selectCommand(this._debug.selectCommand);
   }

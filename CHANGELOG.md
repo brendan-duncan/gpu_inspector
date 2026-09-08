@@ -31,6 +31,10 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Captures in windows of their own: "Open in New Window" on a capture file's tab moves the file
+  to a new window (and "Move to Main Window" brings it back), and on a capture tab of a live
+  session opens a copy of the capture in a new window (through a temporary file removed when
+  the application quits).
 - Display refresh rate from the display instead of an estimate: the layer enables
   `VK_EXT_present_timing` (with its dependencies and feature) or `VK_GOOGLE_display_timing` on
   the device when the driver offers one, asks the swapchain for its refresh period, and on
