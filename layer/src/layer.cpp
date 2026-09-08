@@ -9,6 +9,7 @@
 #include "capture.h"
 #include "descriptors.h"
 #include "json_parse.h"
+#include "shader_edit.h"
 #include "tracker.h"
 #include "transport.h"
 #include "image_readback.h"
@@ -167,6 +168,48 @@ static void HandleUiMessage(const std::string& text) {
     } else if (action == "RequestImage") {
         ImageReadback::Get().Request((uint64_t)msg.GetNumber("id"), (uint32_t)msg.GetNumber("mip"),
                                      (uint32_t)msg.GetNumber("layer"));
+    } else if (action == "ReplaceShader" || action == "RestoreShader") {
+        // Live shader editing (see shader_edit.h): {pipeline, stage: "VK_SHADER_STAGE_...", spirv: base64}.
+        uint64_t pipeline = (uint64_t)msg.GetNumber("pipeline");
+        std::string stageName = msg.GetString("stage");
+        VkShaderStageFlagBits stage = (VkShaderStageFlagBits)0;
+        static const struct { const char* name; VkShaderStageFlagBits bit; } kStages[] = {
+            {"VK_SHADER_STAGE_VERTEX_BIT", VK_SHADER_STAGE_VERTEX_BIT},
+            {"VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT},
+            {"VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT},
+            {"VK_SHADER_STAGE_GEOMETRY_BIT", VK_SHADER_STAGE_GEOMETRY_BIT},
+            {"VK_SHADER_STAGE_FRAGMENT_BIT", VK_SHADER_STAGE_FRAGMENT_BIT},
+            {"VK_SHADER_STAGE_COMPUTE_BIT", VK_SHADER_STAGE_COMPUTE_BIT},
+            {"VK_SHADER_STAGE_TASK_BIT_EXT", VK_SHADER_STAGE_TASK_BIT_EXT},
+            {"VK_SHADER_STAGE_MESH_BIT_EXT", VK_SHADER_STAGE_MESH_BIT_EXT},
+            {"VK_SHADER_STAGE_RAYGEN_BIT_KHR", VK_SHADER_STAGE_RAYGEN_BIT_KHR},
+            {"VK_SHADER_STAGE_ANY_HIT_BIT_KHR", VK_SHADER_STAGE_ANY_HIT_BIT_KHR},
+            {"VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR", VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR},
+            {"VK_SHADER_STAGE_MISS_BIT_KHR", VK_SHADER_STAGE_MISS_BIT_KHR},
+            {"VK_SHADER_STAGE_INTERSECTION_BIT_KHR", VK_SHADER_STAGE_INTERSECTION_BIT_KHR},
+            {"VK_SHADER_STAGE_CALLABLE_BIT_KHR", VK_SHADER_STAGE_CALLABLE_BIT_KHR},
+        };
+        for (auto& s : kStages) if (stageName == s.name) stage = s.bit;
+        if (action == "RestoreShader") {
+            ShaderEditor::Get().Restore(pipeline, stage);
+        } else {
+            std::vector<uint8_t> bytes;
+            if (!stage || !DecodeBase64(msg.GetString("spirv"), bytes) || bytes.size() % 4) {
+                JsonWriter w;
+                w.BeginObject();
+                w.Key("action"); w.String("ShaderReplaced");
+                w.Key("pipeline"); w.Uint(pipeline);
+                w.Key("stage"); w.String(stageName);
+                w.Key("ok"); w.Bool(false);
+                w.Key("error"); w.String(stage ? "malformed SPIR-V payload" : "unknown shader stage");
+                w.EndObject();
+                Transport::Get().SendJson(std::move(w.str()));
+            } else {
+                std::vector<uint32_t> words(bytes.size() / 4);
+                memcpy(words.data(), bytes.data(), bytes.size());
+                ShaderEditor::Get().Replace(pipeline, stage, std::move(words));
+            }
+        }
     } else if (action == "RequestSnapshot") {
         // A UI window that picked up an already-connected session rebuilds its object list.
         Tracker::Get().SendSnapshot();
@@ -433,6 +476,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     // Live image readbacks go on this queue before the present, while the frame's images are in
     // their tracked layouts and the swapchain image is still owned by the application.
     ImageReadback::Get().OnPresent(data, queue);
+    ShaderEditor::Get().OnPresent(data);
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
     data->frameIndex++;
     CaptureManager::Get().OnPresent(data, queue, pPresentInfo, res);

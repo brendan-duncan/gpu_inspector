@@ -209,6 +209,17 @@ export interface CaptureBufferDataMessage {
   __binary?: Uint8Array;
 }
 
+/** Answer to ReplaceShader / RestoreShader: whether the pipeline was rebuilt with the edit. */
+export interface ShaderReplacedMessage {
+  action: "ShaderReplaced";
+  pipeline: number;
+  stage: string;        // "vertex", "fragment", ... (the layer's stage names)
+  ok: boolean;
+  error?: string;
+  note?: string;        // parts of the pipeline's create info the layer could not keep
+  replacement?: number; // object id of the replacement pipeline
+}
+
 export type LayerMessage =
   | SnapshotMessage
   | AddObjectMessage
@@ -225,6 +236,7 @@ export type LayerMessage =
   | CaptureTextureDataMessage
   | CaptureBuffersMessage
   | CaptureBufferDataMessage
+  | ShaderReplacedMessage
   | ImageDataMessage;
 
 // ------------------------------------------------------------------------------------------
@@ -254,7 +266,13 @@ export interface CaptureRequest {
   captureBuffers?: boolean;
 }
 
-export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest | SettingsRequest | CaptureRequest;
+/** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */
+export interface ReplaceShaderRequest { action: "ReplaceShader"; pipeline: number; stage: string; spirv: string }
+/** Drops the edit of one stage (or of every stage when `stage` is omitted). */
+export interface RestoreShaderRequest { action: "RestoreShader"; pipeline: number; stage?: string }
+
+export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
+  | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer
@@ -341,3 +359,15 @@ export interface ShaderTextResult {
 }
 
 export type ShaderTextMode = "dis" | "glsl" | "hlsl" | "msl";
+
+/** Source languages the shader editor compiles to SPIR-V (with the Vulkan SDK's tools). */
+export type ShaderLanguage = "glsl" | "hlsl" | "spirv-asm";
+
+export interface CompileShaderResult {
+  ok: boolean;
+  spirv?: Uint8Array;
+  /** Compiler output (errors and warnings). */
+  log: string;
+  /** The tool that ran, for the status line. */
+  tool: string;
+}

@@ -74,6 +74,13 @@ export class SessionPanel extends Div implements SessionContext {
       this._frameLabel.text = `frame ${m.frame}  ${m.frameTimeMs.toFixed(2)} ms  (${(1000 / m.frameTimeMs).toFixed(0)} fps)`;
     });
     this.database.onSnapshotBegin.addListener((count) => this.appendLog(`snapshot: ${count} live objects`));
+    // Shader edits are logged too, so their outcome is visible even when the editor is closed.
+    this.database.onOtherMessage.addListener((msg) => {
+      if (msg.action !== "ShaderReplaced") return;
+      const pipeline = this.database.getObject(msg.pipeline);
+      const name = pipeline ? pipeline.name : `Pipeline ${msg.pipeline}`;
+      this.appendLog(`shader edit: ${name} ${msg.stage}: ${msg.ok ? (msg.replacement ? `applied as object ${msg.replacement}` : "restored") : `failed: ${msg.error ?? "unknown error"}`}${msg.note ? ` (${msg.note})` : ""}`);
+    });
 
     for (const line of info.log) this._logLines.push(line);
     this._renderLog();

@@ -5,6 +5,7 @@
 #include "capture.h"
 #include "descriptors.h"
 #include "image_readback.h"
+#include "shader_edit.h"
 #include "layer.h"
 #include "resources.h"
 #include "tracker.h"
@@ -60,6 +61,11 @@ void PreHook_vkBeginCommandBuffer(VkCommandBuffer& commandBuffer, const VkComman
 
 void PreHook_vkResetCommandBuffer(VkCommandBuffer& commandBuffer, VkCommandBufferResetFlags& flags) {
     CaptureManager::Get().OnResetCommandBuffer(GetDeviceData(commandBuffer), commandBuffer);
+}
+
+// Live shader editing: an edited pipeline is bound as its replacement (see shader_edit.h).
+void PreHook_vkCmdBindPipeline(VkCommandBuffer& commandBuffer, VkPipelineBindPoint& pipelineBindPoint, VkPipeline& pipeline) {
+    pipeline = ShaderEditor::Get().Resolve(pipeline);
 }
 
 // =============================================================================================
@@ -190,13 +196,65 @@ void Hook_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uin
 // =============================================================================================
 // Shader code
 
+// The stage(s) of a SPIR-V module from its OpEntryPoint instructions, as "vertex", "fragment",
+// "vertex+fragment" (execution models per the SPIR-V spec).
+static std::string SpirvStages(const uint32_t* words, size_t count) {
+    if (count < 5 || words[0] != 0x07230203u) return "";
+    std::string stages;
+    for (size_t i = 5; i < count;) {
+        uint32_t op = words[i] & 0xffff;
+        uint32_t len = words[i] >> 16;
+        if (!len || i + len > count) break;
+        if (op == 54) break;   // OpFunction: declarations are over
+        if (op == 15 && len >= 3) {
+            const char* name = nullptr;
+            switch (words[i + 1]) {
+                case 0: name = "vertex"; break;
+                case 1: name = "tess control"; break;
+                case 2: name = "tess eval"; break;
+                case 3: name = "geometry"; break;
+                case 4: name = "fragment"; break;
+                case 5: name = "compute"; break;
+                case 5267: case 5364: name = "task"; break;
+                case 5268: case 5365: name = "mesh"; break;
+                case 5313: name = "raygen"; break;
+                case 5314: name = "intersection"; break;
+                case 5315: name = "any hit"; break;
+                case 5316: name = "closest hit"; break;
+                case 5317: name = "miss"; break;
+                case 5318: name = "callable"; break;
+                default: name = "shader"; break;
+            }
+            if (stages.find(name) == std::string::npos) {
+                if (!stages.empty()) stages += "+";
+                stages += name;
+            }
+        }
+        i += len;
+    }
+    return stages;
+}
+
 void Hook_vkCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo,
                                const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule) {
     if (!pCreateInfo || !pCreateInfo->pCode || !pShaderModule || !*pShaderModule) return;
     auto blob = std::make_shared<std::vector<uint8_t>>(
         reinterpret_cast<const uint8_t*>(pCreateInfo->pCode),
         reinterpret_cast<const uint8_t*>(pCreateInfo->pCode) + pCreateInfo->codeSize);
-    Tracker::Get().AddBlob(HT_VkShaderModule, (uint64_t)(uintptr_t)*pShaderModule, "SPIR-V", std::move(blob));
+    Tracker& t = Tracker::Get();
+    t.AddBlob(HT_VkShaderModule, (uint64_t)(uintptr_t)*pShaderModule, "SPIR-V", std::move(blob));
+    // The stage, for the object list ("vertex shader, 12 KB SPIR-V").
+    std::string stages = SpirvStages(pCreateInfo->pCode, pCreateInfo->codeSize / 4);
+    uint64_t id = t.Resolve(HT_VkShaderModule, (uint64_t)(uintptr_t)*pShaderModule);
+    if (!stages.empty() && id) {
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(id);
+        w.Key("stage"); w.String(stages);
+        w.EndObject();
+        t.Update(id, "stage", w.str());
+    }
 }
 
 static const char* StageName(VkShaderStageFlagBits stage) {
@@ -256,6 +314,7 @@ void Hook_vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCac
         const VkGraphicsPipelineCreateInfo& ci = pCreateInfos[i];
         for (uint32_t s = 0; s < ci.stageCount && ci.pStages; ++s) AttachStage(pPipelines[i], ci.pStages[s]);
     }
+    ShaderEditor::Get().OnCreateGraphicsPipelines(device, createInfoCount, pCreateInfos, pPipelines);
 }
 
 void Hook_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount,
@@ -265,6 +324,7 @@ void Hook_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCach
     for (uint32_t i = 0; i < createInfoCount; ++i) {
         if (pPipelines[i]) AttachStage(pPipelines[i], pCreateInfos[i].stage);
     }
+    ShaderEditor::Get().OnCreateComputePipelines(device, createInfoCount, pCreateInfos, pPipelines);
 }
 
 // =============================================================================================

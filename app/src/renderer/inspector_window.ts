@@ -6,7 +6,6 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Button } from "./widget/button.js";
 import { TextInput } from "./widget/text_input.js";
-import { Select } from "./widget/select.js";
 import { TabWidget } from "./widget/tab_widget.js";
 import { TabHandle } from "./widget/tab_handle.js";
 import { Dialog } from "./widget/dialog.js";
@@ -16,6 +15,15 @@ import { SessionPanel } from "./session_panel.js";
 import { LaunchDialog, launchDisplayName } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName } from "../shared/protocol.js";
+
+// Theme icons (inline SVG in the button's text color): a moon for dark, a sun for light.
+const THEME_ICONS: Record<ThemeName, string> = {
+  dark: '<svg viewBox="0 0 16 16" aria-label="Dark theme"><path d="M10.5 2.2a6 6 0 1 0 3.3 8.6A5 5 0 0 1 10.5 2.2z" fill="currentColor"/></svg>',
+  light: '<svg viewBox="0 0 16 16" aria-label="Light theme"><circle cx="8" cy="8" r="3" fill="currentColor"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M3.2 12.8l1.4-1.4M11.4 4.6l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+};
+
+// Toolbar icon (inline SVG in the button's text color): a clock face for the recent launches.
+const ICON_RECENT = '<svg viewBox="0 0 16 16" aria-label="Recent"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.6 1.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 13.4l1.8 0.6-0.6-1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export class InspectorWindow extends Window {
   private _mode: "main" | "session" = "main";
@@ -30,7 +38,8 @@ export class InspectorWindow extends Window {
   private _lastLaunch: LaunchConfig | null = null;
   private _recentMenu: Div | null = null;
   private _portInput: TextInput | null = null;
-  private _themeSelect: Select | null = null;
+  private _themeButton: Button | null = null;
+  private _themeMenu: Div | null = null;
   private _debug: AppConfig["debug"] | null = null;
 
   constructor() {
@@ -161,7 +170,7 @@ export class InspectorWindow extends Window {
 
     // Recents dropdown: one click relaunches a previous configuration.
     const menu = new Div(row, { class: "menu-container" });
-    new Button(menu, { label: "Recent ▾", class: "btn", callback: () => {
+    new Button(menu, { html: ICON_RECENT, class: "btn btn-icon", tooltip: "Recent: relaunch a previous configuration", callback: () => {
       this._recentMenu?.classList.toggle("open");
     }});
     this._recentMenu = new Div(menu, { class: "menu-dropdown recent-menu" });
@@ -175,25 +184,36 @@ export class InspectorWindow extends Window {
       void window.inspector.connect(Number(this._portInput?.value));
     }});
 
-    // Theme picker, right-aligned. The choice is saved and applied to every window.
-    const spacer = new Span(row, { class: "launch-spacer" });
-    spacer.style.flexGrow = "1";
-    new Span(row, { text: "Theme", class: "launch-label" });
-    this._themeSelect = new Select(row, {
-      options: THEMES.map((t) => themeLabel(t)),
-      class: "theme-select",
-      value: themeLabel(currentTheme()),
-      onChange: (_value: string, index: number) => {
-        const theme = THEMES[index];
-        if (theme) void window.inspector.setTheme(theme);
-      },
+    // Theme picker, right-aligned (margin-left: auto). The choice is saved and applied to every
+    // window. The button shows the current theme's icon; the menu lists every theme.
+    const themeMenu = new Div(row, { class: "menu-container theme-container" });
+    this._themeButton = new Button(themeMenu, { html: THEME_ICONS[currentTheme()], class: "btn btn-icon theme-button",
+      tooltip: `Theme: ${themeLabel(currentTheme())}`, callback: () => {
+      this._themeMenu?.classList.toggle("open");
+    }});
+    this._themeMenu = new Div(themeMenu, { class: "menu-dropdown theme-menu" });
+    for (const theme of THEMES) {
+      const item = new Div(this._themeMenu, { class: "menu-item theme-menu-item" });
+      new Span(item, { html: THEME_ICONS[theme], class: "theme-menu-icon" });
+      new Span(item, { text: themeLabel(theme) });
+      item.element.onclick = () => {
+        this._themeMenu?.classList.remove("open");
+        void window.inspector.setTheme(theme);
+      };
+    }
+    document.addEventListener("mousedown", (e) => {
+      if (!themeMenu.element.contains(e.target as Node)) this._themeMenu?.classList.remove("open");
     });
     this._setRecents([]);
   }
 
   private _setTheme(theme: ThemeName): void {
     applyTheme(theme);
-    if (this._themeSelect) this._themeSelect.select.element.value = themeLabel(theme);
+    if (this._themeButton) {
+      this._themeButton.html = THEME_ICONS[theme];
+      this._themeButton.tooltip = `Theme: ${themeLabel(theme)}`;
+    }
+    this._themeMenu?.children.forEach((item, i) => item.classList.toggle("active", THEMES[i] === theme));
   }
 
   private _setRecents(recents: LaunchConfig[]): void {

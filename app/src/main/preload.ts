@@ -27,4 +27,6 @@ contextBridge.exposeInMainWorld("inspector", {
   clearRecents: () => ipcRenderer.invoke("inspector:clearRecents"),
   onRecents: (cb: (recents: unknown[]) => void) => ipcRenderer.on("inspector:recents", (_e, r) => cb(r)),
   shaderText: (spirv: Uint8Array, mode: string) => ipcRenderer.invoke("inspector:shaderText", spirv, mode),
+  compileShader: (source: string, language: string, stage: string, entryPoint: string, spirvVersion: string) =>
+    ipcRenderer.invoke("inspector:compileShader", source, language, stage, entryPoint, spirvVersion),
 });

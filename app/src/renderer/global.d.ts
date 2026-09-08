@@ -1,6 +1,6 @@
 import type {
   AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  ShaderTextMode, ShaderTextResult, ThemeName, UiRequest,
+  CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -35,6 +35,8 @@ export interface InspectorApi {
   clearRecents(): Promise<LaunchConfig[]>;
   onRecents(cb: (recents: LaunchConfig[]) => void): void;
   shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult>;
+  /** Compiles shader source to SPIR-V with the Vulkan SDK's compilers (shader editor). */
+  compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult>;
 }
 
 declare global {

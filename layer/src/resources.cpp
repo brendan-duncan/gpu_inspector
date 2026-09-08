@@ -2,6 +2,7 @@
 
 #include "descriptors.h"
 #include "image_readback.h"
+#include "shader_edit.h"
 
 namespace vkinsp {
 
@@ -96,6 +97,9 @@ void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
         case HT_VkDescriptorSetLayout:
         case HT_VkDescriptorUpdateTemplate:
             DescriptorTracker::Get().OnDestroy(type, handle);
+            break;
+        case HT_VkPipeline:
+            ShaderEditor::Get().OnDestroyPipeline(handle);
             break;
         default: break;
     }

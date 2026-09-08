@@ -13,10 +13,14 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
+import { CodeEditor, highlight } from "./code_editor.js";
 import { ImageView } from "./image_view.js";
+import { encodeBase64 } from "./utils/base64.js";
+import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
+import { stageLabel } from "./shader_cache.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
-import type { CaptureDescriptorBinding, HandleRef, ShaderTextMode } from "../shared/protocol.js";
+import type { CaptureDescriptorBinding, HandleRef, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears.
 const TYPE_ORDER = [
@@ -49,11 +53,47 @@ interface ObjectItem extends Widget {
 }
 
 interface ShaderView {
+  index: number;
+  blobName: string;
   pre: Widget;
   mode: ShaderTextMode;
   data: Uint8Array | null;
+  text: string;                  // the converted text currently shown
   buttons: Partial<Record<ShaderTextMode, Button>>;
+  editButton: Button;
+  editor: Div | null;
+  body: Widget;
 }
+
+/** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
+interface ShaderEdit {
+  language: ShaderLanguage;
+  source: string;
+  /** Pipelines the edit was applied to and the layer's answer for each. */
+  results: Map<number, string>;
+  applied: boolean;
+}
+
+/** Which pipelines an edit of a payload goes to, and the stage it replaces. */
+interface EditTargets {
+  pipelines: VulkanObject[];
+  stage: ShaderStage;
+  stageFlag: string;
+  entryPoint: string;
+  spirvVersion: string;
+}
+
+const STAGE_FLAG: Record<string, string> = {
+  vertex: "VK_SHADER_STAGE_VERTEX_BIT", tess_control: "VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT",
+  tess_eval: "VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT", geometry: "VK_SHADER_STAGE_GEOMETRY_BIT",
+  fragment: "VK_SHADER_STAGE_FRAGMENT_BIT", compute: "VK_SHADER_STAGE_COMPUTE_BIT", task: "VK_SHADER_STAGE_TASK_BIT_EXT",
+  mesh: "VK_SHADER_STAGE_MESH_BIT_EXT", raygen: "VK_SHADER_STAGE_RAYGEN_BIT_KHR", any_hit: "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+  closest_hit: "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR", miss: "VK_SHADER_STAGE_MISS_BIT_KHR",
+  intersection: "VK_SHADER_STAGE_INTERSECTION_BIT_KHR", callable: "VK_SHADER_STAGE_CALLABLE_BIT_KHR",
+};
+
+const LANGUAGE_OF_MODE: Record<ShaderTextMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null };
+const LANGUAGE_LABEL: Record<ShaderLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)" };
 
 /** Object list filters, after WebGPU Inspector's inspect panel filter panel. */
 interface Filters {
@@ -108,6 +148,10 @@ export class InspectPanel {
   private _forward: VulkanObject[] = [];
   private _filters: Filters = InspectPanel._emptyFilters();
   private _shaderViews = new Map<number, ShaderView>();
+  /** Shader edits by "<object id>:<blob index>"; the layer holds the applied state. */
+  private _shaderEdits = new Map<string, ShaderEdit>();
+  /** The editor currently open, to route ShaderReplaced answers to its status line. */
+  private _openEditor: { key: string; targets: EditTargets; status: Div } | null = null;
   private _imageView: ImageView | null = null;
   /** Descriptor sets whose contents have been requested from the layer (avoids re-asking on every re-render). */
   private _descriptorRequested = new Set<number>();
@@ -145,6 +189,7 @@ export class InspectPanel {
     db.onObjectBlob.addListener((id, index, data) => this._objectBlob(id, index, data));
     db.onOtherMessage.addListener((msg) => {
       if (msg.action === "ImageData") this._imageView?.handleImageData(msg);
+      else if (msg.action === "ShaderReplaced") this._shaderReplaced(msg);
     });
     db.onCapturedObjectsChanged.addListener(() => {
       if (this._filters.onlyInLastCapture) this._applyFilter();
@@ -265,6 +310,8 @@ export class InspectPanel {
     this._back = [];
     this._forward = [];
     this._descriptorRequested.clear();
+    this._shaderEdits.clear();
+    this._openEditor = null;
     this._updateHistoryButtons();
   }
 
@@ -504,6 +551,8 @@ export class InspectPanel {
 
   private _fillItem(object: VulkanObject, item: Widget): void {
     item.html = "";
+    const edited = object.edited || (object.type === "VkPipeline" && object.label.endsWith("(edited)"));
+    if (edited) new Span(item, { text: "✎ ", class: "object-item-edited", tooltip: object.edited ? "A shader of this object has been edited" : "Replacement pipeline built from an edited shader" });
     new Span(item, { text: object.name, class: "object-item-name" });
     new Span(item, { text: ` ${object.summary(this.database)}`, class: "object-item-type" });
     item.element.title = `${object.type} ${object.id} (${object.handle})`;
@@ -718,14 +767,22 @@ export class InspectPanel {
       new Div(grp.body, { text: object.type === "VkShaderModule" ? "No shader code recorded." : "No shader stages recorded.", class: "text-muted" });
       return;
     }
+    this._openEditor = null;
     object.blobs.forEach((blob, index) => {
-      const grp = new collapsible(this.inspectPanel, { label: `Shader: ${blob.name} (${blob.size} bytes)`, collapsed: index > 0 });
+      const key = `${object.id}:${index}`;
+      const edit = this._shaderEdits.get(key);
+      const grp = new collapsible(this.inspectPanel, { label: `Shader: ${blob.name} (${blob.size} bytes)${edit?.applied ? "  [edited]" : ""}`, collapsed: index > 0 });
       const bar = new Div(grp.body, { class: "shader-toolbar" });
-      const view: ShaderView = { pre: new Widget("pre"), mode: "dis", data: null, buttons: {} };
+      const view: ShaderView = {
+        index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
+        editButton: new Button(null), editor: null, body: grp.body,
+      };
       const modes: [ShaderTextMode, string][] = [["dis", "SPIR-V"], ["glsl", "GLSL"], ["hlsl", "HLSL"]];
       for (const [mode, label] of modes) {
         view.buttons[mode] = new Button(bar, { label, class: "btn btn-sm", callback: () => void this._showShader(index, mode) });
       }
+      view.editButton = new Button(bar, { label: edit?.applied ? "Edit (edited)" : "Edit", class: "btn btn-sm shader-edit-button", disabled: true,
+        tooltip: "Edit the shown text and compile it into the running application", callback: () => this._openShaderEditor(object, view) });
       view.pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
       this._shaderViews.set(index, view);
       void this.window.send({ action: "RequestBlob", id: object.id, index });
@@ -739,7 +796,13 @@ export class InspectPanel {
     for (const m of Object.keys(view.buttons) as ShaderTextMode[]) view.buttons[m]?.element.classList.toggle("active", m === mode);
     view.pre.text = "Converting...";
     const r = await window.inspector.shaderText(view.data, mode);
-    if (view.mode === mode) view.pre.text = r.text;
+    if (view.mode === mode) {
+      view.text = r.text;
+      const language = LANGUAGE_OF_MODE[mode];
+      if (r.ok && language) view.pre.html = highlight(r.text, language);
+      else view.pre.text = r.text;
+      view.editButton.disabled = !r.ok || !this.window.connected;
+    }
   }
 
   private _objectBlob(id: number, index: number, data: Uint8Array | null): void {
@@ -752,5 +815,146 @@ export class InspectPanel {
     }
     view.data = data;
     void this._showShader(index, view.mode);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Shader editor: edit the decompiled text, compile it with the SDK, have the layer rebuild
+  // the pipeline(s) with the new code (see layer/src/shader_edit.h).
+
+  /** The pipelines an edit of this payload applies to: the pipeline itself, or every pipeline using the module. */
+  private _editTargets(object: VulkanObject, view: ShaderView): EditTargets | null {
+    if (!view.data) return null;
+    const reflection = reflectSpirv(view.data);
+    const spirvVersion = reflection?.version ?? "1.5";
+    if (object.type === "VkPipeline") {
+      // Pipeline payloads are named "<stage>:<entry point>".
+      const sep = view.blobName.indexOf(":");
+      const stage = (sep > 0 ? view.blobName.substring(0, sep) : view.blobName) as ShaderStage;
+      const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : "main";
+      if (!STAGE_FLAG[stage]) return null;
+      return { pipelines: [object], stage, stageFlag: STAGE_FLAG[stage], entryPoint, spirvVersion };
+    }
+    // A shader module: the stage comes from its entry point, the pipelines from its dependents.
+    const entry = reflection?.entryPoints[0];
+    if (!entry || !STAGE_FLAG[entry.stage]) return null;
+    const pipelines: VulkanObject[] = [];
+    for (const dep of object.dependents) {
+      if (dep.type !== "VkPipeline" || dep.isDeleted) continue;
+      const d = dep.descriptor;
+      if (!d) continue;
+      const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
+      if (stages.some((s) => isObject(s) && refId(s.module) === object.id)) pipelines.push(dep);
+    }
+    return { pipelines, stage: entry.stage, stageFlag: STAGE_FLAG[entry.stage], entryPoint: entry.name, spirvVersion };
+  }
+
+  private _openShaderEditor(object: VulkanObject, view: ShaderView): void {
+    if (view.editor) {
+      view.editor.remove();
+      view.editor = null;
+      view.pre.style.display = "";
+      this._openEditor = null;
+      return;
+    }
+    const key = `${object.id}:${view.index}`;
+    const language = LANGUAGE_OF_MODE[view.mode];
+    if (!language) return;
+    const targets = this._editTargets(object, view);
+    const existing = this._shaderEdits.get(key);
+    const editor = new Div(null, { class: "shader-editor" });
+    view.body.insertBefore(editor, view.pre);
+    view.pre.style.display = "none";
+    view.editor = editor;
+
+    const head = new Div(editor, { class: "shader-editor-head" });
+    new Span(head, { text: `Editing as ${LANGUAGE_LABEL[language]}`, class: "font-md" });
+    if (targets) {
+      const where = object.type === "VkPipeline" ? "this pipeline" : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
+      new Span(head, { text: `  ${stageLabel(targets.stage)} stage, entry ${targets.entryPoint}, applies to ${where}`, class: "text-muted font-sm" });
+    } else {
+      new Span(head, { text: "  Cannot determine the stage of this code; edits cannot be applied.", class: "inspect_info_error" });
+    }
+    if (object.type === "VkPipeline" && targets && LANGUAGE_OF_MODE[view.mode] === "glsl") {
+      new Div(editor, { text: "Tip: names the application stripped appear as _m0, _m1... in the decompiled source; that is fine, the layout is what matters.", class: "text-muted font-sm" });
+    }
+
+    const source = existing && existing.language === language ? existing.source : view.text;
+    const text = new CodeEditor(editor, { value: source, language, class: "shader-editor-text" });
+    const buttons = new Div(editor, { class: "shader-toolbar" });
+    const status = new Div(editor, { class: "shader-editor-status text-muted font-sm" });
+    const log = new Widget("pre", editor, { class: "shader-editor-log", style: "display: none;" });
+    this._openEditor = targets ? { key, targets, status } : null;
+    if (existing?.results.size) status.text = [...existing.results.values()].join("\n");
+
+    new Button(buttons, { label: "Compile & Apply", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length, callback: () => {
+      if (!targets) return;
+      const edit: ShaderEdit = { language, source: text.value, results: new Map(), applied: false };
+      this._shaderEdits.set(key, edit);
+      status.text = `Compiling with ${LANGUAGE_LABEL[language]}...`;
+      log.style.display = "none";
+      void window.inspector.compileShader(text.value, language, targets.stage, targets.entryPoint, targets.spirvVersion).then((r) => {
+        if (r.log) {
+          log.text = r.log;
+          log.style.display = "";
+        }
+        if (!r.ok || !r.spirv) {
+          status.text = `${r.tool}: compilation failed.`;
+          return;
+        }
+        const spirv = encodeBase64(r.spirv);
+        status.text = `${r.tool}: ${r.spirv.byteLength} bytes of SPIR-V. Applying to ${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"}...`;
+        for (const p of targets.pipelines) {
+          edit.results.set(p.id, `${p.name}: applying...`);
+          void this.window.send({ action: "ReplaceShader", pipeline: p.id, stage: targets.stageFlag, spirv });
+        }
+      });
+    } });
+    new Button(buttons, { label: "Restore Original", class: "btn btn-sm", disabled: !targets || !targets.pipelines.length,
+      tooltip: "Bind the application's own pipeline again", callback: () => {
+      if (!targets) return;
+      const edit = this._shaderEdits.get(key) ?? { language, source: text.value, results: new Map<number, string>(), applied: false };
+      edit.results.clear();
+      edit.applied = false;
+      this._shaderEdits.set(key, edit);
+      status.text = "Restoring...";
+      for (const p of targets.pipelines) void this.window.send({ action: "RestoreShader", pipeline: p.id, stage: targets.stageFlag });
+    } });
+    new Button(buttons, { label: "Close", class: "btn btn-sm", callback: () => {
+      const edit = this._shaderEdits.get(key);
+      if (edit) edit.source = text.value;
+      else if (text.value !== view.text) this._shaderEdits.set(key, { language, source: text.value, results: new Map(), applied: false });
+      this._openShaderEditor(object, view);
+    } });
+  }
+
+  /** The layer's answer to a ReplaceShader / RestoreShader: shown in the open editor's status line. */
+  private _shaderReplaced(msg: ShaderReplacedMessage): void {
+    const open = this._openEditor;
+    let edit: ShaderEdit | undefined;
+    if (open) edit = this._shaderEdits.get(open.key);
+    if (!open || !edit) return;
+    if (!open.targets.pipelines.some((p) => p.id === msg.pipeline)) return;
+    const pipeline = this.database.getObject(msg.pipeline);
+    const name = pipeline?.name ?? `Pipeline ${msg.pipeline}`;
+    const replacement = msg.replacement ? this.database.getObject(msg.replacement) : null;
+    let line: string;
+    if (msg.ok && msg.replacement) line = `${name}: edit applied${replacement ? ` as ${replacement.name}` : ""}${msg.note ? ` (${msg.note})` : ""}`;
+    else if (msg.ok) line = `${name}: original restored`;
+    else line = `${name}: failed: ${msg.error ?? "unknown error"}`;
+    edit.results.set(msg.pipeline, line);
+    edit.applied = [...edit.results.values()].some((l) => l.includes("edit applied"));
+    open.status.text = [...edit.results.values()].join("\n");
+    open.status.classList.toggle("inspect_info_error", !msg.ok);
+
+    // Mark the pipeline (and the module the edit came from) in the object list.
+    if (msg.ok && pipeline) {
+      pipeline.edited = !!msg.replacement;
+      this._objectChanged(pipeline);
+    }
+    const source = this.inspectedObject;
+    if (source && source.type === "VkShaderModule") {
+      source.edited = open.targets.pipelines.some((p) => p.edited);
+      this._objectChanged(source);
+    }
   }
 }

@@ -57,6 +57,18 @@
   --group-3-body-bg: #283a3b;
   --group-4-body-bg: #382e3d;
 
+  /* Shader code highlighting */
+  --code-comment: #6a9955;
+  --code-keyword: #c586c0;
+  --code-type: #4ec9b0;
+  --code-builtin: #dcdcaa;
+  --code-number: #b5cea8;
+  --code-string: #ce9178;
+  --code-preprocessor: #9cdcfe;
+  --code-constant: #4fc1ff;
+  --code-id: #9cdcfe;
+  --code-operator: #d4d4d4;
+
   /* Tabs */
   --tab-header-bg: #222222;
   --tab-header-shadow: #111111;
@@ -175,6 +187,17 @@
   --group-2-body-bg: #e8f7dc;
   --group-3-body-bg: #e2f5f5;
   --group-4-body-bg: #f5e5fa;
+
+  --code-comment: #008000;
+  --code-keyword: #af00db;
+  --code-type: #267f99;
+  --code-builtin: #795e26;
+  --code-number: #098658;
+  --code-string: #a31515;
+  --code-preprocessor: #0000ff;
+  --code-constant: #0070c1;
+  --code-id: #001080;
+  --code-operator: #333333;
 
   --tab-header-bg: #e0e0e0;
   --tab-header-shadow: #c8c8c8;

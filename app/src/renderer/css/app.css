@@ -103,7 +103,12 @@ html, body {
   gap: 6px;
   margin: 3px 0;
   flex-wrap: wrap;
+  /* The row is itself an item of the control bar's flex layout; it must take the full width
+     for its spacer to push the right-aligned items (theme button) to the edge. */
+  flex: 1 1 100%;
+  min-width: 0;
 }
+.launch-row .theme-container { margin-left: auto; }
 .launch-label {
   color: var(--fg-secondary);
   margin-left: 8px;
@@ -174,6 +179,7 @@ html, body {
 .object-item.selected .object-item-type { opacity: 0.85; }
 .object-item-name { color: var(--fg-primary); }
 .object-item-type { color: var(--fg-secondary); font-size: 9pt; }
+.object-item-edited { color: var(--accent-success); font-weight: bold; }
 .object-item.error .object-item-name { color: var(--accent-error); }
 
 .dependency-list {
@@ -234,12 +240,85 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 }
 .dependency_ghost { color: var(--fg-secondary); font-style: italic; }
 
+/* Shader editor (Inspect > Shader > Edit) */
+.shader-editor { margin: 4px 0; }
+.shader-editor-head { padding: 4px 8px; }
+.shader-editor-status { padding: 2px 8px; white-space: pre-wrap; }
+
+/* Highlighted code: the read-only shader views and the editor share the token colors. */
+.code-editor {
+  position: relative;
+  height: 50vh;
+  min-height: 120px;
+  overflow: hidden;
+  resize: vertical;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+}
+.code-editor-highlight, .code-editor-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 9pt;
+  line-height: 1.4;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+  border: 0;
+}
+.code-editor-highlight { color: var(--fg-primary); pointer-events: none; overflow: hidden; }
+.code-editor-highlight code { font: inherit; }
+.code-editor-input {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg-primary);
+  resize: none;
+  outline: none;
+}
+.code-editor-input::selection { background: var(--accent-primary); color: transparent; }
+.shader-text .tok-comment, .code-editor .tok-comment { color: var(--code-comment); font-style: italic; }
+.shader-text .tok-keyword, .code-editor .tok-keyword { color: var(--code-keyword); }
+.shader-text .tok-type, .code-editor .tok-type { color: var(--code-type); }
+.shader-text .tok-builtin, .code-editor .tok-builtin { color: var(--code-builtin); }
+.shader-text .tok-number, .code-editor .tok-number { color: var(--code-number); }
+.shader-text .tok-string, .code-editor .tok-string { color: var(--code-string); }
+.shader-text .tok-preprocessor, .code-editor .tok-preprocessor { color: var(--code-preprocessor); }
+.shader-text .tok-constant, .code-editor .tok-constant { color: var(--code-constant); }
+.shader-text .tok-id, .code-editor .tok-id { color: var(--code-id); }
+.shader-text .tok-operator, .code-editor .tok-operator { color: var(--code-operator); }
+.shader-text .tok-punct, .code-editor .tok-punct { color: var(--fg-secondary); }
+.shader-text .tok-ident, .code-editor .tok-ident { color: var(--fg-primary); }
+.shader-editor-log {
+  font-family: var(--font-mono);
+  font-size: 9pt;
+  margin: 4px 0;
+  padding: 8px;
+  max-height: 30vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: var(--info-error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--accent-error);
+}
+
 /* Capture panel */
 .capture_panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-bar { flex: 0 0 auto; padding: 6px 10px; margin-bottom: 0; }
 .capture-tabs { flex: 1 1 auto; min-height: 0; }
 .capture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-view > .split { flex: 1 1 auto; min-height: 0; height: auto; }
+/* Frame Stats (capture) */
+.frame-stats { padding: 12px 16px; }
+.frame-stats-title { font-size: 14pt; font-weight: bold; margin-bottom: 10px; }
+.frame-stats-section { margin-bottom: 14px; }
+.frame-stats-heading { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
+.frame-stats-list { background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 6px 10px; }
+.frame-stats-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 10pt; line-height: 1.4; }
+.frame-stats-label { color: var(--fg-primary); }
+.frame-stats-value { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 .capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
@@ -405,6 +484,10 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 
 /* Recents menu */
 .recent-menu { min-width: 340px; max-width: 600px; }
+.theme-menu { min-width: 120px; left: auto; right: 0; }
+.theme-menu-item { display: flex; align-items: center; gap: 8px; }
+.theme-menu-item.active { font-weight: 600; }
+.theme-menu-icon svg { width: 14px; height: 14px; display: block; }
 .recent-item { display: flex; align-items: baseline; gap: 10px; }
 .recent-item-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .recent-item-path { color: var(--fg-secondary); font-size: 8.5pt; max-width: 280px; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }

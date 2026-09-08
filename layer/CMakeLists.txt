@@ -49,6 +49,8 @@ add_library(${LAYER_LIB} SHARED
     src/resources.cpp
     src/descriptors.h
     src/descriptors.cpp
+    src/shader_edit.h
+    src/shader_edit.cpp
     src/capture.h
     src/capture.cpp
     src/image_readback.h

@@ -17,6 +17,7 @@ import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, type CapturedTexture } from "./capture_data.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
+import { CaptureStatistics, renderFrameStats } from "./capture_statistics.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
@@ -200,11 +201,12 @@ export class CaptureView implements CaptureHost {
     const left = new Div(pane1, { class: "capture-left" });
     const filterRow = new Div(left, { class: "capture-filter-row" });
     new Span(filterRow, { text: "Filter", class: "inspector-filter-label" });
-    this._filterInput = new TextInput(filterRow, { placeholder: "command name, object, index...", class: "inspector-filter-input", style: "width: 260px;" });
+    this._filterInput = new TextInput(filterRow, { placeholder: "command name, object, index...", class: "inspector-filter-input", style: "width: 220px;" });
     this._filterInput.element.oninput = () => {
       this._filter = this._filterInput.value.trim().toLowerCase();
       this._applyCommandFilter();
     };
+    new Button(filterRow, { label: "Frame Stats", class: "btn btn-sm", tooltip: "Statistics of the captured frame: commands, passes, pipelines, bindings, memory traffic, geometry", callback: () => this._showStats() });
     this._listPanel = new Div(left, { class: "capture-commands" });
     const pane2 = new Span(split, { style: "flex-grow: 1; overflow: hidden;" });
     this._infoPanel = new Div(pane2, { class: "capture-info" });
@@ -492,6 +494,18 @@ export class CaptureView implements CaptureHost {
 
   private _showCommand(cmd: CaptureCommand): void {
     this.info.show(this._infoPanel, cmd);
+  }
+
+  /** Replaces the command details with the capture's statistics (WebGPU Inspector's Frame Stats). */
+  private _showStats(): void {
+    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
+    this._selectedRow = null;
+    this._infoPanel.html = "";
+    if (!this.data.commands.length) {
+      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, this.window.database));
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */

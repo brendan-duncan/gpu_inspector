@@ -126,6 +126,8 @@ PRE_HOOKS = {
     "vkCreateSwapchainKHR",
     "vkBeginCommandBuffer",
     "vkResetCommandBuffer",
+    # live shader editing: bind the replacement pipeline instead of the original
+    "vkCmdBindPipeline",
 }
 
 SKIP_COMMANDS = {"vkNegotiateLoaderLayerInterfaceVersion"}

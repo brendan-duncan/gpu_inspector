@@ -163,6 +163,33 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
   database, texture decoding, SPIR-V reflection, vertex format decoding and the buffer layout
   parser.
 
+#### Frame Stats
+
+The Frame Stats button of a capture tab replaces the command details with statistics of the
+capture (`capture_statistics.ts`, after WebGPU Inspector's): commands by kind, passes and
+attachments, pipelines and stages bound, descriptor sets and what they held, push constants,
+memory traffic (update/fill/copy bytes, and what the capture read back), and geometry. Vertex,
+triangle, line and point counts follow each draw's bound pipeline's topology; indirect draws
+count from their captured argument buffers.
+
+#### Shader editor
+
+The Edit button on a shader payload (Inspect > VkPipeline or VkShaderModule > Shader) edits the
+text currently shown (SPIR-V disassembly, GLSL or HLSL from `spirv-cross`) and compiles it with
+the SDK's `spirv-as`, `glslangValidator` or `dxc` (`compileShader` in `main.ts`, target
+environment matched to the module's SPIR-V version). WebGPU Inspector can rebuild a pipeline in
+the page; here the application's `VkPipeline` is immutable, so the layer does it
+(`src/shader_edit.*`): it keeps a deep copy of every pipeline's create info (known pNext
+structs included, unknown ones dropped with a note), and `ReplaceShader {pipeline, stage,
+spirv}` creates a new module and a replacement pipeline from that copy with the stage swapped.
+From then on `vkCmdBindPipeline` (a pre-hook) binds the replacement instead of the original;
+`RestoreShader` drops it. The replacement is registered as an object of its own ("<name>
+(edited)", with the new code as its stage payload) so captures and reflection see it. Retired
+replacements are destroyed at a later present after `vkDeviceWaitIdle`, since command buffers
+may still reference them. Editing a module applies to every pipeline that uses it. Command
+buffers recorded before the edit keep binding the original until they are re-recorded, and
+graphics pipeline libraries are not supported.
+
 #### Meters
 
 The Inspect tab's top row follows WebGPU Inspector's meters: a frame time plot (average and

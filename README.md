@@ -8,6 +8,9 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
+* **Shader editing** — edit a pipeline's shader as GLSL, HLSL or SPIR-V assembly, compile it with
+  the Vulkan SDK's compilers and see the running application use it; restore the original at any
+  time.
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
   and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
   with the parsed contents of its uniform and storage buffers, the decoded vertex and index

@@ -27,6 +27,8 @@ export class VulkanObject {
   invalidReason: string | null = null;
   widget: unknown = null;                  // list entry in the inspect panel
   isDeleted = false;
+  /** A shader of this pipeline / this module has been replaced by the shader editor. */
+  edited = false;
 
   constructor(msg: AddObjectMessage) {
     this.id = msg.id;
@@ -98,12 +100,18 @@ export class VulkanObject {
         return d ? `${formatBytes(num(d.size))} ${fmtFlags(d.usage)}` : "";
       case "VkDeviceMemory":
         return d ? `${formatBytes(num(d.allocationSize))} type ${num(d.memoryTypeIndex)}` : "";
-      case "VkShaderModule":
-        return d ? `${formatBytes(num(d.codeSize))} SPIR-V` : "";
+      case "VkShaderModule": {
+        // The layer reports the module's entry point stage(s) (ObjectUpdate "stage").
+        const stage = str(this.updates.stage);
+        return `${stage ? `${stage} shader, ` : ""}${d ? formatBytes(num(d.codeSize)) : ""} SPIR-V`;
+      }
       case "VkPipeline": {
         if (!d) return "";
-        if (Array.isArray(d.pStages)) return `graphics ${d.pStages.length} stages`;
-        if (isObject(d.stage)) return `compute ${fmt(d.stage.stage)}`;
+        if (Array.isArray(d.pStages)) {
+          const names = d.pStages.map((s) => (isObject(s) ? stageWord(str(s.stage)) : "")).filter((s) => s);
+          return names.length ? names.join(" + ") : `graphics ${d.pStages.length} stages`;
+        }
+        if (isObject(d.stage)) return `${stageWord(str(d.stage.stage))} (compute)`;
         return "";
       }
       case "VkRenderPass":
@@ -162,6 +170,13 @@ export function objectMemoryBytes(o: VulkanObject, db: ObjectLookup | null): num
     default:
       return 0;
   }
+}
+
+/** "VK_SHADER_STAGE_FRAGMENT_BIT" -> "fragment"; "VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT" -> "tess control". */
+export function stageWord(flag: string): string {
+  const m = /^VK_SHADER_STAGE_(.+?)_BIT/.exec(flag);
+  if (!m) return flag;
+  return m[1].toLowerCase().replace("tessellation_control", "tess control").replace("tessellation_evaluation", "tess eval").replace(/_/g, " ");
 }
 
 export function isObject(v: ArgValue | undefined): v is ArgObject {
