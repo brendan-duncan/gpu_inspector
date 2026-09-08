@@ -13,7 +13,9 @@ interpreter and re-created pipelines.
 - Texture viewer (mip, layer, channels, exposure, auto range, zoom, hover/pinned values, copy).
 - Descriptor set contents on demand. Shader stage labels.
 - Frame capture: N frames, queued capture at a frame or after a delay (launch dialog and CLI),
-  one tab per capture, command filter, debug-group coloring, render target read-back.
+  one tab per capture, command filter, debug-group coloring, render target read-back, a
+  thumbnail strip of every pass's attachments, and the image viewer (zoom, channels, exposure,
+  texel values) on captured render targets.
 - Command inspection: pipeline state, per-stage reflection, descriptor sets with parsed uniform
   and storage buffers (Format editor, radix, array paging), vertex/index/indirect data, push
   constants, render targets.
@@ -39,9 +41,6 @@ interpreter and re-created pipelines.
 - [ ] Capture files: include the current contents of sampled images (descriptor previews are
       live read-backs today, so a loaded capture has none), and a recent-files list.
 - [ ] "At frame" field in the capture bar (the layer already supports `atFrame`).
-- [ ] Render-pass thumbnail strip beside the command list; clicking selects the pass.
-- [ ] Captured render targets in the full image viewer (hover values, zoom, channels) instead of
-      plain canvases.
 - [ ] "Affected By" on a buffer: earlier copies/updates/fills targeting it and dispatches that
       bind it as writable storage.
 - [ ] Multisampled render target read-back (resolve into a temporary image).

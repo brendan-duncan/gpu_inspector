@@ -15,7 +15,13 @@ import {
 } from "./vulkan/texture_decode.js";
 import { isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
-import type { ImageDataMessage } from "../shared/protocol.js";
+import type { CaptureTextureInfo, ImageDataMessage } from "../shared/protocol.js";
+
+/** Pixels read back during a capture (a render target), shown instead of the live image. */
+export interface CapturedImageSource {
+  info: CaptureTextureInfo;
+  data: Uint8Array;
+}
 
 const CHANNEL_MODES: [string, ChannelMode][] = [["RGB", "rgb"], ["Red", "r"], ["Green", "g"], ["Blue", "b"], ["Alpha", "a"], ["Luminance", "luminance"]];
 
@@ -40,9 +46,11 @@ function getTooltip(): HTMLPreElement {
 
 export class ImageView {
   readonly session: SessionContext;
-  readonly object: VulkanObject;
+  readonly object: VulkanObject | null;
   /** The VkImage whose contents are shown (the view's image for a VkImageView). */
   readonly imageId: number;
+  /** Captured pixels (all layers back to back) rather than live read-backs. */
+  readonly captured: CapturedImageSource | null;
 
   private _is3D = false;
   private _mipCount = 1;
@@ -64,39 +72,48 @@ export class ImageView {
   private _scroll!: Div;
   private _canvas: HTMLCanvasElement;
 
-  constructor(parent: Widget, session: SessionContext, object: VulkanObject) {
+  constructor(parent: Widget, session: SessionContext, object: VulkanObject | null, captured: CapturedImageSource | null = null) {
     this.session = session;
     this.object = object;
+    this.captured = captured;
     const db = session.database;
 
-    // Resolve the image and the subresource range this object covers.
     let image: VulkanObject | null = object;
-    if (object.type === "VkImageView") {
-      image = db.getObject(refId(object.descriptor?.image));
-      const range = isObject(object.descriptor?.subresourceRange) ? object.descriptor.subresourceRange : null;
-      this._baseMip = num(range?.baseMipLevel);
-      this._baseLayer = num(range?.baseArrayLayer);
-    }
-    this.imageId = image?.id ?? 0;
-    const d = image?.descriptor;
     let isDepth = false;
-    if (image?.cmd === "vkGetSwapchainImagesKHR") {
-      const sd = db.getObject(image.parentId)?.descriptor;
-      this._layerCount = Math.max(1, num(sd?.imageArrayLayers) || 1);
-    } else if (d) {
-      this._is3D = d.imageType === "VK_IMAGE_TYPE_3D";
-      this._mipCount = Math.max(1, num(d.mipLevels) || 1);
-      const e = isObject(d.extent) ? d.extent : null;
-      this._layerCount = this._is3D ? Math.max(1, num(e?.depth) || 1) : Math.max(1, num(d.arrayLayers) || 1);
-      isDepth = /_D\d+_|_D\d+$|_S8_UINT/.test(String(d.format ?? ""));
-    }
-    if (object.type === "VkImageView") {
-      const range = isObject(object.descriptor?.subresourceRange) ? object.descriptor.subresourceRange : null;
-      const levels = num(range?.levelCount);
-      const layers = num(range?.layerCount);
-      // VK_REMAINING_* is serialized as a large number; keep the image's count in that case.
-      if (levels > 0 && levels < 1024) this._mipCount = Math.min(this._mipCount, this._baseMip + levels);
-      if (!this._is3D && layers > 0 && layers < 65536) this._layerCount = Math.min(this._layerCount, this._baseLayer + layers);
+    if (captured) {
+      // A captured render target: one mip, the layers the capture read back, no live request.
+      const info = captured.info;
+      this.imageId = info.id;
+      this._layerCount = Math.max(1, info.layers || 1);
+      isDepth = info.aspect === "depth";
+    } else {
+      // Resolve the image and the subresource range this object covers.
+      if (object?.type === "VkImageView") {
+        image = db.getObject(refId(object.descriptor?.image));
+        const range = isObject(object.descriptor?.subresourceRange) ? object.descriptor.subresourceRange : null;
+        this._baseMip = num(range?.baseMipLevel);
+        this._baseLayer = num(range?.baseArrayLayer);
+      }
+      this.imageId = image?.id ?? 0;
+      const d = image?.descriptor;
+      if (image?.cmd === "vkGetSwapchainImagesKHR") {
+        const sd = db.getObject(image.parentId)?.descriptor;
+        this._layerCount = Math.max(1, num(sd?.imageArrayLayers) || 1);
+      } else if (d) {
+        this._is3D = d.imageType === "VK_IMAGE_TYPE_3D";
+        this._mipCount = Math.max(1, num(d.mipLevels) || 1);
+        const e = isObject(d.extent) ? d.extent : null;
+        this._layerCount = this._is3D ? Math.max(1, num(e?.depth) || 1) : Math.max(1, num(d.arrayLayers) || 1);
+        isDepth = /_D\d+_|_D\d+$|_S8_UINT/.test(String(d.format ?? ""));
+      }
+      if (object?.type === "VkImageView") {
+        const range = isObject(object.descriptor?.subresourceRange) ? object.descriptor.subresourceRange : null;
+        const levels = num(range?.levelCount);
+        const layers = num(range?.layerCount);
+        // VK_REMAINING_* is serialized as a large number; keep the image's count in that case.
+        if (levels > 0 && levels < 1024) this._mipCount = Math.min(this._mipCount, this._baseMip + levels);
+        if (!this._is3D && layers > 0 && layers < 65536) this._layerCount = Math.min(this._layerCount, this._baseLayer + layers);
+      }
     }
     this._mip = this._baseMip;
     this._layer = this._baseLayer;
@@ -110,8 +127,27 @@ export class ImageView {
 
     this._canvas = document.createElement("canvas");
     this._build(parent, image);
-    if (image) this.request();
-    else this._status.text = "image not available";
+    if (captured) {
+      const info = captured.info;
+      this._data = {
+        action: "ImageData", id: info.id, mip: info.mip, layer: 0, depth: info.depth, layers: info.layers, size: info.size,
+        format: info.format, aspect: info.aspect, width: info.width, height: info.height, __binary: captured.data,
+      };
+      this._decode();
+    } else if (image) {
+      this.request();
+    } else {
+      this._status.text = "image not available";
+    }
+  }
+
+  /** Layers (or 3D slices) arrive together and are picked locally rather than requested. */
+  private get _slices(): boolean {
+    return this._is3D || this.captured !== null;
+  }
+
+  private _sliceCount(msg: ImageDataMessage): number {
+    return Math.max(1, this._is3D ? msg.depth : this.captured ? msg.layers : 1);
   }
 
   private _build(parent: Widget, image: VulkanObject | null): void {
@@ -132,9 +168,9 @@ export class ImageView {
       const options: string[] = [];
       for (let i = this._is3D ? 0 : this._baseLayer; i < this._layerCount; i++) options.push(String(i));
       new Select(bar, { options, onChange: (_v: string, index: number) => {
-        if (this._is3D) {
+        if (this._slices) {
           this._layer = index;
-          this._decode();  // all slices of a 3D mip arrive together
+          this._decode();  // all slices of a 3D mip (or of a captured target) arrive together
         } else {
           this._layer = this._baseLayer + index;
           this.request();
@@ -178,7 +214,7 @@ export class ImageView {
     } });
     this._smoothCheck = new Checkbox(bar, { label: "Smooth", checked: false, tooltip: "Filter when scaling instead of showing texels" });
     this._smoothCheck.input.onchange = () => this._canvas.classList.toggle("smooth", this._smoothCheck.checked);
-    new Button(bar, { html: ICON_REFRESH, class: "btn btn-sm btn-icon", tooltip: "Refresh: read the image again from the application", callback: () => this.request() });
+    if (!this.captured) new Button(bar, { html: ICON_REFRESH, class: "btn btn-sm btn-icon", tooltip: "Refresh: read the image again from the application", callback: () => this.request() });
     new Button(bar, { html: ICON_COPY, class: "btn btn-sm btn-icon", tooltip: "Copy the displayed image as PNG", callback: () => void this._copy() });
 
     const info = new Div(parent, { class: "image-view-toolbar" });
@@ -207,7 +243,7 @@ export class ImageView {
 
   /** Asks the layer for the selected subresource. */
   request(): void {
-    if (!this.imageId) return;
+    if (!this.imageId || this.captured) return;
     if (!this.session.connected) {
       this._status.text = "not connected";
       return;
@@ -241,7 +277,7 @@ export class ImageView {
       this._canvas.height = 0;
       return;
     }
-    const slice = this._is3D ? Math.min(this._layer, Math.max(1, msg.depth) - 1) : 0;
+    const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
     this._texels = decodeTexels(msg, msg.__binary, slice);
     if (!this._texels) {
       this._status.text = "decode failed";
@@ -261,8 +297,8 @@ export class ImageView {
     this._canvas.height = tex.height;
     this._canvas.getContext("2d")!.putImageData(new ImageData(rgba, tex.width, tex.height), 0, 0);
 
-    const slice = this._is3D ? Math.min(this._layer, Math.max(1, msg.depth) - 1) : 0;
-    const where = `${tex.width}x${tex.height} mip ${msg.mip}${this._is3D ? ` slice ${slice}` : this._layerCount > 1 ? ` layer ${msg.layer}` : ""}`;
+    const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
+    const where = `${tex.width}x${tex.height} mip ${msg.mip}${this._is3D ? ` slice ${slice}` : this._layerCount > 1 ? ` layer ${this.captured ? slice : msg.layer}` : ""}`;
     const fmt = (v: number): string => tex.integer ? String(v) : formatFloat(v);
     const range = tex.channels === 1
       ? `  Min ${fmt(tex.min[0])}  Max ${fmt(tex.max[0])}`

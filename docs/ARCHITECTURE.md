@@ -185,7 +185,13 @@ layer keeps for each shader module / pipeline stage (`renderer/shader_cache.ts` 
 with `RequestBlob`). The type can be overridden per binding with GLSL struct declarations
 (`renderer/vulkan/buffer_layout.ts` computes std140/std430 offsets), the way WebGPU Inspector's
 Format button takes WGSL. Images bound in descriptor sets show a thumbnail of their current
-contents (live readback), since the capture does not copy sampled images.
+contents (live readback), since the capture does not copy sampled images. The read-back render
+targets appear twice: as a thumbnail strip beside the command list (one tile per render pass
+with every attachment, clicking it selects the pass's begin command, WebGPU Inspector's frame
+images), and in the selected pass's Render Targets section, where clicking a target opens the
+image viewer (`renderer/image_view.ts`, zoom, channels, exposure, auto range, texel values under
+the mouse) on the captured pixels in place. That viewer takes a captured source instead of live
+read-backs, so it works the same on loaded capture files.
 
 ### Live image readback
 

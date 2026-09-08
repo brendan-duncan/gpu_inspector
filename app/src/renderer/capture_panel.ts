@@ -22,6 +22,7 @@ import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./cap
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
+import { ImageView } from "./image_view.js";
 import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, isAction } from "./vulkan/command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
@@ -262,6 +263,9 @@ export class CaptureView implements CaptureHost {
   private _rows: CommandRow[] = [];
   private _timeline: TimelineWidget;
   private _profile: boolean;
+  private _thumbStrip: Div;
+  /** Canvases showing a captured texture (thumbnail strip, render target sections), drawn when its data arrives. */
+  private _textureCanvases = new Map<CapturedTexture, HTMLCanvasElement[]>();
   /**
    * Pass blocks of the command tree, keyed by passKey(), for durations and the timeline. `row`
    * is the header the timeline scrolls to: the begin command's row for render passes, the block
@@ -281,9 +285,13 @@ export class CaptureView implements CaptureHost {
     this._profile = profile;
     this.info = new CommandInfoView(this);
 
-    const split = new Split(this.root, { direction: Split.Horizontal, position: 520 });
+    const split = new Split(this.root, { direction: Split.Horizontal, position: 700 });
     const pane1 = new Span(split);
-    const left = new Div(pane1, { class: "capture-left" });
+    const leftRow = new Div(pane1, { class: "capture-left-row" });
+    // Render pass thumbnails to the left of the command list (WebGPU Inspector's frame images strip).
+    this._thumbStrip = new Div(leftRow, { class: "capture-thumb-strip" });
+    this._thumbStrip.style.display = "none";
+    const left = new Div(leftRow, { class: "capture-left" });
     const filterRow = new Div(left, { class: "capture-filter-row" });
     new Span(filterRow, { text: "Filter", class: "inspector-filter-label" });
     this._filterInput = new TextInput(filterRow, { placeholder: "command name, object, index...", class: "inspector-filter-input", style: "width: 220px;" });
@@ -305,6 +313,7 @@ export class CaptureView implements CaptureHost {
     this.data.onTexturesAnnounced.addListener(() => {
       this._updateStatus();
       this._refreshSelection();
+      this._buildThumbnails();
     });
     this.data.onBuffersAnnounced.addListener(() => this._updateStatus());
     // Buffer contents stream in after the commands; show them once they are all here (or a
@@ -402,6 +411,7 @@ export class CaptureView implements CaptureHost {
     this._selectedRow = null;
     this._rows = [];
     this._passBlocks.clear();
+    this._textureCanvases.clear();
     this._drawCount = 0;
     // Objects this capture references, for the Inspect panel's "used in last capture" filter.
     const db = this.window.database;
@@ -428,6 +438,7 @@ export class CaptureView implements CaptureHost {
     this.onLabelChanged.emit();
     this._updateStatus();
     this._applyCommandFilter();
+    this._buildThumbnails();
     if (this.data.passTimings.size) this._applyPassTimings();
     else if (this._profile) this._timeline.showPlaceholder("Profile passes: waiting for GPU timestamps...");
     const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
@@ -741,15 +752,42 @@ export class CaptureView implements CaptureHost {
       new Div(box, { text: tex.info.error, class: "text-muted font-sm" });
       return;
     }
-    const canvas = document.createElement("canvas");
-    canvas.className = "capture-texture-canvas";
+    const canvas = this._textureCanvas(tex, "capture-texture-canvas");
+    canvas.title = "Click to open in the image viewer (zoom, channels, exposure, texel values)";
     box.element.appendChild(canvas);
+    // Clicking the thumbnail opens the full image viewer on the captured pixels, in place.
+    let viewer: Div | null = null;
+    const toggle = (): void => {
+      if (!tex.data) return;
+      if (viewer) {
+        viewer.remove();
+        viewer = null;
+        canvas.style.display = "";
+        box.classList.remove("open");
+        return;
+      }
+      viewer = new Div(box, { class: "capture-texture-viewer" });
+      new Button(viewer, { label: "Close viewer", class: "btn btn-sm", callback: toggle });
+      new ImageView(viewer, this.window, image, { info: tex.info, data: tex.data });
+      canvas.style.display = "none";
+      box.classList.add("open");
+    };
+    canvas.onclick = toggle;
+  }
+
+  /** A canvas showing a captured texture: drawn now when its data is here, else when it arrives. */
+  private _textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement {
+    const canvas = document.createElement("canvas");
+    canvas.className = className;
     if (tex.data) this._drawTexture(canvas, tex);
     else {
       canvas.width = 64;
       canvas.height = 64;
-      tex.canvas = canvas;
+      const list = this._textureCanvases.get(tex) ?? [];
+      list.push(canvas);
+      this._textureCanvases.set(tex, list);
     }
+    return canvas;
   }
 
   private _drawTexture(canvas: HTMLCanvasElement, tex: CapturedTexture): void {
@@ -773,6 +811,42 @@ export class CaptureView implements CaptureHost {
   }
 
   private _textureLoaded(tex: CapturedTexture): void {
-    if (tex.canvas && tex.data) this._drawTexture(tex.canvas, tex);
+    if (!tex.data) return;
+    for (const canvas of this._textureCanvases.get(tex) ?? []) this._drawTexture(canvas, tex);
+    this._textureCanvases.delete(tex);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Thumbnail strip: every render pass's attachments beside the command list; clicking one
+  // selects the pass's begin command (WebGPU Inspector's frame images).
+
+  private _buildThumbnails(): void {
+    const strip = this._thumbStrip;
+    strip.html = "";
+    let count = 0;
+    for (const [key, block] of this._passBlocks) {
+      const k = parsePassKey(key);
+      if (k.compute) continue;
+      const textures = this.data.texturesForPass(k.frame, k.commandBuffer, k.passIndex);
+      if (!textures.length) continue;
+      const tile = new Div(strip, { class: "capture-thumb-tile" });
+      const frames = this.data.frames > 1 ? `Frame ${this.data.frame + k.frame}  ` : "";
+      new Div(tile, { text: `${frames}${block.label.replace(/^(Render Pass|Rendering) /, "Pass ")}`, class: "capture-thumb-label", tooltip: block.label });
+      for (const tex of textures) {
+        new Div(tile, { text: `${tex.info.attachment}: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}`, class: "text-muted font-sm capture-thumb-info" });
+        if (tex.info.error) {
+          new Div(tile, { text: tex.info.error, class: "text-muted font-sm" });
+          continue;
+        }
+        tile.element.appendChild(this._textureCanvas(tex, "capture-thumb-canvas"));
+        count++;
+      }
+      const row = block.row;
+      tile.element.onclick = () => {
+        row.element.scrollIntoView({ block: "center" });
+        if ("command" in row) row.element.click();
+      };
+    }
+    strip.style.display = count ? "" : "none";
   }
 }

@@ -358,7 +358,18 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-bound-track { flex: 1 1 auto; height: 10px; background: var(--bg-primary); border-radius: 5px; overflow: hidden; }
 .frame-bound-fill { height: 100%; border-radius: 5px; }
 .frame-bound-value { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.capture-left-row { display: flex; height: 100%; min-height: 0; }
+.capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1 1 auto; min-width: 0; }
+/* Render pass thumbnails beside the command list */
+.capture-thumb-strip { flex: 0 0 180px; overflow: auto; border-right: 1px solid var(--border-subtle); padding: 4px; background: var(--bg-secondary); }
+.capture-thumb-tile { border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 4px; margin-bottom: 6px; cursor: pointer; background: var(--bg-tertiary); }
+.capture-thumb-tile:hover { border-color: var(--accent-primary); }
+.capture-thumb-label { font-size: 9pt; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capture-thumb-info { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capture-thumb-canvas { display: block; width: 100%; height: auto; margin: 2px 0 4px 0; background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 12px 12px; image-rendering: pixelated; }
+.capture_pass_texture.open { width: 100%; max-width: none; flex: 1 1 100%; box-sizing: border-box; }
+.capture-texture-canvas { cursor: zoom-in; }
+.capture-texture-viewer { margin-top: 4px; }
 .capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
 .capture-left > .capture-commands { flex: 1 1 auto; min-height: 0; height: auto; }
@@ -392,7 +403,7 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .draw-state { font-family: var(--font-mono); font-size: 9pt; padding: 4px; }
 .draw-state-row { line-height: 1.6; }
 .draw-state-label { display: inline-block; min-width: 150px; color: var(--fg-secondary); }
-.capture_frameImages { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px; }
+.capture_frameImages { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px; width: auto; height: auto; }
 .capture_pass_texture { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px; max-width: 420px; }
 .capture-texture-title { font-weight: 600; }
 .capture-texture-canvas { display: block; margin-top: 4px; max-width: 400px; max-height: 300px; background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px; image-rendering: pixelated; }

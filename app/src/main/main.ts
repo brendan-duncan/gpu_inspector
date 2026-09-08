@@ -40,7 +40,7 @@ let mainWin: BrowserWindow | null = null;
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
 //               --launch-android=<package> --device=<serial> [--activity=<name>]
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
-//               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y]
+//               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -1240,16 +1240,18 @@ void app.whenReady().then(() => {
     const shot = cliOption("screenshot");
     if (shot) {
       setTimeout(async () => {
-        // Testing aid: --debug-mouse=x,y moves the mouse over the main window before the shot.
-        const mouse = cliOption("debug-mouse")?.split(",").map(Number);
-        if (mouse && mouse.length === 2 && mainWin) {
+        // Testing aid: --debug-mouse=x,y[;x,y...] clicks each point on the main window (in
+        // order, with a pause between) before the shot; the last one leaves the mouse there.
+        for (const point of cliOption("debug-mouse")?.split(";") ?? []) {
+          const mouse = point.split(",").map(Number);
+          if (mouse.length !== 2 || !mainWin) continue;
           mainWin.webContents.sendInputEvent({ type: "mouseEnter", x: mouse[0], y: mouse[1] });
           mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0], y: mouse[1] });
           await new Promise((r) => setTimeout(r, 100));
           mainWin.webContents.sendInputEvent({ type: "mouseDown", x: mouse[0], y: mouse[1], button: "left", clickCount: 1 });
           mainWin.webContents.sendInputEvent({ type: "mouseUp", x: mouse[0], y: mouse[1], button: "left", clickCount: 1 });
           mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0] + 2, y: mouse[1] + 2 });
-          await new Promise((r) => setTimeout(r, 300));
+          await new Promise((r) => setTimeout(r, 400));
         }
         await writeScreenshots(shot);
         if (cliFlag("quit-after-screenshot")) {
