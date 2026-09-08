@@ -306,6 +306,14 @@ may still reference them. Editing a module applies to every pipeline that uses i
 buffers recorded before the edit keep binding the original until they are re-recorded, and
 graphics pipeline libraries are not supported.
 
+#### Shader reflection
+
+Every shader payload in the Inspect tab (a module, or a pipeline stage) has a Reflection section
+above its code: the SPIR-V version, each entry point with its stage, workgroup size, inputs and
+outputs, the resources by set and binding with struct members, offsets and sizes, and the push
+constant block. It is the same `reflectSpirv` result the capture view uses per draw, rendered by
+`renderer/shader_reflection_view.ts`, so a module explains what it expects without a capture.
+
 #### Shader source maps
 
 WebGPU shaders are their own source; SPIR-V is not, but compilers can embed the source and a

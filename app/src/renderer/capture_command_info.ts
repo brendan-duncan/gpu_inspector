@@ -27,6 +27,7 @@ import {
 import { vertexFormat } from "./vulkan/vk_format.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { stageLabel, type StageSource } from "./shader_cache.js";
+import { kindLabel, renderReflection } from "./shader_reflection_view.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -488,48 +489,7 @@ export class CommandInfoView {
       new Div(body, { text: "Shader code not available for reflection.", class: "text-muted" });
       return;
     }
-    const entry = reflection.entryPoint(source.entryPoint);
-    const ul = new Widget("ul", body);
-    if (reflection.version) new Widget("li", ul, { text: `SPIR-V ${reflection.version}` });
-    if (entry) {
-      new Widget("li", ul, { text: `Entry: ${entry.name}${entry.workgroupSize ? `  workgroup ${entry.workgroupSize.join("x")}` : ""}` });
-      if (entry.inputs.length) {
-        new Widget("li", ul, { text: `Inputs: ${entry.inputs.length}` });
-        const l2 = new Widget("ul", ul);
-        for (const v of entry.inputs) new Widget("li", l2, { text: `location ${v.location}: ${v.name || "(unnamed)"}  ${v.typeName}` });
-      }
-      if (entry.outputs.length) {
-        new Widget("li", ul, { text: `Outputs: ${entry.outputs.length}` });
-        const l2 = new Widget("ul", ul);
-        for (const v of entry.outputs) new Widget("li", l2, { text: `location ${v.location}: ${v.name || "(unnamed)"}  ${v.typeName}` });
-      }
-    }
-    if (reflection.resources.length) {
-      new Widget("li", ul, { text: `Resources: ${reflection.resources.length}` });
-      const l2 = new Widget("ul", ul);
-      for (const r of reflection.resources) {
-        const access = r.kind === "storage" || r.kind === "storageImage" || r.kind === "storageTexelBuffer"
-          ? (r.readOnly ? " read-only" : r.writeOnly ? " write-only" : " read-write") : "";
-        new Widget("li", l2, { text: `set ${r.set} binding ${r.binding}: ${kindLabel(r.kind)}${access}  ${r.name}${r.count !== 1 ? `[${r.count || ""}]` : ""}: ${r.typeName}` });
-        if (r.type.kind === "struct") this._typeInfo(l2, r.type);
-      }
-    }
-    if (reflection.pushConstants.length) {
-      new Widget("li", ul, { text: "Push constants:" });
-      const l2 = new Widget("ul", ul);
-      for (const r of reflection.pushConstants) {
-        new Widget("li", l2, { text: `${r.name}: ${r.typeName}` });
-        if (r.type.kind === "struct") this._typeInfo(l2, r.type);
-      }
-    }
-  }
-
-  /** Members of a struct with their offsets and sizes (nested one level, like WebGPU Inspector's shader info). */
-  private _typeInfo(ul: Widget, type: StructType): void {
-    const l = new Widget("ul", ul, { class: "shader-type-members" });
-    for (const m of type.members) {
-      new Widget("li", l, { text: `${m.name}: ${typeName(m.type)}  offset ${m.offset}  size ${m.type.kind === "opaque" ? "?" : m.type.size || "<runtime>"}` });
-    }
+    renderReflection(body, reflection, { entryPoint: source.entryPoint });
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1070,19 +1030,3 @@ function findResource(stages: StageReflection[], set: number, binding: number): 
   return null;
 }
 
-function kindLabel(kind: ShaderResource["kind"]): string {
-  switch (kind) {
-    case "uniform": return "UNIFORM";
-    case "storage": return "STORAGE";
-    case "pushConstant": return "PUSH CONSTANT";
-    case "sampledImage": return "texture";
-    case "combinedImageSampler": return "combined image sampler";
-    case "storageImage": return "storage image";
-    case "sampler": return "sampler";
-    case "uniformTexelBuffer": return "uniform texel buffer";
-    case "storageTexelBuffer": return "storage texel buffer";
-    case "inputAttachment": return "input attachment";
-    case "accelerationStructure": return "acceleration structure";
-    default: return "resource";
-  }
-}

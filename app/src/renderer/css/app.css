@@ -256,6 +256,8 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
   color: var(--fg-primary);
 }
 .shader-debug-summary { padding: 0 8px 4px 8px; }
+.shader-reflection { margin: 0 4px 6px 4px; }
+.shader-reflection > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
 .shader-file-bar { padding-top: 0; }
 /* Source maps: one span per source line / SPIR-V instruction, clickable when mapped. */
 .shader-text .code-line { display: inline-block; min-width: 100%; box-sizing: border-box; }

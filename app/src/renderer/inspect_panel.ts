@@ -19,6 +19,7 @@ import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
+import { renderReflection } from "./shader_reflection_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import type { CaptureDescriptorBinding, HandleRef, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
@@ -73,6 +74,8 @@ interface ShaderView {
   disText: string;               // cached spirv-dis output
   summary: Div;
   fileBar: Div | null;
+  /** The Reflection section of the payload, filled when its SPIR-V arrives. */
+  reflection: collapsible;
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
@@ -939,8 +942,12 @@ export class InspectPanel {
       const view: ShaderView = {
         index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
         editButton: new Button(null), editor: null, body: grp.body, debug: null, sourceFile: 0, disText: "",
-        summary: new Div(null), fileBar: null,
+        summary: new Div(null), fileBar: null, reflection: new collapsible(null),
       };
+      // Reflection (entry points, interface, resources, push constants) from the SPIR-V itself,
+      // so a module or pipeline explains what it expects without a capture.
+      view.reflection = new collapsible(grp.body, { label: "Reflection", collapsed: false, class: "shader-reflection" });
+      new Div(view.reflection.body, { text: "Loading...", class: "text-muted font-sm" });
       // Source: the text the compiler embedded in the SPIR-V (shown once the payload says it has one).
       view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The original source embedded in the SPIR-V by the compiler", callback: () => void this._showShader(index, "source") });
       view.buttons.source.style.display = "none";
@@ -955,6 +962,29 @@ export class InspectPanel {
       this._shaderViews.set(index, view);
       void this.window.send({ action: "RequestBlob", id: object.id, index });
     });
+  }
+
+  private _fillReflection(view: ShaderView, data: Uint8Array): void {
+    const body = view.reflection.body;
+    body.html = "";
+    let reflection = null;
+    try {
+      reflection = reflectSpirv(data);
+    } catch (e) {
+      new Div(body, { text: `Reflection failed: ${(e as Error).message}`, class: "text-muted font-sm" });
+      return;
+    }
+    if (!reflection) {
+      new Div(body, { text: "Not a SPIR-V module.", class: "text-muted font-sm" });
+      return;
+    }
+    // Pipeline payloads are named "<stage>:<entry point>": show that entry point only.
+    const sep = view.blobName.indexOf(":");
+    const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : undefined;
+    const info = new Div(body, { class: "shader-info" });
+    renderReflection(info, reflection, { entryPoint, showStage: true });
+    const entries = entryPoint ? 1 : reflection.entryPoints.length;
+    view.reflection.label.text = `Reflection: ${entries} entry point${entries === 1 ? "" : "s"}, ${reflection.resources.length} resource${reflection.resources.length === 1 ? "" : "s"}${reflection.pushConstants.length ? ", push constants" : ""}`;
   }
 
   private _setShaderMode(view: ShaderView, mode: ShaderViewMode): void {
@@ -1002,6 +1032,7 @@ export class InspectPanel {
     }
     view.data = data;
     view.disText = "";
+    this._fillReflection(view, data);
     view.debug = parseSpirvDebugInfo(data);
     const info = view.debug;
     if (info) {

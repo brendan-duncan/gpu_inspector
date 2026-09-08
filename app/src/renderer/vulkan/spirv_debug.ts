@@ -78,7 +78,9 @@ function readString(words: Uint32Array, start: number, end: number): string {
 /** Parses the debug information of a SPIR-V module; null when the data is not SPIR-V. */
 export function parseSpirvDebugInfo(data: Uint8Array): SpirvDebugInfo | null {
   if (data.byteLength < 20 || data.byteLength % 4) return null;
-  const words = new Uint32Array(data.buffer, data.byteOffset, data.byteLength / 4);
+  // A view into a capture file can start at any byte; word views need 4-byte alignment.
+  const bytes = data.byteOffset % 4 ? data.slice() : data;
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
   if (words[0] !== 0x07230203) return null;
   const genWord = words[2];
   const genId = genWord >>> 16;
