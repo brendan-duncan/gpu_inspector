@@ -433,7 +433,9 @@ export class InspectPanel {
     const refresh = db.refreshMs > 0
       ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${hz(db.refreshMs)}${db.refreshSource === "estimate" ? ", estimated" : " display"})${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}` : ""}`
       : db.presentMode ? `   ${/FIFO/.test(db.presentMode) ? "Vsync on, rate not known yet" : `No vsync${db.displayRefreshMs > 0 ? ` (${hz(db.displayRefreshMs)} display)` : ""}`} (${db.presentMode.replace(/^VK_PRESENT_MODE_/, "").replace(/_KHR$/, "")})` : "";
-    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms${refresh}`;
+    const boundary = db.frameBoundary === "wait" ? "   Frames end at the application's vkWaitForFences (no swapchain present)"
+      : db.frameBoundary === "submit" ? "   Frames end at every submission (no swapchain present, no fence waits)" : "";
+    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms${refresh}${boundary}`;
     this._frameTimeLabel.tooltip = REFRESH_SOURCE_TEXT[db.refreshSource] ?? "";
     this._frameTimeLabel.classList.toggle("meter-dropped", db.droppedFrames > 0);
     this._updateMemoryLabel();

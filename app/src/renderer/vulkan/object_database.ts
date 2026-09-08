@@ -38,6 +38,7 @@ export class ObjectDatabase implements ObjectLookup {
   refreshSource = "";
   displayRefreshMs = 0;
   presentMode = "";
+  frameBoundary = "";
   droppedFrames = 0;       // in the last reporting interval
   droppedFramesTotal = 0;  // since the connection
   inspectedObject: VulkanObject | null = null;
@@ -184,6 +185,7 @@ export class ObjectDatabase implements ObjectLookup {
     this.refreshSource = "";
     this.displayRefreshMs = 0;
     this.presentMode = "";
+    this.frameBoundary = "";
     this.droppedFrames = 0;
     this.droppedFramesTotal = 0;
     this.inspectedObject = null;
@@ -304,6 +306,7 @@ export class ObjectDatabase implements ObjectLookup {
         this.refreshSource = msg.refreshSource ?? "";
         this.displayRefreshMs = msg.displayRefreshMs ?? 0;
         this.presentMode = msg.presentMode ?? "";
+        this.frameBoundary = msg.frameBoundary ?? "";
         this.droppedFrames = msg.dropped ?? 0;
         this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
         this.onFrameStats.emit(msg);

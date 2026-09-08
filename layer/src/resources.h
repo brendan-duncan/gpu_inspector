@@ -73,6 +73,8 @@ struct RenderPassInfo {
     // Per subpass: which attachments are color / depth targets (indices into attachments).
     std::vector<std::vector<uint32_t>> subpassColor;
     std::vector<int32_t> subpassDepth;  // -1 if none
+    // Multiview: the layers the pass renders (the highest view bit + 1 over its subpasses), 0 without.
+    uint32_t viewLayers = 0;
 };
 
 class ResourceRegistry {

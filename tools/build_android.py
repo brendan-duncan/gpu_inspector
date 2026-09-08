@@ -197,6 +197,7 @@ def build_apk(abis, sdk):
     <application android:label="GPU Inspector Layer"
         android:hasCode="false"
         android:debuggable="true"
+        android:forceQueryable="true"
         android:extractNativeLibs="true"/>
 </manifest>
 ''')

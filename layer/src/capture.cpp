@@ -161,19 +161,18 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     _submissions.push_back(std::move(sub));
 }
 
-void CaptureManager::OnPresent(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result) {
+void CaptureManager::OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result) {
     std::unique_lock lock(_mutex);
     if (_state == State::Armed) {
-        // frameIndex was advanced by this present: the frame that starts now is `frameIndex`.
+        // frameIndex was advanced by this frame end: the frame that starts now is `frameIndex`.
         if (_options.atFrame == UINT64_MAX || dev->frameIndex >= _options.atFrame) Start(dev);
         return;
     }
     if (_state != State::Capturing) return;
-    Log("capture: present (result %d, %u swapchains) after %zu submissions", (int)result,
-        info ? info->swapchainCount : 0, _submissions.size());
+    Log("capture: frame end (%s, result %d) after %zu submissions", info ? "present" : "no present", (int)result, _submissions.size());
 
     // The present itself is part of the captured frame.
-    {
+    if (info) {
         JsonWriter w(&Tracker::Get());
         ArgsToJson_vkQueuePresentKHR(w, queue, info);
         CaptureSubmission sub;
@@ -418,6 +417,8 @@ void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, co
         p.layouts.resize(p.attachments.size(), VK_IMAGE_LAYOUT_UNDEFINED);
         for (size_t i = 0; i < p.attachments.size() && i < rp.attachments.size(); ++i)
             p.layouts[i] = rp.attachments[i].finalLayout;
+        // Multiview renders the view mask's layers with a one-layer framebuffer (stereo: both eyes).
+        p.layerCount = std::max(p.layerCount, rp.viewLayers);
     }
 }
 
@@ -428,6 +429,8 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
     p.dynamic = true;
     p.renderArea = info->renderArea;
     p.layerCount = info->layerCount;
+    for (uint32_t bit = 0; bit < 32; ++bit)
+        if (info->viewMask & (1u << bit)) p.layerCount = std::max(p.layerCount, bit + 1);   // multiview
     p.passIndex = rec->NextPassIndex();
     p.query = rec->pendingQuery;
     rec->pendingQuery = UINT32_MAX;

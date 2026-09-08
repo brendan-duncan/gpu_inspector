@@ -236,8 +236,9 @@ export class AndroidTarget {
     await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
 
     await shell(adbPath, serial, `am force-stop ${pkg}`);
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, `tcp:${port}`]);
-    log(`forwarding localhost:${port} to the device`);
+    // The layer listens on an abstract Unix socket (no INTERNET permission needed in the target).
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:vkinsp:${port}`]);
+    log(`forwarding localhost:${port} to the device's @vkinsp:${port}`);
     if (this._stopped) return;
 
     this._startLogcat();
@@ -330,7 +331,9 @@ export class AndroidTarget {
       }
       if (installed !== info.versionName) {
         this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
-        await adb(adbPath, serial, ["install", "-r", "-d", layer.apk], INSTALL_TIMEOUT_MS);
+        // --force-queryable: Android 11+ package visibility would otherwise hide the layer
+        // package from the target, and the loader would not find the library.
+        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
       }
       await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
       return `${info.package} ${info.versionName} (${apkAbi})`;

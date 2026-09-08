@@ -141,7 +141,9 @@ public:
 
     void OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args, int64_t result,
                   const std::vector<VkCommandBuffer>& commandBuffers);
-    void OnPresent(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result);
+    // A frame ended: after a present (`info`), or without one (info null: the frame-boundary
+    // substitutes of layer.cpp).
+    void OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result);
 
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the

@@ -86,15 +86,24 @@ device-side server:
 * **Loader.** Android's loader has no manifests: it dlopens every `libVkLayer*.so` in its layer
   directories and resolves `vkEnumerateInstance{Layer,Extension}Properties` and the two
   `GetProcAddr`s by name, so the Android build exports them (end of `layer.cpp`).
+* **Frame boundaries.** An OpenXR application never presents (the runtime composites), so
+  the layer switches, after sixty submissions without a present, to ending frames at the
+  application's `vkWaitForFences` following a submission (or at every submission when it never
+  waits); see `EndFrame` in `layer.cpp`. Multiview passes read back the view mask's layers.
 * **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
   (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
   `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the
   **layer APK** (`build/android/gpu_inspector_layer.apk`, a package with no code that only carries
   the library, named in `gpu_debug_layer_app` the way RenderDoc's own APK is); the inspector
   installs it when the device's copy has a different version (the version name is a hash of the
-  library). On Android 9 the library is copied into the application's data directory with
+  library, installed `--force-queryable` and declaring `forceQueryable`: Android 11+'s package
+  visibility would otherwise hide it from the target and the loader would not find it). On
+  Android 9 the library is copied into the application's data directory with
   `run-as`, which the loader searches too. Either way the application must be debuggable, or the
   device rooted: Android permits nothing else.
+* **Transport.** The layer listens on an abstract Unix socket (`@vkinsp:<port>`), which needs no
+  INTERNET permission in the target (most applications lack it and TCP sockets fail with
+  EACCES); `adb forward tcp:<port> localabstract:vkinsp:<port>` reaches it.
 * **Configuration.** An Android app inherits no environment. `ConfigValue()` in `layer.cpp` maps
   each `VKINSP_*` variable to a `debug.vkinsp.*` system property (`VKINSP_PORT` ->
   `debug.vkinsp.port`), which `adb shell setprop` can set without root; RenderDoc's `debug.rdoc.*`

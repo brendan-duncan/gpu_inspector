@@ -124,6 +124,9 @@ struct App {
     bool badScissor = false;
     bool leak = false;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;  // --msaa: 4x, resolved into the swapchain
+    // --offscreen: render into an image of our own and never present, like an OpenXR
+    // application whose runtime composites (the inspector's frame boundaries without presents).
+    bool offscreen = false;
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -157,6 +160,10 @@ struct App {
     VkImage msaaImage{};        // multisampled color target (--msaa)
     VkDeviceMemory msaaMemory{};
     VkImageView msaaView{};
+    VkImage offImage{};         // --offscreen: the color target that stands in for the swapchain image
+    VkDeviceMemory offMemory{};
+    VkImageView offView{};
+    VkFramebuffer offFramebuffer{};
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
     VkRenderPass renderPass{};
 
@@ -510,6 +517,33 @@ struct App {
         CHECK(vkCreateImageView(device, &dvci, nullptr, &depthView));
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
 
+        if (offscreen) {
+            VkImageCreateInfo oci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            oci.imageType = VK_IMAGE_TYPE_2D;
+            oci.format = colorFormat;
+            oci.extent = {width, height, 1};
+            oci.mipLevels = 1;
+            oci.arrayLayers = 1;
+            oci.samples = VK_SAMPLE_COUNT_1_BIT;
+            oci.tiling = VK_IMAGE_TILING_OPTIMAL;
+            oci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            oci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            CHECK(vkCreateImage(device, &oci, nullptr, &offImage));
+            VkMemoryRequirements oreq;
+            vkGetImageMemoryRequirements(device, offImage, &oreq);
+            VkMemoryAllocateInfo omai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            omai.allocationSize = oreq.size;
+            omai.memoryTypeIndex = FindMemoryType(oreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            CHECK(vkAllocateMemory(device, &omai, nullptr, &offMemory));
+            CHECK(vkBindImageMemory(device, offImage, offMemory, 0));
+            VkImageViewCreateInfo ovci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            ovci.image = offImage;
+            ovci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            ovci.format = colorFormat;
+            ovci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            CHECK(vkCreateImageView(device, &ovci, nullptr, &offView));
+            Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)offImage, "Offscreen color");
+        }
         // Multisampled color target, resolved into the swapchain image by the render pass.
         if (samples != VK_SAMPLE_COUNT_1_BIT) {
             VkImageCreateInfo mci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -552,7 +586,7 @@ struct App {
         atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        atts[0].finalLayout = msaa ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        atts[0].finalLayout = msaa || offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         atts[2].format = colorFormat;
         atts[2].samples = VK_SAMPLE_COUNT_1_BIT;
         atts[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -560,7 +594,7 @@ struct App {
         atts[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        atts[2].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        atts[2].finalLayout = offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         atts[1].format = depthFormat;
         atts[1].samples = samples;
         atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -597,6 +631,18 @@ struct App {
     void CreateFramebuffers() {
         const uint32_t count = (uint32_t)swapViews.size();
         framebuffers.resize(count);
+        if (offscreen) {
+            const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
+            VkImageView views[] = {msaa ? msaaView : offView, depthView, offView};
+            VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fci.renderPass = renderPass;
+            fci.attachmentCount = msaa ? 3 : 2;
+            fci.pAttachments = views;
+            fci.width = width;
+            fci.height = height;
+            fci.layers = 1;
+            CHECK(vkCreateFramebuffer(device, &fci, nullptr, &offFramebuffer));
+        }
         for (uint32_t i = 0; i < count; ++i) {
             const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
             VkImageView views[] = {msaa ? msaaView : swapViews[i], depthView, swapViews[i]};
@@ -627,6 +673,14 @@ struct App {
         msaaView = VK_NULL_HANDLE;
         msaaImage = VK_NULL_HANDLE;
         msaaMemory = VK_NULL_HANDLE;
+        if (offFramebuffer) vkDestroyFramebuffer(device, offFramebuffer, nullptr);
+        if (offView) vkDestroyImageView(device, offView, nullptr);
+        if (offImage) vkDestroyImage(device, offImage, nullptr);
+        if (offMemory) vkFreeMemory(device, offMemory, nullptr);
+        offFramebuffer = VK_NULL_HANDLE;
+        offView = VK_NULL_HANDLE;
+        offImage = VK_NULL_HANDLE;
+        offMemory = VK_NULL_HANDLE;
         for (auto v : swapViews) vkDestroyImageView(device, v, nullptr);
         swapViews.clear();
         swapImages.clear();
@@ -904,13 +958,15 @@ struct App {
         if (resized && !RecreateSwapchain()) return false;
         VkFence fence = inFlight[frameSlot];
         CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
-        uint32_t imageIndex;
-        VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
-        if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
-            resized = true;
-            return false;
+        uint32_t imageIndex = 0;
+        if (!offscreen) {
+            VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
+            if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+                resized = true;
+                return false;
+            }
+            if (ar != VK_SUBOPTIMAL_KHR) CHECK(ar);
         }
-        if (ar != VK_SUBOPTIMAL_KHR) CHECK(ar);
         CHECK(vkResetFences(device, 1, &fence));
 
         Mat4 proj = Perspective(1.0f, (float)width / (float)height, 0.1f, 10.0f);
@@ -948,7 +1004,7 @@ struct App {
         clears[1].depthStencil = {1.0f, 0};
         VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rpbi.renderPass = renderPass;
-        rpbi.framebuffer = framebuffers[imageIndex];
+        rpbi.framebuffer = offscreen ? offFramebuffer : framebuffers[imageIndex];
         rpbi.renderArea = {{0, 0}, {width, height}};
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
@@ -973,14 +1029,21 @@ struct App {
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        si.waitSemaphoreCount = 1;
+        si.waitSemaphoreCount = offscreen ? 0 : 1;
         si.pWaitSemaphores = &imageAvailable[frameSlot];
         si.pWaitDstStageMask = &waitStage;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cb;
-        si.signalSemaphoreCount = 1;
+        si.signalSemaphoreCount = offscreen ? 0 : 1;
         si.pSignalSemaphores = &renderFinished[frameSlot];
         CHECK(vkQueueSubmit(queue, 1, &si, fence));
+        if (offscreen) {
+            // No present: pace the loop like a 90 Hz headset instead.
+            std::this_thread::sleep_for(std::chrono::milliseconds(11));
+            frameSlot = (frameSlot + 1) % kFramesInFlight;
+            frameCount++;
+            return true;
+        }
 
         VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         pi.waitSemaphoreCount = 1;
@@ -1114,6 +1177,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
+        else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
     }
     return app.Run();
 }

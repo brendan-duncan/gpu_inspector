@@ -520,6 +520,12 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->presentTiming = refresh.presentTiming;
     data->displayTiming = refresh.displayTiming;
     data->dynamicRendering = dynamicRendering.enabled;
+    {
+        // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
+        const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");
+        if (boundary == "wait") data->frameBoundary = DeviceData::FrameBoundary::Wait;
+        else if (boundary == "submit") data->frameBoundary = DeviceData::FrameBoundary::Submit;
+    }
     for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
         data->enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
     InitDeviceDispatch(*pDevice, nextGdpa, data->dispatch);
@@ -622,15 +628,11 @@ static double EstimateRefreshMs(const std::vector<double>& intervals) {
     return 0;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
-    DeviceData* data = GetDeviceData(queue);
-    // Live image readbacks go on this queue before the present, while the frame's images are in
-    // their tracked layouts and the swapchain image is still owned by the application.
-    ImageReadback::Get().OnPresent(data, queue);
-    ShaderEditor::Get().OnPresent(data);
-    VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+// The end of a frame: the counters, the capture, the validation frame, the frame timing report.
+// From a present, or from the substitutes below when the application never presents.
+static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pPresentInfo, VkResult res) {
     data->frameIndex++;
-    CaptureManager::Get().OnPresent(data, queue, pPresentInfo, res);
+    CaptureManager::Get().OnFrameEnd(data, queue, pPresentInfo, res);
     ValidationLog::Get().SetFrame(data->frameIndex);
 
     // Frame timing, reported ten times per second: average, shortest and longest frame of the
@@ -694,7 +696,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             w.Key("refreshMs"); w.Double(data->refreshMs);
             w.Key("refreshSource"); w.String(data->refreshMs > 0 ? RefreshSourceName((RefreshSource)data->refreshSource) : "");
             w.Key("displayRefreshMs"); w.Double(data->displayRefreshMs);
-            w.Key("presentMode"); w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode);
+            if (data->presentSeen.load(std::memory_order_relaxed)) { w.Key("presentMode"); w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode); }
+            w.Key("frameBoundary"); w.String(FrameBoundaryName(data->frameBoundary));
             // Dropped frames: refreshes that showed no new frame (with vsync the display consumes
             // at most one present per refresh). The running deficit of refreshes over frames is
             // signed: an interval bounded by a queued present is one refresh short and the next
@@ -727,6 +730,65 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
         data->lastReport = now;
     }
     data->lastPresent = now;
+}
+
+const char* FrameBoundaryName(DeviceData::FrameBoundary b) {
+    switch (b) {
+        case DeviceData::FrameBoundary::Present: return "present";
+        case DeviceData::FrameBoundary::Wait: return "wait";
+        case DeviceData::FrameBoundary::Submit: return "submit";
+        default: return "";
+    }
+}
+
+// A frame that ends without a present: the per-frame work a present would do (live image
+// read-backs, shader edits), then the frame end itself.
+static void FrameWithoutPresent(DeviceData* data, VkQueue queue) {
+    data->submitsSinceFrame.store(0, std::memory_order_relaxed);
+    if (queue) {
+        ImageReadback::Get().OnPresent(data, queue);
+        ShaderEditor::Get().OnPresent(data);
+    }
+    EndFrame(data, queue, nullptr, VK_SUCCESS);
+}
+
+void OnSubmitForFrames(DeviceData* data, VkQueue queue) {
+    if (!data) return;
+    data->lastSubmitQueue.store(queue, std::memory_order_relaxed);
+    data->submitsSinceFrame.fetch_add(1, std::memory_order_relaxed);
+    if (data->presentSeen.load(std::memory_order_relaxed)) return;
+    const uint32_t n = data->submitsWithoutPresent.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (data->frameBoundary == DeviceData::FrameBoundary::Auto) {
+        // Applications with a swapchain present within a few submissions; sixty without one
+        // means there is no swapchain to present to.
+        if (n < 60) return;
+        data->frameBoundary = data->waitsWithoutPresent.load(std::memory_order_relaxed) > 0
+            ? DeviceData::FrameBoundary::Wait : DeviceData::FrameBoundary::Submit;
+        Log("no present after %u submissions: frames end at %s", n,
+            data->frameBoundary == DeviceData::FrameBoundary::Wait ? "the application's vkWaitForFences" : "every submission");
+    }
+    if (data->frameBoundary == DeviceData::FrameBoundary::Submit) FrameWithoutPresent(data, queue);
+}
+
+void OnWaitForFrames(DeviceData* data) {
+    if (!data || data->presentSeen.load(std::memory_order_relaxed)) return;
+    data->waitsWithoutPresent.fetch_add(1, std::memory_order_relaxed);
+    if (data->frameBoundary == DeviceData::FrameBoundary::Wait && data->submitsSinceFrame.load(std::memory_order_relaxed) > 0)
+        FrameWithoutPresent(data, data->lastSubmitQueue.load(std::memory_order_relaxed));
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    DeviceData* data = GetDeviceData(queue);
+    // Live image readbacks go on this queue before the present, while the frame's images are in
+    // their tracked layouts and the swapchain image is still owned by the application.
+    ImageReadback::Get().OnPresent(data, queue);
+    ShaderEditor::Get().OnPresent(data);
+    VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+    // A present always ends the frame; it also settles the frame boundary for good.
+    data->presentSeen.store(true, std::memory_order_relaxed);
+    data->frameBoundary = DeviceData::FrameBoundary::Present;
+    data->submitsSinceFrame.store(0, std::memory_order_relaxed);
+    EndFrame(data, queue, pPresentInfo, res);
     return res;
 }
 

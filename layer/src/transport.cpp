@@ -29,6 +29,7 @@ static void CloseSocket(socket_t s) { closesocket(s); }
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 typedef int socket_t;
 #define INVALID_SOCK (-1)
@@ -134,6 +135,25 @@ struct Transport::Impl {
     }
 
     void ListenerLoop() {
+#if defined(__ANDROID__)
+        // An abstract Unix socket: TCP sockets need the INTERNET permission, which most
+        // applications lack; `adb forward tcp:<port> localabstract:vkinsp:<port>` reaches this.
+        socket_t listenSock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (listenSock == INVALID_SOCK) { Log("socket() failed (%d)", errno); return; }
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        char name[32];
+        snprintf(name, sizeof(name), "vkinsp:%u", port);
+        memcpy(addr.sun_path + 1, name, strlen(name));   // sun_path[0] == 0: the abstract namespace
+        const socklen_t addrLen = (socklen_t)(offsetof(sockaddr_un, sun_path) + 1 + strlen(name));
+        if (bind(listenSock, (sockaddr*)&addr, addrLen) != 0) {
+            Log("bind(@%s) failed (%d)", name, errno);
+            CloseSocket(listenSock);
+            return;
+        }
+        if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
+        Log("listening on the abstract socket @%s", name);
+#else
         socket_t listenSock = socket(AF_INET, SOCK_STREAM, 0);
         if (listenSock == INVALID_SOCK) { Log("socket() failed"); return; }
         int one = 1;
@@ -149,6 +169,7 @@ struct Transport::Impl {
         }
         if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
         Log("listening on 127.0.0.1:%u", port);
+#endif
 
         while (!stop) {
             socket_t s = accept(listenSock, nullptr, nullptr);

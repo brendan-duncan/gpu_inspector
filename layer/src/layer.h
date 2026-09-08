@@ -63,6 +63,18 @@ struct DeviceData {
     // Dynamic rendering usable on the device (see depth_resolve.h): multisampled depth read-back.
     bool dynamicRendering = false;
 
+    // Frame boundaries (EndFrame in layer.cpp): a swapchain present ends a frame. An application
+    // that never presents (OpenXR: the runtime composites) gets its frames from its own
+    // vkWaitForFences after a submission, or from every submission when it never waits; chosen
+    // once submissions pile up without a present, or set by VKINSP_FRAME_BOUNDARY.
+    enum class FrameBoundary { Auto, Present, Wait, Submit };
+    FrameBoundary frameBoundary = FrameBoundary::Auto;
+    std::atomic<bool> presentSeen{false};
+    std::atomic<uint32_t> submitsSinceFrame{0};
+    std::atomic<uint32_t> submitsWithoutPresent{0};
+    std::atomic<uint32_t> waitsWithoutPresent{0};
+    std::atomic<VkQueue> lastSubmitQueue{VK_NULL_HANDLE};
+
     // Queue -> queue family (from vkGetDeviceQueue), and transient command pools per family used
     // for live image readback (see image_readback.cpp).
     std::mutex queueMutex;
@@ -103,6 +115,12 @@ struct DeviceData {
 };
 
 extern std::atomic<bool> g_captureActive;
+
+// Frame boundaries without a swapchain (layer.cpp): every submission and every vkWaitForFences
+// report here; see DeviceData::FrameBoundary.
+void OnSubmitForFrames(DeviceData* data, VkQueue queue);
+void OnWaitForFrames(DeviceData* data);
+const char* FrameBoundaryName(DeviceData::FrameBoundary b);
 CommandRecorder* LookupRecorder(DeviceData* dev, VkCommandBuffer cb);
 
 inline CommandRecorder* DeviceData::RecorderFor(VkCommandBuffer cb) {

@@ -141,6 +141,10 @@ static void SubmitEnd(VkQueue queue) {
     if (DeviceData* dev = GetDeviceData(queue)) dev->submitNanos.fetch_add((uint64_t)ns, std::memory_order_relaxed);
 }
 void PreHook_vkQueueSubmit(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo*& pSubmits, VkFence& fence) { SubmitBegin(); }
+// An application without a swapchain marks its frames by waiting on its fences (see layer.cpp).
+void PreHook_vkWaitForFences(VkDevice& device, uint32_t& fenceCount, const VkFence*& pFences, VkBool32& waitAll, uint64_t& timeout) {
+    OnWaitForFrames(GetDeviceData(device));
+}
 void PreHook_vkQueueSubmit2(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
 void PreHook_vkQueueSubmit2KHR(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
 
@@ -199,6 +203,14 @@ void Hook_vkCreateFramebuffer(VkDevice device, const VkFramebufferCreateInfo* pC
     ResourceRegistry::Get().AddFramebuffer(*pFramebuffer, info);
 }
 
+// The layers a multiview mask renders to: the highest set bit + 1 (0 without multiview).
+static uint32_t ViewMaskLayers(uint32_t viewMask) {
+    uint32_t layers = 0;
+    for (uint32_t bit = 0; bit < 32; ++bit)
+        if (viewMask & (1u << bit)) layers = bit + 1;
+    return layers;
+}
+
 void Hook_vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* pCreateInfo,
                              const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass) {
     if (!pCreateInfo || !pRenderPass || !*pRenderPass) return;
@@ -213,6 +225,12 @@ void Hook_vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* pCre
         for (uint32_t i = 0; i < sp.colorAttachmentCount; ++i) color.push_back(sp.pColorAttachments[i].attachment);
         info.subpassColor.push_back(color);
         info.subpassDepth.push_back(sp.pDepthStencilAttachment ? (int32_t)sp.pDepthStencilAttachment->attachment : -1);
+    }
+    // Multiview (VK_KHR_multiview on a version 1 render pass): the view masks come in the pNext chain.
+    for (auto* n = static_cast<const VkBaseInStructure*>(pCreateInfo->pNext); n; n = n->pNext) {
+        if (n->sType != VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO) continue;
+        auto* mv = reinterpret_cast<const VkRenderPassMultiviewCreateInfo*>(n);
+        for (uint32_t s = 0; s < mv->subpassCount; ++s) info.viewLayers = std::max(info.viewLayers, ViewMaskLayers(mv->pViewMasks[s]));
     }
     ResourceRegistry::Get().AddRenderPass(*pRenderPass, info);
 }
@@ -231,6 +249,7 @@ void Hook_vkCreateRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* pC
         for (uint32_t i = 0; i < sp.colorAttachmentCount; ++i) color.push_back(sp.pColorAttachments[i].attachment);
         info.subpassColor.push_back(color);
         info.subpassDepth.push_back(sp.pDepthStencilAttachment ? (int32_t)sp.pDepthStencilAttachment->attachment : -1);
+        info.viewLayers = std::max(info.viewLayers, ViewMaskLayers(sp.viewMask));
     }
     ResourceRegistry::Get().AddRenderPass(*pRenderPass, info);
 }
@@ -587,6 +606,7 @@ static void NoteRenderingLayouts(VkCommandBuffer commandBuffer, const VkRenderin
 
 void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
     SubmitEnd(queue);
+    OnSubmitForFrames(GetDeviceData(queue), queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; ++j) cbs.push_back(pSubmits[i].pCommandBuffers[j]);
@@ -599,6 +619,7 @@ void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo*
 
 void Hook_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence) {
     SubmitEnd(queue);
+    OnSubmitForFrames(GetDeviceData(queue), queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
         for (uint32_t j = 0; j < pSubmits[i].commandBufferInfoCount; ++j)

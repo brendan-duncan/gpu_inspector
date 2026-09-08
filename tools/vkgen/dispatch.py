@@ -140,6 +140,8 @@ PRE_HOOKS = {
     "vkQueueSubmit",
     "vkQueueSubmit2",
     "vkQueueSubmit2KHR",
+    # frame boundaries of applications that never present (OpenXR): see EndFrame in layer.cpp
+    "vkWaitForFences",
     # compute pass timing: a run of dispatches is bracketed from the first dispatch to the next
     # barrier / event wait / render pass / label / secondary execution / end of the buffer
     "vkCmdDispatch",

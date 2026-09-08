@@ -67,7 +67,10 @@ export interface FrameStatsMessage {
   refreshSource?: string;
   /** The display's refresh period from a real source (0 when only the estimate is available), vsync or not. */
   displayRefreshMs?: number;
+  /** Absent until the application presented once (an OpenXR application never does). */
   presentMode?: string;
+  /** What ends a frame: "present", or for applications without a swapchain "wait" (their vkWaitForFences) or "submit"; "" while undecided. */
+  frameBoundary?: string;
   /** Refreshes in the interval that repeated the previous frame (dropped frames), and the
    *  layer's running total since the refresh estimate was made. */
   dropped?: number;

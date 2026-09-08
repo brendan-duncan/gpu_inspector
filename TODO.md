@@ -100,8 +100,12 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
 - [ ] Android: an Android build of the triangle test app (NativeActivity) so the device path can
-      be exercised without a Unity player; a GLES layer for Unity's GLES player; lower default
-      read-back limits for phones.
+      be exercised without a third-party app (a Pixel 8 Pro with Google's Vulkan hello-triangle
+      sample verified the path on 2026-09-08); a GLES layer for Unity's GLES player; lower
+      default read-back limits for phones.
+- [ ] OpenXR on Quest: verify the fence-wait frame boundaries and multiview read-back on the
+      headset (needs a debuggable OpenXR build); the XR frame period (72/90/120 Hz) has no
+      source without a swapchain.
 - [ ] Multiple devices and queues in one process (timestamps are per device; the query pool is
       created on the capturing device only).
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.

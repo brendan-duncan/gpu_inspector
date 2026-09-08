@@ -1,6 +1,19 @@
 ## 0.5.0
 
 ### Added
+- Frames without a swapchain: an application that never presents (OpenXR, where the runtime
+  composites) gets its frame boundaries from its own `vkWaitForFences` after a submission, or
+  from every submission when it never waits, chosen once submissions pile up without a present
+  (`VKINSP_FRAME_BOUNDARY=wait|submit` forces it). Captures, the frame time meter and the live
+  image viewer work on such applications; the meter says which boundary is in use. The triangle
+  test application's `--offscreen` option renders without presenting to exercise this.
+- Multiview: the layers a render pass or dynamic rendering renders through its view mask
+  (stereo) are read back, not only the framebuffer's layer count.
+- Android: the layer listens on an abstract Unix socket, so the target no longer needs the
+  INTERNET permission, and the layer package is installed force-queryable so Android 11+'s
+  package visibility lets the target's loader find it. Verified on a Pixel 8 Pro (Mali-G715):
+  connection, object list, capture with render target read-back and pass timing, and the
+  display refresh period through `VK_EXT_present_timing`.
 - Two shader analysis rules: loop-invariant computation (instructions inside a loop whose
   inputs cannot change in it: constants, values from outside the loop, loads of variables the
   loop never stores to; reported per line with the op units repeated every iteration) and
