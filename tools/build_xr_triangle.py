@@ -1,10 +1,15 @@
 """
-Builds the OpenXR test application (test/xr_triangle) for Android headsets and packages it as a
-debuggable APK, so the inspector's layer can be loaded into it (Android only loads layers into
-debuggable applications):
+Builds the OpenXR test application (test/xr_triangle) for Android headsets and packages it as
+two debuggable APKs, so the inspector's layer can be loaded into them (Android only loads layers
+into debuggable applications):
 
-    python tools/build_xr_triangle.py            # -> build/android/xr_triangle.apk
+    python tools/build_xr_triangle.py            # -> build/android/xr_triangle.apk, xr_triangle_slow.apk
     adb install -r build/android/xr_triangle.apk
+    adb install -r build/android/xr_triangle_slow.apk
+
+Both packages run the same library; the "slow" one (com.brendanduncan.xrtriangle.slow, "XR
+Triangle (Slow)") renders the scene with deliberate inefficiencies for the inspector's frame
+and shader analysis to flag.
 
 Needs what tools/build_android.py needs (SDK with build-tools and a platform, NDK, cmake, ninja,
 Java) plus glslc from the Vulkan SDK for the shaders. The Khronos OpenXR loader for Android is
@@ -27,7 +32,11 @@ ROOT = ba.ROOT
 OUT = os.path.join(ROOT, "build", "android")
 SRC = os.path.join(ROOT, "test", "xr_triangle")
 PACKAGE = "com.brendanduncan.xrtriangle"
-APK_NAME = "xr_triangle.apk"
+# (package, label, apk name): the multiview application and its deliberately slow twin.
+PACKAGES = [
+    (PACKAGE, "XR Triangle", "xr_triangle.apk"),
+    (PACKAGE + ".slow", "XR Triangle (Slow)", "xr_triangle_slow.apk"),
+]
 MIN_SDK = 29
 TARGET_SDK = 32
 LOADER_VERSION = "1.1.63"
@@ -65,7 +74,7 @@ def shaders_inl(glslc, out_dir):
     """Compiles the shaders and writes them as C arrays (shaders.inl)."""
     os.makedirs(out_dir, exist_ok=True)
     chunks = []
-    for name, ident in (("xr.vert", "kVertSpv"), ("xr.frag", "kFragSpv")):
+    for name, ident in (("xr.vert", "kVertSpv"), ("xr.frag", "kFragSpv"), ("xr_slow.frag", "kSlowFragSpv")):
         spv = os.path.join(out_dir, name + ".spv")
         ba.run([glslc, "--target-env=vulkan1.1", "-g", os.path.join(SRC, name), "-o", spv])
         with open(spv, "rb") as f:
@@ -100,7 +109,7 @@ def build(abi, ndk, cmake, ninja, loader_dir, glslc, debug):
     return lib, loader
 
 
-def package(libs, sdk):
+def package(libs, sdk, package_name, label, apk_name):
     build_tools = ba.newest(glob.glob(os.path.join(sdk, "build-tools", "*")))
     aapt2 = os.path.join(build_tools, "aapt2" + ba.EXE)
     zipalign = os.path.join(build_tools, "zipalign" + ba.EXE)
@@ -110,14 +119,14 @@ def package(libs, sdk):
     java = ba.find_java()
     if not java:
         ba.die("no Java runtime found for apksigner")
-    work = os.path.join(OUT, "xr_triangle", "apk")
+    work = os.path.join(OUT, "xr_triangle", "apk", package_name)
     os.makedirs(work, exist_ok=True)
     manifest = os.path.join(work, "AndroidManifest.xml")
     version_code = int(time.time()) // 60
     with open(manifest, "w", encoding="utf-8") as f:
         f.write(f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="{PACKAGE}"
+    package="{package_name}"
     android:versionCode="{version_code}"
     android:versionName="1.0">
     <uses-sdk android:minSdkVersion="{MIN_SDK}" android:targetSdkVersion="{TARGET_SDK}"/>
@@ -136,14 +145,14 @@ def package(libs, sdk):
         <intent><action android:name="org.khronos.openxr.OpenXRApiLayerService"/></intent>
     </queries>
     <!-- debuggable: Android loads GPU debug layers (the inspector's) only into debuggable applications. -->
-    <application android:label="XR Triangle"
+    <application android:label="{label}"
         android:hasCode="false"
         android:debuggable="true"
         android:extractNativeLibs="true">
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest|quest2|questpro|quest3|quest3s"/>
         <meta-data android:name="com.oculus.handtracking.version" android:value="V2.0"/>
         <activity android:name="android.app.NativeActivity"
-            android:label="XR Triangle"
+            android:label="{label}"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
@@ -173,10 +182,10 @@ def package(libs, sdk):
             z.write(loader, f"lib/{abi}/libopenxr_loader.so")
     ba.run([zipalign, "-f", "4", unaligned, aligned])
     keystore = os.path.join(os.path.expanduser("~"), ".android", "debug.keystore")
-    apk = os.path.join(OUT, APK_NAME)
+    apk = os.path.join(OUT, apk_name)
     ba.run([java, "-jar", apksigner, "sign", "--ks", keystore, "--ks-pass", "pass:android",
             "--ks-key-alias", "androiddebugkey", "--key-pass", "pass:android", "--out", apk, aligned])
-    print(f"apk: {apk} ({PACKAGE})")
+    print(f"apk: {apk} ({package_name})")
 
 
 def main():
@@ -199,7 +208,8 @@ def main():
     for abi in [a.strip() for a in args.abi.split(",") if a.strip()]:
         lib, loader = build(abi, ndk, cmake, ninja, loader_dir, glslc, args.debug)
         libs.append((abi, lib, loader))
-    package(libs, sdk)
+    for package_name, label, apk_name in PACKAGES:
+        package(libs, sdk, package_name, label, apk_name)
 
 
 if __name__ == "__main__":

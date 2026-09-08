@@ -181,10 +181,13 @@ connects. The Log tab shows the layer's logcat output. Closing the session turns
 settings off again. From the command line: `npm start -- --launch-android=<package>
 --device=<serial>`.
 
-For a headset, `python tools/build_xr_triangle.py` builds `build/android/xr_triangle.apk`, a
-debuggable OpenXR test application (a stereo triangle in one multiview pass) to launch the same
-way; it needs the Vulkan SDK's `glslc` and downloads the Khronos OpenXR loader on the first run.
-The headset must be worn (or its proximity sensor covered) for the OpenXR session to start.
+For a headset, `python tools/build_xr_triangle.py` builds two debuggable OpenXR test
+applications to launch the same way: `build/android/xr_triangle.apk` renders a ring of
+triangles in one multiview pass, and `xr_triangle_slow.apk` ("XR Triangle (Slow)") renders the
+same scene with deliberate inefficiencies, so the capture's **Frame Stats** (Frame Issues) and
+**Analyze Shaders** reports have something to flag. The build needs the Vulkan SDK's `glslc`
+and downloads the Khronos OpenXR loader on the first run. The headset must be worn (or its
+proximity sensor covered) for the OpenXR session to start.
 
 Shader editing works as on the desktop: the shaders are compiled on this machine with the Vulkan
 SDK's compilers and sent to the device. Expect the captured frame to take noticeably longer on a

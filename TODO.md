@@ -35,6 +35,9 @@ interpreter and re-created pipelines.
   disassembly annotated and linked to source lines, editing from the embedded source.
 - Static shader analysis on SPIR-V: modeled Shader Cost per entry point and function, a
   Performance Analysis findings list per shader, and "Analyze Shaders" over a capture's frame.
+- Frame Issues: frame-level rules over a capture (attachment loads and stores, clears outside
+  passes, transient depth, MSAA stores, stereo without multiview, redundant binds, tiny draws)
+  in Frame Stats, linked to their commands; the slow XR test package exercises them.
 - Validation messages: the layer's debug-utils messenger forwards validation layer output (with
   repeat counts and object links); "Validation layer" in the launch dialog enables the Khronos
   layer; Inspect lists the messages, marks the objects, the session bar counts them.
@@ -102,6 +105,16 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Android: a phone build of the triangle test app (NativeActivity with a swapchain; the
       OpenXR one in `test/xr_triangle` only runs on headsets); a GLES layer for Unity's GLES
       player; lower default read-back limits for phones.
+- [ ] Render target read-back of an attachment with storeOp DONT_CARE reads undefined contents
+      (the fast XR package's transient depth buffer): the layer could rewrite DONT_CARE to STORE
+      at render pass creation while capturing, the way RenderDoc does, keeping the original ops
+      in the object record so the Frame Issues rules still see what the application asked for.
+- [ ] Frame Issues rules to add: redundant descriptor set and vertex buffer binds, push
+      constants re-pushed unchanged, barriers with no work between them (or full-pipeline
+      barriers inside passes), attachments larger than the render area, render passes that
+      could be subpasses (a pass whose only input is the previous pass's output), MSAA without a
+      resolve (the storeOp STORE of a sampled multisampled image), compute dispatches of one
+      workgroup, and marking the flagged commands in the command list like validation messages.
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
       OpenXR layer or the runtime's own properties. Launching on a Quest that is not worn

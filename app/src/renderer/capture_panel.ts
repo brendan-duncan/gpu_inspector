@@ -24,6 +24,7 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { pipelineStages, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
+import { analyzeFrame } from "./vulkan/frame_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
@@ -885,7 +886,9 @@ export class CaptureView implements CaptureHost {
       new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
-    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, this.window.database), this.timingSummary());
+    const db = this.window.database;
+    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
+      { findings: analyzeFrame(this.data, db), onJump: (index) => this.selectCommand(index) });
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */

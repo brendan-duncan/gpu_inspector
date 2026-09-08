@@ -40,6 +40,23 @@
   ("mips 0-3"). The triangle test application's checker texture has a mip chain.
 - The launch dialog's Package field filters the device's packages as you type ("2 of 28
   match"); a package of the list shows the whole list again.
+- Frame Issues: Frame Stats opens with the findings of frame-level rules over the captured
+  commands and objects, each linked to its command. The rules lean towards tiled and XR GPUs:
+  a clear command on an image the frame then loads as an attachment (`clear-outside-pass`), a
+  color attachment loaded before anything wrote it (`color-load`), a depth attachment stored
+  although nothing can read it (`depth-store`), a depth attachment neither loaded nor stored
+  that is not a transient attachment (`depth-transient`), a multisampled attachment stored
+  although it is resolved (`msaa-store`), two passes recording the same draws to same-sized
+  targets without multiview (`stereo-without-multiview`), binding the pipeline that is bound
+  (`redundant-pipeline-bind`) and many draws of a handful of vertices (`tiny-draws`).
+- The XR test application builds as two packages: `com.brendanduncan.xrtriangle` renders a
+  ring of triangles in one instanced draw of one multiview pass with a transient, unstored
+  depth buffer, and `com.brendanduncan.xrtriangle.slow` ("XR Triangle (Slow)") renders the
+  same scene with deliberate inefficiencies (a pass per eye, a clear command plus loadOp LOAD,
+  a stored non-transient depth buffer, a draw and a pipeline bind per triangle, a fragment
+  shader with expensive builtins and loop-invariant work in a loop) for the Frame Issues and
+  Analyze Shaders reports to flag. On a Quest 3 the slow package's two eye passes take 2.5 ms
+  each against 3.4 ms for the multiview pass.
 
 ### Fixed
 - Android launch reported "adb shell: Stopping: ... Starting: Intent" as an error on a Quest:

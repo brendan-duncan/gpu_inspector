@@ -3,7 +3,9 @@
 // (with the bound pipeline's topology for triangle counts and captured indirect arguments for
 // indirect draws).
 import { Div } from "./widget/div.js";
+import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
+import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import { COMPUTE_PASS_END, DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, TRACE_METHODS } from "./vulkan/command_sets.js";
 import { fmt, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
@@ -445,15 +447,46 @@ function renderPassTimings(root: Widget, t: FrameTimingInfo): void {
   if (t.passes.length > shown.length) new Div(list, { text: `... ${t.passes.length - shown.length} more`, class: "text-muted font-sm" });
 }
 
+/** The frame analysis findings (vulkan/frame_analysis.ts) and how to jump to a command. */
+export interface FrameIssues {
+  findings: FrameFinding[];
+  onJump: (commandIndex: number) => void;
+}
+
+function renderFrameIssues(root: Widget, issues: FrameIssues): void {
+  const card = new Div(root, { class: "frame-stats-section" });
+  const n = issues.findings.length;
+  new Div(card, { text: `Frame Issues (${n})`, class: "frame-stats-heading" });
+  const body = new Div(card, { class: "frame-stats-list" });
+  if (!n) {
+    new Div(body, { text: "No issues found by the frame rules (attachment loads and stores, clears, stereo passes, draw batching).", class: "perf-empty text-muted" });
+    return;
+  }
+  for (const f of issues.findings) {
+    const row = new Div(body, { class: `perf-finding perf-row-${f.severity}${f.confidence !== "high" ? " perf-lowconf" : ""}` });
+    const head = new Div(row, { class: "perf-finding-head" });
+    new Span(head, { text: f.severity.toUpperCase(), class: `perf-badge perf-${f.severity}` });
+    new Span(head, { text: f.rule, class: "perf-rule" });
+    if (f.commandIndex !== undefined) {
+      const link = new Span(head, { text: `command ${f.commandIndex}`, class: "perf-line-link dependency_link" });
+      const index = f.commandIndex;
+      link.element.onclick = () => issues.onJump(index);
+      link.element.title = "Select the command";
+    }
+    if (f.count > 1) new Span(head, { text: `×${f.count}`, class: "perf-count text-muted" });
+    new Div(row, { text: f.message, class: "perf-msg" });
+    if (f.confidence !== "high") new Div(row, { text: `${f.confidence} confidence`, class: "perf-finding-meta text-muted font-sm" });
+  }
+}
+
 /** Renders the statistics as WebGPU Inspector's Frame Stats view: one card per section. */
-export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null): void {
+export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null, issues: FrameIssues | null = null): void {
   const root = new Div(container, { class: "frame-stats" });
   new Div(root, { text: "Frame Statistics", class: "frame-stats-title" });
   if (stats.frames > 1) new Div(root, { text: `Totals over ${stats.frames} captured frames.`, class: "text-muted font-sm" });
-  if (timing) {
-    renderFrameBound(root, timing);
-    renderPassTimings(root, timing);
-  }
+  if (timing) renderFrameBound(root, timing);
+  if (issues) renderFrameIssues(root, issues);
+  if (timing) renderPassTimings(root, timing);
   for (const section of stats.sections()) {
     const card = new Div(root, { class: "frame-stats-section" });
     new Div(card, { text: section.title, class: "frame-stats-heading" });

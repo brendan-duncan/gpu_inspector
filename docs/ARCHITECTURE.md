@@ -91,8 +91,13 @@ device-side server:
   application's `vkWaitForFences` following a submission (or at every submission when it never
   waits); see `EndFrame` in `layer.cpp`. Multiview passes read back the view mask's layers.
   `test/xr_triangle` is an OpenXR NativeActivity (one stereo swapchain, a multiview pass with
-  `gl_ViewIndex`) that `tools/build_xr_triangle.py` builds against the Khronos loader AAR and
-  packages debuggable; verified on a Quest 3. Its manifest declares hand tracking as an input
+  `gl_ViewIndex`, a transient unstored depth buffer, one instanced draw) that
+  `tools/build_xr_triangle.py` builds against the Khronos loader AAR and packages debuggable
+  twice: the same library as `com.brendanduncan.xrtriangle` and as `...xrtriangle.slow`, which
+  reads its package name through JNI and renders with deliberate inefficiencies (a pass per
+  eye, a clear command plus loadOp LOAD, a stored depth buffer, a draw and a bind per triangle,
+  a wasteful fragment shader) for the frame analysis and shader analysis to flag; both verified
+  on a Quest 3. Its manifest declares hand tracking as an input
   option, since the Quest shell otherwise refuses to launch an application until controllers
   are on, and a launch check dialog left behind by such a refusal blocks later launches until
   the shell restarts.
@@ -495,6 +500,26 @@ all its inputs are constants, global variable addresses, values defined outside 
 shared or image memory, or invariant operations themselves (phis and calls never are; cycles
 resolve to variant). The workgroup memory rule sums the sizes of Workgroup variables with a
 scalar layout computed from the type declarations.
+
+#### Frame analysis
+
+`renderer/vulkan/frame_analysis.ts` runs rules over a whole capture rather than one shader:
+one walk of the commands builds a record per render pass (attachments with their load and
+store ops, formats, sample counts, the image behind each view and its usage, the view mask
+from `VkRenderPassMultiviewCreateInfo`, `VkSubpassDescription2` or `VkRenderingInfo`, the draws
+with the pipeline bound for each) and notes the clear commands, the images copies read and
+the image views descriptor snapshots bind. The rules then flag what costs most on a tiled GPU:
+a clear command followed by a pass loading the same image, a color attachment loaded before
+the frame wrote it, a depth attachment stored that nothing can read (its usage has no sampled,
+input-attachment or storage bit; `TRANSFER_SRC` does not count, the layer adds it to every
+image for read-back), a depth attachment neither loaded nor stored without
+`TRANSIENT_ATTACHMENT` usage (the severity depends on the device having a lazily allocated
+memory type, from the physical device's memory properties), a multisampled attachment stored
+although it is resolved, redundant pipeline binds and many tiny draws; and the XR-specific
+one: passes without multiview whose draw sequence (pipelines and vertex counts), target size
+and attachment formats match another pass rendering to a different image or layer, which is
+one pass per eye. Every finding names the command it is about; `renderFrameStats` in
+`capture_statistics.ts` shows them as the Frame Issues card with links that select the command.
 
 Every own-cost charge of the analysis is also charged to the source line of the instruction
 (`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):

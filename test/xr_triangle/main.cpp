@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "shaders.inl"   // generated: kVertSpv / kFragSpv (uint32_t arrays)
+#include "shaders.inl"   // generated: kVertSpv / kFragSpv / kSlowFragSpv (uint32_t arrays)
 
 #define TAG "xr_triangle"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -92,17 +92,51 @@ Mat4 RotationY(float a) {
     return r;
 }
 
+Mat4 RotationZ(float a) {
+    Mat4 r = Identity();
+    r.m[0] = cosf(a); r.m[4] = -sinf(a);
+    r.m[1] = sinf(a); r.m[5] = cosf(a);
+    return r;
+}
+
 // ------------------------------------------------------------------------------------ app
 
 struct SwapchainImage {
     VkImage image = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;             // both layers (multiview)
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkImageView eyeViews[2]{};                     // slow: one layer each
+    VkFramebuffer eyeFramebuffers[2]{};
 };
+
+// The package the activity runs as: the "slow" package (...xrtriangle.slow) renders the same
+// scene with deliberate inefficiencies for the inspector's frame analysis to flag.
+std::string PackageName(android_app* app) {
+    JNIEnv* env = nullptr;
+    app->activity->vm->AttachCurrentThread(&env, nullptr);
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "getPackageName", "()Ljava/lang/String;");
+    jstring js = (jstring)env->CallObjectMethod(activity, method);
+    const char* utf = js ? env->GetStringUTFChars(js, nullptr) : nullptr;
+    std::string name = utf ? utf : "";
+    if (utf) env->ReleaseStringUTFChars(js, utf);
+    if (js) env->DeleteLocalRef(js);
+    env->DeleteLocalRef(cls);
+    app->activity->vm->DetachCurrentThread();
+    return name;
+}
+
+constexpr uint32_t kTriangles = 48;   // the ring (kTriangles in xr.vert)
 
 struct App {
     android_app* android = nullptr;
     bool resumed = false;
+    // The slow package: one pass per eye instead of multiview, the color target cleared with a
+    // clear command and loaded by the pass, the depth attachment stored and not transient, one
+    // draw (and a pipeline bind) per triangle instead of one instanced draw, and a wasteful
+    // fragment shader.
+    bool slow = false;
 
     XrInstance instance = XR_NULL_HANDLE;
     XrSystemId system = XR_NULL_SYSTEM_ID;
@@ -129,6 +163,7 @@ struct App {
     VkImage depthImage = VK_NULL_HANDLE;
     VkDeviceMemory depthMemory = VK_NULL_HANDLE;
     VkImageView depthView = VK_NULL_HANDLE;
+    VkImageView depthEyeViews[2]{};   // slow: one layer each
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -278,12 +313,17 @@ struct App {
         setName(device, &ni);
     }
 
-    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+    int32_t TryFindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(gpu, &mp);
         for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return i;
-        return 0;
+            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return (int32_t)i;
+        return -1;
+    }
+
+    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+        int32_t i = TryFindMemoryType(bits, props);
+        return i < 0 ? 0 : (uint32_t)i;
     }
 
     // ---------------------------------------------------------------------------- session
@@ -324,6 +364,7 @@ struct App {
         for (int64_t f : formats) if (f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB) { swapchainFormat = f; break; }
         XrSwapchainCreateInfo swci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         swci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        if (slow) swci.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;   // for the clear command
         swci.format = swapchainFormat;
         swci.sampleCount = 1;
         swci.width = width;
@@ -349,19 +390,31 @@ struct App {
             Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)images[i].image, name);
             VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             vci.image = images[i].image;
-            vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
             vci.format = (VkFormat)swapchainFormat;
-            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, viewCount};
-            VK_CHECK(vkCreateImageView(device, &vci, nullptr, &images[i].view));
-            VkImageView attachments[] = {images[i].view, depthView};
             VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             fbci.renderPass = renderPass;
             fbci.attachmentCount = 2;
-            fbci.pAttachments = attachments;
             fbci.width = width;
             fbci.height = height;
             fbci.layers = 1;   // multiview: the view mask selects the layers
-            VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &images[i].framebuffer));
+            if (!slow) {
+                vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, viewCount};
+                VK_CHECK(vkCreateImageView(device, &vci, nullptr, &images[i].view));
+                VkImageView attachments[] = {images[i].view, depthView};
+                fbci.pAttachments = attachments;
+                VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &images[i].framebuffer));
+            } else {
+                // Slow: a framebuffer per eye over one layer each.
+                for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+                    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, v, 1};
+                    VK_CHECK(vkCreateImageView(device, &vci, nullptr, &images[i].eyeViews[v]));
+                    VkImageView attachments[] = {images[i].eyeViews[v], depthEyeViews[v]};
+                    fbci.pAttachments = attachments;
+                    VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &images[i].eyeFramebuffers[v]));
+                }
+            }
         }
     }
 
@@ -369,7 +422,9 @@ struct App {
         VkAttachmentDescription atts[2]{};
         atts[0].format = (VkFormat)swapchainFormat;
         atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
-        atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        // Slow: LOAD reads the previous contents (cleared beforehand by a clear command) into
+        // the tile instead of clearing it there.
+        atts[0].loadOp = slow ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
         atts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -379,7 +434,9 @@ struct App {
         atts[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
         atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
         atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        atts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        // Nothing reads the depth buffer after the pass: DONT_CARE keeps a tiled GPU from
+        // writing it back. Slow: stored anyway.
+        atts[1].storeOp = slow ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -405,7 +462,7 @@ struct App {
         mv.correlationMaskCount = 1;
         mv.pCorrelationMasks = &viewMask;
         VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        rpci.pNext = &mv;
+        rpci.pNext = slow ? nullptr : &mv;   // slow: no multiview, one pass per eye
         rpci.attachmentCount = 2;
         rpci.pAttachments = atts;
         rpci.subpassCount = 1;
@@ -413,7 +470,7 @@ struct App {
         rpci.dependencyCount = 1;
         rpci.pDependencies = &dep;
         VK_CHECK(vkCreateRenderPass(device, &rpci, nullptr, &renderPass));
-        Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)renderPass, "Stereo pass");
+        Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)renderPass, slow ? "Eye pass" : "Stereo pass");
     }
 
     void CreateDepth() {
@@ -425,14 +482,19 @@ struct App {
         ici.arrayLayers = viewCount;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        // Neither loaded nor stored, the depth buffer can live in tile memory only: a transient
+        // attachment in lazily allocated memory (when the device has such memory). Slow: a
+        // regular image in regular memory.
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | (slow ? 0 : VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VK_CHECK(vkCreateImage(device, &ici, nullptr, &depthImage));
         VkMemoryRequirements req;
         vkGetImageMemoryRequirements(device, depthImage, &req);
         VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         mai.allocationSize = req.size;
-        mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        int32_t lazy = slow ? -1 : TryFindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
+        mai.memoryTypeIndex = lazy >= 0 ? (uint32_t)lazy : FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        LOGI("depth memory: %s", lazy >= 0 ? "lazily allocated" : "device local");
         VK_CHECK(vkAllocateMemory(device, &mai, nullptr, &depthMemory));
         VK_CHECK(vkBindImageMemory(device, depthImage, depthMemory, 0));
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -440,7 +502,16 @@ struct App {
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         vci.format = VK_FORMAT_D24_UNORM_S8_UINT;
         vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, viewCount};
-        VK_CHECK(vkCreateImageView(device, &vci, nullptr, &depthView));
+        if (!slow) {
+            VK_CHECK(vkCreateImageView(device, &vci, nullptr, &depthView));
+        } else {
+            for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+                vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                vci.subresourceRange.baseArrayLayer = v;
+                vci.subresourceRange.layerCount = 1;
+                VK_CHECK(vkCreateImageView(device, &vci, nullptr, &depthEyeViews[v]));
+            }
+        }
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Stereo depth");
     }
 
@@ -461,7 +532,7 @@ struct App {
         VK_CHECK(vkCreatePipelineLayout(device, &plci, nullptr, &pipelineLayout));
 
         VkShaderModule vs = Module(kVertSpv, sizeof(kVertSpv));
-        VkShaderModule fs = Module(kFragSpv, sizeof(kFragSpv));
+        VkShaderModule fs = slow ? Module(kSlowFragSpv, sizeof(kSlowFragSpv)) : Module(kFragSpv, sizeof(kFragSpv));
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -617,35 +688,79 @@ struct App {
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(commandBuffer, &bi));
-        VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
-        label.pLabelName = "Stereo scene";
-        label.color[0] = 0.2f; label.color[1] = 0.8f; label.color[2] = 0.4f; label.color[3] = 1.0f;
-        if (beginLabel) beginLabel(commandBuffer, &label);
 
+        // A ring of triangles two meters ahead, slowly turning.
+        const float seconds = (float)((double)time * 1e-9);
+        // The ring spins in its own plane (about Z) and nods about Y, never edge-on.
+        Mat4 model = Multiply(RotationY(0.6f * sinf(seconds * 0.4f)), RotationZ(seconds * 0.5f));
+        model.m[14] = -2.0f;
+        Mat4 mvp[2];
+        for (uint32_t v = 0; v < viewCount && v < 2; ++v)
+            mvp[v] = Multiply(Multiply(Projection(views[v].fov, 0.05f, 100.0f), ViewFromPose(views[v].pose)), model);
         VkClearValue clears[2]{};
         clears[0].color = {{0.05f, 0.05f, 0.12f, 1.0f}};
         clears[1].depthStencil = {1.0f, 0};
         VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rpbi.renderPass = renderPass;
-        rpbi.framebuffer = images[imageIndex].framebuffer;
         rpbi.renderArea = {{0, 0}, {width, height}};
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
-        vkCmdBeginRenderPass(commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-        // A triangle two meters ahead, slowly turning.
-        const float seconds = (float)((double)time * 1e-9);
-        Mat4 model = RotationY(seconds * 0.5f);
-        model.m[14] = -2.0f;
-        Mat4 mvp[2];
-        for (uint32_t v = 0; v < viewCount && v < 2; ++v)
-            mvp[v] = Multiply(Multiply(Projection(views[v].fov, 0.05f, 100.0f), ViewFromPose(views[v].pose)), model);
-        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), mvp);
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-        vkCmdEndRenderPass(commandBuffer);
-        if (endLabel) endLabel(commandBuffer);
+        if (!slow) {
+            Label("Stereo scene");
+            rpbi.framebuffer = images[imageIndex].framebuffer;
+            vkCmdBeginRenderPass(commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), mvp);
+            vkCmdDraw(commandBuffer, 3, kTriangles, 0, 0);   // the whole ring, instanced
+            vkCmdEndRenderPass(commandBuffer);
+            if (endLabel) endLabel(commandBuffer);
+        } else {
+            for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+                Label(v == 0 ? "Left eye" : "Right eye");
+                // A clear command instead of loadOp CLEAR: a separate pass over the image on a
+                // tiled GPU, and the render pass then loads what it cleared.
+                VkImageSubresourceRange layer{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, v, 1};
+                Transition(images[imageIndex].image, layer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                vkCmdClearColorImage(commandBuffer, images[imageIndex].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clears[0].color, 1, &layer);
+                Transition(images[imageIndex].image, layer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                rpbi.framebuffer = images[imageIndex].eyeFramebuffers[v];
+                vkCmdBeginRenderPass(commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+                // gl_ViewIndex is 0 without multiview: this eye's matrix goes into slot 0.
+                Mat4 eye[2] = {mvp[v], mvp[v]};
+                for (uint32_t i = 0; i < kTriangles; ++i) {
+                    // One draw per triangle, the pipeline and constants re-bound every time.
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(eye), eye);
+                    vkCmdDraw(commandBuffer, 3, 1, 0, i);
+                }
+                vkCmdEndRenderPass(commandBuffer);
+                if (endLabel) endLabel(commandBuffer);
+            }
+        }
         VK_CHECK(vkEndCommandBuffer(commandBuffer));
+    }
+
+    void Label(const char* name) {
+        if (!beginLabel) return;
+        VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+        label.pLabelName = name;
+        label.color[0] = 0.2f; label.color[1] = 0.8f; label.color[2] = 0.4f; label.color[3] = 1.0f;
+        beginLabel(commandBuffer, &label);
+    }
+
+    void Transition(VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = from == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        b.dstAccessMask = to == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange = range;
+        const VkPipelineStageFlags src = from == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        const VkPipelineStageFlags dst = to == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        vkCmdPipelineBarrier(commandBuffer, src, dst, 0, 0, nullptr, 0, nullptr, 1, &b);
     }
 
     void Shutdown() {
@@ -653,10 +768,15 @@ struct App {
         for (auto& i : images) {
             if (i.framebuffer) vkDestroyFramebuffer(device, i.framebuffer, nullptr);
             if (i.view) vkDestroyImageView(device, i.view, nullptr);
+            for (uint32_t v = 0; v < 2; ++v) {
+                if (i.eyeFramebuffers[v]) vkDestroyFramebuffer(device, i.eyeFramebuffers[v], nullptr);
+                if (i.eyeViews[v]) vkDestroyImageView(device, i.eyeViews[v], nullptr);
+            }
         }
         images.clear();
         if (swapchain) xrDestroySwapchain(swapchain);
         if (depthView) vkDestroyImageView(device, depthView, nullptr);
+        for (uint32_t v = 0; v < 2; ++v) if (depthEyeViews[v]) vkDestroyImageView(device, depthEyeViews[v], nullptr);
         if (depthImage) vkDestroyImage(device, depthImage, nullptr);
         if (depthMemory) vkFreeMemory(device, depthMemory, nullptr);
         if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
@@ -688,6 +808,9 @@ void android_main(android_app* app) {
     self.android = app;
     app->userData = &self;
     app->onAppCmd = OnAppCommand;
+    const std::string package = PackageName(app);
+    self.slow = package.size() >= 5 && package.compare(package.size() - 5, 5, ".slow") == 0;
+    LOGI("package %s (%s rendering)", package.c_str(), self.slow ? "deliberately slow" : "multiview");
 
     self.CreateInstance();
     self.CreateVulkan();
