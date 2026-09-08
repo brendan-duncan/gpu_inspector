@@ -56,10 +56,39 @@ function cliFlag(name: string): boolean {
 
 interface Settings {
   recents?: LaunchConfig[];
+  /** Capture files saved or opened, most recent first. */
+  recentCaptures?: string[];
   theme?: ThemeName;
 }
 
 const MAX_RECENTS = 12;
+
+function loadRecentCaptures(): string[] {
+  const list = loadSettings().recentCaptures ?? [];
+  return list.filter((p) => typeof p === "string" && p);
+}
+
+/** Moves (or inserts) a capture file to the front of the recent captures and tells every window. */
+function addRecentCapture(file: string): string[] {
+  const list = loadRecentCaptures().filter((p) => p !== file);
+  list.unshift(file);
+  list.length = Math.min(list.length, MAX_RECENTS);
+  const settings = loadSettings();
+  settings.recentCaptures = list;
+  saveSettings(settings);
+  broadcast("inspector:recentCaptures", list);
+  return list;
+}
+
+function removeRecentCapture(index: number): string[] {
+  const list = loadRecentCaptures();
+  list.splice(index, 1);
+  const settings = loadSettings();
+  settings.recentCaptures = list;
+  saveSettings(settings);
+  broadcast("inspector:recentCaptures", list);
+  return list;
+}
 
 function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
   return {
@@ -1038,6 +1067,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
   const win = windowOf(e.sender);
   return {
     recents: loadRecents(),
+    recentCaptures: loadRecentCaptures(),
     layerDir: findLayerDir(),
     theme: appTheme(),
     windowMode: win === mainWin ? "main" : "session",
@@ -1164,6 +1194,8 @@ ipcMain.handle("inspector:saveFile", async (e, opts: SaveFileOptions, data: Uint
     return null;
   }
 });
+ipcMain.handle("inspector:addRecentCapture", (_e, file: string) => addRecentCapture(file));
+ipcMain.handle("inspector:removeRecentCapture", (_e, index: number) => removeRecentCapture(index));
 ipcMain.handle("inspector:readFile", (_e, file: string): Uint8Array | null => {
   try {
     return new Uint8Array(fs.readFileSync(file));

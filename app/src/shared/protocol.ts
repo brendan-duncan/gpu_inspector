@@ -465,6 +465,8 @@ export type ThemeName = (typeof THEMES)[number];
 export interface AppConfig {
   /** Recently launched configurations, most recent first. */
   recents: LaunchConfig[];
+  /** Recently saved or opened capture files, most recent first. */
+  recentCaptures: string[];
   layerDir: string | null;
   /** The theme in effect (a persisted user setting). */
   theme: ThemeName;

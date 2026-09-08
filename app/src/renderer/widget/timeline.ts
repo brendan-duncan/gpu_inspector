@@ -2,8 +2,9 @@
 import { Widget, WidgetOptions } from "./widget.js";
 import { Div } from "./div.js";
 
-const renderColor = "#4a8db8";
-const computeColor = "#a87cd0";
+// Colors come from the theme tokens (theme.css) so the strip follows light and dark themes.
+const renderColor = "var(--timeline-render)";
+const computeColor = "var(--timeline-compute)";
 const minSegmentPx = 2;
 const stripHeightPx = 28;
 
@@ -59,8 +60,8 @@ export class TimelineWidget extends Widget {
       "flex: 0 0 auto",
       "overflow: hidden",
       "white-space: nowrap",
-      "background: #1e1e1e",
-      "border-bottom: 1px solid #333",
+      "background: var(--timeline-bg)",
+      "border-bottom: 1px solid var(--border-subtle)",
       "box-sizing: border-box",
       "position: relative",
       "transition: height 120ms ease-out"
@@ -69,7 +70,7 @@ export class TimelineWidget extends Widget {
       style: `position: relative; height: ${stripHeightPx}px; width: 100%;`
     });
     this._scale = new Div(this, {
-      style: "font-size: 10px; color: #888; padding: 2px 6px; height: 14px; line-height: 14px;"
+      style: "font-size: 10px; color: var(--fg-secondary); padding: 2px 6px; height: 14px; line-height: 14px;"
     });
     this._segments = [];
   }
@@ -96,7 +97,7 @@ export class TimelineWidget extends Widget {
       "display: flex",
       "align-items: center",
       "justify-content: center",
-      "color: #888",
+      "color: var(--fg-secondary)",
       "font-size: 11px",
       "font-style: italic"
     ].join(";");
@@ -147,7 +148,7 @@ export class TimelineWidget extends Widget {
         "bottom: 0",
         `left: ${(budgetMs / scaleMax) * 100}%`,
         "width: 0",
-        "border-left: 1px dashed #e0b050",
+        "border-left: 1px dashed var(--timeline-budget)",
         "pointer-events: none",
         "z-index: 5"
       ].join(";");
@@ -178,7 +179,7 @@ export class TimelineWidget extends Widget {
         "border-radius: 2px",
         "cursor: pointer",
         "overflow: hidden",
-        "color: #fff",
+        "color: var(--timeline-segment-fg)",
         "font-size: 10px",
         "line-height: " + (stripHeightPx - 4) + "px",
         "padding: 0 4px",

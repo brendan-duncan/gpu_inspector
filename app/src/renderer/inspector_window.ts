@@ -36,6 +36,7 @@ export class InspectorWindow extends Window {
   private _removingSession = 0;
 
   private _recents: LaunchConfig[] = [];
+  private _recentCaptures: string[] = [];
   private _lastLaunch: LaunchConfig | null = null;
   private _recentMenu: Div | null = null;
   private _portInput: TextInput | null = null;
@@ -94,12 +95,14 @@ export class InspectorWindow extends Window {
     });
     window.inspector.onLog((l) => this._sessions.get(l.sessionId)?.appendLog(l.line));
     window.inspector.onRecents((recents) => this._setRecents(recents));
+    window.inspector.onRecentCaptures((list) => this._setRecentCaptures(list));
     window.inspector.onTheme((theme) => this._setTheme(theme));
     window.inspector.onUpdate((status) => this._setUpdateStatus(status));
 
     void window.inspector.getConfig().then((cfg) => {
       this._debug = cfg.debug;
       this._setTheme(cfg.theme);
+      this._recentCaptures = cfg.recentCaptures ?? [];
       this._setRecents(cfg.recents);
       this._setVersion(cfg.version, cfg.canUpdate);
       for (const s of cfg.sessions) this._addSession(s);
@@ -169,6 +172,7 @@ export class InspectorWindow extends Window {
     this._handles.set(id, handle);
     this._tabs.setHandleActive(handle);
     this._updatePlaceholder();
+    void window.inspector.addRecentCapture(path);
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
   }
 
@@ -364,13 +368,21 @@ export class InspectorWindow extends Window {
 
   private _setRecents(recents: LaunchConfig[]): void {
     this._recents = recents;
+    this._renderRecentMenu();
+  }
+
+  private _setRecentCaptures(list: string[]): void {
+    this._recentCaptures = list;
+    this._renderRecentMenu();
+  }
+
+  /** The Recent menu: launches, then capture files. */
+  private _renderRecentMenu(): void {
     const menu = this._recentMenu;
     if (!menu) return;
     menu.html = "";
-    if (!recents.length) {
-      new Div(menu, { text: "No recent launches", class: "menu-item disabled" });
-      return;
-    }
+    const recents = this._recents;
+    if (!recents.length) new Div(menu, { text: "No recent launches", class: "menu-item disabled" });
     recents.forEach((r, index) => {
       const item = new Div(menu, { class: "menu-item recent-item", tooltip: `${r.exe}\n${r.args}` });
       new Span(item, { text: launchDisplayName(r), class: "recent-item-name" });
@@ -385,12 +397,32 @@ export class InspectorWindow extends Window {
         this.launch(r);
       };
     });
-    new Div(menu, { class: "menu-separator" });
-    const clear = new Div(menu, { text: "Clear recents", class: "menu-item" });
-    clear.element.onclick = () => {
-      menu.classList.remove("open");
-      void window.inspector.clearRecents().then((list) => this._setRecents(list));
-    };
+    if (recents.length) {
+      new Div(menu, { class: "menu-separator" });
+      const clear = new Div(menu, { text: "Clear recents", class: "menu-item" });
+      clear.element.onclick = () => {
+        menu.classList.remove("open");
+        void window.inspector.clearRecents().then((list) => this._setRecents(list));
+      };
+    }
+    if (this._recentCaptures.length) {
+      new Div(menu, { class: "menu-separator" });
+      new Div(menu, { text: "Capture files", class: "menu-item disabled recent-heading" });
+      this._recentCaptures.forEach((path, index) => {
+        const item = new Div(menu, { class: "menu-item recent-item", tooltip: path });
+        new Span(item, { text: path.replace(/^.*[\\/]/, ""), class: "recent-item-name" });
+        new Span(item, { text: path, class: "recent-item-path" });
+        const remove = new Span(item, { text: "×", class: "recent-item-remove", tooltip: "Remove from recents" });
+        remove.element.onclick = (e: MouseEvent) => {
+          e.stopPropagation();
+          void window.inspector.removeRecentCapture(index);
+        };
+        item.element.onclick = () => {
+          menu.classList.remove("open");
+          void this.openCaptureFile(path);
+        };
+      });
+    }
   }
 
   showLaunchDialog(initial: LaunchConfig | null = null): void {

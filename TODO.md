@@ -47,8 +47,6 @@ interpreter and re-created pipelines.
 ### Captures
 - [ ] Open a capture in a new window (the file session exists only in the window that opened it;
       a session window would need the file path handed over and reopened there).
-- [ ] Capture files: a recent-files list.
-- [ ] "At frame" field in the capture bar (the layer already supports `atFrame`).
 - [ ] Multisampled render target read-back (resolve into a temporary image).
 - [ ] Sampled image read-back: every mip of a view (only the base mip is copied today), and
       sampled images bound through descriptor buffers / shader objects.
@@ -60,7 +58,6 @@ interpreter and re-created pipelines.
 - [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
 - [ ] Dropped-frame detection and a refresh-rate estimate for the frame budget (present timing
       or `VK_GOOGLE_display_timing` where available).
-- [ ] Theme-aware timeline widget colors.
 
 ### Shaders
 - [ ] Shader flame graph: the frame's GPU time split by pass, pipeline and function using the

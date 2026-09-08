@@ -46,6 +46,7 @@ export class CapturePanel {
 
   private _statusLabel!: Span;
   private _frameCountInput!: TextInput;
+  private _atFrameInput!: TextInput;
   private _texturesCheck!: Checkbox;
   private _buffersCheck!: Checkbox;
   private _imagesCheck!: Checkbox;
@@ -103,6 +104,9 @@ export class CapturePanel {
     c.push(new Button(row, { label: "Capture", class: "btn btn-success", callback: () => this.capture() }));
     c.push(new Span(row, { text: "Frames", class: "launch-label" }));
     this._frameCountInput = new TextInput(row, { value: "1", class: "launch-input launch-input-narrow" });
+    c.push(new Span(row, { text: "At frame", class: "launch-label", tooltip: "Capture that frame of the application (the layer's present counter, 0 = the first frame; a frame already passed captures the next one). Empty: the next frame." }));
+    this._atFrameInput = new TextInput(row, { value: "", placeholder: "next", class: "launch-input launch-input-narrow" });
+    c.push(this._atFrameInput);
     this._texturesCheck = new Checkbox(row, { label: "Render targets", checked: true, tooltip: "Read back render pass attachments at the end of each pass" });
     this._buffersCheck = new Checkbox(row, { label: "Buffers", checked: true, tooltip: "Read back the buffers bound by descriptor sets, vertex and index bindings and indirect draws" });
     this._imagesCheck = new Checkbox(row, { label: "Images", checked: true, tooltip: "Read back the images bound by descriptor sets (sampled and storage images, once per image view, up to 256 MB per capture), so the capture shows what the shaders sampled" });
@@ -132,6 +136,11 @@ export class CapturePanel {
       return;
     }
     if (frames && frames > 0) this._frameCountInput.value = String(frames);
+    if (atFrame === undefined) {
+      // The bar's "At frame" field, when filled in; a queued capture passes its own.
+      const at = this._atFrameInput.value.trim();
+      if (at !== "" && Number.isFinite(Number(at))) atFrame = Math.max(0, Math.floor(Number(at)));
+    }
     const view = new CaptureView(this.window, ++this._captureCount, this._profileCheck.checked);
     if (atFrame !== undefined) view.status = `waiting for frame ${atFrame}...`;
     this._addView(view);
@@ -187,6 +196,7 @@ export class CapturePanel {
     const defaultPath = captureFileName(this.window.name, view.data.frame, view.data.frames);
     const saved = await window.inspector.saveFile({ title: "Save capture", defaultPath, filters: CAPTURE_FILE_FILTERS, ...(path ? { path } : {}) }, bytes);
     this._statusLabel.text = saved ? `saved ${saved} (${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB)` : view.status;
+    if (saved) void window.inspector.addRecentCapture(saved);
     return saved;
   }
 

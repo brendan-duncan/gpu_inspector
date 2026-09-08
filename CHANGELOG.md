@@ -27,8 +27,14 @@
   tooltip; the compiler log's error lines jump to the line, and the editor goes to the first
   error when a compile fails. glslangValidator, dxc and spirv-as messages are understood.
 
+- "At frame" field in the capture bar: capture a given frame of the application instead of the
+  next one (0 is the first frame; the launch dialog's queued capture offered this already).
+- Recent capture files in the Recent menu: files saved or opened are listed under the recent
+  launches and reopen with a click.
+
 ### Changed
 - Shader Reflection sections are collapsed by default.
+- The GPU pass timeline follows the theme (light and dark) instead of fixed dark colors.
 
 ### Fixed
 - Compile & Apply from the Source view failed with `'#version' : must occur first in shader`:

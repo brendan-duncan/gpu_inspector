@@ -44,6 +44,10 @@ export interface InspectorApi {
   saveFile(opts: SaveFileOptions, data: Uint8Array): Promise<string | null>;
   /** Reads a whole file; null when it cannot be read. */
   readFile(path: string): Promise<Uint8Array | null>;
+  /** Recent capture files (saved or opened), most recent first; changes reach every window. */
+  addRecentCapture(path: string): Promise<string[]>;
+  removeRecentCapture(index: number): Promise<string[]>;
+  onRecentCaptures(cb: (list: string[]) => void): void;
   /** The filesystem path of a File dropped onto the window. */
   pathForFile(file: File): string;
   getRecents(): Promise<LaunchConfig[]>;

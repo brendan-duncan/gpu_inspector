@@ -45,6 +45,13 @@
   --collapse-button-fg: #dddddd;
   --compute-pass-bg: #3a4a5a;
 
+  /* GPU pass timeline (Profile passes) */
+  --timeline-bg: #1e1e1e;
+  --timeline-render: #4a8db8;
+  --timeline-compute: #a87cd0;
+  --timeline-budget: #e0b050;
+  --timeline-segment-fg: #ffffff;
+
   /* Debug label groups in the capture list, by nesting depth: title bar, and the body that
      tints the commands inside the group (like WebGPU Inspector). */
   --group-0-bg: #5c3b3c;
@@ -178,6 +185,12 @@
   --collapsible-body-bg: #f2f2f2;
   --collapse-button-fg: #333333;
   --compute-pass-bg: #c8d8e8;
+
+  --timeline-bg: #f3f3f3;
+  --timeline-render: #3d7fb0;
+  --timeline-compute: #8c5fc0;
+  --timeline-budget: #b07a10;
+  --timeline-segment-fg: #ffffff;
 
   --group-0-bg: #f5c0c1;
   --group-1-bg: #ffd98a;
