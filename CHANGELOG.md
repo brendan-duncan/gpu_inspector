@@ -31,6 +31,13 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Refresh rate and dropped frames: with vsync on (a FIFO present mode) the layer estimates the
+  display refresh period from the frame intervals and counts the refreshes that repeated the
+  previous frame.
+  The frame time meter shows the vsync period and the dropped frames, the session bar counts
+  them, and the pass timeline's budget marker and the Frame Bound card use the refresh period,
+  with "vsync bound" and "missing the refresh" verdicts. Without vsync the present mode is shown
+  and the frame interval stays the budget.
 
 ### Changed
 - Shader Reflection sections are collapsed by default.

@@ -78,7 +78,8 @@ export class SessionPanel extends Div implements SessionContext {
     this._log = new Widget("pre", logPanel, { class: "log-text" });
 
     this.database.onFrameStats.addListener((m) => {
-      this._frameLabel.text = `frame ${m.frame}  ${m.frameTimeMs.toFixed(2)} ms  (${(1000 / m.frameTimeMs).toFixed(0)} fps)`;
+      const dropped = this.database.droppedFramesTotal;
+      this._frameLabel.text = `frame ${m.frame}  ${m.frameTimeMs.toFixed(2)} ms  (${(1000 / m.frameTimeMs).toFixed(0)} fps)${dropped ? `  ${dropped} dropped` : ""}`;
     });
     this.database.onSnapshotBegin.addListener((count) => this.appendLog(`snapshot: ${count} live objects`));
     // Shader edits are logged too, so their outcome is visible even when the editor is closed.
@@ -263,7 +264,7 @@ export class FileSessionPanel extends SessionPanel {
     this.path = path;
     this.setFileMode(path);
     const m = capture.manifest;
-    this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0 });
+    this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0, refreshMs: m.refreshMs ?? 0 });
     this.database.loadValidation(capture.validation);
     this.appendLog(`loaded ${path}: ${capture.commands.length} commands, ${capture.objects.length} objects, saved ${m.savedAt} from ${m.source?.name ?? "?"}`);
     this.capturePanel.setFileMode();

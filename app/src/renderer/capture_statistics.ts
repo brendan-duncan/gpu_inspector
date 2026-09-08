@@ -361,7 +361,8 @@ export class CaptureStatistics {
 
 /** GPU pass timings of a capture (Profile passes) with the live frame and submit times for the Frame Bound card. */
 export interface FrameTimingInfo {
-  frameMs: number;       // live frame interval (the budget, as no refresh rate is known)
+  frameMs: number;       // live frame interval
+  refreshMs: number;     // display refresh interval while vsync was on (the budget), 0 without
   submitMs: number;      // CPU time per frame inside vkQueueSubmit
   gpuSpanMs: number;     // first pass start to last pass end
   gpuTotalMs: number;    // sum of pass durations
@@ -374,7 +375,8 @@ export interface FrameTimingInfo {
  * against the frame interval and names the likely bottleneck, like WebGPU Inspector's card.
  */
 function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
-  const budget = t.frameMs > 0 ? t.frameMs : Math.max(t.gpuSpanMs, t.submitMs);
+  const vsync = t.refreshMs > 0;
+  const budget = vsync ? t.refreshMs : t.frameMs > 0 ? t.frameMs : Math.max(t.gpuSpanMs, t.submitMs);
   if (!(budget > 0)) return;
   const gpu = t.frames > 1 ? t.gpuSpanMs / t.frames : t.gpuSpanMs;
   let verdict: string;
@@ -384,6 +386,12 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
     cls = "frame-bound-gpu";
   } else if (t.submitMs / budget > 0.8) {
     verdict = "CPU bound (submit)";
+    cls = "frame-bound-cpu";
+  } else if (vsync && t.frameMs >= budget * 0.9 && t.frameMs <= budget * 1.1) {
+    verdict = "Vsync bound: the frame waits for the display; GPU and CPU have headroom";
+    cls = "frame-bound-idle";
+  } else if (vsync && t.frameMs > budget * 1.1) {
+    verdict = "Missing the refresh: the frame takes longer than the display period, but neither the GPU passes nor the submit fill it (CPU work outside submission, or waits)";
     cls = "frame-bound-cpu";
   } else {
     verdict = "Present / CPU bound outside submit: the GPU has headroom";
@@ -404,7 +412,13 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
   };
   bar("GPU (pass span)", gpu, "#4a8db8");
   bar("CPU (submit)", t.submitMs, "#5fd08a");
-  new Div(body, { text: "The budget is the live frame interval (no display refresh rate is known). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.", class: "text-muted font-sm" });
+  if (vsync) bar("Frame interval", t.frameMs, "#a0a0a0");
+  new Div(body, {
+    text: vsync
+      ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, estimated from the frame intervals while vsync is on). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.`
+      : "The budget is the live frame interval (vsync is off, so no display refresh period applies). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.",
+    class: "text-muted font-sm",
+  });
 }
 
 function renderPassTimings(root: Widget, t: FrameTimingInfo): void {

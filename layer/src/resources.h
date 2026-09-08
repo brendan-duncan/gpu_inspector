@@ -62,6 +62,7 @@ struct SwapchainInfo {
     VkExtent2D extent{};
     VkImageUsageFlags usage = 0;
     uint32_t arrayLayers = 1;
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 };
 
 struct RenderPassInfo {

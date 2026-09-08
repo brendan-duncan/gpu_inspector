@@ -33,6 +33,11 @@ export class ObjectDatabase implements ObjectLookup {
   frameTimeMs = 0;
   /** CPU time per frame inside vkQueueSubmit, from the last FrameStats. */
   submitMs = 0;
+  /** Display refresh interval while vsync is on (0 without), the present mode, and dropped frames. */
+  refreshMs = 0;
+  presentMode = "";
+  droppedFrames = 0;       // in the last reporting interval
+  droppedFramesTotal = 0;  // since the connection
   inspectedObject: VulkanObject | null = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = new Set<number>();
@@ -138,6 +143,11 @@ export class ObjectDatabase implements ObjectLookup {
     this.objectsByHandle = new Map();
     this.frameIndex = 0;
     this.frameTimeMs = 0;
+    this.submitMs = 0;
+    this.refreshMs = 0;
+    this.presentMode = "";
+    this.droppedFrames = 0;
+    this.droppedFramesTotal = 0;
     this.inspectedObject = null;
     this.capturedObjects = new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
@@ -155,7 +165,7 @@ export class ObjectDatabase implements ObjectLookup {
    * path as a live snapshot, then the objects destroyed before the save become ghosts without
    * the destroy cascade, so every link of the loaded capture still resolves.
    */
-  loadObjects(objects: CaptureFileObject[], blobs: Map<string, Uint8Array>, stats: { frame: number; frameTimeMs: number; submitMs: number }): void {
+  loadObjects(objects: CaptureFileObject[], blobs: Map<string, Uint8Array>, stats: { frame: number; frameTimeMs: number; submitMs: number; refreshMs?: number }): void {
     this.reset();
     this._snapshotRemaining = objects.length;
     this.onReset.emit();
@@ -192,7 +202,8 @@ export class ObjectDatabase implements ObjectLookup {
     this.frameIndex = stats.frame;
     this.frameTimeMs = stats.frameTimeMs;
     this.submitMs = stats.submitMs;
-    this.onFrameStats.emit({ action: "FrameStats", frame: stats.frame, frameTimeMs: stats.frameTimeMs, submitMs: stats.submitMs });
+    this.refreshMs = stats.refreshMs ?? 0;
+    this.onFrameStats.emit({ action: "FrameStats", frame: stats.frame, frameTimeMs: stats.frameTimeMs, submitMs: stats.submitMs, refreshMs: this.refreshMs });
   }
 
   private _accountMemory(o: VulkanObject, sign: 1 | -1): void {
@@ -246,6 +257,10 @@ export class ObjectDatabase implements ObjectLookup {
         this.frameIndex = msg.frame;
         this.frameTimeMs = msg.frameTimeMs;
         this.submitMs = msg.submitMs ?? 0;
+        this.refreshMs = msg.refreshMs ?? 0;
+        this.presentMode = msg.presentMode ?? "";
+        this.droppedFrames = msg.dropped ?? 0;
+        this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
         this.onFrameStats.emit(msg);
         break;
       case "ObjectBlob":

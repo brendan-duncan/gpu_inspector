@@ -424,7 +424,11 @@ export class InspectPanel {
 
   private _updateMeters(frameTimeMs: number, maxMs: number, submitMs: number): void {
     const db = this.database;
-    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms`;
+    const refresh = db.refreshMs > 0
+      ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${(1000 / db.refreshMs).toFixed(0)} Hz)${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}` : ""}`
+      : db.presentMode ? `   ${/FIFO/.test(db.presentMode) ? "Vsync on, rate not known yet" : "No vsync"} (${db.presentMode.replace(/^VK_PRESENT_MODE_/, "").replace(/_KHR$/, "")})` : "";
+    this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms${refresh}`;
+    this._frameTimeLabel.classList.toggle("meter-dropped", db.droppedFrames > 0);
     this._updateMemoryLabel();
     this._frameTimeData.add(frameTimeMs);
     this._frameTimeMaxData.add(maxMs);

@@ -72,6 +72,16 @@ struct DeviceData {
     uint32_t frameTimeCount = 0;
     // CPU time spent inside vkQueueSubmit* since the last report (the "CPU submit" meter line).
     std::atomic<uint64_t> submitNanos{0};
+    // Refresh-rate estimate and dropped frames (see layer_vkQueuePresentKHR): the last frame
+    // intervals, the estimated display refresh interval while vsync is on, the present mode of
+    // the last present, and the frames missed since the last report.
+    std::vector<double> recentIntervalsMs;
+    size_t recentIntervalNext = 0;
+    double refreshMs = 0;
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    double deficitRefreshMs = 0; // the estimate refreshDeficit was accumulated with
+    long refreshDeficit = 0;     // refreshes elapsed minus frames presented, while vsync is on
+    long droppedTotal = 0;       // the reported dropped frames: the largest deficit so far
 
     // Returns the recorder for a command buffer that is being captured, else nullptr.
     // Cheap when no capture is active: a single relaxed atomic load.

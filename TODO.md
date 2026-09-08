@@ -56,8 +56,9 @@ interpreter and re-created pipelines.
       to that command in the capture list (the layer's messenger sees the message during the
       vkCmd call, before or after our hook depending on layer order).
 - [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
-- [ ] Dropped-frame detection and a refresh-rate estimate for the frame budget (present timing
-      or `VK_GOOGLE_display_timing` where available).
+- [ ] Refresh rate from `VK_GOOGLE_display_timing` / `VK_EXT_present_timing` where available,
+      instead of the interval-based estimate (which cannot tell a 30 fps app on a 60 Hz display
+      from a 30 Hz display).
 
 ### Shaders
 - [ ] Shader flame graph: the frame's GPU time split by pass, pipeline and function using the

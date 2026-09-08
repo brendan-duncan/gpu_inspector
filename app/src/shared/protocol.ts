@@ -61,6 +61,13 @@ export interface FrameStatsMessage {
   frames?: number;
   /** CPU time per frame spent inside vkQueueSubmit. */
   submitMs?: number;
+  /** Estimated display refresh interval while vsync is on (FIFO present modes); 0 without vsync. */
+  refreshMs?: number;
+  presentMode?: string;
+  /** Refreshes in the interval that repeated the previous frame (dropped frames), and the
+   *  layer's running total since the refresh estimate was made. */
+  dropped?: number;
+  droppedTotal?: number;
 }
 export interface PongMessage { action: "Pong" }
 

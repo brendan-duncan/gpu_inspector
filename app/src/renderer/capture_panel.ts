@@ -376,7 +376,8 @@ export class CaptureView implements CaptureHost {
       return;
     }
     timed.sort((a, b) => a.startTime - b.startTime);
-    this._timeline.setData({ commands: timed, firstTime: timed[0].startTime, budgetMs: this.window.database.frameTimeMs });
+    const db = this.window.database;
+    this._timeline.setData({ commands: timed, firstTime: timed[0].startTime, budgetMs: db.refreshMs > 0 ? db.refreshMs : db.frameTimeMs });
   }
 
   /** GPU timing summary of the capture for Frame Stats: span, sum, and the passes sorted by cost. */
@@ -401,7 +402,7 @@ export class CaptureView implements CaptureHost {
     if (!passes.length) return null;
     passes.sort((a, b) => b.durationMs - a.durationMs);
     const db = this.window.database;
-    return { frameMs: db.frameTimeMs, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
+    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
   }
 
   /** Tab label: the captured frame number(s) once known. */

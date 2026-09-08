@@ -56,6 +56,8 @@ export interface CaptureFileManifest {
   /** The live frame interval and submit time when the capture was taken (Frame Bound card). */
   frameTimeMs: number;
   submitMs: number;
+  /** Display refresh period while vsync was on (0 without), the Frame Bound budget. */
+  refreshMs?: number;
   objects: CaptureFileObject[];
   commands: CaptureCommand[];
   textures: { info: CaptureTextureInfo; payload?: Payload }[];
@@ -185,7 +187,7 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
   const manifest: CaptureFileManifest = {
     format: FORMAT, version: VERSION, api: "vulkan", application: "GPU Inspector", savedAt: new Date().toISOString(),
     source: { name: session.name },
-    frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs,
+    frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs,
     objects: records,
     // Secondary command buffers are already inlined into the list; their nested copies are dropped.
     commands: data.commands.map((c) => {

@@ -240,6 +240,7 @@ void Hook_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* 
     info.extent = pCreateInfo->imageExtent;
     info.usage = pCreateInfo->imageUsage;
     info.arrayLayers = pCreateInfo->imageArrayLayers;
+    info.presentMode = pCreateInfo->presentMode;
     ResourceRegistry::Get().AddSwapchain(*pSwapchain, info);
 }
 

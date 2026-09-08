@@ -166,7 +166,19 @@ much slower than on the desktop.
    the same runs into "Compute N" blocks by applying the same rule to the command stream. The UI
    shows timings as pass durations in the command tree, the pass timeline above the list, and
    the Frame Bound card and Pass Timings of Frame Stats. `FrameStats` also carries the CPU time inside `vkQueueSubmit`
-   per frame (`submitMs`, measured by pre/post hooks), the "submit" line of the frame time meter.
+   per frame (`submitMs`, measured by pre/post hooks), the "submit" line of the frame time meter,
+   and a refresh-rate estimate (`EstimateRefreshMs`): with a FIFO present mode the display
+   consumes at most one present per refresh, so the last 240 intervals add up to at least one
+   period per present (less a start-up allowance of 8 the driver queued before blocking), and
+   every interval other than a queued present (near zero) is a whole number of periods; the
+   slowest common rate that both conditions accept (90% of the intervals within 4%) is the
+   estimate. Per report, the refreshes elapsed minus the frames presented accumulate in a signed
+   deficit (a report bounded by a queued present is one short, the next one long); its growth is
+   `dropped`, its high-water mark `droppedTotal`, both reset when the estimate changes. The UI
+   uses the period as the frame budget (timeline marker, Frame Bound card) and shows the dropped
+   frames in the meter and the session bar; without vsync the frame interval stays the budget.
+   A 30 fps application on a 60 Hz display reads as 30 Hz (`VK_GOOGLE_display_timing` would
+   tell them apart).
 10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
    comparison until their tab is closed. Layer messages go to the most recently requested capture.

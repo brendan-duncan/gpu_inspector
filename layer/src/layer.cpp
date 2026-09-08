@@ -14,11 +14,14 @@
 #include "transport.h"
 #include "validation.h"
 #include "image_readback.h"
+#include "resources.h"
 #include "vk_commands.gen.h"
 #include "vk_serialize.gen.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -513,6 +516,36 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkDebugMarkerSetObjectNameEXT(VkDevice devi
 // ---------------------------------------------------------------------------------------------
 // Frame boundary
 
+// Refresh period from the intervals between presents under vsync (a FIFO present mode). The
+// display consumes at most one present per refresh, so over the window the intervals add up to
+// at least one period per present; and apart from queued presents (near-zero intervals: the driver let another
+// frame in before blocking) every interval is a whole number of periods. The slowest common rate
+// that both conditions accept is the estimate, snapped to that rate. A 30 fps application on a
+// 60 Hz display reads as 30 Hz: the intervals cannot tell the two apart. 0 when nothing fits.
+static double EstimateRefreshMs(const std::vector<double>& intervals) {
+    static const double kRates[] = {24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 180, 240, 360};
+    const size_t n = intervals.size();
+    double sum = 0;
+    for (double ms : intervals) sum += ms;
+    // Start-up allowance: the driver lets a few presents through before blocking (up to the
+    // swapchain length); those consumed no refresh, so 8 intervals are left out of the bound.
+    constexpr size_t kQueued = 8;
+    for (double hz : kRates) {
+        const double period = 1000.0 / hz;
+        if (n <= kQueued || sum < period * (double)(n - kQueued) * 0.97) continue;
+        const double tolerance = std::max(period * 0.04, 0.25);
+        size_t fit = 0, total = 0;
+        for (double ms : intervals) {
+            if (ms < 1.0) continue;   // queued present: no refresh between it and the previous one
+            total++;
+            const double k = std::round(ms / period);
+            if (k >= 1 && std::fabs(ms - k * period) <= tolerance) fit++;
+        }
+        if (total >= 8 && fit * 10 >= total * 9) return period;
+    }
+    return 0;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceData* data = GetDeviceData(queue);
     // Live image readbacks go on this queue before the present, while the frame's images are in
@@ -528,6 +561,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     // interval (the UI's frame time meter plots the average and the longest).
     using clock = std::chrono::steady_clock;
     auto now = clock::now();
+    if (pPresentInfo && pPresentInfo->swapchainCount && pPresentInfo->pSwapchains) {
+        SwapchainInfo sc;
+        if (ResourceRegistry::Get().GetSwapchain(pPresentInfo->pSwapchains[0], sc)) data->presentMode = sc.presentMode;
+    }
     if (data->lastPresent.time_since_epoch().count() != 0) {
         double ms = std::chrono::duration<double, std::milli>(now - data->lastPresent).count();
         if (data->frameTimeCount == 0) {
@@ -539,6 +576,16 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
         }
         data->frameTimeAccumMs += ms;
         data->frameTimeCount++;
+
+        // Refresh-rate estimate from the intervals of the last ~240 frames (see EstimateRefreshMs).
+        constexpr size_t kWindow = 240;
+        if (data->recentIntervalsMs.size() < kWindow) data->recentIntervalsMs.push_back(ms);
+        else data->recentIntervalsMs[data->recentIntervalNext] = ms;
+        data->recentIntervalNext = (data->recentIntervalNext + 1) % kWindow;
+        const bool vsync = data->presentMode == VK_PRESENT_MODE_FIFO_KHR || data->presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ||
+                           data->presentMode == VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
+        if (vsync && data->recentIntervalsMs.size() >= 32) data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs);
+        else if (!vsync) data->refreshMs = 0;
         double sinceReport = std::chrono::duration<double, std::milli>(now - data->lastReport).count();
         if (sinceReport >= 100.0 && Transport::Get().Connected()) {
             JsonWriter w;
@@ -551,6 +598,29 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             w.Key("frames"); w.Uint(data->frameTimeCount);
             uint64_t submitNanos = data->submitNanos.exchange(0, std::memory_order_relaxed);
             w.Key("submitMs"); w.Double((double)submitNanos / 1e6 / data->frameTimeCount);
+            w.Key("refreshMs"); w.Double(data->refreshMs);
+            w.Key("presentMode"); w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode);
+            // Dropped frames: refreshes that showed no new frame (with vsync the display consumes
+            // at most one present per refresh). The running deficit of refreshes over frames is
+            // signed: an interval bounded by a queued present is one refresh short and the next
+            // one is one long, so only the deficit's growth is reported.
+            // A new estimate (start-up, a mode switch) invalidates the deficit so far; the total
+            // is the layer's, the UI shows it as sent.
+            uint32_t dropped = 0;
+            if (data->refreshMs > 0) {
+                if (data->refreshMs != data->deficitRefreshMs) {
+                    data->deficitRefreshMs = data->refreshMs;
+                    data->refreshDeficit = 0;
+                    data->droppedTotal = 0;
+                }
+                data->refreshDeficit += std::lround(sinceReport / data->refreshMs) - (long)data->frameTimeCount;
+                if (data->refreshDeficit > data->droppedTotal) {
+                    dropped = (uint32_t)(data->refreshDeficit - data->droppedTotal);
+                    data->droppedTotal = data->refreshDeficit;
+                }
+            }
+            w.Key("dropped"); w.Uint(dropped);
+            w.Key("droppedTotal"); w.Uint((uint64_t)std::max(0L, data->droppedTotal));
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;

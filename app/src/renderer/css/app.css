@@ -137,6 +137,7 @@ html, body {
 .status-error { color: var(--accent-error); }
 .status-warning { color: var(--accent-warning); }
 .launch-validation { margin-left: 12px; font-weight: 600; cursor: pointer; }
+.meter-dropped { color: var(--accent-warning); }
 .launch-validation:hover { text-decoration: underline; }
 
 /* Validation messages (Inspect > Validation Messages) */
