@@ -61,8 +61,12 @@ export interface FrameStatsMessage {
   frames?: number;
   /** CPU time per frame spent inside vkQueueSubmit. */
   submitMs?: number;
-  /** Estimated display refresh interval while vsync is on (FIFO present modes); 0 without vsync. */
+  /** Display refresh interval while vsync is on (FIFO present modes); 0 without vsync. */
   refreshMs?: number;
+  /** Where refreshMs came from: "present_timing", "display_timing", "monitor" or "estimate" (frame intervals). */
+  refreshSource?: string;
+  /** The display's refresh period from a real source (0 when only the estimate is available), vsync or not. */
+  displayRefreshMs?: number;
   presentMode?: string;
   /** Refreshes in the interval that repeated the previous frame (dropped frames), and the
    *  layer's running total since the refresh estimate was made. */

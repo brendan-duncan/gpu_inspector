@@ -271,7 +271,7 @@ export class FileSessionPanel extends SessionPanel {
     this.path = path;
     this.setFileMode(path);
     const m = capture.manifest;
-    this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0, refreshMs: m.refreshMs ?? 0 });
+    this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0, refreshMs: m.refreshMs ?? 0, refreshSource: m.refreshSource ?? "" });
     this.database.loadValidation(capture.validation);
     for (const [a, f] of Object.entries(m.symbols ?? {})) this.database.symbols.set(a, f);
     for (const [id, frames] of Object.entries(m.stacks ?? {})) this.database.stacks.set(Number(id), frames);

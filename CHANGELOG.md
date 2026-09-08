@@ -31,6 +31,16 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Display refresh rate from the display instead of an estimate: the layer enables
+  `VK_EXT_present_timing` (with its dependencies and feature) or `VK_GOOGLE_display_timing` on
+  the device when the driver offers one, asks the swapchain for its refresh period, and on
+  Windows otherwise reads the current mode of the monitor showing the application. The frame
+  interval estimate remains the last resort. Dropped frames now count against the real refresh
+  period (a 30 fps application on a 60 Hz display shows them). The meter says which it is
+  ("60 Hz display" or "estimated", the tooltip names the source), and the Frame Bound card's
+  note does too. `VK_EXT_present_timing` stays off when an enabled Khronos validation layer is
+  older than the extension (it would not understand it); `VKINSP_NO_REFRESH_EXTENSIONS=1`
+  leaves the device untouched.
 - Source view in captures: a draw's or dispatch's shader sections in the command details show
   the embedded source (with the file bar for includes), the modeled Shader Cost and the
   Performance Analysis findings, whose line links open the source at that line, next to the

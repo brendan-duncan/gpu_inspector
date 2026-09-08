@@ -180,8 +180,20 @@ much slower than on the desktop.
    `dropped`, its high-water mark `droppedTotal`, both reset when the estimate changes. The UI
    uses the period as the frame budget (timeline marker, Frame Bound card) and shows the dropped
    frames in the meter and the session bar; without vsync the frame interval stays the budget.
-   A 30 fps application on a 60 Hz display reads as 30 Hz (`VK_GOOGLE_display_timing` would
-   tell them apart).
+   A 30 fps application on a 60 Hz display reads as 30 Hz, which is why the estimate is the
+   last resort: `src/refresh_rate.*` asks the display first. At device creation the layer
+   enables `VK_EXT_present_timing` (plus `VK_KHR_present_id2`, `VK_KHR_calibrated_timestamps`
+   and the `presentTiming` / `presentId2` features chained into the create info; the instance
+   gets `VK_KHR_get_surface_capabilities2`, tried and dropped if the loader lacks it) when the
+   physical device offers it, else `VK_GOOGLE_display_timing`; a failed creation retries with
+   the application's own create info. Swapchains get `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT`
+   when the surface supports timing, and `vkGetSwapchainTimingPropertiesEXT` /
+   `vkGetRefreshCycleDurationGOOGLE` give the refresh period, re-queried every 120 presents
+   (monitor changes). On Windows without a driver source the current mode of the monitor showing
+   the application's largest window (`EnumDisplaySettings`) stands in. `FrameStats` carries
+   `refreshSource` and `displayRefreshMs`. An enabled Khronos validation layer older than the
+   layer's headers does not know `VK_EXT_present_timing` (the SDK 1.4.304 one crashes on it),
+   so the extension stays off then; `VKINSP_NO_REFRESH_EXTENSIONS=1` disables both.
 10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
    comparison until their tab is closed. Layer messages go to the most recently requested capture.

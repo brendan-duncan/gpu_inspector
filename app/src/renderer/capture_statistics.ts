@@ -363,6 +363,7 @@ export class CaptureStatistics {
 export interface FrameTimingInfo {
   frameMs: number;       // live frame interval
   refreshMs: number;     // display refresh interval while vsync was on (the budget), 0 without
+  refreshSource?: string; // "present_timing" | "display_timing" | "monitor" | "estimate"
   submitMs: number;      // CPU time per frame inside vkQueueSubmit
   gpuSpanMs: number;     // first pass start to last pass end
   gpuTotalMs: number;    // sum of pass durations
@@ -374,6 +375,13 @@ export interface FrameTimingInfo {
  * "Frame Bound" card: compares the GPU span of the captured passes and the CPU submit time
  * against the frame interval and names the likely bottleneck, like WebGPU Inspector's card.
  */
+const REFRESH_SOURCE_NOTE: Record<string, string> = {
+  present_timing: "reported by the driver through VK_EXT_present_timing",
+  display_timing: "reported by the driver through VK_GOOGLE_display_timing",
+  monitor: "the current mode of the monitor showing the application",
+  estimate: "estimated from the frame intervals while vsync is on",
+};
+
 function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
   const vsync = t.refreshMs > 0;
   const budget = vsync ? t.refreshMs : t.frameMs > 0 ? t.frameMs : Math.max(t.gpuSpanMs, t.submitMs);
@@ -415,7 +423,7 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
   if (vsync) bar("Frame interval", t.frameMs, "#a0a0a0");
   new Div(body, {
     text: vsync
-      ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, estimated from the frame intervals while vsync is on). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.`
+      ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, ${REFRESH_SOURCE_NOTE[t.refreshSource ?? ""] ?? "estimated from the frame intervals while vsync is on"}). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.`
       : "The budget is the live frame interval (vsync is off, so no display refresh period applies). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.",
     class: "text-muted font-sm",
   });

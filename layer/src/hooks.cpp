@@ -5,6 +5,7 @@
 #include "capture.h"
 #include "descriptors.h"
 #include "image_readback.h"
+#include "refresh_rate.h"
 #include "shader_edit.h"
 #include "layer.h"
 #include "resources.h"
@@ -45,14 +46,21 @@ void PreHook_vkCreateSwapchainKHR(VkDevice& device, const VkSwapchainCreateInfoK
     if (!pCreateInfo) return;
     DeviceData* dev = GetDeviceData(device);
     VkSurfaceCapabilitiesKHR caps{};
+    thread_local VkSwapchainCreateInfoKHR copy;
+    copy = *pCreateInfo;
+    bool changed = false;
     if (dev && dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilitiesKHR &&
         dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilitiesKHR(dev->physicalDevice, pCreateInfo->surface, &caps) == VK_SUCCESS &&
         (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
-        thread_local VkSwapchainCreateInfoKHR copy;
-        copy = *pCreateInfo;
         copy.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        pCreateInfo = &copy;
+        changed = true;
     }
+    // Present timing (the display refresh period) needs the flag on the swapchain.
+    if (dev && dev->presentTiming && SurfaceSupportsPresentTiming(dev, pCreateInfo->surface)) {
+        copy.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT;
+        changed = true;
+    }
+    if (changed) pCreateInfo = &copy;
 }
 
 void PreHook_vkBeginCommandBuffer(VkCommandBuffer& commandBuffer, const VkCommandBufferBeginInfo*& pBeginInfo) {
@@ -241,6 +249,10 @@ void Hook_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* 
     info.usage = pCreateInfo->imageUsage;
     info.arrayLayers = pCreateInfo->imageArrayLayers;
     info.presentMode = pCreateInfo->presentMode;
+    RefreshSource source = RefreshSource::None;
+    info.refreshMs = QueryRefreshMs(GetDeviceData(device), *pSwapchain, source);
+    info.refreshSource = (int)source;
+    if (info.refreshMs > 0) Log("swapchain refresh period %.3f ms (%s)", info.refreshMs, RefreshSourceName(source));
     ResourceRegistry::Get().AddSwapchain(*pSwapchain, info);
 }
 

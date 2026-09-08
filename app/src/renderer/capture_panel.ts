@@ -424,7 +424,7 @@ export class CaptureView implements CaptureHost {
     if (!passes.length) return null;
     passes.sort((a, b) => b.durationMs - a.durationMs);
     const db = this.window.database;
-    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
+    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
   }
 
   /** Tab label: the captured frame number(s) once known. */

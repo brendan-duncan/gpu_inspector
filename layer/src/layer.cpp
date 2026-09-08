@@ -12,6 +12,7 @@
 #include "shader_edit.h"
 #include "tracker.h"
 #include "transport.h"
+#include "refresh_rate.h"
 #include "stacktrace.h"
 #include "validation.h"
 #include "image_readback.h"
@@ -369,13 +370,29 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
     VkInstanceCreateInfo createInfo = *pCreateInfo;
     std::vector<const char*> extensionNames;
     bool debugUtils = ValidationLog::EnsureDebugUtils(nextGipa, createInfo, extensionNames);
+    // VK_EXT_present_timing (the display refresh period) depends on VK_KHR_get_surface_capabilities2:
+    // tried on the instance, and dropped when the loader does not offer it.
+    const VkInstanceCreateInfo withoutSurfaceCaps2 = createInfo;
+    std::vector<const char*> extensionNames2;
+    bool surfaceCaps2 = AddSurfaceCapabilities2(createInfo, extensionNames2);
+    const bool oldValidation = OldValidationLayerEnabled(nextGipa, *pCreateInfo);
 
     VkResult res = nextCreateInstance(&createInfo, pAllocator, pInstance);
+    if (res == VK_ERROR_EXTENSION_NOT_PRESENT && surfaceCaps2) {
+        surfaceCaps2 = false;
+        res = nextCreateInstance(&withoutSurfaceCaps2, pAllocator, pInstance);
+    }
     if (res != VK_SUCCESS) return res;
 
     auto data = std::make_unique<InstanceData>();
     data->instance = *pInstance;
     data->nextGetInstanceProcAddr = nextGipa;
+    data->surfaceCapabilities2 = surfaceCaps2 || (pCreateInfo->ppEnabledExtensionNames && [&] {
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
+            if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) == 0) return true;
+        return false;
+    }());
+    data->oldValidationLayer = oldValidation;
     if (pCreateInfo->pApplicationInfo) {
         const VkApplicationInfo& ai = *pCreateInfo->pApplicationInfo;
         data->apiVersion = ai.apiVersion ? ai.apiVersion : VK_API_VERSION_1_0;
@@ -475,7 +492,19 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
 
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;
 
-    VkResult res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    // A refresh-period source (VK_EXT_present_timing or VK_GOOGLE_display_timing) is enabled for
+    // the application when the physical device offers one (see refresh_rate.h).
+    VkDeviceCreateInfo createInfo = *pCreateInfo;
+    RefreshDeviceSetup refresh;
+    PlanRefreshSource(instance, physicalDevice, createInfo, refresh);
+
+    VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming)) {
+        // The driver refused the addition: create the device as the application asked.
+        Log("vkCreateDevice with the refresh-rate extension failed (%d); retrying without", (int)res);
+        refresh = RefreshDeviceSetup{};
+        res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    }
     if (res != VK_SUCCESS) return res;
 
     auto data = std::make_unique<DeviceData>();
@@ -483,6 +512,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->physicalDevice = physicalDevice;
     data->instance = instance;
     data->nextGetDeviceProcAddr = nextGdpa;
+    data->presentTiming = refresh.presentTiming;
+    data->displayTiming = refresh.displayTiming;
     for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
         data->enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
     InitDeviceDispatch(*pDevice, nextGdpa, data->dispatch);
@@ -602,7 +633,22 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     auto now = clock::now();
     if (pPresentInfo && pPresentInfo->swapchainCount && pPresentInfo->pSwapchains) {
         SwapchainInfo sc;
-        if (ResourceRegistry::Get().GetSwapchain(pPresentInfo->pSwapchains[0], sc)) data->presentMode = sc.presentMode;
+        if (ResourceRegistry::Get().GetSwapchain(pPresentInfo->pSwapchains[0], sc)) {
+            data->presentMode = sc.presentMode;
+            // The display can change (a window moved to another monitor, a mode switch):
+            // re-query the swapchain's refresh period every ~2 s.
+            if (data->frameIndex % 120 == 0) {
+                RefreshSource source = RefreshSource::None;
+                double ms = QueryRefreshMs(data, pPresentInfo->pSwapchains[0], source);
+                if (ms > 0 && (ms != sc.refreshMs || (int)source != sc.refreshSource)) {
+                    sc.refreshMs = ms;
+                    sc.refreshSource = (int)source;
+                    ResourceRegistry::Get().AddSwapchain(pPresentInfo->pSwapchains[0], sc);
+                }
+            }
+            data->displayRefreshMs = sc.refreshMs;
+            data->refreshSource = sc.refreshSource;
+        }
     }
     if (data->lastPresent.time_since_epoch().count() != 0) {
         double ms = std::chrono::duration<double, std::milli>(now - data->lastPresent).count();
@@ -623,7 +669,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
         data->recentIntervalNext = (data->recentIntervalNext + 1) % kWindow;
         const bool vsync = data->presentMode == VK_PRESENT_MODE_FIFO_KHR || data->presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ||
                            data->presentMode == VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
-        if (vsync && data->recentIntervalsMs.size() >= 32) data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs);
+        // The display's own refresh period when a source reports one; the estimate otherwise.
+        if (vsync && data->displayRefreshMs > 0) data->refreshMs = data->displayRefreshMs;
+        else if (vsync && data->recentIntervalsMs.size() >= 32) { data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs); data->refreshSource = (int)RefreshSource::Estimate; }
         else if (!vsync) data->refreshMs = 0;
         double sinceReport = std::chrono::duration<double, std::milli>(now - data->lastReport).count();
         if (sinceReport >= 100.0 && Transport::Get().Connected()) {
@@ -638,6 +686,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             uint64_t submitNanos = data->submitNanos.exchange(0, std::memory_order_relaxed);
             w.Key("submitMs"); w.Double((double)submitNanos / 1e6 / data->frameTimeCount);
             w.Key("refreshMs"); w.Double(data->refreshMs);
+            w.Key("refreshSource"); w.String(data->refreshMs > 0 ? RefreshSourceName((RefreshSource)data->refreshSource) : "");
+            w.Key("displayRefreshMs"); w.Double(data->displayRefreshMs);
             w.Key("presentMode"); w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode);
             // Dropped frames: refreshes that showed no new frame (with vsync the display consumes
             // at most one present per refresh). The running deficit of refreshes over frames is

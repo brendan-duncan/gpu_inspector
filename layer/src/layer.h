@@ -41,6 +41,11 @@ struct InstanceData {
     std::vector<std::string> enabledExtensions;
     // The layer's own VK_EXT_debug_utils messenger (see validation.h); null when unavailable.
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+    // Refresh-rate support (refresh_rate.h): whether VK_KHR_get_surface_capabilities2 is enabled,
+    // and whether a validation layer older than the layer's headers is in the chain (it would
+    // not know VK_EXT_present_timing).
+    bool surfaceCapabilities2 = false;
+    bool oldValidationLayer = false;
 };
 
 struct DeviceData {
@@ -52,6 +57,9 @@ struct DeviceData {
     std::vector<std::string> enabledExtensions;
     VkPhysicalDeviceProperties properties{};
     VkPhysicalDeviceMemoryProperties memoryProperties{};
+    // Refresh-period sources the layer enabled at device creation (see refresh_rate.h).
+    bool presentTiming = false;   // VK_EXT_present_timing
+    bool displayTiming = false;   // VK_GOOGLE_display_timing
 
     // Queue -> queue family (from vkGetDeviceQueue), and transient command pools per family used
     // for live image readback (see image_readback.cpp).
@@ -79,6 +87,10 @@ struct DeviceData {
     size_t recentIntervalNext = 0;
     double refreshMs = 0;
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // The display's refresh period from the swapchain's source (0: only the estimate), and
+    // which source refreshMs came from.
+    double displayRefreshMs = 0;
+    int refreshSource = 0;       // RefreshSource
     double deficitRefreshMs = 0; // the estimate refreshDeficit was accumulated with
     long refreshDeficit = 0;     // refreshes elapsed minus frames presented, while vsync is on
     long droppedTotal = 0;       // the reported dropped frames: the largest deficit so far

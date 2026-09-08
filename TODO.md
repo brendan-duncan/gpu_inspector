@@ -58,9 +58,9 @@ interpreter and re-created pipelines.
       command index.
 - [ ] Stack traces: source lines on Linux/Android (addr2line / DWARF; dladdr gives exported
       names only), and a symbol path setting for PDBs that are not next to the modules.
-- [ ] Refresh rate from `VK_GOOGLE_display_timing` / `VK_EXT_present_timing` where available,
-      instead of the interval-based estimate (which cannot tell a 30 fps app on a 60 Hz display
-      from a 30 Hz display).
+- [ ] Refresh rate on Linux without a driver timing extension: the monitor mode through
+      RandR / Wayland outputs (Windows reads the monitor mode today; Linux and Android without
+      `VK_GOOGLE_display_timing` fall back to the frame-interval estimate).
 
 ### Shaders
 - [ ] Shader flame graph: statement-level frames (the SPIR-V cost model stops at functions, and

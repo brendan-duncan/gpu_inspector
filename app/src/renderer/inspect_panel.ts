@@ -16,6 +16,14 @@ import { objectLink, renderArgs } from "./args_view.js";
 import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors } from "./code_editor.js";
 import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
 import { renderSourceLines } from "./shader_source_view.js";
+
+/** What the display refresh period rests on, for the meter's tooltip. */
+const REFRESH_SOURCE_TEXT: Record<string, string> = {
+  present_timing: "Refresh period reported by the driver (VK_EXT_present_timing).",
+  display_timing: "Refresh period reported by the driver (VK_GOOGLE_display_timing).",
+  monitor: "Refresh period of the monitor showing the application's window (its current display mode).",
+  estimate: "Refresh period estimated from the frame intervals: a 30 fps application on a 60 Hz display reads as 30 Hz.",
+};
 import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
@@ -421,10 +429,12 @@ export class InspectPanel {
 
   private _updateMeters(frameTimeMs: number, maxMs: number, submitMs: number): void {
     const db = this.database;
+    const hz = (ms: number): string => `${(1000 / ms).toFixed(0)} Hz`;
     const refresh = db.refreshMs > 0
-      ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${(1000 / db.refreshMs).toFixed(0)} Hz)${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}` : ""}`
-      : db.presentMode ? `   ${/FIFO/.test(db.presentMode) ? "Vsync on, rate not known yet" : "No vsync"} (${db.presentMode.replace(/^VK_PRESENT_MODE_/, "").replace(/_KHR$/, "")})` : "";
+      ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${hz(db.refreshMs)}${db.refreshSource === "estimate" ? ", estimated" : " display"})${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}` : ""}`
+      : db.presentMode ? `   ${/FIFO/.test(db.presentMode) ? "Vsync on, rate not known yet" : `No vsync${db.displayRefreshMs > 0 ? ` (${hz(db.displayRefreshMs)} display)` : ""}`} (${db.presentMode.replace(/^VK_PRESENT_MODE_/, "").replace(/_KHR$/, "")})` : "";
     this._frameTimeLabel.text = `Frame Time: ${frameTimeMs.toFixed(2)} ms  (${(1000 / Math.max(0.001, frameTimeMs)).toFixed(0)} fps)   Submit: ${submitMs.toFixed(2)} ms${refresh}`;
+    this._frameTimeLabel.tooltip = REFRESH_SOURCE_TEXT[db.refreshSource] ?? "";
     this._frameTimeLabel.classList.toggle("meter-dropped", db.droppedFrames > 0);
     this._updateMemoryLabel();
     this._frameTimeData.add(frameTimeMs);

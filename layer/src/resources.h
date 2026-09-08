@@ -63,6 +63,9 @@ struct SwapchainInfo {
     VkImageUsageFlags usage = 0;
     uint32_t arrayLayers = 1;
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // The display refresh period queried for this swapchain (0 unknown) and its source.
+    double refreshMs = 0;
+    int refreshSource = 0;       // RefreshSource (refresh_rate.h)
 };
 
 struct RenderPassInfo {

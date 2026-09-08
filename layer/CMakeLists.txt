@@ -55,6 +55,8 @@ add_library(${LAYER_LIB} SHARED
     src/shader_edit.cpp
     src/validation.h
     src/validation.cpp
+    src/refresh_rate.h
+    src/refresh_rate.cpp
     src/capture.h
     src/capture.cpp
     src/image_readback.h
