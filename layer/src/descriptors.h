@@ -98,5 +98,7 @@ VkDeviceSize DescriptorBufferRange(const DescriptorEntry& e);
 
 bool IsBufferDescriptor(VkDescriptorType t);
 bool IsDynamicDescriptor(VkDescriptorType t);
+// Descriptors carrying an image view (sampled, storage, combined, input attachment; not plain samplers).
+bool IsImageDescriptor(VkDescriptorType t);
 
 } // namespace vkinsp

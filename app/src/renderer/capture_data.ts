@@ -92,8 +92,31 @@ export class CaptureData {
   }
 
   texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
-    return this.textures.filter((t) => t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
+    return this.textures.filter((t) => t.info.kind !== "sampled" && t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
       .sort((a, b) => a.info.attachment - b.info.attachment);
+  }
+
+  /** A sampled / storage image read back for a descriptor, by the id the descriptor carries in `data`. */
+  capturedImage(captureId: number | undefined | null): CapturedTexture | null {
+    if (!captureId) return null;
+    return this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === captureId) ?? null;
+  }
+
+  /** Any captured contents of an image (a sampled read-back or a render target), with data. */
+  imageContents(imageId: number): CapturedTexture | null {
+    return this.textures.find((t) => t.info.id === imageId && t.data && !t.info.error) ?? null;
+  }
+
+  /** Sampled image read-backs: [captured, failed]. */
+  get sampledImageCounts(): [number, number] {
+    let ok = 0;
+    let failed = 0;
+    for (const t of this.textures) {
+      if (t.info.kind !== "sampled") continue;
+      if (t.info.error) failed++;
+      else ok++;
+    }
+    return [ok, failed];
   }
 
   /** The commands of one captured frame (indices stay those of the full list). */
@@ -152,7 +175,9 @@ export class CaptureData {
         this.onTexturesAnnounced.emit();
         break;
       case "CaptureTextureData": {
-        const tex = this.textures.find((t) => t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
+        const tex = msg.capture
+          ? this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === msg.capture)
+          : this.textures.find((t) => t.info.kind !== "sampled" && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);

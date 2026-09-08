@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "command_recorder.h"
@@ -27,9 +28,13 @@ struct CaptureOptions {
     uint64_t atFrame = UINT64_MAX;
     uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range (longer ranges are truncated)
     uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
-    uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
+    uint64_t maxTextureSize = 256ull << 20;   // skip render targets (and sampled images) larger than this
+    uint64_t maxImageTotal = 256ull << 20;    // stop capturing sampled / storage images past this many bytes
     bool captureTextures = true;
     bool captureBuffers = true;
+    // Read back the images bound by descriptor sets (sampled, storage, input attachments), once
+    // per image view per capture, so captures show what the shaders sampled.
+    bool captureImages = true;
     // Write GPU timestamps around every render pass (VkQueryPool), reported as CapturePassTimings.
     bool profilePasses = true;
 };
@@ -73,6 +78,13 @@ struct TextureCapture {
     VkDeviceSize stagingOffset = 0;
     bool failed = false;
     std::string note;
+    // Sampled / storage images bound by descriptor sets (rather than render pass attachments):
+    // referenced from the descriptor by `captureId`, copied when the binding pass ends.
+    bool sampled = false;
+    uint32_t captureId = 0;
+    uint64_t viewId = 0;
+    uint32_t baseLayer = 0;
+    bool recorded = true;         // the copy command has been recorded (false until a deferred copy is flushed)
 };
 
 // A buffer range captured when it was bound (descriptor sets, vertex and index buffers,
@@ -136,6 +148,10 @@ public:
     // captured (no capture in progress, buffers disabled, empty range, budget exhausted).
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
                                 VkDeviceSize size);
+    // Queues a readback of the subresource an image view covers (its base mip, all its layers),
+    // once per view per capture. Returns the texture capture id to reference from the descriptor
+    // JSON, or 0 when nothing is captured. `layout` is the layout the descriptor promises.
+    uint32_t QueueImageCapture(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageLayout layout);
 
 private:
     CaptureManager() = default;
@@ -150,6 +166,7 @@ private:
     void SendPassTimings(DeviceData* dev);
     void ReleaseStaging(DeviceData* dev);
     void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
+    void FlushImageCopies(DeviceData* dev, CommandRecorder* rec);
     void EnsureQueryPool(DeviceData* dev);
     void ReleaseQueryPool(DeviceData* dev);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
@@ -185,6 +202,9 @@ private:
     std::vector<BufferCapture> _buffers;
     uint64_t _bufferBytes = 0;
     uint32_t _nextBufferId = 1;
+    // Sampled image captures: one per image view per capture, and the bytes taken so far.
+    std::unordered_map<uint64_t, uint32_t> _imageCaptureByView;
+    uint64_t _imageBytes = 0;
 
     // Pass profiling: one timestamp query pool per capture (created on the capturing device).
     VkQueryPool _queryPool = VK_NULL_HANDLE;

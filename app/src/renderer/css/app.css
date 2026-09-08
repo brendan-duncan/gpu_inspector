@@ -441,7 +441,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
   background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px;
   image-rendering: pixelated;
 }
-.capture-thumb.loaded { width: auto; height: auto; }
+/* Loaded thumbnails keep their aspect; small textures are scaled up so texels stay visible. */
+.capture-thumb.loaded { width: auto; height: auto; min-width: 64px; }
+.capture-image-box { margin: 4px 0; }
 .format-dialog { top: 12%; }
 .format-dialog-body { padding: 8px 14px 10px 14px; max-height: none; }
 .format-dialog-text {

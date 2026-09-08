@@ -45,6 +45,7 @@ export class CapturePanel {
   private _frameCountInput!: TextInput;
   private _texturesCheck!: Checkbox;
   private _buffersCheck!: Checkbox;
+  private _imagesCheck!: Checkbox;
   private _profileCheck!: Checkbox;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
@@ -76,6 +77,17 @@ export class CapturePanel {
     return this._live?.data ?? this.activeView?.data ?? null;
   }
 
+  /** Captured contents of an image from the active tab, else the most recent capture that has it. */
+  capturedImage(imageId: number): CapturedTexture | null {
+    const active = this.activeView?.data.imageContents(imageId);
+    if (active) return active;
+    for (let i = this._views.length - 1; i >= 0; i--) {
+      const t = this._views[i].data.imageContents(imageId);
+      if (t) return t;
+    }
+    return null;
+  }
+
   /** A session showing a capture file: nothing to capture, only save and inspect. */
   setFileMode(): void {
     for (const w of this._captureControls) w.style.display = "none";
@@ -90,8 +102,9 @@ export class CapturePanel {
     this._frameCountInput = new TextInput(row, { value: "1", class: "launch-input launch-input-narrow" });
     this._texturesCheck = new Checkbox(row, { label: "Render targets", checked: true, tooltip: "Read back render pass attachments at the end of each pass" });
     this._buffersCheck = new Checkbox(row, { label: "Buffers", checked: true, tooltip: "Read back the buffers bound by descriptor sets, vertex and index bindings and indirect draws" });
+    this._imagesCheck = new Checkbox(row, { label: "Images", checked: true, tooltip: "Read back the images bound by descriptor sets (sampled and storage images, once per image view, up to 256 MB per capture), so the capture shows what the shaders sampled" });
     this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
-    c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._profileCheck);
+    c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._imagesCheck, this._profileCheck);
     c.push(new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" }));
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
@@ -128,6 +141,7 @@ export class CapturePanel {
       ...(atFrame !== undefined ? { atFrame: Math.max(0, Math.floor(atFrame)) } : {}),
       captureTextures: this._texturesCheck.checked,
       captureBuffers: this._buffersCheck.checked,
+      captureImages: this._imagesCheck.checked,
       profilePasses: this._profileCheck.checked,
       maxBufferSize: maxKb * 1024,
     });
@@ -603,7 +617,10 @@ export class CaptureView implements CaptureHost {
       for (const b of d.buffers.values()) if (b.info.error) failed++;
       buffers = `, ${d.buffers.size} buffers${failed ? ` (${failed} failed)` : ""}${d.buffersLoading ? " loading..." : ""}`;
     }
-    this._setStatus(`${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${d.textures.length} render targets${buffers}`);
+    const [images, failedImages] = d.sampledImageCounts;
+    const targets = d.textures.length - images - failedImages;
+    const imageText = images || failedImages ? `, ${images} image${images === 1 ? "" : "s"}${failedImages ? ` (${failedImages} failed)` : ""}` : "";
+    this._setStatus(`${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${targets} render targets${imageText}${buffers}`);
   }
 
   private _passLabel(cmd: CaptureCommand, passIndex: number): string {
@@ -776,6 +793,10 @@ export class CaptureView implements CaptureHost {
   }
 
   /** A canvas showing a captured texture: drawn now when its data is here, else when it arrives. */
+  textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement {
+    return this._textureCanvas(tex, className);
+  }
+
   private _textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement {
     const canvas = document.createElement("canvas");
     canvas.className = className;

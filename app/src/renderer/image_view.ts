@@ -50,7 +50,9 @@ export class ImageView {
   /** The VkImage whose contents are shown (the view's image for a VkImageView). */
   readonly imageId: number;
   /** Captured pixels (all layers back to back) rather than live read-backs. */
-  readonly captured: CapturedImageSource | null;
+  captured: CapturedImageSource | null;
+  /** The captured source was substituted for a live read-back (no connection). */
+  private _fromCapture = false;
 
   private _is3D = false;
   private _mipCount = 1;
@@ -113,6 +115,21 @@ export class ImageView {
         // VK_REMAINING_* is serialized as a large number; keep the image's count in that case.
         if (levels > 0 && levels < 1024) this._mipCount = Math.min(this._mipCount, this._baseMip + levels);
         if (!this._is3D && layers > 0 && layers < 65536) this._layerCount = Math.min(this._layerCount, this._baseLayer + layers);
+      }
+    }
+    // Without an application to read from (a capture file, a stopped target), show what the
+    // most recent capture read back of this image, if anything.
+    if (!captured && !session.connected && this.imageId) {
+      const t = session.capturedImage(this.imageId);
+      if (t?.data) {
+        captured = { info: t.info, data: t.data };
+        this.captured = captured;
+        this._is3D = false;
+        this._mipCount = 1;
+        this._baseMip = 0;
+        this._baseLayer = 0;
+        this._layerCount = Math.max(1, t.info.layers || 1);
+        this._fromCapture = true;
       }
     }
     this._mip = this._baseMip;
@@ -303,7 +320,7 @@ export class ImageView {
     const range = tex.channels === 1
       ? `  Min ${fmt(tex.min[0])}  Max ${fmt(tex.max[0])}`
       : `  Min ${tex.min.slice(0, tex.channels).map(fmt).join(", ")}  Max ${tex.max.slice(0, tex.channels).map(fmt).join(", ")}`;
-    this._status.text = `${msg.format.replace(/^VK_FORMAT_/, "")} ${where}${range}`;
+    this._status.text = `${msg.format.replace(/^VK_FORMAT_/, "")} ${where}${range}${this._fromCapture ? "  (from the capture)" : ""}`;
     this._pixelInfo.text = this._pinned;
     this._applyZoom();
   }

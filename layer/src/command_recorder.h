@@ -63,6 +63,20 @@ struct PendingBufferCopy {
     VkDeviceSize stagingOffset = 0;
 };
 
+// A sampled / storage image queued for readback (see CaptureManager::QueueImageCapture); the copy
+// is recorded when the pending list is flushed, like buffer copies.
+struct PendingImageCopy {
+    uint32_t captureId = 0;        // index + 1 into the capture's texture list
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageSubresourceRange range{};   // what the barriers cover (all aspects of the mip / layers)
+    VkImageAspectFlags copyAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    VkExtent3D extent{};
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceSize stagingOffset = 0;
+    VkDeviceSize size = 0;
+};
+
 class CommandRecorder {
 public:
     CommandRecorder(VkDevice device, VkCommandBuffer cb, HandleResolver* resolver)
@@ -97,6 +111,7 @@ public:
         _ended = false;
         _renderPassContinue = renderPassContinue;
         _pendingCopies.clear();
+        _pendingImages.clear();
     }
 
     // True while transfer commands cannot be recorded: inside a render pass, or in a secondary
@@ -104,6 +119,7 @@ public:
     bool InsidePass() const { return _pass.active || _renderPassContinue; }
     bool renderPassContinue() const { return _renderPassContinue; }
     std::vector<PendingBufferCopy>& pendingCopies() { return _pendingCopies; }
+    std::vector<PendingImageCopy>& pendingImages() { return _pendingImages; }
     // Query pair written by the pass-begin pre-hook, claimed by the pass when it starts.
     uint32_t pendingQuery = UINT32_MAX;
 
@@ -130,6 +146,7 @@ private:
     bool _ended = false;
     bool _renderPassContinue = false;
     std::vector<PendingBufferCopy> _pendingCopies;
+    std::vector<PendingImageCopy> _pendingImages;
 };
 
 } // namespace vkinsp

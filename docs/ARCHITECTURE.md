@@ -184,8 +184,17 @@ offsets and array/matrix strides, decorations, variables, entry points) run on t
 layer keeps for each shader module / pipeline stage (`renderer/shader_cache.ts` fetches it once
 with `RequestBlob`). The type can be overridden per binding with GLSL struct declarations
 (`renderer/vulkan/buffer_layout.ts` computes std140/std430 offsets), the way WebGPU Inspector's
-Format button takes WGSL. Images bound in descriptor sets show a thumbnail of their current
-contents (live readback), since the capture does not copy sampled images. The read-back render
+Format button takes WGSL. Images bound in descriptor sets are read back by the capture too
+(`CaptureManager::QueueImageCapture`): when a bind or push descriptor command is recorded, every
+sampled / storage / input-attachment image view it binds is queued once per view per capture
+(its base mip, all its layers, block-compressed formats included) under a byte budget
+(`maxImageTotal`, 256 MB), and the copy is recorded when the pass ends, like the buffer copies,
+with the layout the descriptor promised (the layout tracker's when it says UNDEFINED). The
+descriptor carries the texture capture id in `data`, the texture entry says `kind: "sampled"`,
+and the binding shows the captured contents with the image viewer a click away; a live thumbnail
+is the fallback when the read-back failed or images were not captured. The Inspect tab's image
+viewer falls back to the most recent capture's contents when no application is connected, so
+capture files show their textures. The read-back render
 targets appear twice: as a thumbnail strip beside the command list (one tile per render pass
 with every attachment, clicking it selects the pass's begin command, WebGPU Inspector's frame
 images), and in the selected pass's Render Targets section, where clicking a target opens the

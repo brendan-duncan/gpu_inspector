@@ -27,7 +27,8 @@ import {
 import { vertexFormat } from "./vulkan/vk_format.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { stageLabel, type StageSource } from "./shader_cache.js";
-import type { CaptureData, CapturedBuffer } from "./capture_data.js";
+import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
+import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
@@ -85,6 +86,8 @@ export interface CaptureHost {
   readonly window: SessionContext;
   readonly data: CaptureData;
   renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void;
+  /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
+  textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
 }
 
 interface StageReflection { source: StageSource; reflection: ShaderReflection | null }
@@ -754,7 +757,12 @@ export class CommandInfoView {
         new Span(row2, { text: `  ${image.summary(db)}`, class: "text-muted" });
       }
       if (d.imageLayout) new Div(body, { text: `Layout: ${fmt(d.imageLayout)}`, class: "text-muted font-sm" });
-      if (view && image) this._thumbnail(grp, view, image);
+      const captured = this.panel.data.capturedImage(d.data);
+      if (captured && !captured.info.error) this._capturedThumbnail(grp, captured, image);
+      else if (view && image) {
+        if (captured?.info.error) new Div(body, { text: `Not read back by the capture: ${captured.info.error}`, class: "text-muted font-sm" });
+        this._thumbnail(grp, view, image);
+      }
     }
     if (d.sampler !== undefined) {
       const sampler = db.getObject(refId(d.sampler));
@@ -779,6 +787,30 @@ export class CommandInfoView {
         objectLink(row2, buffer, this._link);
       }
     }
+  }
+
+  /** Contents the capture read back when the binding pass ended; clicking opens the image viewer in place. */
+  private _capturedThumbnail(grp: collapsible, tex: CapturedTexture, image: VulkanObject | null): void {
+    const box = new Div(grp.body, { class: "capture-image-box" });
+    const canvas = this.panel.textureCanvas(tex, "capture-thumb loaded capture-texture-canvas");
+    canvas.title = "Contents captured when the pass ended. Click to open in the image viewer";
+    box.element.appendChild(canvas);
+    new Div(box, { text: `Captured: ${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}${tex.info.layers > 1 ? ` [${tex.info.layers} layers]` : ""} mip ${tex.info.mip}`, class: "text-muted font-sm" });
+    let viewer: Div | null = null;
+    const toggle = (): void => {
+      if (!tex.data) return;
+      if (viewer) {
+        viewer.remove();
+        viewer = null;
+        canvas.style.display = "";
+        return;
+      }
+      viewer = new Div(box, { class: "capture-texture-viewer" });
+      new Button(viewer, { label: "Close viewer", class: "btn btn-sm", callback: toggle });
+      new ImageView(viewer, this.panel.window, image, { info: tex.info, data: tex.data });
+      canvas.style.display = "none";
+    };
+    canvas.onclick = toggle;
   }
 
   /** Current contents of the image (read from the running application when the binding is expanded). */

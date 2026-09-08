@@ -683,8 +683,13 @@ static std::vector<std::vector<uint32_t>> CaptureSetBuffers(DeviceData* dev, Com
                 dyn = dynamicOffsets && dynamicIndex < dynamicOffsetCount ? dynamicOffsets[dynamicIndex] : 0;
                 dynamicIndex++;
             }
-            if (!IsBufferDescriptor(b.type) || !e.written || !e.buffer) continue;
-            ids[bi][k] = CaptureManager::Get().QueueBufferCapture(dev, rec, e.buffer, e.offset + dyn, DescriptorBufferRange(e));
+            if (!e.written) continue;
+            if (IsBufferDescriptor(b.type) && e.buffer) {
+                ids[bi][k] = CaptureManager::Get().QueueBufferCapture(dev, rec, e.buffer, e.offset + dyn, DescriptorBufferRange(e));
+            } else if (IsImageDescriptor(b.type) && e.imageView) {
+                // Sampled / storage images: read back once per view so the capture shows what was sampled.
+                ids[bi][k] = CaptureManager::Get().QueueImageCapture(dev, rec, e.imageView, e.imageLayout);
+            }
         }
     }
     return ids;

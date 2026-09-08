@@ -18,8 +18,8 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
   submit time with the frame interval.
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
   and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
-  with the parsed contents of its uniform and storage buffers, the decoded vertex and index
-  buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
+  with the parsed contents of its uniform and storage buffers and the images it sampled, the
+  decoded vertex and index buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
   files that reopen anywhere without the application, for bug reports and comparisons.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the

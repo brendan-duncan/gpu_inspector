@@ -17,8 +17,9 @@ interpreter and re-created pipelines.
   thumbnail strip of every pass's attachments, and the image viewer (zoom, channels, exposure,
   texel values) on captured render targets.
 - Command inspection: pipeline state, per-stage reflection, descriptor sets with parsed uniform
-  and storage buffers (Format editor, radix, array paging), vertex/index/indirect data, push
-  constants, render targets.
+  and storage buffers (Format editor, radix, array paging) and the contents of bound images
+  (read back once per view, budgeted), vertex/index/indirect data, push constants, render
+  targets.
 - Frame Stats (API activity, passes, pipelines, bindings, memory, geometry).
 - Profile passes: GPU timestamps per render pass and per run of dispatches (compute passes),
   pass durations in headers, pass timeline, Frame Bound card and pass timings in Frame Stats.
@@ -38,14 +39,13 @@ interpreter and re-created pipelines.
 ### Captures
 - [ ] Open a capture in a new window (the file session exists only in the window that opened it;
       a session window would need the file path handed over and reopened there).
-- [ ] Capture files: include the current contents of sampled images (descriptor previews are
-      live read-backs today, so a loaded capture has none), and a recent-files list.
+- [ ] Capture files: a recent-files list.
 - [ ] "At frame" field in the capture bar (the layer already supports `atFrame`).
 - [ ] "Affected By" on a buffer: earlier copies/updates/fills targeting it and dispatches that
       bind it as writable storage.
 - [ ] Multisampled render target read-back (resolve into a temporary image).
-- [ ] Sampled image read-back at capture time for descriptor previews (currently live thumbnails
-      on demand).
+- [ ] Sampled image read-back: every mip of a view (only the base mip is copied today), and
+      sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect
 - [ ] Shader reflection section on shader modules and pipelines (the code exists in the capture

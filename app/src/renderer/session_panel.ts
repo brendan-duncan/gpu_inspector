@@ -11,6 +11,7 @@ import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
 import type { LoadedCapture } from "./capture_file.js";
+import type { CapturedTexture } from "./capture_data.js";
 import type { LayerMessage, SessionInfo, StatusMessage, UiRequest } from "../shared/protocol.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
@@ -24,6 +25,8 @@ export interface SessionContext {
   send(msg: UiRequest): Promise<boolean>;
   /** Reveals an object in the Inspect tab. */
   showObject(objectId: number): void;
+  /** Contents of an image read back by a capture (a sampled image or render target), when one has it. */
+  capturedImage(imageId: number): CapturedTexture | null;
 }
 
 const MAX_LOG_LINES = 2000;
@@ -167,6 +170,10 @@ export class SessionPanel extends Div implements SessionContext {
 
   showCaptureTab(): void {
     this._tabs.activeTab = 1;
+  }
+
+  capturedImage(imageId: number): CapturedTexture | null {
+    return this.capturePanel.capturedImage(imageId);
   }
 
   handleMessages(batch: LayerMessage[]): void {

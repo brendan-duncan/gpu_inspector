@@ -161,6 +161,12 @@ export interface CaptureTextureInfo {
   mip: number;
   size: number;
   error?: string;
+  /** "sampled": an image bound by a descriptor set (read back once per view); absent = a render pass attachment. */
+  kind?: "attachment" | "sampled";
+  /** Sampled images: the id descriptors reference in `data`, the view, and the view's first layer. */
+  capture?: number;
+  view?: number;
+  baseLayer?: number;
 }
 
 export interface CaptureTextureFramesMessage { action: "CaptureTextureFrames"; count: number; textures: CaptureTextureInfo[] }
@@ -193,6 +199,8 @@ export interface CaptureTextureDataMessage {
   commandBuffer: number;
   passIndex: number;
   attachment: number;
+  /** Sampled images: the capture id (see CaptureTextureInfo.capture). */
+  capture?: number;
   size: number;
   __binary?: Uint8Array;
 }
@@ -326,6 +334,10 @@ export interface CaptureRequest {
   captureTextures?: boolean;
   /** Read back the buffers bound by descriptor sets, vertex/index bindings and indirect draws. */
   captureBuffers?: boolean;
+  /** Read back the images bound by descriptor sets (once per image view). */
+  captureImages?: boolean;
+  /** Total image bytes captured per capture; further images are reported as errors. */
+  maxImageTotal?: number;
   /** Write GPU timestamps around every render pass (CapturePassTimings). */
   profilePasses?: boolean;
 }

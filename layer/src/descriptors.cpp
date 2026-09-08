@@ -274,6 +274,7 @@ DescriptorSetContents DescriptorTracker::FromWrites(uint32_t writeCount, const V
 
 bool IsBufferDescriptor(VkDescriptorType t) { return IsBufferType(t); }
 bool IsDynamicDescriptor(VkDescriptorType t) { return IsDynamicType(t); }
+bool IsImageDescriptor(VkDescriptorType t) { return IsImageType(t) && t != VK_DESCRIPTOR_TYPE_SAMPLER; }
 
 VkDeviceSize DescriptorBufferRange(const DescriptorEntry& e) {
     if (e.range != VK_WHOLE_SIZE) return e.range;
@@ -327,6 +328,10 @@ void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& con
                 if (b.type != VK_DESCRIPTOR_TYPE_SAMPLER) {
                     w.Key("imageView"); w.Handle(HT_VkImageView, "VkImageView", (uint64_t)(uintptr_t)e.imageView);
                     w.Key("imageLayout"); w.Enum(ToString_VkImageLayout(e.imageLayout), (int64_t)e.imageLayout);
+                    // The texture capture id of the image's contents (see CaptureManager::QueueImageCapture).
+                    if (dataIds && bi < dataIds->size() && k < (*dataIds)[bi].size() && (*dataIds)[bi][k]) {
+                        w.Key("data"); w.Uint((*dataIds)[bi][k]);
+                    }
                 }
                 if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER || b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                     w.Key("sampler"); w.Handle(HT_VkSampler, "VkSampler", (uint64_t)(uintptr_t)e.sampler);
