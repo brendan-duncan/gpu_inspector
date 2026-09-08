@@ -97,13 +97,7 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
 
   constructor(parent?: Widget | HTMLElement | null, options: FlameGraphOptions<N> = {}) {
     super("div", parent, options);
-    this.element.style.cssText = [
-      "width: 100%",
-      "background: #1e1e1e",
-      "overflow: auto",
-      "position: relative",
-      "box-sizing: border-box",
-    ].join(";");
+    this.classList.add("flamegraph");
 
     this._formatValue = options.formatValue ?? ((n: N) => n.totalCost.toFixed(1));
     this._colorOf = options.colorOf ?? defaultColorOf;
@@ -111,10 +105,8 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
     this._onSelect = options.onSelect ?? null;
     this._zoomOnClick = options.zoomOnClick !== false;
 
-    this._breadcrumb = new Div(this, {
-      style: "font-size: 11px; color: #aaa; padding: 3px 6px; min-height: 16px; line-height: 16px; white-space: nowrap; overflow-x: auto;",
-    });
-    this._canvas = new Div(this, { style: "position: relative; width: 100%;" });
+    this._breadcrumb = new Div(this, { class: "flamegraph-breadcrumb" });
+    this._canvas = new Div(this, { class: "flamegraph-canvas" });
 
     this._root = null;
     this._stack = [];
@@ -152,7 +144,8 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
     if (!root) {
       return;
     }
-    this._stack = [root, ...ancestors.slice(1), node];
+    // The root is always the full view; zooming into it would only repeat the breadcrumb.
+    this._stack = node === root ? [root] : [root, ...ancestors.slice(1), node];
     this._render();
   }
 
@@ -207,8 +200,8 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
     // a data cap this is only visual — zooming in brings the frames back.
     if (culled > 0) {
       const hint = document.createElement("span");
-      hint.textContent = `  (${culled} frames too small to draw — zoom in)`;
-      hint.style.cssText = "color: #777; font-style: italic;";
+      hint.textContent = `  (${culled} frame${culled === 1 ? "" : "s"} too small to draw; zoom in)`;
+      hint.className = "flamegraph-hint";
       this._breadcrumb.element.appendChild(hint);
     }
 
@@ -224,15 +217,13 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
       if (i > 0) {
         const sep = document.createElement("span");
         sep.textContent = " › ";
-        sep.style.color = "#666";
+        sep.className = "flamegraph-crumb-sep";
         this._breadcrumb.element.appendChild(sep);
       }
       const crumb = document.createElement("span");
       crumb.textContent = node.name;
       const isLast = i === this._stack.length - 1;
-      crumb.style.cssText = isLast
-        ? "color: #ddd;"
-        : "color: #6db3f2; cursor: pointer; text-decoration: underline;";
+      crumb.className = isLast ? "flamegraph-crumb-current" : "flamegraph-crumb-link";
       if (!isLast) {
         crumb.onclick = () => {
           this._stack.length = i + 1;
@@ -245,27 +236,15 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
 
   private _emitFrame(node: N, depth: number, leftPct: number, widthPct: number, ancestors: N[]): void {
     const frame = document.createElement("div");
+    frame.className = "flamegraph-frame";   // geometry inline, looks in app.css (a hairline between siblings)
     frame.style.cssText = [
-      "position: absolute",
       `top: ${depth * (rowHeightPx + rowGapPx)}px`,
       `left: ${leftPct}%`,
       `width: ${widthPct}%`,
       `height: ${rowHeightPx}px`,
       `min-width: ${minFramePx}px`,
-      `background: ${this._colorOf(node)}`,
-      "border-radius: 2px",
-      "box-sizing: border-box",
-      "overflow: hidden",
-      "white-space: nowrap",
-      "text-overflow: ellipsis",
-      "color: #fff",
-      "font-size: 10px",
       `line-height: ${rowHeightPx}px`,
-      "padding: 0 4px",
-      "cursor: pointer",
-      // A hairline between adjacent frames so equal-colored siblings read as
-      // separate boxes.
-      "border-right: 1px solid #1e1e1e",
+      `background: ${this._colorOf(node)}`,
     ].join(";");
 
     // Only label frames wide enough to show something legible; the tooltip
@@ -275,12 +254,6 @@ export class FlameGraph<N extends FlameGraphNodeBase<N> = FlameGraphNode> extend
     }
     frame.title = this._tooltipOf ? this._tooltipOf(node) : `${node.name}\n${this._formatValue(node)}`;
 
-    frame.addEventListener("mouseenter", () => {
-      frame.style.filter = "brightness(1.3)";
-    });
-    frame.addEventListener("mouseleave", () => {
-      frame.style.filter = "";
-    });
     frame.addEventListener("click", (e: MouseEvent) => {
       e.stopPropagation();
       if (this._onSelect) {

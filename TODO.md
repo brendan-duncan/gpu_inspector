@@ -63,8 +63,9 @@ interpreter and re-created pipelines.
       from a 30 Hz display).
 
 ### Shaders
-- [ ] Shader flame graph: the frame's GPU time split by pass, pipeline and function using the
-      modeled costs, once per-draw timing exists (WebGPU Inspector's Shader Flame Graph).
+- [ ] Shader flame graph: statement-level frames (the SPIR-V cost model stops at functions, and
+      glslc inlines everything into `main`), per-draw GPU timing (replay), and measured fragment
+      counts instead of the scissor-area estimate.
 - [ ] Shader analysis: workgroup memory size rule (needs type sizes of Workgroup variables),
       loop-invariant detection, and per-statement cost through the source map.
 - [ ] Source maps from outside the module: a user-configured source root (file name from

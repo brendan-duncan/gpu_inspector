@@ -379,6 +379,10 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .capture-tabs { flex: 1 1 auto; min-height: 0; }
 .capture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-view > .split { flex: 1 1 auto; min-height: 0; height: auto; }
+/* The list pane keeps the split position, the details pane fills the rest and scrolls inside,
+   whatever the details are wide (a wide report must not push the list aside). */
+.capture-view > .split > *:first-child { flex: 0 0 auto; }
+.capture-view > .split > *:last-child { flex: 1 1 0; min-width: 0; }
 /* Frame Stats (capture) */
 .frame-stats { padding: 12px 16px; }
 .frame-stats-title { font-size: 14pt; font-weight: bold; margin-bottom: 10px; }
@@ -411,7 +415,7 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .capture_pass_texture.open { width: 100%; max-width: none; flex: 1 1 100%; box-sizing: border-box; }
 .capture-texture-canvas { cursor: zoom-in; }
 .capture-texture-viewer { margin-top: 4px; }
-.capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); }
+.capture-filter-row { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 10pt; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; row-gap: 4px; }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
 .capture-left > .capture-commands { flex: 1 1 auto; min-height: 0; height: auto; }
 .inspector-filter-panel { margin: 0 6px 6px 6px; }
@@ -672,3 +676,23 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .stack-frame-location { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .stack-frame-internal { opacity: 0.6; }
 .stack-frames-toggle { margin-top: 4px; cursor: pointer; }
+
+/* Shader Flame Graph (capture details panel) and the flame graph widget. */
+.flame-panel { padding: 8px; white-space: normal; }
+.flame-note, .flame-summary, .flame-legend-hint { white-space: normal; }
+.flame-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.flame-summary { margin-bottom: 4px; }
+.flame-legend { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; font-size: 9pt; }
+.flame-legend-item { display: inline-flex; gap: 4px; align-items: center; }
+.flame-legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
+.flame-legend-hint { margin-left: 8px; }
+.flame-notes { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.flamegraph { width: 100%; background: var(--timeline-bg); overflow: auto; position: relative; box-sizing: border-box; min-height: 120px; }
+.flamegraph-breadcrumb { font-size: 9pt; color: var(--fg-secondary); padding: 3px 6px; min-height: 16px; line-height: 16px; white-space: nowrap; overflow-x: auto; }
+.flamegraph-crumb-sep { color: var(--fg-secondary); }
+.flamegraph-crumb-link { color: var(--accent-info); cursor: pointer; text-decoration: underline; }
+.flamegraph-crumb-current { color: var(--fg-primary); }
+.flamegraph-hint { color: var(--fg-secondary); font-style: italic; }
+.flamegraph-canvas { position: relative; width: 100%; }
+.flamegraph-frame { position: absolute; border-radius: 2px; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #fff; font-size: 10px; padding: 0 4px; cursor: pointer; border-right: 1px solid var(--timeline-bg); }
+.flamegraph-frame:hover { filter: brightness(1.3); }

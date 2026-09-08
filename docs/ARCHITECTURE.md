@@ -295,6 +295,26 @@ a severity marker and the command details a Validation section (`validationForCo
 object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
 validation layer: its default limit (10) would silence the message before the captured frame.
 
+#### Shader Flame Graph
+
+`frame_cost_tree.ts` (no DOM) builds the tree `frame_flamegraph.ts` renders with the flame
+graph widget (`widget/flamegraph.ts`, ported from WebGPU Inspector). It walks the capture's
+commands with the same pass numbering as the command list (render passes and compute runs per
+command buffer and frame), tracks the bound pipeline per stream and bind point and the dynamic
+scissor, and makes one item per draw or dispatch. Per pipeline the panel gathers a `StageModel`
+per stage (the SPIR-V analysis of `spirv_analysis.ts`, plus the workgroup size from reflection
+for compute). Invocation counts: `vertexCount x instanceCount` / `indexCount x instanceCount`,
+indirect draws summed from the captured argument buffer, dispatches `groups x workgroup size`;
+fragment invocations are unknowable without rasterization and are estimated from the scissor
+area clipped to the render area (an upper bound without overdraw), or left unweighted when the
+estimate is switched off. A stage's cost is the entry point's modeled per-invocation cost times
+its invocations; its children are the entry's callees with their inclusive costs (recursion
+cut, children squeezed to fit their parent). Items are grouped per pipeline (or per draw), the
+32 costliest per pass kept and the tail collapsed into a "+ more" frame that keeps its cost.
+When every pass has a measured duration the tree is in milliseconds: each pass subtree is
+scaled to its measured time, so the root and pass widths are real and only the split within a
+pass is modeled; otherwise it stays in modeled op units.
+
 #### Stack traces
 
 `src/stacktrace.*` captures raw return addresses in the hot path (`CaptureStackBackTrace` on

@@ -31,6 +31,14 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Shader Flame Graph ("Flame Graph" in the capture bar, next to Analyze Shaders): the frame's
+  GPU work by pass, pipeline (or draw), shader stage and function, as a zoomable flame graph.
+  Pass widths are the measured GPU durations when the capture profiled its passes, the split
+  inside a pass comes from the static cost model times the invocation counts: vertex and
+  compute counts from the draw and dispatch arguments (indirect ones from the captured
+  argument buffers), fragment counts estimated from the scissor area (switchable). Frames are
+  colored by the dominant kind of work (ALU, SFU, texture, memory); a draw frame selects the
+  draw, a shader frame reveals the shader.
 - Stack traces: the layer records the call stack of every object creation ("Stack traces" in
   the launch dialog, on by default) and, with "Stack traces" in the capture bar, of every
   command of the captured frame. Object details and command details have a Stack trace section
