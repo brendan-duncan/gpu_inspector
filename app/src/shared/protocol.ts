@@ -64,10 +64,48 @@ export interface ObjectBlobMessage {
 
 export interface CaptureFrameResultsMessage { action: "CaptureFrameResults"; frame: number; frames: number; count: number; batches: number }
 
+/** One descriptor of a binding in a bound descriptor set (null when never written). */
+export interface CaptureDescriptor {
+  buffer?: HandleRef | null;
+  offset?: number;
+  range?: number;
+  /** Dynamic uniform/storage buffers: the offset passed to vkCmdBindDescriptorSets. */
+  dynamicOffset?: number;
+  /** Id of the CaptureBuffers entry holding the bound range's contents. */
+  data?: number;
+  imageView?: HandleRef | null;
+  imageLayout?: string;
+  sampler?: HandleRef | null;
+  immutable?: boolean;
+  bufferView?: HandleRef | null;
+}
+
+export interface CaptureDescriptorBinding {
+  binding: number;
+  type: string;         // "VK_DESCRIPTOR_TYPE_..."
+  stages?: string;
+  descriptors: (CaptureDescriptor | null)[];
+}
+
+/** Snapshot of a descriptor set's contents taken when it was bound. */
+export interface CaptureDescriptorSet {
+  set: number;
+  descriptorSet: HandleRef | null;   // null for push descriptors
+  layout?: HandleRef | null;
+  bindings: CaptureDescriptorBinding[];
+}
+
+export interface CaptureDescriptorSets {
+  bindPoint: string;    // "VK_PIPELINE_BIND_POINT_..."
+  sets: CaptureDescriptorSet[];
+}
+
 export interface CaptureChildCommand {
   method: string;
   args: ArgObject | null;
   children?: CaptureChildBuffer[];
+  descriptors?: CaptureDescriptorSets;
+  bufferData?: number[];
 }
 
 export interface CaptureChildBuffer {
@@ -85,6 +123,10 @@ export interface CaptureCommand {
   children?: CaptureChildBuffer[]; // secondary command buffers of vkCmdExecuteCommands
   /** Set on commands the UI inlined from a secondary command buffer: that buffer's object id. */
   secondary?: number;
+  /** vkCmdBindDescriptorSets / vkCmdPushDescriptorSet: what the bound sets contained. */
+  descriptors?: CaptureDescriptorSets;
+  /** vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / indirect draws: CaptureBuffers ids per bound buffer (0 = none). */
+  bufferData?: number[];
 }
 
 export interface CaptureFrameCommandsMessage {
@@ -145,6 +187,27 @@ export interface CaptureTextureDataMessage {
   __binary?: Uint8Array;
 }
 
+/** A buffer range read back when it was bound during the capture. */
+export interface CaptureBufferInfo {
+  id: number;             // referenced by CaptureDescriptor.data and CaptureCommand.bufferData
+  buffer: number;         // VkBuffer object id
+  frame: number;
+  commandBuffer: number;
+  offset: number;
+  size: number;           // bytes captured (0 on error)
+  originalSize?: number;  // bytes bound, when the capture was truncated
+  error?: string;
+}
+
+export interface CaptureBuffersMessage { action: "CaptureBuffers"; count: number; buffers: CaptureBufferInfo[] }
+
+export interface CaptureBufferDataMessage {
+  action: "CaptureBufferData";
+  id: number;
+  size: number;
+  __binary?: Uint8Array;
+}
+
 export type LayerMessage =
   | SnapshotMessage
   | AddObjectMessage
@@ -159,6 +222,8 @@ export type LayerMessage =
   | CaptureFrameCommandsMessage
   | CaptureTextureFramesMessage
   | CaptureTextureDataMessage
+  | CaptureBuffersMessage
+  | CaptureBufferDataMessage
   | ImageDataMessage;
 
 // ------------------------------------------------------------------------------------------
@@ -174,9 +239,14 @@ export interface SettingsRequest { action: "Settings"; recordAlways?: boolean }
 export interface CaptureRequest {
   action: "Capture";
   frameCount: number;
+  /** Bytes captured per bound buffer range (longer ranges are truncated). */
   maxBufferSize?: number;
+  /** Total buffer bytes captured per capture; further buffers are reported as errors. */
+  maxBufferTotal?: number;
   maxTextureSize?: number;
   captureTextures?: boolean;
+  /** Read back the buffers bound by descriptor sets, vertex/index bindings and indirect draws. */
+  captureBuffers?: boolean;
 }
 
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | SettingsRequest | CaptureRequest;

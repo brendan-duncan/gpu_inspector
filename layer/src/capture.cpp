@@ -46,6 +46,9 @@ void CaptureManager::SetRecordAlways(bool on) {
 void CaptureManager::Start(DeviceData* dev) {
     _submissions.clear();
     _textures.clear();
+    _buffers.clear();
+    _bufferBytes = 0;
+    _nextBufferId = 1;
     _commandTotal = 0;
     _frameIndex = dev->frameIndex;
     _frameCount = std::max(1u, _options.frameCount);
@@ -64,12 +67,12 @@ CommandRecorder* CaptureManager::RecorderFor(DeviceData* dev, VkCommandBuffer cb
     return it == dev->recorders.end() ? nullptr : it->second.get();
 }
 
-void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
+void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, VkCommandBufferUsageFlags flags) {
     if (!IsCapturing() && !RecordAlways()) return;
     std::unique_lock lock(dev->recorderMutex);
     auto& slot = dev->recorders[cb];
     if (!slot) slot = std::make_unique<CommandRecorder>(dev->device, cb, &Tracker::Get());
-    else slot->Reset();
+    slot->Reset((flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) != 0);
 }
 
 void CaptureManager::OnEndCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
@@ -109,12 +112,21 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     }
     Log("capture: %s with %zu command buffers", method.c_str(), commandBuffers.size());
     std::lock_guard lock(_mutex);
-    // Render targets read back while recording belong to the frame their command buffer runs in.
+    // Readbacks recorded while recording belong to the frame their command buffer runs in.
     for (auto& tc : _textures) {
         if (tc.frame != UINT32_MAX) continue;
         for (auto& scb : sub.commandBuffers) {
             if (scb.commandBufferId == tc.commandBufferId) {
                 tc.frame = sub.frame;
+                break;
+            }
+        }
+    }
+    for (auto& bc : _buffers) {
+        if (bc.frame != UINT32_MAX || !bc.recorded) continue;
+        for (auto& scb : sub.commandBuffers) {
+            if (scb.commandBufferId == bc.commandBufferId) {
+                bc.frame = sub.frame;
                 break;
             }
         }
@@ -156,14 +168,16 @@ void CaptureManager::OnPresent(DeviceData* dev, VkQueue queue, const VkPresentIn
 void CaptureManager::Finish(DeviceData* dev) {
     _capturing.store(false, std::memory_order_release);
     if (!RecordAlways()) g_captureActive.store(false, std::memory_order_release);
-    Log("capture finishing: %zu submissions, %llu commands, %zu textures", _submissions.size(),
-        (unsigned long long)_commandTotal, _textures.size());
+    Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers (%llu KB)",
+        _submissions.size(), (unsigned long long)_commandTotal, _textures.size(), _buffers.size(),
+        (unsigned long long)(_bufferBytes >> 10));
 
     // Everything recorded in the frame has been submitted; wait for it so staging data is valid.
     dev->dispatch.DeviceWaitIdle(dev->device);
 
     SendCommands();
     SendTextures(dev);
+    SendBuffers(dev);
     ReleaseStaging(dev);
 
     if (!RecordAlways()) {
@@ -173,6 +187,7 @@ void CaptureManager::Finish(DeviceData* dev) {
     std::lock_guard lock(_mutex);
     _submissions.clear();
     _textures.clear();
+    _buffers.clear();
     _state = State::Idle;
     Log("capture sent");
 }
@@ -330,12 +345,190 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
         }
     }
     p.active = false;
+    // Buffers bound during the pass are copied now that transfer commands are allowed again.
+    FlushBufferCopies(dev, rec);
+}
+
+void CaptureManager::OnExecuteCommands(DeviceData* dev, CommandRecorder* rec, uint32_t count,
+                                       const VkCommandBuffer* secondaries) {
+    if (!rec || !secondaries) return;
+    auto& dst = rec->pendingCopies();
+    for (uint32_t i = 0; i < count; ++i) {
+        CommandRecorder* sec = RecorderFor(dev, secondaries[i]);
+        if (!sec) continue;
+        auto& src = sec->pendingCopies();
+        dst.insert(dst.end(), src.begin(), src.end());
+        src.clear();
+    }
+    if (!rec->InsidePass()) FlushBufferCopies(dev, rec);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Buffer readback
+
+uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer,
+                                            VkDeviceSize offset, VkDeviceSize size) {
+    if (!rec || !buffer || !IsCapturing() || !_options.captureBuffers) return 0;
+    BufferInfo bi;
+    if (!ResourceRegistry::Get().GetBuffer(buffer, bi)) return 0;
+    if (offset >= bi.size) return 0;
+    VkDeviceSize avail = bi.size - offset;
+    if (size == VK_WHOLE_SIZE || size > avail) size = avail;
+    if (size == 0) return 0;
+
+    BufferCapture bc;
+    bc.bufferId = Tracker::Get().Resolve(HT_VkBuffer, (uint64_t)(uintptr_t)buffer);
+    bc.offset = offset;
+    bc.size = size;
+    if (size > _options.maxBufferSize) {
+        bc.originalSize = size;
+        bc.size = _options.maxBufferSize;
+    }
+
+    // The same range bound again before the pending copies are flushed reuses the first copy,
+    // provided that copy covers everything this binding needs (a shorter earlier binding of the
+    // same offset must not stand in for a longer one).
+    for (const PendingBufferCopy& p : rec->pendingCopies()) {
+        if (p.buffer == buffer && p.offset == offset && p.size >= bc.size) return p.captureId;
+    }
+    auto fail = [&](const char* why) {
+        bc.failed = true;
+        bc.note = why;
+        std::lock_guard lock(_mutex);
+        bc.id = _nextBufferId++;
+        _buffers.push_back(bc);
+        return bc.id;
+    };
+    {
+        std::lock_guard lock(_mutex);
+        if (_bufferBytes + bc.size > _options.maxBufferTotal) {
+            bc.failed = true;
+            bc.note = "buffer capture budget exceeded";
+            bc.id = _nextBufferId++;
+            _buffers.push_back(bc);
+            return bc.id;
+        }
+    }
+    if (!bi.transferSrc) return fail("buffer lacks TRANSFER_SRC usage");
+
+    uint32_t chunkIndex = 0;
+    VkDeviceSize stagingOffset = 0;
+    VkBuffer staging = VK_NULL_HANDLE;
+    if (!AllocateStaging(dev, bc.size, chunkIndex, stagingOffset, &staging)) return fail("staging allocation failed");
+    bc.stagingIndex = chunkIndex;
+    bc.stagingOffset = stagingOffset;
+    {
+        std::lock_guard lock(_mutex);
+        bc.id = _nextBufferId++;
+        _bufferBytes += bc.size;
+        _buffers.push_back(bc);
+    }
+    rec->pendingCopies().push_back({bc.id, buffer, offset, bc.size, staging, stagingOffset});
+    if (!rec->InsidePass()) FlushBufferCopies(dev, rec);
+    return bc.id;
+}
+
+void CaptureManager::FlushBufferCopies(DeviceData* dev, CommandRecorder* rec) {
+    auto& pending = rec->pendingCopies();
+    if (pending.empty()) return;
+    VkCommandBuffer cb = rec->commandBuffer();
+
+    // Whatever wrote the buffers (host, transfers, shaders) must be visible to the copies.
+    VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                     1, &before, 0, nullptr, 0, nullptr);
+    for (const PendingBufferCopy& p : pending) {
+        VkBufferCopy region{p.offset, p.stagingOffset, p.size};
+        dev->dispatch.CmdCopyBuffer(cb, p.buffer, p.staging, 1, &region);
+    }
+    // Later writes to the source buffers must wait for the copies; the staging data is read by
+    // the host after the frame.
+    VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    after.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    after.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                                     1, &after, 0, nullptr, 0, nullptr);
+
+    uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
+    std::lock_guard lock(_mutex);
+    for (const PendingBufferCopy& p : pending) {
+        if (p.captureId == 0 || p.captureId > _buffers.size()) continue;
+        BufferCapture& bc = _buffers[p.captureId - 1];   // ids are 1-based indices
+        bc.recorded = true;
+        bc.commandBufferId = cbId;
+    }
+    pending.clear();
+}
+
+void CaptureManager::SendBuffers(DeviceData* dev) {
+    Transport& t = Transport::Get();
+    std::vector<BufferCapture> buffers;
+    {
+        std::lock_guard lock(_mutex);
+        buffers = _buffers;
+        for (auto& c : _staging) {
+            if (!c.mapped) dev->dispatch.MapMemory(dev->device, c.memory, 0, VK_WHOLE_SIZE, 0, &c.mapped);
+            VkMappedMemoryRange r{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            r.memory = c.memory;
+            r.size = VK_WHOLE_SIZE;
+            dev->dispatch.InvalidateMappedMemoryRanges(dev->device, 1, &r);
+        }
+    }
+    for (auto& bc : buffers) {
+        if (bc.failed) continue;
+        if (!bc.recorded) {
+            bc.failed = true;
+            bc.note = "copy was never recorded (secondary command buffer not executed)";
+        } else if (bc.frame == UINT32_MAX) {
+            bc.failed = true;
+            bc.note = "command buffer was not submitted during the capture";
+        }
+        if (bc.failed) bc.frame = 0;
+    }
+
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("CaptureBuffers");
+    w.Key("count"); w.Uint(buffers.size());
+    w.Key("buffers"); w.BeginArray();
+    for (auto& bc : buffers) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(bc.id);
+        w.Key("buffer"); w.Uint(bc.bufferId);
+        w.Key("frame"); w.Uint(bc.frame);
+        w.Key("commandBuffer"); w.Uint(bc.commandBufferId);
+        w.Key("offset"); w.Uint(bc.offset);
+        w.Key("size"); w.Uint(bc.failed ? 0 : bc.size);
+        if (bc.originalSize) { w.Key("originalSize"); w.Uint(bc.originalSize); }
+        if (bc.failed) { w.Key("error"); w.String(bc.note); }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    t.SendJson(std::move(w.str()));
+
+    for (auto& bc : buffers) {
+        if (bc.failed) continue;
+        const StagingChunk& c = _staging[bc.stagingIndex];
+        if (!c.mapped) continue;
+        JsonWriter h;
+        h.BeginObject();
+        h.Key("action"); h.String("CaptureBufferData");
+        h.Key("id"); h.Uint(bc.id);
+        h.Key("size"); h.Uint(bc.size);
+        h.EndObject();
+        t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c.mapped) + bc.stagingOffset, (size_t)bc.size);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Readback
 
-bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset) {
+bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
+                                     VkBuffer* bufferOut) {
     const VkDeviceSize kChunk = 64ull << 20;
     const VkDeviceSize align = 256;
     std::lock_guard lock(_mutex);
@@ -345,6 +538,7 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
             _staging[i].used = start + size;
             chunkIndex = i;
             offset = start;
+            if (bufferOut) *bufferOut = _staging[i].buffer;
             return true;
         }
     }
@@ -388,6 +582,7 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
     _staging.push_back(chunk);
     chunkIndex = (uint32_t)_staging.size() - 1;
     offset = 0;
+    if (bufferOut) *bufferOut = chunk.buffer;
     Log("staging chunk %u: %llu MB", chunkIndex, (unsigned long long)(chunk.size >> 20));
     return true;
 }
@@ -433,7 +628,8 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
 
     uint32_t chunkIndex = 0;
     VkDeviceSize offset = 0;
-    if (!AllocateStaging(dev, tc.size, chunkIndex, offset)) return fail("staging allocation failed");
+    VkBuffer staging = VK_NULL_HANDLE;
+    if (!AllocateStaging(dev, tc.size, chunkIndex, offset, &staging)) return fail("staging allocation failed");
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
 
@@ -457,8 +653,7 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     region.bufferOffset = offset;
     region.imageSubresource = {tc.aspect, tc.mip, vi.range.baseArrayLayer, tc.layers};
     region.imageExtent = {tc.width, tc.height, tc.depth};
-    dev->dispatch.CmdCopyImageToBuffer(cb, vi.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                       _staging[chunkIndex].buffer, 1, &region);
+    dev->dispatch.CmdCopyImageToBuffer(cb, vi.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &region);
 
     VkImageMemoryBarrier back = toSrc;
     back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -469,7 +664,7 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    hostRead.buffer = _staging[chunkIndex].buffer;
+    hostRead.buffer = staging;
     hostRead.offset = offset;
     hostRead.size = tc.size;
     dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,

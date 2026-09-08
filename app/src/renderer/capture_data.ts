@@ -1,12 +1,19 @@
 // Reassembles a frame capture streamed by the layer: command batches, then render target
-// descriptors, then their pixel data. Follows WebGPU Inspector's capture_data.js.
+// descriptors and their pixel data, then the buffer ranges that were bound during the frame and
+// their contents. Follows WebGPU Inspector's capture_data.js.
 import { Signal } from "./utils/signal.js";
-import type { CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
+import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
 
 export interface CapturedTexture {
   info: CaptureTextureInfo;
   data: Uint8Array | null;
   canvas: HTMLCanvasElement | null;   // set by the panel while waiting for data
+}
+
+/** A buffer range read back when it was bound (referenced by id from the binding command). */
+export interface CapturedBuffer {
+  info: CaptureBufferInfo;
+  data: Uint8Array | null;
 }
 
 /**
@@ -23,7 +30,10 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
     out.push(c);
     for (const child of c.children ?? []) {
       for (const cc of child.commands) {
-        out.push({ index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer, children: cc.children });
+        out.push({
+          index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer,
+          children: cc.children, descriptors: cc.descriptors, bufferData: cc.bufferData,
+        });
       }
     }
   }
@@ -37,19 +47,27 @@ export class CaptureData {
   frames = 1;
   commands: CaptureCommand[] = [];
   textures: CapturedTexture[] = [];
+  buffers = new Map<number, CapturedBuffer>();
   private _expectedCommands = 0;
+  private _pendingBuffers = 0;
 
   readonly onCaptureStatus = new Signal<(text: string) => void>();
   readonly onCommandsComplete = new Signal<() => void>();
   readonly onTextureLoaded = new Signal<(texture: CapturedTexture) => void>();
   readonly onTexturesAnnounced = new Signal<() => void>();
+  readonly onBuffersAnnounced = new Signal<() => void>();
+  readonly onBufferLoaded = new Signal<(buffer: CapturedBuffer) => void>();
+  /** Every announced buffer's data has arrived (or failed). */
+  readonly onBuffersComplete = new Signal<() => void>();
 
   reset(): void {
     this.frame = 0;
     this.frames = 1;
     this.commands = [];
     this.textures = [];
+    this.buffers = new Map();
     this._expectedCommands = 0;
+    this._pendingBuffers = 0;
   }
 
   texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
@@ -60,6 +78,16 @@ export class CaptureData {
   /** The commands of one captured frame (indices stay those of the full list). */
   commandsForFrame(frame: number): CaptureCommand[] {
     return this.commands.filter((c) => c.frame === frame);
+  }
+
+  /** The captured contents of a bound buffer range, by the id the binding command carries. */
+  buffer(id: number | undefined | null): CapturedBuffer | null {
+    if (!id) return null;
+    return this.buffers.get(id) ?? null;
+  }
+
+  get buffersLoading(): boolean {
+    return this._pendingBuffers > 0;
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -89,6 +117,26 @@ export class CaptureData {
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);
+        }
+        break;
+      }
+      case "CaptureBuffers":
+        this.buffers = new Map();
+        this._pendingBuffers = 0;
+        for (const info of msg.buffers ?? []) {
+          this.buffers.set(info.id, { info, data: null });
+          if (!info.error && info.size > 0) this._pendingBuffers++;
+        }
+        this.onBuffersAnnounced.emit();
+        if (this._pendingBuffers === 0) this.onBuffersComplete.emit();
+        break;
+      case "CaptureBufferData": {
+        const buf = this.buffers.get(msg.id);
+        if (buf) {
+          if (!buf.data) this._pendingBuffers = Math.max(0, this._pendingBuffers - 1);
+          buf.data = msg.__binary ?? new Uint8Array(0);
+          this.onBufferLoaded.emit(buf);
+          if (this._pendingBuffers === 0) this.onBuffersComplete.emit();
         }
         break;
       }

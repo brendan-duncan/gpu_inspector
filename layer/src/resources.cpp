@@ -1,5 +1,6 @@
 #include "resources.h"
 
+#include "descriptors.h"
 #include "image_readback.h"
 
 namespace vkinsp {
@@ -91,6 +92,11 @@ void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
         case HT_VkFramebuffer: _framebuffers.erase(handle); break;
         case HT_VkRenderPass: _renderPasses.erase(handle); break;
         case HT_VkSwapchainKHR: _swapchains.erase(handle); break;
+        case HT_VkDescriptorSet:
+        case HT_VkDescriptorSetLayout:
+        case HT_VkDescriptorUpdateTemplate:
+            DescriptorTracker::Get().OnDestroy(type, handle);
+            break;
         default: break;
     }
 }

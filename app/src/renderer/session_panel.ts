@@ -9,12 +9,15 @@ import { Widget } from "./widget/widget.js";
 import { ObjectDatabase } from "./vulkan/object_database.js";
 import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
+import { ShaderReflectionCache } from "./shader_cache.js";
 import type { LayerMessage, SessionInfo, StatusMessage, UiRequest } from "../shared/protocol.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
 export interface SessionContext {
   readonly database: ObjectDatabase;
   readonly connected: boolean;
+  /** SPIR-V reflection of the session's shaders, fetched from the layer on first use. */
+  readonly shaders: ShaderReflectionCache;
   send(msg: UiRequest): Promise<boolean>;
   /** Reveals an object in the Inspect tab. */
   showObject(objectId: number): void;
@@ -26,6 +29,7 @@ export class SessionPanel extends Div implements SessionContext {
   readonly sessionId: number;
   info: SessionInfo;
   readonly database = new ObjectDatabase();
+  readonly shaders: ShaderReflectionCache;
   readonly inspectPanel: InspectPanel;
   readonly capturePanel: CapturePanel;
 
@@ -39,11 +43,12 @@ export class SessionPanel extends Div implements SessionContext {
   private _restartButton!: Button;
   private _recordAlwaysCheck!: Checkbox;
 
-  constructor(info: SessionInfo, options: { detachLabel: string; onDetach: () => void }) {
+  constructor(info: SessionInfo) {
     super(null, { class: "session-panel" });
     this.sessionId = info.id;
     this.info = info;
-    this._buildBar(options);
+    this.shaders = new ShaderReflectionCache(this.database, (msg) => this.send(msg));
+    this._buildBar();
 
     this._tabs = new TabWidget(this, { class: "session-tabs tabs-fill" });
     const inspectorPanel = new Div(null, { class: "inspector_panel" });
@@ -68,7 +73,8 @@ export class SessionPanel extends Div implements SessionContext {
     this.setStatus(info);
   }
 
-  private _buildBar(options: { detachLabel: string; onDetach: () => void }): void {
+  // Moving the session between windows is in the session tab's context menu.
+  private _buildBar(): void {
     const bar = new Div(this, { class: "control-bar session-bar" });
     const row = new Div(bar, { class: "launch-row" });
     this._nameLabel = new Span(row, { text: "", class: "session-name" });
@@ -87,7 +93,6 @@ export class SessionPanel extends Div implements SessionContext {
     this._restartButton = new Button(row, { label: "Relaunch", class: "btn", tooltip: "Terminate the application and launch it again", callback: () => {
       void window.inspector.restart(this.sessionId);
     }});
-    new Button(row, { label: options.detachLabel, class: "btn", callback: options.onDetach });
   }
 
   get name(): string {

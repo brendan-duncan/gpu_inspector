@@ -57,6 +57,9 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
   connect at any time.
 * `src/transport.*` — TCP server on `VKINSP_PORT`. Frames are `u32 length, u8 kind, payload`;
   kind 0 is UTF-8 JSON, kind 1 is `u32 headerLength, JSON header, raw bytes`.
+* `src/descriptors.*` — descriptor set contents: follows `vkCreateDescriptorSetLayout`,
+  `vkAllocateDescriptorSets`, `vkUpdateDescriptorSets`, update templates and push descriptors, so
+  a bind command during a capture can carry a snapshot of what each bound set contained.
 * `src/capture.*` — frame capture (see below).
 
 Enabling the layer for a process (what the app does when launching):
@@ -76,18 +79,49 @@ VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such 
    generated forwarders serialize each `vkCmd*` call's arguments into it.
 3. At `vkCmdEndRenderPass` / `vkCmdEndRendering` the layer appends its own commands to the
    application's command buffer: barriers plus `vkCmdCopyImageToBuffer` of each attachment into a
-   staging buffer, then barriers back to the pass's final layout. Buffers bound during the pass are
-   copied the same way. This is the in-process equivalent of WebGPU Inspector's pass-end readback.
-   To make it possible, `vkCreateImage` and `vkCreateSwapchainKHR` get `TRANSFER_SRC` added to
-   their usage, and `vkCreateBuffer` gets `TRANSFER_SRC`.
-4. `vkQueueSubmit` records which command buffers ran in which order; the command buffer's record
+   staging buffer, then barriers back to the pass's final layout. This is the in-process
+   equivalent of WebGPU Inspector's pass-end readback. To make it possible, `vkCreateImage` and
+   `vkCreateSwapchainKHR` get `TRANSFER_SRC` added to their usage, and `vkCreateBuffer` gets
+   `TRANSFER_SRC`.
+4. Bound buffers are read back too, like WebGPU Inspector captures the buffers of each bind group
+   and vertex/index binding. `vkCmdBindDescriptorSets` (and push descriptors) gets a
+   `descriptors` snapshot of every bound set, taken from the descriptor tracker: per binding the
+   type and per element the buffer range (with the dynamic offset applied), image view, sampler,
+   layout or texel buffer view. Every buffer range in it, every `vkCmdBindVertexBuffers` /
+   `vkCmdBindIndexBuffer` range and every indirect argument buffer is queued for readback
+   (`CaptureManager::QueueBufferCapture`), truncated to `maxBufferSize` (64 KB by default). The
+   copy is recorded at once outside a render pass and at the end of the pass otherwise (transfers
+   are not allowed inside one); secondary command buffers hand their pending copies to the primary
+   that executes them. The binding command references each capture by id (`data` in the snapshot,
+   `bufferData` for vertex/index/indirect bindings).
+5. `vkQueueSubmit` records which command buffers ran in which order; the command buffer's record
    is frozen at submit so later re-recording does not disturb the capture.
-5. At the next present the layer waits for the frame's work, maps the staging memory, and streams
-   `CaptureFrameCommands`, `CaptureBufferData` and `CaptureTextureData` messages.
-6. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
+6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
+   `CaptureFrameCommands`, `CaptureTextureFrames` + `CaptureTextureData`, then `CaptureBuffers` +
+   `CaptureBufferData` messages.
+7. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
    inlines them into the primary's command stream (Unity records every draw in secondaries).
-7. Multi-frame captures: every command and render target carries a frame ordinal (a render target
+8. Multi-frame captures: every command and render target carries a frame ordinal (a render target
    belongs to the frame its command buffer was submitted in); the UI shows one tab per frame.
+9. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
+   owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
+   comparison until their tab is closed. Layer messages go to the most recently requested capture.
+
+#### Command details
+
+Selecting a draw or dispatch shows what WebGPU Inspector shows for one: the pipeline state, each
+shader stage's reflection (entry point, inputs/outputs, resources), every bound descriptor set
+with its bindings, the parsed contents of uniform and storage buffers, vertex buffers decoded by
+the pipeline's vertex input layout (attribute names from the vertex shader), the index buffer,
+push constants, and the pass's render targets (`renderer/capture_command_info.ts`). Binding
+commands show the same for what they bind. Buffer contents are typed by SPIR-V reflection
+(`renderer/vulkan/spirv_reflect.ts`, a parser of the module's declarations: types with member
+offsets and array/matrix strides, decorations, variables, entry points) run on the SPIR-V the
+layer keeps for each shader module / pipeline stage (`renderer/shader_cache.ts` fetches it once
+with `RequestBlob`). The type can be overridden per binding with GLSL struct declarations
+(`renderer/vulkan/buffer_layout.ts` computes std140/std430 offsets), the way WebGPU Inspector's
+Format button takes WGSL. Images bound in descriptor sets show a thumbnail of their current
+contents (live readback), since the capture does not copy sampled images.
 
 ### Live image readback
 
@@ -113,10 +147,13 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
   windows, IPC bridge, SPIR-V text conversion through the SDK's `spirv-dis` / `spirv-cross`.
 * `src/renderer/` — `inspector_window.ts` (launch toolbar, one tab per session),
   `session_panel.ts` (a session's object database and its Inspect / Capture / Log tabs),
-  `inspect_panel.ts` (live objects), `capture_panel.ts` (frame capture: command list, draw state,
-  render targets), `args_view.ts` (argument trees). `widget/` and `utils/` are TypeScript ports of
-  WebGPU Inspector's widget library and helpers; `vulkan/` holds the object model, database and
-  texture decoding.
+  `inspect_panel.ts` (live objects), `capture_panel.ts` (frame capture: command list, render
+  targets), `capture_command_info.ts` (the selected command: bound state, descriptor sets, buffer
+  contents, shaders), `buffer_data_view.ts` (typed buffer values), `shader_cache.ts` (SPIR-V
+  reflection on demand), `args_view.ts` (argument trees). `widget/` and `utils/` are TypeScript
+  ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds the object model,
+  database, texture decoding, SPIR-V reflection, vertex format decoding and the buffer layout
+  parser.
 
 #### Theme
 
@@ -140,8 +177,8 @@ renderer holds the object database and capture data for each session it displays
 * Relaunching a session waits for the old process to exit before starting the new one, so the
   new connection cannot reach the old process. Connection attempts are retried while the target
   is alive, including after a lost connection, until the connect deadline.
-* Every session is displayed by exactly one window. "Open in New Window" (tab context menu or
-  session bar) moves it into a window of its own; closing that window moves it back to the main
+* Every session is displayed by exactly one window. "Open in New Window" (in the session tab's
+  context menu) moves it into a window of its own; closing that window moves it back to the main
   window; closing the main window ends the application. A window that picks up an already
   connected session sends `RequestSnapshot` and the layer resends its live object list.
 * Closing a session tab terminates the application. Stop terminates it but keeps the tab, so it

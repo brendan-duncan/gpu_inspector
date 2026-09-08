@@ -3,6 +3,7 @@
 #include "hooks.h"
 
 #include "capture.h"
+#include "descriptors.h"
 #include "image_readback.h"
 #include "layer.h"
 #include "resources.h"
@@ -53,7 +54,7 @@ void PreHook_vkCreateSwapchainKHR(VkDevice& device, const VkSwapchainCreateInfoK
 }
 
 void PreHook_vkBeginCommandBuffer(VkCommandBuffer& commandBuffer, const VkCommandBufferBeginInfo*& pBeginInfo) {
-    CaptureManager::Get().OnBeginCommandBuffer(GetDeviceData(commandBuffer), commandBuffer);
+    CaptureManager::Get().OnBeginCommandBuffer(GetDeviceData(commandBuffer), commandBuffer, pBeginInfo ? pBeginInfo->flags : 0);
     LayoutTracker::Get().OnBeginCommandBuffer(commandBuffer);
 }
 
@@ -492,6 +493,233 @@ void Hook_vkCmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBu
     }
     extra += ']';
     rec->SetExtraOnLast(std::move(extra));
+    CaptureManager::Get().OnExecuteCommands(dev, rec, commandBufferCount, pCommandBuffers);
+}
+
+// =============================================================================================
+// Descriptor sets: contents tracking, and snapshots + buffer readbacks when they are bound
+
+void Hook_vkCreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo,
+                                      const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout) {
+    if (pSetLayout && *pSetLayout) DescriptorTracker::Get().OnCreateLayout(*pSetLayout, pCreateInfo);
+}
+
+void Hook_vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo* pAllocateInfo,
+                                   VkDescriptorSet* pDescriptorSets) {
+    DescriptorTracker::Get().OnAllocateSets(pAllocateInfo, pDescriptorSets);
+}
+
+void Hook_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites,
+                                 uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies) {
+    DescriptorTracker::Get().OnUpdateSets(descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+}
+
+void Hook_vkCreateDescriptorUpdateTemplate(VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo,
+                                           const VkAllocationCallbacks* pAllocator,
+                                           VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate) {
+    if (pDescriptorUpdateTemplate && *pDescriptorUpdateTemplate)
+        DescriptorTracker::Get().OnCreateTemplate(*pDescriptorUpdateTemplate, pCreateInfo);
+}
+
+void Hook_vkCreateDescriptorUpdateTemplateKHR(VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo,
+                                              const VkAllocationCallbacks* pAllocator,
+                                              VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate) {
+    Hook_vkCreateDescriptorUpdateTemplate(device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+}
+
+void Hook_vkUpdateDescriptorSetWithTemplate(VkDevice device, VkDescriptorSet descriptorSet,
+                                            VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void* pData) {
+    DescriptorTracker::Get().OnUpdateWithTemplate(descriptorSet, descriptorUpdateTemplate, pData);
+}
+
+void Hook_vkUpdateDescriptorSetWithTemplateKHR(VkDevice device, VkDescriptorSet descriptorSet,
+                                               VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void* pData) {
+    DescriptorTracker::Get().OnUpdateWithTemplate(descriptorSet, descriptorUpdateTemplate, pData);
+}
+
+// Queues readbacks of the buffers in a set's bindings; returns the capture ids in the bindings'
+// shape. Dynamic offsets are consumed in binding order, like WriteDescriptorSetJson does.
+static std::vector<std::vector<uint32_t>> CaptureSetBuffers(DeviceData* dev, CommandRecorder* rec,
+                                                            const DescriptorSetContents& c, const uint32_t* dynamicOffsets,
+                                                            uint32_t dynamicOffsetCount, uint32_t& dynamicIndex) {
+    std::vector<std::vector<uint32_t>> ids(c.bindings.size());
+    for (size_t bi = 0; bi < c.bindings.size(); ++bi) {
+        const DescriptorBinding& b = c.bindings[bi];
+        ids[bi].assign(b.entries.size(), 0);
+        for (size_t k = 0; k < b.entries.size(); ++k) {
+            const DescriptorEntry& e = b.entries[k];
+            uint32_t dyn = 0;
+            if (IsDynamicDescriptor(b.type)) {
+                dyn = dynamicOffsets && dynamicIndex < dynamicOffsetCount ? dynamicOffsets[dynamicIndex] : 0;
+                dynamicIndex++;
+            }
+            if (!IsBufferDescriptor(b.type) || !e.written || !e.buffer) continue;
+            ids[bi][k] = CaptureManager::Get().QueueBufferCapture(dev, rec, e.buffer, e.offset + dyn, DescriptorBufferRange(e));
+        }
+    }
+    return ids;
+}
+
+static VkPipelineBindPoint BindPointFromStages(VkShaderStageFlags stages) {
+    if (stages & VK_SHADER_STAGE_COMPUTE_BIT) return VK_PIPELINE_BIND_POINT_COMPUTE;
+    if (stages & (VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                  VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR))
+        return VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+    return VK_PIPELINE_BIND_POINT_GRAPHICS;
+}
+
+// Attaches {"descriptors": {"bindPoint", "sets": [...]}} to the bind command just recorded.
+static void SnapshotBoundSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, uint32_t firstSet,
+                              uint32_t setCount, const VkDescriptorSet* sets, uint32_t dynamicOffsetCount,
+                              const uint32_t* dynamicOffsets) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev->RecorderFor(commandBuffer);
+    if (!rec || !sets) return;
+    JsonWriter w(&Tracker::Get());
+    w.BeginObject();
+    w.Key("bindPoint"); w.Enum(ToString_VkPipelineBindPoint(bindPoint), (int64_t)bindPoint);
+    w.Key("sets"); w.BeginArray();
+    uint32_t dynamicIndex = 0;
+    for (uint32_t i = 0; i < setCount; ++i) {
+        DescriptorSetContents c;
+        if (!DescriptorTracker::Get().GetSet(sets[i], c)) {
+            w.BeginObject();
+            w.Key("set"); w.Uint(firstSet + i);
+            w.Key("descriptorSet"); w.Handle(HT_VkDescriptorSet, "VkDescriptorSet", (uint64_t)(uintptr_t)sets[i]);
+            w.Key("bindings"); w.BeginArray(); w.EndArray();
+            w.EndObject();
+            continue;
+        }
+        uint32_t captureDynamicIndex = dynamicIndex;
+        auto ids = CaptureSetBuffers(dev, rec, c, dynamicOffsets, dynamicOffsetCount, captureDynamicIndex);
+        WriteDescriptorSetJson(w, firstSet + i, sets[i], c, dynamicOffsets, dynamicOffsetCount, dynamicIndex, &ids);
+    }
+    w.EndArray();
+    w.EndObject();
+    rec->SetExtraOnLast(",\"descriptors\":" + w.str());
+}
+
+void Hook_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
+                                  uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets,
+                                  uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets) {
+    SnapshotBoundSets(commandBuffer, pipelineBindPoint, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount,
+                      pDynamicOffsets);
+}
+
+void Hook_vkCmdBindDescriptorSets2(VkCommandBuffer commandBuffer, const VkBindDescriptorSetsInfo* pBindDescriptorSetsInfo) {
+    const VkBindDescriptorSetsInfo* i = pBindDescriptorSetsInfo;
+    if (!i) return;
+    SnapshotBoundSets(commandBuffer, BindPointFromStages(i->stageFlags), i->firstSet, i->descriptorSetCount,
+                      i->pDescriptorSets, i->dynamicOffsetCount, i->pDynamicOffsets);
+}
+
+void Hook_vkCmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer, const VkBindDescriptorSetsInfo* pBindDescriptorSetsInfo) {
+    Hook_vkCmdBindDescriptorSets2(commandBuffer, pBindDescriptorSetsInfo);
+}
+
+static void SnapshotPushedSet(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, uint32_t set,
+                              uint32_t writeCount, const VkWriteDescriptorSet* writes) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev->RecorderFor(commandBuffer);
+    if (!rec) return;
+    DescriptorSetContents c = DescriptorTracker::FromWrites(writeCount, writes);
+    uint32_t dynamicIndex = 0;
+    auto ids = CaptureSetBuffers(dev, rec, c, nullptr, 0, dynamicIndex);
+    JsonWriter w(&Tracker::Get());
+    w.BeginObject();
+    w.Key("bindPoint"); w.Enum(ToString_VkPipelineBindPoint(bindPoint), (int64_t)bindPoint);
+    w.Key("sets"); w.BeginArray();
+    dynamicIndex = 0;
+    WriteDescriptorSetJson(w, set, VK_NULL_HANDLE, c, nullptr, 0, dynamicIndex, &ids);
+    w.EndArray();
+    w.EndObject();
+    rec->SetExtraOnLast(",\"descriptors\":" + w.str());
+}
+
+void Hook_vkCmdPushDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
+                                 uint32_t set, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites) {
+    SnapshotPushedSet(commandBuffer, pipelineBindPoint, set, descriptorWriteCount, pDescriptorWrites);
+}
+
+void Hook_vkCmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
+                                    uint32_t set, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites) {
+    SnapshotPushedSet(commandBuffer, pipelineBindPoint, set, descriptorWriteCount, pDescriptorWrites);
+}
+
+void Hook_vkCmdPushDescriptorSet2(VkCommandBuffer commandBuffer, const VkPushDescriptorSetInfo* pPushDescriptorSetInfo) {
+    const VkPushDescriptorSetInfo* i = pPushDescriptorSetInfo;
+    if (!i) return;
+    SnapshotPushedSet(commandBuffer, BindPointFromStages(i->stageFlags), i->set, i->descriptorWriteCount, i->pDescriptorWrites);
+}
+
+void Hook_vkCmdPushDescriptorSet2KHR(VkCommandBuffer commandBuffer, const VkPushDescriptorSetInfo* pPushDescriptorSetInfo) {
+    Hook_vkCmdPushDescriptorSet2(commandBuffer, pPushDescriptorSetInfo);
+}
+
+// =============================================================================================
+// Vertex, index and indirect buffers: readbacks attached as {"bufferData": [id, ...]}
+
+static void AttachBufferData(VkCommandBuffer commandBuffer, uint32_t count, const VkBuffer* buffers,
+                             const VkDeviceSize* offsets, const VkDeviceSize* sizes, VkDeviceSize fixedSize) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev->RecorderFor(commandBuffer);
+    if (!rec || !buffers || !CaptureManager::Get().IsCapturing()) return;
+    std::string extra = ",\"bufferData\":[";
+    for (uint32_t i = 0; i < count; ++i) {
+        VkDeviceSize size = sizes && sizes[i] ? sizes[i] : fixedSize;
+        uint32_t id = CaptureManager::Get().QueueBufferCapture(dev, rec, buffers[i], offsets ? offsets[i] : 0, size);
+        if (i) extra += ',';
+        extra += std::to_string(id);
+    }
+    extra += ']';
+    rec->SetExtraOnLast(std::move(extra));
+}
+
+void Hook_vkCmdBindVertexBuffers(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount,
+                                 const VkBuffer* pBuffers, const VkDeviceSize* pOffsets) {
+    AttachBufferData(commandBuffer, bindingCount, pBuffers, pOffsets, nullptr, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount,
+                                  const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes,
+                                  const VkDeviceSize* pStrides) {
+    AttachBufferData(commandBuffer, bindingCount, pBuffers, pOffsets, pSizes, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount,
+                                     const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes,
+                                     const VkDeviceSize* pStrides) {
+    AttachBufferData(commandBuffer, bindingCount, pBuffers, pOffsets, pSizes, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType) {
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, nullptr, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdBindIndexBuffer2(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
+                                VkIndexType indexType) {
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, &size, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdBindIndexBuffer2KHR(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
+                                   VkIndexType indexType) {
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, &size, VK_WHOLE_SIZE);
+}
+
+void Hook_vkCmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount,
+                            uint32_t stride) {
+    VkDeviceSize size = drawCount ? (VkDeviceSize)(drawCount - 1) * stride + sizeof(VkDrawIndirectCommand) : 0;
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, nullptr, size);
+}
+
+void Hook_vkCmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount,
+                                   uint32_t stride) {
+    VkDeviceSize size = drawCount ? (VkDeviceSize)(drawCount - 1) * stride + sizeof(VkDrawIndexedIndirectCommand) : 0;
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, nullptr, size);
+}
+
+void Hook_vkCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset) {
+    AttachBufferData(commandBuffer, 1, &buffer, &offset, nullptr, sizeof(VkDispatchIndirectCommand));
 }
 
 } // namespace vkinsp

@@ -47,6 +47,8 @@ add_library(${LAYER_LIB} SHARED
     src/hooks.cpp
     src/resources.h
     src/resources.cpp
+    src/descriptors.h
+    src/descriptors.cpp
     src/capture.h
     src/capture.cpp
     src/image_readback.h

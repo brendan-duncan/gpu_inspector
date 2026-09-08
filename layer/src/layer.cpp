@@ -157,7 +157,9 @@ static void HandleUiMessage(const std::string& text) {
         o.frameCount = (uint32_t)msg.GetNumber("frameCount", 1);
         if (const JsonValue* v = msg.Get("maxBufferSize")) o.maxBufferSize = (uint64_t)v->num;
         if (const JsonValue* v = msg.Get("maxTextureSize")) o.maxTextureSize = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("maxBufferTotal")) o.maxBufferTotal = (uint64_t)v->num;
         o.captureTextures = msg.GetBool("captureTextures", true);
+        o.captureBuffers = msg.GetBool("captureBuffers", true);
         CaptureManager::Get().Request(o);
     }
 }

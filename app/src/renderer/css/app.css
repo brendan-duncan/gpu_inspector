@@ -225,7 +225,9 @@ html, body {
 /* Capture panel */
 .capture_panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-bar { flex: 0 0 auto; padding: 6px 10px; margin-bottom: 0; }
-.capture_panel > .split { flex: 1 1 auto; min-height: 0; height: auto; }
+.capture-tabs { flex: 1 1 auto; min-height: 0; }
+.capture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.capture-view > .split { flex: 1 1 auto; min-height: 0; height: auto; }
 .capture-commands { overflow: auto; height: 100%; font-size: 9.5pt; padding: 4px; }
 .capture-frame-tabs { height: 100%; }
 .capture-frame-list { overflow: auto; height: 100%; padding: 4px; }
@@ -253,6 +255,54 @@ html, body {
 .capture_pass_texture { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px; max-width: 420px; }
 .capture-texture-title { font-weight: 600; }
 .capture-texture-canvas { display: block; margin-top: 4px; max-width: 400px; max-height: 300px; background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px; image-rendering: pixelated; }
+
+/* Command details: descriptor sets, buffer contents, shader info */
+.capture-info .collapsible_body { padding-left: 14px; }
+.descriptor-set-head { padding: 2px 0 4px 0; }
+.descriptor-binding > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
+.shader-info { font-size: 9.5pt; padding: 4px; }
+.shader-info ul, .buffer-root, .buffer-struct, .buffer-array ul, .vertex-attributes { margin: 2px 0 2px 0; padding-left: 18px; }
+.shader-info li, .buffer-root li, .vertex-attributes li { list-style: none; line-height: 1.5; }
+.shader-type-members li { color: var(--fg-secondary); }
+.buffer-head { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 10pt; }
+.buffer-label { font-weight: 600; }
+.buffer-format-button { margin-left: auto; }
+.buffer-data { font-family: var(--font-mono); font-size: 9pt; }
+.buffer-member { color: var(--syntax-key); }
+.buffer-value { color: var(--syntax-number); white-space: pre; }
+.buffer-matrix-row { white-space: pre; }
+.buffer-type { color: var(--fg-muted); font-style: italic; }
+.buffer-offset { color: var(--fg-muted); }
+.buffer-array-filter { display: flex; align-items: center; gap: 6px; padding: 2px 0 4px 0; font-family: var(--font-family); }
+.buffer-array-filter .dragger { flex: 0 0 auto; max-width: 90px; }
+.buffer-array-filter .inputfield { width: 70px; }
+.capture-thumb {
+  display: block;
+  margin: 6px 0;
+  width: 64px;
+  height: 64px;
+  max-width: 256px;
+  max-height: 256px;
+  background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px;
+  image-rendering: pixelated;
+}
+.capture-thumb.loaded { width: auto; height: auto; }
+.format-dialog { top: 12%; }
+.format-dialog-body { padding: 8px 14px 10px 14px; max-height: none; }
+.format-dialog-text {
+  width: 100%;
+  height: 260px;
+  margin: 8px 0;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 9.5pt;
+  background-color: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  resize: vertical;
+}
+.format-dialog-row { display: flex; align-items: center; gap: 8px; font-size: 10pt; }
+.format-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
 /* Live image view (Inspect > Image) */
 .image-view-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px; flex-wrap: wrap; }

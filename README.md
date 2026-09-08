@@ -9,7 +9,9 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
 * **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
-  and debug label, with reconstructed pipeline state per draw and read-back render targets.
+  and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
+  with the parsed contents of its uniform and storage buffers, the decoded vertex and index
+  buffers, push constants and the pass's read-back render targets.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
 project. Third-party code and licenses are listed in

@@ -22,9 +22,11 @@ struct DeviceData;
 
 struct CaptureOptions {
     uint32_t frameCount = 1;
-    uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range
+    uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range (longer ranges are truncated)
+    uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
     bool captureTextures = true;
+    bool captureBuffers = true;
 };
 
 // One command buffer executed by a submit, with its frozen command list.
@@ -59,6 +61,23 @@ struct TextureCapture {
     std::string note;
 };
 
+// A buffer range captured when it was bound (descriptor sets, vertex and index buffers,
+// indirect arguments). Referenced from the binding command by its id.
+struct BufferCapture {
+    uint32_t id = 0;
+    uint64_t bufferId = 0;
+    uint32_t frame = UINT32_MAX;
+    uint64_t commandBufferId = 0;   // command buffer the copy was recorded into
+    VkDeviceSize offset = 0;
+    VkDeviceSize size = 0;          // bytes copied
+    VkDeviceSize originalSize = 0;  // bytes bound, when truncated to maxBufferSize
+    uint32_t stagingIndex = 0;
+    VkDeviceSize stagingOffset = 0;
+    bool recorded = false;          // the copy command has been recorded
+    bool failed = false;
+    std::string note;
+};
+
 class CaptureManager {
 public:
     static CaptureManager& Get();
@@ -72,7 +91,7 @@ public:
     bool RecordAlways() const { return _recordAlways.load(std::memory_order_relaxed); }
 
     // Hooks (called by generated forwarders / hooks.cpp).
-    void OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
+    void OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, VkCommandBufferUsageFlags flags);
     void OnEndCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
     void OnResetCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
     void OnFreeCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
@@ -86,6 +105,15 @@ public:
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
+    // A primary executing secondaries takes over their pending buffer copies (recorded inside a
+    // render pass, they can only be flushed by the primary at the end of that pass).
+    void OnExecuteCommands(DeviceData* dev, CommandRecorder* rec, uint32_t count, const VkCommandBuffer* secondaries);
+
+    // Queues a readback of [offset, offset + size) of a buffer bound by the command being
+    // recorded. Returns the capture id to reference from the command's JSON, or 0 when nothing is
+    // captured (no capture in progress, buffers disabled, empty range, budget exhausted).
+    uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
+                                VkDeviceSize size);
 
 private:
     CaptureManager() = default;
@@ -96,7 +124,9 @@ private:
     void Finish(DeviceData* dev);
     void SendCommands();
     void SendTextures(DeviceData* dev);
+    void SendBuffers(DeviceData* dev);
     void ReleaseStaging(DeviceData* dev);
+    void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
     struct StagingChunk {
@@ -106,7 +136,8 @@ private:
         VkDeviceSize used = 0;
         void* mapped = nullptr;
     };
-    bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset);
+    bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
+                         VkBuffer* bufferOut = nullptr);
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
                            VkImageLayout layout);
 
@@ -121,6 +152,9 @@ private:
 
     std::vector<CaptureSubmission> _submissions;
     std::vector<TextureCapture> _textures;
+    std::vector<BufferCapture> _buffers;
+    uint64_t _bufferBytes = 0;
+    uint32_t _nextBufferId = 1;
     std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;
 };

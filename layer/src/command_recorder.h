@@ -41,6 +41,18 @@ struct ActivePass {
     uint32_t passIndex = 0;                  // index of this pass within the command buffer
 };
 
+// A buffer range queued for readback (see CaptureManager::QueueBufferCapture). The copy into
+// staging is recorded when the pending list is flushed: at once outside a render pass, at the
+// end of the pass otherwise (transfer commands are not allowed inside one).
+struct PendingBufferCopy {
+    uint32_t captureId = 0;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    VkDeviceSize size = 0;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceSize stagingOffset = 0;
+};
+
 class CommandRecorder {
 public:
     CommandRecorder(VkDevice device, VkCommandBuffer cb, HandleResolver* resolver)
@@ -66,12 +78,20 @@ public:
     // only when the command buffer is re-begun).
     std::shared_ptr<const CommandList> Snapshot() const { return _commands; }
 
-    void Reset() {
+    void Reset(bool renderPassContinue = false) {
         _commands = std::make_shared<CommandList>();
         _pass = ActivePass{};
         _passCount = 0;
         _ended = false;
+        _renderPassContinue = renderPassContinue;
+        _pendingCopies.clear();
     }
+
+    // True while transfer commands cannot be recorded: inside a render pass, or in a secondary
+    // command buffer that executes inside one (VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT).
+    bool InsidePass() const { return _pass.active || _renderPassContinue; }
+    bool renderPassContinue() const { return _renderPassContinue; }
+    std::vector<PendingBufferCopy>& pendingCopies() { return _pendingCopies; }
 
     VkDevice device() const { return _device; }
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }
@@ -90,6 +110,8 @@ private:
     ActivePass _pass;
     uint32_t _passCount = 0;
     bool _ended = false;
+    bool _renderPassContinue = false;
+    std::vector<PendingBufferCopy> _pendingCopies;
 };
 
 } // namespace vkinsp

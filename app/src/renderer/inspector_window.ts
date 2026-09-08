@@ -81,10 +81,7 @@ export class InspectorWindow extends Window {
 
   private _addSession(info: SessionInfo): void {
     if (this._sessions.has(info.id)) return;
-    const detach = this._mode === "main"
-      ? { detachLabel: "Open in New Window", onDetach: () => void window.inspector.openSessionWindow(info.id) }
-      : { detachLabel: "Move to Main Window", onDetach: () => void window.inspector.moveSessionToMain(info.id) };
-    const panel = new SessionPanel(info, detach);
+    const panel = new SessionPanel(info);
     this._sessions.set(info.id, panel);
     const handle = this._tabs.addTab(info.name, panel);
     handle.tooltip = info.config ? `${info.config.exe}\n${info.config.args}\nport ${info.port}` : `port ${info.port}`;

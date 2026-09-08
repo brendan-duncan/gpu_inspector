@@ -91,6 +91,31 @@ EXTRA_HOOKS = {
     "vkCmdPipelineBarrier2KHR",
     "vkGetDeviceQueue",
     "vkGetDeviceQueue2",
+    # descriptor set contents
+    "vkCreateDescriptorSetLayout",
+    "vkAllocateDescriptorSets",
+    "vkUpdateDescriptorSets",
+    "vkCreateDescriptorUpdateTemplate",
+    "vkCreateDescriptorUpdateTemplateKHR",
+    "vkUpdateDescriptorSetWithTemplate",
+    "vkUpdateDescriptorSetWithTemplateKHR",
+    # bound resources captured with the binding command
+    "vkCmdBindDescriptorSets",
+    "vkCmdBindDescriptorSets2",
+    "vkCmdBindDescriptorSets2KHR",
+    "vkCmdPushDescriptorSet",
+    "vkCmdPushDescriptorSetKHR",
+    "vkCmdPushDescriptorSet2",
+    "vkCmdPushDescriptorSet2KHR",
+    "vkCmdBindVertexBuffers",
+    "vkCmdBindVertexBuffers2",
+    "vkCmdBindVertexBuffers2EXT",
+    "vkCmdBindIndexBuffer",
+    "vkCmdBindIndexBuffer2",
+    "vkCmdBindIndexBuffer2KHR",
+    "vkCmdDrawIndirect",
+    "vkCmdDrawIndexedIndirect",
+    "vkCmdDispatchIndirect",
 }
 
 # Hand-written pre-call hooks: PreHook_<cmd>(<params by reference>). They run before the
