@@ -31,6 +31,11 @@
   next one (0 is the first frame; the launch dialog's queued capture offered this already).
 - Recent capture files in the Recent menu: files saved or opened are listed under the recent
   launches and reopen with a click.
+- Source view in captures: a draw's or dispatch's shader sections in the command details show
+  the embedded source (with the file bar for includes), the modeled Shader Cost and the
+  Performance Analysis findings, whose line links open the source at that line, next to the
+  reflection. The code is fetched when the section is opened, from the layer or the capture
+  file.
 - Shader Flame Graph ("Flame Graph" in the capture bar, next to Analyze Shaders): the frame's
   GPU work by pass, pipeline (or draw), shader stage and function, as a zoomable flame graph.
   Pass widths are the measured GPU durations when the capture profiled its passes, the split

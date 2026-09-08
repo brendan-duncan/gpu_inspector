@@ -295,6 +295,16 @@ a severity marker and the command details a Validation section (`validationForCo
 object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
 validation layer: its default limit (10) would silence the message before the captured frame.
 
+#### Source view in captures
+
+`shader_source_view.ts` renders an embedded source file with line numbers and highlighting
+(`renderSourceLines`, shared with the Inspect tab's Source view, which adds the jump to the
+disassembly) and a whole module's source with its summary line and file bar
+(`renderEmbeddedSource`). The captured command's shader sections
+(`CommandInfoView._renderShader`) fetch the stage's SPIR-V on first expansion and show the
+source, the Shader Cost and the Performance Analysis sections under the reflection; a finding's
+line link opens the source at that line.
+
 #### Shader Flame Graph
 
 `frame_cost_tree.ts` (no DOM) builds the tree `frame_flamegraph.ts` renders with the flame

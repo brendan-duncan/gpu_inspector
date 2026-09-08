@@ -1085,6 +1085,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       capture: cliFlag("debug-capture"),
       captureFrames: Number(cliOption("debug-capture")) || 1,
       captureStacks: cliFlag("debug-capture-stacks"),
+      selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),

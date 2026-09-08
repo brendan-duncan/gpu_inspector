@@ -15,6 +15,7 @@ import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, r
 import { objectLink, renderArgs } from "./args_view.js";
 import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors } from "./code_editor.js";
 import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
+import { renderSourceLines } from "./shader_source_view.js";
 import { ImageView } from "./image_view.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
@@ -1169,26 +1170,7 @@ export class InspectPanel {
     }
     const language = sourceLanguageOf(info);
     view.text = file.text;
-    const map = sourceLineMap(file.text);
-    const lines = language ? highlightLines(file.text, language) : file.text.split("\n").map(escapeHtml);
-    while (lines.length > map.lines.length) lines.pop();
-    const mapped = new Set<number>();
-    for (const loc of info.locations) if (loc && loc.file === view.sourceFile) mapped.add(loc.line);
-    const width = String(Math.max(...map.lineOf, 1)).length;
-    let html = "";
-    for (let i = 0; i < lines.length; i++) {
-      const n = map.lineOf[i];
-      const isMapped = n > 0 && mapped.has(n);
-      const cls = `code-line${isMapped ? " code-line-mapped" : ""}${n > 0 && n === activeLine ? " code-line-active" : ""}${n ? "" : " code-line-unnumbered"}`;
-      const title = isMapped ? ' title="Show the SPIR-V instructions of this line"' : "";
-      html += `<span class="${cls}" data-line="${n}"${title}><span class="code-lineno">${(n ? String(n) : "").padStart(width)}</span>${lines[i]}</span>\n`;
-    }
-    view.pre.html = html;
-    view.pre.element.onclick = (e) => {
-      const el = (e.target as HTMLElement).closest(".code-line-mapped") as HTMLElement | null;
-      if (el) void this._jumpToDisassembly(view, view.sourceFile, Number(el.dataset.line));
-    };
-    if (activeLine) view.pre.element.querySelector(".code-line-active")?.scrollIntoView({ block: "center" });
+    renderSourceLines(view.pre, info, view.sourceFile, { activeLine, onMappedLine: (f, line) => void this._jumpToDisassembly(view, f, line) });
     view.editButton.disabled = !language || !this.window.connected;
     view.editButton.tooltip = language
       ? "Edit the embedded source and compile it into the running application"

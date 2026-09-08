@@ -71,8 +71,8 @@ interpreter and re-created pipelines.
 - [ ] Source maps from outside the module: a user-configured source root (file name from
       `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
       but without embedded text, and `#include` resolution for the editor from the same root.
-- [ ] Source-level view in captures: the draw's shader panel showing the embedded source, and
-      debug-info variable names (DebugLocalVariable / DebugGlobalVariable) in buffer layouts.
+- [ ] Debug-info variable names (DebugLocalVariable / DebugGlobalVariable) in buffer layouts,
+      for modules without OpName / OpMemberName.
 
 ## Replay-based features **(RenderDoc)**
 

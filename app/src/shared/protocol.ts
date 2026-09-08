@@ -540,6 +540,8 @@ export interface AppConfig {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
     /** --debug-capture-stacks: the debug capture records command stack traces. */
     captureStacks: boolean;
+    /** --debug-command=<index>: select that command of the debug capture or the opened file. */
+    selectCommand: number | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
   };

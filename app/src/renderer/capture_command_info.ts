@@ -30,6 +30,10 @@ import { stageLabel, type StageSource } from "./shader_cache.js";
 import { kindLabel, renderReflection } from "./shader_reflection_view.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 import { renderCommandStack } from "./stacktrace_view.js";
+import { renderEmbeddedSource } from "./shader_source_view.js";
+import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
+import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
+import { fetchBlob } from "./capture_file.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -515,6 +519,36 @@ export class CommandInfoView {
     const row = new Div(body);
     new Span(row, { text: source.module ? "Module: " : "Code in: ", class: "text-muted" });
     objectLink(row, target, this._link);
+    // The embedded source, the modeled cost and the findings come from the SPIR-V payload,
+    // fetched when the group is first opened (from the layer, or the capture file).
+    const details = new Div(body);
+    let loaded = false;
+    const load = async (): Promise<void> => {
+      if (loaded) return;
+      loaded = true;
+      const status = new Div(details, { text: "Loading shader code...", class: "text-muted font-sm" });
+      const data = await fetchBlob(this.panel.window, source.object, source.blobIndex);
+      status.remove();
+      if (!data) {
+        new Div(details, { text: "Shader code not available.", class: "text-muted font-sm" });
+        return;
+      }
+      const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });
+      const view = renderEmbeddedSource(sourceGrp.body, data);
+      const analysis = analyzeSpirvCached(data);
+      if (analysis) {
+        renderCostSection(details, analysis, source.entryPoint);
+        renderAnalysisSection(details, analysis, (file, line) => {
+          const files = view.info?.files ?? [];
+          let index = files.findIndex((f) => f.text !== null && f.name.replace(/^.*[\/]/, "") === file);
+          if (index < 0) index = files.findIndex((f) => f.text !== null);
+          if (index < 0) return;
+          sourceGrp.expand();
+          view.show(index, line);
+        });
+      }
+    };
+    if (!grp.collapsed) void load(); else grp.onExpanded.addListener(() => void load());
     if (!reflection) {
       new Div(body, { text: "Shader code not available for reflection.", class: "text-muted" });
       return;
