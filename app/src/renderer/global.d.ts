@@ -1,5 +1,5 @@
 import type {
-  AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
+  AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
   CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus,
 } from "../shared/protocol.js";
 
@@ -18,6 +18,10 @@ export interface InspectorApi {
   launch(config: LaunchConfig): Promise<LaunchResult>;
   /** Connects to an already running application in a new session, shown in the main window. */
   connect(port: number): Promise<LaunchResult>;
+  /** Android devices reachable through adb (launch dialog). */
+  androidDevices(): Promise<AndroidDeviceList>;
+  /** Third-party packages installed on an Android device. */
+  androidPackages(serial: string): Promise<string[]>;
   /** Terminates the session's application; the session stays open. */
   kill(sessionId: number): Promise<boolean>;
   /** Terminates the session's application and launches it again with the same configuration. */

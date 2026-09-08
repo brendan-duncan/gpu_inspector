@@ -122,4 +122,11 @@ inline DeviceDispatch* GetDeviceDispatch(H handle) {
 void Log(const char* fmt, ...);
 bool LogEnabled();
 
+// Layer configuration: VKINSP_* environment variables on desktop, or the matching system
+// properties on Android (VKINSP_PORT -> debug.vkinsp.port), since an Android app inherits no
+// environment; the inspector sets them with `adb shell setprop`. Returns "" when unset.
+std::string ConfigValue(const char* envName);
+// True when the setting is present and not "0".
+bool ConfigFlag(const char* envName);
+
 } // namespace vkinsp

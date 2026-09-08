@@ -501,6 +501,8 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .launch-dialog-select select { min-width: 300px; }
 .launch-dialog-capture-mode select { min-width: 190px; }
 .launch-dialog-options { gap: 14px; }
+.launch-dialog-hint { color: var(--fg-secondary); font-size: 8.5pt; margin-left: 176px; white-space: pre-wrap; }
+.launch-dialog-package { flex: 1 1 auto; }
 .launch-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Recents menu */

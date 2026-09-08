@@ -12,7 +12,7 @@ import { Dialog } from "./widget/dialog.js";
 import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
 import { SessionPanel } from "./session_panel.js";
-import { LaunchDialog, launchDisplayName } from "./launch_dialog.js";
+import { LaunchDialog, emptyLaunchConfig, launchDisplayName } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";
 
@@ -90,7 +90,7 @@ export class InspectorWindow extends Window {
       this._setVersion(cfg.version, cfg.canUpdate);
       for (const s of cfg.sessions) this._addSession(s);
       if (this._mode === "main") {
-        if (cfg.debug?.launchDialog) this.showLaunchDialog();
+        if (cfg.debug?.launchDialog) this.showLaunchDialog(cfg.debug.launchDialog === "android" ? { ...emptyLaunchConfig(), target: "android" } : null);
         if (!cfg.layerDir) this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");
       }
       this._updatePlaceholder();
@@ -336,8 +336,8 @@ export class InspectorWindow extends Window {
     };
   }
 
-  showLaunchDialog(): void {
-    new LaunchDialog(this._recents, this._lastLaunch, (config) => this.launch(config));
+  showLaunchDialog(initial: LaunchConfig | null = null): void {
+    new LaunchDialog(this._recents, initial ?? this._lastLaunch, (config) => this.launch(config));
   }
 
   launch(config: LaunchConfig): void {

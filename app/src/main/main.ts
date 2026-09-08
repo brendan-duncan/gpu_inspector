@@ -12,8 +12,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
+  type AndroidDeviceList,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
   type UpdateStatus,
@@ -35,6 +37,7 @@ const KILL_TIMEOUT_MS = 3000;
 let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
+//               --launch-android=<package> --device=<serial> [--activity=<name>]
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y]
 function cliOption(name: string): string | null {
@@ -59,10 +62,13 @@ const MAX_RECENTS = 12;
 
 function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
   return {
+    target: c.target === "android" ? "android" : "native",
     exe: c.exe ?? "",
     args: c.args ?? "",
     cwd: c.cwd ?? "",
     env: c.env ?? "",
+    device: c.device ?? "",
+    activity: c.activity ?? "",
     port: Number(c.port) || DEFAULT_PORT,
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
@@ -83,9 +89,11 @@ function saveRecents(recents: LaunchConfig[]): void {
 }
 
 // Moves (or inserts) a configuration to the front of the recents list. Entries are identified
-// by executable + arguments so relaunching with different options updates the existing entry.
+// by target, executable (or package + device) and arguments so relaunching with different
+// options updates the existing entry.
 function addRecent(config: LaunchConfig): LaunchConfig[] {
-  const recents = loadRecents().filter((r) => !(r.exe === config.exe && r.args === config.args));
+  const recents = loadRecents().filter((r) =>
+    !(r.target === config.target && r.exe === config.exe && r.args === config.args && r.device === config.device));
   recents.unshift(config);
   recents.length = Math.min(recents.length, MAX_RECENTS);
   saveRecents(recents);
@@ -160,10 +168,22 @@ function findLayerDir(): string | null {
   return null;
 }
 
+/** The Android layer libraries and APK (tools/build_android.py), from the build tree or a packaged app. */
+function findAndroidLayerFiles(): AndroidLayerFiles | null {
+  const root = path.resolve(__dirname, "..", "..", "..");
+  const candidates = [
+    process.env.INSPECTOR_ANDROID_LAYER_DIR,
+    path.join(root, "build", "android"),
+    path.join(process.resourcesPath ?? "", "layer", "android"),
+  ].filter((d): d is string => !!d);
+  return findAndroidLayer(candidates);
+}
+
 // ------------------------------------------------------------------------------------------
 // Sessions
 
 function launchDisplayName(c: LaunchConfig): string {
+  if (c.target === "android") return `${c.exe} (Android)`;
   const base = path.basename(c.exe) || c.exe;
   return c.args ? `${base} ${c.args}` : base;
 }
@@ -174,6 +194,8 @@ class Session {
   config: LaunchConfig | null;
   port: number;
   target: ChildProcess | null = null;
+  /** The launched Android application, for Android targets (see android.ts). */
+  android: AndroidTarget | null = null;
   pid: number | null = null;
   /** The established connection to the layer. */
   socket: net.Socket | null = null;
@@ -321,7 +343,7 @@ function attemptConnect(s: Session): void {
   // still alive: right after a launch the layer is not listening yet, and a connection can
   // briefly reach a previous process on the same port that is still shutting down.
   const retry = (why: string): void => {
-    const alive = s.config ? s.target !== null : true;
+    const alive = s.config ? s.target !== null || s.android !== null : true;
     if (alive && Date.now() < s.connectDeadline) {
       if (!s.connectTimer) {
         s.connectTimer = setTimeout(() => {
@@ -395,7 +417,7 @@ function attemptConnect(s: Session): void {
 
 function portInUseBySession(port: number, except: Session | null): boolean {
   for (const s of sessions.values()) {
-    if (s !== except && s.port === port && (s.target || s.connected)) return true;
+    if (s !== except && s.port === port && (s.target || s.android || s.connected)) return true;
   }
   return false;
 }
@@ -511,10 +533,62 @@ function terminate(proc: ChildProcess): void {
   proc.kill();
 }
 
+/**
+ * Starts the session's package on its Android device with the layer enabled (see android.ts).
+ * The layer listens on the device; adb forwards the session's port to it, so the connection
+ * is made to 127.0.0.1 like for a local process. Installation and start take a while and can
+ * fail (device gone, package not debuggable): that is reported through the session status.
+ */
+function launchAndroid(s: Session, adb: string, layer: AndroidLayerFiles): LaunchResult {
+  const config = s.config;
+  if (!config) return { ok: false, error: "session has no launch configuration" };
+  const target = new AndroidTarget({
+    adb, serial: config.device, package: config.exe, activity: config.activity, port: s.port,
+    log: config.log, recordAlways: config.recordAlways, layer,
+    onLog: (line) => s.appendLog(line),
+    onExit: () => {
+      if (s.android !== target) return;
+      s.android = null;
+      s.pid = null;
+      disconnectSession(s);
+      s.setStatus("exited", s.killing ? "terminated by inspector" : "process exited");
+      s.killing = false;
+    },
+  });
+  s.android = target;
+  s.pid = null;
+  s.killing = false;
+  s.appendLog(`launching ${config.exe} on ${config.device}`);
+  if (s.port !== config.port) s.appendLog(`port ${config.port} is in use; using ${s.port}`);
+  s.setStatus("launched", `starting on ${config.device}`);
+  target.start().then(() => {
+    if (s.android !== target) return;
+    s.pid = target.pid;
+    s.setStatus("launched", `pid ${target.pid}`);
+    connectSession(s, LAUNCH_CONNECT_TIMEOUT_MS);
+  }, (e: unknown) => {
+    if (s.android !== target) return;
+    s.android = null;
+    void target.stop();
+    s.setStatus("error", e instanceof Error ? e.message : String(e));
+  });
+  return { ok: true, sessionId: s.id, port: s.port };
+}
+
 /** Terminates the target and resolves once it has exited (or after a timeout). */
 function killTarget(s: Session): Promise<void> {
   const proc = s.target;
   disconnectSession(s);
+  if (s.android) {
+    const target = s.android;
+    s.android = null;
+    s.pid = null;
+    s.killing = true;
+    return target.stop().then(() => {
+      s.setStatus("exited", "terminated by inspector");
+      s.killing = false;
+    });
+  }
   if (!proc) return Promise.resolve();
   s.killing = true;
   return new Promise((resolve) => {
@@ -534,11 +608,26 @@ function killTarget(s: Session): Promise<void> {
   });
 }
 
-function validateLaunch(config: LaunchConfig): { layerDir: string } | { error: string } {
+type ValidLaunch = { kind: "native"; layerDir: string } | { kind: "android"; adb: string; layer: AndroidLayerFiles };
+
+function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
+  if (config.target === "android") {
+    const adb = findAdb();
+    if (!adb) return { error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
+    const layer = findAndroidLayerFiles();
+    if (!layer) return { error: "Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)" };
+    if (!config.device) return { error: "no Android device selected" };
+    if (!config.exe) return { error: "no package name given" };
+    return { kind: "android", adb, layer };
+  }
   const layerDir = findLayerDir();
   if (!layerDir) return { error: "layer not found: build the layer first (see docs/ARCHITECTURE.md)" };
   if (!config.exe || !fs.existsSync(config.exe)) return { error: `executable not found: ${config.exe}` };
-  return { layerDir };
+  return { kind: "native", layerDir };
+}
+
+function startTarget(s: Session, v: ValidLaunch): LaunchResult {
+  return v.kind === "android" ? launchAndroid(s, v.adb, v.layer) : spawnTarget(s, v.layerDir);
 }
 
 async function launch(config: LaunchConfig): Promise<LaunchResult> {
@@ -550,7 +639,7 @@ async function launch(config: LaunchConfig): Promise<LaunchResult> {
   s.recordAlways = config.recordAlways;
   sessions.set(s.id, s);
   if (mainWin) attachSession(s, mainWin);
-  const result = spawnTarget(s, v.layerDir);
+  const result = startTarget(s, v);
   addRecent(config);
   broadcast("inspector:recents", loadRecents());
   return result;
@@ -575,11 +664,19 @@ async function restartSession(s: Session): Promise<LaunchResult> {
   }
   await killTarget(s);
   s.port = await findFreePort(s.config.port, s);
-  return spawnTarget(s, v.layerDir);
+  return startTarget(s, v);
 }
 
 async function closeSession(s: Session): Promise<void> {
   await killTarget(s);
+  // The last Android session on a device turns the device's debug layer settings off again, so
+  // the package runs without the layer when started from the device itself.
+  const config = s.config;
+  if (config?.target === "android" &&
+      ![...sessions.values()].some((o) => o !== s && o.config?.target === "android" && o.config.device === config.device)) {
+    const adb = findAdb();
+    if (adb) void disableLayer(adb, config.device);
+  }
   sessions.delete(s.id);
   const viewer = s.viewer;
   s.send("inspector:sessionRemoved", s.id);
@@ -591,6 +688,10 @@ async function closeSession(s: Session): Promise<void> {
 function killAllTargets(): void {
   for (const s of sessions.values()) {
     disconnectSession(s);
+    if (s.android) {
+      s.android.stopSync();
+      s.android = null;
+    }
     if (s.target) {
       try {
         terminate(s.target);
@@ -906,7 +1007,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       select: cliOption("debug-select"),
       capture: cliFlag("debug-capture"),
       captureFrames: Number(cliOption("debug-capture")) || 1,
-      launchDialog: cliFlag("debug-launch-dialog"),
+      launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
     },
   };
 });
@@ -930,6 +1031,25 @@ ipcMain.handle("inspector:clearRecents", () => {
 });
 ipcMain.handle("inspector:launch", (_e, config: LaunchConfig) => launch(config));
 ipcMain.handle("inspector:connect", (_e, port: number) => connectOnly(port));
+ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
+  const adb = findAdb();
+  const layer = findAndroidLayerFiles() !== null;
+  if (!adb) return { adb: null, devices: [], layer, error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
+  try {
+    return { adb, devices: await listDevices(adb), layer, error: null };
+  } catch (e) {
+    return { adb, devices: [], layer, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+ipcMain.handle("inspector:androidPackages", async (_e, serial: string): Promise<string[]> => {
+  const adb = findAdb();
+  if (!adb || !serial) return [];
+  try {
+    return await listPackages(adb, serial);
+  } catch {
+    return [];
+  }
+});
 ipcMain.handle("inspector:kill", async (_e, id: number) => {
   const s = getSession(id);
   if (!s) return false;
@@ -1010,9 +1130,13 @@ void app.whenReady().then(() => {
   mainWin = createMainWindow();
   mainWin.webContents.on("did-finish-load", () => {
     const exe = cliOption("launch");
-    if (exe) {
+    const androidPackage = cliOption("launch-android");
+    if (exe || androidPackage) {
       const config = normalizeLaunch({
-        exe,
+        target: androidPackage ? "android" : "native",
+        exe: androidPackage ?? exe ?? "",
+        device: cliOption("device") ?? "",
+        activity: cliOption("activity") ?? "",
         args: cliOption("args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),

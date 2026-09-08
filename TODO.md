@@ -94,7 +94,11 @@ application with injected state. Route (a) is the general one and is the prerequ
 
 ## Vulkan-specific
 - [ ] Attach to a running process (implicit layer registration), see ARCHITECTURE.md.
-- [ ] Remote targets over TCP (the transport is already socket-based).
+- [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
+      reached through `adb forward` today, see ARCHITECTURE.md).
+- [ ] Android: an Android build of the triangle test app (NativeActivity) so the device path can
+      be exercised without a Unity player; a GLES layer for Unity's GLES player; lower default
+      read-back limits for phones.
 - [ ] Multiple devices and queues in one process (timestamps are per device; the query pool is
       created on the capturing device only).
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.

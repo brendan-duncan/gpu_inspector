@@ -12,7 +12,7 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
 |---|---|
 | Capture model | WebGPU Inspector style: commands are recorded in-process during the captured frame and GPU resource contents (render targets, buffers, textures) are read back at capture time. There is no replay. Captures can be saved and reopened for viewing. |
 | Attach model | Launch from the inspector first. The layer is enabled per-process through environment variables; no system-wide registration is needed. Attaching to running processes (implicit layer + registry/manifest install) is a later goal. |
-| Targets | Local machine only for now. The layer and UI talk over TCP, so remote targets can be added later without changing the protocol. |
+| Targets | Local processes, and Android devices through adb (see Android below). The layer and UI talk over TCP, so other remote targets can be added without changing the protocol. |
 | Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux. |
 | UI | Electron, written in TypeScript throughout (esbuild bundles, `tsc` type-checks), including the widget library ported from WebGPU Inspector. |
 | Distribution | electron-builder installers (Windows NSIS, Linux .deb) bundling the layer under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
@@ -75,6 +75,47 @@ VKINSP_PORT=<port>
 VKINSP_LOG=1            (optional, stderr + debugger logging)
 VKINSP_LOG_FILE=<path>  (optional, also append the log to a file; GUI apps such as Unity players have no stderr)
 ```
+
+### Android
+
+The same layer, built with the NDK (`tools/build_android.py`), runs inside Android applications.
+Android differs from the desktop in how a layer gets into a process and how it is configured, and
+the approach follows RenderDoc's Android support (`renderdoc/android/android.cpp`), minus its
+device-side server:
+
+* **Loader.** Android's loader has no manifests: it dlopens every `libVkLayer*.so` in its layer
+  directories and resolves `vkEnumerateInstance{Layer,Extension}Properties` and the two
+  `GetProcAddr`s by name, so the Android build exports them (end of `layer.cpp`).
+* **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
+  (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
+  `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the
+  **layer APK** (`build/android/gpu_inspector_layer.apk`, a package with no code that only carries
+  the library, named in `gpu_debug_layer_app` the way RenderDoc's own APK is); the inspector
+  installs it when the device's copy has a different version (the version name is a hash of the
+  library). On Android 9 the library is copied into the application's data directory with
+  `run-as`, which the loader searches too. Either way the application must be debuggable, or the
+  device rooted: Android permits nothing else.
+* **Configuration.** An Android app inherits no environment. `ConfigValue()` in `layer.cpp` maps
+  each `VKINSP_*` variable to a `debug.vkinsp.*` system property (`VKINSP_PORT` ->
+  `debug.vkinsp.port`), which `adb shell setprop` can set without root; RenderDoc's `debug.rdoc.*`
+  properties are the same idea.
+* **Transport and log.** The layer listens on the device's loopback as usual; `adb forward
+  tcp:<port> tcp:<port>` maps the session's host port to it and the session connects to
+  `127.0.0.1` like for a local process. The layer logs to logcat (tag `vkinsp`), which the session
+  streams into its Log tab together with native crash dumps; the process is watched with `pidof`.
+  Closing the last session on a device deletes the debug layer settings again.
+* **Not needed.** RenderDoc runs a remote server on the device to start packages, copy the capture
+  file back and replay it there. Captures here stream straight over the socket and there is no
+  replay, so the layer is the only device-side component. Replay-based features (see TODO.md)
+  would need a device-side replay process for Android, since a desktop GPU cannot replay a Mali or
+  Adreno capture faithfully.
+
+The generated serializers already cover `VK_KHR_android_surface` and the Android hardware buffer
+extensions (guarded by `VK_USE_PLATFORM_ANDROID_KHR`). The readback path invalidates mapped
+memory, so non-coherent host-visible memory types, common on mobile GPUs, are read correctly, and
+swapchain images only get `TRANSFER_SRC` when the surface supports it. What differs is cost: a
+tiled GPU has to flush its tiles for the per-pass attachment copies, so the captured frame is
+much slower than on the desktop.
 
 ### Frame capture
 
@@ -275,6 +316,10 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64          # Windows
 cmake --build build --config Release
 # -> build/bin/{lib,}VkLayer_inspector_capture.{so,dll} + VK_LAYER_INSPECTOR_capture.json
 
+# Android layer (NDK) + layer APK; needs the Android SDK, an NDK and a Java runtime
+python tools/build_android.py [--abi arm64-v8a,x86_64]
+# -> build/android/lib/<abi>/libVkLayer_inspector_capture.so, build/android/gpu_inspector_layer.apk
+
 # app
 cd app && npm install && npm start        # builds with esbuild, then launches Electron
 npm run typecheck                          # tsc
@@ -304,7 +349,8 @@ captures a frame automatically and writes a screenshot (one per window), and
 `--quit-after-screenshot` exits once it is written; `--debug-relaunch`, `--debug-multi` and
 `--debug-detach` exercise relaunching, two simultaneous sessions and a session window;
 `--debug-log=<file>` mirrors the session log to a file, the layer log to `<file>.layer.log` and any
-malformed layer message to `<file>.badjson`. `python tools/inspector_client.py --capture
+malformed layer message to `<file>.badjson`; `--debug-launch-dialog[=android]` opens the launch
+dialog at startup; `--launch-android=<package> --device=<serial>` launches on an Android device. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 
 Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):

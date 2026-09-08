@@ -1,7 +1,6 @@
 <p align="center"><img src="docs/images/title.png" alt="GPU Inspector" width="800"></p>
 
-GPU Inspector is a cross-platform (Windows, Linux) graphics inspector for native applications, the native
-counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
+**GPU Inspector** is a cross-platform (Windows, Linux) graphics inspector for native applications, the native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
 version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
 any application works without instrumentation, and Unity Vulkan players are the primary target.
 The UI and protocol are API-neutral so Metal and Direct3D capture libraries can follow.
@@ -143,6 +142,42 @@ npm run pack         # unpacked packaged app in app/release (needs the Release l
 npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
 ```
 
+## Android
+
+Vulkan applications on Android devices (a Unity player built as a **Development Build**, for
+example) can be inspected through adb. The same layer runs on the device; the inspector installs
+it, starts the application with it enabled, and talks to it over an `adb forward` port.
+
+What is needed, beyond the desktop prerequisites:
+
+| What | Where |
+|---|---|
+| Android SDK with `platform-tools` (adb), `build-tools` and a `platforms/android-*` | Android Studio's SDK Manager, or `sdkmanager` from the command-line tools |
+| Android NDK (r26 or newer) | SDK Manager, or `sdkmanager "ndk;26.3.11579264"` |
+| A Java runtime, for signing the layer APK | `JAVA_HOME`, `java` on `PATH`, or the JDK bundled with Android Studio |
+| A device running Android 9 or newer with USB debugging on, and a **debuggable** build of the application | Android only loads layers into debuggable applications (or on rooted devices) |
+
+Build the Android layer once (it finds the SDK and NDK in `ANDROID_HOME`, `ANDROID_NDK_HOME` or
+the default install location):
+
+```
+python tools/build_android.py            # arm64-v8a; add --abi arm64-v8a,x86_64 for an emulator
+```
+
+This produces `build/android/lib/<abi>/libVkLayer_inspector_capture.so` and
+`build/android/gpu_inspector_layer.apk`, a layer package with no code of its own. Then choose
+**Android device (adb)** under *Run On* in the launch dialog, pick the device and the package,
+and press **Launch**. The inspector installs the layer APK when the device does not have this
+version yet (Android 10+; on Android 9 it copies the library into the application's data
+directory instead), enables Android's GPU debug layer settings for the package, starts it, and
+connects. The Log tab shows the layer's logcat output. Closing the session turns the debug layer
+settings off again. From the command line: `npm start -- --launch-android=<package>
+--device=<serial>`.
+
+Shader editing works as on the desktop: the shaders are compiled on this machine with the Vulkan
+SDK's compilers and sent to the device. Expect the captured frame to take noticeably longer on a
+tiled mobile GPU, since every render target is read back at the end of its pass.
+
 ## Troubleshooting
 
 **"layer not found" when launching.** The app looks for `VK_LAYER_INSPECTOR_capture.json` in
@@ -166,6 +201,15 @@ the icon the window itself advertises. Run `tools/install_desktop_entry.sh` to i
 **Electron fails to start on Linux with a sandbox or user-namespace error.** Recent distributions
 (Ubuntu 23.10+) restrict unprivileged user namespaces, which Chromium's sandbox needs. Either
 allow them for this binary, or start the app with `npx electron . --no-sandbox`.
+
+**Android: the application starts but never connects.** Check the Log tab: `run-as` failing with
+"not debuggable" means the build is not debuggable; nothing at all from `[vkinsp]` means the
+loader did not pick the layer up (`adb logcat -s vulkan` shows its search). `adb shell settings
+list global | grep gpu_debug` shows the settings the inspector wrote.
+
+**Android: "adb not found".** Set `ANDROID_HOME` to the SDK, put `platform-tools` on `PATH`, or
+point `INSPECTOR_ADB` at the adb executable. `INSPECTOR_ANDROID_LAYER_DIR` likewise overrides
+where the Android layer is looked for (the directory holding `lib/<abi>/` and the APK).
 
 **`vulkaninfo` reports no devices.** The Vulkan driver for your GPU is missing; see the driver
 packages under Prerequisites. Nothing in the inspector will work until a driver is present.

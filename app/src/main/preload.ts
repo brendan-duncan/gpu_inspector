@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("inspector", {
   // Sessions
   launch: (config: unknown) => ipcRenderer.invoke("inspector:launch", config),
   connect: (port: number) => ipcRenderer.invoke("inspector:connect", port),
+  androidDevices: () => ipcRenderer.invoke("inspector:androidDevices"),
+  androidPackages: (serial: string) => ipcRenderer.invoke("inspector:androidPackages", serial),
   kill: (sessionId: number) => ipcRenderer.invoke("inspector:kill", sessionId),
   restart: (sessionId: number) => ipcRenderer.invoke("inspector:restart", sessionId),
   closeSession: (sessionId: number) => ipcRenderer.invoke("inspector:closeSession", sessionId),

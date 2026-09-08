@@ -25,3 +25,17 @@ fs.rmSync(dst, { recursive: true, force: true });
 fs.mkdirSync(dst, { recursive: true });
 for (const f of [library, manifest]) fs.copyFileSync(path.join(src, f), path.join(dst, f));
 console.log(`staged layer from ${src} -> ${dst}`);
+
+// Android: the layer libraries and the layer APK from tools/build_android.py, when built. The
+// app looks for them in resources/layer/android (findAndroidLayerFiles in src/main/main.ts).
+const androidSrc = process.env.INSPECTOR_ANDROID_LAYER_DIR ?? path.join(root, "build", "android");
+if (fs.existsSync(path.join(androidSrc, "lib"))) {
+  const androidDst = path.join(dst, "android");
+  fs.cpSync(path.join(androidSrc, "lib"), path.join(androidDst, "lib"), { recursive: true });
+  for (const f of ["gpu_inspector_layer.apk", "gpu_inspector_layer.apk.json"]) {
+    if (fs.existsSync(path.join(androidSrc, f))) fs.copyFileSync(path.join(androidSrc, f), path.join(androidDst, f));
+  }
+  console.log(`staged Android layer from ${androidSrc} -> ${androidDst}`);
+} else {
+  console.log(`no Android layer in ${androidSrc} (build it with tools/build_android.py); the package will not support Android targets`);
+}

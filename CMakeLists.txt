@@ -5,6 +5,6 @@ option(VKINSP_BUILD_TESTS "Build the test applications" ON)
 
 add_subdirectory(layer)
 
-if(VKINSP_BUILD_TESTS)
+if(VKINSP_BUILD_TESTS AND NOT ANDROID)
     add_subdirectory(test/triangle)
 endif()

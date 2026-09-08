@@ -67,7 +67,17 @@ target_include_directories(${LAYER_LIB} PRIVATE
     "${GEN_DIR}")
 
 target_compile_definitions(${LAYER_LIB} PRIVATE VK_NO_PROTOTYPES)
-if(WIN32)
+if(ANDROID)
+    # Built with the NDK's toolchain file (tools/build_android.py). Android's loader has no layer
+    # manifests: it dlopens every libVkLayer*.so in the layer directories and resolves the
+    # enumeration entry points by name (see the exports at the end of layer.cpp). The log goes to
+    # logcat and the configuration comes from system properties instead of the environment.
+    target_compile_definitions(${LAYER_LIB} PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
+    target_compile_options(${LAYER_LIB} PRIVATE -Wall -Wno-unused-parameter)
+    # 16 KB page alignment is required by Android 15+ devices with 16 KB pages.
+    target_link_options(${LAYER_LIB} PRIVATE -Wl,--no-undefined -Wl,-z,max-page-size=16384 $<$<CONFIG:Release>:-s>)
+    target_link_libraries(${LAYER_LIB} PRIVATE log)
+elseif(WIN32)
     target_compile_definitions(${LAYER_LIB} PRIVATE VK_USE_PLATFORM_WIN32_KHR NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_compile_options(${LAYER_LIB} PRIVATE /W3 /bigobj)
 elseif(UNIX AND NOT APPLE)
@@ -104,7 +114,11 @@ set_target_properties(${LAYER_LIB} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-# Layer manifest, placed next to the library for every configuration.
+# Layer manifest, placed next to the library for every configuration (desktop loaders only;
+# Android's loader does not read manifests).
+if(ANDROID)
+    return()
+endif()
 if(WIN32)
     set(LAYER_LIB_PATH ".\\\\${LAYER_LIB}.dll")
 else()

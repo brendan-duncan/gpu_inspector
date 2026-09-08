@@ -309,11 +309,18 @@ export interface QueuedCapture {
 }
 
 export interface LaunchConfig {
+  /** "native": an executable on this machine. "android": a package on a device reached through adb. */
+  target: "native" | "android";
+  /** Executable path, or the package name for an Android target. */
   exe: string;
   args: string;
   cwd: string;
   /** Extra environment variables, one KEY=VALUE per line. */
   env: string;
+  /** Android: the device serial (`adb -s`). */
+  device: string;
+  /** Android: the activity to start; empty for the package's launcher activity. */
+  activity: string;
   port: number;
   log: boolean;
   recordAlways: boolean;
@@ -348,6 +355,26 @@ export interface SessionInfo {
   log: string[];
 }
 
+/** An Android device known to adb (main -> renderer, for the launch dialog). */
+export interface AndroidDevice {
+  serial: string;
+  /** adb's state: "device" when usable; "unauthorized", "offline", ... otherwise. */
+  state: string;
+  model: string;
+  /** Android API level and primary ABI; 0 / "" when the device could not be queried. */
+  sdk: number;
+  abi: string;
+}
+
+export interface AndroidDeviceList {
+  /** The adb executable used, or null when none was found (error says so). */
+  adb: string | null;
+  devices: AndroidDevice[];
+  /** Whether the Android layer (tools/build_android.py) is available to the app. */
+  layer: boolean;
+  error: string | null;
+}
+
 export interface SessionStatusMessage extends StatusMessage { sessionId: number }
 export interface SessionLogMessage { sessionId: number; line: string }
 export interface SessionMessages { sessionId: number; messages: LayerMessage[] }
@@ -370,7 +397,8 @@ export interface AppConfig {
   version: string;
   /** Whether this build can update itself (installed builds only, not `npm start`). */
   canUpdate: boolean;
-  debug: { select: string | null; capture: boolean; captureFrames: number; launchDialog: boolean };
+  /** launchDialog: open the launch dialog at startup, on the "native" or "android" target (testing aid). */
+  debug: { select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null };
 }
 
 /** Progress of the application's self-update (main -> renderer, "inspector:update"). */

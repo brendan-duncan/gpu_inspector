@@ -183,8 +183,8 @@ void Transport::Start() {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
-    if (const char* p = getenv("VKINSP_PORT")) {
-        int v = atoi(p);
+    {
+        int v = atoi(ConfigValue("VKINSP_PORT").c_str());
         if (v > 0 && v < 65536) _impl->port = (uint16_t)v;
     }
     _impl->sender = std::thread([this] { _impl->SenderLoop(); });

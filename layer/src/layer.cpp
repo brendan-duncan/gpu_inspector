@@ -16,6 +16,7 @@
 #include "vk_commands.gen.h"
 #include "vk_serialize.gen.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -27,9 +28,36 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__ANDROID__)
+#include <android/log.h>
+#include <sys/system_properties.h>
 #endif
 
 namespace vkinsp {
+
+// ---------------------------------------------------------------------------------------------
+// Configuration
+
+std::string ConfigValue(const char* envName) {
+#if defined(__ANDROID__)
+    // VKINSP_PORT -> debug.vkinsp.port. "debug." properties can be set from `adb shell` without
+    // root, which is how RenderDoc's Android layer takes its settings too.
+    std::string name = "debug.vkinsp.";
+    const char* suffix = strncmp(envName, "VKINSP_", 7) == 0 ? envName + 7 : envName;
+    for (const char* p = suffix; *p; ++p) name.push_back((char)tolower((unsigned char)*p));
+    char value[PROP_VALUE_MAX] = {};
+    int len = __system_property_get(name.c_str(), value);
+    return len > 0 ? std::string(value, (size_t)len) : std::string();
+#else
+    const char* v = getenv(envName);
+    return v ? std::string(v) : std::string();
+#endif
+}
+
+bool ConfigFlag(const char* envName) {
+    std::string v = ConfigValue(envName);
+    return !v.empty() && v != "0";
+}
 
 // ---------------------------------------------------------------------------------------------
 // Logging
@@ -37,10 +65,7 @@ namespace vkinsp {
 static int g_logEnabled = -1;
 
 bool LogEnabled() {
-    if (g_logEnabled < 0) {
-        const char* v = getenv("VKINSP_LOG");
-        g_logEnabled = (v && *v && *v != '0') ? 1 : 0;
-    }
+    if (g_logEnabled < 0) g_logEnabled = ConfigFlag("VKINSP_LOG") ? 1 : 0;
     return g_logEnabled == 1;
 }
 
@@ -51,9 +76,8 @@ static FILE* LogFile() {
     static bool tried = false;
     if (!tried) {
         tried = true;
-        if (const char* path = getenv("VKINSP_LOG_FILE")) {
-            if (*path) file = fopen(path, "a");
-        }
+        std::string path = ConfigValue("VKINSP_LOG_FILE");
+        if (!path.empty()) file = fopen(path.c_str(), "a");
     }
     return file;
 }
@@ -65,8 +89,13 @@ void Log(const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+#if defined(__ANDROID__)
+    // An Android app has no usable stderr; the inspector reads the "vkinsp" tag from logcat.
+    __android_log_write(ANDROID_LOG_INFO, "vkinsp", buf);
+#else
     fprintf(stderr, "[vkinsp] %s\n", buf);
     fflush(stderr);
+#endif
     if (FILE* f = LogFile()) {
         fprintf(f, "[vkinsp] %s\n", buf);
         fflush(f);
@@ -235,9 +264,7 @@ static void EnsureStarted() {
     started = true;
     Transport::Get().Start();
     Transport::Get().SetMessageHandler(HandleUiMessage);
-    if (const char* v = getenv("VKINSP_RECORD_ALWAYS")) {
-        if (*v && *v != '0') CaptureManager::Get().SetRecordAlways(true);
-    }
+    if (ConfigFlag("VKINSP_RECORD_ALWAYS")) CaptureManager::Get().SetRecordAlways(true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -579,3 +606,29 @@ VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkI
 VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     return vkinsp::layer_vkGetDeviceProcAddr(device, pName);
 }
+
+#if defined(__ANDROID__)
+// Android's loader (frameworks/native/vulkan/libvulkan/layers_extensions.cpp) has no manifests
+// and does not call the negotiate function: it dlopens every libVkLayer*.so in the layer search
+// directories and resolves the enumeration entry points by name, as RenderDoc's Android layer
+// exports them too.
+VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
+vkEnumerateInstanceLayerProperties(uint32_t* pPropertyCount, VkLayerProperties* pProperties) {
+    return vkinsp::layer_vkEnumerateInstanceLayerProperties(pPropertyCount, pProperties);
+}
+
+VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
+vkEnumerateInstanceExtensionProperties(const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
+    return vkinsp::layer_vkEnumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties);
+}
+
+VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
+vkEnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties) {
+    return vkinsp::layer_vkEnumerateDeviceLayerProperties(physicalDevice, pPropertyCount, pProperties);
+}
+
+VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
+vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
+    return vkinsp::layer_vkEnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
+}
+#endif
