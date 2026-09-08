@@ -10,6 +10,10 @@
 - "Affected by" on a captured buffer (descriptor bindings, vertex, index and indirect buffers):
   the earlier commands of the frame that wrote it, transfers naming it as their destination and
   draws or dispatches that had it bound as a storage buffer; clicking one selects it.
+- Leak report: when a device or instance is destroyed with objects still alive under it, the
+  layer reports them (type counts and the objects with their names); the Inspect tab lists them
+  in a Leaked Objects group, the session bar counts them, and the Log tab records the summary.
+  The triangle test application's `--leak` option leaves a sampler and a buffer alive.
 
 ### Changed
 - Shader Reflection sections are collapsed by default.

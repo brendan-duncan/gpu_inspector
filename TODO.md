@@ -13,6 +13,8 @@ interpreter and re-created pipelines.
 - Texture viewer (mip, layer, channels, exposure, auto range, zoom, hover/pinned values, copy).
 - Descriptor set contents on demand. Shader stage labels. A Reflection section on every shader
   payload (entry points, interface, resources by set and binding, push constants).
+- Leak report at device / instance destruction: the objects still alive, by type and by name,
+  in the Inspect tab, the session bar and the log.
 - Device sections: the physical device's properties, limits, memory heaps and types, queue
   families, features and extensions; the device's enabled extensions, queues and features
   (across the pNext chain); the instance's application info, layers and extensions.
@@ -53,7 +55,6 @@ interpreter and re-created pipelines.
 - [ ] Validation messages in captures: attach the messages raised while a command was recorded
       to that command in the capture list (the layer's messenger sees the message during the
       vkCmd call, before or after our hook depending on layer order).
-- [ ] Leak report at `vkDestroyDevice` (objects never destroyed).
 - [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
 - [ ] Dropped-frame detection and a refresh-rate estimate for the frame budget (present timing
       or `VK_GOOGLE_display_timing` where available).

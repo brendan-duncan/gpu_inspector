@@ -116,6 +116,12 @@ export class SessionPanel extends Div implements SessionContext {
       }
     });
     this.database.onReset.addListener(() => this._updateValidationLabel());
+    this.database.onLeakReport.addListener((r) => {
+      const owner = this.database.getObject(r.owner);
+      const summary = Object.entries(r.byType).map(([t, n]) => `${n} ${t.replace(/^Vk/, "")}`).join(", ");
+      this.appendLog(`leak report: ${owner ? owner.name : `${r.ownerClass} ${r.owner}`} destroyed with ${r.count} live objects: ${summary}`);
+      this._updateValidationLabel();
+    });
     const spacer = new Span(row, { class: "launch-spacer" });
     spacer.style.flexGrow = "1";
     this._recordAlwaysCheck = new Checkbox(row, { label: "Record all command buffers", checked: this.info.recordAlways,
@@ -218,9 +224,11 @@ export class SessionPanel extends Div implements SessionContext {
 
   private _updateValidationLabel(): void {
     const [errors, warnings] = this.database.validationCounts;
+    const leaks = this.database.leakCount;
     const parts: string[] = [];
     if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
     if (warnings) parts.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+    if (leaks) parts.push(`${leaks} leaked object${leaks === 1 ? "" : "s"}`);
     this._validationLabel.text = parts.length ? `⚠ ${parts.join(", ")}` : "";
     this._validationLabel.style.display = parts.length ? "" : "none";
     this._validationLabel.element.className = `launch-validation ${errors ? "status-error" : "status-warning"}`;

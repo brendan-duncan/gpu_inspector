@@ -119,6 +119,7 @@ struct App {
     uint32_t width = 640, height = 480;
     int maxFrames = -1;
     bool badScissor = false;
+    bool leak = false;
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -964,6 +965,12 @@ struct App {
 
     void Cleanup() {
         vkDeviceWaitIdle(device);
+        // --leak: leave the sampler and the wave buffer alive so the inspector's leak report has
+        // something to report at vkDestroyDevice.
+        if (leak) {
+            sampler = VK_NULL_HANDLE;
+            waveBuffer = VK_NULL_HANDLE;
+        }
         vkDestroyPipeline(device, computePipeline, nullptr);
         vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, computeSetLayout, nullptr);
@@ -1025,6 +1032,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
+        else if (!strcmp(argv[i], "--leak")) app.leak = true;
     }
     return app.Run();
 }

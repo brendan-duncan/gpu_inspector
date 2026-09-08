@@ -287,10 +287,34 @@ export interface ValidationCountMessage {
   dropped?: number;
 }
 
+/** One object still alive when its owner was destroyed. */
+export interface LeakedObject {
+  id: number;
+  class: string;
+  name: string | null;
+  cmd: string;
+}
+
+/**
+ * Sent just before a device or instance is destroyed with objects still alive under it (the
+ * DeleteObjects for them follows). Objects the application cannot destroy and those freed with
+ * their pool are not counted.
+ */
+export interface LeakReportMessage {
+  action: "LeakReport";
+  owner: number;
+  ownerClass: string;
+  count: number;
+  byType: Record<string, number>;
+  /** The first 2000 leaked objects, by id. */
+  objects: LeakedObject[];
+}
+
 export type LayerMessage =
   | SnapshotMessage
   | ValidationMessage
   | ValidationCountMessage
+  | LeakReportMessage
   | AddObjectMessage
   | DeleteObjectsMessage
   | ObjectSetLabelMessage

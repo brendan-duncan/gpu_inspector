@@ -263,6 +263,17 @@ list and in their details, and the session bar counts errors and warnings; messa
 written to the Log tab and saved in capture files. The triangle test application's
 `--bad-scissor` option provokes one for testing.
 
+#### Leak report
+
+`vkDestroyDevice` and `vkDestroyInstance` first ask the tracker for the objects still alive
+under the owner (`Tracker::SendLeakReport`): everything in its child tree except what the
+application cannot destroy itself (queues, physical devices, swapchain images) and what is
+freed with its pool (descriptor sets, command buffers). The report goes out as `LeakReport`
+(owner, count, counts by type, the first 2000 objects with their names and creating commands)
+just before the `DeleteObjects` cascade, so the Inspect tab's Leaked Objects group keeps the
+names after the objects are gone; the session bar counts them next to the validation counts,
+and the Log tab records the summary.
+
 #### Capture files
 
 A capture can be saved (the Save button of the capture bar, or the tab's context menu) and

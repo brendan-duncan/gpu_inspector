@@ -5,7 +5,7 @@
 // in each object's serialized creation arguments instead of per-class knowledge.
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
-import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_file.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -46,6 +46,8 @@ export class ObjectDatabase implements ObjectLookup {
   validationByObject = new Map<number, ValidationEntry[]>();
   /** Unique messages the layer dropped after its cap. */
   validationDropped = 0;
+  /** Leak reports (objects alive when their device or instance was destroyed), in arrival order. */
+  leaks: LeakReportMessage[] = [];
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -62,6 +64,12 @@ export class ObjectDatabase implements ObjectLookup {
   readonly onCapturedObjectsChanged = new Signal<() => void>();
   /** A validation message arrived (isNew) or its repeat count changed. */
   readonly onValidationMessage = new Signal<(entry: ValidationEntry, isNew: boolean) => void>();
+  readonly onLeakReport = new Signal<(report: LeakReportMessage) => void>();
+
+  /** Leaked objects over every report. */
+  get leakCount(): number {
+    return this.leaks.reduce((n, r) => n + r.count, 0);
+  }
 
   /** Validation errors and warnings by severity: [errors, warnings]. */
   get validationCounts(): [number, number] {
@@ -138,6 +146,7 @@ export class ObjectDatabase implements ObjectLookup {
     this.validationByKey = new Map();
     this.validationByObject = new Map();
     this.validationDropped = 0;
+    this.leaks = [];
     this._snapshotRemaining = 0;
   }
 
@@ -245,6 +254,10 @@ export class ObjectDatabase implements ObjectLookup {
         break;
       case "ValidationMessage":
         this._addValidation(msg);
+        break;
+      case "LeakReport":
+        this.leaks.push(msg);
+        this.onLeakReport.emit(msg);
         break;
       case "ValidationCount":
         for (const [key, count] of msg.counts ?? []) {

@@ -23,7 +23,7 @@ import { renderReflection } from "./shader_reflection_view.js";
 import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
-import type { CaptureDescriptorBinding, HandleRef, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
+import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears.
 const TYPE_ORDER = [
@@ -180,6 +180,8 @@ export class InspectPanel {
   private _validationList: Widget | null = null;
   private _validationItems = new Map<number, Widget>();
   private _selectedValidation: ValidationEntry | null = null;
+  private _leakGroup: collapsible | null = null;
+  private _leakList: Widget | null = null;
   private _backButton!: Button;
   private _forwardButton!: Button;
   private _filterInput!: TextInput;
@@ -218,6 +220,54 @@ export class InspectPanel {
     });
     db.onFrameStats.addListener((m) => this._updateMeters(m.frameTimeMs, m.maxMs ?? m.frameTimeMs, m.submitMs ?? 0));
     db.onValidationMessage.addListener((entry, isNew) => this._validationMessage(entry, isNew));
+    db.onLeakReport.addListener((report) => this._leakReport(report));
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Leak reports: objects still alive when their device or instance was destroyed, listed in
+  // a group above the object list. The objects themselves are deleted right after the report,
+  // so the entries keep what the report said about them.
+
+  private _leakReport(report: LeakReportMessage): void {
+    if (!this._leakGroup) {
+      const g = new collapsible(null, { collapsed: false, label: "Leaked Objects 0", class: "leak-group" });
+      g.body.style.maxHeight = "320px";
+      g.body.style.overflow = "auto";
+      this._leakList = new Widget("ol", g.body, { style: "margin-top: 6px; margin-bottom: 6px;" });
+      const first = this.groupsContainer.children[0];
+      if (first) this.groupsContainer.insertBefore(g, first);
+      else this.groupsContainer.appendChild(g);
+      this._leakGroup = g;
+    }
+    const owner = this.database.getObject(report.owner);
+    const ownerName = owner ? owner.name : `${report.ownerClass} ${report.owner}`;
+    const summary = Object.entries(report.byType).map(([t, n]) => `${n} ${t.replace(/^Vk/, "")}`).join(", ");
+    new Widget("li", this._leakList!, { text: `${ownerName} destroyed with ${report.count} live object${report.count === 1 ? "" : "s"}: ${summary}`, class: "leak-owner text-muted font-sm" });
+    for (const o of report.objects) {
+      const item = new Widget("li", this._leakList!, { class: "object-item leak-item" });
+      new Span(item, { text: "⚠ ", class: "validation-sev validation-sev-warning" });
+      new Span(item, { text: o.name ? `${o.name}` : `${o.class.replace(/^Vk/, "")} ${o.id}`, class: "object-item-name" });
+      new Span(item, { text: ` ${o.class} ${o.id}  ${o.cmd}`, class: "object-item-type" });
+      item.tooltip = `${o.class} ${o.id} created by ${o.cmd}, still alive when ${ownerName} was destroyed`;
+      item.element.onclick = () => {
+        const obj = this.database.getObject(o.id);
+        if (obj && !obj.isDeleted) {
+          this.revealObject(obj);
+          return;
+        }
+        this.inspectPanel.html = "";
+        this.inspectedObject = null;
+        const box = new Div(this.inspectPanel, { class: "info-box info-box-warning" });
+        new Div(box, { text: `Leaked: ${o.name ? `${o.name}  ` : ""}${o.class} ${o.id}`, class: "font-lg" });
+        new Div(box, { text: `Created by ${o.cmd}; still alive when ${ownerName} was destroyed, and destroyed with it.`, class: "font-md text-muted" });
+        if (obj) {
+          new Div(box, { text: "Its last known creation arguments:", class: "font-md text-muted" });
+          renderArgs(new Div(box, { class: "args-tree" }), obj.args, this.database, (l) => this.revealObject(l));
+        }
+      };
+    }
+    if (report.count > report.objects.length) new Widget("li", this._leakList!, { text: `... ${report.count - report.objects.length} more`, class: "text-muted font-sm" });
+    this._leakGroup.label.text = `Leaked Objects ${this.database.leakCount}`;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -444,6 +494,8 @@ export class InspectPanel {
     this._validationList = null;
     this._validationItems.clear();
     this._selectedValidation = null;
+    this._leakGroup = null;
+    this._leakList = null;
     this.groupsContainer.html = "";
     this.inspectPanel.html = "";
     this._frameTimePlot.reset();

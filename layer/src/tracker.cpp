@@ -1,6 +1,7 @@
 #include "tracker.h"
 
 #include <algorithm>
+#include <map>
 
 #include "layer.h"
 #include "resources.h"
@@ -144,6 +145,65 @@ void Tracker::OnDestroyChildren(HandleType type, uint64_t handle) {
     std::vector<uint64_t> removed;
     for (uint64_t c : children) RemoveLocked(c, removed);
     if (_live) SendDeleted(removed);
+}
+
+void Tracker::SendLeakReport(HandleType type, uint64_t handle) {
+    if (!handle) return;
+    std::unique_lock lock(_mutex);
+    auto& m = _byHandle[type];
+    auto it = m.find(handle);
+    if (it == m.end()) return;
+    auto oit = _byId.find(it->second);
+    if (oit == _byId.end()) return;
+    const TrackedObject& owner = oit->second;
+
+    std::vector<const TrackedObject*> leaked;
+    std::vector<uint64_t> stack(owner.children.begin(), owner.children.end());
+    while (!stack.empty()) {
+        uint64_t id = stack.back();
+        stack.pop_back();
+        auto cit = _byId.find(id);
+        if (cit == _byId.end()) continue;
+        const TrackedObject& o = cit->second;
+        for (uint64_t c : o.children) stack.push_back(c);
+        if (o.type == HT_VkQueue || o.type == HT_VkPhysicalDevice || o.type == HT_VkDescriptorSet || o.type == HT_VkCommandBuffer) continue;
+        if (o.type == HT_VkImage && o.cmd == VkCmdId::GetSwapchainImagesKHR) continue;
+        leaked.push_back(&o);
+    }
+    if (leaked.empty()) {
+        Log("no leaked objects under %s %llu", kHandleTypeNames[owner.type], (unsigned long long)owner.id);
+        return;
+    }
+    std::sort(leaked.begin(), leaked.end(), [](auto* a, auto* b) { return a->id < b->id; });
+    std::map<std::string, uint32_t> byType;
+    for (auto* o : leaked) byType[kHandleTypeNames[o->type]]++;
+    Log("%zu objects still alive under %s %llu at destruction", leaked.size(), kHandleTypeNames[owner.type], (unsigned long long)owner.id);
+    if (!_live) return;
+
+    constexpr size_t kMaxListed = 2000;
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("LeakReport");
+    w.Key("owner"); w.Uint(owner.id);
+    w.Key("ownerClass"); w.String(kHandleTypeNames[owner.type]);
+    w.Key("count"); w.Uint(leaked.size());
+    w.Key("byType"); w.BeginObject();
+    for (auto& [name, n] : byType) { w.Key(name.c_str()); w.Uint(n); }
+    w.EndObject();
+    w.Key("objects"); w.BeginArray();
+    size_t listed = 0;
+    for (auto* o : leaked) {
+        if (listed++ >= kMaxListed) break;
+        w.BeginObject();
+        w.Key("id"); w.Uint(o->id);
+        w.Key("class"); w.String(kHandleTypeNames[o->type]);
+        w.Key("name"); if (o->label.empty()) w.Null(); else w.String(o->label);
+        w.Key("cmd"); w.String(kVkCommandNames[(int)o->cmd]);
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void Tracker::SetLabel(HandleType type, uint64_t handle, const char* label) {

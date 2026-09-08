@@ -52,6 +52,11 @@ public:
                       VkCmdId cmd, uint32_t index, const std::string& args);
     void OnDestroy(HandleType type, uint64_t handle);
     void OnDestroyChildren(HandleType type, uint64_t handle);
+    // Reports the objects still alive under an owner about to be destroyed (a device or an
+    // instance) as a LeakReport message: type counts and the first objects with their names.
+    // Objects the application cannot destroy (queues, physical devices, swapchain images) and
+    // those freed with their pool (descriptor sets, command buffers) are not counted.
+    void SendLeakReport(HandleType type, uint64_t handle);
     void SetLabel(HandleType type, uint64_t handle, const char* label);
     // Records a named JSON update (e.g. "memory" binding) on an object and streams it as an
     // ObjectUpdate message. Updates are replayed as part of the snapshot.
