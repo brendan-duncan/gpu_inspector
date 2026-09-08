@@ -381,7 +381,7 @@ void ShaderEditor::Reply(uint64_t pipelineId, VkShaderStageFlagBits stage, bool 
     w.Key("action"); w.String("ShaderReplaced");
     w.Key("pipeline"); w.Uint(pipelineId);
     w.Key("stage"); w.String(StageName(stage));
-    w.Key("ok"); w.Bool(ok);
+    w.Key("ok"); w.Boolean(ok);
     if (!message.empty()) { w.Key(ok ? "note" : "error"); w.String(message); }
     if (replacementId) { w.Key("replacement"); w.Uint(replacementId); }
     w.EndObject();

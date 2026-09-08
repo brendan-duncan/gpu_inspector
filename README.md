@@ -1,6 +1,8 @@
-# GPU Inspector
+<div style="background-color:#222; width:100%; display:flex; align-items:center; justify-content:center; font-size:48pt;border-radius:20px; border: 1px solid #aaa;margin-bottom:20px;">
+<img src="app/assets/icon.png" width="250px"><span>GPU Inspector</span>
+</div>
 
-A cross-platform (Windows, Linux) graphics inspector for native applications, the native
+GPU Inspector is a cross-platform (Windows, Linux) graphics inspector for native applications, the native
 counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
 version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
 any application works without instrumentation, and Unity Vulkan players are the primary target.

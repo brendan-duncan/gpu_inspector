@@ -11,7 +11,7 @@
 namespace vkinsp {
 
 struct JsonValue {
-    enum Kind { Null, Bool, Number, String, Array, Object } kind = Null;
+    enum Kind { Null, Boolean, Number, String, Array, Object } kind = Null;  // Boolean, not Bool: Xlib macro
     bool b = false;
     double num = 0;
     std::string str;
@@ -33,7 +33,7 @@ struct JsonValue {
     }
     bool GetBool(const char* key, bool def = false) const {
         const JsonValue* v = Get(key);
-        return (v && v->kind == Bool) ? v->b : def;
+        return (v && v->kind == Boolean) ? v->b : def;
     }
 };
 
@@ -60,8 +60,8 @@ private:
         if (c == '{') return Object(v);
         if (c == '[') return Array(v);
         if (c == '"') { v.kind = JsonValue::String; return Str(v.str); }
-        if (_s.compare(_pos, 4, "true") == 0) { v.kind = JsonValue::Bool; v.b = true; _pos += 4; return true; }
-        if (_s.compare(_pos, 5, "false") == 0) { v.kind = JsonValue::Bool; v.b = false; _pos += 5; return true; }
+        if (_s.compare(_pos, 4, "true") == 0) { v.kind = JsonValue::Boolean; v.b = true; _pos += 4; return true; }
+        if (_s.compare(_pos, 5, "false") == 0) { v.kind = JsonValue::Boolean; v.b = false; _pos += 5; return true; }
         if (_s.compare(_pos, 4, "null") == 0) { v.kind = JsonValue::Null; _pos += 4; return true; }
         return Number(v);
     }

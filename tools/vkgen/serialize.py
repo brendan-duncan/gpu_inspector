@@ -97,7 +97,7 @@ class Emitter:
             return f'w.Handle(HT_{real}, "{real}", (uint64_t)(uintptr_t){expr});'
         if cat == "basetype":
             if type_name == "VkBool32":
-                return f"w.Bool({expr} != 0);"
+                return f"w.Boolean({expr} != 0);"
             if type_name in UINT_BASETYPES:
                 return f"w.Uint((uint64_t){expr});"
             return None

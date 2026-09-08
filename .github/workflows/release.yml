@@ -1,7 +1,8 @@
 name: Release
 
 # Builds the Windows installer and the Linux .deb and publishes them, with the auto-update
-# manifests, to a GitHub release for the tag. See docs/RELEASING.md.
+# manifests, to a GitHub release for the tag. The release is only created once both builds have
+# succeeded, so a failed build never leaves a half-published release. See docs/RELEASING.md.
 on:
   push:
     tags:
@@ -71,36 +72,40 @@ jobs:
         working-directory: app
         run: npm run typecheck
 
-      - name: Build and publish installer
+      # Builds only; the release job below publishes once every platform has built.
+      - name: Build installer
         working-directory: app
-        shell: bash
-        # A manual run builds without publishing; the installers are attached to the workflow run.
-        run: npm run dist:${{ matrix.target }} -- --publish ${{ github.ref_type == 'tag' && 'always' || 'never' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:${{ matrix.target }} -- --publish never
 
       - uses: actions/upload-artifact@v4
-        if: github.ref_type != 'tag'
         with:
           name: installer-${{ matrix.target }}
+          if-no-files-found: error
           path: |
             app/release/*.exe
             app/release/*.deb
             app/release/*.yml
             app/release/*.blockmap
+            !app/release/builder-*.yml
 
-  release-notes:
+  release:
     needs: build
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - name: Write download links into the release
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          ls -l assets
           cat > notes.md <<NOTES
           # GPU Inspector ${VERSION}
 
@@ -111,4 +116,6 @@ jobs:
 
           Installed builds update themselves: the app checks this repository's releases on startup.
           NOTES
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --draft=false --latest
+          # latest.yml / latest-linux.yml and the .blockmap are what installed builds read to update.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "GPU Inspector ${VERSION}" --notes-file notes.md assets/*

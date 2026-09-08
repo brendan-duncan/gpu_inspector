@@ -17,13 +17,14 @@ The workflow then, on a Windows and an Ubuntu 22.04 runner:
 2. builds the layer with CMake (`-DVKINSP_BUILD_TESTS=OFF`, so no Vulkan SDK is needed),
 3. sets the app version from the tag (`v0.2.0` releases `0.2.0`; `app/package.json` is not
    consulted, but keep it in step so `npm start` shows the right number),
-4. runs `npm run dist:win` / `npm run dist:linux` with `--publish always`, which uploads the
-   installer and the update manifest (`latest.yml` / `latest-linux.yml`) to the GitHub release
-   for the tag, creating the release if needed,
-5. writes download links into the release notes and marks it as the latest release.
+4. runs `npm run dist:win` / `npm run dist:linux` and uploads the installer, its block map and
+   the update manifest (`latest.yml` / `latest-linux.yml`) as workflow artifacts,
+5. once both platforms have built, creates the GitHub release for the tag with all of those
+   files attached and download links in the notes, and marks it as the latest release.
 
-Running the workflow by hand (workflow_dispatch) builds without publishing and attaches the
-installers to the workflow run instead.
+A build failure on either platform therefore leaves no release behind; fix, delete the tag
+(`git push --delete origin vX.Y.Z; git tag -d vX.Y.Z`) and tag again. Running the workflow by
+hand (workflow_dispatch) only builds; the installers are attached to the workflow run.
 
 Release assets:
 
@@ -76,5 +77,5 @@ npm run dist:win                         # app/release/GPU-Inspector-Setup-<vers
 npm run dist:linux                       # app/release/gpu-inspector_<version>_amd64.deb
 ```
 
-`npm run dist` without `--publish` only builds; add `-- --publish always` with `GH_TOKEN` set to
-publish from a machine instead of the workflow.
+`npm run dist` only builds; `gh release create vX.Y.Z app/release/*` (or `-- --publish always`
+with `GH_TOKEN` set) publishes from a machine instead of the workflow.

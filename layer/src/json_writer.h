@@ -48,7 +48,8 @@ public:
     }
 
     void Null() { Sep(); _out += "null"; _needComma = true; }
-    void Bool(bool b) { Sep(); _out += b ? "true" : "false"; _needComma = true; }
+    // Not "Bool": X11's Xlib.h (included by vulkan.h on Linux) defines Bool as a macro.
+    void Boolean(bool b) { Sep(); _out += b ? "true" : "false"; _needComma = true; }
 
     void Int(int64_t v) {
         Sep();

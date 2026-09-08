@@ -330,7 +330,7 @@ void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& con
                 }
                 if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER || b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                     w.Key("sampler"); w.Handle(HT_VkSampler, "VkSampler", (uint64_t)(uintptr_t)e.sampler);
-                    if (b.immutableSamplers) { w.Key("immutable"); w.Bool(true); }
+                    if (b.immutableSamplers) { w.Key("immutable"); w.Boolean(true); }
                 }
             } else if (IsTexelType(b.type)) {
                 w.Key("bufferView"); w.Handle(HT_VkBufferView, "VkBufferView", (uint64_t)(uintptr_t)e.bufferView);

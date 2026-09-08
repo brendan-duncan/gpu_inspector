@@ -158,7 +158,7 @@ static void HandleUiMessage(const std::string& text) {
         w.BeginObject();
         w.Key("action"); w.String("ObjectUpdate");
         w.Key("id"); w.Uint(id);
-        w.Key("tracked"); w.Bool(tracked);
+        w.Key("tracked"); w.Boolean(tracked);
         w.Key("layout"); w.Handle(HT_VkDescriptorSetLayout, "VkDescriptorSetLayout", (uint64_t)(uintptr_t)contents.layout);
         w.Key("bindings");
         uint32_t dynamicIndex = 0;
@@ -200,7 +200,7 @@ static void HandleUiMessage(const std::string& text) {
                 w.Key("action"); w.String("ShaderReplaced");
                 w.Key("pipeline"); w.Uint(pipeline);
                 w.Key("stage"); w.String(stageName);
-                w.Key("ok"); w.Bool(false);
+                w.Key("ok"); w.Boolean(false);
                 w.Key("error"); w.String(stage ? "malformed SPIR-V payload" : "unknown shader stage");
                 w.EndObject();
                 Transport::Get().SendJson(std::move(w.str()));
