@@ -16,7 +16,8 @@ namespace vkinsp {
 struct InstanceData;
 struct DeviceData;
 
-enum class RefreshSource { None, PresentTiming, DisplayTiming, Monitor, Estimate };
+// ("Unknown", not "None": X11 headers define None, and vulkan_xlib.h pulls them in on Linux.)
+enum class RefreshSource { Unknown, PresentTiming, DisplayTiming, Monitor, Estimate };
 const char* RefreshSourceName(RefreshSource s);
 
 // Adds VK_KHR_get_surface_capabilities2 (a dependency of VK_EXT_present_timing) to the instance

@@ -3,7 +3,9 @@
 #include "json_writer.h"
 #include "layer.h"
 
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>

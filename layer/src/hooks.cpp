@@ -249,7 +249,7 @@ void Hook_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* 
     info.usage = pCreateInfo->imageUsage;
     info.arrayLayers = pCreateInfo->imageArrayLayers;
     info.presentMode = pCreateInfo->presentMode;
-    RefreshSource source = RefreshSource::None;
+    RefreshSource source = RefreshSource::Unknown;
     info.refreshMs = QueryRefreshMs(GetDeviceData(device), *pSwapchain, source);
     info.refreshSource = (int)source;
     if (info.refreshMs > 0) Log("swapchain refresh period %.3f ms (%s)", info.refreshMs, RefreshSourceName(source));

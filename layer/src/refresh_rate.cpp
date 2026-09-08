@@ -184,7 +184,7 @@ static double MonitorRefreshMs() {
 #endif
 
 double QueryRefreshMs(DeviceData* dev, VkSwapchainKHR swapchain, RefreshSource& source) {
-    source = RefreshSource::None;
+    source = RefreshSource::Unknown;
     if (!dev) return 0;
     if (dev->presentTiming) {
         VkSwapchainTimingPropertiesEXT props{VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};

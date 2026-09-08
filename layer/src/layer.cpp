@@ -644,7 +644,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             // The display can change (a window moved to another monitor, a mode switch):
             // re-query the swapchain's refresh period every ~2 s.
             if (data->frameIndex % 120 == 0) {
-                RefreshSource source = RefreshSource::None;
+                RefreshSource source = RefreshSource::Unknown;
                 double ms = QueryRefreshMs(data, pPresentInfo->pSwapchains[0], source);
                 if (ms > 0 && (ms != sc.refreshMs || (int)source != sc.refreshSource)) {
                     sc.refreshMs = ms;
