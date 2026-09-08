@@ -661,6 +661,13 @@ export class CaptureView implements CaptureHost {
     this._showCommand(row.command);
   }
 
+  selectCommand(index: number): void {
+    const row = this._rows.find((r) => r.command.index === index);
+    if (!row) return;
+    row.element.scrollIntoView({ block: "center" });
+    this._selectRow(row);
+  }
+
   private _summarizeArgs(cmd: CaptureCommand): string {
     const a = cmd.args;
     if (!a) return "";

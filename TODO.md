@@ -23,7 +23,7 @@ interpreter and re-created pipelines.
 - Command inspection: pipeline state, per-stage reflection, descriptor sets with parsed uniform
   and storage buffers (Format editor, radix, array paging) and the contents of bound images
   (read back once per view, budgeted), vertex/index/indirect data, push constants, render
-  targets.
+  targets, and "Affected by" on every buffer (the frame's earlier writers of it).
 - Frame Stats (API activity, passes, pipelines, bindings, memory, geometry).
 - Profile passes: GPU timestamps per render pass and per run of dispatches (compute passes),
   pass durations in headers, pass timeline, Frame Bound card and pass timings in Frame Stats.
@@ -45,8 +45,6 @@ interpreter and re-created pipelines.
       a session window would need the file path handed over and reopened there).
 - [ ] Capture files: a recent-files list.
 - [ ] "At frame" field in the capture bar (the layer already supports `atFrame`).
-- [ ] "Affected By" on a buffer: earlier copies/updates/fills targeting it and dispatches that
-      bind it as writable storage.
 - [ ] Multisampled render target read-back (resolve into a temporary image).
 - [ ] Sampled image read-back: every mip of a view (only the base mip is copied today), and
       sampled images bound through descriptor buffers / shader objects.

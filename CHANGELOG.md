@@ -7,7 +7,9 @@
   application info, layers and extensions. The layer attaches the physical device's
   capabilities at `vkEnumeratePhysicalDevices`, so capture files carry them too.
 - Physical devices show their name and type in the object list.
-- This changelog.
+- "Affected by" on a captured buffer (descriptor bindings, vertex, index and indirect buffers):
+  the earlier commands of the frame that wrote it, transfers naming it as their destination and
+  draws or dispatches that had it bound as a storage buffer; clicking one selects it.
 
 ### Changed
 - Shader Reflection sections are collapsed by default.

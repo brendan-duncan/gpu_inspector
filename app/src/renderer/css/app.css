@@ -454,6 +454,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Loaded thumbnails keep their aspect; small textures are scaled up so texels stay visible. */
 .capture-thumb.loaded { width: auto; height: auto; min-width: 64px; }
 .capture-image-box { margin: 4px 0; }
+.affected-by { margin: 4px 0; }
+.affected-by > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
+.affected-by-list { max-height: 160px; overflow: auto; }
 .format-dialog { top: 12%; }
 .format-dialog-body { padding: 8px 14px 10px 14px; max-height: none; }
 .format-dialog-text {

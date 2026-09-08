@@ -89,7 +89,22 @@ export interface CaptureHost {
   renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void;
   /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
   textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
+  /** Selects a command of the list by its index (scrolls to it and shows its details). */
+  selectCommand(index: number): void;
 }
+
+/** Commands that write a buffer through a transfer, and the argument naming the destination. */
+const BUFFER_WRITE_METHODS: Record<string, (a: ArgObject) => ArgValue | undefined> = {
+  vkCmdCopyBuffer: (a) => a.dstBuffer,
+  vkCmdCopyBuffer2: (a) => (isObject(a.pCopyBufferInfo) ? a.pCopyBufferInfo.dstBuffer : undefined),
+  vkCmdCopyBuffer2KHR: (a) => (isObject(a.pCopyBufferInfo) ? a.pCopyBufferInfo.dstBuffer : undefined),
+  vkCmdCopyImageToBuffer: (a) => a.dstBuffer,
+  vkCmdCopyImageToBuffer2: (a) => (isObject(a.pCopyImageToBufferInfo) ? a.pCopyImageToBufferInfo.dstBuffer : undefined),
+  vkCmdCopyImageToBuffer2KHR: (a) => (isObject(a.pCopyImageToBufferInfo) ? a.pCopyImageToBufferInfo.dstBuffer : undefined),
+  vkCmdUpdateBuffer: (a) => a.dstBuffer,
+  vkCmdFillBuffer: (a) => a.dstBuffer,
+  vkCmdCopyQueryPoolResults: (a) => a.dstBuffer,
+};
 
 interface StageReflection { source: StageSource; reflection: ShaderReflection | null }
 
@@ -131,6 +146,8 @@ export class CommandInfoView {
   private _thumbs = new Map<number, HTMLCanvasElement[]>();
   private _thumbRequested = new Set<number>();
   private _radix: Radix = 10;
+  /** The command being shown (for "Affected by": what wrote a buffer before it). */
+  private _current: CaptureCommand | null = null;
 
   constructor(panel: CaptureHost) {
     this.panel = panel;
@@ -149,6 +166,7 @@ export class CommandInfoView {
     container.html = "";
     this._thumbs.clear();
     this._thumbRequested.clear();
+    this._current = cmd;
     const token = ++this._token;
     const db = this.db;
     const method = cmd.method;
@@ -595,6 +613,7 @@ export class CommandInfoView {
     const dyn = d.dynamicOffset !== undefined ? `  dynamic offset ${d.dynamicOffset}  (effective ${num(d.offset) + num(d.dynamicOffset)})` : "";
     new Span(row, { text: `  offset ${num(d.offset)}  range ${num(d.range)}${dyn}`, class: "text-muted" });
     if (buf?.descriptor) new Div(body, { text: `${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted font-sm" });
+    if (buf) this._renderAffectedBy(body, buf.id);
 
     const captured = this.panel.data.buffer(d.data);
     const key = `${state.pipeline?.id ?? 0}:${set.set}:${binding.binding}`;
@@ -606,6 +625,73 @@ export class CommandInfoView {
         `descriptor offset ${num(d.offset)} + dynamic offset ${num(d.dynamicOffset)}, range ${num(d.range)}, buffer size ${bufSize}, capture id ${captured.info.id}` });
     }
     this._renderBufferContents(body, key, kind, res, captured);
+  }
+
+  /**
+   * "Affected by": the earlier commands of the frame that wrote the buffer (WebGPU Inspector's
+   * list under a bind group's buffer): transfers naming it as their destination, and draws,
+   * dispatches and ray tracing launches whose bound descriptor sets hold it as a storage buffer.
+   */
+  private _affectedBy(bufferId: number): CaptureCommand[] {
+    const current = this._current;
+    if (!current) return [];
+    const out: CaptureCommand[] = [];
+    // Storage buffers bound per stream and bind point: stream -> bind point -> set index -> buffers.
+    const bound = new Map<string, Map<string, Map<number, Set<number>>>>();
+    for (const c of this.panel.data.commands) {
+      if (!c || c.index >= current.index) break;
+      if (c.frame !== current.frame || SUBMIT_METHODS.has(c.method)) continue;
+      const a = c.args;
+      const writer = BUFFER_WRITE_METHODS[c.method];
+      if (writer && a && refId(writer(a)) === bufferId) {
+        out.push(c);
+        continue;
+      }
+      const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
+      if (c.descriptors) {
+        let byPoint = bound.get(stream);
+        if (!byPoint) bound.set(stream, (byPoint = new Map()));
+        let sets = byPoint.get(c.descriptors.bindPoint);
+        if (!sets) byPoint.set(c.descriptors.bindPoint, (sets = new Map()));
+        for (const s of c.descriptors.sets) {
+          const buffers = new Set<number>();
+          for (const b of s.bindings) {
+            if (!b.type.includes("STORAGE_BUFFER")) continue;
+            for (const d of b.descriptors) {
+              const id = refId(d?.buffer);
+              if (id !== null) buffers.add(id);
+            }
+          }
+          sets.set(s.set, buffers);
+        }
+        continue;
+      }
+      if (isAction(c.method)) {
+        const sets = bound.get(stream)?.get(bindPointOf(c.method));
+        if (!sets) continue;
+        for (const buffers of sets.values()) {
+          if (buffers.has(bufferId)) {
+            out.push(c);
+            break;
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  private _renderAffectedBy(body: Widget, bufferId: number): void {
+    const commands = this._affectedBy(bufferId);
+    if (!commands.length) return;
+    const grp = new collapsible(body, { label: `Affected by (${commands.length})`, collapsed: commands.length > 6, class: "affected-by" });
+    const ul = new Widget("ul", grp.body, { class: "dependency-list affected-by-list" });
+    for (const c of commands) {
+      const li = new Widget("li", ul);
+      const link = new Span(li, { text: `#${c.index} ${c.method.replace(/^vkCmd/, "")}`, class: "dependency_link" });
+      const how = BUFFER_WRITE_METHODS[c.method] ? "transfer destination" : "bound as a storage buffer";
+      new Span(li, { text: `  ${how}`, class: "text-muted font-sm" });
+      link.element.onclick = () => this.panel.selectCommand(c.index);
+    }
   }
 
   /** Header line, Format button and typed values of a captured buffer range. */
@@ -843,6 +929,7 @@ export class CommandInfoView {
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
     if (buf?.descriptor) new Span(row, { text: `  ${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted" });
     if (vb.cmd !== state.pipelineCmd) new Div(body, { text: `bound by #${vb.cmd.index} ${vb.cmd.method.replace(/^vkCmd/, "")}`, class: "text-muted font-sm" });
+    if (buf) this._renderAffectedBy(body, buf.id);
 
     const inputs = vertexReflection?.entryPoint()?.inputs ?? [];
     const nameOf = (location: number): string => inputs.find((i) => i.location === location)?.name || `location${location}`;
@@ -903,6 +990,7 @@ export class CommandInfoView {
     new Span(row, { text: "Buffer: ", class: "text-muted" });
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
     if (buf?.descriptor) new Span(row, { text: `  ${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted" });
+    if (buf) this._renderAffectedBy(body, buf.id);
 
     const captured = this.panel.data.buffer(ib.dataId);
     if (!captured) {
@@ -944,6 +1032,7 @@ export class CommandInfoView {
     const row = new Div(body, { class: "font-md" });
     new Span(row, { text: "Buffer: ", class: "text-muted" });
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
+    if (buf) this._renderAffectedBy(body, buf.id);
     const captured = this.panel.data.buffer(cmd.bufferData?.[0]);
     if (!captured || captured.info.error) {
       new Div(body, { text: captured?.info.error ? `Contents not captured: ${captured.info.error}` : "Contents were not captured.", class: "text-muted" });
