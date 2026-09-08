@@ -209,7 +209,7 @@ export class ObjectDatabase implements ObjectLookup {
    * path as a live snapshot, then the objects destroyed before the save become ghosts without
    * the destroy cascade, so every link of the loaded capture still resolves.
    */
-  loadObjects(objects: CaptureFileObject[], blobs: Map<string, Uint8Array>, stats: { frame: number; frameTimeMs: number; submitMs: number; refreshMs?: number; refreshSource?: string }): void {
+  loadObjects(objects: CaptureFileObject[], blobs: Map<string, Uint8Array>, stats: { frame: number; frameTimeMs: number; submitMs: number; refreshMs?: number; refreshSource?: string; displayRefreshMs?: number; frameBoundary?: string }): void {
     this.reset();
     this._snapshotRemaining = objects.length;
     this.onReset.emit();
@@ -248,7 +248,10 @@ export class ObjectDatabase implements ObjectLookup {
     this.submitMs = stats.submitMs;
     this.refreshMs = stats.refreshMs ?? 0;
     this.refreshSource = stats.refreshSource ?? "";
-    this.onFrameStats.emit({ action: "FrameStats", frame: stats.frame, frameTimeMs: stats.frameTimeMs, submitMs: stats.submitMs, refreshMs: this.refreshMs, refreshSource: this.refreshSource });
+    this.displayRefreshMs = stats.displayRefreshMs ?? 0;
+    this.frameBoundary = stats.frameBoundary ?? "";
+    this.onFrameStats.emit({ action: "FrameStats", frame: stats.frame, frameTimeMs: stats.frameTimeMs, submitMs: stats.submitMs, refreshMs: this.refreshMs, refreshSource: this.refreshSource,
+      displayRefreshMs: this.displayRefreshMs, frameBoundary: this.frameBoundary });
   }
 
   private _accountMemory(o: VulkanObject, sign: 1 | -1): void {

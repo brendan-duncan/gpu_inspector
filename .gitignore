@@ -30,7 +30,7 @@ Thumbs.db
 
 # generated from vk.xml by CMake (tools/gen_vulkan.py)
 layer/gen/
-tools/vkgen/__pycache__/
+__pycache__/
 
 # installers (electron-builder)
 app/release/

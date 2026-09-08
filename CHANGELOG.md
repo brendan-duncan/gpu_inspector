@@ -6,9 +6,20 @@
   from every submission when it never waits, chosen once submissions pile up without a present
   (`VKINSP_FRAME_BOUNDARY=wait|submit` forces it). Captures, the frame time meter and the live
   image viewer work on such applications; the meter says which boundary is in use. The triangle
-  test application's `--offscreen` option renders without presenting to exercise this.
+  test application's `--offscreen` option renders without presenting to exercise this. The
+  refresh estimate applies to such frames too (the runtime paces them), and a capture file
+  keeps the frame boundary and refresh source it was taken with.
+- The refresh estimate picks the common rate the frame intervals fit best (the median distance
+  to a multiple of the period, within 8%) instead of the slowest rate 90% of them fit within
+  4%, so frames ended by a fence wait, which jitter by a millisecond, still resolve (a Quest's
+  72 Hz); the layer logs the refresh rate and its source whenever they change.
 - Multiview: the layers a render pass or dynamic rendering renders through its view mask
   (stereo) are read back, not only the framebuffer's layer count.
+- An OpenXR test application for Android headsets (`test/xr_triangle`, built and packaged as a
+  debuggable APK by `tools/build_xr_triangle.py`): one stereo swapchain rendered in a single
+  multiview pass. Verified on a Meta Quest 3 (Adreno 740): frames end at the application's
+  fence wait, the capture reads both eye layers of the color and depth attachments back, and
+  the pass timing works.
 - Android: the layer listens on an abstract Unix socket, so the target no longer needs the
   INTERNET permission, and the layer package is installed force-queryable so Android 11+'s
   package visibility lets the target's loader find it. Verified on a Pixel 8 Pro (Mali-G715):

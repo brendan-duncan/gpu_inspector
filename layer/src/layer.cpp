@@ -598,11 +598,14 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkDebugMarkerSetObjectNameEXT(VkDevice devi
 // ---------------------------------------------------------------------------------------------
 // Frame boundary
 
-// Refresh period from the intervals between presents under vsync (a FIFO present mode). The
-// display consumes at most one present per refresh, so over the window the intervals add up to
-// at least one period per present; and apart from queued presents (near-zero intervals: the driver let another
-// frame in before blocking) every interval is a whole number of periods. The slowest common rate
-// that both conditions accept is the estimate, snapped to that rate. A 30 fps application on a
+// Refresh period from the intervals between frames under vsync (a FIFO present mode; frames
+// without a present are paced by whoever composites them, an OpenXR runtime). The display
+// consumes at most one present per refresh, so over the window the intervals add up to at least
+// one period per frame; and apart from queued presents (near-zero intervals: the driver let
+// another frame in before blocking) every interval is a whole number of periods. Of the common
+// rates the first condition allows, the one whose period the intervals match best wins, judged
+// by the median distance to the nearest multiple (hitches and start-up do not count); rates are
+// tried slowest first and a faster one must fit clearly better, so a 30 fps application on a
 // 60 Hz display reads as 30 Hz: the intervals cannot tell the two apart. 0 when nothing fits.
 static double EstimateRefreshMs(const std::vector<double>& intervals) {
     static const double kRates[] = {24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 180, 240, 360};
@@ -612,20 +615,28 @@ static double EstimateRefreshMs(const std::vector<double>& intervals) {
     // Start-up allowance: the driver lets a few presents through before blocking (up to the
     // swapchain length); those consumed no refresh, so 8 intervals are left out of the bound.
     constexpr size_t kQueued = 8;
+    std::vector<double> errors;
+    errors.reserve(n);
+    double best = 0, bestError = 0;
     for (double hz : kRates) {
         const double period = 1000.0 / hz;
         if (n <= kQueued || sum < period * (double)(n - kQueued) * 0.97) continue;
-        const double tolerance = std::max(period * 0.04, 0.25);
-        size_t fit = 0, total = 0;
+        errors.clear();
         for (double ms : intervals) {
             if (ms < 1.0) continue;   // queued present: no refresh between it and the previous one
-            total++;
-            const double k = std::round(ms / period);
-            if (k >= 1 && std::fabs(ms - k * period) <= tolerance) fit++;
+            const double k = std::max(1.0, std::round(ms / period));
+            errors.push_back(std::fabs(ms - k * period));
         }
-        if (total >= 8 && fit * 10 >= total * 9) return period;
+        if (errors.size() < 8) continue;
+        std::nth_element(errors.begin(), errors.begin() + errors.size() / 2, errors.end());
+        const double error = errors[errors.size() / 2];
+        // Frames ended by a fence wait or the runtime's pacing jitter by a millisecond where a
+        // present's vblank is exact, hence the wide tolerance; distinguishing 72 from 75 Hz is
+        // left to the best-fit rule.
+        if (error > std::max(period * 0.08, 0.25)) continue;
+        if (best == 0 || error + 0.1 < bestError) { best = period; bestError = error; }
     }
-    return 0;
+    return best;
 }
 
 // The end of a frame: the counters, the capture, the validation frame, the frame timing report.
@@ -681,6 +692,14 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
         if (vsync && data->displayRefreshMs > 0) data->refreshMs = data->displayRefreshMs;
         else if (vsync && data->recentIntervalsMs.size() >= 32) { data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs); data->refreshSource = (int)RefreshSource::Estimate; }
         else if (!vsync) data->refreshMs = 0;
+        // Logged when the rate changes (by more than half a percent: a timing extension's
+        // measured period wanders slightly) or its source does.
+        if (std::fabs(data->refreshMs - data->loggedRefreshMs) > data->loggedRefreshMs * 0.005 || (data->refreshMs > 0 && data->refreshSource != data->loggedRefreshSource)) {
+            data->loggedRefreshMs = data->refreshMs;
+            data->loggedRefreshSource = data->refreshSource;
+            if (data->refreshMs > 0) Log("refresh rate: %.4g Hz (%.3f ms, %s)", 1000.0 / data->refreshMs, data->refreshMs, RefreshSourceName((RefreshSource)data->refreshSource));
+            else Log("refresh rate: unknown");
+        }
         double sinceReport = std::chrono::duration<double, std::milli>(now - data->lastReport).count();
         if (sinceReport >= 100.0 && Transport::Get().Connected()) {
             JsonWriter w;

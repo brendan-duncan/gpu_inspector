@@ -23,6 +23,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <timeapi.h>
 #else
 #include <xcb/xcb.h>
 #endif
@@ -1038,8 +1039,12 @@ struct App {
         si.pSignalSemaphores = &renderFinished[frameSlot];
         CHECK(vkQueueSubmit(queue, 1, &si, fence));
         if (offscreen) {
-            // No present: pace the loop like a 90 Hz headset instead.
-            std::this_thread::sleep_for(std::chrono::milliseconds(11));
+            // No present: pace the loop like a 90 Hz headset's runtime instead, on a steady
+            // schedule (a sleep after the frame's own work would drift and jitter).
+            using namespace std::chrono;
+            static steady_clock::time_point next = steady_clock::now();
+            next += nanoseconds(11111111);
+            std::this_thread::sleep_until(next);
             frameSlot = (frameSlot + 1) % kFramesInFlight;
             frameCount++;
             return true;
@@ -1177,7 +1182,12 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
-        else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
+        else if (!strcmp(argv[i], "--offscreen")) {
+            app.offscreen = true;
+#ifdef _WIN32
+            timeBeginPeriod(1);   // 1 ms scheduler granularity for the frame pacing
+#endif
+        }
     }
     return app.Run();
 }

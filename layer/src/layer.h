@@ -105,6 +105,8 @@ struct DeviceData {
     // which source refreshMs came from.
     double displayRefreshMs = 0;
     int refreshSource = 0;       // RefreshSource
+    double loggedRefreshMs = 0;  // the last refresh rate written to the log, and its source
+    int loggedRefreshSource = 0;
     double deficitRefreshMs = 0; // the estimate refreshDeficit was accumulated with
     long refreshDeficit = 0;     // refreshes elapsed minus frames presented, while vsync is on
     long droppedTotal = 0;       // the reported dropped frames: the largest deficit so far

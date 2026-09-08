@@ -90,6 +90,12 @@ device-side server:
   the layer switches, after sixty submissions without a present, to ending frames at the
   application's `vkWaitForFences` following a submission (or at every submission when it never
   waits); see `EndFrame` in `layer.cpp`. Multiview passes read back the view mask's layers.
+  `test/xr_triangle` is an OpenXR NativeActivity (one stereo swapchain, a multiview pass with
+  `gl_ViewIndex`) that `tools/build_xr_triangle.py` builds against the Khronos loader AAR and
+  packages debuggable; verified on a Quest 3. Its manifest declares hand tracking as an input
+  option, since the Quest shell otherwise refuses to launch an application until controllers
+  are on, and a launch check dialog left behind by such a refusal blocks later launches until
+  the shell restarts.
 * **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
   (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
   `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the
@@ -191,9 +197,11 @@ much slower than on the desktop.
    and a refresh-rate estimate (`EstimateRefreshMs`): with a FIFO present mode the display
    consumes at most one present per refresh, so the last 240 intervals add up to at least one
    period per present (less a start-up allowance of 8 the driver queued before blocking), and
-   every interval other than a queued present (near zero) is a whole number of periods; the
-   slowest common rate that both conditions accept (90% of the intervals within 4%) is the
-   estimate. Per report, the refreshes elapsed minus the frames presented accumulate in a signed
+   every interval other than a queued present (near zero) is a whole number of periods; of the
+   common rates the sum allows, the one the intervals fit best (the median distance to the
+   nearest multiple, within 8%: frames ended by a fence wait jitter by a millisecond where a
+   vblank is exact) is the estimate, a faster rate replacing a slower one only when it fits
+   clearly better. The layer logs the rate whenever it changes. Per report, the refreshes elapsed minus the frames presented accumulate in a signed
    deficit (a report bounded by a queued present is one short, the next one long); its growth is
    `dropped`, its high-water mark `droppedTotal`, both reset when the estimate changes. The UI
    uses the period as the frame budget (timeline marker, Frame Bound card) and shows the dropped
