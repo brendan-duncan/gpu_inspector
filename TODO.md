@@ -24,6 +24,9 @@ interpreter and re-created pipelines.
   pipelines, syntax highlighting.
 - Shader source maps: embedded source (OpSource / NonSemantic DebugInfo) as a Source view, SPIR-V
   disassembly annotated and linked to source lines, editing from the embedded source.
+- Validation messages: the layer's debug-utils messenger forwards validation layer output (with
+  repeat counts and object links); "Validation layer" in the launch dialog enables the Khronos
+  layer; Inspect lists the messages, marks the objects, the session bar counts them.
 - Capture files (`.gpucap`): save from the capture bar or tab menu, open from the launch bar or by
   drag and drop into a session of their own with the object graph, shaders, buffers, render
   targets and timings; "Open in New Tab" copies a capture in memory.
@@ -51,8 +54,9 @@ interpreter and re-created pipelines.
 - [ ] Shader reflection section on shader modules and pipelines (the code exists in the capture
       view).
 - [ ] Device features, limits, memory heaps and enabled extensions as inspectable sections.
-- [ ] Validation messages: register a debug-utils messenger in the layer and forward validation
-      layer output; a Validation Errors category with jump-to-object, and error-highlighted objects.
+- [ ] Validation messages in captures: attach the messages raised while a command was recorded
+      to that command in the capture list (the layer's messenger sees the message during the
+      vkCmd call, before or after our hook depending on layer order).
 - [ ] Leak report at `vkDestroyDevice` (objects never destroyed).
 - [ ] Object and command stacktraces (stack capture in the layer, symbolized in the app).
 - [ ] Dropped-frame detection and a refresh-rate estimate for the frame budget (present timing

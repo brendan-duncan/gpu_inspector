@@ -20,7 +20,7 @@ import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import type { SessionContext } from "./session_panel.js";
-import type { ObjectDatabase } from "./vulkan/object_database.js";
+import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import type { CaptureDescriptorBinding, HandleRef, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears.
@@ -169,6 +169,11 @@ export class InspectPanel {
   private objectsPanel!: Div;
   private groupsContainer!: Div;
   private inspectPanel!: Div;
+  // Validation messages (the layer's debug-utils messenger), listed above the object groups.
+  private _validationGroup: collapsible | null = null;
+  private _validationList: Widget | null = null;
+  private _validationItems = new Map<number, Widget>();
+  private _selectedValidation: ValidationEntry | null = null;
   private _backButton!: Button;
   private _forwardButton!: Button;
   private _filterInput!: TextInput;
@@ -206,6 +211,123 @@ export class InspectPanel {
       if (this._filters.onlyInLastCapture) this._applyFilter();
     });
     db.onFrameStats.addListener((m) => this._updateMeters(m.frameTimeMs, m.maxMs ?? m.frameTimeMs, m.submitMs ?? 0));
+    db.onValidationMessage.addListener((entry, isNew) => this._validationMessage(entry, isNew));
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Validation messages: a group above the object list (WebGPU Inspector's "Validation Errors"),
+  // an error mark on every object a message names, and the message as an inspectable item.
+
+  private _ensureValidationGroup(): collapsible {
+    if (this._validationGroup) return this._validationGroup;
+    const g = new collapsible(null, { collapsed: true, label: "Validation Messages 0", class: "validation-group" });
+    g.body.style.maxHeight = "320px";
+    g.body.style.overflow = "auto";
+    this._validationList = new Widget("ol", g.body, { style: "margin-top: 6px; margin-bottom: 6px;" });
+    const first = this.groupsContainer.children[0];
+    if (first) this.groupsContainer.insertBefore(g, first);
+    else this.groupsContainer.appendChild(g);
+    this._validationGroup = g;
+    return g;
+  }
+
+  private _setValidationLabel(): void {
+    if (!this._validationGroup) return;
+    const [errors, warnings] = this.database.validationCounts;
+    const n = this.database.validation.length;
+    const dropped = this.database.validationDropped;
+    this._validationGroup.label.text = `Validation Messages ${n}${dropped ? ` (+${dropped} dropped)` : ""}`;
+    this._validationGroup.classList.toggle("has-errors", errors > 0);
+    this._validationGroup.classList.toggle("has-warnings", errors === 0 && warnings > 0);
+  }
+
+  private _validationItemText(entry: ValidationEntry): string {
+    // The validation layer's first line is "Validation Error: [ VUID ] Object 0: handle = ...;
+    // | MessageID = ... | <what went wrong>": the last "|" segment is the readable part.
+    let first = entry.message.split("\n")[0].replace(/^Validation (Error|Warning|Performance Warning): \[[^\]]*\]\s*/, "");
+    const segments = first.split(" | ");
+    if (segments.length > 1) first = segments[segments.length - 1].trim();
+    const head = entry.idName ? `${entry.idName}: ` : "";
+    const text = `${head}${first}`;
+    return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+  }
+
+  private _validationMessage(entry: ValidationEntry, isNew: boolean): void {
+    const g = this._ensureValidationGroup();
+    if (isNew) {
+      const item = new Widget("li", this._validationList!, { class: "object-item validation-item" });
+      new Span(item, { text: entry.severity === "error" ? "✖" : entry.severity === "warning" ? "⚠" : "ℹ", class: `validation-sev validation-sev-${entry.severity}` });
+      new Span(item, { text: this._validationItemText(entry), class: "validation-text" });
+      new Span(item, { text: entry.count > 1 ? `×${entry.count}` : "", class: "validation-count" });
+      item.tooltip = entry.message;
+      item.element.onclick = () => this._selectValidation(entry);
+      this._validationItems.set(entry.key, item);
+      // Objects the message names show the error in the list and in their details.
+      for (const o of entry.objects ?? []) {
+        if (!o.object || !isHandleRef(o.object)) continue;
+        const obj = this.database.getObject(o.object.__id);
+        if (!obj) continue;
+        if (obj.widget) this._fillItem(obj, obj.widget as Widget);
+        if (this.inspectedObject === obj) this._inspectObject(obj);
+      }
+    } else {
+      const item = this._validationItems.get(entry.key);
+      const count = item?.children[2] as Span | undefined;
+      if (count) count.text = entry.count > 1 ? `×${entry.count}` : "";
+    }
+    this._setValidationLabel();
+    if (this._selectedValidation === entry && !isNew) this._inspectValidation(entry);
+    void g;
+  }
+
+  /** Expands the validation group (the session bar's counter). */
+  showValidation(): void {
+    const g = this._ensureValidationGroup();
+    g.expand();
+    g.element.scrollIntoView({ block: "nearest" });
+  }
+
+  private _selectValidation(entry: ValidationEntry): void {
+    const prev = this._selectedObject?.widget as ObjectItem | null;
+    if (prev) prev.element.classList.remove("selected");
+    this._selectedObject = null;
+    for (const [key, item] of this._validationItems) item.element.classList.toggle("selected", key === entry.key);
+    this._selectedValidation = entry;
+    this._inspectValidation(entry);
+  }
+
+  private _inspectValidation(entry: ValidationEntry): void {
+    this.inspectPanel.html = "";
+    this.inspectedObject = null;
+    this.database.inspectedObject = null;
+    const db = this.database;
+    const onLink = (o: VulkanObject) => this.revealObject(o);
+    const box = new Div(this.inspectPanel, { class: entry.severity === "error" ? "info-box info-box-error" : "info-box info-box-warning", style: "flex: 0 0 auto;" });
+    new Div(box, { text: `Validation ${entry.severity}${entry.idName ? `: ${entry.idName}` : ""}`, class: "font-lg" });
+    const meta: string[] = [];
+    if (entry.types?.length) meta.push(entry.types.join(", "));
+    meta.push(`frame ${entry.frame}`);
+    meta.push(entry.count > 1 ? `reported ${entry.count} times` : "reported once");
+    if (entry.idNumber) meta.push(`id ${entry.idNumber}`);
+    new Div(box, { text: meta.join("  |  "), class: "font-md text-muted" });
+    if (entry.objects?.length) {
+      const grp = new collapsible(box, { label: `Objects (${entry.objects.length})`, collapsed: false });
+      const ul = new Widget("ul", grp.body, { class: "dependency-list" });
+      for (const o of entry.objects) {
+        const li = new Widget("li", ul);
+        const obj = o.object && isHandleRef(o.object) ? db.getObject(o.object.__id) : null;
+        if (obj) objectLink(li, obj, onLink, true);
+        else new Span(li, { text: `${o.class} ${o.handle}`, class: "text-muted" });
+        if (o.name) new Span(li, { text: `  "${o.name}"`, class: "text-muted font-sm" });
+      }
+    }
+    if (entry.cmdBufLabels?.length) new Div(box, { text: `Command buffer labels: ${entry.cmdBufLabels.join(" > ")}`, class: "font-md text-muted" });
+    if (entry.queueLabels?.length) new Div(box, { text: `Queue labels: ${entry.queueLabels.join(" > ")}`, class: "font-md text-muted" });
+    const grp = new collapsible(this.inspectPanel, { label: "Message", collapsed: false });
+    new Widget("pre", grp.body, { text: entry.message, class: "validation-message" });
+    if (entry.idName?.startsWith("VUID-")) {
+      new Div(grp.body, { text: `Specification: search the Vulkan specification for ${entry.idName} (registry.khronos.org/vulkan/specs/latest/html/vkspec.html#${entry.idName}).`, class: "text-muted font-sm" });
+    }
   }
 
   // ---------------------------------------------------------------------------------------
@@ -312,6 +434,10 @@ export class InspectPanel {
 
   private _reset(): void {
     this._groups.clear();
+    this._validationGroup = null;
+    this._validationList = null;
+    this._validationItems.clear();
+    this._selectedValidation = null;
     this.groupsContainer.html = "";
     this.inspectPanel.html = "";
     this._frameTimePlot.reset();
@@ -551,6 +677,10 @@ export class InspectPanel {
     item.element.onclick = () => {
       const prev = this._selectedObject?.widget as ObjectItem | null;
       if (prev) prev.element.classList.remove("selected");
+      if (this._selectedValidation) {
+        this._validationItems.get(this._selectedValidation.key)?.element.classList.remove("selected");
+        this._selectedValidation = null;
+      }
       this._selectedObject = object;
       item.element.classList.add("selected");
       this.inspectObject(object);
@@ -573,6 +703,11 @@ export class InspectPanel {
     if (object.isInvalid) {
       item.element.classList.add("error");
       item.tooltip = object.invalidReason ?? "";
+    }
+    const validation = this.database.validationFor(object.id);
+    if (validation.length) {
+      item.element.classList.add("error");
+      item.tooltip = validation.map((v) => this._validationItemText(v)).slice(0, 5).join("\n");
     }
   }
 
@@ -659,6 +794,20 @@ export class InspectPanel {
     if (summary) new Div(infoBox, { text: summary, class: "font-md" });
     new Div(infoBox, { text: `Created by ${object.cmd}${object.index ? ` [${object.index}]` : ""}`, class: "font-md text-muted" });
     if (object.isInvalid) new Div(infoBox, { text: `Invalid: ${object.invalidReason}`, class: "inspect_info_error" });
+    const validation = db.validationFor(object.id);
+    if (validation.length) {
+      infoBox.classList.remove("info-box-success");
+      infoBox.classList.add("info-box-error");
+      const grp = new collapsible(infoBox, { label: `Validation (${validation.length})`, collapsed: false });
+      for (const v of validation) {
+        const row = new Div(grp.body, { class: "validation-object-row" });
+        new Span(row, { text: v.severity === "error" ? "✖ " : "⚠ ", class: `validation-sev validation-sev-${v.severity}` });
+        new Span(row, { text: this._validationItemText(v), class: "validation-text dependency_link" });
+        if (v.count > 1) new Span(row, { text: ` ×${v.count}`, class: "validation-count" });
+        row.element.onclick = () => this._selectValidation(v);
+        row.tooltip = v.message;
+      }
+    }
 
     const parent = db.getObject(object.parentId);
     if (parent) {

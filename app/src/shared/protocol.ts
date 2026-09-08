@@ -241,8 +241,46 @@ export interface ShaderReplacedMessage {
   replacement?: number; // object id of the replacement pipeline
 }
 
+/** An object a validation message names: the tracked reference (or raw handle) and its debug name. */
+export interface ValidationObjectRef {
+  object: HandleRef | RawHandleRef | null;
+  class: string;
+  handle: string;
+  name?: string;
+}
+
+export type ValidationSeverity = "error" | "warning" | "info" | "verbose";
+
+/**
+ * A message from the layer's VK_EXT_debug_utils messenger (the validation layer, or the driver).
+ * The same message repeated is sent once; ValidationCount carries the repeat counts.
+ */
+export interface ValidationMessage {
+  action: "ValidationMessage";
+  key: number;
+  severity: ValidationSeverity;
+  types: string[];          // "validation" | "performance" | "general"
+  idName: string | null;    // "VUID-..."
+  idNumber: number;
+  message: string;
+  frame: number;
+  count: number;
+  objects: ValidationObjectRef[];
+  queueLabels?: string[];
+  cmdBufLabels?: string[];
+}
+
+export interface ValidationCountMessage {
+  action: "ValidationCount";
+  counts: [number, number][];   // [key, count]
+  /** Unique messages the layer stopped keeping once its cap was reached. */
+  dropped?: number;
+}
+
 export type LayerMessage =
   | SnapshotMessage
+  | ValidationMessage
+  | ValidationCountMessage
   | AddObjectMessage
   | DeleteObjectsMessage
   | ObjectSetLabelMessage
@@ -324,6 +362,8 @@ export interface LaunchConfig {
   port: number;
   log: boolean;
   recordAlways: boolean;
+  /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
+  validation: boolean;
   capture: QueuedCapture;
 }
 

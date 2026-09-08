@@ -5,8 +5,11 @@
 // in each object's serialized creation arguments instead of per-class knowledge.
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
-import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_file.js";
+
+/** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
+export type ValidationEntry = ValidationMessage;
 
 // Vulkan lets most objects be destroyed once the objects created from them exist (shader
 // modules after pipelines, descriptor set layouts after pipeline layouts, ...). Only these
@@ -37,6 +40,12 @@ export class ObjectDatabase implements ObjectLookup {
   memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
   /** Binary payloads received (ObjectBlob) or loaded from a capture file, keyed "id:index". */
   blobData = new Map<string, Uint8Array>();
+  /** Validation messages in arrival order, and by the objects they name. */
+  validation: ValidationEntry[] = [];
+  validationByKey = new Map<number, ValidationEntry>();
+  validationByObject = new Map<number, ValidationEntry[]>();
+  /** Unique messages the layer dropped after its cap. */
+  validationDropped = 0;
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -51,6 +60,47 @@ export class ObjectDatabase implements ObjectLookup {
   /** Messages not handled here (capture data) are forwarded to whoever listens. */
   readonly onOtherMessage = new Signal<(msg: LayerMessage) => void>();
   readonly onCapturedObjectsChanged = new Signal<() => void>();
+  /** A validation message arrived (isNew) or its repeat count changed. */
+  readonly onValidationMessage = new Signal<(entry: ValidationEntry, isNew: boolean) => void>();
+
+  /** Validation errors and warnings by severity: [errors, warnings]. */
+  get validationCounts(): [number, number] {
+    let errors = 0;
+    let warnings = 0;
+    for (const v of this.validation) {
+      if (v.severity === "error") errors++;
+      else if (v.severity === "warning") warnings++;
+    }
+    return [errors, warnings];
+  }
+
+  /** Validation messages naming an object. */
+  validationFor(id: number): ValidationEntry[] {
+    return this.validationByObject.get(id) ?? [];
+  }
+
+  private _addValidation(msg: ValidationMessage): void {
+    const existing = this.validationByKey.get(msg.key);
+    if (existing) {
+      existing.count = msg.count;
+      this.onValidationMessage.emit(existing, false);
+      return;
+    }
+    this.validation.push(msg);
+    this.validationByKey.set(msg.key, msg);
+    for (const o of msg.objects ?? []) {
+      if (!o.object || !isHandleRef(o.object)) continue;
+      const list = this.validationByObject.get(o.object.__id) ?? [];
+      if (!list.includes(msg)) list.push(msg);
+      this.validationByObject.set(o.object.__id, list);
+    }
+    this.onValidationMessage.emit(msg, true);
+  }
+
+  /** Validation messages of a capture file. */
+  loadValidation(entries: ValidationMessage[]): void {
+    for (const e of entries) this._addValidation(e);
+  }
 
   /** Records the objects a capture referenced (every {__id} in its commands). */
   setCapturedObjects(ids: Set<number>): void {
@@ -84,6 +134,10 @@ export class ObjectDatabase implements ObjectLookup {
     this.capturedObjects = new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
     this.blobData = new Map();
+    this.validation = [];
+    this.validationByKey = new Map();
+    this.validationByObject = new Map();
+    this.validationDropped = 0;
     this._snapshotRemaining = 0;
   }
 
@@ -188,6 +242,19 @@ export class ObjectDatabase implements ObjectLookup {
       case "ObjectBlob":
         if (msg.__binary) this.blobData.set(`${msg.id}:${msg.index ?? 0}`, msg.__binary);
         this.onObjectBlob.emit(msg.id, msg.index ?? 0, msg.__binary ?? null);
+        break;
+      case "ValidationMessage":
+        this._addValidation(msg);
+        break;
+      case "ValidationCount":
+        for (const [key, count] of msg.counts ?? []) {
+          const e = this.validationByKey.get(key);
+          if (e && e.count !== count) {
+            e.count = count;
+            this.onValidationMessage.emit(e, false);
+          }
+        }
+        if (msg.dropped !== undefined) this.validationDropped = msg.dropped;
         break;
       case "ObjectBlobs": {
         const o = this.getObject(msg.id);

@@ -39,6 +39,8 @@ struct InstanceData {
     std::string appName;
     std::string engineName;
     std::vector<std::string> enabledExtensions;
+    // The layer's own VK_EXT_debug_utils messenger (see validation.h); null when unavailable.
+    VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
 };
 
 struct DeviceData {

@@ -16,7 +16,7 @@ const DEFAULT_PORT = 47531;
 export function emptyLaunchConfig(): LaunchConfig {
   return {
     target: "native", exe: "", args: "", cwd: "", env: "", device: "", activity: "",
-    port: DEFAULT_PORT, log: true, recordAlways: false, capture: { mode: "none", value: 0 },
+    port: DEFAULT_PORT, log: true, recordAlways: false, validation: false, capture: { mode: "none", value: 0 },
   };
 }
 
@@ -62,6 +62,7 @@ export class LaunchDialog extends Dialog {
   private _port: TextInput;
   private _log: Checkbox;
   private _recordAlways: Checkbox;
+  private _validation!: Checkbox;
   private _captureMode: Select;
   private _captureValue: TextInput;
   private _captureValueLabel: Span;
@@ -133,6 +134,8 @@ export class LaunchDialog extends Dialog {
       this._recordAlways = new Checkbox(row, { label: "Record all command buffers", checked: false,
         tooltip: "Record every command buffer as it is built, so buffers recorded once and reused every frame appear in captures. Costs CPU time in the target." });
       this._log = new Checkbox(row, { label: "Layer log", checked: true, tooltip: "Log the layer's activity (the target's stderr, or logcat on Android), shown in the Log tab" });
+      this._validation = new Checkbox(row, { label: "Validation layer", checked: false,
+        tooltip: "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
       new Span(row, { text: "Port", class: "launch-dialog-label launch-dialog-label-inline" });
       this._port = new TextInput(row, { value: String(DEFAULT_PORT), class: "launch-dialog-input launch-dialog-port" });
     }
@@ -261,6 +264,7 @@ export class LaunchDialog extends Dialog {
       port: Number(this._port.value) || DEFAULT_PORT,
       log: this._log.checked,
       recordAlways: this._recordAlways.checked,
+      validation: !android && this._validation.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
   }
@@ -283,6 +287,7 @@ export class LaunchDialog extends Dialog {
     this._port.value = String(c.port || DEFAULT_PORT);
     this._log.checked = c.log ?? true;
     this._recordAlways.checked = c.recordAlways ?? false;
+    this._validation.checked = c.validation ?? false;
     const mode = c.capture?.mode ?? "none";
     this._captureMode.index = Math.max(0, CAPTURE_MODES.findIndex((m) => m[1] === mode));
     this._captureValue.value = String(c.capture?.value ?? 0);

@@ -12,6 +12,7 @@
 #include "shader_edit.h"
 #include "tracker.h"
 #include "transport.h"
+#include "validation.h"
 #include "image_readback.h"
 #include "vk_commands.gen.h"
 #include "vk_serialize.gen.h"
@@ -242,6 +243,7 @@ static void HandleUiMessage(const std::string& text) {
     } else if (action == "RequestSnapshot") {
         // A UI window that picked up an already-connected session rebuilds its object list.
         Tracker::Get().SendSnapshot();
+        ValidationLog::Get().SendSnapshot();
     } else if (action == "Settings") {
         if (const JsonValue* v = msg.Get("recordAlways")) CaptureManager::Get().SetRecordAlways(v->b);
     } else if (action == "Capture") {
@@ -319,7 +321,12 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
     // Advance the chain for the next layer.
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;
 
-    VkResult res = nextCreateInstance(pCreateInfo, pAllocator, pInstance);
+    // Validation messages need VK_EXT_debug_utils; enable it for the application when it did not.
+    VkInstanceCreateInfo createInfo = *pCreateInfo;
+    std::vector<const char*> extensionNames;
+    bool debugUtils = ValidationLog::EnsureDebugUtils(nextGipa, createInfo, extensionNames);
+
+    VkResult res = nextCreateInstance(&createInfo, pAllocator, pInstance);
     if (res != VK_SUCCESS) return res;
 
     auto data = std::make_unique<InstanceData>();
@@ -339,6 +346,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
         data->engineName.c_str(), VK_API_VERSION_MAJOR(data->apiVersion),
         VK_API_VERSION_MINOR(data->apiVersion), VK_API_VERSION_PATCH(data->apiVersion));
 
+    InstanceData* inst = data.get();
     RegisterInstance(DispatchKey(*pInstance), std::move(data));
 
     Tracker& t = Tracker::Get();
@@ -346,6 +354,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
     ArgsToJson_vkCreateInstance(w, pCreateInfo, pAllocator, pInstance);
     t.OnCreate(HT_VkInstance, (uint64_t)(uintptr_t)*pInstance, HT_Count, 0, VkCmdId::CreateInstance, 0, w.str());
     t.EndArgs();
+    if (debugUtils) ValidationLog::Get().CreateMessenger(inst);
     return VK_SUCCESS;
 }
 
@@ -355,6 +364,7 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyInstance(VkInstance instance,
     InstanceData* data = FindInstance(key);
     if (!data) return;
     Log("vkDestroyInstance");
+    ValidationLog::Get().DestroyMessenger(data);
     Tracker::Get().OnDestroy(HT_VkInstance, (uint64_t)(uintptr_t)instance);
     PFN_vkDestroyInstance next = data->dispatch.DestroyInstance;
     next(instance, pAllocator);
@@ -508,6 +518,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
     data->frameIndex++;
     CaptureManager::Get().OnPresent(data, queue, pPresentInfo, res);
+    ValidationLog::Get().SetFrame(data->frameIndex);
 
     // Frame timing, reported ten times per second: average, shortest and longest frame of the
     // interval (the UI's frame time meter plots the average and the longest).
@@ -541,6 +552,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
             data->frameTimeAccumMs = 0;
             data->frameTimeCount = 0;
             data->lastReport = now;
+            ValidationLog::Get().Flush();
         }
     } else {
         data->lastReport = now;

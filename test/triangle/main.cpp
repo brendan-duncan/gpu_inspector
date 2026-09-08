@@ -118,6 +118,7 @@ std::string ExeDir() {
 struct App {
     uint32_t width = 640, height = 480;
     int maxFrames = -1;
+    bool badScissor = false;
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -850,7 +851,9 @@ struct App {
         vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         VkViewport viewport{0, 0, (float)width, (float)height, 0, 1};
-        VkRect2D scissor{{0, 0}, {width, height}};
+        // --bad-scissor: a negative offset is a validation error (VUID-vkCmdSetScissor-x-00595),
+        // used to exercise the inspector's validation message reporting.
+        VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
         vkCmdSetViewport(cb, 0, 1, &viewport);
         vkCmdSetScissor(cb, 0, 1, &scissor);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
@@ -945,6 +948,7 @@ int RunApp(int argc, char** argv) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
     }
     return app.Run();
 }

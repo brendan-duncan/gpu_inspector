@@ -135,6 +135,23 @@ html, body {
 .status-connecting, .status-launched { color: var(--accent-warning); }
 .status-disconnected, .status-exited { color: var(--fg-secondary); }
 .status-error { color: var(--accent-error); }
+.status-warning { color: var(--accent-warning); }
+.launch-validation { margin-left: 12px; font-weight: 600; cursor: pointer; }
+.launch-validation:hover { text-decoration: underline; }
+
+/* Validation messages (Inspect > Validation Messages) */
+.validation-group.has-errors > .title_bar .object_type { color: var(--accent-error); }
+.validation-group.has-warnings > .title_bar .object_type { color: var(--accent-warning); }
+.validation-item { display: flex; gap: 6px; align-items: baseline; overflow: hidden; }
+.validation-sev { font-weight: bold; flex: 0 0 auto; }
+.validation-sev-error { color: var(--accent-error); }
+.validation-sev-warning { color: var(--accent-warning); }
+.validation-sev-info, .validation-sev-verbose { color: var(--accent-info); }
+.validation-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.validation-count { color: var(--fg-secondary); font-size: 9pt; flex: 0 0 auto; }
+.validation-message { white-space: pre-wrap; font-family: var(--font-mono); font-size: 9pt; margin: 6px; user-select: text; }
+.validation-object-row { padding: 2px 0; cursor: pointer; }
+.info-box-warning { background-color: rgba(220, 200, 90, 0.12); border: 1px solid var(--accent-warning); }
 .launch-frame {
   margin-left: 12px;
   font-family: var(--font-mono);

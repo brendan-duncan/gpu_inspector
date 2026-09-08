@@ -222,6 +222,26 @@ memory traffic (update/fill/copy bytes, and what the capture read back), and geo
 triangle, line and point counts follow each draw's bound pipeline's topology; indirect draws
 count from their captured argument buffers.
 
+#### Validation messages
+
+The layer registers its own `VK_EXT_debug_utils` messenger on every instance
+(`src/validation.*`), enabling the extension in `vkCreateInstance` when the application did not
+(the loader implements it, so it is always available), and forwards what the validation layer or
+the driver reports as `ValidationMessage` (severity, message id name and number, text, the frame,
+and the objects the message names, resolved to tracked ids so the UI can link them). Messages are
+kept in the layer as well: a UI that connects later receives them after the object snapshot, and
+repeats of one message (engines re-issue the same mistake every frame) are counted rather than
+resent, the counts going out with the frame tick as `ValidationCount`. Unique messages are capped
+at 2000 per process. Only messages of layers *below* ours in the chain reach the messenger, which
+is why the launcher enables the Khronos validation layer itself: the launch dialog's "Validation
+layer" checkbox adds `VK_LAYER_KHRONOS_validation` to the enabled layers and its directory (the
+Vulkan SDK, or the distribution's `explicit_layer.d`) to the layer path, since `VK_LAYER_PATH`
+replaces the loader's own explicit-layer search. The Inspect tab lists the messages above the
+object groups (WebGPU Inspector's "Validation Errors"), marks the objects they name in the object
+list and in their details, and the session bar counts errors and warnings; messages are also
+written to the Log tab and saved in capture files. The triangle test application's
+`--bad-scissor` option provokes one for testing.
+
 #### Capture files
 
 A capture can be saved (the Save button of the capture bar, or the tab's context menu) and

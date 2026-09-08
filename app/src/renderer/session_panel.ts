@@ -46,6 +46,7 @@ export class SessionPanel extends Div implements SessionContext {
   private _nameLabel!: Span;
   private _statusLabel!: Span;
   private _frameLabel!: Span;
+  private _validationLabel!: Span;
   private _stopButton!: Button;
   private _restartButton!: Button;
   private _recordAlwaysCheck!: Checkbox;
@@ -97,6 +98,21 @@ export class SessionPanel extends Div implements SessionContext {
     this._nameLabel = new Span(row, { text: "", class: "session-name" });
     this._statusLabel = new Span(row, { text: "disconnected", class: "launch-status status-disconnected" });
     this._frameLabel = new Span(row, { text: "", class: "launch-frame" });
+    // Validation counter: errors and warnings the layer's debug-utils messenger reported.
+    this._validationLabel = new Span(row, { text: "", class: "launch-validation", tooltip: "Validation messages: click to list them in the Inspect tab" });
+    this._validationLabel.style.display = "none";
+    this._validationLabel.element.onclick = () => {
+      this._tabs.activeTab = 0;
+      this.inspectPanel.showValidation();
+    };
+    this.database.onValidationMessage.addListener((entry, isNew) => {
+      this._updateValidationLabel();
+      if (isNew) {
+        const first = entry.message.split("\n")[0];
+        this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${first.length > 300 ? `${first.slice(0, 300)}...` : first}`);
+      }
+    });
+    this.database.onReset.addListener(() => this._updateValidationLabel());
     const spacer = new Span(row, { class: "launch-spacer" });
     spacer.style.flexGrow = "1";
     this._recordAlwaysCheck = new Checkbox(row, { label: "Record all command buffers", checked: this.info.recordAlways,
@@ -193,6 +209,16 @@ export class SessionPanel extends Div implements SessionContext {
     this._log.element.scrollTop = this._log.element.scrollHeight;
   }
 
+  private _updateValidationLabel(): void {
+    const [errors, warnings] = this.database.validationCounts;
+    const parts: string[] = [];
+    if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+    if (warnings) parts.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+    this._validationLabel.text = parts.length ? `⚠ ${parts.join(", ")}` : "";
+    this._validationLabel.style.display = parts.length ? "" : "none";
+    this._validationLabel.element.className = `launch-validation ${errors ? "status-error" : "status-warning"}`;
+  }
+
   /** Bar of a session that shows a capture file: no application to stop, relaunch or configure. */
   protected setFileMode(path: string): void {
     this._nameLabel.text = this.info.name;
@@ -223,6 +249,7 @@ export class FileSessionPanel extends SessionPanel {
     this.setFileMode(path);
     const m = capture.manifest;
     this.database.loadObjects(capture.objects, capture.blobs, { frame: m.frame, frameTimeMs: m.frameTimeMs ?? 0, submitMs: m.submitMs ?? 0 });
+    this.database.loadValidation(capture.validation);
     this.appendLog(`loaded ${path}: ${capture.commands.length} commands, ${capture.objects.length} objects, saved ${m.savedAt} from ${m.source?.name ?? "?"}`);
     this.capturePanel.setFileMode();
     this.capturePanel.openLoaded(capture);

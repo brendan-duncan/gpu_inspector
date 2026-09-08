@@ -11,7 +11,7 @@
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import type { SessionContext } from "./session_panel.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, ValidationMessage } from "../shared/protocol.js";
 
 export const CAPTURE_FILE_EXTENSION = "gpucap";
 export const CAPTURE_FILE_FILTERS = [{ name: "GPU Inspector captures", extensions: [CAPTURE_FILE_EXTENSION] }, { name: "All files", extensions: ["*"] }];
@@ -61,11 +61,14 @@ export interface CaptureFileManifest {
   textures: { info: CaptureTextureInfo; payload?: Payload }[];
   buffers: { info: CaptureBufferInfo; payload?: Payload }[];
   passTimings: PassTiming[];
+  /** Validation messages the session had received when the capture was saved. */
+  validation?: ValidationMessage[];
 }
 
 /** A parsed capture file, ready for CaptureData.load() and ObjectDatabase.loadObjects(). */
 export interface LoadedCapture {
   manifest: CaptureFileManifest;
+  validation: ValidationMessage[];
   objects: CaptureFileObject[];
   /** SPIR-V payloads keyed "objectId:blobIndex". */
   blobs: Map<string, Uint8Array>;
@@ -129,6 +132,7 @@ function referencedObjects(session: SessionContext, data: CaptureData): VulkanOb
     ids.add(b.info.buffer);
     ids.add(b.info.commandBuffer);
   }
+  for (const v of db.validation) db.collectReferences(v.objects, ids);
   const out = new Map<number, VulkanObject>();
   const queue = [...ids];
   while (queue.length) {
@@ -191,6 +195,7 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
     textures: data.textures.map((t) => ({ info: t.info, ...(t.data ? { payload: addPayload(t.data) } : {}) })),
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...(b.data ? { payload: addPayload(b.data) } : {}) })),
     passTimings: [...data.passTimings.values()],
+    validation: db.validation,
   };
 
   const json = new TextEncoder().encode(JSON.stringify(manifest));
@@ -250,5 +255,5 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const passTimings = new Map<string, PassTiming>();
   for (const p of manifest.passTimings ?? []) passTimings.set(`${p.frame}:${p.commandBuffer}:${p.passIndex}`, p);
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
-  return { manifest, objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings };
+  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings };
 }

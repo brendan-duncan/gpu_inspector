@@ -10,6 +10,7 @@
 
 #include "layer.h"
 #include "tracker.h"
+#include "validation.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -162,8 +163,10 @@ struct Transport::Impl {
             client = s;
             connected = true;
             Log("client connected");
-            // Snapshot the live objects into the queue before any new events are streamed.
+            // Snapshot the live objects into the queue before any new events are streamed, then
+            // the validation messages reported so far (they reference those objects).
             Tracker::Get().SendSnapshot();
+            ValidationLog::Get().SendSnapshot();
             if (receiver.joinable()) receiver.join();
             receiver = std::thread([this, s] { ReceiverLoop(s); });
         }

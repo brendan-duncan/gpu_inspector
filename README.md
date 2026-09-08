@@ -7,6 +7,8 @@ The UI and protocol are API-neutral so Metal and Direct3D capture libraries can 
 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
+* **Validation messages** — enable the Khronos validation layer from the launch dialog and the
+  errors and warnings it reports are listed in the Inspect tab, linked to the objects they name.
 * **Shader editing** — edit a pipeline's shader as GLSL, HLSL or SPIR-V assembly, compile it with
   the Vulkan SDK's compilers and see the running application use it; restore the original at any
   time. Shaders compiled with debug information (`-g`, `-fspv-debug=vulkan-with-source`) show

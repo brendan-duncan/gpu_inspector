@@ -28,6 +28,7 @@ type WebContents = electron.WebContents;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+const VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
 const DEFAULT_PORT = 47531;
 const MAX_LOG_LINES = 2000;
 const LAUNCH_CONNECT_TIMEOUT_MS = 60000;
@@ -72,6 +73,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     port: Number(c.port) || DEFAULT_PORT,
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
+    validation: c.validation ?? false,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
       : { mode: "none", value: 0 },
@@ -451,23 +453,62 @@ function splitArgs(s: string): string[] {
   return out;
 }
 
+/**
+ * The directory holding the Khronos validation layer's manifest: the Vulkan SDK (VULKAN_SDK, or
+ * the default install locations) or a distribution's layer directory. Needed because the launch
+ * sets VK_LAYER_PATH, which replaces the loader's own explicit-layer search.
+ */
+function findValidationLayerDir(): string | null {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates: string[] = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path.join(sdk, "Bin"), path.join(sdk, "share", "vulkan", "explicit_layer.d"), path.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    // Installed SDKs without VULKAN_SDK in this process's environment: newest first.
+    for (const root of ["C:\\VulkanSDK", path.join(os.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path.join(root, v, "Bin"));
+      } catch {
+        // no SDK there
+      }
+    }
+  } else {
+    candidates.push("/usr/share/vulkan/explicit_layer.d", "/usr/local/share/vulkan/explicit_layer.d", "/etc/vulkan/explicit_layer.d",
+      path.join(os.homedir(), ".local", "share", "vulkan", "explicit_layer.d"));
+  }
+  for (const c of candidates) if (fs.existsSync(path.join(c, manifest))) return c;
+  return null;
+}
+
 /** Starts the session's configured executable with the layer enabled and connects to it. */
 function spawnTarget(s: Session, layerDir: string): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
+  // With "Validation layer" the Khronos validation layer is enabled too; its messages reach the
+  // inspector's debug-utils messenger (layer/src/validation.cpp).
+  const layers = [LAYER_NAME];
+  const layerPaths = [layerDir];
+  if (config.validation) {
+    const dir = findValidationLayerDir();
+    if (dir) {
+      layers.push(VALIDATION_LAYER_NAME);
+      layerPaths.push(dir);
+      s.appendLog(`validation layer: ${dir}`);
+    } else {
+      s.appendLog("validation layer not found: install the Vulkan SDK (or the distribution's validation layer package) or set VULKAN_SDK");
+    }
+  }
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...parseEnvLines(config.env ?? ""),
-    VK_ADD_LAYER_PATH: layerDir,
-    VK_LOADER_LAYERS_ENABLE: LAYER_NAME,
+    VK_ADD_LAYER_PATH: layerPaths.join(path.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
     // Older loaders:
-    VK_LAYER_PATH: process.env.VK_LAYER_PATH ? `${layerDir}${path.delimiter}${process.env.VK_LAYER_PATH}` : layerDir,
-    VK_INSTANCE_LAYERS: process.env.VK_INSTANCE_LAYERS ? `${LAYER_NAME}${path.delimiter}${process.env.VK_INSTANCE_LAYERS}` : LAYER_NAME,
+    VK_LAYER_PATH: [...layerPaths, ...(process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : [])].join(path.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...(process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : [])].join(path.delimiter),
     VKINSP_PORT: String(s.port),
     VKINSP_LOG: config.log ? "1" : "0",
-    // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have
-    // no usable stderr).
-    ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
     // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have
     // no usable stderr).
     ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
@@ -1171,6 +1212,7 @@ void app.whenReady().then(() => {
         args: cliOption("args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),
+        validation: cliFlag("validation"),
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }
