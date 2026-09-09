@@ -13,6 +13,8 @@ export interface DebugSourceFile {
   name: string;
   /** Source text, or null when only the file name was embedded. */
   text: string | null;
+  /** The text came from a file on this machine (the launch configuration's source roots), not the module. */
+  fromHost?: boolean;
 }
 
 export interface DebugLocation {
@@ -283,7 +285,9 @@ export function describeDebugInfo(info: SpirvDebugInfo | null): string {
   if (!info) return "";
   const parts: string[] = [];
   const withText = info.files.filter((f) => f.text !== null);
-  if (withText.length) {
+  if (withText.length && withText.every((f) => f.fromHost)) {
+    parts.push(`Source from this machine (source roots): ${withText.map((f) => f.name).join(", ")}`);
+  } else if (withText.length) {
     parts.push(`Embedded source: ${withText.map((f) => f.name).join(", ")}`);
   } else if (info.files.length) {
     parts.push(`Source file name only: ${info.files.map((f) => f.name).join(", ")}`);

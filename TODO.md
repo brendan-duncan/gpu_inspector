@@ -69,9 +69,8 @@ interpreter and re-created pipelines.
 ### Shaders
 - [ ] Shader flame graph: per-draw GPU timing (replay) and measured fragment counts instead of
       the scissor-area estimate.
-- [ ] Source maps from outside the module: a user-configured source root (file name from
-      `OpSource` / `OpLine` looked up on disk) for shaders compiled with `-gVS`-style line info
-      but without embedded text, and `#include` resolution for the editor from the same root.
+- [ ] Shader editor `#include` resolution from the source roots (the Source view already reads
+      files the debug information names from them).
 - [ ] Debug-info variable names (DebugLocalVariable / DebugGlobalVariable) in buffer layouts,
       for modules without OpName / OpMemberName.
 

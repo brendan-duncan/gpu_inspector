@@ -474,6 +474,8 @@ export interface LaunchConfig {
   validation: boolean;
   /** Android: directories holding the unstripped libraries of the application (";"-separated), for stack trace source lines. */
   symbolDirs?: string;
+  /** Directories holding the shader sources (";"-separated), for modules with line information but no embedded text. */
+  sourceRoots?: string;
   /** With `validation`: the validation layer's synchronization validation (hazards between commands and submissions). */
   syncValidation?: boolean;
   /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */

@@ -207,8 +207,17 @@ def triangle_implicit(state, log):
     return expect(s.get("state") == "connected", f"the waiting session is {s.get('state')!r} ({s.get('detail')})") +         expect("waiting for an application" in log, "the session did not wait for an application") +         check_capture_basic(state, log)
 
 
+def triangle_sources(state, log):
+    s = session(state)
+    # The compute shader ships with line information only (tools/strip_shader_source.py); the
+    # dispatch's Compute Shader section, expanded by the click, fetches wave.comp from the root.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect((s.get("hostSources") or 0) >= 1, "the compute shader's source was not found under the source root")
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
+    source_root = os.path.join(ROOT, "test")
 
     def start_triangle():
         env = dict(os.environ, VKINSP_ENABLE="1", VKINSP_PORT="47531")
@@ -218,6 +227,7 @@ def triangle_cases(triangle):
         Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
              companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
         Case("plain", launch + ["--debug-capture"], triangle_plain),
+        Case("sources", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-command=5", "--debug-mouse=870,432"], triangle_sources, delay_ms=14000),
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),

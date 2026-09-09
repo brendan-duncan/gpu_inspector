@@ -532,6 +532,21 @@ outputs, the resources by set and binding with struct members, offsets and sizes
 constant block. It is the same `reflectSpirv` result the capture view uses per draw, rendered by
 `renderer/shader_reflection_view.ts`, so a module explains what it expects without a capture.
 
+#### Source roots
+
+A module that carries line information but no text (dxc `-Zi`, a build that strips the text)
+names its files in `OpString` / `DebugSource`; `resolveSourcesFromHost` in
+`shader_source_view.ts` asks the main process for them (`inspector:shaderSource`,
+`main/shader_sources.ts`): an absolute name that exists is read as is, otherwise each source
+root of the launch configuration (the last ones used serve capture files) is indexed once by
+file name, a few levels deep, and the candidate sharing the most trailing path components with
+the name wins ("triangle/wave.comp" prefers `.../triangle/wave.comp`). The text fills the parsed
+debug info in place, marked `fromHost`, so the Source view, the per-line costs and the findings'
+links work as with embedded text; the summary says the source came from this machine. The
+triangle test application ships its compute shader that way: `tools/strip_shader_source.py`
+drops the text and makes the file name relative to `test/` after glslc, so the source root
+`test/` (the `sources` case of `tools/ui_tests.py`) is what finds it.
+
 #### Shader analysis
 
 WebGPU Inspector analyzes WGSL source; here the same questions are answered from the SPIR-V

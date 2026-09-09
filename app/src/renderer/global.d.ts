@@ -36,6 +36,8 @@ export interface InspectorApi {
   openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */
   symbolize(frames: StackFrame[], dirs: string[]): Promise<StackFrame[]>;
+  /** The text of shader source files named by debug information, found under the roots (empty: the last ones used). */
+  shaderSource(names: string[], roots: string[]): Promise<Record<string, string>>;
   /** From a capture window: the main window opens the file and this window closes. */
   openCaptureInMain(path: string): Promise<boolean>;
   onOpenCapture(cb: (path: string) => void): void;

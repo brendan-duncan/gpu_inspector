@@ -149,6 +149,15 @@ npm run pack         # unpacked packaged app in app/release (needs the Release l
 npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
 ```
 
+## Shader sources
+
+Shaders compiled with source-level debug information (`-g` for glslc and glslangValidator,
+`-fspv-debug=vulkan-with-source` for dxc) carry their text, and the Source view, the cost per
+line and the findings' line links use it. A shader that carries line information only (dxc
+`-Zi`, a build that strips the text) names its file instead: **Source roots** in the launch
+dialog (directories, separated by `;`) tells the inspector where those files are on this
+machine, and it reads them from there.
+
 ## Applications started elsewhere
 
 An application the inspector cannot launch itself (an editor, a game behind its launcher) can

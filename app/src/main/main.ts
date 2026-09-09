@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
+import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { implicitLayerStatus, setImplicitLayer } from "./implicit_layer.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
@@ -64,6 +65,8 @@ interface Settings {
   recentCaptures?: string[];
   /** The last symbol directories a launch used (";"-separated), for stack traces of capture files. */
   symbolDirs?: string;
+  /** The last source roots a launch used (";"-separated), for the shaders of capture files. */
+  sourceRoots?: string;
   theme?: ThemeName;
 }
 
@@ -111,6 +114,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     validation: c.validation ?? false,
     syncValidation: c.syncValidation ?? false,
     symbolDirs: c.symbolDirs ?? "",
+    sourceRoots: c.sourceRoots ?? "",
     stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
@@ -1250,6 +1254,21 @@ ipcMain.handle("inspector:symbolize", (_e, frames: StackFrame[], dirs: string[])
   return symbolizeFrames(frames, list);
 });
 
+// Shader source files named by a module's debug information, found under the session's source
+// roots (or the last ones used, for capture files).
+ipcMain.handle("inspector:shaderSource", (_e, names: string[], roots: string[]) => {
+  const list = (roots.length ? roots : (loadSettings().sourceRoots ?? "").split(";")).map((d) => d.trim()).filter(Boolean);
+  if (roots.length) {
+    const settings = loadSettings();
+    if (settings.sourceRoots !== roots.join(";")) {
+      settings.sourceRoots = roots.join(";");
+      saveSettings(settings);
+      forgetSourceIndex();
+    }
+  }
+  return findShaderSources(names, list);
+});
+
 ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
@@ -1361,6 +1380,7 @@ void app.whenReady().then(() => {
         validation: cliFlag("validation"),
         syncValidation: cliFlag("sync-validation"),
         symbolDirs: cliOption("symbol-dirs") ?? "",
+        sourceRoots: cliOption("source-roots") ?? "",
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }

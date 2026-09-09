@@ -15,7 +15,7 @@ import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, r
 import { objectLink, renderArgs } from "./args_view.js";
 import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors } from "./code_editor.js";
 import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
-import { renderSourceLines } from "./shader_source_view.js";
+import { MISSING_SOURCE_HINT, hasMissingSources, renderSourceLines, resolveSourcesFromHost } from "./shader_source_view.js";
 
 /** What the display refresh period rests on, for the meter's tooltip. */
 const REFRESH_SOURCE_TEXT: Record<string, string> = {
@@ -1143,9 +1143,30 @@ export class InspectPanel {
     const info = view.debug;
     if (info) {
       view.summary.text = describeDebugInfo(info);
-      if (!hasEmbeddedSource(info)) {
-        view.summary.text += ". To embed the source, compile with -g (glslc, glslangValidator), -gVS (glslangValidator, NonSemantic form) or -fspv-debug=vulkan-with-source (dxc).";
-      }
+      if (!hasEmbeddedSource(info)) view.summary.text += `. ${MISSING_SOURCE_HINT}`;
+    }
+    if (info && !hasEmbeddedSource(info) && hasMissingSources(info)) {
+      // Line information without text: fetch the files from this machine's source roots, then
+      // set the view up again as if the text had been embedded.
+      view.summary.text = `${describeDebugInfo(info)}. Looking for the sources under the source roots...`;
+      void resolveSourcesFromHost(info, this.window).then((changed) => {
+        if (view.data !== data || view.debug !== info) return;
+        if (!changed) {
+          view.summary.text = `${describeDebugInfo(info)}. The files were not found under the source roots. ${MISSING_SOURCE_HINT}`;
+          return;
+        }
+        view.summary.text = describeDebugInfo(info);
+        this._setUpSource(view, index, info);
+      });
+    }
+    this._setUpSource(view, index, info);
+  }
+
+  /** The Source view's file bar and initial mode, once the debug information (with text) is known. */
+  private _setUpSource(view: ShaderView, index: number, info: SpirvDebugInfo | null): void {
+    if (view.fileBar) {
+      view.fileBar.element.remove();
+      view.fileBar = null;
     }
     if (info && hasEmbeddedSource(info)) {
       view.buttons.source!.style.display = "";

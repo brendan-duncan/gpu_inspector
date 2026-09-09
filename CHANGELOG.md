@@ -1,4 +1,12 @@
-## 0.5.0
+## 0.7.0
+
+### Added
+- Source roots (launch dialog, `--source-roots`): a shader with line information but no
+  embedded text gets its Source view, line costs and findings from the file its debug
+  information names, looked up under the roots. The triangle test app's compute shader ships
+  that way (`tools/strip_shader_source.py`).
+
+## 0.6.0
 
 ### Added
 - Frames without a swapchain (OpenXR): frame boundaries from the application's fence waits or

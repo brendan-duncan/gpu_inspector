@@ -1,5 +1,6 @@
 // One inspected application: its object database, the Inspect / Capture / Log tabs, and a bar
 // with the session's state and controls. One SessionPanel is shown per session tab.
+import { hostSourcesResolved } from "./shader_source_view.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Button } from "./widget/button.js";
@@ -31,6 +32,8 @@ export interface SessionContext {
   capturedImage(imageId: number): CapturedTexture | null;
   /** Directories with the application's unstripped libraries (launch configuration), for host-side symbolization. */
   readonly symbolDirs: string[];
+  /** Directories with the shader sources (launch configuration), for modules without embedded text. */
+  readonly sourceRoots: string[];
 }
 
 const MAX_LOG_LINES = 2000;
@@ -174,9 +177,14 @@ export class SessionPanel extends Div implements SessionContext {
       validationErrors: db.validation.filter((v) => v.severity === "error").length,
       frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
       symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
+      hostSources: hostSourcesResolved(),
       captures: this.capturePanel.debugState(),
       log: this.info.log.slice(-40),
     };
+  }
+
+  get sourceRoots(): string[] {
+    return (this.info.config?.sourceRoots ?? "").split(";").map((d) => d.trim()).filter(Boolean);
   }
 
   get symbolDirs(): string[] {

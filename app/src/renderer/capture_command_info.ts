@@ -547,7 +547,7 @@ export class CommandInfoView {
         return;
       }
       const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });
-      const view = renderEmbeddedSource(sourceGrp.body, data);
+      const view = renderEmbeddedSource(sourceGrp.body, data, this.panel.window);
       const analysis = analyzeSpirvCached(data);
       if (analysis) {
         const jump = (file: string | undefined, line: number): void => {

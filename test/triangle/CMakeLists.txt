@@ -15,14 +15,24 @@ endif()
 set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
 set(SHADERS cube.vert cube.frag wave.comp)
 set(SPV_FILES)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 foreach(s ${SHADERS})
     set(spv "$<TARGET_FILE_DIR:vkinsp_triangle>/${s}.spv")
     list(APPEND SPV_FILES "${spv}")
+    # The compute shader keeps its line information but loses its text, like a shipped shader
+    # (dxc -Zi, a stripped build): the inspector's "Source roots" then supply it.
+    set(strip)
+    if(s STREQUAL "wave.comp")
+        set(strip COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/strip_shader_source.py"
+                  "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv" "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
+                  --relative-to "${CMAKE_SOURCE_DIR}/test")
+    endif()
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
         # -g embeds the GLSL source and line information (the inspector's shader source maps).
         COMMAND ${GLSLC} -g "${CMAKE_CURRENT_SOURCE_DIR}/${s}" -o "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${s}"
+        ${strip}
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${s}" "${CMAKE_SOURCE_DIR}/tools/strip_shader_source.py"
         COMMENT "Compiling ${s}"
         VERBATIM)
     list(APPEND SPV_OUTPUTS "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv")

@@ -68,6 +68,7 @@ export class LaunchDialog extends Dialog {
   private _packageHint: Span;
   private _activity: TextInput;
   private _symbolDirs!: TextInput;
+  private _sourceRoots!: TextInput;
   private _port: TextInput;
   private _log: Checkbox;
   private _recordAlways: Checkbox;
@@ -161,6 +162,8 @@ export class LaunchDialog extends Dialog {
     this._symbolDirs.tooltip = "Where to look for the application's unstripped libraries (the build tree): stack traces of objects and captured commands then show functions, files and lines, resolved with the NDK's llvm-symbolizer on this machine.";
 
     section(body, "Inspector Options");
+    this._sourceRoots = this._inputRow(body, "Source roots", "(directories with the shader sources, separated by ;)");
+    this._sourceRoots.tooltip = "Where the shader sources live on this machine: a shader compiled with line information but without embedded text (dxc -Zi, a stripped build) then gets its Source view, line costs and findings from the file its debug information names.";
     {
       const row = new Div(body, { class: "launch-dialog-row launch-dialog-options" });
       this._recordAlways = new Checkbox(row, { label: "Record all command buffers", checked: false,
@@ -338,6 +341,7 @@ export class LaunchDialog extends Dialog {
       validation: !android && this._validation.checked,
       syncValidation: !android && this._validation.checked && this._syncValidation.checked,
       symbolDirs: android ? this._symbolDirs.value.trim() : "",
+      sourceRoots: this._sourceRoots.value.trim(),
       stacktraces: this._stacktraces.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
@@ -364,6 +368,7 @@ export class LaunchDialog extends Dialog {
     this._validation.checked = c.validation ?? false;
     this._syncValidation.checked = c.syncValidation ?? false;
     this._symbolDirs.value = c.symbolDirs ?? "";
+    this._sourceRoots.value = c.sourceRoots ?? "";
     this._stacktraces.checked = c.stacktraces ?? true;
     const mode = c.capture?.mode ?? "none";
     this._captureMode.index = Math.max(0, CAPTURE_MODES.findIndex((m) => m[1] === mode));
