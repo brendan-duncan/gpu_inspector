@@ -12,6 +12,9 @@ namespace mtlinsp {
 /** Registers the device with the tracker and hooks its class. Called from the interposed entry points. */
 void TrackDeviceObject(id device);
 
+/** Hooks CAMetalLayer, by name: it is public, and a drawable's texture comes from nowhere else. */
+void HookDrawableSource(void);
+
 void HookDeviceClass(id device);
 void HookCommandQueueClass(id queue);
 void HookCommandBufferClass(id commandBuffer);

@@ -11,11 +11,13 @@
 // is only obviously correct when the compiler is not also inserting retains and releases.
 #include "hooks.h"
 
+#include "capture.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "tracker.h"
 
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 
 #include <atomic>
 #include <string>
@@ -32,6 +34,27 @@ const char *LabelOf(id object) {
     if (![object respondsToSelector:@selector(label)]) return "";
     NSString *label = [object performSelector:@selector(label)];
     return label == nil ? "" : label.UTF8String;
+}
+
+/** A tracked object as the UI's `{"__id", "__class"}` reference, or null. */
+void WriteRef(vkinsp::JsonWriter &w, id object, const char *type) {
+    const uint64_t id = IdOf(object);
+    if (id == 0) {
+        w.Null();
+        return;
+    }
+    w.BeginObject();
+    w.Key("__id"); w.Uint(id);
+    w.Key("__class"); w.String(type);
+    w.EndObject();
+}
+
+void WriteSize(vkinsp::JsonWriter &w, MTLSize size) {
+    w.BeginObject();
+    w.Key("width"); w.Uint(size.width);
+    w.Key("height"); w.Uint(size.height);
+    w.Key("depth"); w.Uint(size.depth);
+    w.EndObject();
 }
 
 // The "args" of an AddObject: the descriptor the object was created from, in the same shape the
@@ -122,6 +145,40 @@ uint64_t Track(id object, const char *type, const char *cmd, id parent, const st
         Hook(cls, @selector(setLabel:), (IMP)Replaced_setLabel);
     }
     return id;
+}
+
+// --------------------------------------------------------------------------------------------
+// CAMetalLayer
+//
+// A drawable's texture is the one a frame actually renders to, and it arrives from
+// `CAMetalLayer.nextDrawable` rather than from any of the device's `new*` calls, so nothing else
+// here would ever see it. Without it a render pass's colour attachment resolves to null.
+// CAMetalLayer is a public QuartzCore class, so unlike everything else in this file it can be
+// hooked by name, at load, before the application has a layer.
+
+id Replaced_nextDrawable(id self, SEL _cmd) {
+    Reentry reentry;
+    id drawable = ((id (*)(id, SEL))Original(self, _cmd))(self, _cmd);
+    if (reentry.outermost() && drawable != nil) {
+        CAMetalLayer *layer = (CAMetalLayer *)self;
+        id<CAMetalDrawable> metalDrawable = (id<CAMetalDrawable>)drawable;
+        id<MTLTexture> texture = metalDrawable.texture;
+        if (texture != nil && IdOf(texture) == 0) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("pixelFormat"); w.Uint((uint64_t)texture.pixelFormat);
+            w.Key("width"); w.Uint(texture.width);
+            w.Key("height"); w.Uint(texture.height);
+            w.Key("usage"); w.Uint((uint64_t)texture.usage);
+            w.Key("framebufferOnly"); w.Boolean(layer.framebufferOnly);
+            w.EndObject();
+            // A layer cycles a small pool of drawables, so this registers each of them once.
+            Track(texture, "MTLTexture", "CAMetalLayer nextDrawable", layer.device, w.str());
+            Log("nextDrawable -> texture %s %lux%lu", ClassName(texture),
+                (unsigned long)texture.width, (unsigned long)texture.height);
+        }
+    }
+    return drawable;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -259,6 +316,25 @@ id Replaced_renderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *des
             (unsigned long)color.loadAction, (unsigned long)color.storeAction,
             ClassName(color.texture), ClassName(encoder));
         g_encodersThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("colorAttachments"); w.BeginArray();
+            for (NSUInteger i = 0; i < 8; i++) {
+                MTLRenderPassColorAttachmentDescriptor *a = descriptor.colorAttachments[i];
+                if (a.texture == nil) continue;
+                w.BeginObject();
+                w.Key("index"); w.Uint(i);
+                w.Key("texture"); WriteRef(w, a.texture, "MTLTexture");
+                w.Key("loadAction"); w.Uint((uint64_t)a.loadAction);
+                w.Key("storeAction"); w.Uint((uint64_t)a.storeAction);
+                w.EndObject();
+            }
+            w.EndArray();
+            w.Key("depthAttachment"); WriteRef(w, descriptor.depthAttachment.texture, "MTLTexture");
+            w.EndObject();
+            RecordCommand("renderCommandEncoderWithDescriptor:", encoder, w.str());
+        }
     }
     HookRenderEncoderClass(encoder);
     return encoder;
@@ -270,6 +346,7 @@ id Replaced_computeCommandEncoder(id self, SEL _cmd) {
     if (reentry.outermost()) {
         Log("commandBuffer.computeCommandEncoder -> %s", ClassName(encoder));
         g_encodersThisFrame++;
+        if (Recording()) RecordCommand("computeCommandEncoder", encoder, {});
     }
     HookComputeEncoderClass(encoder);
     return encoder;
@@ -291,13 +368,21 @@ void Replaced_presentDrawable(id self, SEL _cmd, id drawable) {
             (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
             g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(self),
             ClassName(drawable));
+        if (Recording()) RecordCommand("presentDrawable:", self, {});
+        // Not the frame boundary itself: the commit that follows is. See OnCommit.
+        OnPresentDrawable(self);
     }
     ((void (*)(id, SEL, id))Original(self, _cmd))(self, _cmd, drawable);
 }
 
 void Replaced_commit(id self, SEL _cmd) {
     Reentry reentry;
-    if (reentry.outermost()) Log("commandBuffer.commit label=\"%s\"", LabelOf(self));
+    if (reentry.outermost()) {
+        Log("commandBuffer.commit label=\"%s\"", LabelOf(self));
+        if (Recording()) RecordCommand("commit", self, {});
+        // Drives the capture state machine: arms, counts a frame, or finishes and sends.
+        OnCommit(self);
+    }
     ((void (*)(id, SEL))Original(self, _cmd))(self, _cmd);
 }
 
@@ -306,7 +391,16 @@ void Replaced_commit(id self, SEL _cmd) {
 
 void Replaced_setRenderPipelineState(id self, SEL _cmd, id state) {
     Reentry reentry;
-    if (reentry.outermost()) Log("  encoder.setRenderPipelineState: %s", ClassName(state));
+    if (reentry.outermost()) {
+        Log("  encoder.setRenderPipelineState: %s", ClassName(state));
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("pipeline"); WriteRef(w, state, "MTLRenderPipelineState");
+            w.EndObject();
+            RecordCommand("setRenderPipelineState:", self, w.str());
+        }
+    }
     ((void (*)(id, SEL, id))Original(self, _cmd))(self, _cmd, state);
 }
 
@@ -315,6 +409,15 @@ void Replaced_setVertexBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, N
     if (reentry.outermost()) {
         Log("  encoder.setVertexBuffer:\"%s\" offset:%lu atIndex:%lu", LabelOf(buffer),
             (unsigned long)offset, (unsigned long)index);
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("buffer"); WriteRef(w, buffer, "MTLBuffer");
+            w.Key("offset"); w.Uint(offset);
+            w.Key("index"); w.Uint(index);
+            w.EndObject();
+            RecordCommand("setVertexBuffer:offset:atIndex:", self, w.str());
+        }
     }
     ((void (*)(id, SEL, id, NSUInteger, NSUInteger))Original(self, _cmd))(self, _cmd, buffer,
                                                                           offset, index);
@@ -328,6 +431,16 @@ void Replaced_drawPrimitives(id self, SEL _cmd, NSUInteger type, NSUInteger star
             (unsigned long)type, (unsigned long)start, (unsigned long)count,
             (unsigned long)instances);
         g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("vertexStart"); w.Uint(start);
+            w.Key("vertexCount"); w.Uint(count);
+            w.Key("instanceCount"); w.Uint(instances);
+            w.EndObject();
+            RecordCommand("drawPrimitives:vertexStart:vertexCount:instanceCount:", self, w.str());
+        }
     }
     ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, NSUInteger))Original(self, _cmd))(
         self, _cmd, type, start, count, instances);
@@ -343,6 +456,19 @@ void Replaced_drawIndexedPrimitives(id self, SEL _cmd, NSUInteger type, NSUInteg
             (unsigned long)type, (unsigned long)indexCount, LabelOf(indexBuffer),
             (unsigned long)instances);
         g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("indexCount"); w.Uint(indexCount);
+            w.Key("indexType"); w.Uint(indexType);
+            w.Key("indexBuffer"); WriteRef(w, indexBuffer, "MTLBuffer");
+            w.Key("indexBufferOffset"); w.Uint(offset);
+            w.Key("instanceCount"); w.Uint(instances);
+            w.EndObject();
+            RecordCommand("drawIndexedPrimitives:indexCount:indexType:indexBuffer:"
+                          "indexBufferOffset:instanceCount:", self, w.str());
+        }
     }
     ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger))Original(
         self, _cmd))(self, _cmd, type, indexCount, indexType, indexBuffer, offset, instances);
@@ -350,7 +476,10 @@ void Replaced_drawIndexedPrimitives(id self, SEL _cmd, NSUInteger type, NSUInteg
 
 void Replaced_endEncoding(id self, SEL _cmd) {
     Reentry reentry;
-    if (reentry.outermost()) Log("  encoder.endEncoding (%s \"%s\")", ClassName(self), LabelOf(self));
+    if (reentry.outermost()) {
+        Log("  encoder.endEncoding (%s \"%s\")", ClassName(self), LabelOf(self));
+        if (Recording()) RecordCommand("endEncoding", self, {});
+    }
     ((void (*)(id, SEL))Original(self, _cmd))(self, _cmd);
 }
 
@@ -359,7 +488,16 @@ void Replaced_endEncoding(id self, SEL _cmd) {
 
 void Replaced_setComputePipelineState(id self, SEL _cmd, id state) {
     Reentry reentry;
-    if (reentry.outermost()) Log("  encoder.setComputePipelineState: %s", ClassName(state));
+    if (reentry.outermost()) {
+        Log("  encoder.setComputePipelineState: %s", ClassName(state));
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("pipeline"); WriteRef(w, state, "MTLComputePipelineState");
+            w.EndObject();
+            RecordCommand("setComputePipelineState:", self, w.str());
+        }
+    }
     ((void (*)(id, SEL, id))Original(self, _cmd))(self, _cmd, state);
 }
 
@@ -371,6 +509,14 @@ void Replaced_dispatchThreads(id self, SEL _cmd, MTLSize threads, MTLSize perGro
             (unsigned long)threads.depth, (unsigned long)perGroup.width,
             (unsigned long)perGroup.height, (unsigned long)perGroup.depth);
         g_dispatchesThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("threadsPerGrid"); WriteSize(w, threads);
+            w.Key("threadsPerThreadgroup"); WriteSize(w, perGroup);
+            w.EndObject();
+            RecordCommand("dispatchThreads:threadsPerThreadgroup:", self, w.str());
+        }
     }
     ((void (*)(id, SEL, MTLSize, MTLSize))Original(self, _cmd))(self, _cmd, threads, perGroup);
 }
@@ -383,6 +529,14 @@ void Replaced_dispatchThreadgroups(id self, SEL _cmd, MTLSize groups, MTLSize pe
             (unsigned long)perGroup.width, (unsigned long)perGroup.height,
             (unsigned long)perGroup.depth);
         g_dispatchesThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("threadgroupsPerGrid"); WriteSize(w, groups);
+            w.Key("threadsPerThreadgroup"); WriteSize(w, perGroup);
+            w.EndObject();
+            RecordCommand("dispatchThreadgroups:threadsPerThreadgroup:", self, w.str());
+        }
     }
     ((void (*)(id, SEL, MTLSize, MTLSize))Original(self, _cmd))(self, _cmd, groups, perGroup);
 }
@@ -392,6 +546,13 @@ void Replaced_dispatchThreadgroups(id self, SEL _cmd, MTLSize groups, MTLSize pe
 // --------------------------------------------------------------------------------------------
 // Installation. Each is called with every object of its kind, not only new ones, so each stops at
 // the first sighting of a class; Hook() is idempotent besides.
+
+void HookDrawableSource(void) {
+    Class cls = objc_getClass("CAMetalLayer");
+    if (cls == nil || !FirstSighting(cls)) return;
+    Log("hooking CAMetalLayer");
+    Hook(cls, @selector(nextDrawable), (IMP)Replaced_nextDrawable);
+}
 
 void TrackDeviceObject(id device) {
     if (device == nil) return;

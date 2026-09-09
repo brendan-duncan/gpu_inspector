@@ -30,7 +30,7 @@ import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
-import { COMPUTE_PASS_END, DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
+import { isAction } from "./command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
@@ -528,6 +528,7 @@ export class CaptureView implements CaptureHost {
 
   /** Builds the command tree of one captured frame into `container`. */
   private _renderFrame(frame: number, container: Widget): void {
+    const sets = this.data.sets;
     this._commandBufferPassCounters.clear();
     this._computePassCounters.clear();
     const commands = this.data.commandsForFrame(frame);
@@ -546,7 +547,7 @@ export class CaptureView implements CaptureHost {
     let inRenderPass = false;
 
     // Compute passes: a run of dispatches outside a render pass, grouped the way the layer times
-    // them (see COMPUTE_PASS_END; render pass begins, labels, secondaries and the end of the
+    // them (see COMPUTE_PASS_END in ../command_sets.ts; render pass begins, labels, secondaries and the end of the
     // buffer close one too). Each command buffer, secondaries included, counts its own.
     let compute: { block: collapsible; parent: Widget; dispatches: number; label: string } | null = null;
     const closeCompute = (): void => {
@@ -594,7 +595,7 @@ export class CaptureView implements CaptureHost {
           current = block.body;
         }
       }
-      if (SUBMIT_METHODS.has(cmd.method)) {
+      if (sets.SUBMIT.has(cmd.method)) {
         closeCommandBuffer();
         const queue = db.getObject(objId);
         const block = new collapsible(container, { label: `${cmd.method}  ${queue ? queue.name : ""}`, collapsed: false, class: "capture-submit" });
@@ -616,7 +617,7 @@ export class CaptureView implements CaptureHost {
           continue;
         }
       }
-      if (PASS_BEGIN.has(cmd.method)) {
+      if (sets.PASS_BEGIN.has(cmd.method)) {
         closeCompute();
         inRenderPass = true;
         const passIndex = this._commandBufferPassCounters.get(objId) ?? 0;
@@ -630,19 +631,19 @@ export class CaptureView implements CaptureHost {
         current = block.body;
         continue;
       }
-      if (PASS_END.has(cmd.method)) {
+      if (sets.PASS_END.has(cmd.method)) {
         closeSecondary();
         inRenderPass = false;
         this._addRow(current, cmd);
         current = stack.pop() ?? cbBody;
         continue;
       }
-      if (COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || LABEL_BEGIN.has(cmd.method) || LABEL_END.has(cmd.method)) closeCompute();
-      if (DISPATCH_METHODS.has(cmd.method) && !inRenderPass) {
+      if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
+      if (sets.DISPATCH.has(cmd.method) && !inRenderPass) {
         if (!compute) openCompute(cmd.secondary || objId);
         compute!.dispatches++;
       }
-      if (LABEL_BEGIN.has(cmd.method)) {
+      if (sets.LABEL_BEGIN.has(cmd.method)) {
         const info = cmd.args && (isObject(cmd.args.pLabelInfo) ? cmd.args.pLabelInfo : isObject(cmd.args.pMarkerInfo) ? cmd.args.pMarkerInfo : null);
         const name = info ? str(info.pLabelName ?? info.pMarkerName) : cmd.method;
         const block = new collapsible(current, { label: name, collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
@@ -651,13 +652,13 @@ export class CaptureView implements CaptureHost {
         current = block.body;
         continue;
       }
-      if (LABEL_END.has(cmd.method)) {
+      if (sets.LABEL_END.has(cmd.method)) {
         this._addRow(current, cmd);
         current = stack.pop() ?? cbBody;
         continue;
       }
       const row = this._addRow(current, cmd);
-      if (isAction(cmd.method)) {
+      if (isAction(sets, cmd.method)) {
         row.classList.add("capture_drawcall");
         drawCount++;
       }
@@ -716,10 +717,11 @@ export class CaptureView implements CaptureHost {
 
   /** What the UI tests read through --debug-dump (tools/ui_tests.py): the capture in numbers. */
   debugState(): Record<string, unknown> {
+    const sets = this.data.sets;
     const db = this.window.database;
     const d = this.data;
-    const draws = d.commands.filter((c) => DRAW_METHODS.has(c.method) || DISPATCH_METHODS.has(c.method)).length;
-    const passes = d.commands.filter((c) => PASS_BEGIN.has(c.method)).length;
+    const draws = d.commands.filter((c) => sets.DRAW.has(c.method) || sets.DISPATCH.has(c.method)).length;
+    const passes = d.commands.filter((c) => sets.PASS_BEGIN.has(c.method)).length;
     if (!this._analysis && d.commands.length) this._analysis = analyzeFrame(d, db);
     return {
       status: this.status, frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
@@ -908,16 +910,17 @@ export class CaptureView implements CaptureHost {
 
   /** Uses per pipeline: the pipeline bound on the stream and bind point of each draw or dispatch. */
   private _pipelineUses(): Map<number, number> {
+    const sets = this.data.sets;
     const bound = new Map<string, number>();
     const uses = new Map<number, number>();
     for (const c of this.data.commands) {
-      if (!c || SUBMIT_METHODS.has(c.method)) continue;
+      if (!c || sets.SUBMIT.has(c.method)) continue;
       const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
-      if (c.method === "vkCmdBindPipeline" && c.args) {
+      if (sets.BIND_PIPELINE.has(c.method) && c.args) {
         const id = refId(c.args.pipeline);
-        if (id !== null) bound.set(`${stream}:${str(c.args.pipelineBindPoint)}`, id);
-      } else if (isAction(c.method)) {
-        const id = bound.get(`${stream}:${bindPointOf(c.method)}`);
+        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c.method, c.args)}`, id);
+      } else if (isAction(sets, c.method)) {
+        const id = bound.get(`${stream}:${sets.bindPointOf(c.method)}`);
         if (id !== undefined) uses.set(id, (uses.get(id) ?? 0) + 1);
       }
     }

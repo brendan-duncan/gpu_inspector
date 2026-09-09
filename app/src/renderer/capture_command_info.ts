@@ -16,10 +16,7 @@ import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
 import { decodeBase64 } from "./utils/base64.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
-import {
-  BIND_DESCRIPTOR_METHODS, BIND_INDEX_METHODS, BIND_VERTEX_METHODS, DRAW_METHODS, INDIRECT_METHODS, PASS_BEGIN, PASS_END,
-  PUSH_CONSTANT_METHODS, SUBMIT_METHODS, bindPointOf, isAction,
-} from "./vulkan/command_sets.js";
+import { isAction, type CommandSets } from "./command_sets.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import {
   typeName, type ReflType, type ShaderReflection, type ShaderResource, type ShaderStage, type StructMember, type StructType,
@@ -150,9 +147,9 @@ function pushConstantBytes(a: ArgObject | null): Uint8Array | null {
   }
 }
 
-function sameStream(cmd: CaptureCommand, c: CaptureCommand): boolean {
+function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: CaptureCommand): boolean {
   if (c.object?.__id !== cmd.object?.__id) return false;
-  if (SUBMIT_METHODS.has(c.method)) return false;
+  if (cmdSets.SUBMIT.has(c.method)) return false;
   return true;
 }
 
@@ -180,6 +177,7 @@ export class CommandInfoView {
   // Entry point
 
   show(container: Div, cmd: CaptureCommand): void {
+    const cmdSets = this.panel.data.sets;
     container.html = "";
     this._thumbs.clear();
     this._thumbRequested.clear();
@@ -216,7 +214,7 @@ export class CommandInfoView {
       });
     }
 
-    if (isAction(method)) {
+    if (isAction(cmdSets, method)) {
       const state = this.drawState(cmd);
       const graphics = state.bindPoint === "VK_PIPELINE_BIND_POINT_GRAPHICS";
       this._renderPipelineState(container, state);
@@ -226,30 +224,30 @@ export class CommandInfoView {
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
       }
-      if (INDIRECT_METHODS.has(method)) this._renderIndirect(container, cmd);
+      if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
       this._renderPushConstants(container, state, state.pushConstants, token);
-      if (DRAW_METHODS.has(method)) this._renderTargets(container, cmd);
-    } else if (method === "vkCmdBindPipeline") {
+      if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);
+    } else if (cmdSets.BIND_PIPELINE.has(method)) {
       const pipeline = db.getObject(refId(cmd.args?.pipeline));
-      const state = this._emptyState(str(cmd.args?.pipelineBindPoint));
+      const state = this._emptyState(cmdSets.pipelineBindPointOf(method, cmd.args));
       state.pipelineCmd = cmd;
       state.pipeline = pipeline;
       this._renderPipelineState(container, state);
       this._renderShaders(container, pipeline, token);
-    } else if (BIND_DESCRIPTOR_METHODS.has(method) && cmd.descriptors) {
+    } else if (cmdSets.BIND_DESCRIPTOR.has(method) && cmd.descriptors) {
       const state = this._stateFor(cmd, cmd.descriptors.bindPoint);
       this._renderDescriptorSets(container, state, cmd.descriptors.sets.map((set) => ({ cmd, set })), token);
-    } else if (BIND_VERTEX_METHODS.has(method)) {
+    } else if (cmdSets.BIND_VERTEX.has(method)) {
       const state = this._stateFor(cmd, "VK_PIPELINE_BIND_POINT_GRAPHICS");
       this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
-    } else if (BIND_INDEX_METHODS.has(method)) {
+    } else if (cmdSets.BIND_INDEX.has(method)) {
       const ib = this._indexBufferOf(cmd);
       if (ib) this._renderIndexBuffer(container, ib, null);
-    } else if (PUSH_CONSTANT_METHODS.has(method)) {
+    } else if (cmdSets.PUSH_CONSTANT.has(method)) {
       const pc = this._pushConstantOf(cmd);
       const state = this._stateFor(cmd, pc && pc.stageFlags.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
       if (pc) this._renderPushConstants(container, state, [pc], token);
-    } else if (PASS_BEGIN.has(method) || PASS_END.has(method)) {
+    } else if (cmdSets.PASS_BEGIN.has(method) || cmdSets.PASS_END.has(method)) {
       this._renderTargets(container, cmd);
     }
 
@@ -305,12 +303,13 @@ export class CommandInfoView {
    * Commands inlined from a secondary command buffer see only that buffer's own commands (a
    * secondary starts with no state); commands of a primary skip the inlined ones.
    */
-  drawState(cmd: CaptureCommand, bindPoint = bindPointOf(cmd.method)): DrawState {
+  drawState(cmd: CaptureCommand, bindPoint = this.panel.data.sets.bindPointOf(cmd.method)): DrawState {
+    const cmdSets = this.panel.data.sets;
     const commands = this.panel.data.commands;
     const state = this._emptyState(bindPoint);
     for (let i = cmd.index - 1; i >= 0; i--) {
       const c = commands[i];
-      if (!c || !sameStream(cmd, c)) break;
+      if (!c || !sameStream(cmdSets, cmd, c)) break;
       if (cmd.secondary) {
         if (c.secondary !== cmd.secondary) break;
       } else if (c.secondary) {
@@ -318,13 +317,14 @@ export class CommandInfoView {
       }
       const a = c.args;
       if (!a) continue;
+      if (cmdSets.BIND_PIPELINE.has(c.method)) {
+        if (!state.pipelineCmd && cmdSets.pipelineBindPointOf(c.method, a) === bindPoint) {
+          state.pipelineCmd = c;
+          state.pipeline = this.db.getObject(refId(a.pipeline));
+        }
+        continue;
+      }
       switch (c.method) {
-        case "vkCmdBindPipeline":
-          if (!state.pipelineCmd && a.pipelineBindPoint === bindPoint) {
-            state.pipelineCmd = c;
-            state.pipeline = this.db.getObject(refId(a.pipeline));
-          }
-          break;
         case "vkCmdBindVertexBuffers":
         case "vkCmdBindVertexBuffers2":
         case "vkCmdBindVertexBuffers2EXT":
@@ -371,19 +371,21 @@ export class CommandInfoView {
 
   /** State for a binding command: what is bound before it, plus the pipeline bound next if none was bound before. */
   private _stateFor(cmd: CaptureCommand, bindPoint: string): DrawState {
+    const cmdSets = this.panel.data.sets;
     const state = this.drawState(cmd, bindPoint);
     if (state.pipeline) return state;
     const commands = this.panel.data.commands;
     for (let i = cmd.index + 1; i < commands.length; i++) {
       const c = commands[i];
-      if (!c || !sameStream(cmd, c)) break;
+      if (!c || !sameStream(cmdSets, cmd, c)) break;
       if (cmd.secondary ? c.secondary !== cmd.secondary : c.secondary) {
         if (cmd.secondary) break;
         continue;
       }
-      if (c.method === "vkCmdBindPipeline" && c.args?.pipelineBindPoint === bindPoint) {
+      if (cmdSets.BIND_PIPELINE.has(c.method) &&
+          cmdSets.pipelineBindPointOf(c.method, c.args) === bindPoint) {
         state.pipelineCmd = c;
-        state.pipeline = this.db.getObject(refId(c.args.pipeline));
+        state.pipeline = this.db.getObject(refId(c.args?.pipeline));
         break;
       }
     }
@@ -420,20 +422,21 @@ export class CommandInfoView {
 
   /** Pass containing (or begun / ended by) a command. */
   findPass(cmd: CaptureCommand): { passBegin: CaptureCommand; passIndex: number } | null {
+    const cmdSets = this.panel.data.sets;
     const commands = this.panel.data.commands;
     let depth = 0;
     for (let i = cmd.index; i >= 0; i--) {
       const c = commands[i];
-      if (!c || !sameStream(cmd, c)) break;
+      if (!c || !sameStream(cmdSets, cmd, c)) break;
       if (c.secondary) continue;   // passes are begun and ended by the primary
-      if (i !== cmd.index && PASS_END.has(c.method)) depth++;
-      if (PASS_BEGIN.has(c.method)) {
+      if (i !== cmd.index && cmdSets.PASS_END.has(c.method)) depth++;
+      if (cmdSets.PASS_BEGIN.has(c.method)) {
         if (depth === 0) {
           let passIndex = 0;
           for (let j = i - 1; j >= 0; j--) {
             const p = commands[j];
-            if (!p || !sameStream(cmd, p)) break;
-            if (PASS_BEGIN.has(p.method)) passIndex++;
+            if (!p || !sameStream(cmdSets, cmd, p)) break;
+            if (cmdSets.PASS_BEGIN.has(p.method)) passIndex++;
           }
           return { passBegin: c, passIndex };
         }
@@ -693,6 +696,7 @@ export class CommandInfoView {
    * dispatches and ray tracing launches whose bound descriptor sets hold it as a storage buffer.
    */
   private _affectedBy(bufferId: number): CaptureCommand[] {
+    const cmdSets = this.panel.data.sets;
     const current = this._current;
     if (!current) return [];
     const out: CaptureCommand[] = [];
@@ -700,7 +704,7 @@ export class CommandInfoView {
     const bound = new Map<string, Map<string, Map<number, Set<number>>>>();
     for (const c of this.panel.data.commands) {
       if (!c || c.index >= current.index) break;
-      if (c.frame !== current.frame || SUBMIT_METHODS.has(c.method)) continue;
+      if (c.frame !== current.frame || cmdSets.SUBMIT.has(c.method)) continue;
       const a = c.args;
       const writer = BUFFER_WRITE_METHODS[c.method];
       if (writer && a && refId(writer(a)) === bufferId) {
@@ -726,8 +730,8 @@ export class CommandInfoView {
         }
         continue;
       }
-      if (isAction(c.method)) {
-        const sets = bound.get(stream)?.get(bindPointOf(c.method));
+      if (isAction(cmdSets, c.method)) {
+        const sets = bound.get(stream)?.get(cmdSets.bindPointOf(c.method));
         if (!sets) continue;
         for (const buffers of sets.values()) {
           if (buffers.has(bufferId)) {

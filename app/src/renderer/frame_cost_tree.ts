@@ -21,7 +21,7 @@ import type { CaptureData } from "./capture_data.js";
 import { passKey } from "./capture_data.js";
 import type { ShaderStage } from "./vulkan/spirv_reflect.js";
 import { dominantDimension, weighCost, type CostDimension, type CostVec, type FunctionAnalysis, type ShaderAnalysis } from "./vulkan/spirv_analysis.js";
-import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
+import { isAction } from "./command_sets.js";
 import { isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { FlameGraphNodeBase } from "./widget/flamegraph.js";
 
@@ -200,6 +200,7 @@ function rectArea(v: ArgValue | undefined): number | null {
 
 function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } {
   const { data, models } = o;
+  const sets = data.sets;
   const passes: Pass[] = [];
   const notes: string[] = [];
   let missingModels = 0;
@@ -226,7 +227,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
         closeSecondary();
         currentSecondary = cmd.secondary ?? 0;
       }
-      if (SUBMIT_METHODS.has(cmd.method)) { closeCommandBuffer(); continue; }
+      if (sets.SUBMIT.has(cmd.method)) { closeCommandBuffer(); continue; }
       if (objId !== currentCb) {
         closeCommandBuffer();
         currentCb = objId;
@@ -235,7 +236,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
       const stream = `${objId}:${cmd.secondary ?? 0}`;
       const a = cmd.args;
 
-      if (PASS_BEGIN.has(cmd.method)) {
+      if (sets.PASS_BEGIN.has(cmd.method)) {
         closeCompute();
         const index = passCounters.get(objId) ?? 0;
         passCounters.set(objId, index + 1);
@@ -248,12 +249,12 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
         passes.push(renderPass);
         continue;
       }
-      if (PASS_END.has(cmd.method)) { renderPass = null; continue; }
-      if (COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || LABEL_BEGIN.has(cmd.method) || LABEL_END.has(cmd.method)) closeCompute();
+      if (sets.PASS_END.has(cmd.method)) { renderPass = null; continue; }
+      if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
 
-      if (cmd.method === "vkCmdBindPipeline" && a) {
+      if (sets.BIND_PIPELINE.has(cmd.method) && a) {
         const id = refId(a.pipeline);
-        if (id !== null) bound.set(`${stream}:${str(a.pipelineBindPoint)}`, id);
+        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(cmd.method, a)}`, id);
         continue;
       }
       if ((cmd.method === "vkCmdSetScissor" || cmd.method === "vkCmdSetScissorWithCount" || cmd.method === "vkCmdSetScissorWithCountEXT") && a) {
@@ -261,10 +262,10 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
         scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
         continue;
       }
-      if (!isAction(cmd.method)) continue;
+      if (!isAction(sets, cmd.method)) continue;
 
-      const isDispatch = DISPATCH_METHODS.has(cmd.method);
-      const pipelineId = bound.get(`${stream}:${bindPointOf(cmd.method)}`);
+      const isDispatch = sets.DISPATCH.has(cmd.method);
+      const pipelineId = bound.get(`${stream}:${sets.bindPointOf(cmd.method)}`);
       if (pipelineId === undefined) continue;
       let pass: Pass | null;
       if (isDispatch && !renderPass) {

@@ -3,6 +3,7 @@
 #include "json_writer.h"
 #include "swizzle.h"
 #include "transport.h"
+#include "ui_messages.h"
 
 #import <Foundation/Foundation.h>
 
@@ -148,6 +149,7 @@ void OnDisconnect() {
 }
 
 void StartTracking() {
+    StartUiMessages();
     Transport::Get().SetOnConnect([] { SendSnapshot(); });
     Transport::Get().SetOnDisconnect([] { OnDisconnect(); });
     Transport::Get().Start();

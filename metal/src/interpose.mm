@@ -47,6 +47,7 @@ __attribute__((constructor)) void Loaded(void) {
     // The listener comes up before the application has a device, so the UI can be waiting when
     // the process starts or attach later and get a snapshot either way.
     mtlinsp::StartTracking();
+    mtlinsp::HookDrawableSource();
 }
 
 }  // namespace

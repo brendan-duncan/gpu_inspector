@@ -7,7 +7,6 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
-import { COMPUTE_PASS_END, DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, TRACE_METHODS } from "./vulkan/command_sets.js";
 import { fmt, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
@@ -84,6 +83,8 @@ export class CaptureStatistics {
   totalPatches = 0;
 
   compute(data: CaptureData, db: ObjectDatabase): this {
+    // This capture's API decides how the command names classify (../command_sets.ts).
+    const cmdSets = data.sets;
     this.frames = data.frames;
     const pipelines = new Set<number>();
     const sets = new Set<number>();
@@ -101,45 +102,45 @@ export class CaptureStatistics {
       const method = cmd.method;
       const a = cmd.args;
       const stream = `${cmd.object?.__id ?? 0}:${cmd.secondary ?? 0}`;
-      if (SUBMIT_METHODS.has(method)) {
+      if (cmdSets.SUBMIT.has(method)) {
         this.submits++;
         continue;
       }
-      if (COMPUTE_PASS_END.has(method) || PASS_BEGIN.has(method) || LABEL_BEGIN.has(method) || LABEL_END.has(method) || method === "vkEndCommandBuffer") computeOpen.set(stream, false);
-      if (PASS_BEGIN.has(method)) inRenderPass.set(stream, true);
-      if (PASS_END.has(method)) inRenderPass.set(stream, false);
+      if (cmdSets.COMPUTE_PASS_END.has(method) || cmdSets.PASS_BEGIN.has(method) || cmdSets.LABEL_BEGIN.has(method) || cmdSets.LABEL_END.has(method) || method === "vkEndCommandBuffer") computeOpen.set(stream, false);
+      if (cmdSets.PASS_BEGIN.has(method)) inRenderPass.set(stream, true);
+      if (cmdSets.PASS_END.has(method)) inRenderPass.set(stream, false);
       if (cmd.object) commandBuffers.add(cmd.object.__id);
       if (cmd.secondary) secondaries.add(cmd.secondary);
 
-      if (DRAW_METHODS.has(method)) {
+      if (cmdSets.DRAW.has(method)) {
         this.draws++;
         if (method.includes("Indexed")) this.indexedDraws++;
         if (method.includes("MeshTasks")) this.meshDraws++;
         const pipeline = db.getObject(boundPipeline.get(stream));
         this._geometry(cmd, data, pipeline);
-      } else if (DISPATCH_METHODS.has(method)) {
+      } else if (cmdSets.DISPATCH.has(method)) {
         this.dispatches++;
         if (!inRenderPass.get(stream) && !computeOpen.get(stream)) {
           this.computePasses++;
           computeOpen.set(stream, true);
         }
-      } else if (TRACE_METHODS.has(method)) {
+      } else if (cmdSets.TRACE.has(method)) {
         this.traceRays++;
       } else if (COPY_METHODS.has(method)) {
         this.copyCommands++;
         this._memory(cmd, db);
       } else if (BARRIER_METHODS.has(method)) {
         this.barriers++;
-      } else if (LABEL_BEGIN.has(method)) {
+      } else if (cmdSets.LABEL_BEGIN.has(method)) {
         this.debugLabels++;
-      } else if (PASS_BEGIN.has(method)) {
+      } else if (cmdSets.PASS_BEGIN.has(method)) {
         this.renderPasses++;
         this._attachments(cmd, db);
-      } else if (method === "vkCmdBindPipeline" && a) {
+      } else if (cmdSets.BIND_PIPELINE.has(method) && a) {
         this.bindPipeline++;
         const id = refId(a.pipeline);
         if (id !== null) pipelines.add(id);
-        const bindPoint = str(a.pipelineBindPoint);
+        const bindPoint = cmdSets.pipelineBindPointOf(method, a);
         if (bindPoint === "VK_PIPELINE_BIND_POINT_GRAPHICS") {
           this.graphicsPipelinesBound++;
           boundPipeline.set(stream, id ?? 0);

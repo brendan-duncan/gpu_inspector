@@ -1,6 +1,8 @@
 // Reassembles a frame capture streamed by the layer: command batches, then render target
 // descriptors and their pixel data, then the buffer ranges that were bound during the frame and
 // their contents. Follows WebGPU Inspector's capture_data.js.
+import { setsFor, type CommandSets } from "./command_sets.js";
+import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_file.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
@@ -58,6 +60,8 @@ export class CaptureData {
   /** Frame number of the first captured frame, and how many frames the capture spans. */
   frame = 0;
   frames = 1;
+  /** Which API produced it. Captures made before the field existed are Vulkan. */
+  api: CaptureApi = "vulkan";
   commands: CaptureCommand[] = [];
   textures: CapturedTexture[] = [];
   buffers = new Map<number, CapturedBuffer>();
@@ -76,9 +80,15 @@ export class CaptureData {
   readonly onBuffersComplete = new Signal<() => void>();
   readonly onPassTimings = new Signal<() => void>();
 
+  /** The command classification for this capture's API (see ../command_sets.ts). */
+  get sets(): CommandSets {
+    return setsFor(this.api);
+  }
+
   reset(): void {
     this.frame = 0;
     this.frames = 1;
+    this.api = "vulkan";
     this.commands = [];
     this.textures = [];
     this.buffers = new Map();
@@ -139,6 +149,7 @@ export class CaptureData {
     this.reset();
     this.frame = c.manifest.frame;
     this.frames = Math.max(1, c.manifest.frames ?? 1);
+    this.api = c.api;
     this.commands = c.commands;          // saved after flattenSecondaries: already one stream per primary
     this.textures = c.textures;
     this.buffers = c.buffers;
@@ -158,6 +169,7 @@ export class CaptureData {
         this.reset();
         this.frame = msg.frame;
         this.frames = Math.max(1, msg.frames ?? 1);
+        this.api = msg.api ?? "vulkan";
         this._expectedCommands = msg.count;
         this.onCaptureStatus.emit(`receiving ${msg.count} commands...`);
         if (msg.count === 0) this.onCommandsComplete.emit();

@@ -18,8 +18,12 @@ add_library(${CAPTURE_LIB} SHARED
     src/swizzle.mm
     src/hooks.h
     src/hooks.mm
+    src/capture.h
+    src/capture.mm
     src/tracker.h
     src/tracker.mm
+    src/ui_messages.h
+    src/ui_messages.mm
     src/transport.h
     src/transport.mm
     src/interpose.mm)

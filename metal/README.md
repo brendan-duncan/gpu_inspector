@@ -1,9 +1,10 @@
 # Metal capture
 
 A first cut at capturing Metal, the way `layer/` captures Vulkan. It discovers and hooks the
-Metal class tree, tracks the objects an application creates, and streams them to the inspector
-over the same protocol the Vulkan layer speaks, so the Inspect panel works against a Metal
-application today. Frame capture — command recording and resource read-back — is not written yet.
+Metal class tree, tracks the objects an application creates, records the command stream of a
+frame on request, and streams all of it to the inspector over the same protocol the Vulkan layer
+speaks. The Inspect and Capture panels both work against a Metal application today. Resource
+read-back — render targets and buffer contents — is not written yet.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
@@ -148,11 +149,36 @@ create it.
 One cosmetic thing the UI gets wrong: it pluralizes type names by appending "s", so the object
 tree says "MTLLibrarys". Vulkan type names never hit that case.
 
+## Frame capture
+
+`capture.mm` follows the Vulkan layer's model: the UI's `Capture` message arms the library, the
+next frame's commands are recorded as they are encoded, and `CaptureFrameResults` plus batched
+`CaptureFrameCommands` go out when the frame ends. Each command carries its selector, its
+arguments, and `{"__id", "__class"}` references to the tracked objects it names, so the UI
+resolves a bound buffer or pipeline to the object it already knows.
+
+The frame boundary is `commit`, not `presentDrawable:`. Metal presents by asking a command buffer
+to, partway through encoding it, with the commit after — so arming at `presentDrawable:` starts
+the recording mid-command-buffer and its first command is the *previous* frame's `commit`. Vulkan
+has no such problem, since vkQueuePresentKHR is a queue operation that follows the submission.
+`presentDrawable:` only marks the command buffer; its commit is the boundary.
+
+The UI classifies commands — which are draws, which open a pass, which bind a pipeline — by
+matching method names, and those were Vulkan's. It now picks a table per capture instead:
+`app/src/renderer/command_sets.ts` defines the interface, `vulkan/command_sets.ts` and
+`metal/command_sets.ts` fill it in, and `CaptureData.sets` selects by the `api` the library
+reports in `CaptureFrameResults` (or that a `.gpucap` recorded — the file format already had the
+field, hard-coded to `"vulkan"`). With that, a Metal capture groups into passes, counts its draws
+and dispatches, and resolves the pipeline bound at each draw.
+
+`"Profile passes: waiting for GPU timestamps..."` still waits forever, because no
+`CapturePassTimings` is sent yet.
+
 ## Not done
 
-Frame capture: command recording, pass grouping and resource read-back — everything in
-`layer/src/capture.cpp`, which is the bulk of the Vulkan layer. Also `DeleteObjects` (nothing
-watches for released objects yet), blit and argument-buffer coverage,
+Resource read-back: render targets and buffer contents, and the pass timings that would fill in
+the profile view. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
+(nothing watches for released objects yet), blit and argument-buffer coverage,
 `MTLIndirectCommandBuffer`, `MTKView`/`CAMetalLayer` paths other than the one the test
 application uses, Intel and AMD class trees (only Apple Silicon is verified), re-signing a
 hardened target as part of the launch flow, and launching a target from the UI at all — today

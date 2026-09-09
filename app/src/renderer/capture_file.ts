@@ -11,7 +11,7 @@
 import { passKey, type CaptureData, type CapturedBuffer, type CapturedTexture } from "./capture_data.js";
 import type { SessionContext } from "./session_panel.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, StackFrame, ValidationMessage, CaptureApi } from "../shared/protocol.js";
 import { requestStacks, resolveSymbols } from "./stacktrace_view.js";
 
 export const CAPTURE_FILE_EXTENSION = "gpucap";
@@ -48,7 +48,7 @@ export interface CaptureFileObject {
 export interface CaptureFileManifest {
   format: typeof FORMAT;
   version: number;
-  api: "vulkan";
+  api: CaptureApi;
   application: string;
   savedAt: string;
   source: { name: string };
@@ -88,6 +88,8 @@ export interface LoadedCapture {
   textures: CapturedTexture[];
   buffers: Map<number, CapturedBuffer>;
   passTimings: Map<string, PassTiming>;
+  /** Files written before the field was real say "vulkan"; so does an absent one. */
+  api: CaptureApi;
 }
 
 /** A file name for a capture: "<application>_frame_<N>.gpucap". */
@@ -214,7 +216,7 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
   if (onProgress) onProgress("saving: writing...");
 
   const manifest: CaptureFileManifest = {
-    format: FORMAT, version: VERSION, api: "vulkan", application: "GPU Inspector", savedAt: new Date().toISOString(),
+    format: FORMAT, version: VERSION, api: data.api, application: "GPU Inspector", savedAt: new Date().toISOString(),
     source: { name: session.name },
     frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource,
     displayRefreshMs: db.displayRefreshMs, frameBoundary: db.frameBoundary,
@@ -289,5 +291,6 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const passTimings = new Map<string, PassTiming>();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
-  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings };
+  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
+         api: manifest.api ?? "vulkan" };
 }

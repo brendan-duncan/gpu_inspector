@@ -116,7 +116,18 @@ export interface ObjectBlobMessage {
   __binary?: Uint8Array;
 }
 
-export interface CaptureFrameResultsMessage { action: "CaptureFrameResults"; frame: number; frames: number; count: number; batches: number }
+/** Which graphics API produced a capture: it decides how the UI classifies the command names. */
+export type CaptureApi = "vulkan" | "metal";
+
+export interface CaptureFrameResultsMessage {
+  action: "CaptureFrameResults";
+  frame: number;
+  frames: number;
+  count: number;
+  batches: number;
+  /** Absent from Vulkan captures, which predate the field. */
+  api?: CaptureApi;
+}
 
 /** One descriptor of a binding in a bound descriptor set (null when never written). */
 export interface CaptureDescriptor {

@@ -1,4 +1,7 @@
-// Command classifications shared by the capture panel's command list and command details.
+// Vulkan's command classification. The Metal counterpart is ../metal/command_sets.ts, and the
+// interface both fill in is ../command_sets.ts.
+import type { CommandSets } from "../command_sets.js";
+import type { ArgObject } from "../../shared/protocol.js";
 
 export const DRAW_METHODS = new Set([
   "vkCmdDraw", "vkCmdDrawIndexed", "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDrawIndirectCount",
@@ -42,3 +45,27 @@ export function bindPointOf(method: string): string {
   if (TRACE_METHODS.has(method)) return "VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR";
   return "VK_PIPELINE_BIND_POINT_GRAPHICS";
 }
+
+// The same tables as the API-keyed record the capture panel selects by `CaptureData.sets`
+// (../command_sets.ts). The named exports above stay for Vulkan-only code that has no capture in
+// hand — vulkan/frame_analysis.ts, which only ever runs on a Vulkan capture.
+export const VULKAN_SETS: CommandSets = {
+  DRAW: DRAW_METHODS,
+  DISPATCH: DISPATCH_METHODS,
+  TRACE: TRACE_METHODS,
+  PASS_BEGIN,
+  PASS_END,
+  LABEL_BEGIN,
+  LABEL_END,
+  SUBMIT: SUBMIT_METHODS,
+  BIND_DESCRIPTOR: BIND_DESCRIPTOR_METHODS,
+  BIND_VERTEX: BIND_VERTEX_METHODS,
+  BIND_INDEX: BIND_INDEX_METHODS,
+  PUSH_CONSTANT: PUSH_CONSTANT_METHODS,
+  INDIRECT: INDIRECT_METHODS,
+  COMPUTE_PASS_END,
+  bindPointOf,
+  BIND_PIPELINE: new Set(["vkCmdBindPipeline"]),
+  pipelineBindPointOf: (_method: string, args: ArgObject | null): string =>
+    typeof args?.pipelineBindPoint === "string" ? args.pipelineBindPoint : "",
+};
