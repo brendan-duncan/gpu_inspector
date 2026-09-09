@@ -11,20 +11,29 @@ const root = path.resolve(appDir, "..");
 const manifest = "VK_LAYER_INSPECTOR_capture.json";
 const library = process.platform === "win32" ? "VkLayer_inspector_capture.dll" : "libVkLayer_inspector_capture.so";
 
-const candidates = process.env.INSPECTOR_LAYER_DIR
-  ? [process.env.INSPECTOR_LAYER_DIR]
-  : ["Release", "RelWithDebInfo", ""].map((c) => path.join(root, "build", "bin", c));
-const src = candidates.find((d) => fs.existsSync(path.join(d, manifest)) && fs.existsSync(path.join(d, library)));
-if (!src) {
-  console.error(`layer not found (${library} + ${manifest}) in:\n  ${candidates.join("\n  ")}\nBuild it first (see README.md) or set INSPECTOR_LAYER_DIR.`);
-  process.exit(1);
-}
-
 const dst = path.join(appDir, "dist", "layer");
 fs.rmSync(dst, { recursive: true, force: true });
+// Always present, even when empty: electron-builder's extraResources entry for it is
+// unconditional, and the Android layer below goes inside it.
 fs.mkdirSync(dst, { recursive: true });
-for (const f of [library, manifest]) fs.copyFileSync(path.join(src, f), path.join(dst, f));
-console.log(`staged layer from ${src} -> ${dst}`);
+
+// macOS builds are the UI only: the layer does not build on Apple (layer/CMakeLists.txt covers
+// UNIX AND NOT APPLE), so a mac package captures Android targets and opens .gpucap files but
+// cannot launch a local application. Everything else here still applies.
+if (process.platform === "darwin") {
+  console.log("macOS: no desktop capture layer (Android targets and .gpucap files only)");
+} else {
+  const candidates = process.env.INSPECTOR_LAYER_DIR
+    ? [process.env.INSPECTOR_LAYER_DIR]
+    : ["Release", "RelWithDebInfo", ""].map((c) => path.join(root, "build", "bin", c));
+  const src = candidates.find((d) => fs.existsSync(path.join(d, manifest)) && fs.existsSync(path.join(d, library)));
+  if (!src) {
+    console.error(`layer not found (${library} + ${manifest}) in:\n  ${candidates.join("\n  ")}\nBuild it first (see README.md) or set INSPECTOR_LAYER_DIR.`);
+    process.exit(1);
+  }
+  for (const f of [library, manifest]) fs.copyFileSync(path.join(src, f), path.join(dst, f));
+  console.log(`staged layer from ${src} -> ${dst}`);
+}
 
 // Android: the layer libraries and the layer APK from tools/build_android.py, when built. The
 // app looks for them in resources/layer/android (findAndroidLayerFiles in src/main/main.ts).

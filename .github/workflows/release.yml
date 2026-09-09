@@ -1,8 +1,9 @@
 name: Release
 
-# Builds the Windows installer and the Linux .deb and publishes them, with the auto-update
-# manifests, to a GitHub release for the tag. The release is only created once both builds have
-# succeeded, so a failed build never leaves a half-published release. See docs/RELEASING.md.
+# Builds the Windows installer, the Linux .deb and the macOS .dmg/.zip and publishes them, with
+# the auto-update manifests, to a GitHub release for the tag. The release is only created once
+# every build has succeeded, so a failed build never leaves a half-published release. See
+# docs/RELEASING.md.
 on:
   push:
     tags:
@@ -25,6 +26,10 @@ jobs:
           # older runner keeps the .deb installable on older distributions.
           - os: ubuntu-22.04
             target: linux
+          # The UI only: there is no capture layer for Apple, so this job skips the CMake build
+          # below and produces both architectures from the one (arm64) runner.
+          - os: macos-14
+            target: mac
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +79,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libxcb1-dev libx11-dev libwayland-dev
 
-      # The layer: tests are off so the build needs neither the Vulkan SDK nor glslc.
+      # The layer: tests are off so the build needs neither the Vulkan SDK nor glslc. There is no
+      # Apple build of it, so the macOS job skips all three of these steps and packages the UI
+      # alone (tools/stage_layer.mjs expects that).
       - name: Configure layer (Windows)
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DVKINSP_BUILD_TESTS=OFF
@@ -82,6 +89,7 @@ jobs:
         if: runner.os == 'Linux'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVKINSP_BUILD_TESTS=OFF
       - name: Build layer
+        if: runner.os != 'macOS'
         run: cmake --build build --config Release --parallel
 
       - name: Install app dependencies
@@ -94,8 +102,26 @@ jobs:
 
       # Builds only; the release job below publishes once every platform has built.
       - name: Build installer
+        if: runner.os != 'macOS'
         working-directory: app
         run: npm run dist:${{ matrix.target }} -- --publish never
+
+      # macOS is its own step because CSC_LINK and CSC_KEY_PASSWORD are what electron-builder
+      # reads for Windows signing too, and the Mac certificate must not reach that job. Five
+      # secrets (docs/RELEASING.md): MAC_CERTS is the Developer ID Application certificate and key
+      # as a base64 .p12, MAC_CERTS_PASSWORD its password, and APPLE_ID /
+      # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID the notarization credentials. A fork without
+      # them still builds, just unsigned and un-notarized.
+      - name: Build installer (macOS, signed and notarized)
+        if: runner.os == 'macOS'
+        working-directory: app
+        run: npm run dist:mac -- --publish never
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTS }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -104,6 +130,8 @@ jobs:
           path: |
             app/release/*.exe
             app/release/*.deb
+            app/release/*.dmg
+            app/release/*.zip
             app/release/*.yml
             app/release/*.blockmap
             !app/release/builder-*.yml
@@ -133,6 +161,12 @@ jobs:
 
           - **Windows**: [GPU-Inspector-Setup-${VERSION}.exe](${BASE}/GPU-Inspector-Setup-${VERSION}.exe)
           - **Linux (Debian/Ubuntu)**: [gpu-inspector_${VERSION}_amd64.deb](${BASE}/gpu-inspector_${VERSION}_amd64.deb)
+          - **macOS (Apple Silicon)**: [GPU-Inspector-${VERSION}-arm64.dmg](${BASE}/GPU-Inspector-${VERSION}-arm64.dmg)
+          - **macOS (Intel)**: [GPU-Inspector-${VERSION}-x64.dmg](${BASE}/GPU-Inspector-${VERSION}-x64.dmg)
+
+          The macOS build is the user interface only: it inspects Android devices over adb and
+          opens \`.gpucap\` files, but cannot capture an application running on the Mac itself —
+          there is no Apple build of the Vulkan layer.
 
           Installed builds update themselves: the app checks this repository's releases on startup.
           NOTES

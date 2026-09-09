@@ -3,7 +3,9 @@
 **GPU Inspector** is a cross-platform (Windows, Linux) graphics inspector for native applications, the native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
 version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
 any application works without instrumentation, and Unity Vulkan players are the primary target.
-The UI and protocol are API-neutral so Metal and Direct3D capture libraries can follow.
+The UI and protocol are API-neutral so Metal and Direct3D capture libraries can follow. There is
+also a macOS build of the user interface, for inspecting Android devices and reading saved
+captures; it cannot capture applications running on the Mac itself (see [macOS](#macos)).
 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
@@ -29,8 +31,10 @@ project, and [TODO.md](TODO.md) for what is planned. Third-party code and licens
 ## Install
 
 Installers for each release are on the [releases page](https://github.com/brendan-duncan/gpu_inspector/releases):
-`GPU-Inspector-Setup-<version>.exe` for Windows and `gpu-inspector_<version>_amd64.deb` for
-Debian and Ubuntu (`sudo apt install ./gpu-inspector_<version>_amd64.deb`). Installed builds check
+`GPU-Inspector-Setup-<version>.exe` for Windows, `gpu-inspector_<version>_amd64.deb` for
+Debian and Ubuntu (`sudo apt install ./gpu-inspector_<version>_amd64.deb`), and
+`GPU-Inspector-<version>-arm64.dmg` or `-x64.dmg` for macOS (see [macOS](#macos) for what that
+build does and does not do). Installed builds check
 for updates at startup and offer to download them; the version label at the right of the launch
 bar checks on demand. The installers contain the layer, so nothing below is needed unless you
 want to build from source. What changed in each release is in [CHANGELOG.md](CHANGELOG.md), and
@@ -41,7 +45,8 @@ how releases are made in [docs/RELEASING.md](docs/RELEASING.md).
 Both platforms need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm (the Electron UI),
 the windowing-system headers Vulkan's surface extensions include, and the shader tools `glslc`,
-`spirv-dis` and `spirv-cross`. Where they come from differs per platform.
+`spirv-dis` and `spirv-cross`. Where they come from differs per platform. Building on macOS needs
+only Node.js and npm, because only the UI is built there.
 
 ### Linux
 
@@ -130,6 +135,15 @@ cd app && npm install && npm start
 
 Use the generator name of the Visual Studio you installed (`"Visual Studio 18 2026"` for VS 2026).
 
+### macOS
+
+```
+cd app && npm install && npm start
+```
+
+No CMake step and no submodule: the macOS build is the user interface alone. See
+[macOS](#macos) below for what it can inspect.
+
 ### Using it
 
 Point the launcher at a Vulkan executable — for example the bundled test application,
@@ -171,6 +185,33 @@ start). For an editor started from a launcher, set the variables for your accoun
 Windows) and restart the launcher. **Unregister** removes the registration. From the command
 line: `npm start -- --wait-for-app --port=<port>`, and `--implicit-layer=on|off` switches the
 registration.
+
+## macOS
+
+The macOS build is the Electron user interface without a capture layer: `layer/` does not build
+for Apple targets. Little is lost by that today, because applications on macOS render with Metal.
+The layer intercepts Vulkan, so even ported it would see only the few applications that run on
+MoltenVK, not native Metal ones. What the mac build does:
+
+* inspects and captures Vulkan applications on **Android** devices over adb, exactly as the
+  Windows and Linux builds do (see [Android](#android) below), and
+* opens `.gpucap` files saved anywhere, so a capture taken on a Windows or Linux machine can be
+  read, compared and reported from a Mac.
+
+The launch dialog therefore offers only the Android target, and **Launch** cannot start a program
+on the Mac itself. Shader text in the Inspect panel still needs `spirv-dis` and `spirv-cross`
+(`brew install spirv-tools spirv-cross`, or the macOS [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#mac)).
+
+Releases are signed with the project's Apple Developer ID and notarized by Apple, so the `.dmg`
+opens and the app runs without a Gatekeeper warning or any `xattr` incantation. Both
+architectures are published: `-arm64` for Apple Silicon and `-x64` for Intel.
+
+A build you make yourself is a different matter: without a Developer ID certificate in the
+keychain `npm run dist:mac` produces an ad-hoc signed app, which runs on the machine that built
+it but is not something to hand to anyone else.
+
+Capturing Metal applications natively would need a Metal interception library rather than a port
+of the Vulkan layer; it is a possible future direction, not a limitation of this build.
 
 ## Android
 
@@ -229,14 +270,15 @@ linked to their commands, and stack traces with source lines. Each case starts t
 the inspector, captures a frame, and checks what the renderer reports (`--debug-dump`) and the
 layer's log. `--captures <dir>` also opens every `.gpucap` in a directory, checking a
 `<name>.expect.json` next to it (`{"findings": {"rule": count}}`) when there is one. The
-renderer's unit tests run with `npm test` in `app/`.
+renderer's unit tests run with `npm test` in `app/`. The triangle cases need the layer, so on
+macOS only `--captures <dir>` applies.
 
 ## Troubleshooting
 
 **"layer not found" when launching.** The app looks for `VK_LAYER_INSPECTOR_capture.json` in
 `build/bin`, `build/bin/{Release,RelWithDebInfo,Debug}` and next to a packaged app. If your build
 directory is somewhere else, point `INSPECTOR_LAYER_DIR` at the directory holding the manifest and
-the layer library.
+the layer library. On macOS there is no layer to find; the message says so instead.
 
 **The target starts but never connects.** The layer only loads if the Vulkan loader can find it;
 run the target with `VK_LOADER_DEBUG=layer` to see the loader's search, and turn on **Log** in the

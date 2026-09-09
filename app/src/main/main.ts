@@ -196,6 +196,15 @@ function saveSettings(settings: Settings): void {
 // ------------------------------------------------------------------------------------------
 // Layer location
 
+/**
+ * What to say when there is no layer directory. macOS builds are the UI only — the capture layer
+ * does not build on Apple — so there the local targets (a program launched here, or the implicit
+ * layer) are simply unavailable, and telling the user to go build one would send them nowhere.
+ */
+const NO_LAYER_ERROR = process.platform === "darwin"
+  ? "local capture is not supported on macOS: inspect an Android device over adb, or open a saved .gpucap file"
+  : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
+
 function findLayerDir(): string | null {
   if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
   const root = path.resolve(__dirname, "..", "..", "..");
@@ -718,7 +727,7 @@ type ValidLaunch = { kind: "native"; layerDir: string } | { kind: "android"; adb
 
 function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
   if (config.target === "implicit") {
-    if (!findLayerDir()) return { error: "layer not found: build the layer first (see docs/ARCHITECTURE.md)" };
+    if (!findLayerDir()) return { error: NO_LAYER_ERROR };
     return { kind: "implicit" };
   }
   if (config.target === "android") {
@@ -731,7 +740,7 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
     return { kind: "android", adb, layer };
   }
   const layerDir = findLayerDir();
-  if (!layerDir) return { error: "layer not found: build the layer first (see docs/ARCHITECTURE.md)" };
+  if (!layerDir) return { error: NO_LAYER_ERROR };
   if (!config.exe || !fs.existsSync(config.exe)) return { error: `executable not found: ${config.exe}` };
   return { kind: "native", layerDir };
 }
@@ -1151,6 +1160,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
     recents: loadRecents(),
     recentCaptures: loadRecentCaptures(),
     layerDir: findLayerDir(),
+    platform: process.platform,
     theme: appTheme(),
     windowMode: win === mainWin ? "main" : "session",
     sessions: sessionsOf(win).map((s) => s.info()),
@@ -1192,11 +1202,11 @@ ipcMain.handle("inspector:launch", (_e, config: LaunchConfig) => launch(config))
 ipcMain.handle("inspector:connect", (_e, port: number) => connectOnly(port));
 ipcMain.handle("inspector:implicitLayer", async (): Promise<ImplicitLayerStatus> => {
   const dir = findLayerDir();
-  return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: "layer not built" };
+  return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: NO_LAYER_ERROR };
 });
 ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<ImplicitLayerStatus> => {
   const dir = findLayerDir();
-  return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: "layer not built" };
+  return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: NO_LAYER_ERROR };
 });
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
@@ -1406,7 +1416,7 @@ void app.whenReady().then(() => {
     const implicit = cliOption("implicit-layer");
     if (implicit === "on" || implicit === "off") {
       const dir = findLayerDir();
-      const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: "layer not built" } as ImplicitLayerStatus);
+      const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: NO_LAYER_ERROR } as ImplicitLayerStatus);
       void done.then((status) => {
         console.log(status.error ? `implicit layer: ${status.error}` : `implicit layer ${status.registered ? "registered" : "not registered"}: ${status.manifest}`);
         app.quit();

@@ -546,6 +546,9 @@ export interface AppConfig {
   /** Recently saved or opened capture files, most recent first. */
   recentCaptures: string[];
   layerDir: string | null;
+  /** The host platform (process.platform). "darwin" has no capture layer: Android targets and
+   *  saved captures only, so the launch dialog offers neither local target there. */
+  platform: string;
   /** The theme in effect (a persisted user setting). */
   theme: ThemeName;
   /** "main": the launcher window. "session": a window showing sessions moved out of the main window. */

@@ -18,7 +18,8 @@ files:
   - package.json
 
 # The app looks for the layer in resources/layer and its icons in resources/assets
-# (findLayerDir and appIconPath in src/main/main.ts).
+# (findLayerDir and appIconPath in src/main/main.ts). On macOS dist/layer holds only the Android
+# layer, when it was built: there is no desktop capture layer for Apple (tools/stage_layer.mjs).
 extraResources:
   - from: dist/layer
     to: layer
@@ -73,6 +74,43 @@ deb:
     - libuuid1
     - libsecret-1-0
     - libvulkan1
+
+# macOS is the UI only: there is no Apple capture layer, so a mac build inspects Android targets
+# and opens .gpucap files (see the macOS section of README.md).
+mac:
+  target:
+    # Both architectures, as separate artifacts rather than one universal binary: half the
+    # download, and electron-updater picks the right one from latest-mac.yml. The .zip is not
+    # only a second download format — it is the archive electron-updater installs from, so
+    # dropping it would leave installed builds unable to update themselves.
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  icon: assets/icon.icns
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+  artifactName: GPU-Inspector-${version}-${arch}.${ext}
+  # Signed with the project's Developer ID and notarized, which is what lets a downloaded build
+  # open without the user being told it is damaged or unidentified. `identity` is deliberately
+  # unset so electron-builder discovers the certificate: from the keychain on a developer's Mac,
+  # from CSC_LINK/CSC_KEY_PASSWORD in CI. Notarization runs when APPLE_ID,
+  # APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID are in the environment, and staples the ticket
+  # to the bundle before the .dmg and .zip are built from it, so both carry it.
+  # docs/RELEASING.md has the credential setup.
+  #
+  # Neither step is required to get a working build: without a certificate electron-builder logs
+  # that it skipped signing, without the Apple credentials it logs that it skipped notarization,
+  # and tools/adhoc_sign.cjs leaves the bundle ad-hoc signed. A contributor with no Apple
+  # Developer account can still build and run the app.
+  hardenedRuntime: true
+
+# Runs before electron-builder's own signing, so a real Developer ID signature simply replaces
+# what it did. It matters only when there is no certificate to sign with.
+afterPack: tools/adhoc_sign.cjs
+
+dmg:
+  artifactName: GPU-Inspector-${version}-${arch}.${ext}
 
 publish:
   provider: github

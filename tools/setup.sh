@@ -25,6 +25,20 @@ for arg in "$@"; do
     esac
 done
 
+# This script builds the layer, which has no Apple target, so on macOS it has nothing to do that
+# npm cannot do; say so rather than fail later looking for a Linux package manager.
+if [ "$(uname -s)" = "Darwin" ]; then
+    cat >&2 <<'MSG'
+tools/setup.sh is for Linux. The macOS build is the user interface alone (there is no Apple
+build of the capture layer), and needs only:
+
+    cd app && npm install && npm start
+
+See the macOS section of README.md.
+MSG
+    exit 2
+fi
+
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }

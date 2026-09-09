@@ -1,6 +1,11 @@
 ## 0.7.0
 
 ### Added
+- macOS build of the user interface (`npm run dist:mac`, `GPU-Inspector-<version>-arm64.dmg`
+  and `-x64.dmg`, published by the release workflow): inspects Android devices over adb and
+  opens `.gpucap` files. There is no Apple build of the capture layer, so the launch dialog
+  offers only the Android target there and says why. The download is signed with the project's
+  Apple Developer ID and notarized, so it opens without a Gatekeeper warning.
 - Source roots (launch dialog, `--source-roots`): a shader with line information but no
   embedded text gets its Source view, line costs and findings from the file its debug
   information names, looked up under the roots. The triangle test app's compute shader ships

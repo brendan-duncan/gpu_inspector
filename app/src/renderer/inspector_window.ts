@@ -14,7 +14,7 @@ import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
 import { FileSessionPanel, SessionPanel } from "./session_panel.js";
 import { CAPTURE_FILE_EXTENSION, CAPTURE_FILE_FILTERS, parseCaptureFile } from "./capture_file.js";
-import { LaunchDialog, emptyLaunchConfig, launchDisplayName } from "./launch_dialog.js";
+import { LaunchDialog, emptyLaunchConfig, launchDisplayName, setHostPlatform } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";
 
@@ -109,6 +109,9 @@ export class InspectorWindow extends Window {
 
     void window.inspector.getConfig().then((cfg) => {
       this._debug = cfg.debug;
+      // Before anything can open the launch dialog, which offers a different set of targets on
+      // a host without a capture layer.
+      setHostPlatform(cfg.platform);
       this._setTheme(cfg.theme);
       this._recentCaptures = cfg.recentCaptures ?? [];
       this._setRecents(cfg.recents);
@@ -128,7 +131,11 @@ export class InspectorWindow extends Window {
             : target === "implicit" ? { ...emptyLaunchConfig(), target: "implicit" } : null);
         }
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
-        if (!cfg.layerDir && !cfg.debug?.openCapture) this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");
+        // On macOS there is no capture layer to build, so its absence is the expected state and
+        // not worth a dialog on every start; the launch dialog says what the mac build can do.
+        if (!cfg.layerDir && !cfg.debug?.openCapture && cfg.platform !== "darwin") {
+          this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");
+        }
       }
       this._updatePlaceholder();
     });

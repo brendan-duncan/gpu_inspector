@@ -21,7 +21,19 @@ export function emptyLaunchConfig(): LaunchConfig {
 }
 
 const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", "none"], ["Capture frame", "frame"], ["Capture after seconds", "time"]];
-const TARGETS: [string, LaunchConfig["target"]][] = [["This computer", "native"], ["Android device (adb)", "android"], ["An application started elsewhere (implicit layer)", "implicit"]];
+type Target = [string, LaunchConfig["target"]];
+const TARGETS: Target[] = [["This computer", "native"], ["Android device (adb)", "android"], ["An application started elsewhere (implicit layer)", "implicit"]];
+
+// Both local targets need the capture layer, which does not build on Apple, so a macOS build
+// offers only Android. The main process reports the host in AppConfig.platform and the window
+// passes it here before any dialog is opened.
+let hostPlatform = "";
+export function setHostPlatform(platform: string): void {
+  hostPlatform = platform;
+}
+function hostTargets(): Target[] {
+  return hostPlatform === "darwin" ? TARGETS.filter(([, t]) => t === "android") : TARGETS;
+}
 
 export function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
@@ -45,6 +57,7 @@ function setOptions(select: Select, options: string[]): void {
 export class LaunchDialog extends Dialog {
   private _recents: LaunchConfig[];
   private _recentSelect: Select | null = null;
+  private _targets: Target[] = hostTargets();
   private _target: Select;
   private _nativeRows: Div;
   private _androidRows: Div;
@@ -105,7 +118,12 @@ export class LaunchDialog extends Dialog {
     {
       const row = new Div(body, { class: "launch-dialog-row" });
       new Span(row, { text: "Run On", class: "launch-dialog-label" });
-      this._target = new Select(row, { options: TARGETS.map((t) => t[0]), class: "launch-dialog-select", onChange: () => this._updateTarget() });
+      this._target = new Select(row, { options: this._targets.map((t) => t[0]), class: "launch-dialog-select", onChange: () => this._updateTarget() });
+    }
+    if (hostPlatform === "darwin") {
+      new Div(body, { class: "launch-dialog-hint",
+        text: "The macOS build has no capture layer, so it cannot launch an application on this computer. "
+          + "Inspect an Android device over adb, or open a saved .gpucap file." });
     }
 
     // Native target: the program to run.
@@ -232,7 +250,7 @@ export class LaunchDialog extends Dialog {
   }
 
   private get target(): LaunchConfig["target"] {
-    return TARGETS[this._target.index]?.[1] ?? "native";
+    return this._targets[this._target.index]?.[1] ?? this._targets[0]?.[1] ?? "native";
   }
 
   private _updateTarget(): void {
@@ -348,8 +366,12 @@ export class LaunchDialog extends Dialog {
   }
 
   setConfig(c: LaunchConfig): void {
-    const android = c.target === "android";
-    this._target.index = android ? 1 : c.target === "implicit" ? 2 : 0;
+    // A recent launch whose target this host does not offer (a native launch in a configuration
+    // carried to a mac) falls back to the first target, so `android` follows the selection rather
+    // than the configuration.
+    const wanted = this._targets.findIndex(([, t]) => t === c.target);
+    this._target.index = wanted >= 0 ? wanted : 0;
+    const android = this.target === "android";
     if (android) {
       this._package.value = c.exe ?? "";
       this._activity.value = c.activity ?? "";
