@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #import <objc/runtime.h>
 
@@ -31,12 +32,27 @@ void RequestCapture(const CaptureOptions &options);
 bool Recording();
 
 /**
+ * Queues a bound buffer range to be read back with the capture, and returns the id the command
+ * should carry in `bufferData` so the UI can find the contents (0 when it cannot be read).
+ *
+ * Cheaper than the Vulkan layer's equivalent, which records a GPU copy into staging: a Metal
+ * buffer in a shared or managed storage mode is mapped into the process the whole time, so this
+ * is a memcpy. A private-storage buffer has no such pointer and is reported as an error rather
+ * than blitted, for now.
+ */
+uint64_t QueueBufferCapture(id buffer, uint64_t offset, uint64_t size);
+
+/**
  * Records one command of the frame being captured.
  *
  * `method` is the selector, `object` the encoder or command buffer it was called on, and
  * `argsJson` its arguments already serialized, or empty.
  */
 void RecordCommand(const char *method, id object, const std::string &argsJson);
+
+/** As RecordCommand, with the CaptureBuffers ids of the ranges the command bound. */
+void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
+                              std::vector<uint64_t> bufferData);
 
 /** Notes that this command buffer will present, so its commit is the end of a frame. */
 void OnPresentDrawable(id commandBuffer);

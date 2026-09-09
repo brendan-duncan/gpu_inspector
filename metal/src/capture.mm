@@ -5,7 +5,7 @@
 #include "tracker.h"
 #include "transport.h"
 
-#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 
 #include <atomic>
 #include <mutex>
@@ -15,12 +15,26 @@
 namespace mtlinsp {
 namespace {
 
+// A bound buffer range read back with the capture. `data` is filled at once, because a buffer in
+// a shared storage mode is already mapped; the Vulkan layer has to record a GPU copy instead.
+struct CapturedBuffer {
+    uint64_t id = 0;
+    uint64_t bufferId = 0;     // the tracked MTLBuffer
+    uint32_t frame = 0;
+    uint64_t offset = 0;
+    uint64_t size = 0;
+    uint64_t originalSize = 0; // set when the range was truncated
+    std::string error;
+    std::vector<uint8_t> data;
+};
+
 struct RecordedCommand {
     uint32_t frame = 0;
     std::string method;
     uint64_t objectId = 0;      // the encoder or command buffer, when it is tracked
     std::string objectType;     // its protocol name, for the reference the UI shows
     std::string args;
+    std::vector<uint64_t> bufferData;  // CapturedBuffer ids, in the order the UI expects
 };
 
 std::mutex g_mutex;
@@ -32,6 +46,12 @@ uint32_t g_frameIndex = 0;
 std::vector<RecordedCommand> g_commands;
 // Command buffers that have been asked to present: their commit ends a frame.
 std::set<const void *> g_presenting;
+std::vector<CapturedBuffer> g_buffers;
+uint64_t g_nextBufferId = 1;
+
+// Matches the Vulkan layer's default: enough for a vertex or uniform buffer, not so much that a
+// large storage buffer floods the connection.
+constexpr uint64_t kMaxBufferSize = 64 * 1024;
 
 // A capture's commands go out in batches rather than one message, so a frame with tens of
 // thousands of commands does not become a single enormous JSON string.
@@ -52,16 +72,59 @@ void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t inde
         w.EndObject();
     }
     w.Key("args"); if (c.args.empty()) w.Null(); else w.Raw(c.args);
+    if (!c.bufferData.empty()) {
+        w.Key("bufferData"); w.BeginArray();
+        for (uint64_t id : c.bufferData) w.Uint(id);
+        w.EndArray();
+    }
     w.EndObject();
+}
+
+/** CaptureBuffers (what was read) then one CaptureBufferData binary frame per buffer. */
+void SendBuffers(std::vector<CapturedBuffer> &buffers) {
+    if (buffers.empty()) return;
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("CaptureBuffers");
+    w.Key("count"); w.Uint(buffers.size());
+    w.Key("buffers"); w.BeginArray();
+    for (const CapturedBuffer &b : buffers) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(b.id);
+        w.Key("buffer"); w.Uint(b.bufferId);
+        w.Key("frame"); w.Uint(b.frame);
+        w.Key("commandBuffer"); w.Uint(0);
+        w.Key("offset"); w.Uint(b.offset);
+        w.Key("size"); w.Uint(b.error.empty() ? b.data.size() : 0);
+        if (b.originalSize != 0) { w.Key("originalSize"); w.Uint(b.originalSize); }
+        if (!b.error.empty()) { w.Key("error"); w.String(b.error); }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+
+    for (const CapturedBuffer &b : buffers) {
+        if (!b.error.empty() || b.data.empty()) continue;
+        vkinsp::JsonWriter h;
+        h.BeginObject();
+        h.Key("action"); h.String("CaptureBufferData");
+        h.Key("id"); h.Uint(b.id);
+        h.Key("size"); h.Uint(b.data.size());
+        h.EndObject();
+        Transport::Get().SendBinary(std::move(h.str()), b.data.data(), b.data.size());
+    }
 }
 
 /** Streams CaptureFrameResults then the command batches, and clears the recording. */
 void Finish() {
     std::vector<RecordedCommand> commands;
+    std::vector<CapturedBuffer> buffers;
     uint32_t frames = 0;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         commands.swap(g_commands);
+        buffers.swap(g_buffers);
         frames = g_frameIndex;
         g_frameIndex = 0;
         g_recording = false;
@@ -98,8 +161,9 @@ void Finish() {
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
-    Log("capture finished: %zu commands over %u frame(s), %zu batch(es)", commands.size(), frames,
-        batches);
+    SendBuffers(buffers);
+    Log("capture finished: %zu commands over %u frame(s), %zu batch(es), %zu buffer(s)",
+        commands.size(), frames, batches, buffers.size());
 }
 
 }  // namespace
@@ -115,11 +179,54 @@ bool Recording() {
     return g_recording;
 }
 
+uint64_t QueueBufferCapture(id buffer, uint64_t offset, uint64_t size) {
+    if (!g_recording || buffer == nil) return 0;
+    const uint64_t bufferId = IdOf(buffer);
+    if (bufferId == 0) return 0;
+
+    id<MTLBuffer> metalBuffer = (id<MTLBuffer>)buffer;
+    const uint64_t length = metalBuffer.length;
+    if (offset >= length) return 0;
+    const uint64_t available = length - offset;
+    uint64_t want = size == 0 ? available : std::min(size, available);
+
+    CapturedBuffer captured;
+    captured.bufferId = bufferId;
+    captured.offset = offset;
+    if (want > kMaxBufferSize) {
+        captured.originalSize = want;
+        want = kMaxBufferSize;
+    }
+    captured.size = want;
+
+    const void *contents = metalBuffer.storageMode == MTLStorageModePrivate ? nullptr
+                                                                            : metalBuffer.contents;
+    if (contents == nullptr) {
+        captured.error = "buffer is in private storage (no mapped contents to read)";
+    } else {
+        const uint8_t *bytes = static_cast<const uint8_t *>(contents) + offset;
+        captured.data.assign(bytes, bytes + want);
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return 0;
+    captured.id = g_nextBufferId++;
+    captured.frame = g_frameIndex;
+    g_buffers.push_back(std::move(captured));
+    return g_buffers.back().id;
+}
+
 void RecordCommand(const char *method, id object, const std::string &argsJson) {
+    RecordCommandWithBuffers(method, object, argsJson, {});
+}
+
+void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
+                              std::vector<uint64_t> bufferData) {
     if (!g_recording) return;
     RecordedCommand command;
     command.method = method;
     command.args = argsJson;
+    command.bufferData = std::move(bufferData);
     command.objectId = IdOf(object);
     if (command.objectId != 0 && object != nil) command.objectType = ClassName(object);
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -146,6 +253,8 @@ void OnCommit(id commandBuffer) {
             g_pending = false;
             g_frameIndex = 0;
             g_commands.clear();
+            g_buffers.clear();
+            g_nextBufferId = 1;
             g_recording = true;
             Log("capture started");
             return;

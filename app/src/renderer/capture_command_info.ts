@@ -16,7 +16,7 @@ import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
 import { decodeBase64 } from "./utils/base64.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
-import { isAction, type CommandSets } from "./command_sets.js";
+import { isAction, type BoundIndexBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import {
   typeName, type ReflType, type ShaderReflection, type ShaderResource, type ShaderStage, type StructMember, type StructType,
@@ -45,23 +45,7 @@ import type {
 
 export interface BoundSet { cmd: CaptureCommand; set: CaptureDescriptorSet }
 
-export interface BoundVertexBuffer {
-  cmd: CaptureCommand;
-  binding: number;
-  buffer: ArgValue;
-  offset: number;
-  size: number | null;     // vkCmdBindVertexBuffers2 pSizes
-  stride: number | null;   // vkCmdBindVertexBuffers2 pStrides
-  dataId: number;
-}
-
-export interface BoundIndexBuffer {
-  cmd: CaptureCommand;
-  buffer: ArgValue;
-  offset: number;
-  indexType: string;
-  dataId: number;
-}
+export type { BoundIndexBuffer, BoundVertexBuffer } from "./command_sets.js";
 
 export interface PushConstantUpdate {
   cmd: CaptureCommand;
@@ -216,7 +200,7 @@ export class CommandInfoView {
 
     if (isAction(cmdSets, method)) {
       const state = this.drawState(cmd);
-      const graphics = state.bindPoint === "VK_PIPELINE_BIND_POINT_GRAPHICS";
+      const graphics = state.bindPoint === cmdSets.graphicsBindPoint;
       this._renderPipelineState(container, state);
       this._renderShaders(container, state.pipeline, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
@@ -307,6 +291,9 @@ export class CommandInfoView {
     const cmdSets = this.panel.data.sets;
     const commands = this.panel.data.commands;
     const state = this._emptyState(bindPoint);
+    // An API without an index-buffer binding command names it in the draw itself (Metal).
+    // indexBufferOf answers null for a command that declares none, so this is safe to ask always.
+    state.indexBuffer = cmdSets.indexBufferOf(cmd);
     for (let i = cmd.index - 1; i >= 0; i--) {
       const c = commands[i];
       if (!c || !sameStream(cmdSets, cmd, c)) break;
@@ -324,19 +311,17 @@ export class CommandInfoView {
         }
         continue;
       }
+      if (cmdSets.BIND_VERTEX.has(c.method)) {
+        for (const vb of cmdSets.vertexBuffersOf(c)) {
+          if (!state.vertexBuffers.has(vb.binding)) state.vertexBuffers.set(vb.binding, vb);
+        }
+        continue;
+      }
+      if (cmdSets.BIND_INDEX.has(c.method)) {
+        if (!state.indexBuffer) state.indexBuffer = cmdSets.indexBufferOf(c);
+        continue;
+      }
       switch (c.method) {
-        case "vkCmdBindVertexBuffers":
-        case "vkCmdBindVertexBuffers2":
-        case "vkCmdBindVertexBuffers2EXT":
-          for (const vb of this._vertexBuffersOf(c)) {
-            if (!state.vertexBuffers.has(vb.binding)) state.vertexBuffers.set(vb.binding, vb);
-          }
-          break;
-        case "vkCmdBindIndexBuffer":
-        case "vkCmdBindIndexBuffer2":
-        case "vkCmdBindIndexBuffer2KHR":
-          if (!state.indexBuffer) state.indexBuffer = this._indexBufferOf(c);
-          break;
         case "vkCmdSetVertexInputEXT":
           if (!state.vertexInput) state.vertexInput = a;
           break;
@@ -393,24 +378,11 @@ export class CommandInfoView {
   }
 
   private _vertexBuffersOf(c: CaptureCommand): BoundVertexBuffer[] {
-    const a = c.args;
-    if (!a || !Array.isArray(a.pBuffers)) return [];
-    const first = num(a.firstBinding);
-    return a.pBuffers.map((buffer, k) => ({
-      cmd: c,
-      binding: first + k,
-      buffer,
-      offset: Array.isArray(a.pOffsets) ? num(a.pOffsets[k]) : 0,
-      size: Array.isArray(a.pSizes) && a.pSizes[k] ? num(a.pSizes[k]) : null,
-      stride: Array.isArray(a.pStrides) ? num(a.pStrides[k]) : null,
-      dataId: c.bufferData?.[k] ?? 0,
-    }));
+    return this.panel.data.sets.vertexBuffersOf(c);
   }
 
   private _indexBufferOf(c: CaptureCommand): BoundIndexBuffer | null {
-    const a = c.args;
-    if (!a) return null;
-    return { cmd: c, buffer: a.buffer, offset: num(a.offset), indexType: str(a.indexType), dataId: c.bufferData?.[0] ?? 0 };
+    return this.panel.data.sets.indexBufferOf(c);
   }
 
   private _pushConstantOf(c: CaptureCommand): PushConstantUpdate | null {

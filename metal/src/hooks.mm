@@ -416,7 +416,10 @@ void Replaced_setVertexBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, N
             w.Key("offset"); w.Uint(offset);
             w.Key("index"); w.Uint(index);
             w.EndObject();
-            RecordCommand("setVertexBuffer:offset:atIndex:", self, w.str());
+            // From the offset to the end of the buffer: Metal does not say how much a draw will
+            // read, and the stride is in the pipeline's vertex descriptor, not the binding.
+            const uint64_t data = QueueBufferCapture(buffer, offset, 0);
+            RecordCommandWithBuffers("setVertexBuffer:offset:atIndex:", self, w.str(), {data});
         }
     }
     ((void (*)(id, SEL, id, NSUInteger, NSUInteger))Original(self, _cmd))(self, _cmd, buffer,
@@ -466,8 +469,11 @@ void Replaced_drawIndexedPrimitives(id self, SEL _cmd, NSUInteger type, NSUInteg
             w.Key("indexBufferOffset"); w.Uint(offset);
             w.Key("instanceCount"); w.Uint(instances);
             w.EndObject();
-            RecordCommand("drawIndexedPrimitives:indexCount:indexType:indexBuffer:"
-                          "indexBufferOffset:instanceCount:", self, w.str());
+            // MTLIndexType: 0 = UInt16, 1 = UInt32. The draw says exactly how many it reads.
+            const uint64_t indexBytes = indexCount * (indexType == 0 ? 2 : 4);
+            const uint64_t data = QueueBufferCapture(indexBuffer, offset, indexBytes);
+            RecordCommandWithBuffers("drawIndexedPrimitives:indexCount:indexType:indexBuffer:"
+                                     "indexBufferOffset:instanceCount:", self, w.str(), {data});
         }
     }
     ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger))Original(

@@ -1,7 +1,9 @@
 // Vulkan's command classification. The Metal counterpart is ../metal/command_sets.ts, and the
 // interface both fill in is ../command_sets.ts.
 import type { CommandSets } from "../command_sets.js";
-import type { ArgObject } from "../../shared/protocol.js";
+import type { ArgObject, CaptureCommand } from "../../shared/protocol.js";
+import type { BoundIndexBuffer, BoundVertexBuffer } from "../command_sets.js";
+import { num, str } from "./vulkan_object.js";
 
 export const DRAW_METHODS = new Set([
   "vkCmdDraw", "vkCmdDrawIndexed", "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDrawIndirectCount",
@@ -68,4 +70,29 @@ export const VULKAN_SETS: CommandSets = {
   BIND_PIPELINE: new Set(["vkCmdBindPipeline"]),
   pipelineBindPointOf: (_method: string, args: ArgObject | null): string =>
     typeof args?.pipelineBindPoint === "string" ? args.pipelineBindPoint : "",
+
+  graphicsBindPoint: "VK_PIPELINE_BIND_POINT_GRAPHICS",
+
+  vertexBuffersOf(cmd: CaptureCommand): BoundVertexBuffer[] {
+    const a = cmd.args;
+    if (!a || !Array.isArray(a.pBuffers)) return [];
+    const first = num(a.firstBinding);
+    return a.pBuffers.map((buffer, k) => ({
+      cmd,
+      binding: first + k,
+      buffer,
+      offset: Array.isArray(a.pOffsets) ? num(a.pOffsets[k]) : 0,
+      size: Array.isArray(a.pSizes) && a.pSizes[k] ? num(a.pSizes[k]) : null,
+      stride: Array.isArray(a.pStrides) ? num(a.pStrides[k]) : null,
+      dataId: cmd.bufferData?.[k] ?? 0,
+    }));
+  },
+
+  indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null {
+    if (!BIND_INDEX_METHODS.has(cmd.method)) return null;
+    const a = cmd.args;
+    if (!a) return null;
+    return { cmd, buffer: a.buffer, offset: num(a.offset), indexType: str(a.indexType),
+             dataId: cmd.bufferData?.[0] ?? 0 };
+  },
 };

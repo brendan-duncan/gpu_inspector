@@ -9,7 +9,31 @@
 // The tables themselves live beside the rest of each API's code, in `vulkan/` and `metal/`.
 import { METAL_SETS } from "./metal/command_sets.js";
 import { VULKAN_SETS } from "./vulkan/command_sets.js";
-import type { ArgObject, CaptureApi } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, CaptureApi, CaptureCommand } from "../shared/protocol.js";
+
+/**
+ * A vertex buffer a command binds. Vulkan binds a range of bindings with one command carrying
+ * parallel arrays; Metal binds one per call, with the binding index as an argument. Both are
+ * flattened to this.
+ */
+export interface BoundVertexBuffer {
+  cmd: CaptureCommand;
+  binding: number;
+  buffer: ArgValue;
+  offset: number;
+  size: number | null;
+  stride: number | null;
+  /** Id of the CaptureBuffers entry holding the bound range's contents, 0 when not captured. */
+  dataId: number;
+}
+
+export interface BoundIndexBuffer {
+  cmd: CaptureCommand;
+  buffer: ArgValue;
+  offset: number;
+  indexType: string;
+  dataId: number;
+}
 
 export interface CommandSets {
   DRAW: ReadonlySet<string>;
@@ -41,6 +65,26 @@ export interface CommandSets {
    * point as an argument; Metal has one selector per bind point and no argument.
    */
   pipelineBindPointOf(method: string, args: ArgObject | null): string;
+  /**
+   * The bind point name that means "the graphics/render pipeline", in this API's vocabulary.
+   * What vertex and index buffers hang off, and what a compute bind point is not.
+   */
+  graphicsBindPoint: string;
+
+  // Reading a command's contents, which needs each API's own argument names rather than only its
+  // method names. Vulkan's vkCmdBindVertexBuffers has `pBuffers`/`firstBinding`/`pOffsets`; Metal's
+  // setVertexBuffer:offset:atIndex: has `buffer`/`index`/`offset`.
+
+  /** The vertex buffers `cmd` binds, empty when it binds none. */
+  vertexBuffersOf(cmd: CaptureCommand): BoundVertexBuffer[];
+  /**
+   * The index buffer `cmd` declares, or null when it declares none.
+   *
+   * Vulkan declares one with a binding command; Metal has no such command and names the index
+   * buffer in the indexed draw itself, so for Metal this answers on the draw. Callers may ask any
+   * command and rely on null.
+   */
+  indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null;
 }
 
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */

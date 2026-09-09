@@ -5,7 +5,10 @@
 // method. Where Vulkan needs several spellings of the same command for its extensions and core
 // versions, Metal needs one per overload — `drawPrimitives:` has four, differing only in whether
 // instancing and base-instance arguments are present.
-import type { CommandSets } from "../command_sets.js";
+import type { BoundIndexBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
+import type { CaptureCommand } from "../../shared/protocol.js";
+// Generic argument coercers that happen to live beside the Vulkan object model.
+import { num } from "../vulkan/vulkan_object.js";
 
 const DRAW = new Set([
   "drawPrimitives:vertexStart:vertexCount:",
@@ -75,5 +78,38 @@ export const METAL_SETS: CommandSets = {
   BIND_PIPELINE: new Set(["setRenderPipelineState:", "setComputePipelineState:"]),
   pipelineBindPointOf(method: string): string {
     return method === "setComputePipelineState:" ? "compute" : "render";
+  },
+
+  graphicsBindPoint: "render",
+
+  vertexBuffersOf(cmd: CaptureCommand): BoundVertexBuffer[] {
+    const a = cmd.args;
+    if (!a || a.buffer === undefined) return [];
+    // One buffer per call. Metal's vertex stride lives in the pipeline's vertex descriptor rather
+    // than in the binding, so there is nothing to report for it here.
+    return [{
+      cmd,
+      binding: num(a.index),
+      buffer: a.buffer,
+      offset: num(a.offset),
+      size: null,
+      stride: null,
+      dataId: cmd.bufferData?.[0] ?? 0,
+    }];
+  },
+
+  indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null {
+    // Metal has no index-buffer binding command: an indexed draw names its own index buffer.
+    const a = cmd.args;
+    if (!a || a.indexBuffer === undefined) return null;
+    return {
+      cmd,
+      buffer: a.indexBuffer,
+      offset: num(a.indexBufferOffset),
+      // MTLIndexType: 0 = UInt16, 1 = UInt32.
+      indexType: num(a.indexType) === 1 ? "MTLIndexTypeUInt32" : "MTLIndexTypeUInt16",
+      // bufferData is [vertex..., index] per command; an indexed draw captures only its index buffer.
+      dataId: cmd.bufferData?.[0] ?? 0,
+    };
   },
 };

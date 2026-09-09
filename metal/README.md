@@ -174,10 +174,43 @@ and dispatches, and resolves the pipeline bound at each draw.
 `"Profile passes: waiting for GPU timestamps..."` still waits forever, because no
 `CapturePassTimings` is sent yet.
 
+### Argument shapes, not only method names
+
+Classifying commands by name gets the command tree, the pass grouping, the draw counts and the
+bound pipeline. The panels that show a command's *contents* go a level deeper and read argument
+names: `pBuffers`/`firstBinding`/`pOffsets` for Vulkan against `buffer`/`index`/`offset` for
+Metal. So `CommandSets` carries accessors as well as sets — `vertexBuffersOf(cmd)` and
+`indexBufferOf(cmd)` beside `pipelineBindPointOf` — and each returns the same neutral
+`BoundVertexBuffer` / `BoundIndexBuffer` whatever the arguments were called.
+
+The accessor is also where genuine structural differences go, not just naming ones. Vulkan binds a
+range of vertex bindings with one command carrying parallel arrays; Metal binds one per call.
+Vulkan binds an index buffer with its own command; Metal has no such command and names the index
+buffer in the indexed draw, so `indexBufferOf` answers on the draw there and on the binding
+command in Vulkan. Callers ask any command and rely on null.
+
+One more constant needed the same treatment: the panel decided whether to show vertex and index
+buffers by comparing the bind point against the literal `"VK_PIPELINE_BIND_POINT_GRAPHICS"`, so
+`graphicsBindPoint` is part of the table too.
+
+## Buffer read-back
+
+Bound vertex buffers and an indexed draw's index buffer are read back with the capture and sent as
+`CaptureBuffers` plus a `CaptureBufferData` binary frame each, which is what the UI shows under a
+draw as "Vertex Buffer 0: vertices" and "Index Buffer: indices".
+
+Much cheaper than the Vulkan layer's equivalent. That records a GPU copy into staging memory and
+maps it after the frame; a Metal buffer in a shared or managed storage mode is mapped into the
+process the whole time, so reading it is a `memcpy` at record time with no GPU work at all — which
+is what unified memory buys. A private-storage buffer has no such pointer and is reported with an
+error rather than blitted; that is the case that would need the Vulkan approach.
+
+Ranges are capped at 64 KB, matching the layer's default, and the cap is reported as
+`originalSize` so the UI can say a range was truncated.
+
 ## Not done
 
-Resource read-back: render targets and buffer contents, and the pass timings that would fill in
-the profile view. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
+Render target read-back, and the pass timings that would fill in the profile view. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
 (nothing watches for released objects yet), blit and argument-buffer coverage,
 `MTLIndirectCommandBuffer`, `MTKView`/`CAMetalLayer` paths other than the one the test
 application uses, Intel and AMD class trees (only Apple Silicon is verified), re-signing a
