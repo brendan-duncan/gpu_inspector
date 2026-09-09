@@ -439,8 +439,10 @@ from the module base, and frames without a source location get a second pass on 
 directories" (Android section; the last ones used serve capture files) are searched a few
 levels deep for a file named like the module, the largest copy taken as the unstripped one,
 and `llvm-symbolizer` from the NDK (the one on `PATH`, or `addr2line`, otherwise) turns the
-offsets into functions, files and lines. The results replace the cached frames, so a capture
-file saves them; `--debug-expand-stacks` opens the section as soon as a command is shown.
+offsets into functions, files and lines; its JSON output also gives the callers a function
+was inlined into, kept as `inlinedInto` and shown as indented steps under the frame. The
+results replace the cached frames, so a capture file saves them; `--debug-expand-stacks` opens
+the section as soon as a command is shown.
 
 #### Leak report
 

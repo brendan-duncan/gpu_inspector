@@ -123,6 +123,13 @@ export function renderStackFrames(container: Widget, frames: StackFrame[]): void
       text.tooltip = `${f.address}${f.module ? `  ${f.module}` : ""}${f.offset ? `+0x${f.offset.toString(16)}` : ""}`;
       if (f.file) new Span(row, { text: `${f.file}:${f.line}`, class: "stack-frame-location text-muted" });
       else if (f.function && f.module) new Span(row, { text: f.module, class: "stack-frame-location text-muted" });
+      // The callers the function was inlined into share the address: shown as steps under it.
+      for (const c of f.inlinedInto ?? []) {
+        const sub = new Div(list, { class: `stack-frame stack-frame-inlined${f.internal ? " stack-frame-internal" : ""}` });
+        new Span(sub, { text: "", class: "stack-frame-index" });
+        new Span(sub, { text: `inlined into ${c.function ?? "?"}`, class: "stack-frame-function text-muted" });
+        if (c.file) new Span(sub, { text: `${c.file}:${c.line}`, class: "stack-frame-location text-muted" });
+      }
     }
     if (!index) new Div(list, { text: "No frames.", class: "text-muted font-sm" });
   };

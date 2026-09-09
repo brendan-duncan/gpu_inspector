@@ -100,10 +100,34 @@ export async function symbolizeFrames(frames: StackFrame[], dirs: string[]): Pro
     }
     if (!file) continue;
     const offsets = list.map((f) => `0x${f.offset.toString(16)}`);
-    const text = tool.llvm
-      ? await run(tool.exe, [`--obj=${file}`, "--functions=linkage", "--demangle", "--inlining=false", "--output-style=LLVM", ...offsets])
-      : await run(tool.exe, ["-C", "-f", "-e", file, ...offsets]);
-    // Both tools print two lines per address: the function, then "file:line[:column]".
+    if (tool.llvm) {
+      // JSON: one entry per address with its inlined frames, innermost first.
+      const text = await run(tool.exe, [`--obj=${file}`, "--functions=linkage", "--demangle", "--inlining=true", "--output-style=JSON", ...offsets]);
+      let entries: { Address?: string; Symbol?: { FunctionName?: string; FileName?: string; Line?: number }[] }[] = [];
+      try {
+        entries = JSON.parse(text) as typeof entries;
+      } catch {
+        continue;
+      }
+      for (let i = 0; i < list.length && i < entries.length; ++i) {
+        const symbols = (entries[i].Symbol ?? []).map((s) => ({
+          function: s.FunctionName && s.FunctionName !== "??" ? s.FunctionName : undefined,
+          file: s.FileName && s.FileName !== "??" && (s.Line ?? 0) > 0 ? s.FileName : undefined,
+          line: (s.Line ?? 0) > 0 ? s.Line : undefined,
+        }));
+        const inner = symbols[0];
+        if (!inner || (!inner.function && !inner.file)) continue;
+        const resolved: StackFrame = { ...list[i] };
+        if (inner.function) resolved.function = inner.function;
+        if (inner.file) { resolved.file = inner.file; resolved.line = inner.line; }
+        const callers = symbols.slice(1).filter((s) => s.function || s.file);
+        if (callers.length) resolved.inlinedInto = callers;
+        out.push(resolved);
+      }
+      continue;
+    }
+    // addr2line prints two lines per address: the function, then "file:line[:column]".
+    const text = await run(tool.exe, ["-C", "-f", "-e", file, ...offsets]);
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length);
     for (let i = 0; i < list.length && 2 * i + 1 < lines.length; ++i) {
       const fn = lines[2 * i];

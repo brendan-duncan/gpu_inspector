@@ -90,6 +90,8 @@ export interface StackFrame {
   internal?: boolean;
   /** The UI already tried (or managed) to resolve it on the host from the unstripped module. */
   hostResolved?: boolean;
+  /** The callers this frame's function was inlined into, innermost first (host symbolization with debug info). */
+  inlinedInto?: { function?: string; file?: string; line?: number }[];
 }
 
 /** Answer to RequestStacktraces: the creation stacks of objects. */
