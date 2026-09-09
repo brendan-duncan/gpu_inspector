@@ -158,6 +158,12 @@ uint64_t Track(id object, const char *type, const char *cmd, id parent, const st
 
 id Replaced_nextDrawable(id self, SEL _cmd) {
     Reentry reentry;
+    // A framebufferOnly layer's drawable texture cannot be a blit source, and the flag has to be
+    // off before the drawable is made. This is the Metal counterpart of the layer adding
+    // TRANSFER_SRC usage to every image it sees: a small cost paid always, so a capture can be
+    // taken at any moment without the application having been told to expect one.
+    CAMetalLayer *metalLayer = (CAMetalLayer *)self;
+    if (metalLayer.framebufferOnly) metalLayer.framebufferOnly = NO;
     id drawable = ((id (*)(id, SEL))Original(self, _cmd))(self, _cmd);
     if (reentry.outermost() && drawable != nil) {
         CAMetalLayer *layer = (CAMetalLayer *)self;
@@ -308,9 +314,30 @@ id Replaced_commandBuffer(id self, SEL _cmd) {
 
 id Replaced_renderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor) {
     Reentry reentry;
+    // An attachment with storeAction DontCare has undefined contents after the pass, so during a
+    // capture the store is forced on — the counterpart of the layer's store-everything render
+    // pass, and far less work because Metal's store action is a mutable field. The application's
+    // own descriptor is left alone: it owns and reuses that object.
+    MTLRenderPassDescriptor *pass = descriptor;
+    if (reentry.outermost() && Recording() && descriptor != nil) {
+        pass = [descriptor copy];
+        for (NSUInteger i = 0; i < 8; i++) {
+            MTLRenderPassColorAttachmentDescriptor *a = pass.colorAttachments[i];
+            if (a.texture != nil && a.storeAction == MTLStoreActionDontCare) {
+                a.storeAction = MTLStoreActionStore;
+            }
+        }
+    }
     id encoder = ((id (*)(id, SEL, MTLRenderPassDescriptor *))Original(self, _cmd))(self, _cmd,
-                                                                                    descriptor);
+                                                                                    pass);
     if (reentry.outermost()) {
+        BeginPass(encoder, self);
+        if (Recording()) {
+            for (NSUInteger i = 0; i < 8; i++) {
+                MTLRenderPassColorAttachmentDescriptor *a = pass.colorAttachments[i];
+                if (a.texture != nil) AddPassAttachment(encoder, a.texture, (uint32_t)i);
+            }
+        }
         MTLRenderPassColorAttachmentDescriptor *color = descriptor.colorAttachments[0];
         Log("commandBuffer.renderCommandEncoderWithDescriptor: load=%lu store=%lu texture=%s -> %s",
             (unsigned long)color.loadAction, (unsigned long)color.storeAction,
@@ -346,6 +373,7 @@ id Replaced_computeCommandEncoder(id self, SEL _cmd) {
     if (reentry.outermost()) {
         Log("commandBuffer.computeCommandEncoder -> %s", ClassName(encoder));
         g_encodersThisFrame++;
+        BeginPass(encoder, self);
         if (Recording()) RecordCommand("computeCommandEncoder", encoder, {});
     }
     HookComputeEncoderClass(encoder);
@@ -482,11 +510,15 @@ void Replaced_drawIndexedPrimitives(id self, SEL _cmd, NSUInteger type, NSUInteg
 
 void Replaced_endEncoding(id self, SEL _cmd) {
     Reentry reentry;
-    if (reentry.outermost()) {
+    const bool outermost = reentry.outermost();
+    if (outermost) {
         Log("  encoder.endEncoding (%s \"%s\")", ClassName(self), LabelOf(self));
         if (Recording()) RecordCommand("endEncoding", self, {});
     }
     ((void (*)(id, SEL))Original(self, _cmd))(self, _cmd);
+    // Only after the forward: a command buffer allows one encoder at a time, and until the
+    // application's is really closed the read-back's blit encoder cannot be created.
+    if (outermost) EndRenderPass(self);
 }
 
 // --------------------------------------------------------------------------------------------

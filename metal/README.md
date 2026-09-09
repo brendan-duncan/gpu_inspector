@@ -208,9 +208,45 @@ error rather than blitted; that is the case that would need the Vulkan approach.
 Ranges are capped at 64 KB, matching the layer's default, and the cap is reported as
 `originalSize` so the UI can say a range was truncated.
 
+## Render target read-back
+
+A pass's colour attachments are blitted into staging buffers when the application ends its
+encoder, and sent as `CaptureTextureFrames` plus a `CaptureTextureData` binary frame each. The
+Capture panel shows the frame the application actually drew.
+
+Three things have to be arranged for it, each the Metal counterpart of something the Vulkan layer
+does:
+
+* **The attachment has to survive the pass.** `storeAction` `DontCare` leaves it undefined, so
+  during a capture the store is forced on. Far less machinery than the layer's store-everything
+  render pass, because a store action is a mutable field — but the application's own descriptor is
+  copied first rather than written to, since it owns and reuses that object.
+* **The drawable has to be readable.** A `framebufferOnly` `CAMetalLayer` hands out textures that
+  cannot be a blit source, and the flag has to be off before the drawable exists. So it is turned
+  off in the `nextDrawable` hook, always — the counterpart of the layer adding `TRANSFER_SRC` to
+  every image, a small cost paid all the time so that a capture can be taken at any moment.
+* **The blit needs the command buffer, and it has to be free.** A command buffer allows one
+  encoder at a time, so the read-back's blit encoder can only be created *after* the hook forwards
+  the application's `endEncoding` — doing it before raises
+  `A command encoder is already encoding to this command buffer`. The encoder-to-command-buffer
+  map is built when the encoder is created.
+
+The capture is then sent from the command buffer's completion handler rather than at commit: the
+staging holds nothing until the GPU has run the blits. `Internal` in `capture.h` keeps the
+library's own Metal calls out of the recording, which would otherwise contain the commands the
+capture made.
+
+Pixel formats are named the way the protocol names them, which is Vulkan's way — the UI's decoder
+is 570 lines built around those names and emitting the canonical name for the same layout reuses
+all of it. The visible cost is that a Metal texture's format reads as `VK_FORMAT_B8G8R8A8_UNORM`
+in the UI. A deliberate shortcut, and the obvious thing to revisit.
+
 ## Not done
 
-Render target read-back, and the pass timings that would fill in the profile view. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
+Pass timings, which would fill in the profile view and clear the
+`"Profile passes: waiting for GPU timestamps..."` the panel still sits in. Depth attachments are
+not read back (colour only), nor are sampled images, and only the pixel formats in `FormatName`
+are supported. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
 (nothing watches for released objects yet), blit and argument-buffer coverage,
 `MTLIndirectCommandBuffer`, `MTKView`/`CAMetalLayer` paths other than the one the test
 application uses, Intel and AMD class trees (only Apple Silicon is verified), re-signing a

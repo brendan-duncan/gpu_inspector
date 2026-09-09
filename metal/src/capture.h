@@ -54,6 +54,32 @@ void RecordCommand(const char *method, id object, const std::string &argsJson);
 void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
                               std::vector<uint64_t> bufferData);
 
+/**
+ * Suppresses recording while the library issues Metal calls of its own.
+ *
+ * Read-back needs a blit encoder, and creating one goes through the same hooks the application
+ * does — without this the capture would contain the commands the capture made.
+ */
+class Internal {
+public:
+    Internal();
+    ~Internal();
+};
+
+/**
+ * Registers a render pass beginning, and returns the pass index the UI will give it.
+ *
+ * Every encoder counts, render and compute alike, because the UI's PASS_BEGIN set holds both and
+ * it numbers them in one sequence per command buffer.
+ */
+uint32_t BeginPass(id encoder, id commandBuffer);
+
+/** Notes an attachment of the pass just begun, for read-back at endEncoding. */
+void AddPassAttachment(id encoder, id texture, uint32_t attachment);
+
+/** Reads the pass's colour attachments back, at endEncoding, into staging buffers. */
+void EndRenderPass(id encoder);
+
 /** Notes that this command buffer will present, so its commit is the end of a frame. */
 void OnPresentDrawable(id commandBuffer);
 
