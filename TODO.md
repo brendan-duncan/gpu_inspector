@@ -131,7 +131,7 @@ application with injected state. Route (a) is the general one and is the prerequ
 ## Distribution
 - [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).
 - [ ] AppImage / rpm targets next to the .deb (electron-updater supports both).
-- [ ] macOS build (needs an .icns icon and signing/notarization; the layer has no Metal side yet).
+- [x] macOS build of the UI, signed with the project's Developer ID and notarized.
 
 ## Tooling
 - [ ] Claude Code plugin / MCP server over saved `.gpucap` files (the format is in

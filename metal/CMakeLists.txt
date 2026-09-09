@@ -1,0 +1,35 @@
+# The Metal capture library: a dylib loaded into the target with DYLD_INSERT_LIBRARIES, which
+# intercepts Metal by interposing its device entry points and hooking the Objective-C classes it
+# reaches from them. See src/interpose.mm and README.md.
+#
+# At this stage it is a spike: it logs the class tree and the frame's commands. It does not speak
+# the inspector's protocol yet.
+cmake_minimum_required(VERSION 3.20)
+project(GpuInspectorMetalCapture OBJCXX)
+
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(CAPTURE_LIB "mtlinsp_capture")
+
+add_library(${CAPTURE_LIB} SHARED
+    src/swizzle.h
+    src/swizzle.mm
+    src/hooks.mm
+    src/interpose.mm)
+
+target_include_directories(${CAPTURE_LIB} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+# Manual reference counting, not ARC: the hooks forward to the implementations they replaced
+# through raw IMPs, and the `new*` methods hand back an object the caller owns. Passing that
+# straight through is only clearly correct with no compiler-inserted retains and releases in the
+# way. -fno-objc-arc is the default, but the intent is worth pinning down.
+target_compile_options(${CAPTURE_LIB} PRIVATE -fno-objc-arc -Wall -Wno-unused-parameter -g)
+
+target_link_libraries(${CAPTURE_LIB} PRIVATE
+    "-framework Foundation"
+    "-framework Metal")
+
+set_target_properties(${CAPTURE_LIB} PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

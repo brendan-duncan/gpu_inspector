@@ -110,18 +110,34 @@ jobs:
       # reads for Windows signing too, and the Mac certificate must not reach that job. Five
       # secrets (docs/RELEASING.md): MAC_CERTS is the Developer ID Application certificate and key
       # as a base64 .p12, MAC_CERTS_PASSWORD its password, and APPLE_ID /
-      # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID the notarization credentials. A fork without
-      # them still builds, just unsigned and un-notarized.
+      # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID the notarization credentials.
+      #
+      # The certificate goes through MAC_CERTS and is exported to CSC_LINK by hand rather than
+      # being bound to it directly, because a secret that is not set expands to the empty string,
+      # and electron-builder reads an empty CSC_LINK as "a certificate file at the empty path"
+      # rather than as "no certificate" (getCscLink in platformPackager.js keeps it: "allow to
+      # specify as empty string"). It resolves that against the working directory and dies with
+      # `<app dir> not a file`. Exporting it only when it is non-empty is what actually lets a
+      # build without the secrets fall back to unsigned. The APPLE_* three need no such care:
+      # empty values are falsy where they are read, and notarization logs that it skipped.
       - name: Build installer (macOS, signed and notarized)
         if: runner.os == 'macOS'
         working-directory: app
-        run: npm run dist:mac -- --publish never
         env:
-          CSC_LINK: ${{ secrets.MAC_CERTS }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+          MAC_CERTS: ${{ secrets.MAC_CERTS }}
+          MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$MAC_CERTS" ]; then
+            export CSC_LINK="$MAC_CERTS"
+            export CSC_KEY_PASSWORD="$MAC_CERTS_PASSWORD"
+          else
+            echo "::warning::MAC_CERTS is not set: building unsigned and un-notarized. See docs/RELEASING.md."
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          npm run dist:mac -- --publish never
 
       - uses: actions/upload-artifact@v4
         with:
