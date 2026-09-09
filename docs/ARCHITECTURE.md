@@ -109,6 +109,11 @@ device-side server:
   bind refused with `EADDRINUSE` for 30 s (also on the desktop); and a connection attempt
   refused on the host is checked against `adb forward --list`, because adb drops a device's
   forwards when the device reconnects (a headset's USB link blips with its power state).
+  After the start, `_launchDiagnostics` reads `dumpsys power` and `dumpsys window` and logs
+  what would keep the application from running: a device that is asleep (an OpenXR session
+  stays idle until the headset is worn) and a headset shell's launch check dialog
+  ("controllers required"), which a launch attempted without controllers or tracked hands
+  leaves behind and which blocks every later launch until the shell restarts.
 * **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
   (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
   `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the

@@ -120,10 +120,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       per-rule on/off filter like the shader findings' severity filter.
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
-      OpenXR layer or the runtime's own properties. Launching on a Quest that is not worn
-      leaves the session in IDLE, and a stuck "controllers required" shell dialog blocks every
-      later launch until the shell restarts (`am force-stop com.oculus.vrshell`): the launcher
-      could detect the dialog from `dumpsys window` and say so in the Log tab.
+      OpenXR layer or the runtime's own properties.
 - [ ] Multiple devices and queues in one process (timestamps are per device; the query pool is
       created on the capturing device only).
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.

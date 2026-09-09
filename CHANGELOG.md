@@ -21,6 +21,8 @@
 - Shader cost per source line, clickable into the Source view; line frames in the flame graph.
 - Sampled image read-back of every mip level.
 - Launch dialog: the Package field filters the device's packages.
+- Android launch diagnostics in the Log: a device that is asleep (an OpenXR session stays
+  idle), and a headset shell's "controllers required" dialog blocking launches.
 - "Sync validation" launch option (with the validation layer): hazards reported at
   vkQueueSubmit are linked to the command the message names, like record-time messages; the
   per-submission counters in such messages no longer make every frame a new message. The

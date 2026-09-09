@@ -279,9 +279,12 @@ export class AndroidTarget {
     for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
       this.pid = await this._findPid();
       if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
+      // Still no process after a couple of seconds: say what may be holding the launch up.
+      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
     }
     if (this._stopped) return;
     if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
+    await this._launchDiagnostics(false);
     this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
   }
 
@@ -436,6 +439,32 @@ export class AndroidTarget {
     proc.on("error", () => {
       if (this._logcat === proc) this._logcat = null;
     });
+  }
+
+  /**
+   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
+   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
+   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
+   * which then blocks every later launch until the shell restarts.
+   */
+  private async _launchDiagnostics(noProcess: boolean): Promise<void> {
+    const { adb: adbPath, serial } = this.opts;
+    const log = this.opts.onLog;
+    try {
+      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
+      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
+      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
+    } catch {
+      // not answering: the launch itself reports that
+    }
+    try {
+      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
+      if (Number(windows.trim()) > 0) {
+        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+      }
+    } catch {
+      // grep found nothing (exit 1) or no such service: nothing to report
+    }
   }
 
   private async _findPid(): Promise<number | null> {
