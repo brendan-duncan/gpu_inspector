@@ -358,6 +358,20 @@ a severity marker and the command details a Validation section (`validationForCo
 object database). The launcher sets `VK_LAYER_DUPLICATE_MESSAGE_LIMIT=0` alongside the
 validation layer: its default limit (10) would silence the message before the captured frame.
 
+Synchronization validation ("Sync validation" in the launch dialog: `VK_LAYER_VALIDATE_SYNC`,
+plus `VK_LAYER_ENABLES` for older layers) reports hazards between submissions at
+`vkQueueSubmit`, with the queue as the only object; the text names the submitted command buffer
+("entry 0, VkCommandBuffer 0x...") and the command ("command: vkCmdDrawIndexed"). When no object
+of the message is a command buffer, `CurrentCommand` takes the handles from the text, and for a
+recorder that has ended (the buffer is being submitted) finds the command by its sequence number
+("seq_no", older layers) or else the first command of that name in the recording. Such messages
+also carry per-submission counters ("submit: 37, batch: 0"), which are stripped from the text
+before the repeat lookup, or every frame would be a new message. The capture's own read-back
+barriers can resolve a hazard in the captured frame (the buffer copy's barrier orders a draw
+after an earlier unsynchronized write), so a hazard reported every other frame can be missing
+from the captured one. The triangle test application's `--hazard` option submits its vertex
+update unsynchronized ahead of the frame's draw.
+
 #### Capture windows
 
 A capture file can be shown in a window of its own: `openCaptureWindow` in `main.ts` opens a

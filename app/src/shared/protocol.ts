@@ -466,6 +466,8 @@ export interface LaunchConfig {
   recordAlways: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
+  /** With `validation`: the validation layer's synchronization validation (hazards between commands and submissions). */
+  syncValidation?: boolean;
   /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */
   stacktraces: boolean;
   capture: QueuedCapture;

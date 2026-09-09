@@ -124,6 +124,11 @@ struct App {
     int maxFrames = -1;
     bool badScissor = false;
     bool leak = false;
+    // --hazard: every frame the vertex buffer is written with vkCmdUpdateBuffer in a command
+    // buffer submitted on its own, with no semaphore or barrier before the main submission's
+    // draw reads it, so synchronization validation reports the hazard at vkQueueSubmit (a
+    // hazard against the previous frame would not do: a capture waits for the GPU first).
+    bool hazard = false;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;  // --msaa: 4x, resolved into the swapchain
     // --offscreen: render into an image of our own and never present, like an OpenXR
     // application whose runtime composites (the inspector's frame boundaries without presents).
@@ -194,6 +199,7 @@ struct App {
     VkCommandPool commandPool{};
     static const int kFramesInFlight = 2;
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
+    VkCommandBuffer hazardBuffers[kFramesInFlight]{};   // --hazard: the vertex update, submitted first
     VkSemaphore imageAvailable[kFramesInFlight]{};
     VkSemaphore renderFinished[kFramesInFlight]{};
     VkFence inFlight[kFramesInFlight]{};
@@ -428,6 +434,7 @@ struct App {
         cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cbai.commandBufferCount = kFramesInFlight;
         CHECK(vkAllocateCommandBuffers(device, &cbai, commandBuffers));
+        if (hazard) CHECK(vkAllocateCommandBuffers(device, &cbai, hazardBuffers));
         for (int i = 0; i < kFramesInFlight; ++i) {
             VkSemaphoreCreateInfo sci2{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             CHECK(vkCreateSemaphore(device, &sci2, nullptr, &imageAvailable[i]));
@@ -727,7 +734,7 @@ struct App {
             for (int k = 0; k < 6; ++k) indices[ix++] = quad[k];
         }
         VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        CreateBuffer(sizeof(verts), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host, vertexBuffer, vertexMemory, "Cube vertices");
+        CreateBuffer(sizeof(verts), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (hazard ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0), host, vertexBuffer, vertexMemory, "Cube vertices");
         CreateBuffer(sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, host, indexBuffer, indexMemory, "Cube indices");
         CreateBuffer(sizeof(Mat4), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, uniformBuffer, uniformMemory, "Cube uniforms");
         void* map;
@@ -1009,6 +1016,19 @@ struct App {
         rpbi.renderArea = {{0, 0}, {width, height}};
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
+        if (hazard) {
+            // The first vertex wiggles, written by a submission of its own that nothing waits
+            // for before the draw below reads the buffer (see --hazard).
+            VkCommandBuffer hb = hazardBuffers[frameSlot];
+            CHECK(vkBeginCommandBuffer(hb, &bi));
+            const float wiggle[3] = {-0.5f + 0.1f * sinf(t * 3.0f), -0.5f, -0.5f};
+            vkCmdUpdateBuffer(hb, vertexBuffer, 0, sizeof(wiggle), wiggle);
+            CHECK(vkEndCommandBuffer(hb));
+            VkSubmitInfo hsi{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            hsi.commandBufferCount = 1;
+            hsi.pCommandBuffers = &hb;
+            CHECK(vkQueueSubmit(queue, 1, &hsi, VK_NULL_HANDLE));
+        }
         vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         VkViewport viewport{0, 0, (float)width, (float)height, 0, 1};
@@ -1181,6 +1201,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
+        else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen")) {
             app.offscreen = true;

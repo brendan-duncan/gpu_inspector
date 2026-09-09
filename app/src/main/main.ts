@@ -103,6 +103,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
     validation: c.validation ?? false,
+    syncValidation: c.syncValidation ?? false,
     stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
@@ -563,6 +564,8 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.
     ...(config.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {}),
+    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
+    ...(config.validation && config.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}),
   };
   const args = splitArgs(config.args ?? "");
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
@@ -1307,6 +1310,7 @@ void app.whenReady().then(() => {
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),
         validation: cliFlag("validation"),
+        syncValidation: cliFlag("sync-validation"),
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }

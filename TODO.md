@@ -53,9 +53,13 @@ interpreter and re-created pipelines.
 - [ ] Sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect
-- [ ] Validation messages raised at submit or execution time (synchronization validation, GPU
-      assisted validation) attached to the commands they name, where the message text carries a
-      command index.
+- [ ] GPU-assisted validation messages attached to the commands they name (submit-time
+      synchronization validation messages are linked through the command buffer handle and the
+      command name in their text; a name that occurs several times in the buffer links to its
+      first occurrence). The capture's own read-back barriers can resolve a hazard in the
+      captured frame (a barrier before the layer's buffer copy orders the draw after an earlier
+      unsynchronized write), so a hazard seen every other frame may be missing from the
+      captured one: turning the Buffers and Render targets options off avoids that.
 - [ ] Stack traces: source lines on Linux/Android (addr2line / DWARF; dladdr gives exported
       names only), and a symbol path setting for PDBs that are not next to the modules.
 - [ ] Refresh rate on Linux without a driver timing extension: the monitor mode through

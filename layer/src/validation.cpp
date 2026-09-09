@@ -8,6 +8,7 @@
 #include "transport.h"
 #include "vk_commands.gen.h"
 
+#include <cctype>
 #include <cstring>
 
 namespace vkinsp {
@@ -90,34 +91,107 @@ void ValidationLog::DestroyMessenger(InstanceData* inst) {
     inst->messenger = VK_NULL_HANDLE;
 }
 
+// The command a submit-time message is about. Synchronization validation reports a hazard
+// between submissions at vkQueueSubmit, with the queue as the only object; the text names the
+// submitted command buffer and the command in it: "... entry 0, VkCommandBuffer 0x14e00a0a8d0[],
+// Submitted access info (submitted_usage: ..., command: vkCmdUpdateBuffer, ...)". Older layers
+// added "seq_no: N" (counted from 1 at vkBeginCommandBuffer, the recorder's slot 0). Without a
+// sequence number the first command of that name in the buffer is taken.
+/** The "seq_no: N" a synchronization validation message of an older layer carries, 0 without. */
+static int64_t SequenceNumber(const char* message) {
+    const char* p = message ? strstr(message, "seq_no: ") : nullptr;
+    if (!p) return 0;
+    char* end = nullptr;
+    long long n = strtoll(p + 8, &end, 10);
+    return end && end != p + 8 ? (int64_t)n : 0;
+}
+
+/**
+ * The message text with the counters synchronization validation stamps into it removed
+ * ("submit: 37, batch: 0", "seq_no: 5, reset_no: 2"), so the same hazard every frame is one
+ * message counted rather than a new one per submission.
+ */
+static std::string StableText(const char* message) {
+    std::string s = message ? message : "";
+    for (const char* key : {"submit: ", "batch: ", "seq_no: ", "reset_no: "}) {
+        const size_t klen = strlen(key);
+        for (size_t at = s.find(key); at != std::string::npos; at = s.find(key, at + klen)) {
+            size_t end = at + klen;
+            while (end < s.size() && isdigit((unsigned char)s[end])) ++end;
+            s.erase(at + klen, end - (at + klen));
+        }
+    }
+    return s;
+}
+
+static bool CommandFromText(const char* message, CommandRecorder* rec, int64_t& slot) {
+    if (!message || !rec) return false;
+    int64_t seq = SequenceNumber(message);
+    if (seq > 0 && (size_t)seq <= rec->commandCount()) { slot = seq - 1; return true; }
+    const char* c = strstr(message, "command: vk");
+    if (!c) return false;
+    c += 9;
+    size_t len = 0;
+    while (isalnum((unsigned char)c[len])) ++len;
+    std::string name(c, len);
+    auto commands = rec->Snapshot();
+    for (size_t i = 0; i < commands->size(); ++i) {
+        if (name == kVkCommandNames[(int)(*commands)[i].id]) { slot = (int64_t)i; return true; }
+    }
+    return false;
+}
+
+/** The command buffer handles a message's text names ("VkCommandBuffer 0x..."), in order. */
+static std::vector<uint64_t> CommandBuffersInText(const char* message) {
+    std::vector<uint64_t> out;
+    for (const char* p = message ? strstr(message, "VkCommandBuffer 0x") : nullptr; p; p = strstr(p + 1, "VkCommandBuffer 0x")) {
+        unsigned long long h = strtoull(p + 16, nullptr, 16);
+        if (h) out.push_back((uint64_t)h);
+    }
+    return out;
+}
+
 ValidationLog::CommandRef ValidationLog::CurrentCommand(const VkDebugUtilsMessengerCallbackDataEXT* data) {
     CommandRef ref;
     if (!g_captureActive.load(std::memory_order_relaxed)) return ref;
+    std::vector<uint64_t> handles;
     for (uint32_t i = 0; i < data->objectCount; ++i) {
         const VkDebugUtilsObjectNameInfoEXT& o = data->pObjects[i];
-        if (o.objectType != VK_OBJECT_TYPE_COMMAND_BUFFER || !o.objectHandle) continue;
+        if (o.objectType == VK_OBJECT_TYPE_COMMAND_BUFFER && o.objectHandle) handles.push_back(o.objectHandle);
+    }
+    if (handles.empty()) handles = CommandBuffersInText(data->pMessage);
+    for (uint64_t handle : handles) {
         // Only a tracked (live) handle is safe to dereference for its dispatch key.
-        uint64_t id = Tracker::Get().Resolve(HT_VkCommandBuffer, o.objectHandle);
+        uint64_t id = Tracker::Get().Resolve(HT_VkCommandBuffer, handle);
         if (!id) continue;
-        VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)o.objectHandle;
+        VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)handle;
         DeviceData* dev = GetDeviceData(cb);
         CommandRecorder* rec = dev ? CaptureManager::Get().RecorderFor(dev, cb) : nullptr;
-        // The message fires inside the vkCmd call, before the layer's post-hook appends the
-        // command, so the command in flight is at the current count.
-        if (!rec || rec->ended()) continue;
-        ref.cmdBufferId = id;
-        ref.slot = (int64_t)rec->commandCount();
-        break;
+        if (!rec) continue;
+        if (!rec->ended()) {
+            // The message fires inside the vkCmd call, before the layer's post-hook appends the
+            // command, so the command in flight is at the current count.
+            ref.cmdBufferId = id;
+            ref.slot = (int64_t)rec->commandCount();
+            break;
+        }
+        int64_t slot = 0;
+        if (CommandFromText(data->pMessage, rec, slot)) {
+            ref.cmdBufferId = id;
+            ref.slot = slot;
+            break;
+        }
     }
     return ref;
 }
+
 
 void ValidationLog::OnMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types,
                               const VkDebugUtilsMessengerCallbackDataEXT* data) {
     if (!data || !data->pMessage) return;
     // The message text names the handles involved, so the same mistake on another object is a
     // message of its own; the same mistake on the same object every frame is one message counted.
-    std::string dedupe = std::to_string(data->messageIdNumber) + "|" + data->pMessage;
+    std::string dedupe = std::to_string(data->messageIdNumber) + "|" + StableText(data->pMessage);
     CommandRef cmd = CurrentCommand(data);
 
     std::lock_guard<std::mutex> lock(_mutex);
