@@ -21,10 +21,11 @@ export function emptyLaunchConfig(): LaunchConfig {
 }
 
 const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", "none"], ["Capture frame", "frame"], ["Capture after seconds", "time"]];
-const TARGETS: [string, LaunchConfig["target"]][] = [["This computer", "native"], ["Android device (adb)", "android"]];
+const TARGETS: [string, LaunchConfig["target"]][] = [["This computer", "native"], ["Android device (adb)", "android"], ["An application started elsewhere (implicit layer)", "implicit"]];
 
 export function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
+  if (c.target === "implicit") return `any application (port ${c.port})`;
   const base = c.exe.replace(/\\/g, "/").split("/").pop() || c.exe;
   return c.args ? `${base} ${c.args}` : base;
 }
@@ -47,6 +48,11 @@ export class LaunchDialog extends Dialog {
   private _target: Select;
   private _nativeRows: Div;
   private _androidRows: Div;
+  private _implicitRows!: Div;
+  private _implicitStatus!: Span;
+  private _implicitButton!: Button;
+  private _implicitRegistered = false;
+  private _launchButton!: Button;
   private _exe: TextInput;
   private _cwd: TextInput;
   private _args: TextInput;
@@ -135,6 +141,20 @@ export class LaunchDialog extends Dialog {
       edit.element.addEventListener("input", () => this._filterPackages());
       this._packageHint = new Span(row, { text: "", class: "launch-dialog-count" });
     }
+    // Implicit layer: nothing to launch; the layer is registered for this user and loads into
+    // any application started with VKINSP_ENABLE=1, which the session then waits for.
+    this._implicitRows = new Div(body);
+    section(this._implicitRows, "Implicit Layer");
+    {
+      const row = new Div(this._implicitRows, { class: "launch-dialog-row" });
+      new Span(row, { text: "Registration", class: "launch-dialog-label" });
+      this._implicitStatus = new Span(row, { text: "checking...", class: "launch-dialog-status" });
+      this._implicitButton = new Button(row, { label: "Register", class: "btn", callback: () => void this._toggleImplicit() });
+    }
+    new Div(this._implicitRows, {
+      text: "Start the application yourself with these environment variables, then press Wait: VKINSP_ENABLE=1 and VKINSP_PORT set to the port below (VKINSP_LOG_FILE=<path> writes the layer's log to a file, since the inspector cannot read the output of a process it did not start). For an editor started from a launcher, set them for your user account (setx on Windows) and restart the launcher. The registration is per user and stays until you unregister it.",
+      class: "launch-dialog-hint",
+    });
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
     this._activity.tooltip = "Activity to start, as com.example.Activity or .Activity; empty for the launcher activity";
     this._symbolDirs = this._inputRow(this._androidRows, "Symbol directories", "(directories with the unstripped .so files, separated by ;)");
@@ -167,7 +187,7 @@ export class LaunchDialog extends Dialog {
 
     const footer = new Div(this, { class: "dialog-footer launch-dialog-footer" });
     new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
-    new Button(footer, { label: "Launch", class: "btn btn-success", callback: () => {
+    this._launchButton = new Button(footer, { label: "Launch", class: "btn btn-success", callback: () => {
       const config = this.config;
       if (config.target === "android") {
         if (!config.device) {
@@ -214,9 +234,29 @@ export class LaunchDialog extends Dialog {
 
   private _updateTarget(): void {
     const android = this.target === "android";
-    this._nativeRows.style.display = android ? "none" : "";
+    const implicit = this.target === "implicit";
+    this._nativeRows.style.display = android || implicit ? "none" : "";
     this._androidRows.style.display = android ? "" : "none";
+    this._implicitRows.style.display = implicit ? "" : "none";
+    this._launchButton.text = implicit ? "Wait" : "Launch";
     if (android && !this._devices.length) void this._loadDevices();
+    if (implicit) void this._refreshImplicit();
+  }
+
+  private async _refreshImplicit(): Promise<void> {
+    const status = await window.inspector.implicitLayer();
+    this._implicitRegistered = status.registered;
+    this._implicitStatus.text = status.error ? status.error : status.registered ? `registered: ${status.manifest}` : "not registered";
+    this._implicitButton.text = status.registered ? "Unregister" : "Register";
+  }
+
+  private async _toggleImplicit(): Promise<void> {
+    this._implicitButton.disabled = true;
+    const status = await window.inspector.setImplicitLayer(!this._implicitRegistered);
+    this._implicitButton.disabled = false;
+    this._implicitRegistered = status.registered;
+    this._implicitStatus.text = status.error ? status.error : status.registered ? `registered: ${status.manifest}` : "not registered";
+    this._implicitButton.text = status.registered ? "Unregister" : "Register";
   }
 
   private async _loadDevices(): Promise<void> {
@@ -286,7 +326,7 @@ export class LaunchDialog extends Dialog {
     const android = target === "android";
     return {
       target,
-      exe: android ? this._package.value.trim() : this._exe.value.trim(),
+      exe: android ? this._package.value.trim() : target === "implicit" ? "" : this._exe.value.trim(),
       args: android ? "" : this._args.value,
       cwd: android ? "" : this._cwd.value.trim(),
       env: android ? "" : this._env.value,
@@ -305,7 +345,7 @@ export class LaunchDialog extends Dialog {
 
   setConfig(c: LaunchConfig): void {
     const android = c.target === "android";
-    this._target.index = android ? 1 : 0;
+    this._target.index = android ? 1 : c.target === "implicit" ? 2 : 0;
     if (android) {
       this._package.value = c.exe ?? "";
       this._activity.value = c.activity ?? "";

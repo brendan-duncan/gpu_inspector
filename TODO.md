@@ -103,7 +103,9 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Shader flame graph / statement cost via ablation once per-draw replay timing exists.
 
 ## Vulkan-specific
-- [ ] Attach to a running process (implicit layer registration), see ARCHITECTURE.md.
+- [ ] Implicit layer: a "Set for my account" button for the environment variables (setx /
+      the shell profile) next to Register, and registration for the packaged app (the
+      installer could register the layer, the uninstaller remove it).
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
 - [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by

@@ -43,11 +43,14 @@ def electron():
 
 
 class Case:
-    def __init__(self, name, args, checks, delay_ms=12000):
+    def __init__(self, name, args, checks, delay_ms=12000, companion=None, before=None, after=None):
         self.name = name
         self.args = args
         self.checks = checks      # callable(dump, log) -> list of failure strings
         self.delay_ms = delay_ms
+        self.companion = companion  # callable() -> Popen, started a few seconds after the UI (an app it did not launch)
+        self.before = before        # callable() run before the UI starts (registration)
+        self.after = after          # callable() run when the UI has quit (cleanup)
 
 
 def run_case(case, work, keep):
@@ -62,10 +65,23 @@ def run_case(case, work, keep):
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)   # VS Code's terminal exports it, which would start plain Node
     started = time.time()
+    if case.before:
+        case.before()
+    proc = subprocess.Popen(cmd, cwd=APP, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    companion = None
     try:
-        subprocess.run(cmd, cwd=APP, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=case.delay_ms / 1000 + 90)
+        if case.companion:
+            time.sleep(4)
+            companion = case.companion()
+        proc.wait(timeout=case.delay_ms / 1000 + 90)
     except subprocess.TimeoutExpired:
+        proc.kill()
         return [f"the UI did not quit within {case.delay_ms / 1000 + 90:.0f} s"], time.time() - started
+    finally:
+        if companion:
+            companion.kill()
+        if case.after:
+            case.after()
     failures = []
     if not os.path.isfile(dump):
         return ["no dump was written (did the UI start?)"], time.time() - started
@@ -180,9 +196,27 @@ def triangle_prerecord(state, log):
         expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors with pre-recorded buffers")
 
 
+def implicit_layer(on):
+    env = dict(os.environ)
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    subprocess.run([electron(), ".", f"--implicit-layer={'on' if on else 'off'}"], cwd=APP, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+
+
+def triangle_implicit(state, log):
+    s = session(state)
+    return expect(s.get("state") == "connected", f"the waiting session is {s.get('state')!r} ({s.get('detail')})") +         expect("waiting for an application" in log, "the session did not wait for an application") +         check_capture_basic(state, log)
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
+
+    def start_triangle():
+        env = dict(os.environ, VKINSP_ENABLE="1", VKINSP_PORT="47531")
+        return subprocess.Popen([triangle, "--frames", "5000"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return [
+        # The implicit layer: registered for the case, the triangle started outside the inspector.
+        Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
+             companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
         Case("plain", launch + ["--debug-capture"], triangle_plain),
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),

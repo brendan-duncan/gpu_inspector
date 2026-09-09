@@ -13,13 +13,14 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
+import { implicitLayerStatus, setImplicitLayer } from "./implicit_layer.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
   type AndroidDeviceList,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type OpenFileOptions, type SaveFileOptions, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
-  type UpdateStatus, type StackFrame,
+  type UpdateStatus, type StackFrame, type ImplicitLayerStatus,
 } from "../shared/protocol.js";
 
 const { app, BrowserWindow, ipcMain, dialog, nativeImage } = electron;
@@ -34,6 +35,8 @@ const DEFAULT_PORT = 47531;
 const MAX_LOG_LINES = 2000;
 const LAUNCH_CONNECT_TIMEOUT_MS = 60000;
 const ATTACH_CONNECT_TIMEOUT_MS = 5000;
+/** How long a session waits for an application the implicit layer brings (see waitForApplication). */
+const WAIT_CONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const KILL_TIMEOUT_MS = 3000;
 
 let mainWin: BrowserWindow | null = null;
@@ -95,7 +98,7 @@ function removeRecentCapture(index: number): string[] {
 
 function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
   return {
-    target: c.target === "android" ? "android" : "native",
+    target: c.target === "android" ? "android" : c.target === "implicit" ? "implicit" : "native",
     exe: c.exe ?? "",
     args: c.args ?? "",
     cwd: c.cwd ?? "",
@@ -221,6 +224,7 @@ function findAndroidLayerFiles(): AndroidLayerFiles | null {
 
 function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
+  if (c.target === "implicit") return `any application (port ${c.port})`;
   const base = path.basename(c.exe) || c.exe;
   return c.args ? `${base} ${c.args}` : base;
 }
@@ -385,7 +389,7 @@ function attemptConnect(s: Session): void {
   // reconnected): every couple of seconds the forward is checked and re-created.
   let refused = false;
   const retry = (why: string): void => {
-    const alive = s.config ? s.target !== null || s.android !== null : true;
+    const alive = s.config ? s.target !== null || s.android !== null || s.config.target === "implicit" : true;
     if (alive && Date.now() < s.connectDeadline) {
       if (s.state === "connected") s.setStatus("connecting", `port ${s.port}`);   // adb accepted, the device dropped it
       if (!s.connectTimer) {
@@ -706,9 +710,13 @@ function killTarget(s: Session): Promise<void> {
   });
 }
 
-type ValidLaunch = { kind: "native"; layerDir: string } | { kind: "android"; adb: string; layer: AndroidLayerFiles };
+type ValidLaunch = { kind: "native"; layerDir: string } | { kind: "android"; adb: string; layer: AndroidLayerFiles } | { kind: "implicit" };
 
 function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
+  if (config.target === "implicit") {
+    if (!findLayerDir()) return { error: "layer not found: build the layer first (see docs/ARCHITECTURE.md)" };
+    return { kind: "implicit" };
+  }
   if (config.target === "android") {
     const adb = findAdb();
     if (!adb) return { error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
@@ -725,7 +733,20 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
 }
 
 function startTarget(s: Session, v: ValidLaunch): LaunchResult {
+  if (v.kind === "implicit") return waitForApplication(s);
   return v.kind === "android" ? launchAndroid(s, v.adb, v.layer) : spawnTarget(s, v.layerDir);
+}
+
+/**
+ * Nothing to start: the implicit layer is registered, so an application started with
+ * VKINSP_ENABLE=1 (and VKINSP_PORT set to the session's port) loads the layer and listens; the
+ * session keeps trying to connect for a good while.
+ */
+function waitForApplication(s: Session): LaunchResult {
+  s.appendLog(`waiting for an application started with VKINSP_ENABLE=1 VKINSP_PORT=${s.port} (the implicit layer)`);
+  connectSession(s, WAIT_CONNECT_TIMEOUT_MS);
+  s.setStatus("connecting", `waiting for an application with VKINSP_ENABLE=1 on port ${s.port}`);
+  return { ok: true, sessionId: s.id, port: s.port };
 }
 
 async function launch(config: LaunchConfig): Promise<LaunchResult> {
@@ -1138,6 +1159,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       captureStacks: cliFlag("debug-capture-stacks"),
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
+      waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),
@@ -1164,6 +1186,14 @@ ipcMain.handle("inspector:clearRecents", () => {
 });
 ipcMain.handle("inspector:launch", (_e, config: LaunchConfig) => launch(config));
 ipcMain.handle("inspector:connect", (_e, port: number) => connectOnly(port));
+ipcMain.handle("inspector:implicitLayer", async (): Promise<ImplicitLayerStatus> => {
+  const dir = findLayerDir();
+  return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: "layer not built" };
+});
+ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<ImplicitLayerStatus> => {
+  const dir = findLayerDir();
+  return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: "layer not built" };
+});
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
   const layer = findAndroidLayerFiles() !== null;
@@ -1351,6 +1381,22 @@ void app.whenReady().then(() => {
           if (s) openSessionWindow(s);
         }, 3000);
       }
+    }
+    // --implicit-layer=on|off registers or unregisters the implicit layer for this user and quits.
+    const implicit = cliOption("implicit-layer");
+    if (implicit === "on" || implicit === "off") {
+      const dir = findLayerDir();
+      const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: "layer not built" } as ImplicitLayerStatus);
+      void done.then((status) => {
+        console.log(status.error ? `implicit layer: ${status.error}` : `implicit layer ${status.registered ? "registered" : "not registered"}: ${status.manifest}`);
+        app.quit();
+      });
+      return;
+    }
+    // --wait-for-app: a session that waits for an application started with VKINSP_ENABLE=1.
+    if (cliFlag("wait-for-app")) {
+      void launch({ ...normalizeLaunch({} as LaunchConfig), target: "implicit", port: Number(cliOption("port")) || DEFAULT_PORT,
+        recordAlways: cliFlag("record-always"), log: true });
     }
     // Testing aid: switch the theme through the same path the picker uses.
     const debugTheme = cliOption("debug-theme");

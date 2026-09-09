@@ -626,6 +626,7 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .launch-dialog-options { gap: 14px; }
 .launch-dialog-hint { color: var(--fg-secondary); font-size: 8.5pt; margin-left: 176px; white-space: pre-wrap; }
 .launch-dialog-count { color: var(--fg-secondary); font-size: 8.5pt; white-space: nowrap; }
+.launch-dialog-status { color: var(--fg-secondary); font-size: 8.5pt; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 0; min-width: 0; }
 .launch-dialog-package { flex: 1 1 auto; }
 .launch-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 

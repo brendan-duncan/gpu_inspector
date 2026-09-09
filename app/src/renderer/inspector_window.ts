@@ -124,7 +124,8 @@ export class InspectorWindow extends Window {
         if (cfg.debug?.launchDialog) {
           // "android" or "android:<package text>" (the text prefilled, to check the filter).
           const [target, text] = cfg.debug.launchDialog.split(":", 2);
-          this.showLaunchDialog(target === "android" ? { ...emptyLaunchConfig(), target: "android", exe: text ?? "" } : null);
+          this.showLaunchDialog(target === "android" ? { ...emptyLaunchConfig(), target: "android", exe: text ?? "" }
+            : target === "implicit" ? { ...emptyLaunchConfig(), target: "implicit" } : null);
         }
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
         if (!cfg.layerDir && !cfg.debug?.openCapture) this._showMessage("Layer not built", "The capture layer was not found. Build it first (see docs/ARCHITECTURE.md).");

@@ -22,6 +22,10 @@
 - Shader cost per source line, clickable into the Source view; line frames in the flame graph.
 - Sampled image read-back of every mip level.
 - Launch dialog: the Package field filters the device's packages.
+- Applications started elsewhere: the launch dialog registers the layer as an implicit layer
+  for the user ("Register", per user, undone with "Unregister") and "Wait" opens a session
+  that connects when an application started with `VKINSP_ENABLE=1` and `VKINSP_PORT` loads
+  it. `--wait-for-app` and `--implicit-layer=on|off` from the command line.
 - `tools/ui_tests.py`: end-to-end checks of the UI against the triangle application (capture,
   MSAA, present-less frames, validation and hazard links, stack traces) and saved captures
   with expected findings, through the new `--debug-dump` testing aid.

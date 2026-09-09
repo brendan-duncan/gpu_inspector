@@ -1,6 +1,6 @@
 import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame,
+  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -20,6 +20,9 @@ export interface InspectorApi {
   connect(port: number): Promise<LaunchResult>;
   /** Android devices reachable through adb (launch dialog). */
   androidDevices(): Promise<AndroidDeviceList>;
+  /** The implicit registration of the capture layer for this user, and switching it. */
+  implicitLayer(): Promise<ImplicitLayerStatus>;
+  setImplicitLayer(on: boolean): Promise<ImplicitLayerStatus>;
   /** Third-party packages installed on an Android device. */
   androidPackages(serial: string): Promise<string[]>;
   /** Terminates the session's application; the session stays open. */

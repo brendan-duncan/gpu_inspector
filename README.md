@@ -149,6 +149,20 @@ npm run pack         # unpacked packaged app in app/release (needs the Release l
 npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
 ```
 
+## Applications started elsewhere
+
+An application the inspector cannot launch itself (an editor, a game behind its launcher) can
+still be inspected: pick **An application started elsewhere (implicit layer)** under *Run On*
+in the launch dialog and press **Register**. The layer is then registered for your user account
+as an implicit layer (nothing is loaded anywhere until asked), and any application you start
+with `VKINSP_ENABLE=1` and `VKINSP_PORT=<port>` in its environment loads it. Press **Wait** and
+start the application; the session connects when it does (`VKINSP_LOG_FILE=<path>` writes the
+layer's log to a file, since the inspector cannot read the output of a process it did not
+start). For an editor started from a launcher, set the variables for your account (`setx` on
+Windows) and restart the launcher. **Unregister** removes the registration. From the command
+line: `npm start -- --wait-for-app --port=<port>`, and `--implicit-layer=on|off` switches the
+registration.
+
 ## Android
 
 Vulkan applications on Android devices (a Unity player built as a **Development Build**, for

@@ -11,7 +11,7 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
 | Topic | Decision |
 |---|---|
 | Capture model | WebGPU Inspector style: commands are recorded in-process during the captured frame and GPU resource contents (render targets, buffers, textures) are read back at capture time. There is no replay. Captures can be saved and reopened for viewing. |
-| Attach model | Launch from the inspector first. The layer is enabled per-process through environment variables; no system-wide registration is needed. Attaching to running processes (implicit layer + registry/manifest install) is a later goal. |
+| Attach model | Launch from the inspector first: the layer is enabled per-process through environment variables, nothing is registered. For applications started elsewhere (an editor, a game behind its launcher) the layer can be registered as an implicit layer for the user (`main/implicit_layer.ts`: the registry under HKCU on Windows, a manifest in `implicit_layer.d` on Linux) and loads into any process started with `VKINSP_ENABLE=1`, which a session then waits for. A Vulkan layer cannot join a process after its instance exists, so "attach" means "start the application with the variables set". |
 | Targets | Local processes, and Android devices through adb (see Android below). The layer and UI talk over TCP, so other remote targets can be added without changing the protocol. |
 | Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux. |
 | UI | Electron, written in TypeScript throughout (esbuild bundles, `tsc` type-checks), including the widget library ported from WebGPU Inspector. |

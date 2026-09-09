@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("inspector", {
   launch: (config: unknown) => ipcRenderer.invoke("inspector:launch", config),
   connect: (port: number) => ipcRenderer.invoke("inspector:connect", port),
   androidDevices: () => ipcRenderer.invoke("inspector:androidDevices"),
+  implicitLayer: () => ipcRenderer.invoke("inspector:implicitLayer"),
+  setImplicitLayer: (on: boolean) => ipcRenderer.invoke("inspector:setImplicitLayer", on),
   androidPackages: (serial: string) => ipcRenderer.invoke("inspector:androidPackages", serial),
   kill: (sessionId: number) => ipcRenderer.invoke("inspector:kill", sessionId),
   restart: (sessionId: number) => ipcRenderer.invoke("inspector:restart", sessionId),

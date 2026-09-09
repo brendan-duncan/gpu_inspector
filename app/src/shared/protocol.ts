@@ -453,8 +453,10 @@ export interface QueuedCapture {
 }
 
 export interface LaunchConfig {
-  /** "native": an executable on this machine. "android": a package on a device reached through adb. */
-  target: "native" | "android";
+  /** "native": an executable on this machine. "android": a package on a device reached through adb.
+   *  "implicit": nothing is started; the session waits for an application that the registered implicit
+   *  layer connects (started with VKINSP_ENABLE=1 and VKINSP_PORT). */
+  target: "native" | "android" | "implicit";
   /** Executable path, or the package name for an Android target. */
   exe: string;
   args: string;
@@ -560,6 +562,8 @@ export interface AppConfig {
     captureStacks: boolean;
     /** Open the Stack trace section of selected commands and objects (symbolizes at once). */
     expandStacks: boolean;
+    /** Start a session waiting for an application the implicit layer brings (--wait-for-app). */
+    waitForApp: boolean;
     /** --debug-command=<index>: select that command of the debug capture or the opened file. */
     selectCommand: number | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
@@ -615,4 +619,12 @@ export interface CompileShaderResult {
   log: string;
   /** The tool that ran, for the status line. */
   tool: string;
+}
+
+/** The implicit registration of the capture layer for this user (inspector:implicitLayer). */
+export interface ImplicitLayerStatus {
+  registered: boolean;
+  /** The manifest the registration points at (or would). */
+  manifest: string;
+  error?: string;
 }
