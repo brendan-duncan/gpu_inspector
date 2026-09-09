@@ -176,8 +176,14 @@ much slower than on the desktop.
    `hooks.cpp`, straight through the dispatch table so it never appears as an object; store ops
    do not take part in render pass compatibility, so the application's framebuffers and
    pipelines work with it) and the begin pre-hooks substitute it, or rewrite a
-   `VkRenderingInfo`'s attachments, while a capture is being recorded; the post-hooks and the
-   command record see the original. The captured frame pays for the extra stores (a Quest's
+   `VkRenderingInfo`'s attachments, while a capture is being recorded (or under "record
+   always", whose recordings a later capture may show); the post-hooks and the command record
+   see the original. A command buffer recorded before the capture began carries no copies, so
+   every recorder keeps its passes (`RecordedPass`, with whether copies were recorded) and
+   `ReadBackAfterSubmit` copies the attachments of the others when the buffer is submitted
+   during the capture: a command buffer of the layer's (the live read-back's pool) with the
+   same `RecordImageCopy`, submitted right behind the application's on the same queue and
+   waited for, the layouts taken from the layout tracker after the submission. The captured frame pays for the extra stores (a Quest's
    stereo pass took 5.1 ms captured against 2.9 ms live), which the pass timings of a capture
    include. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
    a temporary single-sampled image owned by the capture before the copy; dynamic rendering's

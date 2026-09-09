@@ -28,6 +28,19 @@ struct RecordedCommand {
 using CommandList = std::vector<RecordedCommand>;
 
 // Render pass / dynamic rendering state while recording, used to read attachments back at pass end.
+// A pass this command buffer holds, kept after it ends: a buffer recorded before the capture
+// started (an engine's static command buffer) has no read-back copies in it, so the capture
+// reads its attachments back after the submission instead (CaptureManager::ReadBackAfterSubmit).
+struct RecordedPass {
+    std::vector<VkImageView> attachments;
+    std::vector<VkImageLayout> layouts;
+    std::vector<VkImageView> resolveViews;
+    std::vector<VkImageLayout> resolveLayouts;
+    uint32_t passIndex = 0;
+    uint32_t layerCount = 1;
+    bool readBack = false;   // copies were recorded at the pass end (the buffer was recorded during the capture)
+};
+
 struct ActivePass {
     bool active = false;
     bool dynamic = false;                    // vkCmdBeginRendering
@@ -116,6 +129,7 @@ public:
     void Reset(bool renderPassContinue = false) {
         _commands = std::make_shared<CommandList>();
         _pass = ActivePass{};
+        _passes.clear();
         _passCount = 0;
         _compute = ActiveComputePass{};
         _computeCount = 0;
@@ -137,6 +151,7 @@ public:
     VkDevice device() const { return _device; }
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }
     ActivePass& pass() { return _pass; }
+    std::vector<RecordedPass>& passes() { return _passes; }
     uint32_t NextPassIndex() { return _passCount++; }
     ActiveComputePass& compute() { return _compute; }
     uint32_t NextComputeIndex() { return _computeCount++; }
@@ -155,6 +170,7 @@ private:
     ActiveComputePass _compute;
     uint32_t _computeCount = 0;
     bool _ended = false;
+    std::vector<RecordedPass> _passes;
     bool _captureStacks = false;
     bool _renderPassContinue = false;
     std::vector<PendingBufferCopy> _pendingCopies;

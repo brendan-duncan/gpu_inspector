@@ -110,10 +110,11 @@ application with injected state. Route (a) is the general one and is the prerequ
       `tools/build_android_triangle.py`) on a phone: on a Quest it runs as a 2D panel that the
       shell keeps in the background, so it never gets a window; a GLES layer for Unity's GLES
       player; lower default read-back limits for phones.
-- [ ] Store-everything render pass copies cover `vkCmdBeginRenderPass*` and dynamic rendering
-      recorded during the capture; command buffers pre-recorded before it (Dawn-style, "Record
-      all command buffers") still run the application's DONT_CARE ops. Stencil store ops are
-      left alone (no stencil read-back yet).
+- [ ] Read-back after submission (command buffers recorded before the capture) copies each
+      attachment once, after the whole submission: a pass that renders to an image a later pass
+      of the same submission overwrites shows the later contents; such buffers also have no
+      pass timings (the timestamps go in at record time). Stencil store ops are left
+      alone (no stencil read-back yet).
 - [ ] Frame Issues rules to add: attachments larger than the render area, render passes that
       could be subpasses (a pass whose only input is the previous pass's output), and barriers
       whose stages a later barrier repeats.

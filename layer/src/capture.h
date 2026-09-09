@@ -204,6 +204,14 @@ private:
                          VkBuffer* bufferOut = nullptr);
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
                            VkImageLayout layout, bool resolveTarget = false);
+    // The capture record and the copy for one attachment (staging, resolve image); false with the
+    // failed record already listed. The copy is recorded by the caller into its command buffer.
+    bool PrepareAttachment(DeviceData* dev, uint64_t commandBufferId, uint32_t passIndex, uint32_t layerCount,
+                           uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
+                           TextureCapture& tc, PendingImageCopy& p);
+    // Attachments of the passes a submitted command buffer recorded before the capture began,
+    // copied by a command buffer of the layer's submitted right after the application's.
+    void ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, CommandRecorder* rec, uint64_t commandBufferId, uint32_t frame);
     // Single-sampled images that multisampled captures are resolved into; freed with the staging.
     bool AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out);
     struct ResolveImage {
@@ -218,6 +226,7 @@ private:
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};
     std::atomic<uint32_t> _storeAllPasses{0};
+    std::atomic<uint32_t> _postSubmitReadbacks{0};
     std::atomic<bool> _recordAlways{false};
     // Frame an armed capture waits for (UINT64_MAX when not armed or waiting for the next present),
     // checked cheaply at every vkBeginCommandBuffer so frame 0 can be captured from its first command.

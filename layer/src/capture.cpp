@@ -125,6 +125,7 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
         if (CommandRecorder* rec = RecorderFor(dev, cb)) {
             scb.commands = rec->Snapshot();
             _commandTotal += scb.commands->size();
+            ReadBackAfterSubmit(dev, queue, rec, scb.commandBufferId, sub.frame);
         }
         sub.commandBuffers.push_back(std::move(scb));
     }
@@ -199,6 +200,7 @@ void CaptureManager::Finish(DeviceData* dev) {
         _submissions.size(), (unsigned long long)_commandTotal, _textures.size(), _buffers.size(),
         (unsigned long long)(_bufferBytes >> 10));
     if (uint32_t n = _storeAllPasses.exchange(0, std::memory_order_relaxed)) Log("capture: %u render passes ran with their DONT_CARE store ops forced to STORE, so those attachments read back", n);
+    if (uint32_t n = _postSubmitReadbacks.exchange(0, std::memory_order_relaxed)) Log("capture: %u attachments of command buffers recorded before the capture were read back after their submission", n);
 
     // Everything recorded in the frame has been submitted; wait for it so staging data is valid.
     dev->dispatch.DeviceWaitIdle(dev->device);
@@ -453,7 +455,8 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     ActivePass& p = rec->pass();
     if (!p.active) return;
     // Readback copies are only injected while a capture is in progress.
-    if (IsCapturing() && _options.captureTextures) {
+    const bool readBack = IsCapturing() && _options.captureTextures;
+    if (readBack) {
         for (uint32_t i = 0; i < p.attachments.size(); ++i) {
             CaptureAttachment(dev, rec, i, p.attachments[i], i < p.layouts.size() ? p.layouts[i] : VK_IMAGE_LAYOUT_GENERAL);
             // Dynamic rendering resolves into a separate target that is not among the attachments
@@ -462,6 +465,7 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
                 CaptureAttachment(dev, rec, i, p.resolveViews[i], p.resolveLayouts[i], true);
         }
     }
+    rec->passes().push_back({p.attachments, p.layouts, p.resolveViews, p.resolveLayouts, p.passIndex, p.layerCount, readBack});
     p.active = false;
     // The pass's end timestamp: after every command of the pass has completed.
     if (p.query != UINT32_MAX && _queryPool && _queryDevice == dev->device) {
@@ -1023,15 +1027,27 @@ bool CaptureManager::PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p) {
 
 void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex,
                                        VkImageView view, VkImageLayout layout, bool resolveTarget) {
+    TextureCapture tc;
+    PendingImageCopy p;
+    const uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
+    if (!PrepareAttachment(dev, cbId, rec->pass().passIndex, rec->pass().layerCount, attachmentIndex, view, layout, resolveTarget, tc, p)) return;
+    RecordImageCopy(dev, rec->commandBuffer(), p);
+    std::lock_guard lock(_mutex);
+    _textures.push_back(tc);
+}
+
+bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId, uint32_t passIndex, uint32_t layerCount,
+                                       uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
+                                       TextureCapture& tc, PendingImageCopy& p) {
     ResourceRegistry& reg = ResourceRegistry::Get();
     ImageViewInfo vi;
     ImageInfo img;
-    if (!reg.GetImageView(view, vi) || !reg.GetImage(vi.image, img)) return;
+    if (!reg.GetImageView(view, vi) || !reg.GetImage(vi.image, img)) return false;
 
-    TextureCapture tc;
+    tc = TextureCapture{};
     tc.imageId = Tracker::Get().Resolve(HT_VkImage, (uint64_t)(uintptr_t)vi.image);
-    tc.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
-    tc.passIndex = rec->pass().passIndex;
+    tc.commandBufferId = commandBufferId;
+    tc.passIndex = passIndex;
     tc.attachment = attachmentIndex;
     tc.resolveTarget = resolveTarget;
     tc.format = img.format;
@@ -1042,7 +1058,7 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     tc.depth = std::max(1u, img.extent.depth >> tc.mip);
     tc.layers = vi.range.layerCount == VK_REMAINING_ARRAY_LAYERS ? img.arrayLayers - vi.range.baseArrayLayer
                                                                   : vi.range.layerCount;
-    tc.layers = std::max(1u, std::min(tc.layers, rec->pass().layerCount));
+    tc.layers = std::max(1u, std::min(tc.layers, layerCount));
     tc.aspect = FormatAspects(img.format) & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                       : VK_IMAGE_ASPECT_COLOR_BIT;
 
@@ -1051,6 +1067,7 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
         tc.note = why;
         std::lock_guard lock(_mutex);
         _textures.push_back(tc);
+        return false;
     };
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
     if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
@@ -1073,7 +1090,7 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
 
-    PendingImageCopy p;
+    p = PendingImageCopy{};
     p.image = vi.image;
     p.layout = layout;
     p.range = {tc.aspect, tc.mip, 1, vi.range.baseArrayLayer, tc.layers};
@@ -1087,10 +1104,88 @@ void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, ui
     p.resolve = resolve;
     p.format = img.format;
     if (resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) return fail("depth resolve views could not be created");
-    RecordImageCopy(dev, rec->commandBuffer(), p);
+    return true;
+}
 
+void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, CommandRecorder* rec, uint64_t commandBufferId, uint32_t frame) {
+    if (!_options.captureTextures) return;
+    std::vector<std::pair<TextureCapture, PendingImageCopy>> copies;
+    for (const RecordedPass& pass : rec->passes()) {
+        if (pass.readBack) continue;
+        auto prepare = [&](uint32_t i, VkImageView view, VkImageLayout recordedLayout, bool resolveTarget) {
+            if (!view) return;
+            // The layout now, after the whole submission (later passes or barriers may have
+            // changed it), from the tracker; the pass's own final layout otherwise.
+            ImageViewInfo vi;
+            VkImageLayout layout = recordedLayout;
+            VkImageLayout tracked = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (ResourceRegistry::Get().GetImageView(view, vi) && LayoutTracker::Get().GetLayout(vi.image, tracked) && tracked != VK_IMAGE_LAYOUT_UNDEFINED) layout = tracked;
+            TextureCapture tc;
+            PendingImageCopy p;
+            if (PrepareAttachment(dev, commandBufferId, pass.passIndex, pass.layerCount, i, view, layout, resolveTarget, tc, p)) {
+                tc.frame = frame;
+                copies.emplace_back(tc, p);
+            }
+        };
+        for (uint32_t i = 0; i < pass.attachments.size(); ++i) {
+            prepare(i, pass.attachments[i], i < pass.layouts.size() ? pass.layouts[i] : VK_IMAGE_LAYOUT_GENERAL, false);
+            if (i < pass.resolveViews.size() && pass.resolveViews[i]) prepare(i, pass.resolveViews[i], pass.resolveLayouts[i], true);
+        }
+    }
+    if (copies.empty()) return;
+
+    // A command buffer of the layer's on the same queue, right behind the application's submission.
+    uint32_t family = 0;
+    {
+        std::lock_guard lock(dev->queueMutex);
+        auto it = dev->queueFamilies.find(queue);
+        if (it == dev->queueFamilies.end()) return;
+        family = it->second;
+    }
+    const DeviceDispatch& d = dev->dispatch;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    {
+        std::lock_guard lock(dev->queueMutex);
+        auto it = dev->readbackPools.find(family);
+        if (it != dev->readbackPools.end()) pool = it->second;
+    }
+    if (!pool) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pci.queueFamilyIndex = family;
+        if (d.CreateCommandPool(dev->device, &pci, nullptr, &pool) != VK_SUCCESS) return;
+        std::lock_guard lock(dev->queueMutex);
+        dev->readbackPools[family] = pool;
+    }
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = pool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (d.AllocateCommandBuffers(dev->device, &ai, &cb) != VK_SUCCESS) return;
+    // The loader's dispatch pointer, which a command buffer allocated by a layer lacks (see image_readback.cpp).
+    *reinterpret_cast<void**>(cb) = *reinterpret_cast<void**>(dev->device);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    d.BeginCommandBuffer(cb, &bi);
+    for (auto& c : copies) RecordImageCopy(dev, cb, c.second);
+    d.EndCommandBuffer(cb);
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    d.CreateFence(dev->device, &fci, nullptr, &fence);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+    VkResult res = d.QueueSubmit(queue, 1, &si, fence);
+    if (res == VK_SUCCESS) res = d.WaitForFences(dev->device, 1, &fence, VK_TRUE, 5000000000ull);
+    d.DestroyFence(dev->device, fence, nullptr);
+    d.FreeCommandBuffers(dev->device, pool, 1, &cb);
     std::lock_guard lock(_mutex);
-    _textures.push_back(tc);
+    for (auto& c : copies) {
+        if (res != VK_SUCCESS) { c.first.failed = true; c.first.note = "read-back after submission failed"; }
+        _textures.push_back(c.first);
+    }
+    if (res == VK_SUCCESS) _postSubmitReadbacks.fetch_add((uint32_t)copies.size(), std::memory_order_relaxed);
 }
 
 void CaptureManager::SendTextures(DeviceData* dev) {

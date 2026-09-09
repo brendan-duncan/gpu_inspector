@@ -91,8 +91,11 @@ static void BeforePass(VkCommandBuffer commandBuffer) {
 // its attachment infos rewritten. The record keeps what the application passed (the generated
 // forwarders serialize the original arguments), and the post-hooks map the copy back.
 static bool RecordingCapture(VkCommandBuffer cb) {
+    // "Record all command buffers" records ahead of any capture (for applications that record
+    // once and resubmit), so its recordings get the copies too: whichever of them the capture
+    // later shows must read back.
     DeviceData* dev = GetDeviceData(cb);
-    return dev && dev->RecorderFor(cb) && CaptureManager::Get().IsCapturing();
+    return dev && dev->RecorderFor(cb) && (CaptureManager::Get().IsCapturing() || CaptureManager::Get().RecordAlways());
 }
 
 static thread_local const VkRenderPassBeginInfo* t_beginOriginal = nullptr;

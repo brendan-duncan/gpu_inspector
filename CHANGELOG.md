@@ -40,10 +40,13 @@
   per-submission counters in such messages no longer make every frame a new message. The
   triangle test app's `--hazard` option writes its vertex buffer unsynchronized.
 
-- Render targets with storeOp DONT_CARE read back correctly: while capturing, a render pass
-  runs as a store-everything copy (dynamic rendering gets its attachments rewritten). Object
-  records and captured commands keep the application's own arguments, without the layer's
-  usage additions.
+- Render targets with storeOp DONT_CARE read back correctly: while capturing (or under
+  "Record all command buffers"), a render pass runs as a store-everything copy (dynamic
+  rendering gets its attachments rewritten). Object records and captured commands keep the
+  application's own arguments, without the layer's usage additions.
+- Command buffers recorded before the capture began (engines that record once and resubmit,
+  with "Record all command buffers") get their render targets read back after their
+  submission. The triangle test app's `--prerecord` option works that way.
 - The desktop triangle test app no longer stores its depth buffer.
 
 ### Fixed

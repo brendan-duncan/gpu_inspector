@@ -129,6 +129,10 @@ struct App {
     // draw reads it, so synchronization validation reports the hazard at vkQueueSubmit (a
     // hazard against the previous frame would not do: a capture waits for the GPU first).
     bool hazard = false;
+    // --prerecord: record one command buffer per swapchain image up front and resubmit them
+    // every frame (the tint and the wave then stand still), like engines with static command
+    // buffers; a capture needs the inspector's "Record all command buffers".
+    bool prerecord = false;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;  // --msaa: 4x, resolved into the swapchain
     // --offscreen: render into an image of our own and never present, like an OpenXR
     // application whose runtime composites (the inspector's frame boundaries without presents).
@@ -200,6 +204,7 @@ struct App {
     static const int kFramesInFlight = 2;
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
     VkCommandBuffer hazardBuffers[kFramesInFlight]{};   // --hazard: the vertex update, submitted first
+    std::vector<VkCommandBuffer> prerecorded;            // --prerecord: one per swapchain image
     VkSemaphore imageAvailable[kFramesInFlight]{};
     VkSemaphore renderFinished[kFramesInFlight]{};
     VkFence inFlight[kFramesInFlight]{};
@@ -663,6 +668,22 @@ struct App {
             fci.layers = 1;
             CHECK(vkCreateFramebuffer(device, &fci, nullptr, &framebuffers[i]));
         }
+        if (prerecord && computePipeline) PrerecordAll();
+    }
+
+    // --prerecord: one command buffer per swapchain image, recorded now and resubmitted as is.
+    void PrerecordAll() {
+        const uint32_t count = (uint32_t)framebuffers.size();
+        if (prerecorded.size() != count) {
+            if (!prerecorded.empty()) vkFreeCommandBuffers(device, commandPool, (uint32_t)prerecorded.size(), prerecorded.data());
+            prerecorded.assign(count, VK_NULL_HANDLE);
+            VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            cai.commandPool = commandPool;
+            cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cai.commandBufferCount = count;
+            CHECK(vkAllocateCommandBuffers(device, &cai, prerecorded.data()));
+        }
+        for (uint32_t i = 0; i < count; ++i) Record(prerecorded[i], i, 0.0f);
     }
 
     // Everything sized by the window, except the swapchain itself (see CreateSwapchain).
@@ -960,33 +981,12 @@ struct App {
         vkDestroyShaderModule(device, fs, nullptr);
     }
 
-    // --------------------------------------------------------------------------------- frame
-    // Returns false when nothing was drawn (window minimized or swapchain being replaced).
-    bool DrawFrame(float t) {
-        if (resized && !RecreateSwapchain()) return false;
-        VkFence fence = inFlight[frameSlot];
-        CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
-        uint32_t imageIndex = 0;
-        if (!offscreen) {
-            VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
-            if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
-                resized = true;
-                return false;
-            }
-            if (ar != VK_SUBOPTIMAL_KHR) CHECK(ar);
-        }
-        CHECK(vkResetFences(device, 1, &fence));
-
-        Mat4 proj = Perspective(1.0f, (float)width / (float)height, 0.1f, 10.0f);
-        Mat4 view = Translate(0, 0, -2.5f);
-        Mat4 model = Mul(RotateX(t * 0.7f), RotateY(t));
-        Mat4 mvp = Mul(proj, Mul(view, model));
-        memcpy(uniformMapped, &mvp, sizeof(mvp));
-
-        VkCommandBuffer cb = commandBuffers[frameSlot];
+    // Records one frame's commands: the compute pass, then the cube in the main pass.
+    void Record(VkCommandBuffer cb, uint32_t imageIndex, float t) {
         CHECK(vkResetCommandBuffer(cb, 0));
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        // Prerecorded buffers may be resubmitted while a previous submission is still pending.
+        bi.flags = prerecord ? VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         CHECK(vkBeginCommandBuffer(cb, &bi));
 
         // Compute first: two dispatches refreshing the wave buffer, then a barrier. The inspector
@@ -1047,6 +1047,36 @@ struct App {
         vkCmdEndRenderPass(cb);
         if (endLabel) endLabel(cb);
         CHECK(vkEndCommandBuffer(cb));
+    }
+
+    // --------------------------------------------------------------------------------- frame
+    // Returns false when nothing was drawn (window minimized or swapchain being replaced).
+    bool DrawFrame(float t) {
+        if (resized && !RecreateSwapchain()) return false;
+        VkFence fence = inFlight[frameSlot];
+        CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+        uint32_t imageIndex = 0;
+        if (!offscreen) {
+            VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
+            if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+                resized = true;
+                return false;
+            }
+            if (ar != VK_SUBOPTIMAL_KHR) CHECK(ar);
+        }
+        CHECK(vkResetFences(device, 1, &fence));
+
+        Mat4 proj = Perspective(1.0f, (float)width / (float)height, 0.1f, 10.0f);
+        Mat4 view = Translate(0, 0, -2.5f);
+        Mat4 model = Mul(RotateX(t * 0.7f), RotateY(t));
+        Mat4 mvp = Mul(proj, Mul(view, model));
+        memcpy(uniformMapped, &mvp, sizeof(mvp));
+
+        // --prerecord: the frame's command buffer was recorded when the swapchain was created
+        // (see CreateFramebuffers), the way engines that record once and resubmit work; the
+        // inspector then needs "Record all command buffers" to see its commands.
+        VkCommandBuffer cb = prerecord ? prerecorded[imageIndex] : commandBuffers[frameSlot];
+        if (!prerecord) Record(cb, imageIndex, t);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -1180,6 +1210,7 @@ struct App {
         CreateFramebuffers();
         CreateResources();
         CreateCompute();
+        if (prerecord) PrerecordAll();
         auto start = std::chrono::steady_clock::now();
         while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
             PumpEvents();
@@ -1202,6 +1233,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
+        else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen")) {
             app.offscreen = true;

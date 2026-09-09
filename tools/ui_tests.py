@@ -113,7 +113,7 @@ def check_connected(state, log):
         expect((s.get("objects") or 0) > 20, f"only {s.get('objects')} objects")
 
 
-def check_capture_basic(state, log, min_draws=1, textures=2):
+def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
     c = capture(state)
     return expect(bool(c), "no capture tab") + \
         expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") + \
@@ -121,7 +121,7 @@ def check_capture_basic(state, log, min_draws=1, textures=2):
         expect((c.get("textures") or 0) >= textures, f"{c.get('textures')} render targets read back") + \
         expect((c.get("textureErrors") or 0) == 0, f"{c.get('textureErrors')} render targets failed to read back") + \
         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every render target's data arrived") + \
-        expect((c.get("passTimings") or 0) >= 1, "no pass timings")
+        expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings")
 
 
 def triangle_plain(state, log):
@@ -172,10 +172,19 @@ def triangle_stacks(state, log):
         expect((s.get("symbolsWithLines") or 0) >= 1, "no symbol resolved to a source line (PDB next to the app?)")
 
 
+def triangle_prerecord(state, log):
+    s = session(state)
+    # Pre-recorded buffers hold no timestamps: recorded before the capture's query pool existed.
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect("read back after their submission" in log, "the pre-recorded passes were not read back after submission") + \
+        expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors with pre-recorded buffers")
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
     return [
         Case("plain", launch + ["--debug-capture"], triangle_plain),
+        Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
