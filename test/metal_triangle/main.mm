@@ -84,6 +84,10 @@ constexpr NSUInteger kWaveCount = 256;
     id<MTLBuffer> _indices;
     id<MTLBuffer> _uniforms;
     id<MTLBuffer> _waveOut;
+    // Resources allocated while running rather than at start-up, so that a capture library has
+    // something to stream to a UI that is already connected — the snapshot path and the live path
+    // are different code and only one of them is exercised by start-up allocations.
+    NSMutableArray *_later;
     NSUInteger _frameCount;
 }
 
@@ -141,6 +145,7 @@ constexpr NSUInteger kWaveCount = 256;
     _waveOut = [_device newBufferWithLength:kWaveCount * sizeof(float)
                                     options:MTLResourceStorageModeShared];
     _waveOut.label = @"wave output";
+    _later = [NSMutableArray array];
     return self;
 }
 
@@ -191,6 +196,14 @@ constexpr NSUInteger kWaveCount = 256;
     [commandBuffer presentDrawable:drawable];
     [commandBuffer commit];
     _frameCount++;
+
+    // One more resource every second, held so it stays alive.
+    if (_frameCount % 60 == 0) {
+        id<MTLBuffer> buffer = [_device newBufferWithLength:4096
+                                                    options:MTLResourceStorageModeShared];
+        buffer.label = [NSString stringWithFormat:@"streamed %lu", (unsigned long)_frameCount / 60];
+        [_later addObject:buffer];
+    }
 }
 
 @end

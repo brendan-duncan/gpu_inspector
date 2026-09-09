@@ -34,9 +34,9 @@ bool Hook(Class cls, SEL sel, IMP replacement);
  * The implementation `sel` had before it was hooked, for the receiver's class. A hook always
  * calls this and forwards to it; returning without doing so would drop the application's call.
  *
- * Resolved through the Method the receiver's class holds for the selector, which is the same
- * Method that was replaced — including when it lives on an ancestor shared with sibling classes,
- * where a per-class lookup would come up empty. See the note on g_originals in swizzle.mm.
+ * Resolved by walking up from the receiver's class to the class the hook was installed on. Hooks
+ * are added to that class alone rather than written over an inherited implementation, so a
+ * sibling class that shares an ancestor is never affected. See Hook() in swizzle.mm.
  */
 IMP Original(id self, SEL sel);
 
@@ -47,13 +47,6 @@ IMP Original(id self, SEL sel);
  */
 bool FirstSighting(Class cls);
 
-/** Hooks every method of a class the library knows, once, the first time an object of it appears. */
-void HookDeviceClass(id device);
-void HookCommandQueueClass(id queue);
-void HookCommandBufferClass(id commandBuffer);
-void HookRenderEncoderClass(id encoder);
-void HookComputeEncoderClass(id encoder);
-void HookBlitEncoderClass(id encoder);
 
 /**
  * Suppresses everything but the outermost observation of one application call.

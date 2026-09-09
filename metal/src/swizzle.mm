@@ -11,20 +11,18 @@
 namespace mtlinsp {
 namespace {
 
+struct PairHash {
+    size_t operator()(const std::pair<const void *, const void *> &p) const {
+        return std::hash<const void *>()(p.first) * 31 + std::hash<const void *>()(p.second);
+    }
+};
+
 std::mutex g_mutex;
-// Method -> the implementation it had before the hook.
+// (class, selector) -> the implementation calls on that class reached before the hook.
 //
-// Keyed by the Method rather than by (class, selector), which is not the same thing and matters.
-// class_getInstanceMethod walks up the hierarchy, so hooking "MTLDebugRenderCommandEncoder's
-// endEncoding" can really be replacing an implementation that lives on a shared ancestor. Keying
-// by the class asked about then leaves a sibling that inherits the same implementation —
-// MTLDebugComputeCommandEncoder — with no entry to find: its hook fires, the lookup walks its own
-// ancestors, finds nothing, and the forward jumps through a null pointer. Metal's validation
-// layers have exactly that shape, so it is not hypothetical.
-//
-// Replacing an implementation does not move or copy the Method, so the pointer stays valid and
-// identifies the implementation being replaced no matter which class was named to reach it.
-std::unordered_map<Method, IMP> g_originals;
+// The entry is only ever written for a class that now carries the hook *itself*, which is what
+// makes the key sound. See Hook() for why the obvious approach is not.
+std::unordered_map<std::pair<const void *, const void *>, IMP, PairHash> g_originals;
 // Classes already offered to the hook installers.
 std::set<Class> g_seen;
 
@@ -73,27 +71,45 @@ bool FirstSighting(Class cls) {
 bool Hook(Class cls, SEL sel, IMP replacement) {
     if (cls == nil) return false;
     Method method = class_getInstanceMethod(cls, sel);
-    if (method == nullptr) return false;
+    if (method == nullptr) return false;  // no such method: optional protocol members, API levels
+
+    // class_getInstanceMethod walks up, so `method` may belong to an ancestor rather than to cls.
+    // Calling method_setImplementation on it would rewrite that ancestor's implementation for
+    // *every* class that inherits it — hooking a render encoder would silently hook the compute
+    // encoder and the command buffer beside it. Metal's class trees are shaped exactly that way,
+    // so this is the normal case, not a corner.
+    //
+    // class_addMethod instead installs an override on cls alone, leaving the ancestor untouched;
+    // the implementation being overridden is what calls used to reach, which is the original.
+    // When cls already has its own implementation, class_addMethod declines and there is no
+    // sharing to worry about, so replacing it in place is right.
+    const IMP current = method_getImplementation(method);
+    // Already hooked, here or on an ancestor this class inherits from. Adding an override whose
+    // "original" is our own replacement would call it in a loop.
+    if (current == replacement) return true;
 
     std::lock_guard<std::mutex> lock(g_mutex);
-    // Already replaced, reached through this class or another that shares the implementation.
-    if (g_originals.count(method) != 0) return true;
-    g_originals[method] = method_setImplementation(method, replacement);
+    if (class_addMethod(cls, sel, replacement, method_getTypeEncoding(method))) {
+        g_originals[{(const void *)cls, (const void *)sel}] = current;
+    } else {
+        g_originals[{(const void *)cls, (const void *)sel}] =
+            method_setImplementation(class_getInstanceMethod(cls, sel), replacement);
+    }
     return true;
 }
 
 IMP Original(id self, SEL sel) {
-    Method method = class_getInstanceMethod(object_getClass(self), sel);
-    if (method == nullptr) return nullptr;
     std::lock_guard<std::mutex> lock(g_mutex);
-    auto it = g_originals.find(method);
-    if (it == g_originals.end()) {
-        // Unreachable: a hook only runs because this Method was replaced, so it is in the map.
-        // Worth saying out loud rather than returning a null the caller will jump through.
-        fprintf(stderr, "[mtlinsp] no original for %s on %s\n", sel_getName(sel), ClassName(self));
-        return nullptr;
+    // Up from the receiver's class: a hook lives on the exact class it was recorded against, and
+    // an instance of a subclass reaches it by inheritance.
+    for (Class cls = object_getClass(self); cls != nil; cls = class_getSuperclass(cls)) {
+        auto it = g_originals.find({(const void *)cls, (const void *)sel});
+        if (it != g_originals.end()) return it->second;
     }
-    return it->second;
+    // Unreachable: a hook only runs because it was installed on the receiver's class or one it
+    // inherits from. Worth saying out loud rather than returning a null the caller jumps through.
+    fprintf(stderr, "[mtlinsp] no original for %s on %s\n", sel_getName(sel), ClassName(self));
+    return nullptr;
 }
 
 }  // namespace mtlinsp

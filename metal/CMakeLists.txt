@@ -16,10 +16,19 @@ set(CAPTURE_LIB "mtlinsp_capture")
 add_library(${CAPTURE_LIB} SHARED
     src/swizzle.h
     src/swizzle.mm
+    src/hooks.h
     src/hooks.mm
+    src/tracker.h
+    src/tracker.mm
+    src/transport.h
+    src/transport.mm
     src/interpose.mm)
 
-target_include_directories(${CAPTURE_LIB} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# ../layer/src for json_writer.h, which is header-only, has no Vulkan in it, and writes the same
+# JSON the UI already reads. Shared rather than copied so the two backends cannot drift apart.
+target_include_directories(${CAPTURE_LIB} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../layer/src")
 
 # Manual reference counting, not ARC: the hooks forward to the implementations they replaced
 # through raw IMPs, and the `new*` methods hand back an object the caller owns. Passing that

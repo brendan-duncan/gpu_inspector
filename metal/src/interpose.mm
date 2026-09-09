@@ -8,7 +8,9 @@
 // dyld interposing rather than symbol interposition by name: a __DATA,__interpose section is
 // applied by dyld to every image in the process, including Metal.framework in the shared cache,
 // and only when this library is inserted.
+#include "hooks.h"
 #include "swizzle.h"
+#include "tracker.h"
 
 #import <Metal/Metal.h>
 
@@ -18,14 +20,14 @@ id<MTLDevice> Interposed_MTLCreateSystemDefaultDevice(void) {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     mtlinsp::Log("MTLCreateSystemDefaultDevice -> %s (%s)", mtlinsp::ClassName(device),
                  device == nil ? "" : device.name.UTF8String);
-    if (device != nil) mtlinsp::HookDeviceClass(device);
+    mtlinsp::TrackDeviceObject(device);
     return device;
 }
 
 NSArray<id<MTLDevice>> *Interposed_MTLCopyAllDevices(void) {
     NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
     mtlinsp::Log("MTLCopyAllDevices -> %lu device(s)", (unsigned long)devices.count);
-    for (id<MTLDevice> device in devices) mtlinsp::HookDeviceClass(device);
+    for (id<MTLDevice> device in devices) mtlinsp::TrackDeviceObject(device);
     return devices;
 }
 
@@ -42,6 +44,9 @@ __attribute__((used, section("__DATA,__interpose"))) const Interpose kInterposer
 
 __attribute__((constructor)) void Loaded(void) {
     mtlinsp::Log("loaded into pid %d", getpid());
+    // The listener comes up before the application has a device, so the UI can be waiting when
+    // the process starts or attach later and get a snapshot either way.
+    mtlinsp::StartTracking();
 }
 
 }  // namespace

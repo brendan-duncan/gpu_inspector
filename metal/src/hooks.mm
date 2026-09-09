@@ -9,11 +9,16 @@
 // Compiled without ARC on purpose. These forward to the original implementation through a raw
 // IMP, and the `new*` methods return an object the caller owns (+1); handing that straight back
 // is only obviously correct when the compiler is not also inserting retains and releases.
+#include "hooks.h"
+
+#include "json_writer.h"
 #include "swizzle.h"
+#include "tracker.h"
 
 #import <Metal/Metal.h>
 
 #include <atomic>
+#include <string>
 
 namespace mtlinsp {
 namespace {
@@ -29,13 +34,106 @@ const char *LabelOf(id object) {
     return label == nil ? "" : label.UTF8String;
 }
 
+// The "args" of an AddObject: the descriptor the object was created from, in the same shape the
+// Vulkan layer serializes a VkCreateInfo into. Written by hand, one per creating call — there is
+// no vk.xml for Metal to generate them from, which is the main cost of this backend.
+
+std::string BufferArgs(NSUInteger length, MTLResourceOptions options) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("length"); w.Uint(length);
+    w.Key("options"); w.Uint((uint64_t)options);
+    w.EndObject();
+    return std::move(w.str());
+}
+
+std::string TextureArgs(MTLTextureDescriptor *d) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("textureType"); w.Uint((uint64_t)d.textureType);
+    w.Key("pixelFormat"); w.Uint((uint64_t)d.pixelFormat);
+    w.Key("width"); w.Uint(d.width);
+    w.Key("height"); w.Uint(d.height);
+    w.Key("depth"); w.Uint(d.depth);
+    w.Key("mipmapLevelCount"); w.Uint(d.mipmapLevelCount);
+    w.Key("sampleCount"); w.Uint(d.sampleCount);
+    w.Key("arrayLength"); w.Uint(d.arrayLength);
+    w.Key("usage"); w.Uint((uint64_t)d.usage);
+    w.Key("storageMode"); w.Uint((uint64_t)d.storageMode);
+    w.EndObject();
+    return std::move(w.str());
+}
+
+std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("label");
+    if (d.label == nil) w.Null(); else w.String(d.label.UTF8String);
+    w.Key("vertexFunction");
+    if (d.vertexFunction == nil) w.Null(); else w.String(d.vertexFunction.name.UTF8String);
+    w.Key("fragmentFunction");
+    if (d.fragmentFunction == nil) w.Null(); else w.String(d.fragmentFunction.name.UTF8String);
+    w.Key("rasterSampleCount"); w.Uint(d.rasterSampleCount);
+    w.Key("colorAttachments"); w.BeginArray();
+    for (NSUInteger i = 0; i < 8; i++) {
+        MTLRenderPipelineColorAttachmentDescriptor *a = d.colorAttachments[i];
+        if (a.pixelFormat == MTLPixelFormatInvalid) continue;
+        w.BeginObject();
+        w.Key("index"); w.Uint(i);
+        w.Key("pixelFormat"); w.Uint((uint64_t)a.pixelFormat);
+        w.Key("blendingEnabled"); w.Boolean(a.blendingEnabled);
+        w.EndObject();
+    }
+    w.EndArray();
+    w.Key("depthAttachmentPixelFormat"); w.Uint((uint64_t)d.depthAttachmentPixelFormat);
+    w.EndObject();
+    return std::move(w.str());
+}
+
+std::string LibraryArgs(NSString *source) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("sourceLength"); w.Uint(source.length);
+    w.EndObject();
+    return std::move(w.str());
+}
+
+std::string FunctionArgs(id<MTLFunction> function) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("function");
+    if (function == nil) w.Null(); else w.String(function.name.UTF8String);
+    w.EndObject();
+    return std::move(w.str());
+}
+
+void Replaced_setLabel(id self, SEL _cmd, NSString *label) {
+    Reentry reentry;
+    // Forward first: TrackLabel reads the label back off the object, so it has to be set.
+    ((void (*)(id, SEL, NSString *))Original(self, _cmd))(self, _cmd, label);
+    if (reentry.outermost()) TrackLabel(self);
+}
+
+/** Registers an object and hooks `setLabel:` on its class, so later labelling is streamed. */
+uint64_t Track(id object, const char *type, const char *cmd, id parent, const std::string &args) {
+    const uint64_t id = TrackObject(object, type, cmd, parent, args);
+    Class cls = object_getClass(object);
+    if (cls != nil && [object respondsToSelector:@selector(setLabel:)]) {
+        Hook(cls, @selector(setLabel:), (IMP)Replaced_setLabel);
+    }
+    return id;
+}
+
 // --------------------------------------------------------------------------------------------
 // MTLDevice
 
 id Replaced_newCommandQueue(id self, SEL _cmd) {
     Reentry reentry;
     id queue = ((id (*)(id, SEL))Original(self, _cmd))(self, _cmd);
-    if (reentry.outermost()) Log("device.newCommandQueue -> %s", ClassName(queue));
+    if (reentry.outermost()) {
+        Log("device.newCommandQueue -> %s", ClassName(queue));
+        Track(queue, "MTLCommandQueue", "newCommandQueue", self, {});
+    }
     HookCommandQueueClass(queue);
     return queue;
 }
@@ -46,6 +144,8 @@ id Replaced_newCommandQueueWithMaxCommandBufferCount(id self, SEL _cmd, NSUInteg
     if (reentry.outermost()) {
         Log("device.newCommandQueueWithMaxCommandBufferCount:%lu -> %s", (unsigned long)count,
             ClassName(queue));
+        Track(queue, "MTLCommandQueue", "newCommandQueueWithMaxCommandBufferCount:", self,
+                    {});
     }
     HookCommandQueueClass(queue);
     return queue;
@@ -58,6 +158,8 @@ id Replaced_newBufferWithLength(id self, SEL _cmd, NSUInteger length, MTLResourc
     if (reentry.outermost()) {
         Log("device.newBufferWithLength:%lu options:0x%lx -> %s", (unsigned long)length,
             (unsigned long)options, ClassName(buffer));
+        Track(buffer, "MTLBuffer", "newBufferWithLength:options:", self,
+                    BufferArgs(length, options));
     }
     return buffer;
 }
@@ -70,6 +172,8 @@ id Replaced_newBufferWithBytes(id self, SEL _cmd, const void *bytes, NSUInteger 
     if (reentry.outermost()) {
         Log("device.newBufferWithBytes:length:%lu options:0x%lx -> %s", (unsigned long)length,
             (unsigned long)options, ClassName(buffer));
+        Track(buffer, "MTLBuffer", "newBufferWithBytes:length:options:", self,
+                    BufferArgs(length, options));
     }
     return buffer;
 }
@@ -83,6 +187,8 @@ id Replaced_newTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *de
             (unsigned long)descriptor.width, (unsigned long)descriptor.height,
             (unsigned long)descriptor.pixelFormat, (unsigned long)descriptor.usage,
             ClassName(texture));
+        Track(texture, "MTLTexture", "newTextureWithDescriptor:", self,
+                    TextureArgs(descriptor));
     }
     return texture;
 }
@@ -95,6 +201,22 @@ id Replaced_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescripto
     if (reentry.outermost()) {
         Log("device.newRenderPipelineStateWithDescriptor: label=\"%s\" -> %s",
             descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
+        Track(state, "MTLRenderPipelineState",
+                    "newRenderPipelineStateWithDescriptor:error:", self,
+                    RenderPipelineArgs(descriptor));
+    }
+    return state;
+}
+
+id Replaced_newComputePipelineStateWithFunction(id self, SEL _cmd, id<MTLFunction> function,
+                                                NSError **error) {
+    Reentry reentry;
+    id state = ((id (*)(id, SEL, id, NSError **))Original(self, _cmd))(self, _cmd, function, error);
+    if (reentry.outermost()) {
+        Log("device.newComputePipelineStateWithFunction: %s -> %s",
+            function == nil ? "" : function.name.UTF8String, ClassName(state));
+        Track(state, "MTLComputePipelineState",
+                    "newComputePipelineStateWithFunction:error:", self, FunctionArgs(function));
     }
     return state;
 }
@@ -107,6 +229,8 @@ id Replaced_newLibraryWithSource(id self, SEL _cmd, NSString *source, MTLCompile
     if (reentry.outermost()) {
         Log("device.newLibraryWithSource: %lu chars -> %s", (unsigned long)source.length,
             ClassName(library));
+        Track(library, "MTLLibrary", "newLibraryWithSource:options:error:", self,
+                    LibraryArgs(source));
     }
     return library;
 }
@@ -269,6 +393,21 @@ void Replaced_dispatchThreadgroups(id self, SEL _cmd, MTLSize groups, MTLSize pe
 // Installation. Each is called with every object of its kind, not only new ones, so each stops at
 // the first sighting of a class; Hook() is idempotent besides.
 
+void TrackDeviceObject(id device) {
+    if (device == nil) return;
+    id<MTLDevice> metalDevice = (id<MTLDevice>)device;
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("name"); w.String(metalDevice.name.UTF8String);
+    w.Key("registryID"); w.Uint(metalDevice.registryID);
+    w.Key("hasUnifiedMemory"); w.Boolean(metalDevice.hasUnifiedMemory);
+    w.Key("recommendedMaxWorkingSetSize"); w.Uint(metalDevice.recommendedMaxWorkingSetSize);
+    w.Key("maxBufferLength"); w.Uint(metalDevice.maxBufferLength);
+    w.EndObject();
+    Track(device, "MTLDevice", "MTLCreateSystemDefaultDevice", nil, w.str());
+    HookDeviceClass(device);
+}
+
 void HookDeviceClass(id device) {
     Class cls = object_getClass(device);
     if (!FirstSighting(cls)) return;
@@ -281,6 +420,8 @@ void HookDeviceClass(id device) {
     Hook(cls, @selector(newTextureWithDescriptor:), (IMP)Replaced_newTextureWithDescriptor);
     Hook(cls, @selector(newRenderPipelineStateWithDescriptor:error:),
          (IMP)Replaced_newRenderPipelineState);
+    Hook(cls, @selector(newComputePipelineStateWithFunction:error:),
+         (IMP)Replaced_newComputePipelineStateWithFunction);
     Hook(cls, @selector(newLibraryWithSource:options:error:), (IMP)Replaced_newLibraryWithSource);
 }
 

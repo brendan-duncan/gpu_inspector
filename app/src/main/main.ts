@@ -1423,6 +1423,11 @@ void app.whenReady().then(() => {
       });
       return;
     }
+    // --connect=<port>: attach to an application that is already listening, the command-line form
+    // of the Connect button. Unlike --wait-for-app it needs no layer of ours in the process, so it
+    // is the way in for a capture library the inspector did not launch — the Metal one today.
+    const connectPort = cliOption("connect");
+    if (connectPort) connectOnly(Number(connectPort) || DEFAULT_PORT);
     // --wait-for-app: a session that waits for an application started with VKINSP_ENABLE=1.
     if (cliFlag("wait-for-app")) {
       void launch({ ...normalizeLaunch({} as LaunchConfig), target: "implicit", port: Number(cliOption("port")) || DEFAULT_PORT,
