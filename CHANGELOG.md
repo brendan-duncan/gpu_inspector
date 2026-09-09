@@ -21,6 +21,9 @@
 - Shader cost per source line, clickable into the Source view; line frames in the flame graph.
 - Sampled image read-back of every mip level.
 - Launch dialog: the Package field filters the device's packages.
+- Phone test application (`test/android_triangle`, `tools/build_android_triangle.py`): a
+  debuggable NativeActivity rendering a ring of triangles into a swapchain, for the Android
+  path without a third-party app.
 - Stack traces on Android: the launcher turns the layer's stack collection on, and frames the
   layer can only name by module and offset are resolved on this machine with the NDK's
   llvm-symbolizer against the unstripped libraries under the launch dialog's new "Symbol

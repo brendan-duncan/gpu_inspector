@@ -106,8 +106,9 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Attach to a running process (implicit layer registration), see ARCHITECTURE.md.
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
-- [ ] Android: a phone build of the triangle test app (NativeActivity with a swapchain; the
-      OpenXR one in `test/xr_triangle` only runs on headsets); a GLES layer for Unity's GLES
+- [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by
+      `tools/build_android_triangle.py`) on a phone: on a Quest it runs as a 2D panel that the
+      shell keeps in the background, so it never gets a window; a GLES layer for Unity's GLES
       player; lower default read-back limits for phones.
 - [ ] Store-everything render pass copies cover `vkCmdBeginRenderPass*` and dynamic rendering
       recorded during the capture; command buffers pre-recorded before it (Dawn-style, "Record

@@ -181,7 +181,9 @@ connects. The Log tab shows the layer's logcat output. Closing the session turns
 settings off again. From the command line: `npm start -- --launch-android=<package>
 --device=<serial>`.
 
-For a headset, `python tools/build_xr_triangle.py` builds two debuggable OpenXR test
+`python tools/build_android_triangle.py` builds `build/android/android_triangle.apk`, a debuggable
+test application for phones (a NativeActivity rendering a ring of triangles into a swapchain),
+to launch the same way. For a headset, `python tools/build_xr_triangle.py` builds two debuggable OpenXR test
 applications to launch the same way: `build/android/xr_triangle.apk` renders a ring of
 triangles in one multiview pass, and `xr_triangle_slow.apk` ("XR Triangle (Slow)") renders the
 same scene with deliberate inefficiencies, so the capture's **Frame Stats** (Frame Issues) and

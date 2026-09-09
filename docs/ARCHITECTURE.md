@@ -90,7 +90,11 @@ device-side server:
   the layer switches, after sixty submissions without a present, to ending frames at the
   application's `vkWaitForFences` following a submission (or at every submission when it never
   waits); see `EndFrame` in `layer.cpp`. Multiview passes read back the view mask's layers.
-  `test/xr_triangle` is an OpenXR NativeActivity (one stereo swapchain, a multiview pass with
+  `test/android_triangle` is the phone counterpart of the desktop triangle: a NativeActivity
+  with a `VK_KHR_android_surface` swapchain (FIFO, the surface's pre-transform undone in the
+  projection), a transient unstored depth buffer and one instanced draw, built debuggable by
+  `tools/build_android_triangle.py`; on a Quest it only runs as a background 2D panel without
+  a window. `test/xr_triangle` is an OpenXR NativeActivity (one stereo swapchain, a multiview pass with
   `gl_ViewIndex`, a transient unstored depth buffer, one instanced draw) that
   `tools/build_xr_triangle.py` builds against the Khronos loader AAR and packages debuggable
   twice: the same library as `com.brendanduncan.xrtriangle` and as `...xrtriangle.slow`, which
