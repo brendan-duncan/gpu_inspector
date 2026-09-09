@@ -433,7 +433,14 @@ each batch for modules loaded since) and `dladdr` on Linux/Android (exported nam
 symbol further than 64 KB from the address is the nearest export of a module without symbols
 and is dropped for module+offset. Frames from the innermost up to the outermost loader/layer
 frame are marked `internal` (the driver's frames sit between them) and hidden behind a toggle,
-so the first frame shown is the application's call into Vulkan.
+so the first frame shown is the application's call into Vulkan. Every frame carries its offset
+from the module base, and frames without a source location get a second pass on the host
+(`main/symbolize.ts`, through `inspector:symbolize`): the launch configuration's "Symbol
+directories" (Android section; the last ones used serve capture files) are searched a few
+levels deep for a file named like the module, the largest copy taken as the unstripped one,
+and `llvm-symbolizer` from the NDK (the one on `PATH`, or `addr2line`, otherwise) turns the
+offsets into functions, files and lines. The results replace the cached frames, so a capture
+file saves them; `--debug-expand-stacks` opens the section as soon as a command is shown.
 
 #### Leak report
 

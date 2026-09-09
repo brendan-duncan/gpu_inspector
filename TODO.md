@@ -60,8 +60,9 @@ interpreter and re-created pipelines.
       captured frame (a barrier before the layer's buffer copy orders the draw after an earlier
       unsynchronized write), so a hazard seen every other frame may be missing from the
       captured one: turning the Buffers and Render targets options off avoids that.
-- [ ] Stack traces: source lines on Linux/Android (addr2line / DWARF; dladdr gives exported
-      names only), and a symbol path setting for PDBs that are not next to the modules.
+- [ ] Stack traces: the host symbolizer serves Android and Linux modules found under the
+      symbol directories; a symbol path for PDBs that are not next to the modules on Windows,
+      and inlined frames (`--inlining` is off so the frame count matches the addresses).
 - [ ] Refresh rate on Linux without a driver timing extension: the monitor mode through
       RandR / Wayland outputs (Windows reads the monitor mode today; Linux and Android without
       `VK_GOOGLE_display_timing` fall back to the frame-interval estimate).

@@ -12,13 +12,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { symbolizeFrames } from "./symbolize.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
   type AndroidDeviceList,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type OpenFileOptions, type SaveFileOptions, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
-  type UpdateStatus,
+  type UpdateStatus, type StackFrame,
 } from "../shared/protocol.js";
 
 const { app, BrowserWindow, ipcMain, dialog, nativeImage } = electron;
@@ -58,6 +59,8 @@ interface Settings {
   recents?: LaunchConfig[];
   /** Capture files saved or opened, most recent first. */
   recentCaptures?: string[];
+  /** The last symbol directories a launch used (";"-separated), for stack traces of capture files. */
+  symbolDirs?: string;
   theme?: ThemeName;
 }
 
@@ -104,6 +107,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     recordAlways: c.recordAlways ?? false,
     validation: c.validation ?? false,
     syncValidation: c.syncValidation ?? false,
+    symbolDirs: c.symbolDirs ?? "",
     stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
@@ -638,7 +642,7 @@ function launchAndroid(s: Session, adb: string, layer: AndroidLayerFiles): Launc
   if (!config) return { ok: false, error: "session has no launch configuration" };
   const target = new AndroidTarget({
     adb, serial: config.device, package: config.exe, activity: config.activity, port: s.port,
-    log: config.log, recordAlways: config.recordAlways, layer,
+    log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces, layer,
     onLog: (line) => s.appendLog(line),
     onExit: () => {
       if (s.android !== target) return;
@@ -1132,6 +1136,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       capture: cliFlag("debug-capture"),
       captureFrames: Number(cliOption("debug-capture")) || 1,
       captureStacks: cliFlag("debug-capture-stacks"),
+      expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
@@ -1201,6 +1206,20 @@ ipcMain.handle("inspector:openSessionWindow", (_e, id: number) => {
   openSessionWindow(s);
   return true;
 });
+// Stack frames the layer named by module and offset only, resolved with the unstripped libraries
+// under the session's symbol directories (or the last ones used, for capture files).
+ipcMain.handle("inspector:symbolize", (_e, frames: StackFrame[], dirs: string[]) => {
+  const list = (dirs.length ? dirs : (loadSettings().symbolDirs ?? "").split(";")).map((d) => d.trim()).filter(Boolean);
+  if (dirs.length) {
+    const settings = loadSettings();
+    if (settings.symbolDirs !== dirs.join(";")) {
+      settings.symbolDirs = dirs.join(";");
+      saveSettings(settings);
+    }
+  }
+  return symbolizeFrames(frames, list);
+});
+
 ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
@@ -1311,6 +1330,7 @@ void app.whenReady().then(() => {
         recordAlways: cliFlag("record-always"),
         validation: cliFlag("validation"),
         syncValidation: cliFlag("sync-validation"),
+        symbolDirs: cliOption("symbol-dirs") ?? "",
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }

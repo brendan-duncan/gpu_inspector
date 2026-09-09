@@ -196,6 +196,8 @@ export interface AndroidLaunchOptions {
   port: number;
   log: boolean;
   recordAlways: boolean;
+  /** Record the call stack of every object creation (debug.vkinsp.stacktraces). */
+  stacktraces: boolean;
   layer: AndroidLayerFiles;
   onLog: (line: string) => void;
   /** The application stopped on its own (not through stop()). */
@@ -235,6 +237,7 @@ export class AndroidTarget {
     await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
     await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
     await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
 
     await shell(adbPath, serial, `am force-stop ${pkg}`);
     // A previous instance that has not finished dying still holds the layer's socket, which the
@@ -464,6 +467,15 @@ export class AndroidTarget {
       }
     } catch {
       // grep found nothing (exit 1) or no such service: nothing to report
+    }
+    if (!noProcess) return;
+    // A headset shell says why it held a launch back ("a Guardian dialog is currently showing").
+    try {
+      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
+      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
+      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+    } catch {
+      // nothing logged
     }
   }
 

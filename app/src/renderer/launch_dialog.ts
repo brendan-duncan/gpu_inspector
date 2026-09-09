@@ -61,6 +61,7 @@ export class LaunchDialog extends Dialog {
   private _packages: string[] = [];
   private _packageHint: Span;
   private _activity: TextInput;
+  private _symbolDirs!: TextInput;
   private _port: TextInput;
   private _log: Checkbox;
   private _recordAlways: Checkbox;
@@ -136,6 +137,8 @@ export class LaunchDialog extends Dialog {
     }
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
     this._activity.tooltip = "Activity to start, as com.example.Activity or .Activity; empty for the launcher activity";
+    this._symbolDirs = this._inputRow(this._androidRows, "Symbol directories", "(directories with the unstripped .so files, separated by ;)");
+    this._symbolDirs.tooltip = "Where to look for the application's unstripped libraries (the build tree): stack traces of objects and captured commands then show functions, files and lines, resolved with the NDK's llvm-symbolizer on this machine.";
 
     section(body, "Inspector Options");
     {
@@ -294,6 +297,7 @@ export class LaunchDialog extends Dialog {
       recordAlways: this._recordAlways.checked,
       validation: !android && this._validation.checked,
       syncValidation: !android && this._validation.checked && this._syncValidation.checked,
+      symbolDirs: android ? this._symbolDirs.value.trim() : "",
       stacktraces: this._stacktraces.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
@@ -319,6 +323,7 @@ export class LaunchDialog extends Dialog {
     this._recordAlways.checked = c.recordAlways ?? false;
     this._validation.checked = c.validation ?? false;
     this._syncValidation.checked = c.syncValidation ?? false;
+    this._symbolDirs.value = c.symbolDirs ?? "";
     this._stacktraces.checked = c.stacktraces ?? true;
     const mode = c.capture?.mode ?? "none";
     this._captureMode.index = Math.max(0, CAPTURE_MODES.findIndex((m) => m[1] === mode));

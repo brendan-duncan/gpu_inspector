@@ -187,7 +187,10 @@ triangles in one multiview pass, and `xr_triangle_slow.apk` ("XR Triangle (Slow)
 same scene with deliberate inefficiencies, so the capture's **Frame Stats** (Frame Issues) and
 **Analyze Shaders** reports have something to flag. The build needs the Vulkan SDK's `glslc`
 and downloads the Khronos OpenXR loader on the first run. The headset must be worn (or its
-proximity sensor covered) for the OpenXR session to start.
+proximity sensor covered) for the OpenXR session to start. "Symbol directories" in the launch
+dialog names where the application's unstripped libraries are (its build tree, such as
+`build/android/xr_triangle`): stack traces then show functions, files and lines, resolved with
+the NDK's `llvm-symbolizer`.
 
 Shader editing works as on the desktop: the shaders are compiled on this machine with the Vulkan
 SDK's compilers and sent to the device. Expect the captured frame to take noticeably longer on a

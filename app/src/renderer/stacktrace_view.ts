@@ -40,8 +40,36 @@ export function requestStacks(session: SessionContext, ids: number[]): Promise<M
   });
 }
 
-/** Symbolized frames for addresses (as "0x..." strings), from the cache or the layer. */
-export function resolveSymbols(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
+/**
+ * Frames the layer named by module and offset only (dladdr on Android and Linux knows exported
+ * symbols), resolved on this machine from the unstripped libraries (see main/symbolize.ts). The
+ * results replace the cached frames, so a capture file saves them.
+ */
+async function symbolizeOnHost(session: SessionContext, frames: Map<string, StackFrame>): Promise<void> {
+  const wanted = [...frames.values()].filter((f) => f.module && f.offset > 0 && !f.file && !f.internal && !f.hostResolved);
+  if (!wanted.length) return;
+  for (const f of wanted) f.hostResolved = true;   // one attempt per frame
+  let resolved: StackFrame[] = [];
+  try {
+    resolved = await window.inspector.symbolize(wanted, session.symbolDirs);
+  } catch {
+    return;
+  }
+  for (const f of resolved) {
+    const merged = { ...frames.get(f.address), ...f, hostResolved: true };
+    frames.set(f.address, merged);
+    session.database.symbols.set(f.address, merged);
+  }
+}
+
+/** Symbolized frames for addresses (as "0x..." strings), from the cache or the layer, then the host's symbolizer. */
+export async function resolveSymbols(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
+  const out = await resolveFromLayer(session, addresses);
+  await symbolizeOnHost(session, out);
+  return out;
+}
+
+function resolveFromLayer(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
   const db = session.database;
   const out = new Map<string, StackFrame>();
   const missing: string[] = [];

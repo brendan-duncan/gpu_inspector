@@ -1,6 +1,6 @@
 import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus,
+  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -31,6 +31,8 @@ export interface InspectorApi {
   openSessionWindow(sessionId: number): Promise<boolean>;
   /** Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file). */
   openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
+  /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */
+  symbolize(frames: StackFrame[], dirs: string[]): Promise<StackFrame[]>;
   /** From a capture window: the main window opens the file and this window closes. */
   openCaptureInMain(path: string): Promise<boolean>;
   onOpenCapture(cb: (path: string) => void): void;

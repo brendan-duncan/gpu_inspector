@@ -29,6 +29,8 @@ export interface SessionContext {
   showValidation(entry: ValidationEntry): void;
   /** Contents of an image read back by a capture (a sampled image or render target), when one has it. */
   capturedImage(imageId: number): CapturedTexture | null;
+  /** Directories with the application's unstripped libraries (launch configuration), for host-side symbolization. */
+  readonly symbolDirs: string[];
 }
 
 const MAX_LOG_LINES = 2000;
@@ -160,6 +162,10 @@ export class SessionPanel extends Div implements SessionContext {
 
   get name(): string {
     return this.info.name;
+  }
+
+  get symbolDirs(): string[] {
+    return (this.info.config?.symbolDirs ?? "").split(";").map((d) => d.trim()).filter(Boolean);
   }
 
   get connected(): boolean {

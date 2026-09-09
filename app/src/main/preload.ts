@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("inspector", {
   openSessionWindow: (sessionId: number) => ipcRenderer.invoke("inspector:openSessionWindow", sessionId),
   moveSessionToMain: (sessionId: number) => ipcRenderer.invoke("inspector:moveSessionToMain", sessionId),
   openCaptureWindow: (opts: unknown) => ipcRenderer.invoke("inspector:openCaptureWindow", opts),
+  symbolize: (frames: unknown, dirs: unknown) => ipcRenderer.invoke("inspector:symbolize", frames, dirs),
   openCaptureInMain: (path: string) => ipcRenderer.invoke("inspector:openCaptureInMain", path),
   onOpenCapture: (cb: (path: string) => void) => ipcRenderer.on("inspector:openCapture", (_e, p) => cb(p)),
   refresh: (sessionId: number) => ipcRenderer.invoke("inspector:refresh", sessionId),

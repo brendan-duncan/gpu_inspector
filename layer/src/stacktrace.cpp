@@ -101,10 +101,7 @@ std::vector<StackFrame> Symbolize(const StackTrace& addresses) {
         sym->SizeOfStruct = sizeof(SYMBOL_INFO);
         sym->MaxNameLen = 511;
         DWORD64 disp = 0;
-        if (SymFromAddr(process, addr, &disp, sym) && disp < kMaxSymbolDisplacement) {
-            f.function = sym->Name;
-            f.offset = disp;
-        }
+        if (SymFromAddr(process, addr, &disp, sym) && disp < kMaxSymbolDisplacement) f.function = sym->Name;
         IMAGEHLP_LINE64 line;
         memset(&line, 0, sizeof(line));
         line.SizeOfStruct = sizeof(line);
@@ -162,7 +159,6 @@ std::vector<StackFrame> Symbolize(const StackTrace& addresses) {
                 char* demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
                 f.function = status == 0 && demangled ? demangled : info.dli_sname;
                 free(demangled);
-                f.offset = disp;
             }
         }
         out.push_back(std::move(f));

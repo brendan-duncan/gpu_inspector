@@ -90,6 +90,12 @@ export interface DrawState {
 }
 
 /** What the details view needs from the capture it belongs to (a CaptureView). */
+/** Testing aid (--debug-expand-stacks): open Stack trace sections as soon as a command is shown. */
+export let debugExpandStacks = false;
+export function setDebugExpandStacks(on: boolean): void {
+  debugExpandStacks = on;
+}
+
 export interface CaptureHost {
   readonly window: SessionContext;
   readonly data: CaptureData;
@@ -200,8 +206,9 @@ export class CommandInfoView {
     this._renderValidation(box, cmd);
     this._renderFindings(box, cmd);
     if (cmd.stack && cmd.stack.length) {
-      const stackGrp = new collapsible(box, { label: "Stack trace", collapsed: true, class: "stack-group" });
+      const stackGrp = new collapsible(box, { label: "Stack trace", collapsed: !debugExpandStacks, class: "stack-group" });
       let loaded = false;
+      if (debugExpandStacks) setTimeout(() => stackGrp.onExpanded.emit(), 0);
       stackGrp.onExpanded.addListener(() => {
         if (loaded) return;
         loaded = true;

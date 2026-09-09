@@ -1,6 +1,7 @@
 // Application window. The main window has the launch toolbar and one tab per inspected
 // application (a SessionPanel with its own Inspect / Capture / Log tabs). A session window
 // (opened with "Open in New Window") shows the sessions moved into it and has no launcher.
+import { setDebugExpandStacks } from "./capture_command_info.js";
 import { Window } from "./widget/window.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
@@ -115,6 +116,7 @@ export class InspectorWindow extends Window {
       for (const s of cfg.sessions) this._addSession(s);
       if (this._captureParam) void this.openCaptureFile(this._captureParam, { recent: !this._tempCapture });
       if (this._mode === "main") {
+        if (cfg.debug?.expandStacks) setDebugExpandStacks(true);
         if (cfg.debug?.launchDialog) {
           // "android" or "android:<package text>" (the text prefilled, to check the filter).
           const [target, text] = cfg.debug.launchDialog.split(":", 2);

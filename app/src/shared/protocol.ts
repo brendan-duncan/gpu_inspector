@@ -85,9 +85,11 @@ export interface StackFrame {
   function?: string;
   file?: string;
   line?: number;
-  offset: number;       // from the symbol, or from the module base without one
+  offset: number;       // from the module base (what a symbolizer on the unstripped module needs)
   /** Inside the Vulkan loader or a layer (hidden by default). */
   internal?: boolean;
+  /** The UI already tried (or managed) to resolve it on the host from the unstripped module. */
+  hostResolved?: boolean;
 }
 
 /** Answer to RequestStacktraces: the creation stacks of objects. */
@@ -466,6 +468,8 @@ export interface LaunchConfig {
   recordAlways: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
+  /** Android: directories holding the unstripped libraries of the application (";"-separated), for stack trace source lines. */
+  symbolDirs?: string;
   /** With `validation`: the validation layer's synchronization validation (hazards between commands and submissions). */
   syncValidation?: boolean;
   /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */
@@ -552,6 +556,8 @@ export interface AppConfig {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
     /** --debug-capture-stacks: the debug capture records command stack traces. */
     captureStacks: boolean;
+    /** Open the Stack trace section of selected commands and objects (symbolizes at once). */
+    expandStacks: boolean;
     /** --debug-command=<index>: select that command of the debug capture or the opened file. */
     selectCommand: number | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
