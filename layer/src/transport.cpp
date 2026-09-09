@@ -134,6 +134,31 @@ struct Transport::Impl {
         Log("client disconnected");
     }
 
+    // The address is usually still held by the previous instance of the application, which the
+    // launcher stopped a moment ago and which has not finished dying (an abstract socket lives
+    // until its last descriptor closes): keep trying for a while rather than never listening.
+    bool BindWithRetry(socket_t s, const sockaddr* addr, socklen_t len, const char* name) {
+        int err = 0;
+        for (int attempt = 0; attempt < 120 && !stop; ++attempt) {   // 30 s
+            if (bind(s, addr, len) == 0) {
+                if (attempt) Log("bind(%s) succeeded after %d retries", name, attempt);
+                return true;
+            }
+#if defined(_WIN32)
+            err = WSAGetLastError();
+            const bool inUse = err == WSAEADDRINUSE;
+#else
+            err = errno;
+            const bool inUse = err == EADDRINUSE;
+#endif
+            if (!inUse) break;
+            if (attempt == 0) Log("bind(%s): address in use (the previous instance is still shutting down?); retrying", name);
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        Log("bind(%s) failed (%d)", name, err);
+        return false;
+    }
+
     void ListenerLoop() {
 #if defined(__ANDROID__)
         // An abstract Unix socket: TCP sockets need the INTERNET permission, which most
@@ -142,15 +167,22 @@ struct Transport::Impl {
         if (listenSock == INVALID_SOCK) { Log("socket() failed (%d)", errno); return; }
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
-        char name[32];
-        snprintf(name, sizeof(name), "vkinsp:%u", port);
+        // The name carries the package, so an application launched earlier with the layer and
+        // still running in the background (another package on the same port) cannot answer in
+        // this one's place. /proc/self/cmdline is the package name, or "package:process".
+        char name[sizeof(addr.sun_path) - 1];
+        int n = snprintf(name, sizeof(name), "vkinsp:%u", port);
+        if (FILE* f = fopen("/proc/self/cmdline", "rb")) {
+            char cmd[256] = {};
+            size_t got = fread(cmd, 1, sizeof(cmd) - 1, f);
+            fclose(f);
+            cmd[got] = 0;
+            if (char* colon = strchr(cmd, ':')) *colon = 0;
+            if (cmd[0] && n > 0 && (size_t)n < sizeof(name)) snprintf(name + n, sizeof(name) - (size_t)n, ":%s", cmd);
+        }
         memcpy(addr.sun_path + 1, name, strlen(name));   // sun_path[0] == 0: the abstract namespace
         const socklen_t addrLen = (socklen_t)(offsetof(sockaddr_un, sun_path) + 1 + strlen(name));
-        if (bind(listenSock, (sockaddr*)&addr, addrLen) != 0) {
-            Log("bind(@%s) failed (%d)", name, errno);
-            CloseSocket(listenSock);
-            return;
-        }
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, addrLen, name)) { CloseSocket(listenSock); return; }
         if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
         Log("listening on the abstract socket @%s", name);
 #else
@@ -162,11 +194,9 @@ struct Transport::Impl {
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (bind(listenSock, (sockaddr*)&addr, sizeof(addr)) != 0) {
-            Log("bind(%u) failed", port);
-            CloseSocket(listenSock);
-            return;
-        }
+        char name[32];
+        snprintf(name, sizeof(name), "127.0.0.1:%u", port);
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, sizeof(addr), name)) { CloseSocket(listenSock); return; }
         if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
         Log("listening on 127.0.0.1:%u", port);
 #endif

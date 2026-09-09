@@ -14,8 +14,9 @@
 //     Development Build), or the device rooted; there is no way around that on Android.
 //   * The layer's settings are `debug.vkinsp.*` system properties (`adb shell setprop`), the
 //     Android counterpart of the VKINSP_* environment variables (see ConfigValue in layer.cpp).
-//   * The layer listens on the device's loopback; `adb forward` maps the host port to it, and the
-//     session's TCP client connects to 127.0.0.1 exactly as for a local process.
+//   * The layer listens on an abstract Unix socket named after the port and the package;
+//     `adb forward` maps the host port to it, and the session's TCP client connects to
+//     127.0.0.1 exactly as for a local process.
 //   * The layer log is read from logcat (tag "vkinsp"); the process is watched with `pidof`.
 //
 // Unlike RenderDoc, no helper process runs on the device: the capture streams straight over the
@@ -236,9 +237,24 @@ export class AndroidTarget {
     await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
 
     await shell(adbPath, serial, `am force-stop ${pkg}`);
+    // A previous instance that has not finished dying still holds the layer's socket, which the
+    // new instance would then fail to bind (or, worse, the inspector would connect to the old
+    // one): wait for it to be gone.
+    for (let i = 0; i < 20 && !this._stopped; ++i) {
+      const pid = await this._findPid();
+      if (pid === null) break;
+      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
     // The layer listens on an abstract Unix socket (no INTERNET permission needed in the target).
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:vkinsp:${port}`]);
-    log(`forwarding localhost:${port} to the device's @vkinsp:${port}`);
+    // Still held after the wait: something else answers on the name (a process of the package
+    // pidof does not see). The layer keeps retrying its bind for 30 s, so say why it may stall.
+    if (!this._stopped) {
+      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
+      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
+    }
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
+    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
     if (this._stopped) return;
 
     this._startLogcat();
@@ -267,6 +283,32 @@ export class AndroidTarget {
     if (this._stopped) return;
     if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
     this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
+  }
+
+  /** The layer's abstract socket on the device: the port and the package (see transport.cpp). */
+  get socketName(): string {
+    return `vkinsp:${this.opts.port}:${this.opts.package}`;
+  }
+
+  /**
+   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
+   * device disconnects, and a headset's USB link blips when it changes power state, so a
+   * connection attempt refused on the host side is checked against `adb forward --list`.
+   * Resolves true when the forward had to be re-created.
+   */
+  async ensureForward(): Promise<boolean> {
+    if (this._stopped) return false;
+    const { adb: adbPath, serial, port } = this.opts;
+    const target = `localabstract:${this.socketName}`;
+    const list = await adb(adbPath, serial, ["forward", "--list"]);
+    const present = list.split(/\r?\n/).some((l) => {
+      const f = l.trim().split(/\s+/);
+      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
+    });
+    if (present || this._stopped) return false;
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
+    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
+    return true;
   }
 
   /** Terminates the application, the port forward and the watches. */

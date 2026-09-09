@@ -235,6 +235,7 @@ class Session {
   connecting: net.Socket | null = null;
   connectTimer: NodeJS.Timeout | null = null;
   connectDeadline = 0;
+  connectAttempts = 0;
   state: ConnectionState = "disconnected";
   detail = "";
   recordAlways = false;
@@ -361,6 +362,7 @@ function disconnectSession(s: Session): void {
 function connectSession(s: Session, deadlineMs: number): void {
   disconnectSession(s);
   s.connectDeadline = Date.now() + deadlineMs;
+  s.connectAttempts = 0;
   s.setStatus("connecting", `port ${s.port}`);
   attemptConnect(s);
 }
@@ -373,14 +375,24 @@ function attemptConnect(s: Session): void {
 
   // Retries while the deadline has not passed and, for launched applications, the process is
   // still alive: right after a launch the layer is not listening yet, and a connection can
-  // briefly reach a previous process on the same port that is still shutting down.
+  // briefly reach a previous process on the same port that is still shutting down. For an
+  // Android target a refused connection can also mean adb lost the port forward (the device
+  // reconnected): every couple of seconds the forward is checked and re-created.
+  let refused = false;
   const retry = (why: string): void => {
     const alive = s.config ? s.target !== null || s.android !== null : true;
     if (alive && Date.now() < s.connectDeadline) {
+      if (s.state === "connected") s.setStatus("connecting", `port ${s.port}`);   // adb accepted, the device dropped it
       if (!s.connectTimer) {
         s.connectTimer = setTimeout(() => {
           s.connectTimer = null;
-          attemptConnect(s);
+          const android = s.android;
+          s.connectAttempts++;
+          if (android && refused && s.connectAttempts % 4 === 0) {
+            android.ensureForward().catch(() => false).then(() => { if (s.android === android && !s.socket && !s.connecting) attemptConnect(s); });
+          } else {
+            attemptConnect(s);
+          }
         }, s.target ? 250 : 500);
       }
     } else if (s.state !== "exited" && s.state !== "error") {
@@ -440,7 +452,10 @@ function attemptConnect(s: Session): void {
     }
   });
 
-  sock.on("error", () => gone(s.socket === sock ? "connection lost" : "could not connect"));
+  sock.on("error", (e: NodeJS.ErrnoException) => {
+    refused = e.code === "ECONNREFUSED";
+    gone(s.socket === sock ? "connection lost" : "could not connect");
+  });
   sock.on("close", () => gone(""));
 }
 

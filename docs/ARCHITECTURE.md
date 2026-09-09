@@ -101,6 +101,14 @@ device-side server:
   option, since the Quest shell otherwise refuses to launch an application until controllers
   are on, and a launch check dialog left behind by such a refusal blocks later launches until
   the shell restarts.
+* **Connecting.** The layer's abstract socket is `@vkinsp:<port>:<package>` (the package from
+  `/proc/self/cmdline`), so an application launched earlier with the layer and left running
+  cannot answer for a new one on the same port. The launcher force-stops the package and
+  waits for its process to be gone before starting it, since a dying instance still holds the
+  socket, and warns when `/proc/net/unix` still lists the name; the layer's listener retries a
+  bind refused with `EADDRINUSE` for 30 s (also on the desktop); and a connection attempt
+  refused on the host is checked against `adb forward --list`, because adb drops a device's
+  forwards when the device reconnects (a headset's USB link blips with its power state).
 * **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
   (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
   `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the
