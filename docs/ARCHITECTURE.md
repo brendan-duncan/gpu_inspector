@@ -160,7 +160,17 @@ much slower than on the desktop.
    staging buffer, then barriers back to the pass's final layout. This is the in-process
    equivalent of WebGPU Inspector's pass-end readback. To make it possible, `vkCreateImage` and
    `vkCreateSwapchainKHR` get `TRANSFER_SRC` added to their usage, and `vkCreateBuffer` gets
-   `TRANSFER_SRC`. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
+   `TRANSFER_SRC` (the object record keeps the application's own arguments: the generated
+   forwarders serialize what was passed before a pre-hook substituted it). An attachment with
+   storeOp DONT_CARE has undefined contents after the pass, so `vkCreateRenderPass*` also
+   creates a store-everything copy of any pass with such an attachment (`StoreAllRenderPass` in
+   `hooks.cpp`, straight through the dispatch table so it never appears as an object; store ops
+   do not take part in render pass compatibility, so the application's framebuffers and
+   pipelines work with it) and the begin pre-hooks substitute it, or rewrite a
+   `VkRenderingInfo`'s attachments, while a capture is being recorded; the post-hooks and the
+   command record see the original. The captured frame pays for the extra stores (a Quest's
+   stereo pass took 5.1 ms captured against 2.9 ms live), which the pass timings of a capture
+   include. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
    a temporary single-sampled image owned by the capture before the copy; dynamic rendering's
    resolve targets are captured too. `RecordImageCopy` in `capture.cpp` records the barriers,
    resolve and copy for every image read-back, including the live one. Depth cannot go through
@@ -519,8 +529,8 @@ with the pipeline bound for each) and notes the clear commands, the images copie
 the image views descriptor snapshots bind. The rules then flag what costs most on a tiled GPU:
 a clear command followed by a pass loading the same image, a color attachment loaded before
 the frame wrote it, a depth attachment stored that nothing can read (its usage has no sampled,
-input-attachment or storage bit; `TRANSFER_SRC` does not count, the layer adds it to every
-image for read-back), a depth attachment neither loaded nor stored without
+input-attachment or storage bit; `TRANSFER_SRC` does not count, since old captures carry the
+layer's own addition of it), a depth attachment neither loaded nor stored without
 `TRANSIENT_ATTACHMENT` usage (the severity depends on the device having a lazily allocated
 memory type, from the physical device's memory properties), a multisampled attachment stored
 although it is resolved, barriers inside a render pass or directly after another, redundant

@@ -126,6 +126,8 @@ public:
 
     void Request(const CaptureOptions& options);
     bool IsCapturing() const { return _capturing.load(std::memory_order_relaxed); }
+    /** A pass of the capture began its store-everything copy (hooks.cpp), for the finishing log. */
+    void NoteStoreAllPass() { _storeAllPasses.fetch_add(1, std::memory_order_relaxed); }
 
     // When set, every command buffer is recorded even outside captures, so buffers recorded once
     // and resubmitted every frame (vkcube, many engines) still show their contents in a capture.
@@ -215,6 +217,7 @@ private:
 
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};
+    std::atomic<uint32_t> _storeAllPasses{0};
     std::atomic<bool> _recordAlways{false};
     // Frame an armed capture waits for (UINT64_MAX when not armed or waiting for the next present),
     // checked cheaply at every vkBeginCommandBuffer so frame 0 can be captured from its first command.

@@ -105,10 +105,10 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Android: a phone build of the triangle test app (NativeActivity with a swapchain; the
       OpenXR one in `test/xr_triangle` only runs on headsets); a GLES layer for Unity's GLES
       player; lower default read-back limits for phones.
-- [ ] Render target read-back of an attachment with storeOp DONT_CARE reads undefined contents
-      (the fast XR package's transient depth buffer): the layer could rewrite DONT_CARE to STORE
-      at render pass creation while capturing, the way RenderDoc does, keeping the original ops
-      in the object record so the Frame Issues rules still see what the application asked for.
+- [ ] Store-everything render pass copies cover `vkCmdBeginRenderPass*` and dynamic rendering
+      recorded during the capture; command buffers pre-recorded before it (Dawn-style, "Record
+      all command buffers") still run the application's DONT_CARE ops. Stencil store ops are
+      left alone (no stencil read-back yet).
 - [ ] Frame Issues rules to add: attachments larger than the render area, render passes that
       could be subpasses (a pass whose only input is the previous pass's output), MSAA without a
       resolve (the storeOp STORE of a sampled multisampled image), full-pipeline barriers

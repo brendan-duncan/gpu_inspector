@@ -75,6 +75,10 @@ struct RenderPassInfo {
     std::vector<int32_t> subpassDepth;  // -1 if none
     // Multiview: the layers the pass renders (the highest view bit + 1 over its subpasses), 0 without.
     uint32_t viewLayers = 0;
+    // The layer's copy of the pass with every storeOp STORE, begun in place of the original
+    // while capturing so DONT_CARE attachments can be read back (VK_NULL_HANDLE when the pass
+    // stores everything anyway). See StoreAllRenderPass in hooks.cpp.
+    VkRenderPass storeAll = VK_NULL_HANDLE;
 };
 
 class ResourceRegistry {

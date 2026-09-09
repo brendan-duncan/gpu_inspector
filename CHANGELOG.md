@@ -22,6 +22,12 @@
 - Sampled image read-back of every mip level.
 - Launch dialog: the Package field filters the device's packages.
 
+- Render targets with storeOp DONT_CARE read back correctly: while capturing, a render pass
+  runs as a store-everything copy (dynamic rendering gets its attachments rewritten). Object
+  records and captured commands keep the application's own arguments, without the layer's
+  usage additions.
+- The desktop triangle test app no longer stores its depth buffer.
+
 ### Fixed
 - Android launch on a Quest reported the successful `am start` output as an error.
 - Android launches could stay at "connecting" until Relaunch, or connect to an application

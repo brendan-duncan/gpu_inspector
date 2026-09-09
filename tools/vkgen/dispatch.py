@@ -70,6 +70,8 @@ EXTRA_HOOKS = {
     "vkCreateRenderPass2KHR",
     "vkCreateSwapchainKHR",
     "vkGetSwapchainImagesKHR",
+    # the layer's store-everything copy of a render pass dies with the original
+    "vkDestroyRenderPass",
     # frame capture
     "vkEndCommandBuffer",
     "vkFreeCommandBuffers",
@@ -312,8 +314,14 @@ def emit_entry_cpp(reg, cmds, out):
         destroys = destroyed_handles(reg, c)
         reset = RESET_COMMANDS.get(c.name)
 
+        # A pre-hook may substitute arguments (usage flags, a replacement pipeline, a render pass
+        # copy); the object record and the captured command keep what the application passed.
+        record_args = args
         if c.name in PRE_HOOKS:
+            for p in c.params:
+                body.append(f"    auto vkinsp_orig_{p.name} = {p.name};")
             body.append(f"    PreHook_{c.name}({args});")
+            record_args = ", ".join(f"vkinsp_orig_{p.name}" for p in c.params)
 
         # Destroy hooks run before the downstream call, while the handle is still valid.
         for p in destroys:
@@ -335,7 +343,7 @@ def emit_entry_cpp(reg, cmds, out):
         if first.type == "VkCommandBuffer":
             body.append(f"    if (CommandRecorder* rec = vkinsp_dev->RecorderFor({first.name})) {{")
             body.append(f"        JsonWriter& w = rec->Begin(VkCmdId::{short(c.name)});")
-            body.append(f"        ArgsToJson_{c.name}(w, {args});")
+            body.append(f"        ArgsToJson_{c.name}(w, {record_args});")
             body.append(f"        rec->End(w, {'(int64_t)result' if has_result else '0'});")
             body.append("    }")
 
@@ -344,7 +352,7 @@ def emit_entry_cpp(reg, cmds, out):
             body.append(cond)
             body.append("        Tracker& t = Tracker::Get();")
             body.append("        JsonWriter& w = t.BeginArgs();")
-            body.append(f"        ArgsToJson_{c.name}(w, {args});")
+            body.append(f"        ArgsToJson_{c.name}(w, {record_args});")
             parent = CREATE_PARENTS.get(c.name, (first.type, first.name))
             pexpr = f"HT_{parent[0]}, (uint64_t)(uintptr_t)({parent[1]})"
             for p in creates:

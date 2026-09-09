@@ -198,6 +198,7 @@ void CaptureManager::Finish(DeviceData* dev) {
     Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers (%llu KB)",
         _submissions.size(), (unsigned long long)_commandTotal, _textures.size(), _buffers.size(),
         (unsigned long long)(_bufferBytes >> 10));
+    if (uint32_t n = _storeAllPasses.exchange(0, std::memory_order_relaxed)) Log("capture: %u render passes ran with their DONT_CARE store ops forced to STORE, so those attachments read back", n);
 
     // Everything recorded in the frame has been submitted; wait for it so staging data is valid.
     dev->dispatch.DeviceWaitIdle(dev->device);

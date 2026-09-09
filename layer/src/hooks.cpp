@@ -82,17 +82,90 @@ static void BeforePass(VkCommandBuffer commandBuffer) {
     DeviceData* dev = GetDeviceData(commandBuffer);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec);
 }
+
+// Store ops while capturing: an attachment with storeOp DONT_CARE has undefined contents after
+// the pass (a tiled GPU never writes it back), so the capture's read-back of it would show
+// garbage. While a capture is being recorded, a render pass begins its store-everything copy
+// instead (StoreAllRenderPass: compatible with the application's framebuffers and pipelines,
+// since store ops do not take part in render pass compatibility), and dynamic rendering gets
+// its attachment infos rewritten. The record keeps what the application passed (the generated
+// forwarders serialize the original arguments), and the post-hooks map the copy back.
+static bool RecordingCapture(VkCommandBuffer cb) {
+    DeviceData* dev = GetDeviceData(cb);
+    return dev && dev->RecorderFor(cb) && CaptureManager::Get().IsCapturing();
+}
+
+static thread_local const VkRenderPassBeginInfo* t_beginOriginal = nullptr;
+static thread_local VkRenderPassBeginInfo t_beginCopy;
+
+static const VkRenderPassBeginInfo* StoreAllBegin(VkCommandBuffer cb, const VkRenderPassBeginInfo* info) {
+    t_beginOriginal = nullptr;
+    if (!info || !RecordingCapture(cb)) return info;
+    RenderPassInfo rp;
+    if (!ResourceRegistry::Get().GetRenderPass(info->renderPass, rp) || !rp.storeAll) return info;
+    t_beginCopy = *info;
+    t_beginCopy.renderPass = rp.storeAll;
+    t_beginOriginal = info;
+    CaptureManager::Get().NoteStoreAllPass();
+    return &t_beginCopy;
+}
+
+/** The application's begin info when the pre-hook substituted the copy. */
+static const VkRenderPassBeginInfo* OriginalBegin(const VkRenderPassBeginInfo* info) {
+    return info == &t_beginCopy && t_beginOriginal ? t_beginOriginal : info;
+}
+
+static thread_local const VkRenderingInfo* t_renderingOriginal = nullptr;
+static thread_local VkRenderingInfo t_renderingCopy;
+static thread_local std::vector<VkRenderingAttachmentInfo> t_renderingColors;
+static thread_local VkRenderingAttachmentInfo t_renderingDepth, t_renderingStencil;
+
+static const VkRenderingInfo* StoreAllRendering(VkCommandBuffer cb, const VkRenderingInfo* info) {
+    t_renderingOriginal = nullptr;
+    if (!info || !RecordingCapture(cb)) return info;
+    bool needed = false;
+    for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) needed |= info->pColorAttachments[i].storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    if (info->pDepthAttachment) needed |= info->pDepthAttachment->storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    if (info->pStencilAttachment) needed |= info->pStencilAttachment->storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    if (!needed) return info;
+    t_renderingCopy = *info;
+    t_renderingColors.assign(info->pColorAttachments, info->pColorAttachments + info->colorAttachmentCount);
+    for (auto& a : t_renderingColors) if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    t_renderingCopy.pColorAttachments = t_renderingColors.data();
+    if (info->pDepthAttachment) {
+        t_renderingDepth = *info->pDepthAttachment;
+        if (t_renderingDepth.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) t_renderingDepth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        t_renderingCopy.pDepthAttachment = &t_renderingDepth;
+    }
+    if (info->pStencilAttachment) {
+        t_renderingStencil = *info->pStencilAttachment;
+        if (t_renderingStencil.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) t_renderingStencil.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        t_renderingCopy.pStencilAttachment = &t_renderingStencil;
+    }
+    t_renderingOriginal = info;
+    CaptureManager::Get().NoteStoreAllPass();
+    return &t_renderingCopy;
+}
+
+static const VkRenderingInfo* OriginalRendering(const VkRenderingInfo* info) {
+    return info == &t_renderingCopy && t_renderingOriginal ? t_renderingOriginal : info;
+}
+
 void PreHook_vkCmdBeginRenderPass(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, VkSubpassContents& contents) {
     BeforePass(commandBuffer);
+    pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
     BeforePass(commandBuffer);
+    pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
     BeforePass(commandBuffer);
+    pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
     BeforePass(commandBuffer);
+    pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
 // Compute pass timing: a dispatch outside a render pass opens a compute pass; barriers, event
 // waits, debug labels, secondary execution and the end of the buffer close it (all before the
@@ -130,6 +203,7 @@ void PreHook_vkCmdDebugMarkerEndEXT(VkCommandBuffer& commandBuffer) { EndCompute
 
 void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
     BeforePass(commandBuffer);
+    pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
 
 // CPU submit time: the wall-clock time the application spends inside vkQueueSubmit*, accumulated
@@ -211,10 +285,49 @@ static uint32_t ViewMaskLayers(uint32_t viewMask) {
     return layers;
 }
 
+// The store-everything copy of a render pass (see the store-op notes above the begin pre-hooks):
+// the same create info with every storeOp DONT_CARE turned into STORE, created straight through
+// the dispatch table so it stays out of the object list. VK_NULL_HANDLE when nothing to change.
+static VkRenderPass StoreAllRenderPass(VkDevice device, const VkRenderPassCreateInfo* ci) {
+    std::vector<VkAttachmentDescription> atts(ci->pAttachments, ci->pAttachments + ci->attachmentCount);
+    bool needed = false;
+    for (auto& a : atts) if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) { a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; needed = true; }
+    DeviceData* dev = GetDeviceData(device);
+    if (!needed || !dev || !dev->dispatch.CreateRenderPass) return VK_NULL_HANDLE;
+    VkRenderPassCreateInfo copy = *ci;
+    copy.pAttachments = atts.data();
+    VkRenderPass rp = VK_NULL_HANDLE;
+    return dev->dispatch.CreateRenderPass(device, &copy, nullptr, &rp) == VK_SUCCESS ? rp : VK_NULL_HANDLE;
+}
+
+static VkRenderPass StoreAllRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* ci) {
+    std::vector<VkAttachmentDescription2> atts(ci->pAttachments, ci->pAttachments + ci->attachmentCount);
+    bool needed = false;
+    for (auto& a : atts) if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) { a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; needed = true; }
+    DeviceData* dev = GetDeviceData(device);
+    if (!needed || !dev) return VK_NULL_HANDLE;
+    PFN_vkCreateRenderPass2 create = dev->dispatch.CreateRenderPass2 ? dev->dispatch.CreateRenderPass2 : dev->dispatch.CreateRenderPass2KHR;
+    if (!create) return VK_NULL_HANDLE;
+    VkRenderPassCreateInfo2 copy = *ci;
+    copy.pAttachments = atts.data();
+    VkRenderPass rp = VK_NULL_HANDLE;
+    return create(device, &copy, nullptr, &rp) == VK_SUCCESS ? rp : VK_NULL_HANDLE;
+}
+
+void Hook_vkDestroyRenderPass(VkDevice device, VkRenderPass renderPass, const VkAllocationCallbacks* pAllocator) {
+    RenderPassInfo info;
+    if (!renderPass || !ResourceRegistry::Get().GetRenderPass(renderPass, info) || !info.storeAll) return;
+    DeviceData* dev = GetDeviceData(device);
+    if (dev && dev->dispatch.DestroyRenderPass) dev->dispatch.DestroyRenderPass(device, info.storeAll, nullptr);
+    info.storeAll = VK_NULL_HANDLE;
+    ResourceRegistry::Get().AddRenderPass(renderPass, info);
+}
+
 void Hook_vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* pCreateInfo,
                              const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass) {
     if (!pCreateInfo || !pRenderPass || !*pRenderPass) return;
     RenderPassInfo info;
+    info.storeAll = StoreAllRenderPass(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription& a = pCreateInfo->pAttachments[i];
         info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp});
@@ -239,6 +352,7 @@ void Hook_vkCreateRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* pC
                               const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass) {
     if (!pCreateInfo || !pRenderPass || !*pRenderPass) return;
     RenderPassInfo info;
+    info.storeAll = StoreAllRenderPass2(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription2& a = pCreateInfo->pAttachments[i];
         info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp});
@@ -638,6 +752,7 @@ void Hook_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitI
 void Hook_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                VkSubpassContents contents) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    pRenderPassBegin = OriginalBegin(pRenderPassBegin);
     NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
 }
@@ -645,6 +760,7 @@ void Hook_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPass
 void Hook_vkCmdBeginRenderPass2(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                 const VkSubpassBeginInfo* pSubpassBeginInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    pRenderPassBegin = OriginalBegin(pRenderPassBegin);
     NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
 }
@@ -656,6 +772,7 @@ void Hook_vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRender
 
 void Hook_vkCmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo* pRenderingInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    pRenderingInfo = OriginalRendering(pRenderingInfo);
     NoteRenderingLayouts(commandBuffer, pRenderingInfo);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRendering(dev, rec, pRenderingInfo);
 }

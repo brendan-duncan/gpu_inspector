@@ -330,8 +330,9 @@ export class FrameAnalysis {
       }
       for (const att of pass.attachments) {
         const read = (att as AttachmentUse & { read?: boolean }).read ?? false;
-        // TRANSFER_SRC is not a sign the application reads the image: the layer adds it to every
-        // image for its own read-back. Copies in the frame are tracked separately (readImages).
+        // TRANSFER_SRC is not a sign the application reads the image: captures from before the
+        // record kept the application's arguments carry the layer's own addition of it for the
+        // read-back. Copies in the frame are tracked separately (readImages).
         const canBeRead = /SAMPLED|INPUT_ATTACHMENT|STORAGE/.test(att.usage);
         if (att.kind === "depth") {
           const stored = att.storeOp === "STORE" || (att.format.includes("S8") && att.stencilStoreOp === "STORE");
