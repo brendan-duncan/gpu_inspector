@@ -164,6 +164,21 @@ export class SessionPanel extends Div implements SessionContext {
     return this.info.name;
   }
 
+  /** What the UI tests read through --debug-dump (tools/ui_tests.py). */
+  debugState(): Record<string, unknown> {
+    const db = this.database;
+    const linked = db.validation.filter((v) => !!v.command).length;
+    return {
+      name: this.info.name, state: this.info.state, detail: this.info.detail, pid: this.info.pid,
+      objects: db.allObjects.size, validation: db.validation.length, validationLinked: linked,
+      validationErrors: db.validation.filter((v) => v.severity === "error").length,
+      frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
+      symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
+      captures: this.capturePanel.debugState(),
+      log: this.info.log.slice(-40),
+    };
+  }
+
   get symbolDirs(): string[] {
     return (this.info.config?.symbolDirs ?? "").split(";").map((d) => d.trim()).filter(Boolean);
   }

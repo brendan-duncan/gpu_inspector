@@ -135,5 +135,6 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Claude Code plugin / MCP server over saved `.gpucap` files (the format is in
       `app/src/renderer/capture_file.ts`; the parser has no DOM dependency and can move to a
       shared module).
-- [ ] Automated screenshot tests of the panels against the triangle app and the Unity player.
+- [ ] UI tests: cases for the Unity player and Android devices when attached (the saved-capture
+      mode covers their captures), image comparison of the screenshots against references.
 - [ ] Help links to docs from the panels.

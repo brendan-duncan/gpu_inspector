@@ -117,6 +117,10 @@ export class InspectorWindow extends Window {
       if (this._captureParam) void this.openCaptureFile(this._captureParam, { recent: !this._tempCapture });
       if (this._mode === "main") {
         if (cfg.debug?.expandStacks) setDebugExpandStacks(true);
+        // --debug-dump: the main process reads this at screenshot time (tools/ui_tests.py).
+        (window as unknown as { __inspectorDebugState?: () => unknown }).__inspectorDebugState = () => ({
+          sessions: [...this._sessions.values()].map((s) => s.debugState()),
+        });
         if (cfg.debug?.launchDialog) {
           // "android" or "android:<package text>" (the text prefilled, to check the filter).
           const [target, text] = cfg.debug.launchDialog.split(":", 2);

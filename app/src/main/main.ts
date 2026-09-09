@@ -1374,6 +1374,17 @@ void app.whenReady().then(() => {
           mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0] + 2, y: mouse[1] + 2 });
           await new Promise((r) => setTimeout(r, 400));
         }
+        // Testing aid: --debug-dump=<json> writes what the renderer knows (sessions, captures,
+        // findings, validation) for tools/ui_tests.py to check.
+        const dump = cliOption("debug-dump");
+        if (dump && mainWin) {
+          try {
+            const state = await mainWin.webContents.executeJavaScript("window.__inspectorDebugState ? window.__inspectorDebugState() : null");
+            fs.writeFileSync(dump, JSON.stringify(state, null, 1));
+          } catch (e) {
+            fs.writeFileSync(dump, JSON.stringify({ error: String(e) }));
+          }
+        }
         await writeScreenshots(shot);
         if (cliFlag("quit-after-screenshot")) {
           killAllTargets();

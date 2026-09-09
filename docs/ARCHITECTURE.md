@@ -696,7 +696,15 @@ captures a frame automatically and writes a screenshot (one per window), and
 `--debug-detach` exercise relaunching, two simultaneous sessions and a session window;
 `--debug-log=<file>` mirrors the session log to a file, the layer log to `<file>.layer.log` and any
 malformed layer message to `<file>.badjson`; `--debug-launch-dialog[=android]` opens the launch
-dialog at startup; `--launch-android=<package> --device=<serial>` launches on an Android device. `python tools/inspector_client.py --capture
+dialog at startup; `--launch-android=<package> --device=<serial>` launches on an Android device;
+`--debug-dump=<json>` writes what the renderer knows at screenshot time (each session's state,
+object and validation counts, refresh source, frame boundary, symbols, and per capture the
+command, draw, pass, texture and buffer counts, the frame findings and the commands carrying
+stacks or validation messages: `debugState()` on the session and capture views, read through
+`window.__inspectorDebugState`). `tools/ui_tests.py` builds its cases on these flags: the
+triangle application's options (plain, `--msaa`, `--offscreen`, `--bad-scissor` with the
+validation layer, `--hazard` with sync validation, stacks) and saved captures with expected
+findings, each a UI run whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 
 Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):

@@ -198,6 +198,16 @@ Shader editing works as on the desktop: the shaders are compiled on this machine
 SDK's compilers and sent to the device. Expect the captured frame to take noticeably longer on a
 tiled mobile GPU, since every render target is read back at the end of its pass.
 
+## Testing
+
+`python tools/ui_tests.py` runs the UI end to end against the built triangle application: a
+plain capture, MSAA, frames without a present, a validation error and a synchronization hazard
+linked to their commands, and stack traces with source lines. Each case starts the app through
+the inspector, captures a frame, and checks what the renderer reports (`--debug-dump`) and the
+layer's log. `--captures <dir>` also opens every `.gpucap` in a directory, checking a
+`<name>.expect.json` next to it (`{"findings": {"rule": count}}`) when there is one. The
+renderer's unit tests run with `npm test` in `app/`.
+
 ## Troubleshooting
 
 **"layer not found" when launching.** The app looks for `VK_LAYER_INSPECTOR_capture.json` in

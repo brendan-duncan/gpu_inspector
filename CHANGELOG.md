@@ -22,6 +22,9 @@
 - Shader cost per source line, clickable into the Source view; line frames in the flame graph.
 - Sampled image read-back of every mip level.
 - Launch dialog: the Package field filters the device's packages.
+- `tools/ui_tests.py`: end-to-end checks of the UI against the triangle application (capture,
+  MSAA, present-less frames, validation and hazard links, stack traces) and saved captures
+  with expected findings, through the new `--debug-dump` testing aid.
 - Phone test application (`test/android_triangle`, `tools/build_android_triangle.py`): a
   debuggable NativeActivity rendering a ring of triangles into a swapchain, for the Android
   path without a third-party app.

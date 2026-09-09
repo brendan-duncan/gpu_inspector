@@ -30,7 +30,7 @@ import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
-import { COMPUTE_PASS_END, DISPATCH_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
+import { COMPUTE_PASS_END, DISPATCH_METHODS, DRAW_METHODS, LABEL_BEGIN, LABEL_END, PASS_BEGIN, PASS_END, SUBMIT_METHODS, bindPointOf, isAction } from "./vulkan/command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
@@ -82,6 +82,11 @@ export class CapturePanel {
   }
 
   /** The capture shown in the active tab. */
+  /** The UI tests' view of every capture tab (tools/ui_tests.py). */
+  debugState(): Record<string, unknown>[] {
+    return this._views.map((v) => v.debugState());
+  }
+
   get activeView(): CaptureView | null {
     const index = this._tabs.activeTab;
     return index >= 0 ? this._views[index] ?? null : null;
@@ -707,6 +712,24 @@ export class CaptureView implements CaptureHost {
     };
     this._rows.push(row);
     return row;
+  }
+
+  /** What the UI tests read through --debug-dump (tools/ui_tests.py): the capture in numbers. */
+  debugState(): Record<string, unknown> {
+    const db = this.window.database;
+    const d = this.data;
+    const draws = d.commands.filter((c) => DRAW_METHODS.has(c.method) || DISPATCH_METHODS.has(c.method)).length;
+    const passes = d.commands.filter((c) => PASS_BEGIN.has(c.method)).length;
+    if (!this._analysis && d.commands.length) this._analysis = analyzeFrame(d, db);
+    return {
+      status: this.status, frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
+      textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
+      texturesLoaded: d.textures.filter((t) => !!t.data).length,
+      buffers: d.buffers.size, passTimings: d.passTimings.size,
+      findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
+      commandsWithStacks: d.commands.filter((c) => c.stack && c.stack.length).length,
+      commandsWithValidation: d.commands.filter((c) => db.validationForCommand(c.secondary ?? c.object?.__id, c.slot).length).length,
+    };
   }
 
   /** The frame analysis findings that apply to a command (see vulkan/frame_analysis.ts). */
