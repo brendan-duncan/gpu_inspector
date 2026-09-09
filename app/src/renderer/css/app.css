@@ -667,6 +667,10 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 
 /* Validation marker on a captured command's row (after the call number). */
 .capture_validation_mark { flex: 0 0 auto; }
+.capture_finding_mark { flex: 0 0 auto; font-size: 10px; margin-right: 2px; }
+.perf-mark-high { color: var(--accent-error); }
+.perf-mark-medium { color: var(--accent-warning); }
+.perf-mark-low, .perf-mark-info { color: var(--accent-info); }
 .capture_command_validation > .capture_methodName { text-decoration: underline dotted; text-underline-offset: 3px; }
 
 /* Stack traces (object details, captured command details). */

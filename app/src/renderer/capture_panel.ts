@@ -24,7 +24,8 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { pipelineStages, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
-import { analyzeFrame } from "./vulkan/frame_analysis.js";
+import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
+import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
@@ -40,6 +41,8 @@ interface CommandRow extends Widget {
   command: CaptureCommand;
   /** The validation marker, once the command has messages. */
   validationMark?: Span;
+  /** The frame analysis marker, when a finding applies to the command. */
+  findingMark?: Span;
   /** Lower-case text the command list filter matches against (method and argument summary). */
   filterText: string;
 }
@@ -308,6 +311,8 @@ export class CaptureView implements CaptureHost {
   private _filterInput: TextInput;
   private _filter = "";
   private _rows: CommandRow[] = [];
+  /** The frame analysis of the current commands (Frame Issues and the row markers). */
+  _analysis: { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } | null = null;
   private _validationListener: (entry: ValidationEntry) => void;
   private _timeline: TimelineWidget;
   private _profile: boolean;
@@ -471,6 +476,7 @@ export class CaptureView implements CaptureHost {
     this._infoPanel.html = "";
     this._selectedRow = null;
     this._rows = [];
+    this._analysis = analyzeFrame(this.data, this.window.database);
     this._passBlocks.clear();
     this._textureCanvases.clear();
     this._drawCount = 0;
@@ -692,6 +698,7 @@ export class CaptureView implements CaptureHost {
     row.filterText = `${cmd.method} ${summary}`.toLowerCase();
     new Span(row, { text: `${cmd.index}`, class: "capture_callnum" });
     this._markValidation(row);
+    this._markFindings(row);
     new Span(row, { text: cmd.method.replace(/^vk(Cmd)?/, ""), class: "capture_methodName" });
     new Span(row, { text: summary, class: "capture_method_args" });
     row.element.onclick = (e: MouseEvent) => {
@@ -700,6 +707,22 @@ export class CaptureView implements CaptureHost {
     };
     this._rows.push(row);
     return row;
+  }
+
+  /** The frame analysis findings that apply to a command (see vulkan/frame_analysis.ts). */
+  frameFindings(cmd: CaptureCommand): FrameFinding[] {
+    return this._analysis?.byCommand.get(cmd.index) ?? [];
+  }
+
+  /** Marks a row whose command a frame analysis finding applies to (a flag after the call number). */
+  private _markFindings(row: CommandRow): void {
+    const findings = this.frameFindings(row.command);
+    if (!findings.length || row.findingMark) return;
+    const worst = findings.reduce((w, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), findings[0].severity);
+    const mark = new Span(null, { text: "\u2691", class: `capture_finding_mark perf-mark perf-mark-${worst}` });
+    mark.tooltip = findings.map((f) => `${f.severity}: ${f.rule}`).join("\n");
+    row.element.insertBefore(mark.element, row.element.children[1] ?? null);
+    row.findingMark = mark;
   }
 
   /** Marks a row whose command raised validation messages (the marker sits after the call number). */
@@ -887,8 +910,14 @@ export class CaptureView implements CaptureHost {
       return;
     }
     const db = this.window.database;
+    if (!this._analysis) this._analysis = analyzeFrame(this.data, db);
     renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
-      { findings: analyzeFrame(this.data, db), onJump: (index) => this.selectCommand(index) });
+      { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) });
+  }
+
+  /** Shows the Frame Stats view (the Frame Issues card) in the details pane. */
+  showFrameStats(): void {
+    this._showStats();
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */

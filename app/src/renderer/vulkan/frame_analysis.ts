@@ -10,9 +10,16 @@
 //   msaa-store              a multisampled attachment stored although it is resolved
 //   stereo-without-multiview  two passes with the same draws to same-sized targets (one per eye)
 //   redundant-pipeline-bind  binding the pipeline that is already bound
+//   redundant-descriptor-bind  binding descriptor sets that are already bound (same offsets)
+//   redundant-buffer-bind   binding the vertex or index buffers that are already bound
+//   push-constants-unchanged  pushing the bytes that are already in the range
+//   barrier-adjacent        a barrier right after another, nothing between them
+//   barrier-in-render-pass  a pipeline barrier inside a render pass (breaks the tile pass)
+//   single-workgroup-dispatch  a dispatch of one workgroup
 //   tiny-draws              many draws of a handful of vertices
 //
-// Every finding names the command it is about so the UI can jump to it.
+// Every finding names the command it is about so the UI can jump to it (findings per command
+// through byCommand()).
 import { DRAW_METHODS, PASS_BEGIN, PASS_END } from "./command_sets.js";
 import { isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./spirv_analysis.js";
@@ -72,7 +79,29 @@ interface PassInfo {
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
 
-const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "color-load", "tiny-draws", "redundant-pipeline-bind", "depth-transient"];
+const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "barrier-in-render-pass", "color-load", "tiny-draws",
+  "redundant-pipeline-bind", "redundant-descriptor-bind", "redundant-buffer-bind", "push-constants-unchanged", "barrier-adjacent", "single-workgroup-dispatch", "depth-transient"];
+const BARRIER_METHODS = new Set(["vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR"]);
+
+/** A stable text for an argument value (handles by id), to compare successive binds. */
+function argKey(v: ArgValue | undefined): string {
+  if (isHandleRef(v)) return `#${v.__id}`;
+  if (Array.isArray(v)) return `[${v.map(argKey).join(",")}]`;
+  if (isObject(v)) return `{${Object.entries(v).map(([k, e]) => `${k}:${argKey(e)}`).join(",")}}`;
+  return str(v);
+}
+
+/** One finding per rule with the commands it applies to folded in: the first command is named, the rest counted. */
+class Folded {
+  first: CaptureCommand | null = null;
+  count = 0;
+  commands: CaptureCommand[] = [];
+  add(cmd: CaptureCommand): void {
+    if (!this.first) this.first = cmd;
+    this.count++;
+    if (this.commands.length < 64) this.commands.push(cmd);
+  }
+}
 
 function op(v: ArgValue | undefined): string {
   return str(v).replace("VK_ATTACHMENT_LOAD_OP_", "").replace("VK_ATTACHMENT_STORE_OP_", "");
@@ -104,6 +133,13 @@ export class FrameAnalysis {
   private _db: FrameAnalysisDatabase;
   private _passes: PassInfo[] = [];
   private _lazyMemory = false;
+  /** Every command a finding applies to (folded findings list all of theirs), by command index. */
+  private _byCommand = new Map<number, FrameFinding[]>();
+
+  /** The findings that apply to a command (a folded finding counts for each of its commands). */
+  byCommand(): Map<number, FrameFinding[]> {
+    return this._byCommand;
+  }
 
   constructor(db: FrameAnalysisDatabase) {
     this._db = db;
@@ -118,6 +154,7 @@ export class FrameAnalysis {
   analyze(data: CaptureData): FrameFinding[] {
     this.findings = [];
     this._passes = [];
+    this._byCommand = new Map();
     this._walk(data.commands);
     this._passRules();
     this._stereoRule();
@@ -136,11 +173,19 @@ export class FrameAnalysis {
     const loadedImages = new Set<number>();              // images a pass loaded (read as attachments)
     const lastWrite = new Map<number, number>();         // image id -> index of the last pass that rendered to it
     let lastPass: PassInfo | null = null;
-    let redundantBinds = 0;
-    let firstRedundantBind: CaptureCommand | null = null;
-    let tinyDraws = 0;
-    let firstTinyDraw: CaptureCommand | null = null;
+    const redundantBinds = new Folded();
+    const redundantSets = new Folded();
+    const redundantBuffers = new Folded();
+    const unchangedPush = new Folded();
+    const adjacentBarriers = new Folded();
+    const passBarriers = new Folded();
+    const singleDispatches = new Folded();
+    const tinyDraws = new Folded();
     let draws = 0;
+    const boundSets = new Map<string, string>();         // "cb:bindPoint:set" -> set id + dynamic offsets
+    const boundBuffers = new Map<string, string>();      // "cb:v<binding>" / "cb:index" -> buffer, offset (and size, stride, type)
+    const pushed = new Map<string, string>();            // "cb:offset:size" -> the bytes last pushed there
+    const previous = new Map<number, string>();          // cb -> the method recorded just before
 
     for (const cmd of commands) {
       const method = cmd.method;
@@ -184,11 +229,56 @@ export class FrameAnalysis {
       } else if (method === "vkCmdBindPipeline" && a) {
         const key = `${cb}:${str(a.pipelineBindPoint)}`;
         const id = refId(a.pipeline) ?? 0;
-        if (boundPipeline.get(key) === id) {
-          redundantBinds++;
-          if (!firstRedundantBind) firstRedundantBind = cmd;
-        }
+        if (boundPipeline.get(key) === id) redundantBinds.add(cmd);
         boundPipeline.set(key, id);
+      } else if ((method === "vkCmdBindDescriptorSets" || method === "vkCmdBindDescriptorSets2" || method === "vkCmdBindDescriptorSets2KHR") && a) {
+        const info = isObject(a.pBindDescriptorSetsInfo) ? a.pBindDescriptorSetsInfo : a;
+        const sets = Array.isArray(info.pDescriptorSets) ? info.pDescriptorSets : [];
+        const offsets = Array.isArray(info.pDynamicOffsets) ? info.pDynamicOffsets.map(str) : [];
+        const first = num(info.firstSet);
+        const bindPoint = str(info.pipelineBindPoint ?? info.stageFlags);
+        let same = sets.length > 0;
+        let offsetAt = 0;
+        sets.forEach((set, i) => {
+          // The dynamic offsets belong to the sets in order; without the layouts the split is
+          // unknown, so the whole list is attached to the last set and compared as one.
+          const own = i === sets.length - 1 ? offsets.slice(offsetAt).join(",") : "";
+          const value = `${argKey(set)}|${own}`;
+          const key = `${cb}:${bindPoint}:${first + i}`;
+          if (boundSets.get(key) !== value) same = false;
+          boundSets.set(key, value);
+        });
+        offsetAt = offsets.length;
+        if (same) redundantSets.add(cmd);
+      } else if ((method === "vkCmdBindVertexBuffers" || method === "vkCmdBindVertexBuffers2" || method === "vkCmdBindVertexBuffers2EXT") && a) {
+        const buffers = Array.isArray(a.pBuffers) ? a.pBuffers : [];
+        const field = (name: string, i: number): string => (Array.isArray(a[name]) ? str(a[name][i]) : "");
+        let same = buffers.length > 0;
+        buffers.forEach((b, i) => {
+          const key = `${cb}:v${num(a.firstBinding) + i}`;
+          const value = `${argKey(b)}|${field("pOffsets", i)}|${field("pSizes", i)}|${field("pStrides", i)}`;
+          if (boundBuffers.get(key) !== value) same = false;
+          boundBuffers.set(key, value);
+        });
+        if (same) redundantBuffers.add(cmd);
+      } else if ((method === "vkCmdBindIndexBuffer" || method === "vkCmdBindIndexBuffer2" || method === "vkCmdBindIndexBuffer2KHR") && a) {
+        const key = `${cb}:index`;
+        const value = `${argKey(a.buffer)}|${str(a.offset)}|${str(a.size)}|${str(a.indexType)}`;
+        if (boundBuffers.get(key) === value) redundantBuffers.add(cmd);
+        boundBuffers.set(key, value);
+      } else if ((method === "vkCmdPushConstants" || method === "vkCmdPushConstants2" || method === "vkCmdPushConstants2KHR") && a) {
+        const info = isObject(a.pPushConstantsInfo) ? a.pPushConstantsInfo : a;
+        const bytes = isObject(info.pValues) ? str(info.pValues.base64) : "";
+        if (bytes) {
+          const key = `${cb}:${argKey(info.layout)}:${str(info.stageFlags)}:${num(info.offset)}:${num(info.size)}`;
+          if (pushed.get(key) === bytes) unchangedPush.add(cmd);
+          pushed.set(key, bytes);
+        }
+      } else if (BARRIER_METHODS.has(method)) {
+        if (BARRIER_METHODS.has(previous.get(cb) ?? "")) adjacentBarriers.add(cmd);
+        if (open.has(cb)) passBarriers.add(cmd);
+      } else if ((method === "vkCmdDispatch" || method === "vkCmdDispatchBase" || method === "vkCmdDispatchBaseKHR") && a) {
+        if (num(a.groupCountX) * num(a.groupCountY) * num(a.groupCountZ) === 1) singleDispatches.add(cmd);
       } else if (DRAW_METHODS.has(method)) {
         draws++;
         const pass = open.get(cb) ?? lastPass;
@@ -199,10 +289,7 @@ export class FrameAnalysis {
           pass.draws++;
           pass.drawSignature.push(`${pipeline}:${vertices}`);
         }
-        if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES) {
-          tinyDraws++;
-          if (!firstTinyDraw) firstTinyDraw = cmd;
-        }
+        if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES) tinyDraws.add(cmd);
       } else if (a) {
         // Copies, blits and resolves read their source image.
         for (const key of ["srcImage", "pCopyImageInfo", "pBlitImageInfo", "pResolveImageInfo", "pCopyImageToBufferInfo"]) {
@@ -211,6 +298,8 @@ export class FrameAnalysis {
           if (id !== null) readImages.add(id);
         }
       }
+      // Commands that record nothing (labels) do not separate two barriers.
+      if (!method.includes("DebugUtilsLabel") && !method.includes("DebugMarker")) previous.set(cb, method);
     }
 
     for (const pass of this._passes) {
@@ -220,12 +309,15 @@ export class FrameAnalysis {
         (att as AttachmentUse & { read?: boolean }).read = readImages.has(att.imageId) || loadedImages.has(att.imageId);
       }
     }
-    if (redundantBinds && firstRedundantBind) {
-      this._add("redundant-pipeline-bind", "low", "high", `vkCmdBindPipeline binds the pipeline that is already bound ${redundantBinds === 1 ? "once" : `${redundantBinds} times`}. Drivers do not always skip the redundant bind; binding once per pipeline change is free.`, firstRedundantBind, redundantBinds);
-    }
-    if (tinyDraws >= TINY_DRAW_COUNT && firstTinyDraw) {
-      this._add("tiny-draws", "medium", "medium", `${tinyDraws} of ${draws} draws render at most ${TINY_DRAW_VERTICES} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, firstTinyDraw, tinyDraws);
-    }
+    const times = (f: Folded): string => (f.count === 1 ? "once" : `${f.count} times`);
+    if (redundantBinds.count) this._addFolded("redundant-pipeline-bind", "low", "high", `vkCmdBindPipeline binds the pipeline that is already bound ${times(redundantBinds)}. Drivers do not always skip the redundant bind; binding once per pipeline change is free.`, redundantBinds);
+    if (redundantSets.count) this._addFolded("redundant-descriptor-bind", "low", "high", `vkCmdBindDescriptorSets binds the descriptor sets already bound at those set numbers, with the same dynamic offsets, ${times(redundantSets)}. Binding once per change saves the command and the driver's descriptor work.`, redundantSets);
+    if (redundantBuffers.count) this._addFolded("redundant-buffer-bind", "low", "high", `The vertex or index buffers already bound (same buffers, offsets and sizes) are bound again ${times(redundantBuffers)}.`, redundantBuffers);
+    if (unchangedPush.count) this._addFolded("push-constants-unchanged", "low", "high", `vkCmdPushConstants pushes the bytes that range already holds ${times(unchangedPush)}. Pushing only what changed saves the command and the constant update.`, unchangedPush);
+    if (adjacentBarriers.count) this._addFolded("barrier-adjacent", "low", "medium", `A pipeline barrier directly follows another ${times(adjacentBarriers)}: nothing is recorded between them, so one barrier carrying both sets of transitions and stage masks would do, and each barrier can drain the pipeline.`, adjacentBarriers);
+    if (passBarriers.count) this._addFolded("barrier-in-render-pass", "medium", "medium", `A pipeline barrier is recorded inside a render pass ${times(passBarriers)}. On a tiled GPU a barrier inside a pass forces the tiles to be flushed and reloaded; move the dependency to a subpass dependency or before the pass.`, passBarriers);
+    if (singleDispatches.count) this._addFolded("single-workgroup-dispatch", "low", "medium", `vkCmdDispatch launches a single workgroup ${times(singleDispatches)}: most of the GPU idles during it. Larger dispatches, or a dispatch that folds the work of several small ones, use the machine.`, singleDispatches);
+    if (tinyDraws.count >= TINY_DRAW_COUNT) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
   }
 
   // ---------------------------------------------------------------------------- per-pass rules
@@ -277,7 +369,8 @@ export class FrameAnalysis {
       if (targets.size < 2) continue;
       const first = g[0];
       const pairs = g.length === 2 ? `${this._passName(g[0])} and ${this._passName(g[1])}` : `${g.length} passes starting with ${this._passName(first)}`;
-      this._add("stereo-without-multiview", "medium", "medium", `${pairs} record the same ${first.draws} draw${first.draws === 1 ? "" : "s"} with the same pipelines into different ${first.width}x${first.height} targets, which looks like one pass per eye. With multiview (VK_KHR_multiview: a view mask on the render pass or on vkCmdBeginRendering, gl_ViewIndex in the shaders) both eyes render in one pass: half the commands, and the GPU can share the vertex work between the views.`, first.command, g.length);
+      const f = this._add("stereo-without-multiview", "medium", "medium", `${pairs} record the same ${first.draws} draw${first.draws === 1 ? "" : "s"} with the same pipelines into different ${first.width}x${first.height} targets, which looks like one pass per eye. With multiview (VK_KHR_multiview: a view mask on the render pass or on vkCmdBeginRendering, gl_ViewIndex in the shaders) both eyes render in one pass: half the commands, and the GPU can share the vertex work between the views.`, first.command, g.length);
+      for (const p of g.slice(1)) this._attach(p.command.index, f);
     }
   }
 
@@ -383,12 +476,27 @@ export class FrameAnalysis {
     return `pass ${pass.ordinal}${rp?.label ? ` (${rp.label})` : ""}`;
   }
 
-  private _add(rule: string, severity: Severity, confidence: Confidence, message: string, cmd: CaptureCommand | null, count = 1): void {
-    this.findings.push({ rule, severity, confidence, message, commandIndex: cmd?.index, count });
+  private _add(rule: string, severity: Severity, confidence: Confidence, message: string, cmd: CaptureCommand | null, count = 1): FrameFinding {
+    const f: FrameFinding = { rule, severity, confidence, message, commandIndex: cmd?.index, count };
+    this.findings.push(f);
+    if (cmd) this._attach(cmd.index, f);
+    return f;
+  }
+
+  private _addFolded(rule: string, severity: Severity, confidence: Confidence, message: string, folded: Folded): void {
+    const f = this._add(rule, severity, confidence, message, folded.first, folded.count);
+    for (const cmd of folded.commands) if (cmd !== folded.first) this._attach(cmd.index, f);
+  }
+
+  private _attach(index: number, f: FrameFinding): void {
+    const list = this._byCommand.get(index);
+    if (list) list.push(f); else this._byCommand.set(index, [f]);
   }
 }
 
-/** Shorthand: the findings of a capture. */
-export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase): FrameFinding[] {
-  return new FrameAnalysis(db).analyze(data);
+/** Shorthand: the findings of a capture, and which commands each applies to. */
+export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
+  const analysis = new FrameAnalysis(db);
+  const findings = analysis.analyze(data);
+  return { findings, byCommand: analysis.byCommand() };
 }

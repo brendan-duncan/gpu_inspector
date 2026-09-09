@@ -523,11 +523,17 @@ input-attachment or storage bit; `TRANSFER_SRC` does not count, the layer adds i
 image for read-back), a depth attachment neither loaded nor stored without
 `TRANSIENT_ATTACHMENT` usage (the severity depends on the device having a lazily allocated
 memory type, from the physical device's memory properties), a multisampled attachment stored
-although it is resolved, redundant pipeline binds and many tiny draws; and the XR-specific
-one: passes without multiview whose draw sequence (pipelines and vertex counts), target size
-and attachment formats match another pass rendering to a different image or layer, which is
-one pass per eye. Every finding names the command it is about; `renderFrameStats` in
-`capture_statistics.ts` shows them as the Frame Issues card with links that select the command.
+although it is resolved, barriers inside a render pass or directly after another, redundant
+pipeline, descriptor set and vertex or index buffer binds (compared against what the command
+buffer has bound), push constants re-pushed with the bytes the range already holds, dispatches
+of one workgroup and many tiny draws; and the XR-specific one: passes without multiview whose
+draw sequence (pipelines and vertex counts), target size and attachment formats match another
+pass rendering to a different image or layer, which is one pass per eye. Findings of a rule
+over many commands are folded into one that names the first and counts the rest, but
+`byCommand()` maps every affected command to its findings: the capture panel computes the
+analysis once per capture, marks the affected rows with a flag after the call number, and the
+command details show a Performance section. `renderFrameStats` in `capture_statistics.ts`
+shows the list as the Frame Issues card with links that select the command.
 
 Every own-cost charge of the analysis is also charged to the source line of the instruction
 (`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):

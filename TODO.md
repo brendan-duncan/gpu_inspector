@@ -109,12 +109,11 @@ application with injected state. Route (a) is the general one and is the prerequ
       (the fast XR package's transient depth buffer): the layer could rewrite DONT_CARE to STORE
       at render pass creation while capturing, the way RenderDoc does, keeping the original ops
       in the object record so the Frame Issues rules still see what the application asked for.
-- [ ] Frame Issues rules to add: redundant descriptor set and vertex buffer binds, push
-      constants re-pushed unchanged, barriers with no work between them (or full-pipeline
-      barriers inside passes), attachments larger than the render area, render passes that
+- [ ] Frame Issues rules to add: attachments larger than the render area, render passes that
       could be subpasses (a pass whose only input is the previous pass's output), MSAA without a
-      resolve (the storeOp STORE of a sampled multisampled image), compute dispatches of one
-      workgroup, and marking the flagged commands in the command list like validation messages.
+      resolve (the storeOp STORE of a sampled multisampled image), full-pipeline barriers
+      (ALL_COMMANDS to ALL_COMMANDS) and barriers whose stages a later barrier repeats; a
+      per-rule on/off filter like the shader findings' severity filter.
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
       OpenXR layer or the runtime's own properties. Launching on a Quest that is not worn

@@ -29,6 +29,7 @@ import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObjec
 import { stageLabel, type StageSource } from "./shader_cache.js";
 import { kindLabel, renderReflection } from "./shader_reflection_view.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
+import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import { renderCommandStack } from "./stacktrace_view.js";
 import { renderEmbeddedSource } from "./shader_source_view.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
@@ -97,6 +98,10 @@ export interface CaptureHost {
   textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
   /** Selects a command of the list by its index (scrolls to it and shows its details). */
   selectCommand(index: number): void;
+  /** The frame analysis findings that apply to a command. */
+  frameFindings(cmd: CaptureCommand): FrameFinding[];
+  /** Shows Frame Stats (the Frame Issues card) in the details pane. */
+  showFrameStats(): void;
 }
 
 /** Commands that write a buffer through a transfer, and the argument naming the destination. */
@@ -193,6 +198,7 @@ export class CommandInfoView {
       if (sec) objectLink(row, sec, this._link); else new Span(row, { text: String(cmd.secondary) });
     }
     this._renderValidation(box, cmd);
+    this._renderFindings(box, cmd);
     if (cmd.stack && cmd.stack.length) {
       const stackGrp = new collapsible(box, { label: "Stack trace", collapsed: true, class: "stack-group" });
       let loaded = false;
@@ -725,6 +731,23 @@ export class CommandInfoView {
       }
     }
     return out;
+  }
+
+  /** The frame analysis findings that apply to the command (Frame Issues in Frame Stats). */
+  private _renderFindings(box: Div, cmd: CaptureCommand): void {
+    const findings = this.panel.frameFindings(cmd);
+    if (!findings.length) return;
+    const grp = new collapsible(box, { label: `Performance (${findings.length})`, collapsed: false });
+    for (const f of findings) {
+      const row = new Div(grp.body, { class: `perf-finding perf-row-${f.severity}` });
+      const head = new Div(row, { class: "perf-finding-head" });
+      new Span(head, { text: f.severity.toUpperCase(), class: `perf-badge perf-${f.severity}` });
+      new Span(head, { text: f.rule, class: "perf-rule" });
+      if (f.count > 1) new Span(head, { text: `\u00d7${f.count} in the frame`, class: "perf-count text-muted" });
+      new Div(row, { text: f.message, class: "perf-msg" });
+    }
+    const link = new Div(grp.body, { text: "All frame issues in Frame Stats", class: "dependency_link font-sm" });
+    link.element.onclick = () => this.panel.showFrameStats();
   }
 
   /** The validation messages that fired while the command was recorded; clicking one shows it in the Inspect tab. */

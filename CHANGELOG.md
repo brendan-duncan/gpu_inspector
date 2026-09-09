@@ -7,8 +7,11 @@
   logs refresh rate changes; capture files keep the frame boundary and refresh source.
 - Multiview: a pass's view mask layers are read back.
 - Frame Issues in Frame Stats: `clear-outside-pass`, `color-load`, `depth-store`,
-  `depth-transient`, `msaa-store`, `stereo-without-multiview`, `redundant-pipeline-bind`,
-  `tiny-draws`, each linked to its command.
+  `depth-transient`, `msaa-store`, `stereo-without-multiview`, `barrier-in-render-pass`,
+  `barrier-adjacent`, `redundant-pipeline-bind`, `redundant-descriptor-bind`,
+  `redundant-buffer-bind`, `push-constants-unchanged`, `single-workgroup-dispatch`,
+  `tiny-draws`. Flagged commands carry a marker in the command list and a Performance section
+  in their details.
 - OpenXR test app for headsets (`test/xr_triangle`, `tools/build_xr_triangle.py`) as two
   packages: multiview, and a deliberately slow twin for Frame Issues and Analyze Shaders.
   Verified on a Quest 3.
