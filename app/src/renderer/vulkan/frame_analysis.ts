@@ -15,6 +15,8 @@
 //   push-constants-unchanged  pushing the bytes that are already in the range
 //   barrier-adjacent        a barrier right after another, nothing between them
 //   barrier-in-render-pass  a pipeline barrier inside a render pass (breaks the tile pass)
+//   full-pipeline-barrier   a barrier from ALL_COMMANDS to ALL_COMMANDS (drains the whole GPU)
+//   msaa-sampled            a multisampled attachment stored without a resolve, for sampling
 //   single-workgroup-dispatch  a dispatch of one workgroup
 //   tiny-draws              many draws of a handful of vertices
 //
@@ -79,8 +81,21 @@ interface PassInfo {
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
 
-const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "barrier-in-render-pass", "color-load", "tiny-draws",
-  "redundant-pipeline-bind", "redundant-descriptor-bind", "redundant-buffer-bind", "push-constants-unchanged", "barrier-adjacent", "single-workgroup-dispatch", "depth-transient"];
+const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "msaa-sampled", "barrier-in-render-pass", "color-load", "tiny-draws",
+  "full-pipeline-barrier", "redundant-pipeline-bind", "redundant-descriptor-bind", "redundant-buffer-bind", "push-constants-unchanged", "barrier-adjacent", "single-workgroup-dispatch", "depth-transient"];
+
+/** Every stage mask a barrier command carries (the command's own, or its VkDependencyInfo's barriers). */
+function barrierStageMasks(a: ArgObject): { src: string; dst: string }[] {
+  if (isObject(a.pDependencyInfo)) {
+    const out: { src: string; dst: string }[] = [];
+    for (const key of ["pMemoryBarriers", "pBufferMemoryBarriers", "pImageMemoryBarriers"]) {
+      const list = a.pDependencyInfo[key];
+      if (Array.isArray(list)) for (const b of list) if (isObject(b)) out.push({ src: str(b.srcStageMask), dst: str(b.dstStageMask) });
+    }
+    return out;
+  }
+  return [{ src: str(a.srcStageMask), dst: str(a.dstStageMask) }];
+}
 const BARRIER_METHODS = new Set(["vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR"]);
 
 /** A stable text for an argument value (handles by id), to compare successive binds. */
@@ -179,6 +194,7 @@ export class FrameAnalysis {
     const unchangedPush = new Folded();
     const adjacentBarriers = new Folded();
     const passBarriers = new Folded();
+    const fullBarriers = new Folded();
     const singleDispatches = new Folded();
     const tinyDraws = new Folded();
     let draws = 0;
@@ -277,6 +293,7 @@ export class FrameAnalysis {
       } else if (BARRIER_METHODS.has(method)) {
         if (BARRIER_METHODS.has(previous.get(cb) ?? "")) adjacentBarriers.add(cmd);
         if (open.has(cb)) passBarriers.add(cmd);
+        if (a && barrierStageMasks(a).some((m) => m.src.includes("ALL_COMMANDS") && m.dst.includes("ALL_COMMANDS"))) fullBarriers.add(cmd);
       } else if ((method === "vkCmdDispatch" || method === "vkCmdDispatchBase" || method === "vkCmdDispatchBaseKHR") && a) {
         if (num(a.groupCountX) * num(a.groupCountY) * num(a.groupCountZ) === 1) singleDispatches.add(cmd);
       } else if (DRAW_METHODS.has(method)) {
@@ -315,6 +332,7 @@ export class FrameAnalysis {
     if (redundantBuffers.count) this._addFolded("redundant-buffer-bind", "low", "high", `The vertex or index buffers already bound (same buffers, offsets and sizes) are bound again ${times(redundantBuffers)}.`, redundantBuffers);
     if (unchangedPush.count) this._addFolded("push-constants-unchanged", "low", "high", `vkCmdPushConstants pushes the bytes that range already holds ${times(unchangedPush)}. Pushing only what changed saves the command and the constant update.`, unchangedPush);
     if (adjacentBarriers.count) this._addFolded("barrier-adjacent", "low", "medium", `A pipeline barrier directly follows another ${times(adjacentBarriers)}: nothing is recorded between them, so one barrier carrying both sets of transitions and stage masks would do, and each barrier can drain the pipeline.`, adjacentBarriers);
+    if (fullBarriers.count) this._addFolded("full-pipeline-barrier", "low", "medium", `A barrier waits for every stage and blocks every stage (ALL_COMMANDS to ALL_COMMANDS) ${times(fullBarriers)}: the GPU drains completely before it continues. Naming the stages that produce and consume the data lets the rest overlap.`, fullBarriers);
     if (passBarriers.count) this._addFolded("barrier-in-render-pass", "medium", "medium", `A pipeline barrier is recorded inside a render pass ${times(passBarriers)}. On a tiled GPU a barrier inside a pass forces the tiles to be flushed and reloaded; move the dependency to a subpass dependency or before the pass.`, passBarriers);
     if (singleDispatches.count) this._addFolded("single-workgroup-dispatch", "low", "medium", `vkCmdDispatch launches a single workgroup ${times(singleDispatches)}: most of the GPU idles during it. Larger dispatches, or a dispatch that folds the work of several small ones, use the machine.`, singleDispatches);
     if (tinyDraws.count >= TINY_DRAW_COUNT) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
@@ -347,6 +365,8 @@ export class FrameAnalysis {
           }
         } else if (att.kind === "color" && att.samples > 1 && att.resolved && att.storeOp === "STORE") {
           this._add("msaa-store", "medium", "high", `${this._passName(pass)} stores the ${att.samples}x multisampled attachment ${this._imageName(att.imageId)} (storeOp STORE) although the pass resolves it: the resolve target holds the result, so DONT_CARE saves writing ${att.samples} samples per pixel.`, cmd);
+        } else if (att.kind === "color" && att.samples > 1 && !att.resolved && att.storeOp === "STORE" && att.usage.includes("SAMPLED")) {
+          this._add("msaa-sampled", "low", "medium", `${this._passName(pass)} stores the ${att.samples}x multisampled attachment ${this._imageName(att.imageId)} without resolving it, and the image can be sampled: sampling a multisampled image costs ${att.samples} fetches per texel, while a resolve attachment on the pass produces the single-sampled result in tile memory.`, cmd);
         }
       }
     }

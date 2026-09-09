@@ -115,10 +115,8 @@ application with injected state. Route (a) is the general one and is the prerequ
       all command buffers") still run the application's DONT_CARE ops. Stencil store ops are
       left alone (no stencil read-back yet).
 - [ ] Frame Issues rules to add: attachments larger than the render area, render passes that
-      could be subpasses (a pass whose only input is the previous pass's output), MSAA without a
-      resolve (the storeOp STORE of a sampled multisampled image), full-pipeline barriers
-      (ALL_COMMANDS to ALL_COMMANDS) and barriers whose stages a later barrier repeats; a
-      per-rule on/off filter like the shader findings' severity filter.
+      could be subpasses (a pass whose only input is the previous pass's output), and barriers
+      whose stages a later barrier repeats.
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
       OpenXR layer or the runtime's own properties.

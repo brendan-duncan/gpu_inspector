@@ -2,6 +2,7 @@
 // passes, pipelines, bindings, memory traffic and geometry, computed from the captured commands
 // (with the bound pipeline's topology for triangle counts and captured indirect arguments for
 // indirect draws).
+import { Checkbox } from "./widget/checkbox.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
@@ -453,6 +454,8 @@ export interface FrameIssues {
   onJump: (commandIndex: number) => void;
 }
 
+const SEVERITY_LABEL: Record<string, string> = { high: "High", medium: "Med", low: "Low", info: "Info" };
+
 function renderFrameIssues(root: Widget, issues: FrameIssues): void {
   const card = new Div(root, { class: "frame-stats-section" });
   const n = issues.findings.length;
@@ -462,8 +465,31 @@ function renderFrameIssues(root: Widget, issues: FrameIssues): void {
     new Div(body, { text: "No issues found by the frame rules (attachment loads and stores, clears, stereo passes, draw batching).", class: "perf-empty text-muted" });
     return;
   }
+  // Filters: by severity (the shader findings' classes) and by rule, for a frame where one
+  // rule fires everywhere and hides the others.
+  const severities = [...new Set(issues.findings.map((f) => f.severity))];
+  const rules = [...new Set(issues.findings.map((f) => f.rule))];
+  const list = new Div(null, { class: "perf-findings" });
+  if (severities.length > 1 || rules.length > 1) {
+    const filterRow = new Div(body, { class: "perf-filter-row" });
+    new Span(filterRow, { text: "Show:", class: "text-muted font-sm" });
+    for (const sev of ["high", "medium", "low", "info"]) {
+      if (!severities.includes(sev as typeof severities[number])) continue;
+      const cb = new Checkbox(filterRow, { label: SEVERITY_LABEL[sev], checked: true, class: "inspector-filter-field" });
+      cb.input.onchange = () => list.classList.toggle(`perf-hide-${sev}`, !cb.checked);
+    }
+    if (rules.length > 1) {
+      const ruleRow = new Div(body, { class: "perf-filter-row perf-rule-row" });
+      new Span(ruleRow, { text: "Rules:", class: "text-muted font-sm" });
+      for (const rule of rules) {
+        const cb = new Checkbox(ruleRow, { label: rule, checked: true, class: "inspector-filter-field perf-rule-toggle" });
+        cb.input.onchange = () => { for (const row of list.element.querySelectorAll(`.perf-rule-${rule}`)) (row as HTMLElement).hidden = !cb.checked; };
+      }
+    }
+  }
+  body.appendChild(list);
   for (const f of issues.findings) {
-    const row = new Div(body, { class: `perf-finding perf-row-${f.severity}${f.confidence !== "high" ? " perf-lowconf" : ""}` });
+    const row = new Div(list, { class: `perf-finding perf-row-${f.severity} perf-rule-${f.rule}${f.confidence !== "high" ? " perf-lowconf" : ""}` });
     const head = new Div(row, { class: "perf-finding-head" });
     new Span(head, { text: f.severity.toUpperCase(), class: `perf-badge perf-${f.severity}` });
     new Span(head, { text: f.rule, class: "perf-rule" });

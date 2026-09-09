@@ -10,8 +10,9 @@
   `depth-transient`, `msaa-store`, `stereo-without-multiview`, `barrier-in-render-pass`,
   `barrier-adjacent`, `redundant-pipeline-bind`, `redundant-descriptor-bind`,
   `redundant-buffer-bind`, `push-constants-unchanged`, `single-workgroup-dispatch`,
-  `tiny-draws`. Flagged commands carry a marker in the command list and a Performance section
-  in their details.
+  `full-pipeline-barrier`, `msaa-sampled`, `tiny-draws`, with severity and per-rule filters.
+  Flagged commands carry a marker in the command list and a Performance section in their
+  details.
 - OpenXR test app for headsets (`test/xr_triangle`, `tools/build_xr_triangle.py`) as two
   packages: multiview, and a deliberately slow twin for Frame Issues and Analyze Shaders.
   Verified on a Quest 3.

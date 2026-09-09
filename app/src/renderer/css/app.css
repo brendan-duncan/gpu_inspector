@@ -504,6 +504,8 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .perf-section.perf-title-medium > .title_bar .object_type { color: var(--accent-warning); }
 .perf-note { padding: 4px 6px; }
 .perf-filter-row { display: flex; align-items: center; gap: 12px; padding: 4px 6px; }
+.perf-rule-row { flex-wrap: wrap; gap: 6px 12px; }
+.perf-rule-toggle { font-family: var(--font-mono, monospace); font-size: 8.5pt; }
 .perf-findings { font-size: 10pt; }
 .perf-finding { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); white-space: normal; }
 .perf-finding.perf-lowconf { opacity: 0.8; }

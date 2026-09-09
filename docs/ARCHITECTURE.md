@@ -565,7 +565,8 @@ input-attachment or storage bit; `TRANSFER_SRC` does not count, since old captur
 layer's own addition of it), a depth attachment neither loaded nor stored without
 `TRANSIENT_ATTACHMENT` usage (the severity depends on the device having a lazily allocated
 memory type, from the physical device's memory properties), a multisampled attachment stored
-although it is resolved, barriers inside a render pass or directly after another, redundant
+although it is resolved, a multisampled attachment stored without a resolve for sampling,
+barriers inside a render pass, directly after another or from ALL_COMMANDS to ALL_COMMANDS, redundant
 pipeline, descriptor set and vertex or index buffer binds (compared against what the command
 buffer has bound), push constants re-pushed with the bytes the range already holds, dispatches
 of one workgroup and many tiny draws; and the XR-specific one: passes without multiview whose
@@ -575,7 +576,8 @@ over many commands are folded into one that names the first and counts the rest,
 `byCommand()` maps every affected command to its findings: the capture panel computes the
 analysis once per capture, marks the affected rows with a flag after the call number, and the
 command details show a Performance section. `renderFrameStats` in `capture_statistics.ts`
-shows the list as the Frame Issues card with links that select the command.
+shows the list as the Frame Issues card with links that select the command, behind severity
+checkboxes (the shader findings' hide classes) and one checkbox per rule that fired.
 
 Every own-cost charge of the analysis is also charged to the source line of the instruction
 (`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):
