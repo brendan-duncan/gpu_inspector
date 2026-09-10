@@ -19,12 +19,22 @@
     analysis
   - comparing captures before and after a change
 
+  `get_shader_flame_graph` gives Claude the Shader Flame Graph: the frame's shading work by pass,
+  pipeline, stage, function and source line, with the hottest functions and lines.
+
+  Some shaders carry line information but no source text, and some stack frames carry only a module
+  and offset. The plugin reads their sources and symbols from this machine, using `set_search_paths`
+  or GPU Inspector's own Source roots and Symbol directories. The shader analyses quote the code of
+  their costliest lines. `get_command` resolves a Metal argument buffer's members to the buffers,
+  textures and samplers they hold.
+
   The plugin also drives running applications, with the capture library from a checkout's build or
   an installed GPU Inspector:
-  - launching or attaching to an application
+  - launching or attaching to an application, including debuggable Android packages over adb
   - live frame statistics with a verdict
   - capturing frames into `.gpucap` files that the other tools read
   - replacing a pipeline's shader with compiled source, and restoring it
+  - reading images, descriptor sets and objects (with creation stacks) without a capture
   - the session's status and log
 
   A capture analysis skill and five commands come with it: `analyze`, `profile`, `debug`,

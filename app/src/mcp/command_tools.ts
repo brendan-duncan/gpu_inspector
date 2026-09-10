@@ -3,8 +3,10 @@
 // the validation messages.
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer } from "../renderer/command_sets.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
+import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
 import { pipelineStages } from "../renderer/shader_cache.js";
+import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { imageOfView } from "../renderer/vulkan/pass_info.js";
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructMember, StructType } from "../renderer/vulkan/spirv_reflect.js";
 import { vertexFormat } from "../renderer/vulkan/vk_format.js";
@@ -15,6 +17,7 @@ import {
   CAPTURE_PARAM, PAGE_PARAMS, boolArg, compact, enumArg, jsonResult, optionalInt, page, readTyped, refText, regexArg, requireInt, round, schema,
   stackLines, stringArg, textureBrief, validationBrief,
 } from "./describe.js";
+import { symbolizeOnHost } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
 const KINDS = ["all", "draw", "dispatch", "action", "pass", "bind", "label", "submit", "issue", "validation"] as const;
@@ -238,10 +241,12 @@ class StateReader {
         unread++;
         continue;
       }
+      const bytes = this.c.data.buffer(sb.dataId)?.data;
       slots.push({
         stage: sb.stage, index: sb.index, name: res?.name || undefined, shaderType: res?.typeName || undefined,
         buffer: sb.inline ? "inline bytes" : refText(db, sb.buffer), offset: sb.offset, boundAt: sb.cmd.index,
         ...this.captured(sb.dataId, res?.type ?? null),
+        argumentBuffer: res && bytes && isArgumentBufferType(res.type) ? argumentBufferBrief(db, argumentBufferEntries(res.type, bytes, db)) : undefined,
       });
     }
     return { slots, unreadSlots: unread || undefined };
@@ -293,6 +298,23 @@ class StateReader {
   }
 }
 
+const MAX_ARGUMENT_ENTRIES = 64;
+
+/** An argument buffer's members as get_command lists them: each handle resolved to the buffer (with the offset into it), texture or sampler that reported it. */
+function argumentBufferBrief(db: ObjectDatabase, entries: ArgumentEntry[]): unknown[] | undefined {
+  if (!entries.length) return undefined;
+  const out: unknown[] = entries.slice(0, MAX_ARGUMENT_ENTRIES).map((e) => ({
+    member: e.path, kind: e.kind, type: e.typeName,
+    resource: e.object ? refText(db, e.object.id) : undefined, offset: e.objectOffset || undefined,
+    value: e.object ? undefined
+      : e.value === null ? "past the captured range"
+        : e.value === "0x0" ? "null"
+          : `${e.value}: no tracked ${e.kind === "pointer" ? "buffer holds this address" : "object has this id"}`,
+  }));
+  if (entries.length > MAX_ARGUMENT_ENTRIES) out.push(`... ${entries.length - MAX_ARGUMENT_ENTRIES} more members`);
+  return out;
+}
+
 function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record<string, unknown> {
   const d = c.data;
   const db = c.db;
@@ -342,6 +364,24 @@ function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record
     out.renderTargets = new StateReader(c, emptyDrawState(""), values).targetsOf(cmd);
   }
   return out;
+}
+
+/** An object as its object database knows it, for get_object and get_live_object: its creation, updates, owner, graph and payloads. */
+export function objectDetail(db: ObjectDatabase, o: VulkanObject): Record<string, unknown> {
+  const dependencies = [...o.dependencies];
+  const dependents = [...o.dependents];
+  return {
+    id: o.id, type: o.type, name: o.name !== `${o.shortType} ${o.id}` ? o.name : undefined, handle: o.handle,
+    createdBy: o.cmd, parent: refText(db, o.parentId), destroyed: o.isDeleted || undefined, invalid: o.invalidReason ?? undefined,
+    summary: o.summary(db) || undefined, memoryBytes: objectMemoryBytes(o, db) || undefined,
+    args: compact(o.args, db),
+    updates: Object.keys(o.updates).length ? compact(o.updates, db) : undefined,
+    fixedFunction: fixedFunctionState(o),
+    dependsOn: dependencies.length ? dependencies.slice(0, 100).map((x) => refText(db, x.id)) : undefined,
+    dependents: dependents.length ? dependents.slice(0, 100).map((x) => refText(db, x.id)) : undefined,
+    moreDependents: dependents.length > 100 ? dependents.length - 100 : undefined,
+    payloads: o.blobs.length ? o.blobs.map((b, i) => ({ index: i, name: b.name, bytes: b.size })) : undefined,
+  };
 }
 
 export function commandTools(store: CaptureStore): ToolDefinition[] {
@@ -419,19 +459,23 @@ export function commandTools(store: CaptureStore): ToolDefinition[] {
         "blending), every descriptor set with each binding's shader name and its uniform or storage buffer values decoded " +
         "by the shader's reflection, sampled images (with their read-back texture numbers), vertex buffers with the layout " +
         "and first vertices, the index buffer with the first indices, push constants with values, viewports and scissors, " +
-        "indirect arguments, and the pass's render targets. Use it to see what a draw actually read.",
+        "indirect arguments, the pass's render targets, and on Metal the stage buffers, with an argument buffer's members " +
+        "resolved to the buffers, textures and samplers they hold. Use it to see what a draw actually read.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         index: { type: "integer", minimum: 0, description: "The command's index (from list_commands, a finding or a message)." },
         values: { type: "boolean", description: "Decode buffer and push constant values (default true); false for the structure alone." },
       }, ["index"]),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         const index = requireInt(args, "index");
         const cmd = c.data.commands[index];
         if (!cmd) throw new Error(`No command ${index}: ${c.id} has ${c.data.commands.length} commands (0-${c.data.commands.length - 1}).`);
-        return jsonResult(commandDetail(c, cmd, boolArg(args, "values", true)));
+        const detail = commandDetail(c, cmd, boolArg(args, "values", true));
+        // The recording stack again, with the frames named by module and offset resolved on this machine.
+        if (cmd.stack?.length) detail.stack = stackLines(await symbolizeOnHost(cmd.stack.map((a) => c.db.symbols.get(a) ?? { address: a, offset: 0 })));
+        return jsonResult(detail);
       },
     },
     {
@@ -476,36 +520,26 @@ export function commandTools(store: CaptureStore): ToolDefinition[] {
         id: { type: "integer", minimum: 0, description: "The object's id: the number after # in a reference like VkImage#12." },
       }, ["id"]),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         const db = c.db;
         const d = c.data;
         const id = requireInt(args, "id");
         const o = db.getObject(id);
         if (!o) throw new Error(`No object ${id} in ${c.id}.`);
-        const dependencies = [...o.dependencies];
-        const dependents = [...o.dependents];
         const stack = db.stacks.get(o.id);
         const shaderTypes = ["VkPipeline", "VkShaderModule", "MTLLibrary", "MTLFunction", "MTLRenderPipelineState", "MTLComputePipelineState"];
         const images = d.textures.filter((t) => t.info.id === o.id).map((t) => d.textures.indexOf(t));
         const ranges = [...d.buffers.values()].filter((b) => b.info.buffer === o.id);
         const validation = db.validationFor(o.id);
         return jsonResult({
-          capture: c.id, id: o.id, type: o.type, name: o.name !== `${o.shortType} ${o.id}` ? o.name : undefined, handle: o.handle,
-          createdBy: o.cmd, parent: refText(db, o.parentId), destroyed: o.isDeleted || undefined, invalid: o.invalidReason ?? undefined,
-          summary: o.summary(db) || undefined, memoryBytes: objectMemoryBytes(o, db) || undefined,
-          args: compact(o.args, db),
-          updates: Object.keys(o.updates).length ? compact(o.updates, db) : undefined,
-          fixedFunction: fixedFunctionState(o),
-          dependsOn: dependencies.length ? dependencies.slice(0, 100).map((x) => refText(db, x.id)) : undefined,
-          dependents: dependents.length ? dependents.slice(0, 100).map((x) => refText(db, x.id)) : undefined,
-          moreDependents: dependents.length > 100 ? dependents.length - 100 : undefined,
+          capture: c.id, ...objectDetail(db, o),
           payloads: o.blobs.length ? o.blobs.map((b, i) => ({ index: i, name: b.name, bytes: b.size, inFile: db.blobData.has(`${o.id}:${i}`) })) : undefined,
           shader: shaderTypes.includes(o.type) ? "get_shader shows this object's code, reflection and analysis." : undefined,
           textures: images.length ? images : undefined,
           bufferRanges: ranges.length ? ranges.slice(0, 50).map((b) => ({ data: b.info.id, offset: b.info.offset, bytes: b.info.size, error: b.info.error })) : undefined,
           validation: validation.length ? validation.slice(0, 20).map((v) => validationBrief(c, v, 600)) : undefined,
-          creationStack: stack?.length ? stackLines(stack) : undefined,
+          creationStack: stack?.length ? stackLines(await symbolizeOnHost(stack)) : undefined,
         });
       },
     },

@@ -16,6 +16,7 @@ import { recentCaptureFiles, settingsFile, type Capture, type CaptureStore } fro
 import {
   CAPTURE_PARAM, PAGE_PARAMS, enumArg, findingBrief, jsonResult, optionalInt, page, refText, requireString, round, schema, stringArg, validationBrief,
 } from "./describe.js";
+import { describeSearchPaths, setSearchPaths, splitPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
 const SEVERITIES = ["high", "medium", "low", "info"] as const;
@@ -209,6 +210,25 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           })),
           note: recent.length ? undefined : `No recent captures in ${settingsFile()}.`,
         });
+      },
+    },
+    {
+      name: "set_search_paths",
+      description: "Where to look on this machine for what captures only name. sourceRoots: the directories holding the " +
+        "shader sources, for shaders compiled with line information but no embedded text (dxc -Zi, glslc without -g, " +
+        "stripped builds), so get_shader shows their source and the analyses quote their costliest lines. symbolDirs: the " +
+        "directories holding the application's unstripped libraries (the build tree), so stack frames named only by module " +
+        "and offset (Android, Linux) resolve to functions, files and lines. A list replaces the previous one for this " +
+        "server; an empty list goes back to GPU_INSPECTOR_SOURCE_ROOTS / GPU_INSPECTOR_SYMBOL_DIRS, else the directories " +
+        "GPU Inspector's launch dialog used last. Without arguments it shows what is in effect.",
+      inputSchema: schema({
+        sourceRoots: { type: "array", items: { type: "string" }, description: "Directories searched (six levels deep) for the shader files debug information names." },
+        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name." },
+      }),
+      handler: (args) => {
+        if (args.sourceRoots !== undefined) setSearchPaths("sourceRoots", splitPaths(args.sourceRoots));
+        if (args.symbolDirs !== undefined) setSearchPaths("symbolDirs", splitPaths(args.symbolDirs));
+        return jsonResult(describeSearchPaths());
       },
     },
     {

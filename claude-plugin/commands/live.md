@@ -9,6 +9,8 @@ the user wants looked at: a slow scene, something drawn wrong, a shader to make 
 sensibly; if the executable is missing, ask for it.
 
 1. **Launch.** Call `launch_app` with the executable and arguments.
+   - An Android package name (`com.company.game`) goes to `launch_android_app` instead. Call
+     `list_android_devices` first when more than one device may be connected.
    - If it does not connect, read `recentLog` (and `get_session_log`) and explain why.
    - Common causes: the layer was not found (build it, install GPU Inspector, or pass `layerDir`),
      the application is not Vulkan, or the application crashed.

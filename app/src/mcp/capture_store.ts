@@ -225,12 +225,17 @@ export function settingsFile(): string {
   return path.join(base, "gpu-inspector", "settings.json");
 }
 
+/** A value from GPU Inspector's settings, when the file exists and has it. */
+export function appSetting(key: string): unknown {
+  try {
+    return (JSON.parse(fs.readFileSync(settingsFile(), "utf8")) as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
 /** The capture files GPU Inspector opened or saved most recently, newest first. */
 export function recentCaptureFiles(): string[] {
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsFile(), "utf8")) as { recentCaptures?: unknown };
-    return Array.isArray(settings.recentCaptures) ? settings.recentCaptures.filter((p): p is string => typeof p === "string" && !!p) : [];
-  } catch {
-    return [];
-  }
+  const recent = appSetting("recentCaptures");
+  return Array.isArray(recent) ? recent.filter((p): p is string => typeof p === "string" && !!p) : [];
 }

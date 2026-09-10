@@ -53,6 +53,10 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   command?: CaptureCommand;
   /** The pipeline or module to reveal. */
   objectId?: number;
+  /** Stage, function and line frames: the stage the code runs in. */
+  stage?: ShaderStage;
+  /** Stage frames: the entry point. */
+  entryPoint?: string;
   invocations?: number;
   confidence?: Confidence;
   /** Pass frames: the measured GPU duration, null without. */
@@ -448,6 +452,8 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
           n.estimated = true;
           n.reason = reason;
           n.objectId = s.model.objectId;
+          n.stage = s.model.stage;
+          n.entryPoint = s.model.entryPoint;
           stageNodes.push(n);
           continue;
         }
@@ -460,10 +466,12 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         n.confidence = s.confidence;
         n.estimated = s.confidence !== "exact";
         n.objectId = s.model.objectId;
+        n.stage = s.model.stage;
+        n.entryPoint = s.model.entryPoint;
         n.command = bucket.items[0].command;
         if (root) {
           const tree = functionTree(root, byId, s.invocations, new Set(), 0);
-          const tag = (c: FlameNode): void => { c.objectId = s.model.objectId; for (const cc of c.children) tag(cc); };
+          const tag = (c: FlameNode): void => { c.objectId = s.model.objectId; c.stage = s.model.stage; for (const cc of c.children) tag(cc); };
           for (const c of tree.children) tag(c);
           n.children = tree.children;
           n.selfCost = tree.selfCost;

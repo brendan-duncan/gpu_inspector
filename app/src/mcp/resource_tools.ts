@@ -2,11 +2,12 @@
 // a draw read, and shaders (reflection, embedded source, cross-compiled text, static analysis).
 import { shaderText } from "../main/shader_tools.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
+import { buildFrameCostTree, type FlameNode, type StageModel } from "../renderer/frame_cost_tree.js";
 import { metalStages } from "../renderer/metal/reflection.js";
 import { pipelineStages, pipelineUses } from "../renderer/shader_cache.js";
 import { layoutText, parseLayout } from "../renderer/vulkan/buffer_layout.js";
 import { SEVERITY_RANK, analyzeSpirvCached, weighCost, type CostVec } from "../renderer/vulkan/spirv_analysis.js";
-import { describeDebugInfo, hasEmbeddedSource, parseSpirvDebugInfo } from "../renderer/vulkan/spirv_debug.js";
+import { describeDebugInfo, hasEmbeddedSource } from "../renderer/vulkan/spirv_debug.js";
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructType } from "../renderer/vulkan/spirv_reflect.js";
 import { decodeTexels, displayTexels, isFormatSupported, sliceBytes, type TexelData } from "../renderer/vulkan/texture_decode.js";
 import { vertexFormat } from "../renderer/vulkan/vk_format.js";
@@ -18,12 +19,25 @@ import {
   schema, stringArg, textureBrief, tidy,
 } from "./describe.js";
 import { encodePng, fitPixels } from "./png.js";
-import type { ToolDefinition } from "./stdio_server.js";
+import { codeAt, debugInfoWithSources, searchPaths, sourceLineTexts, type LineTexts } from "./search_paths.js";
+import type { ToolArgs, ToolDefinition, ToolResult } from "./stdio_server.js";
 
 const COST_MODEL = "Modeled cost of one invocation, not a measurement: instructions weighted ALU 1, special functions 4, texture 20, memory 8, with loops counted as 8 iterations per nesting level. It ranks shaders and functions against each other.";
+const FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
+const FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
 const SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"] as const;
 const CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"] as const;
 const SCALAR_BYTES = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 } as const;
+
+/** How read_texture and read_live_image show an image. */
+export const IMAGE_PARAMS = {
+  channels: { type: "string", enum: CHANNELS, description: "What the image shows (default rgb)." },
+  exposure: { type: "number", description: "Multiplier applied before display (default 1)." },
+  autoRange: { type: "boolean", description: "Stretch the value range to black..white (default on for depth and integer formats)." },
+  image: { type: "boolean", description: "Return the PNG (default true); false for the numbers alone." },
+  maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
+  texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." },
+};
 
 interface ShaderSource { stage: string; entryPoint: string; object: VulkanObject; blobIndex: number }
 
@@ -61,6 +75,42 @@ function texel(tex: TexelData, x: number, y: number): number[] {
   const v: number[] = [];
   for (let ch = 0; ch < tex.channels; ch++) v.push(tidy(tex.values[o + ch]));
   return v;
+}
+
+/** A decoded image as the image tools answer: its numbers, a 3x3 grid of texel values, the texels asked for, and the PNG unless `image` is false. */
+export function texelAnswer(tex: TexelData, args: ToolArgs, head: Record<string, unknown>, aspect: string): ToolResult {
+  const grid: Record<string, unknown>[] = [];
+  for (let gy = 0; gy < 3; gy++) {
+    for (let gx = 0; gx < 3; gx++) {
+      const x = Math.min(tex.width - 1, Math.floor(((gx + 0.5) * tex.width) / 3));
+      const y = Math.min(tex.height - 1, Math.floor(((gy + 0.5) * tex.height) / 3));
+      grid.push({ x, y, value: texel(tex, x, y) });
+    }
+  }
+  const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
+  const texels = requested.map((pt) => {
+    const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
+    const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
+    if (!(x >= 0 && x < tex.width && y >= 0 && y < tex.height)) throw new Error(`texel [${String(pt)}] is outside the ${tex.width}x${tex.height} image.`);
+    return { x: Math.floor(x), y: Math.floor(y), value: texel(tex, Math.floor(x), Math.floor(y)) };
+  });
+  const stats = texelStats(tex);
+  const uniform = tex.min.slice(0, tex.channels).every((v, ch) => v === tex.max[ch]);
+  const result = jsonResult({
+    ...head, width: tex.width, height: tex.height,
+    channels: tex.names, linear: tex.linear || undefined, integer: tex.integer || undefined,
+    uniform: uniform || undefined, stats, sampleGrid: grid, texels: texels.length ? texels : undefined,
+  });
+  if (boolArg(args, "image", true)) {
+    const rgba = displayTexels(tex, {
+      channels: enumArg(args, "channels", CHANNELS, "rgb"),
+      exposure: numberArg(args, "exposure") ?? 1,
+      autoRange: boolArg(args, "autoRange", aspect !== "color" || tex.integer),
+    });
+    const fit = fitPixels(rgba, tex.width, tex.height, intArg(args, "maxSize", 512, 16, 2048));
+    result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
+  }
+  return result;
 }
 
 /** The commands that bound a captured buffer range (by its data id), the first eight. */
@@ -123,25 +173,30 @@ function reflectionDetail(r: ShaderReflection | null): Record<string, unknown> {
 }
 
 function sourceDetail(spirv: Uint8Array, maxChars: number): Record<string, unknown> {
-  const info = parseSpirvDebugInfo(spirv);
+  const { info, found } = debugInfoWithSources(spirv);
   if (!info || !hasEmbeddedSource(info)) {
+    const named = (info?.files ?? []).map((f) => f.name).filter(Boolean);
+    const roots = searchPaths("sourceRoots").dirs;
     return {
       debugInfo: describeDebugInfo(info),
-      note: "No source is embedded. Compiling with -g (glslc, glslangValidator), -gVS (glslangValidator) or -fspv-debug=vulkan-with-source (dxc) embeds it; the \"glsl\" or \"hlsl\" view cross-compiles the SPIR-V instead.",
+      note: named.length
+        ? `The debug information names ${named.join(", ")} without the text, and ${roots.length ? `the source roots (${roots.join("; ")}) do not hold it` : "no source roots are set"}: set_search_paths with the directory holding the shader sources finds it. The "glsl" or "hlsl" view cross-compiles the SPIR-V instead.`
+        : "No source is embedded. Compiling with -g (glslc, glslangValidator), -gVS (glslangValidator) or -fspv-debug=vulkan-with-source (dxc) embeds it; the \"glsl\" or \"hlsl\" view cross-compiles the SPIR-V instead.",
     };
   }
   let left = maxChars;
   const files = info.files.map((f, i) => ({ f, i })).filter((x) => x.f.text !== null).map(({ f, i }) => {
     const text = clip(f.text!, Math.max(200, left));
     left -= f.text!.length;
-    return { name: f.name || undefined, main: i === info.mainFile || undefined, text };
+    return { name: f.name || undefined, main: i === info.mainFile || undefined, fromThisMachine: f.fromHost || undefined, text };
   });
-  return { language: info.language, debugInfo: describeDebugInfo(info), files };
+  return { language: info.language, debugInfo: describeDebugInfo(info), foundOnThisMachine: found.length ? found : undefined, files };
 }
 
 function analysisDetail(spirv: Uint8Array, entryPoint: string): Record<string, unknown> {
   const a = analyzeSpirvCached(spirv);
   if (!a) return { note: "The SPIR-V could not be analyzed." };
+  const texts = sourceLineTexts(debugInfoWithSources(spirv).info);
   const named = a.entryPoints.filter((e) => e.name === entryPoint);
   const entries = named.length ? named : a.entryPoints;
   const lines = a.functions.flatMap((f) => f.lines.map((l) => ({ fn: f.name, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, 12);
@@ -157,9 +212,9 @@ function analysisDetail(spirv: Uint8Array, entryPoint: string): Record<string, u
     findings: findings.map((f) => ({
       rule: f.rule, severity: f.severity, confidence: f.confidence, function: f.function,
       line: f.line ? (f.file ? `${f.file}:${f.line}` : String(f.line)) : undefined, loopDepth: f.loopDepth || undefined, count: f.count > 1 ? f.count : undefined,
-      message: f.message,
+      code: codeAt(texts, f.file, f.line), message: f.message,
     })),
-    costliestLines: a.hasLines ? lines.map(({ fn, l }) => ({ line: `${l.file}:${l.line}`, function: fn, cost: round(l.weighted), dominant: l.dominant })) : undefined,
+    costliestLines: a.hasLines ? lines.map(({ fn, l }) => ({ line: `${l.file}:${l.line}`, code: codeAt(texts, l.file, l.line), function: fn, cost: round(l.weighted), dominant: l.dominant })) : undefined,
     totals: a.totals,
   };
 }
@@ -213,6 +268,122 @@ function metalShader(c: Capture, o: VulkanObject, view: string, maxChars: number
   };
 }
 
+/** The stages of every pipeline the frame bound, analyzed from the capture's SPIR-V, for the flame graph. */
+function stageModels(c: Capture): { models: Map<number, StageModel[]>; spirv: Map<string, Uint8Array> } {
+  const db = c.db;
+  const models = new Map<number, StageModel[]>();
+  /** Each stage's SPIR-V by "object|stage", for the code of its lines. */
+  const spirv = new Map<string, Uint8Array>();
+  for (const pipelineId of pipelineUses(c.data).keys()) {
+    const pipeline = db.getObject(pipelineId);
+    if (!pipeline) continue;
+    models.set(pipelineId, pipelineStages(pipeline, db).map((s) => {
+      const bytes = c.spirv(s.object, s.blobIndex);
+      if (bytes) spirv.set(`${s.object.id}|${s.stage}`, bytes);
+      // Compute invocations are the dispatched groups times the workgroup size, from reflection.
+      const reflection = s.stage === "compute" ? c.reflection(s.object, s.blobIndex) : null;
+      const entry = reflection?.entryPoints.find((e) => e.name === s.entryPoint) ?? reflection?.entryPoints[0] ?? null;
+      return {
+        stage: s.stage, entryPoint: s.entryPoint, objectId: s.object.id,
+        analysis: bytes ? analyzeSpirvCached(bytes) : null, workgroupSize: entry?.workgroupSize ?? null,
+      };
+    }));
+  }
+  return { models, spirv };
+}
+
+interface FlameView { c: Capture; total: number; depth: number; minShare: number }
+
+function shareOf(cost: number, total: number): number | undefined {
+  return total > 0 ? round(cost / total) : undefined;
+}
+
+/** A flame graph frame with its children, costliest first, down to `depth`; children below `minShare` fold into one. */
+function flameFrame(v: FlameView, n: FlameNode, level: number): Record<string, unknown> {
+  const db = v.c.db;
+  const out: Record<string, unknown> = { kind: n.kind, name: n.name, cost: round(n.totalCost), share: shareOf(n.totalCost, v.total) };
+  if (n.kind === "pass") {
+    const pass = n.command ? v.c.passOf(n.command.index) : -1;
+    if (pass >= 0) {
+      out.pass = pass;
+      out.name = v.c.passName(pass);
+    }
+    out.command = n.command?.index;
+    out.measuredMs = round(n.durationMs);
+    if (!n.children.length && n.totalCost > 0) out.note = "Nothing in this pass could be weighed: it has no draws or dispatches, or their shaders have no analysis.";
+  } else if (n.kind === "item") {
+    out.command = n.command?.index;
+    out.pipeline = refText(db, n.objectId);
+  } else if (n.kind === "stage") {
+    if (n.stage) out.name = `${n.stage}: ${n.entryPoint}`;
+    out.shader = refText(db, n.objectId);
+    out.invocations = n.invocations;
+    out.invocationCount = n.confidence;
+    out.unweighted = n.reason;
+  } else if (n.kind === "function") {
+    out.own = round(n.selfCost) || undefined;
+  }
+  out.dominant = n.dimension;
+  if (!n.children.length) return out;
+  if (level >= v.depth) {
+    out.hiddenChildren = n.children.length;
+    return out;
+  }
+  const sorted = [...n.children].sort((x, y) => y.totalCost - x.totalCost);
+  const kept = sorted.filter((ch) => v.total <= 0 || ch.totalCost / v.total >= v.minShare);
+  const folded = sorted.slice(kept.length);
+  const children = kept.map((ch) => flameFrame(v, ch, level + 1));
+  const foldedCost = folded.reduce((sum, ch) => sum + ch.totalCost, 0);
+  // A fold under a thousandth of the total is noise (a vertex stage beside its fragment stage): left out.
+  if (folded.length && (v.total <= 0 || foldedCost / v.total >= 0.001)) {
+    const cost = foldedCost;
+    children.push({ kind: "other", name: `${folded.length} smaller frame${folded.length === 1 ? "" : "s"}`, cost: round(cost), share: shareOf(cost, v.total) });
+  }
+  out.children = children;
+  return out;
+}
+
+/** The costliest functions (own cost) and source lines under a frame, summed over every path that reaches them, and the stages left unweighted. */
+function flameHotspots(
+  c: Capture, root: FlameNode, total: number, top: number,
+  codeOf: (object: number | undefined, stage: string | undefined, file: string | undefined, line: number | undefined) => string | undefined,
+): Record<string, unknown> {
+  interface Spot { function: string; stage?: string; object?: number; line?: string; file?: string; lineNo?: number; cost: number }
+  const functions = new Map<string, Spot>();
+  const lines = new Map<string, Spot>();
+  const unweighted = new Map<string, Record<string, unknown>>();
+  const add = (map: Map<string, Spot>, key: string, spot: Omit<Spot, "cost">, cost: number): void => {
+    const s = map.get(key) ?? { ...spot, cost: 0 };
+    s.cost += cost;
+    map.set(key, s);
+  };
+  const walk = (n: FlameNode, fn: string): void => {
+    let name = fn;
+    if (n.kind === "stage" || n.kind === "function") {
+      name = n.kind === "stage" ? n.entryPoint ?? "" : n.name;
+      if (n.selfCost > 0) add(functions, `${n.objectId}|${n.stage}|${name}`, { function: name, stage: n.stage, object: n.objectId }, n.selfCost);
+      if (n.reason) {
+        unweighted.set(`${n.objectId}|${n.stage}|${name}`, { stage: n.stage, entryPoint: n.entryPoint, shader: refText(c.db, n.objectId), reason: n.reason });
+      }
+    } else if (n.kind === "line") {
+      add(lines, `${n.objectId}|${n.stage}|${n.name}`, { function: fn, stage: n.stage, object: n.objectId, line: n.name, file: n.file, lineNo: n.line }, n.totalCost);
+    }
+    for (const ch of n.children) walk(ch, name);
+  };
+  walk(root, "");
+  const ranked = (map: Map<string, Spot>): Record<string, unknown>[] => [...map.values()].sort((x, y) => y.cost - x.cost).slice(0, top).map((s) => ({
+    function: s.function, line: s.line, code: s.lineNo ? codeOf(s.object, s.stage, s.file, s.lineNo) : undefined,
+    stage: s.stage, shader: refText(c.db, s.object), cost: round(s.cost), share: shareOf(s.cost, total),
+  }));
+  const f = ranked(functions);
+  const l = ranked(lines);
+  return {
+    hottestFunctions: f.length ? f : undefined,
+    hottestLines: l.length ? l : undefined,
+    unweightedStages: unweighted.size ? [...unweighted.values()].slice(0, 20) : undefined,
+  };
+}
+
 export function resourceTools(store: CaptureStore): ToolDefinition[] {
   return [
     {
@@ -250,12 +421,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         texture: { type: "integer", minimum: 0, description: "The texture number from list_textures or get_command's renderTargets." },
         mip: { type: "integer", minimum: 0, description: "Mip level, for sampled images read back with their mips (default the first read back)." },
         layer: { type: "integer", minimum: 0, description: "Array layer or 3D slice (default 0)." },
-        channels: { type: "string", enum: CHANNELS, description: "What the image shows (default rgb)." },
-        exposure: { type: "number", description: "Multiplier applied before display (default 1)." },
-        autoRange: { type: "boolean", description: "Stretch the value range to black..white (default on for depth and integer formats)." },
-        image: { type: "boolean", description: "Return the PNG (default true); false for the numbers alone." },
-        maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
-        texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." },
+        ...IMAGE_PARAMS,
       }, ["texture"]),
       readOnly: true,
       handler: (args) => {
@@ -288,39 +454,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const layer = intArg(args, "layer", 0, 0, slices - 1);
         const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf(mip)), layer);
         if (!tex) return jsonResult({ ...brief, note: "The pixel data is shorter than the image's size says." });
-
-        const grid: Record<string, unknown>[] = [];
-        for (let gy = 0; gy < 3; gy++) {
-          for (let gx = 0; gx < 3; gx++) {
-            const x = Math.min(tex.width - 1, Math.floor(((gx + 0.5) * tex.width) / 3));
-            const y = Math.min(tex.height - 1, Math.floor(((gy + 0.5) * tex.height) / 3));
-            grid.push({ x, y, value: texel(tex, x, y) });
-          }
-        }
-        const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
-        const texels = requested.map((pt) => {
-          const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
-          const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
-          if (!(x >= 0 && x < tex.width && y >= 0 && y < tex.height)) throw new Error(`texel [${String(pt)}] is outside the ${tex.width}x${tex.height} image.`);
-          return { x: Math.floor(x), y: Math.floor(y), value: texel(tex, Math.floor(x), Math.floor(y)) };
-        });
-        const stats = texelStats(tex);
-        const uniform = tex.min.slice(0, tex.channels).every((v, ch) => v === tex.max[ch]);
-        const result = jsonResult({
-          ...brief, mip, layer, slices: slices > 1 ? slices : undefined, width: tex.width, height: tex.height,
-          channels: tex.names, linear: tex.linear || undefined, integer: tex.integer || undefined,
-          uniform: uniform || undefined, stats, sampleGrid: grid, texels: texels.length ? texels : undefined,
-        });
-        if (boolArg(args, "image", true)) {
-          const rgba = displayTexels(tex, {
-            channels: enumArg(args, "channels", CHANNELS, "rgb"),
-            exposure: numberArg(args, "exposure") ?? 1,
-            autoRange: boolArg(args, "autoRange", info.aspect !== "color" || tex.integer),
-          });
-          const fit = fitPixels(rgba, tex.width, tex.height, intArg(args, "maxSize", 512, 16, 2048));
-          result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
-        }
-        return result;
+        return texelAnswer(tex, args, { ...brief, mip, layer, slices: slices > 1 ? slices : undefined }, info.aspect);
       },
     },
     {
@@ -561,6 +695,62 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         return jsonResult({
           capture: c.id, model: COST_MODEL, pipelines: pipelineUses(d).size, total: p.total, offset: p.offset, nextOffset: p.nextOffset,
           stages: p.items.map((r) => r.row),
+        });
+      },
+    },
+    {
+      name: "get_shader_flame_graph",
+      description: "The Shader Flame Graph of a Vulkan capture: the frame's GPU work by pass, pipeline (or draw), shader stage, " +
+        "function and source line, with the frame's hottest functions and lines. Each stage weighs its modeled per-invocation " +
+        "cost times its invocations: vertex and compute counts are exact (from the draw and dispatch arguments, indirect ones " +
+        "from the captured buffers), fragment counts estimated from the scissor area. When every pass was timed (Profile " +
+        "passes) the costs are milliseconds, each pass its measured GPU time with only the split inside it modeled; otherwise " +
+        "modeled op units. Where analyze_shaders ranks shaders, this shows where the frame's shading work goes.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        pass: { type: "integer", minimum: 0, description: "Only this pass (the pass number get_bottlenecks and list_commands give); shares are then of the pass." },
+        perDraw: { type: "boolean", description: "One frame per draw or dispatch instead of one per pipeline (default false)." },
+        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area, an upper bound without overdraw (default true); false leaves them unweighted." },
+        depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
+        minShare: { type: "number", minimum: 0, maximum: 1, description: "Fold frames below this share of the total into one \"other\" frame, left out when it is under 0.001 (default 0.01)." },
+        top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." },
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        if (c.data.api === "metal") {
+          return jsonResult({ capture: c.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        const { models, spirv } = stageModels(c);
+        const result = buildFrameCostTree({
+          data: c.data, db: c.db, models, perDraw: boolArg(args, "perDraw", false), estimateFragments: boolArg(args, "estimateFragments", true),
+        });
+        const texts = new Map<string, LineTexts>();
+        const codeOf = (object: number | undefined, stage: string | undefined, file: string | undefined, line: number | undefined): string | undefined => {
+          const key = `${object}|${stage}`;
+          let t = texts.get(key);
+          if (!t) {
+            const bytes = spirv.get(key);
+            t = bytes ? sourceLineTexts(debugInfoWithSources(bytes).info) : new Map();
+            texts.set(key, t);
+          }
+          return codeAt(t, file, line);
+        };
+        let root = result.root;
+        const pass = optionalInt(args, "pass");
+        if (pass !== undefined) {
+          const found = root.children.find((n) => n.command && c.passOf(n.command.index) === pass);
+          if (!found) throw new Error(`Pass ${pass} is not in the flame graph: it has ${root.children.length} passes with draws or dispatches (get_bottlenecks lists every pass).`);
+          root = found;
+        }
+        const total = root.totalCost;
+        const view: FlameView = { c, total, depth: intArg(args, "depth", 6, 1, 32), minShare: Math.min(1, Math.max(0, numberArg(args, "minShare") ?? 0.01)) };
+        return jsonResult({
+          capture: c.id, units: result.units, meaning: result.units === "ms" ? FLAME_MS : FLAME_OPS, model: COST_MODEL,
+          total: round(total), passes: pass === undefined ? result.stats.passes : undefined, drawsAndDispatches: pass === undefined ? result.stats.items : undefined,
+          graph: flameFrame(view, root, 0),
+          ...flameHotspots(c, root, total, intArg(args, "top", 15, 0, 100), codeOf),
+          notes: result.notes.length ? result.notes : undefined,
         });
       },
     },
