@@ -20,6 +20,9 @@
 - Metal frame stats (frame time, submit time, refresh rate) for the session bar and Frame
   Stats, and the capture bar's options (frame to capture at, buffer and texture limits, the
   read-back and profiling switches) honoured by the Metal library.
+- Metal validation messages: command buffer errors with the faulting encoder, Metal's
+  validation layer through the launch dialog's "Validation layer" switch, and shader logs, in
+  the Inspect panel's message list with repeat counts; a leak report at process exit.
 
 ## 0.7.0
 

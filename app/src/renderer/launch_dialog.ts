@@ -192,16 +192,19 @@ export class LaunchDialog extends Dialog {
         tooltip: "Record every command buffer as it is built, so buffers recorded once and reused every frame appear in captures. Costs CPU time in the target." });
       this._log = new Checkbox(row, { label: "Layer log", checked: true, tooltip: "Log the layer's activity (the target's stderr, or logcat on Android), shown in the Log tab" });
       this._validation = new Checkbox(row, { label: "Validation layer", checked: false,
-        tooltip: "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
+        tooltip: hostPlatform === "darwin"
+          ? "Enable Metal's API validation layer and shader validation for the target, in the mode that logs a failure rather than aborting on it. Errors and warnings are listed in the Inspect tab. Slows the application down."
+          : "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
       this._syncValidation = new Checkbox(row, { label: "Sync validation", checked: false,
         tooltip: "With the validation layer: synchronization validation, which reports hazards between commands (at record time) and between submissions (at vkQueueSubmit, linked to the command the message names). Slow." });
       this._stacktraces = new Checkbox(row, { label: "Stack traces", checked: true,
         tooltip: "Record the call stack of every object creation, shown in the object's details (symbols from the application's PDBs or exports). A few microseconds per created object." });
       // Vulkan-only options. The Metal library has no "record always" — a Metal command buffer is
       // encoded and submitted once, so there is no earlier recording a capture could have missed —
-      // no Khronos validation layer to enable, and no creation stacks yet.
+      // no synchronization validation, and no creation stacks yet. "Validation layer" stays: on
+      // macOS it is Metal's own API and shader validation (metal/README.md).
       if (hostPlatform === "darwin") {
-        for (const c of [this._recordAlways, this._validation, this._syncValidation, this._stacktraces]) {
+        for (const c of [this._recordAlways, this._syncValidation, this._stacktraces]) {
           c.element.style.display = "none";
         }
       }

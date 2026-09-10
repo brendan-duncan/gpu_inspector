@@ -148,10 +148,12 @@ backend does. Ordered by value per effort.
       display, or the layer's interval estimate, and none with display sync off.
 - [x] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
       `captureTextures`, `captureBuffers`, `profilePasses`.
-- [ ] Validation messages: the command buffer's error and encoder execution status when a
-      command buffer faults, the shader validation layer's reports, and `MTLLogContainer`
-      output from shader logging, as `ValidationMessage` with the command buffer id.
-- [ ] Leak report at process exit from the tracker (the dealloc hook knows what is alive).
+- [x] Validation messages: a command buffer's error with the encoder that faulted (encoder
+      execution status is on while a client is connected), Metal's validation layer in its
+      logging mode through an NSLog interpose (the launch dialog's "Validation layer" sets
+      `MTL_DEBUG_LAYER` and shader validation), and shader logs, as `ValidationMessage` with
+      repeat counts.
+- [x] Leak report at process exit from the tracker.
 - [ ] Creation stack traces (`backtrace` + `dladdr`) answering `RequestStacktraces`.
 - [ ] Argument buffers decoded through the reflection's pointer types (the bytes are already
       captured as buffer binds).

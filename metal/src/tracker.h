@@ -78,6 +78,13 @@ void TrackLabel(id object);
 
 /** Sends AddObject for every live object, then streams events from there on. */
 void SendSnapshot();
+
+/**
+ * What is still alive at process exit, as the Vulkan layer's LeakReport at device destruction:
+ * a count by type and the objects, owned by the device. The device itself and the command
+ * queues are not counted, since an application keeps those for its whole life.
+ */
+void SendLeakReport();
 void OnDisconnect();
 
 /** Starts the transport and wires the snapshot to it. Called once, on load. */

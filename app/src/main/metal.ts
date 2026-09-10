@@ -100,12 +100,32 @@ export function injectionBlockedReason(exe: string): string | null {
     + `build rather than to a shipping copy.`;
 }
 
-/** The environment the capture library reads (metal/src/transport.mm, swizzle.mm). */
-export function captureEnvironment(library: string, port: number, log: boolean): NodeJS.ProcessEnv {
-  return {
+/**
+ * The environment the capture library reads (metal/src/transport.mm, swizzle.mm).
+ *
+ * "Validation layer" turns on Metal's own API validation and shader validation, in the mode
+ * that logs a failure rather than aborting on it: the library interposes NSLog and forwards
+ * those lines as validation messages (metal/src/validation.mm). A variable the user already set
+ * wins, so a launch can pick another mode.
+ */
+export function captureEnvironment(library: string, port: number, log: boolean, validation = false): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     // Appended rather than replacing: another inserted library is the caller's business.
     DYLD_INSERT_LIBRARIES: [library, ...(process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : [])].join(":"),
     MTLINSP_PORT: String(port),
     MTLINSP_LOG: log ? "1" : "0",
   };
+  if (validation) {
+    const defaults: Record<string, string> = {
+      MTL_DEBUG_LAYER: "1",
+      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
+      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
+      MTL_SHADER_VALIDATION: "1",
+      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1",
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!process.env[key]) env[key] = value;
+    }
+  }
+  return env;
 }

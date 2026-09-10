@@ -376,6 +376,32 @@ that frame (a frame already passed captures the next), `maxBufferSize` truncates
 and `profilePasses` switch the read-backs and the timestamps off. Sampled images and creation
 stack traces have no Metal counterpart yet, so those switches are ignored.
 
+## Validation messages and the leak report
+
+Vulkan has a debug messenger; Metal has three things that say the same kinds of things, and
+`validation.mm` turns each into the UI's `ValidationMessage`, deduplicated by text with repeat
+counts sent at frame end, so the Inspect panel's message list and the session bar's counter work
+unchanged:
+
+* **A command buffer's error**, read in a completed handler the library adds to every command
+  buffer while a client is connected. Command buffers are then made with encoder execution
+  status on — the plain `commandBuffer` forms are opened through the descriptor form, the way
+  compute encoders are for timing — so a GPU fault names the encoder it happened in and the
+  debug signposts before it. Apple documents a small cost to the option, which is why it is only
+  paid with someone watching.
+* **Metal's own validation layer.** `MTL_DEBUG_LAYER=1` aborts on the first error by default;
+  `MTL_DEBUG_LAYER_ERROR_MODE=nslog` logs instead, through NSLog, which the library interposes
+  for every image but itself. A line naming one of the layer's classes or its assertion form is
+  forwarded, with the method it names as the message's id the way a VUID is; the application's
+  own NSLog calls pass through untouched. The launch dialog's "Validation layer" sets those
+  variables, plus `MTL_SHADER_VALIDATION=1`, for the target; a variable already set wins.
+* **Shader logs** (`MTLLogContainer` on a completed command buffer), as info messages.
+
+At process exit the tracker sends the Vulkan layer's `LeakReport` for whatever the application
+never released — everything but the device, the queues and command buffers — and the transport
+is flushed synchronously, since the sender thread would not get another turn. Vulkan sends its
+at device destruction; a Metal application has nothing to destroy, so exit is the moment.
+
 ## Pass timings
 
 The Metal counterpart of `vkCmdWriteTimestamp` is a counter sample buffer, `MTLCounterSampleBuffer`

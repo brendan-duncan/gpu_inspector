@@ -4,6 +4,7 @@
 #include "swizzle.h"
 #include "transport.h"
 #include "ui_messages.h"
+#include "validation.h"
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -12,6 +13,8 @@
 // <objc/runtime.h>.
 extern "C" id objc_loadWeakRetained(id *location);
 
+#include <algorithm>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -292,9 +295,66 @@ void OnDisconnect() {
     g_live = false;
 }
 
+void SendLeakReport() {
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        std::vector<const TrackedObject *> leaked;
+        uint64_t owner = 0;
+        for (uint64_t id : g_order) {
+            auto it = g_byId.find(id);
+            if (it == g_byId.end()) continue;
+            const TrackedObject &o = it->second;
+            if (o.type == "MTLDevice") {
+                if (owner == 0) owner = o.id;
+                continue;
+            }
+            if (o.type == "MTLCommandQueue" || o.type == "MTLCommandBuffer") continue;
+            leaked.push_back(&o);
+        }
+        if (leaked.empty()) {
+            Log("no leaked objects at exit");
+            return;
+        }
+        std::map<std::string, uint32_t> byType;
+        for (const TrackedObject *o : leaked) byType[o->type]++;
+        Log("%zu objects still alive at exit", leaked.size());
+        if (!g_live) return;
+
+        constexpr size_t kMaxListed = 2000;
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("LeakReport");
+        w.Key("owner"); w.Uint(owner);
+        w.Key("ownerClass"); w.String("MTLDevice");
+        w.Key("count"); w.Uint(leaked.size());
+        w.Key("byType"); w.BeginObject();
+        for (const auto &[name, n] : byType) { w.Key(name.c_str()); w.Uint(n); }
+        w.EndObject();
+        w.Key("objects"); w.BeginArray();
+        size_t listed = 0;
+        for (const TrackedObject *o : leaked) {
+            if (listed++ >= kMaxListed) break;
+            w.BeginObject();
+            w.Key("id"); w.Uint(o->id);
+            w.Key("class"); w.String(o->type);
+            w.Key("name"); if (o->label.empty()) w.Null(); else w.String(o->label);
+            w.Key("cmd"); w.String(o->cmd);
+            w.EndObject();
+        }
+        w.EndArray();
+        w.EndObject();
+        message = std::move(w.str());
+    }
+    Transport::Get().SendJson(std::move(message));
+}
+
 void StartTracking() {
     StartUiMessages();
-    Transport::Get().SetOnConnect([] { SendSnapshot(); });
+    Transport::Get().SetOnConnect([] {
+        SendSnapshot();
+        SendValidationSnapshot();
+    });
     Transport::Get().SetOnDisconnect([] { OnDisconnect(); });
     Transport::Get().Start();
 }
