@@ -28,6 +28,7 @@ import { isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vul
 import { SEVERITY_RANK, type Confidence, type Severity } from "./spirv_analysis.js";
 import type { CaptureData } from "../capture_data.js";
 import type { ObjectLookup } from "./vulkan_object.js";
+import { analyzeMetalFrame } from "../metal/frame_analysis.js";
 import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.js";
 
 export interface FrameFinding {
@@ -405,8 +406,9 @@ export class FrameAnalysis {
   }
 }
 
-/** Shorthand: the findings of a capture, and which commands each applies to. */
+/** Shorthand: the findings of a capture, and which commands each applies to. Per API: the rules read each API's own command stream. */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
+  if (data.api === "metal") return analyzeMetalFrame(data, db);
   const analysis = new FrameAnalysis(db);
   const findings = analysis.analyze(data);
   return { findings, byCommand: analysis.byCommand() };

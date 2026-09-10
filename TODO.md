@@ -171,9 +171,9 @@ backend does. Ordered by value per effort.
       counter sample buffer the pass timings already use; into pass headers and Frame Stats.
 - [ ] Vertex-versus-fragment split timing: the render pass sample attachment's end-of-vertex
       and start-of-fragment indices beside the two used now.
-- [ ] Insights as Frame Issues rules keyed by Metal selectors: unnecessary loads and stores,
-      attachments that could be memoryless, redundant state, consecutive passes to the same
-      target that could be merged (the most valuable on a tile-based GPU).
+- [x] Insights as Frame Issues rules over Metal captures (`metal/frame_analysis.ts`): undefined
+      loads, first-use loads, unread stores, multisample stores, memoryless candidates,
+      mergeable back-to-back passes, redundant binds, tiny draws, single-threadgroup dispatches.
 - [ ] Memory viewer: `allocatedSize`, heap and purgeable state per resource, the device's
       `currentAllocatedSize`, into the memory totals meter.
 - [ ] Pass dependency graph from the recorded attachments and bound textures, doubling as the
