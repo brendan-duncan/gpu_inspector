@@ -26,8 +26,8 @@ jobs:
           # older runner keeps the .deb installable on older distributions.
           - os: ubuntu-22.04
             target: linux
-          # The UI only: there is no capture layer for Apple, so this job skips the CMake build
-          # below and produces both architectures from the one (arm64) runner.
+          # Builds the Metal capture library rather than the Vulkan layer, and produces both
+          # architectures from the one (arm64) runner.
           - os: macos-14
             target: mac
     runs-on: ${{ matrix.os }}
@@ -79,17 +79,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libxcb1-dev libx11-dev libwayland-dev
 
-      # The layer: tests are off so the build needs neither the Vulkan SDK nor glslc. There is no
-      # Apple build of it, so the macOS job skips all three of these steps and packages the UI
-      # alone (tools/stage_layer.mjs expects that).
+      # The capture library: tests are off so the build needs neither the Vulkan SDK nor glslc.
+      # On Apple this is the Metal library instead of the Vulkan layer (the root CMakeLists
+      # picks); tools/stage_layer.mjs copies whichever one into the package.
       - name: Configure layer (Windows)
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DVKINSP_BUILD_TESTS=OFF
       - name: Configure layer (Linux)
         if: runner.os == 'Linux'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVKINSP_BUILD_TESTS=OFF
+      # Both architectures in the one dylib: the x64 package needs an Intel slice, and on Apple
+      # Silicon an Intel application under Rosetta does too, since dyld can only insert a library
+      # that has a slice matching the process it is loading into.
+      - name: Configure capture library (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVKINSP_BUILD_TESTS=OFF
+          "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
       - name: Build layer
-        if: runner.os != 'macOS'
         run: cmake --build build --config Release --parallel
 
       - name: Install app dependencies
@@ -180,9 +187,9 @@ jobs:
           - **macOS (Apple Silicon)**: [GPU-Inspector-${VERSION}-arm64.dmg](${BASE}/GPU-Inspector-${VERSION}-arm64.dmg)
           - **macOS (Intel)**: [GPU-Inspector-${VERSION}-x64.dmg](${BASE}/GPU-Inspector-${VERSION}-x64.dmg)
 
-          The macOS build is the user interface only: it inspects Android devices over adb and
-          opens \`.gpucap\` files, but cannot capture an application running on the Mac itself —
-          there is no Apple build of the Vulkan layer.
+          The macOS build captures Metal applications running on the Mac, inspects Android
+          devices over adb and opens \`.gpucap\` files. There is no Apple build of the Vulkan
+          layer, so a Vulkan application on macOS (through MoltenVK) is not a capture target.
 
           Installed builds update themselves: the app checks this repository's releases on startup.
           NOTES

@@ -186,12 +186,17 @@ void WriteGpuIds(Args &a, id object) {
         snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value);
         a.c("gpuAddress", hex);
     }
+    // MTLResourceID needs the macOS 13 SDK to name the type, and the @available check to use it
+    // below that deployment target: the library is built for macOS 11 and later, so a run on an
+    // older system simply reports no resource id.
 #if defined(__MAC_13_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_13_0
-    const SEL resourceId = sel_registerName("gpuResourceID");
-    if ([object respondsToSelector:resourceId]) {
-        const MTLResourceID value = ((MTLResourceID (*)(id, SEL))objc_msgSend)(object, resourceId);
-        snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value._impl);
-        a.c("gpuResourceID", hex);
+    if (@available(macOS 13.0, *)) {
+        const SEL resourceId = sel_registerName("gpuResourceID");
+        if ([object respondsToSelector:resourceId]) {
+            const MTLResourceID value = ((MTLResourceID (*)(id, SEL))objc_msgSend)(object, resourceId);
+            snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value._impl);
+            a.c("gpuResourceID", hex);
+        }
     }
 #endif
 }
