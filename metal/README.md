@@ -405,6 +405,20 @@ never released — everything but the device, the queues and command buffers —
 is flushed synchronously, since the sender thread would not get another turn. Vulkan sends its
 at device destruction; a Metal application has nothing to destroy, so exit is the moment.
 
+## Frame Issues
+
+Frame Stats' Frame Issues card runs a rule set over the captured commands; the Vulkan rules are
+keyed by Vulkan names, so a Metal capture gets its own (`app/src/renderer/metal/frame_analysis.ts`),
+chosen by the capture's `api`. They are the same findings where the two APIs have the same
+mistakes — a first-use load, a store nothing reads, a multisampled attachment stored rather than
+resolved, redundant binds, tiny draws — read straight off the pass descriptor's load and store
+actions, plus what Xcode's Insights flag that a tile-based GPU cares about most: a texture only
+ever cleared and discarded or resolved, which could be `MTLStorageModeMemoryless` and never touch
+memory at all, and two back-to-back passes on the same target where the second loads what the
+first stored, which one render encoder would have kept in tile memory. A load of an attachment
+whose previous pass did not store it is reported as undefined contents, the one correctness
+rule in the set.
+
 ## An Xcode trace of the frame
 
 Xcode's shader debugger and per-line shader profiler cannot be reproduced outside Apple's
