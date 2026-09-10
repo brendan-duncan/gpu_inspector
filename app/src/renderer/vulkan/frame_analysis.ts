@@ -22,10 +22,16 @@
 //
 // Every finding names the command it is about so the UI can jump to it (findings per command
 // through byCommand()).
+//
+// analyzeFrame() below also folds in the rules over the capture's render graph
+// (../render_graph_analysis.ts) when the caller has built one. Those answer exactly what a few of
+// the rules here can only approximate from usage flags, and replace them (SUPERSEDED_RULES).
 import { DRAW_METHODS, PASS_BEGIN, PASS_END } from "./command_sets.js";
 import { decodePass, imageOfView, pNextChain, type AttachmentUse, type PassAttachments } from "./pass_info.js";
 import { isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./spirv_analysis.js";
+import { SUPERSEDED_RULES, analyzeRenderGraph } from "../render_graph_analysis.js";
+import type { RenderGraph } from "../render_graph.js";
 import type { CaptureData } from "../capture_data.js";
 import type { ObjectLookup } from "./vulkan_object.js";
 import { analyzeMetalFrame } from "../metal/frame_analysis.js";
@@ -406,9 +412,35 @@ export class FrameAnalysis {
   }
 }
 
-/** Shorthand: the findings of a capture, and which commands each applies to. Per API: the rules read each API's own command stream. */
-export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  if (data.api === "metal") return analyzeMetalFrame(data, db);
+/**
+ * The findings of a capture, and which commands each applies to.
+ *
+ * Two analyses contribute. These per-command rules (or metal/frame_analysis.ts for a Metal
+ * capture) read each API's own command stream; and when the caller has built the capture's render
+ * graph, the rules over that graph (render_graph_analysis.ts) read the frame's dependencies. The
+ * graph answers exactly what a few of the per-command rules can only approximate, so those are
+ * dropped in its favour rather than reported twice in two wordings.
+ */
+export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
+  const base = data.api === "metal" ? analyzeMetalFrame(data, db) : perCommandAnalysis(data, db);
+  if (!graph) return base;
+  const fromGraph = analyzeRenderGraph(graph);
+
+  const findings = [...base.findings.filter((f) => !SUPERSEDED_RULES.has(f.rule)), ...fromGraph.findings];
+  const byCommand = new Map<number, FrameFinding[]>();
+  for (const [index, list] of base.byCommand) {
+    const kept = list.filter((f) => !SUPERSEDED_RULES.has(f.rule));
+    if (kept.length) byCommand.set(index, kept);
+  }
+  for (const [index, list] of fromGraph.byCommand) {
+    const existing = byCommand.get(index);
+    if (existing) existing.push(...list); else byCommand.set(index, [...list]);
+  }
+  findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+  return { findings, byCommand };
+}
+
+function perCommandAnalysis(data: CaptureData, db: FrameAnalysisDatabase): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
   const analysis = new FrameAnalysis(db);
   const findings = analysis.analyze(data);
   return { findings, byCommand: analysis.byCommand() };

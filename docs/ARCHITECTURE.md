@@ -652,6 +652,40 @@ consumers on the right, with the resource on each edge — the "why is this pass
 graph is really asked. Rows and columns cross-highlight with the selection, and every pass and
 resource links back to the command list and the Inspect tab.
 
+#### Render graph rules
+
+`renderer/render_graph_analysis.ts` runs rules over the graph rather than over the command stream,
+and the difference is what they can say. The per-command rules answer "does anything read this?"
+with a proxy — the Vulkan pass rules from the image's *usage flags* (a sampled bit means something
+*could* read it, not that anything did), the Metal ones from a read set kept per whole texture and
+unversioned, which a mip chain or a target written twice in a frame defeats. The graph knows the
+answer outright: a version of a subresource with no readers. So `unread-store` states it, and the
+rules it replaces (`depth-store`, `color-store`, and Metal's adjacent-pass `mergeable-passes`) are
+listed in `SUPERSEDED_RULES` and dropped by `analyzeFrame` when a graph is available, rather than
+reported a second time in other words.
+
+The rest exist only because the graph does. `overwritten-before-read` finds a version replaced by a
+write that keeps nothing of it with no reader in between — work done and thrown away, which needs
+versioning to see. `transient-candidate` finds a resource written and then read only by the pass
+that immediately follows and never presented or copied: it never has to reach memory at all
+(`TRANSIENT_ATTACHMENT` with `LAZILY_ALLOCATED` memory or an input attachment; `MTLStorageModeMemoryless`).
+`mergeable-passes` is the exact form of that pairing, where the second pass loads precisely what
+the first stored to the same targets. `oversynchronized-barrier` compares what the frame *declares*
+it depends on with what it does: a barrier is questioned only when it names resources (a global
+memory barrier says nothing to check), changes no image layout and moves nothing between queue
+families (both required whatever the data does), and every resource it names is untouched on one
+side of it. That last test is deliberately weaker than "no dependency edge": a barrier may be
+guarding a write-after-read or write-after-write, neither of which is an edge, so the rule only
+fires when there is nothing on one side at all.
+
+Every rule that rests on "nothing reads this" drops a confidence level and says so when any pass
+in the frame has bindings the capture could not resolve, since the graph is then a lower bound on
+the reads. The findings are the same `FrameFinding` the other analyses produce, so they render in
+the Render Graph view's own Suggestions card, in Frame Stats' Frame Issues, and as the flag on the
+command rows, with no separate plumbing. Because the graph is API-neutral, so are the rules: one
+implementation serves Vulkan and Metal, and only the wording of each fix names an API, from
+`RenderGraph.api`.
+
 #### Shader source maps
 
 WebGPU shaders are their own source; SPIR-V is not, but compilers can embed the source and a

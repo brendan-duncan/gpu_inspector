@@ -20,6 +20,8 @@ import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import { TextInput } from "./widget/text_input.js";
 import { orderResources, usageClass } from "./render_graph.js";
+import { analyzeRenderGraph } from "./render_graph_analysis.js";
+import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import type { GraphNode, GraphResource, GraphUse, RenderGraph } from "./render_graph.js";
 import type { Widget } from "./widget/widget.js";
 
@@ -28,6 +30,8 @@ export interface RenderGraphViewOptions {
   onSelectCommand: (commandIndex: number) => void;
   /** Show an object in the Inspect tab. */
   onInspect: (objectId: number) => void;
+  /** Open the Frame Stats report, where these findings sit with the per-command rules. */
+  onShowFrameStats: () => void;
 }
 
 /** Column widths in pixels, by the zoom control's label; "Fit" divides the panel between the passes. */
@@ -48,6 +52,7 @@ class RenderGraphView {
   private _root: Div;
   private _chart: Div;
   private _detail: Div;
+  private _suggestions!: Div;
   private _status: Div;
   private _filter = "";
   private _showImages = true;
@@ -71,6 +76,8 @@ class RenderGraphView {
       new Div(this._root, { text: warning, class: "render-graph-warning font-sm" });
     }
     this._buildControls();
+    this._suggestions = new Div(this._root, { class: "render-graph-suggestions" });
+    this._renderSuggestions();
     this._chart = new Div(this._root, { class: "render-graph-chart" });
     this._detail = new Div(this._root, { class: "render-graph-detail" });
     this._draw();
@@ -80,6 +87,47 @@ class RenderGraphView {
     const costly = [...graph.nodes].sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))[0];
     const initial = presented ?? costly ?? graph.nodes[0];
     if (initial) this._select({ kind: "node", node: initial });
+  }
+
+  /**
+   * What the graph's rules found (render_graph_analysis.ts), above the chart: the same findings
+   * Frame Issues lists, here beside the picture they were derived from. Collapsed by default when
+   * there are several, so the chart stays the first thing in view.
+   */
+  private _renderSuggestions(): void {
+    const { findings } = analyzeRenderGraph(this._graph);
+    this._suggestions.html = "";
+    if (!findings.length) {
+      new Div(this._suggestions, { text: "No suggestions: the graph's rules found nothing to report about this frame's dependencies.", class: "text-muted font-sm" });
+      return;
+    }
+    const card = new Div(this._suggestions, { class: "frame-stats-section" });
+    const head = new Div(card, { class: "render-graph-detail-head" });
+    new Span(head, { text: `Suggestions (${findings.length})`, class: "frame-stats-heading" });
+    const link = new Span(head, { text: "all frame issues", class: "perf-line-link dependency_link" });
+    link.element.onclick = () => this._options.onShowFrameStats();
+    link.tooltip = "Frame Stats lists these together with the per-command rules";
+    const list = new Div(card, { class: "perf-findings" });
+    for (const finding of findings) this._renderFinding(list, finding);
+  }
+
+  private _renderFinding(list: Widget, f: FrameFinding): void {
+    const row = new Div(list, { class: `perf-finding perf-row-${f.severity}` });
+    const head = new Div(row, { class: "perf-finding-head" });
+    new Span(head, { text: f.severity.toUpperCase(), class: `perf-badge perf-${f.severity}` });
+    new Span(head, { text: f.rule, class: "perf-rule" });
+    if (f.commandIndex !== undefined) {
+      const index = f.commandIndex;
+      const node = this._graph.nodes.find((n) => n.commandIndex === index);
+      const link = new Span(head, { text: node ? node.label : `command ${index}`, class: "perf-line-link dependency_link" });
+      // Selecting the pass in the graph rather than jumping away from it: the chart highlights
+      // what it touches, which is the evidence for the finding.
+      link.element.onclick = () => (node ? this._select({ kind: "node", node }) : this._options.onSelectCommand(index));
+      link.tooltip = node ? "Select the pass in the chart" : "Select the command";
+    }
+    if (f.count > 1) new Span(head, { text: `×${f.count}`, class: "perf-count text-muted" });
+    new Div(row, { text: f.message, class: "perf-msg" });
+    if (f.confidence !== "high") new Div(row, { text: `${f.confidence} confidence`, class: "perf-finding-meta text-muted font-sm" });
   }
 
   private _buildControls(): void {

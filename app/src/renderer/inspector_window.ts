@@ -124,6 +124,16 @@ export class InspectorWindow extends Window {
         (window as unknown as { __inspectorDebugState?: () => unknown }).__inspectorDebugState = () => ({
           sessions: [...this._sessions.values()].map((s) => s.debugState()),
         });
+        // --debug-expand: called from the main process just before the shot, so a section opens
+        // once the capture has fully arrived rather than on a guessed timer, and whatever it
+        // fetches is in the dump. It replaces clicking a screen coordinate, which any change to
+        // the panel's layout silently broke.
+        (window as unknown as { __inspectorDebugExpand?: (text: string) => boolean }).__inspectorDebugExpand = (text: string) => {
+          for (const panel of this._sessions.values()) {
+            if (panel.capturePanel.activeView?.expandSection(text)) return true;
+          }
+          return false;
+        };
         if (cfg.debug?.launchDialog) {
           // "android" or "android:<package text>" (the text prefilled, to check the filter).
           const [target, text] = cfg.debug.launchDialog.split(":", 2);

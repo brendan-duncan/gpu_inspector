@@ -610,6 +610,8 @@ export interface AppConfig {
     selectCommand: number | null;
     /** --debug-view=<stats|graph>: open that report of the capture instead of a command. */
     showView: string | null;
+    /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
+    expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
   };

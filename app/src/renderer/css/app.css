@@ -808,3 +808,8 @@ button.btn-menu { display: inline-flex; align-items: center; gap: 5px; }
 /* The filter takes the row's spare width; the Reports menu sits at the right end of it. */
 .capture-filter-row .capture-filter-input { flex: 1 1 auto; width: auto; min-width: 60px; }
 .capture-filter-row .menu-container { margin-left: auto; }
+
+/* The graph rules' findings, above the chart they were derived from. */
+.render-graph-suggestions { margin-bottom: 10px; }
+.render-graph-suggestions .frame-stats-section { margin-bottom: 0; }
+.render-graph-suggestions .perf-findings { max-height: 220px; overflow-y: auto; }

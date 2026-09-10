@@ -68,6 +68,15 @@
   buffer, a multisampled pass with a resolve through a parallel encoder, and a sampled textured
   pass with inline constants, so every read-back path has a test.
 
+- Suggestions from the render graph: rules over the frame's dependencies rather than over one
+  command, so they answer exactly what the per-command rules could only approximate. A pass that
+  stores an attachment no later pass reads (per subresource and per write, where the Vulkan rule
+  read the image's usage flags and the Metal one a per-texture read set); a result replaced before
+  anything reads it; a target read only by the pass that follows, which never has to reach memory;
+  two passes that are one pass; and a barrier synchronizing resources the frame does not use on
+  both sides of it. They appear as a Suggestions card in the Render Graph view and in Frame
+  Issues, and are shared by Vulkan and Metal because the graph is.
+
 ### Changed
 - The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render
   Graph) moved from four buttons into one "Reports" menu at the right of the filter row, which

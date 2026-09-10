@@ -21,7 +21,7 @@ import { decodePass, imageOfView } from "./pass_info.js";
 import { BIND_INDEX_METHODS, BIND_VERTEX_METHODS, DISPATCH_METHODS, INDIRECT_METHODS, TRACE_METHODS, bindPointOf } from "./command_sets.js";
 import { isObject, num, refId, str } from "./vulkan_object.js";
 import type { ObjectLookup, VulkanObject } from "./vulkan_object.js";
-import type { NodeKind, RawAccess, RawResource } from "../render_graph.js";
+import type { NodeKind, RawAccess, RawResource, SyncPoint } from "../render_graph.js";
 import type { ResourceSource } from "../frame_graph.js";
 import type { ArgObject, ArgValue, CaptureCommand, CaptureDescriptorSets } from "../../shared/protocol.js";
 
@@ -51,6 +51,12 @@ const TRANSFERS: Record<string, { read: string[]; write: string[]; nested?: stri
   vkCmdClearDepthStencilImage: { read: [], write: ["image"], verb: "clear" },
   vkCmdCopyQueryPoolResults: { read: [], write: ["dstBuffer"], verb: "query results" },
 };
+
+/** Commands that synchronize passes against each other, whose barriers name their subresources. */
+const BARRIER_METHODS = new Set([
+  "vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR",
+  "vkCmdWaitEvents", "vkCmdWaitEvents2", "vkCmdWaitEvents2KHR",
+]);
 
 /** Transfer verbs that replace the whole destination, so nothing before them is depended on. */
 const FULL_WRITE_VERBS = new Set(["clear", "fill", "update"]);
@@ -116,7 +122,7 @@ export class VulkanResourceSource implements ResourceSource {
       const kind = att.kind === "resolve" ? "resolve target" : `${att.kind} attachment`;
       accesses.push({
         resource, mode: "write", usage: `${kind} (${loads ? "load" : att.loadOp === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : "discard"})`,
-        discards: !loads, dropped: !stores,
+        discards: !loads, dropped: !stores, resolved: att.resolved,
       });
       // Dynamic rendering names the resolve target inside the attachment it resolves, so it is not
       // an entry of its own; it is written all the same.
@@ -214,6 +220,34 @@ export class VulkanResourceSource implements ResourceSource {
 
   computePassLabel(ordinal: number): string {
     return `Compute ${ordinal}`;
+  }
+
+  /**
+   * The subresources a pipeline barrier or event wait names. A barrier that also transitions an
+   * image layout or moves a resource between queue families is marked structural: those are
+   * required by the API whatever the frame's data dependencies are, so no rule may question them.
+   */
+  syncPoint(cmd: CaptureCommand): Omit<SyncPoint, "after"> | null {
+    if (!BARRIER_METHODS.has(cmd.method) || !cmd.args) return null;
+    const a = cmd.args;
+    const groups = isObject(a.pDependencyInfo) ? [a.pDependencyInfo] : [a];
+    const resources: string[] = [];
+    let structural = false;
+    for (const g of groups) {
+      for (const b of arrayOf(g.pImageMemoryBarriers)) {
+        if (str(b.oldLayout) !== str(b.newLayout)) structural = true;
+        if (queueTransfer(b)) structural = true;
+        const range = isObject(b.subresourceRange) ? b.subresourceRange : null;
+        const resource = this._imageResource(refId(b.image), num(range?.baseMipLevel), num(range?.baseArrayLayer));
+        if (resource) resources.push(resource.key);
+      }
+      for (const b of arrayOf(g.pBufferMemoryBarriers)) {
+        if (queueTransfer(b)) structural = true;
+        const resource = this._bufferResource(refId(b.buffer));
+        if (resource) resources.push(resource.key);
+      }
+    }
+    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
   }
 
   private _streamBuffers(stream: string): Map<string, number> {
@@ -319,6 +353,18 @@ function copySubresource(a: ArgObject, mode: "read" | "write"): { mip: number; l
   const range = ranges && isObject(ranges[0]) ? ranges[0] : null;
   if (range) return { mip: num(range.baseMipLevel), layer: num(range.baseArrayLayer) };
   return { mip: 0, layer: 0 };
+}
+
+/** The objects of an argument that is an array of structs, empty when it is neither. */
+function arrayOf(v: ArgValue | undefined): ArgObject[] {
+  return Array.isArray(v) ? v.filter(isObject) : [];
+}
+
+/** A barrier that hands the resource to another queue family, which is never optional. */
+function queueTransfer(b: ArgObject): boolean {
+  const src = str(b.srcQueueFamilyIndex);
+  const dst = str(b.dstQueueFamilyIndex);
+  return src !== dst && src !== "" && dst !== "";
 }
 
 function firstArray(a: ArgObject, keys: string[]): ArgValue[] | null {
