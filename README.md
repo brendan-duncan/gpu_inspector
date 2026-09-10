@@ -1,11 +1,13 @@
 <p align="center"><img src="docs/images/title.png" alt="GPU Inspector" width="800"></p>
 
-**GPU Inspector** is a cross-platform (Windows, Linux) graphics inspector for native applications, the native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
+**GPU Inspector** is a cross-platform (Windows, Linux, macOS) graphics inspector for native applications, the native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
 version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
 any application works without instrumentation, and Unity Vulkan players are the primary target.
-The UI and protocol are API-neutral so Metal and Direct3D capture libraries can follow. There is
-also a macOS build of the user interface, for inspecting Android devices and reading saved
-captures; it cannot capture applications running on the Mac itself (see [macOS](#macos)).
+The UI and protocol are API-neutral, and a second backend is now being written against them:
+`metal/` captures Metal applications on macOS, injected with `DYLD_INSERT_LIBRARIES` rather than
+registered as a layer. It inspects objects and captures frames today, but it is younger than the
+Vulkan layer and does less — [macOS](#macos) has what works and what does not. Direct3D can
+follow the same way. The feature list below describes the Vulkan layer.
 
 * **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
   labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
@@ -42,11 +44,11 @@ how releases are made in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Prerequisites
 
-Both platforms need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
+Linux and Windows need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm (the Electron UI),
 the windowing-system headers Vulkan's surface extensions include, and the shader tools `glslc`,
-`spirv-dis` and `spirv-cross`. Where they come from differs per platform. Building on macOS needs
-only Node.js and npm, because only the UI is built there.
+`spirv-dis` and `spirv-cross`. Where they come from differs per platform. macOS builds the Metal
+capture library instead of the Vulkan layer and needs a shorter list.
 
 ### Linux
 
@@ -94,6 +96,19 @@ alternative source for the same shader tools if your distribution's are too old.
 The Windows SDK that comes with Visual Studio provides the windowing headers, and your GPU's
 Vulkan driver comes with its normal graphics driver, so nothing extra is needed for either.
 
+### macOS
+
+| What | Where |
+|---|---|
+| Xcode command-line tools — the Objective-C++ compiler and the Metal framework headers | `xcode-select --install` |
+| CMake 3.20+ | `brew install cmake`, or https://cmake.org/download/ |
+| Node.js LTS (includes npm) | `brew install node`, or https://nodejs.org/en/download |
+
+Nothing else: `layer/` does not build for Apple targets, so neither `vk.xml`'s Python generator
+nor `glslc` is part of the build. `spirv-dis` and `spirv-cross` (`brew install spirv-tools
+spirv-cross`) are still worth having, for the shader text of Vulkan captures taken on another
+machine or on an Android device.
+
 ## Build and run
 
 ### Linux
@@ -138,18 +153,24 @@ Use the generator name of the Visual Studio you installed (`"Visual Studio 18 20
 ### macOS
 
 ```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 cd app && npm install && npm start
 ```
 
-No CMake step and no submodule: the macOS build is the user interface alone. See
-[macOS](#macos) below for what it can inspect.
+No submodule, and a different CMake build: `layer/` has no Apple target, so the top-level
+`CMakeLists.txt` builds `metal/` — the Metal capture library, `build/bin/libmtlinsp_capture.dylib`
+— and the `mtlinsp_triangle` test application in its place. `tools/setup.sh` is Linux-only. See
+[macOS](#macos) below for what the Metal side can and cannot do.
 
 ### Using it
 
 Point the launcher at a Vulkan executable — for example the bundled test application,
 `build/bin/vkinsp_triangle` (`build\bin\Release\vkinsp_triangle.exe` on Windows) — and press
-**Launch**, then **Capture** in the Capture tab. The inspector sets the layer environment
-variables for the process it launches, so nothing is registered system-wide. The save button of
+**Launch**, then **Capture** in the Capture tab. On macOS the target is a Metal application
+instead — `build/bin/mtlinsp_triangle`, or an `.app` bundle — and the rest is the same. The
+inspector sets the capture environment variables for the process it launches, so nothing is
+registered system-wide. The save button of
 the capture bar writes the capture to a `.gpucap` file; **Open Capture...** (or dropping the file
 on the window) reopens it later, on any machine, without the application.
 
@@ -188,30 +209,81 @@ registration.
 
 ## macOS
 
-The macOS build is the Electron user interface without a capture layer: `layer/` does not build
-for Apple targets. Little is lost by that today, because applications on macOS render with Metal.
-The layer intercepts Vulkan, so even ported it would see only the few applications that run on
-MoltenVK, not native Metal ones. What the mac build does:
+Applications on macOS render with Metal, and the Vulkan layer would see only the few that run on
+MoltenVK — so a port of it was never the answer, and `layer/` does not build for Apple targets at
+all. `metal/` is a Metal capture library that takes its place, loaded into the target with
+`DYLD_INSERT_LIBRARIES`. It is newer than the Vulkan layer and does less, but the Inspect and
+Capture panels both work against a Metal application today, over the same protocol and with no
+separate UI of their own.
 
-* inspects and captures Vulkan applications on **Android** devices over adb, exactly as the
-  Windows and Linux builds do (see [Android](#android) below), and
-* opens `.gpucap` files saved anywhere, so a capture taken on a Windows or Linux machine can be
-  read, compared and reported from a Mac.
+What works:
 
-The launch dialog therefore offers only the Android target, and **Launch** cannot start a program
-on the Mac itself. Shader text in the Inspect panel still needs `spirv-dis` and `spirv-cross`
-(`brew install spirv-tools spirv-cross`, or the macOS [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#mac)).
+* **Object inspection** — the device, command queues, buffers, textures, libraries and render and
+  compute pipeline states, each with the call that created it, its arguments and its label.
+  Clicking a texture reads its pixels back live. A library lists its function names, and shows
+  the Metal Shading Language it was compiled from when it was compiled here rather than loaded as
+  a precompiled `metallib`.
+* **Frame capture** — the frame's commands grouped by command buffer and pass, each draw with the
+  pipeline bound at it, its decoded vertex and index buffers, and the pass's read-back colour
+  attachments. Captures save to the same `.gpucap` files and reopen on any platform.
+* **Android and saved captures** — unchanged from the Windows and Linux builds: Vulkan
+  applications on Android devices over adb (see [Android](#android)), and `.gpucap` files taken
+  anywhere.
+
+What is not there yet: pass timings, so the profile view still sits at *"waiting for GPU
+timestamps"*; depth attachments and sampled images are not read back, and only the pixel formats
+`metal/src/formats.h` maps are (no ASTC, ETC or PVRTC); Metal's own validation layers are not
+surfaced as validation messages; there are no creation stack traces; and shader editing does not
+apply — it is built around SPIR-V and its compilers, and Metal's shaders are already source. Only
+Apple Silicon has been verified. `metal/README.md` is the detailed account, including what the
+interception itself cost to get right, and it keeps the current list.
+
+### Injecting into an application
+
+Metal has no loader and no layer mechanism — no manifests, no dispatch chaining, no supported
+extension point. The library is inserted by dyld and interposes the C functions that hand out a
+device, hooking the Objective-C classes it reaches from there. Choose **This computer** under
+*Run On* in the launch dialog and pick the application's `.app` bundle: the inspector finds the
+executable inside it (`CFBundleExecutable` — a directory cannot be spawned) and sets
+`DYLD_INSERT_LIBRARIES` for that process alone, so nothing is registered system-wide.
+
+**Code signing decides whether this is possible.** dyld silently drops `DYLD_*` for a process
+with the hardened runtime unless it carries
+`com.apple.security.cs.allow-dyld-environment-variables` and
+`com.apple.security.cs.disable-library-validation`, which no notarized application does. The
+inspector checks the signature with `codesign` *before* launching and reports it, rather than
+leaving a session waiting for a connection that can never arrive; the message includes the
+`codesign --force --sign - --entitlements ...` command that adds the two keys. A locally built
+player — a Unity development build, the primary target here — is normally ad-hoc signed without
+the hardened runtime and needs none of that.
+
+Re-signing is deliberately not done for you: it rewrites the application bundle and invalidates
+its signature and notarization, so it is something to do to a development build, not to a shipped
+copy. This is the same shape as Android's requirement that the application be debuggable, and it
+is the one place where "works with any uninstrumented application" does not carry over from
+Windows and Linux.
+
+An application the inspector cannot launch itself can still be started by hand with
+`DYLD_INSERT_LIBRARIES=<path>/libmtlinsp_capture.dylib` and `MTLINSP_PORT=<port>` in its
+environment (`MTLINSP_LOG=1` logs the intercepted calls to the session's Log tab), and attached
+to with **Connect** or `npm start -- --connect=<port>`.
+
+### Distribution
 
 Releases are signed with the project's Apple Developer ID and notarized by Apple, so the `.dmg`
 opens and the app runs without a Gatekeeper warning or any `xattr` incantation. Both
-architectures are published: `-arm64` for Apple Silicon and `-x64` for Intel.
+architectures are published: `-arm64` for Apple Silicon and `-x64` for Intel. The capture library
+is packaged with the app, so an installed build needs no CMake step of its own.
 
 A build you make yourself is a different matter: without a Developer ID certificate in the
 keychain `npm run dist:mac` produces an ad-hoc signed app, which runs on the machine that built
-it but is not something to hand to anyone else.
+it but is not something to hand to anyone else. It also needs the library built first —
+`npm run pack` and `npm run dist` stage `build/bin/libmtlinsp_capture.dylib` into the app, or
+`INSPECTOR_METAL_LIB` names it elsewhere.
 
-Capturing Metal applications natively would need a Metal interception library rather than a port
-of the Vulkan layer; it is a possible future direction, not a limitation of this build.
+Shader text for Vulkan captures — Android sessions, and `.gpucap` files from other machines —
+still needs `spirv-dis` and `spirv-cross` (`brew install spirv-tools spirv-cross`, or the macOS
+[Vulkan SDK](https://vulkan.lunarg.com/sdk/home#mac)). Nothing on the Metal path uses them.
 
 ## Android
 
@@ -270,15 +342,23 @@ linked to their commands, and stack traces with source lines. Each case starts t
 the inspector, captures a frame, and checks what the renderer reports (`--debug-dump`) and the
 layer's log. `--captures <dir>` also opens every `.gpucap` in a directory, checking a
 `<name>.expect.json` next to it (`{"findings": {"rule": count}}`) when there is one. The
-renderer's unit tests run with `npm test` in `app/`. The triangle cases need the layer, so on
-macOS only `--captures <dir>` applies.
+renderer's unit tests run with `npm test` in `app/`. The triangle cases drive the Vulkan layer,
+so on macOS only `--captures <dir>` applies; the Metal library has no automated test yet, and
+`build/bin/mtlinsp_triangle` is run by hand (see `metal/README.md`).
 
 ## Troubleshooting
 
 **"layer not found" when launching.** The app looks for `VK_LAYER_INSPECTOR_capture.json` in
 `build/bin`, `build/bin/{Release,RelWithDebInfo,Debug}` and next to a packaged app. If your build
 directory is somewhere else, point `INSPECTOR_LAYER_DIR` at the directory holding the manifest and
-the layer library. On macOS there is no layer to find; the message says so instead.
+the layer library. On macOS it is the Metal capture library that is looked for in those same
+places, and `INSPECTOR_METAL_LIB` points at the `.dylib` itself.
+
+**macOS: the target starts but never connects.** Almost always the hardened runtime: dyld
+dropped `DYLD_INSERT_LIBRARIES`, so the capture library was never loaded. The launch dialog
+checks for this and refuses, so a target that got past it and still went quiet is worth
+confirming with `codesign -d -v --entitlements - <the .app>`. Launch with **Log** on to see the
+library's own output in the session's Log tab.
 
 **The target starts but never connects.** The layer only loads if the Vulkan loader can find it;
 run the target with `VK_LOADER_DEBUG=layer` to see the loader's search, and turn on **Log** in the

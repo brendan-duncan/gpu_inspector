@@ -8,70 +8,120 @@
 
 #import <Metal/Metal.h>
 
+#include <algorithm>
 #include <atomic>
-#include <mutex>
 #include <map>
+#include <mutex>
 #include <set>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace mtlinsp {
 namespace {
 
-// A bound buffer range read back with the capture. `data` is filled at once, because a buffer in
-// a shared storage mode is already mapped; the Vulkan layer has to record a GPU copy instead.
-// A colour attachment blitted into a staging buffer at the end of its pass. The bytes are read
-// out in the command buffer's completion handler, once the GPU has actually produced them.
+// A colour or depth attachment blitted into a staging buffer at the end of its pass. The bytes
+// are read out in the command buffer's completion handler, once the GPU has produced them.
 struct PendingTexture {
     uint64_t textureId = 0;
     uint32_t frame = 0;
+    uint64_t commandBufferId = 0;
     uint32_t passIndex = 0;
     uint32_t attachment = 0;
+    const char *aspect = "color";
     uint32_t width = 0;
     uint32_t height = 0;
     std::string format;
     size_t size = 0;
     uint64_t bytesPerRow = 0;
     std::string error;
+    // What to copy from: the attachment, or its resolve texture. Retained until the blit.
+    id<MTLTexture> source = nil;
+    uint32_t level = 0;
+    uint32_t slice = 0;
+    uint32_t depthPlane = 0;
+    MTLBlitOption options = MTLBlitOptionNone;
     id<MTLBuffer> staging = nil;
 };
 
-// A render pass in flight: what to blit when the application ends the encoder.
-struct OpenPass {
-    id commandBuffer = nil;
-    uint32_t passIndex = 0;
-    std::vector<PendingTexture> attachments;
-    std::vector<id<MTLTexture>> textures;
-};
-
+// A bound buffer range read back with the capture. `data` is filled at once for a buffer in
+// shared storage; a managed or private one is filled at Finish, from the buffer or its staging.
 struct CapturedBuffer {
     uint64_t id = 0;
-    uint64_t bufferId = 0;     // the tracked MTLBuffer
+    uint64_t bufferId = 0;     // the tracked MTLBuffer, 0 for inline bytes
     uint32_t frame = 0;
+    uint64_t commandBufferId = 0;
     uint64_t offset = 0;
     uint64_t size = 0;
     uint64_t originalSize = 0; // set when the range was truncated
     std::string error;
     std::vector<uint8_t> data;
+    // Deferred read-back. Retained until it is done.
+    id<MTLBuffer> source = nil;
+    id<MTLBuffer> staging = nil;
+    bool managed = false;
+};
+
+struct PassTiming {
+    uint32_t frame = 0;
+    uint64_t commandBufferId = 0;
+    uint32_t passIndex = 0;
+    PassKind kind = PassKind::Render;
+    uint32_t startIndex = 0;
+    uint32_t endIndex = 0;
+};
+
+// A pass in flight: what to blit and sample when the application ends the encoder.
+struct OpenPass {
+    id commandBuffer = nil;
+    uint64_t commandBufferId = 0;
+    uint32_t passIndex = 0;
+    PassKind kind = PassKind::Render;
+    PassTimingSlot timing;
+    std::vector<PendingTexture> attachments;
+    std::vector<uint64_t> deferredBuffers;   // CapturedBuffer ids to blit at the end of the pass
 };
 
 struct RecordedCommand {
     uint32_t frame = 0;
     std::string method;
-    uint64_t objectId = 0;      // the encoder or command buffer, when it is tracked
-    std::string objectType;     // its protocol name, for the reference the UI shows
+    uint64_t commandBufferId = 0;
+    uint64_t encoderId = 0;
+    const char *encoderType = nullptr;
     std::string args;
     std::vector<uint64_t> bufferData;  // CapturedBuffer ids, in the order the UI expects
 };
 
+struct EncoderInfo {
+    id commandBuffer = nil;
+    const char *type = "";
+    uint64_t captureId = 0;   // from the tracker's sequence, so it cannot collide with an object
+    id parent = nil;          // the parallel render encoder that handed this one out, or nil
+};
+
+struct DrawableInfo {
+    const void *drawable = nullptr;
+    uint64_t drawableID = 0;
+};
+
 std::mutex g_mutex;
-// Armed but not started: the next present begins the capture.
+// Armed but not started: the next frame boundary begins the capture.
 bool g_pending = false;
 std::atomic<bool> g_recording{false};
 uint32_t g_wantFrames = 1;
 uint32_t g_frameIndex = 0;
 std::vector<RecordedCommand> g_commands;
-// Command buffers that have been asked to present: their commit ends a frame.
-std::set<const void *> g_presenting;
+std::vector<CapturedBuffer> g_buffers;
+// (buffer id, offset, size) -> CapturedBuffer id, so a range bound at every draw is read once.
+std::map<std::tuple<uint64_t, uint64_t, uint64_t>, uint64_t> g_bufferRanges;
+uint64_t g_nextBufferId = 1;
+std::vector<PendingTexture> g_textures;
+std::vector<PassTiming> g_passTimings;
+
+std::unordered_map<const void *, EncoderInfo> g_encoders;   // encoder -> owner
+std::unordered_map<const void *, OpenPass> g_openPasses;    // encoder -> its pass
+std::unordered_map<const void *, uint32_t> g_passCounters;  // command buffer -> passes begun
+
 // Command buffers committed during the capture that have not completed yet. The read-back blits
 // are in them, so the staging holds nothing until the count reaches zero.
 //
@@ -81,28 +131,178 @@ std::set<const void *> g_presenting;
 // [drawable present] runs — makes Metal assert and abort the application.
 int g_outstanding = 0;
 bool g_finishPending = false;
-// Drawables a command buffer was asked to present. [MTLCommandBuffer presentDrawable:] calls the
-// drawable's own present once the queue schedules the buffer — later, and on another thread, so
-// the re-entry guard cannot pair them. Without this both boundaries fire and frames count twice.
-std::set<const void *> g_presentedByCommandBuffer;
-std::vector<CapturedBuffer> g_buffers;
-uint64_t g_nextBufferId = 1;
+
+// Frame boundaries. See the header.
+std::set<const void *> g_presenting;                          // command buffers asked to present
+std::vector<DrawableInfo> g_presentedByCommandBuffer;         // drawables presentDrawable: took
+std::unordered_map<const void *, DrawableInfo> g_drawableOfTexture;
+std::unordered_map<const void *, DrawableInfo> g_targetOfCommandBuffer;
+std::set<const void *> g_countedDrawables;                    // frame ended at commit already
+bool g_directPresent = false;                                 // the app presents drawables itself
 
 // Matches the Vulkan layer's default: enough for a vertex or uniform buffer, not so much that a
 // large storage buffer floods the connection.
 constexpr uint64_t kMaxBufferSize = 64 * 1024;
 
-std::vector<PendingTexture> g_textures;
-std::map<const void *, OpenPass> g_openPasses;   // encoder -> its pass
-std::map<const void *, uint32_t> g_passCounters; // command buffer -> passes begun
-uint64_t g_nextTextureId = 1;
-
-thread_local int g_internalDepth = 0;
-
-
 // A capture's commands go out in batches rather than one message, so a frame with tens of
 // thousands of commands does not become a single enormous JSON string.
 constexpr size_t kCommandsPerBatch = 2000;
+
+// --------------------------------------------------------------------------------------------
+// GPU timestamps
+//
+// The Metal counterpart of vkCmdWriteTimestamp is a counter sample buffer. A render or compute
+// pass samples into it at its stage boundaries through the pass descriptor, which is why the
+// hooks copy the descriptor while recording; a GPU that cannot sample at stage boundaries but can
+// at draw, dispatch or blit boundaries takes the samples from the encoder instead. The timestamps
+// are resolved once the frame's command buffers have completed and mapped to nanoseconds with two
+// CPU/GPU timestamp pairs taken around the capture.
+
+constexpr uint32_t kSampleCapacity = 4096;
+
+struct Timing {
+    id<MTLDevice> device = nil;
+    id<MTLCounterSampleBuffer> buffer = nil;
+    uint32_t used = 0;
+    uint32_t capacity = 0;
+    bool tried = false;
+    bool stageBoundary = false;
+    bool drawBoundary = false;
+    bool dispatchBoundary = false;
+    bool blitBoundary = false;
+    MTLTimestamp cpuStart = 0;
+    MTLTimestamp gpuStart = 0;
+};
+Timing g_timing;
+
+/** Under g_mutex. Creates the sample buffer on first use in a capture. */
+void EnsureTiming(id<MTLDevice> device) {
+    if (g_timing.tried || device == nil) return;
+    g_timing.tried = true;
+    g_timing.device = device;
+    if (@available(macOS 11.0, *)) {
+        Internal internal;
+        g_timing.stageBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+        g_timing.drawBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+        g_timing.dispatchBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+        g_timing.blitBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtBlitBoundary];
+        id<MTLCounterSet> timestamps = nil;
+        for (id<MTLCounterSet> set in device.counterSets) {
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+        }
+        if (timestamps == nil) {
+            Log("pass timings: no timestamp counter set on %s", device.name.UTF8String);
+            return;
+        }
+        MTLCounterSampleBufferDescriptor *descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
+        descriptor.counterSet = timestamps;
+        descriptor.storageMode = MTLStorageModeShared;
+        descriptor.label = @"gpu-inspector pass timestamps";
+        // The largest the device accepts, from a generous size down.
+        for (uint32_t capacity = kSampleCapacity; capacity >= 64; capacity /= 2) {
+            descriptor.sampleCount = capacity;
+            NSError *error = nil;
+            g_timing.buffer = [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+            if (g_timing.buffer != nil) {
+                g_timing.capacity = capacity;
+                break;
+            }
+        }
+        [descriptor release];
+        if (g_timing.buffer == nil) {
+            Log("pass timings: could not create a counter sample buffer");
+            return;
+        }
+        [device sampleTimestamps:&g_timing.cpuStart gpuTimestamp:&g_timing.gpuStart];
+        Log("pass timings: %u samples, stage boundary %d, draw %d, dispatch %d, blit %d",
+            g_timing.capacity, g_timing.stageBoundary, g_timing.drawBoundary,
+            g_timing.dispatchBoundary, g_timing.blitBoundary);
+    }
+}
+
+/** Under g_mutex. Two sample indices for a pass, or a slot with no buffer. */
+PassTimingSlot ReserveSamples(bool onEncoder) {
+    PassTimingSlot slot;
+    if (g_timing.buffer == nil || g_timing.used + 2 > g_timing.capacity) return slot;
+    slot.sampleBuffer = g_timing.buffer;
+    slot.startIndex = g_timing.used;
+    slot.endIndex = g_timing.used + 1;
+    slot.onEncoder = onEncoder;
+    g_timing.used += 2;
+    return slot;
+}
+
+void ReleaseTiming(Timing &timing) {
+    [timing.buffer release];
+    timing = Timing();
+}
+
+/** Resolves the samples, sends CapturePassTimings and releases the buffer. Not under g_mutex. */
+void SendTimings(std::vector<PassTiming> &timings, Timing &timing) {
+    if (timing.buffer == nil || timing.used == 0 || timings.empty()) {
+        ReleaseTiming(timing);
+        return;
+    }
+    if (@available(macOS 11.0, *)) {
+        Internal internal;
+        MTLTimestamp cpuEnd = 0, gpuEnd = 0;
+        [timing.device sampleTimestamps:&cpuEnd gpuTimestamp:&gpuEnd];
+        NSData *resolved = [timing.buffer resolveCounterRange:NSMakeRange(0, timing.used)];
+        if (resolved == nil || resolved.length < timing.used * sizeof(MTLCounterResultTimestamp)) {
+            Log("pass timings: the counter buffer did not resolve");
+            ReleaseTiming(timing);
+            return;
+        }
+        const MTLCounterResultTimestamp *samples = (const MTLCounterResultTimestamp *)resolved.bytes;
+        // GPU ticks to nanoseconds, from the two CPU/GPU pairs around the capture. On Apple
+        // Silicon the ratio is one; on other GPUs the timestamp counter runs at its own rate.
+        double nsPerTick = 1.0;
+        if (gpuEnd > timing.gpuStart && cpuEnd > timing.cpuStart) {
+            nsPerTick = (double)(cpuEnd - timing.cpuStart) / (double)(gpuEnd - timing.gpuStart);
+        }
+        auto valid = [&](uint32_t index) {
+            if (index >= timing.used) return false;
+            const uint64_t t = samples[index].timestamp;
+            return t != 0 && t != MTLCounterErrorValue;
+        };
+        uint64_t earliest = UINT64_MAX;
+        for (const PassTiming &pt : timings) {
+            if (valid(pt.startIndex) && valid(pt.endIndex)) {
+                earliest = std::min(earliest, samples[pt.startIndex].timestamp);
+            }
+        }
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("CapturePassTimings");
+        w.Key("timestampPeriodNs"); w.Double(nsPerTick);
+        w.Key("passes"); w.BeginArray();
+        uint32_t sent = 0;
+        for (const PassTiming &pt : timings) {
+            if (!valid(pt.startIndex) || !valid(pt.endIndex)) continue;
+            const uint64_t begin = samples[pt.startIndex].timestamp;
+            const uint64_t end = samples[pt.endIndex].timestamp;
+            if (end < begin) continue;
+            w.BeginObject();
+            w.Key("frame"); w.Uint(pt.frame);
+            w.Key("commandBuffer"); w.Uint(pt.commandBufferId);
+            w.Key("passIndex"); w.Uint(pt.passIndex);
+            w.Key("kind"); w.String(pt.kind == PassKind::Compute ? "compute" : "render");
+            w.Key("startMs"); w.Double((double)(begin - earliest) * nsPerTick / 1e6);
+            w.Key("durationMs"); w.Double((double)(end - begin) * nsPerTick / 1e6);
+            w.EndObject();
+            sent++;
+        }
+        w.EndArray();
+        w.Key("count"); w.Uint(sent);
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
+        Log("pass timings: %u of %zu passes timed", sent, timings.size());
+    }
+    ReleaseTiming(timing);
+}
+
+// --------------------------------------------------------------------------------------------
+// Sending
 
 void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t index) {
     w.BeginObject();
@@ -110,12 +310,19 @@ void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t inde
     w.Key("frame"); w.Uint(c.frame);
     w.Key("method"); w.String(c.method);
     w.Key("object");
-    if (c.objectId == 0) {
+    if (c.commandBufferId == 0) {
         w.Null();
     } else {
         w.BeginObject();
-        w.Key("__id"); w.Uint(c.objectId);
-        w.Key("__class"); w.String(c.objectType);
+        w.Key("__id"); w.Uint(c.commandBufferId);
+        w.Key("__class"); w.String("MTLCommandBuffer");
+        w.EndObject();
+    }
+    if (c.encoderId != 0) {
+        w.Key("encoder");
+        w.BeginObject();
+        w.Key("__id"); w.Uint(c.encoderId);
+        w.Key("__class"); w.String(c.encoderType != nullptr ? c.encoderType : "MTLCommandEncoder");
         w.EndObject();
     }
     w.Key("args"); if (c.args.empty()) w.Null(); else w.Raw(c.args);
@@ -125,6 +332,25 @@ void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t inde
         w.EndArray();
     }
     w.EndObject();
+}
+
+/** Fills in the deferred read-backs, now that the GPU has completed the frame. */
+void ResolveBuffers(std::vector<CapturedBuffer> &buffers) {
+    for (CapturedBuffer &b : buffers) {
+        if (b.staging != nil) {
+            const uint8_t *bytes = static_cast<const uint8_t *>(b.staging.contents);
+            if (bytes != nullptr) b.data.assign(bytes, bytes + b.size);
+            else b.error = "staging buffer has no contents";
+        } else if (b.managed && b.source != nil) {
+            const uint8_t *bytes = static_cast<const uint8_t *>(b.source.contents);
+            if (bytes != nullptr) b.data.assign(bytes + b.offset, bytes + b.offset + b.size);
+            else b.error = "managed buffer has no contents";
+        }
+        [b.staging release];
+        b.staging = nil;
+        [b.source release];
+        b.source = nil;
+    }
 }
 
 /** CaptureBuffers (what was read) then one CaptureBufferData binary frame per buffer. */
@@ -140,7 +366,7 @@ void SendBuffers(std::vector<CapturedBuffer> &buffers) {
         w.Key("id"); w.Uint(b.id);
         w.Key("buffer"); w.Uint(b.bufferId);
         w.Key("frame"); w.Uint(b.frame);
-        w.Key("commandBuffer"); w.Uint(0);
+        w.Key("commandBuffer"); w.Uint(b.commandBufferId);
         w.Key("offset"); w.Uint(b.offset);
         w.Key("size"); w.Uint(b.error.empty() ? b.data.size() : 0);
         if (b.originalSize != 0) { w.Key("originalSize"); w.Uint(b.originalSize); }
@@ -151,7 +377,7 @@ void SendBuffers(std::vector<CapturedBuffer> &buffers) {
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 
-    for (const CapturedBuffer &b : buffers) {
+    for (CapturedBuffer &b : buffers) {
         if (!b.error.empty() || b.data.empty()) continue;
         vkinsp::JsonWriter h;
         h.BeginObject();
@@ -159,7 +385,7 @@ void SendBuffers(std::vector<CapturedBuffer> &buffers) {
         h.Key("id"); h.Uint(b.id);
         h.Key("size"); h.Uint(b.data.size());
         h.EndObject();
-        Transport::Get().SendBinary(std::move(h.str()), b.data.data(), b.data.size());
+        Transport::Get().SendBinary(std::move(h.str()), std::move(b.data));
     }
 }
 
@@ -175,16 +401,16 @@ void SendTextures(std::vector<PendingTexture> &textures) {
         w.BeginObject();
         w.Key("id"); w.Uint(t.textureId);
         w.Key("frame"); w.Uint(t.frame);
-        w.Key("commandBuffer"); w.Uint(0);
+        w.Key("commandBuffer"); w.Uint(t.commandBufferId);
         w.Key("passIndex"); w.Uint(t.passIndex);
         w.Key("attachment"); w.Uint(t.attachment);
         w.Key("format"); w.String(t.format);
-        w.Key("aspect"); w.String("color");
+        w.Key("aspect"); w.String(t.aspect);
         w.Key("width"); w.Uint(t.width);
         w.Key("height"); w.Uint(t.height);
         w.Key("depth"); w.Uint(1);
         w.Key("layers"); w.Uint(1);
-        w.Key("mip"); w.Uint(0);
+        w.Key("mip"); w.Uint(t.level);
         w.Key("size"); w.Uint(t.size);
         if (!t.error.empty()) { w.Key("error"); w.String(t.error); }
         w.EndObject();
@@ -193,39 +419,50 @@ void SendTextures(std::vector<PendingTexture> &textures) {
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 
-    for (const PendingTexture &t : textures) {
-        if (t.staging == nil || t.size == 0 || !t.error.empty()) continue;
-        vkinsp::JsonWriter h;
-        h.BeginObject();
-        h.Key("action"); h.String("CaptureTextureData");
-        h.Key("id"); h.Uint(t.textureId);
-        h.Key("frame"); h.Uint(t.frame);
-        h.Key("commandBuffer"); h.Uint(0);
-        h.Key("passIndex"); h.Uint(t.passIndex);
-        h.Key("attachment"); h.Uint(t.attachment);
-        h.Key("size"); h.Uint(t.size);
-        h.EndObject();
-        Transport::Get().SendBinary(std::move(h.str()), t.staging.contents, t.size);
-    }
-    // Owned since newBufferWithLength: (+1, and this file is built without ARC): a render target
-    // is megabytes, so leaking one per pass per capture adds up quickly.
     for (PendingTexture &t : textures) {
+        if (t.staging != nil && t.size != 0 && t.error.empty() && t.staging.contents != nullptr) {
+            vkinsp::JsonWriter h;
+            h.BeginObject();
+            h.Key("action"); h.String("CaptureTextureData");
+            h.Key("id"); h.Uint(t.textureId);
+            h.Key("frame"); h.Uint(t.frame);
+            h.Key("commandBuffer"); h.Uint(t.commandBufferId);
+            h.Key("passIndex"); h.Uint(t.passIndex);
+            h.Key("attachment"); h.Uint(t.attachment);
+            h.Key("size"); h.Uint(t.size);
+            h.EndObject();
+            Transport::Get().SendBinary(std::move(h.str()), t.staging.contents, t.size);
+        }
+        // Owned since newBufferWithLength: (+1, and this file is built without ARC): a render
+        // target is megabytes, so leaking one per pass per capture adds up quickly.
         [t.staging release];
         t.staging = nil;
+        [t.source release];
+        t.source = nil;
     }
 }
 
 /** Streams CaptureFrameResults then the command batches, and clears the recording. */
 void Finish() {
+  // Reached from a completion handler or from whichever thread committed the last command
+  // buffer, neither of which is promised an autorelease pool; resolving the counters returns
+  // an autoreleased NSData.
+  @autoreleasepool {
     std::vector<RecordedCommand> commands;
     std::vector<CapturedBuffer> buffers;
     std::vector<PendingTexture> textures;
+    std::vector<PassTiming> timings;
+    Timing timing;
     uint32_t frames = 0;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         commands.swap(g_commands);
         buffers.swap(g_buffers);
         textures.swap(g_textures);
+        timings.swap(g_passTimings);
+        timing = g_timing;
+        g_timing = Timing();
+        g_bufferRanges.clear();
         frames = g_frameIndex;
         g_frameIndex = 0;
         g_recording = false;
@@ -263,18 +500,16 @@ void Finish() {
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
+    ResolveBuffers(buffers);
     SendBuffers(buffers);
     SendTextures(textures);
+    SendTimings(timings, timing);
     Log("capture finished: %zu commands over %u frame(s), %zu batch(es), %zu buffer(s), "
         "%zu render target(s)", commands.size(), frames, batches, buffers.size(), textures.size());
+  }
 }
 
-/**
- * A frame ended. Arms a pending capture, counts a recorded frame, or finishes one.
- *
- * `completionSource` is a command buffer whose completion means the frame's GPU work — the
- * read-back blits included — is done; nil falls back to the last one committed.
- */
+/** A frame ended. Arms a pending capture, counts a recorded frame, or finishes one. */
 void AdvanceFrame() {
     bool finishNow = false;
     {
@@ -289,13 +524,15 @@ void AdvanceFrame() {
             g_frameIndex = 0;
             g_commands.clear();
             g_buffers.clear();
+            g_bufferRanges.clear();
             g_textures.clear();
+            g_passTimings.clear();
             g_openPasses.clear();
             g_passCounters.clear();
             g_nextBufferId = 1;
-            g_nextTextureId = 1;
             g_outstanding = 0;
             g_finishPending = false;
+            ReleaseTiming(g_timing);
             g_recording = true;
             Log("capture started");
             return;
@@ -323,7 +560,38 @@ void TrackCompletion(id commandBuffer) {
     }];
 }
 
+/** The command buffer a recorded call belongs to, and the encoder's capture id if it was one. */
+void Attribute(id object, id *commandBuffer, uint64_t *encoderId, const char **encoderType) {
+    *commandBuffer = nil;
+    *encoderId = 0;
+    *encoderType = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_encoders.find((__bridge const void *)object);
+        if (it != g_encoders.end()) {
+            *commandBuffer = it->second.commandBuffer;
+            *encoderId = it->second.captureId;
+            *encoderType = it->second.type;
+            return;
+        }
+    }
+    // Not an encoder that was registered: the call was on the command buffer itself.
+    if ([object conformsToProtocol:@protocol(MTLCommandBuffer)]) *commandBuffer = object;
+}
+
+/** Records a present marker on a command buffer, for a frame that ends without presentDrawable:. */
+void RecordPresentMarker(id commandBuffer, const DrawableInfo &drawable) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("drawable"); w.Pointer(drawable.drawable);
+    w.Key("drawableID"); w.Uint(drawable.drawableID);
+    w.EndObject();
+    RecordCommand("present", commandBuffer, w.str());
+}
+
 }  // namespace
+
+// --------------------------------------------------------------------------------------------
 
 void RequestCapture(const CaptureOptions &options) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -333,10 +601,80 @@ void RequestCapture(const CaptureOptions &options) {
 }
 
 bool Recording() {
-    return g_recording && g_internalDepth == 0;
+    return g_recording && !IsInternal();
 }
 
-uint64_t QueueBufferCapture(id buffer, uint64_t offset, uint64_t size) {
+uint64_t CommandBufferId(id commandBuffer) {
+    if (commandBuffer == nil) return 0;
+    const uint64_t existing = IdOf(commandBuffer);
+    if (existing != 0) return existing;
+    id<MTLCommandBuffer> cb = (id<MTLCommandBuffer>)commandBuffer;
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("label");
+    if (cb.label == nil) w.Null(); else w.String(cb.label.UTF8String);
+    w.Key("retainedReferences"); w.Boolean(cb.retainedReferences);
+    w.EndObject();
+    return TrackObject(commandBuffer, "MTLCommandBuffer", "commandBuffer", cb.commandQueue, w.str());
+}
+
+void RegisterEncoder(id encoder, id commandBuffer, const char *type, id parent) {
+    if (encoder == nil || commandBuffer == nil) return;
+    // Before taking g_mutex: the id comes from the tracker, which has a lock of its own.
+    const uint64_t captureId = AllocateId();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    EncoderInfo &info = g_encoders[(__bridge const void *)encoder];
+    info.commandBuffer = commandBuffer;
+    info.type = type;
+    info.captureId = captureId;
+    info.parent = parent;
+}
+
+void ForgetEncoder(id encoder) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_encoders.erase((__bridge const void *)encoder);
+}
+
+id EncoderCommandBuffer(id encoder, bool *secondary) {
+    if (secondary != nullptr) *secondary = false;
+    if (encoder == nil) return nil;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_encoders.find((__bridge const void *)encoder);
+    if (it == g_encoders.end()) return nil;
+    if (secondary != nullptr) *secondary = it->second.parent != nil;
+    return it->second.commandBuffer;
+}
+
+bool IsCommandStreamObject(id object) {
+    if (object == nil) return false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_encoders.count((__bridge const void *)object) != 0) return true;
+    }
+    return [object conformsToProtocol:@protocol(MTLCommandBuffer)];
+}
+
+void RecordCommand(const char *method, id object, const std::string &argsJson) {
+    RecordCommandWithBuffers(method, object, argsJson, {});
+}
+
+void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
+                              std::vector<uint64_t> bufferData) {
+    if (!g_recording) return;
+    RecordedCommand command;
+    command.method = method;
+    command.args = argsJson;
+    command.bufferData = std::move(bufferData);
+    id commandBuffer = nil;
+    Attribute(object, &commandBuffer, &command.encoderId, &command.encoderType);
+    command.commandBufferId = CommandBufferId(commandBuffer);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return;
+    command.frame = g_frameIndex;
+    g_commands.push_back(std::move(command));
+}
+
+uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size) {
     if (!g_recording || buffer == nil) return 0;
     const uint64_t bufferId = IdOf(buffer);
     if (bufferId == 0) return 0;
@@ -356,15 +694,75 @@ uint64_t QueueBufferCapture(id buffer, uint64_t offset, uint64_t size) {
     }
     captured.size = want;
 
-    const void *contents = metalBuffer.storageMode == MTLStorageModePrivate ? nullptr
-                                                                            : metalBuffer.contents;
-    if (contents == nullptr) {
-        captured.error = "buffer is in private storage (no mapped contents to read)";
+    id commandBuffer = nil;
+    uint64_t encoderId = 0;
+    const char *encoderType = nullptr;
+    Attribute(encoder, &commandBuffer, &encoderId, &encoderType);
+    captured.commandBufferId = CommandBufferId(commandBuffer);
+
+    const MTLStorageMode storage = metalBuffer.storageMode;
+    if (storage == MTLStorageModeShared) {
+        const uint8_t *bytes = static_cast<const uint8_t *>(metalBuffer.contents);
+        if (bytes == nullptr) captured.error = "shared buffer has no contents";
+        else captured.data.assign(bytes + offset, bytes + offset + want);
+    } else if (storage == MTLStorageModeManaged) {
+        // The CPU copy may lag a GPU write; synchronizeResource: at the end of the pass brings it
+        // up to date, and the bytes are read after the frame completes.
+        captured.managed = true;
+        captured.source = [metalBuffer retain];
+    } else if (storage == MTLStorageModePrivate) {
+        // No CPU copy at all: blitted into staging at the end of the pass, the way the Vulkan
+        // layer reads every buffer.
+        captured.source = [metalBuffer retain];
     } else {
-        const uint8_t *bytes = static_cast<const uint8_t *>(contents) + offset;
-        captured.data.assign(bytes, bytes + want);
+        captured.error = "buffer storage mode cannot be read";
     }
 
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) {
+        [captured.source release];
+        return 0;
+    }
+    const auto key = std::make_tuple(bufferId, offset, want);
+    auto known = g_bufferRanges.find(key);
+    if (known != g_bufferRanges.end()) {
+        [captured.source release];
+        return known->second;
+    }
+    captured.id = g_nextBufferId++;
+    captured.frame = g_frameIndex;
+    const bool deferred = captured.source != nil;
+    const uint64_t id = captured.id;
+    if (deferred) {
+        auto pass = g_openPasses.find((__bridge const void *)encoder);
+        if (pass == g_openPasses.end()) {
+            // A parallel render encoder's sub-encoder: the pass is its parent's.
+            auto owner = g_encoders.find((__bridge const void *)encoder);
+            if (owner != g_encoders.end() && owner->second.parent != nil) {
+                pass = g_openPasses.find((__bridge const void *)owner->second.parent);
+            }
+        }
+        if (pass == g_openPasses.end()) {
+            captured.error = "bound outside a pass; nothing to copy it through";
+            [captured.source release];
+            captured.source = nil;
+            captured.managed = false;
+        } else {
+            pass->second.deferredBuffers.push_back(id);
+        }
+    }
+    g_bufferRanges[key] = id;
+    g_buffers.push_back(std::move(captured));
+    return id;
+}
+
+uint64_t QueueBytesCapture(const void *bytes, uint64_t size) {
+    if (!g_recording || bytes == nullptr || size == 0) return 0;
+    CapturedBuffer captured;
+    captured.size = std::min<uint64_t>(size, kMaxBufferSize);
+    if (size > captured.size) captured.originalSize = size;
+    const uint8_t *data = static_cast<const uint8_t *>(bytes);
+    captured.data.assign(data, data + captured.size);
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_recording) return 0;
     captured.id = g_nextBufferId++;
@@ -373,81 +771,227 @@ uint64_t QueueBufferCapture(id buffer, uint64_t offset, uint64_t size) {
     return g_buffers.back().id;
 }
 
-void RecordCommand(const char *method, id object, const std::string &argsJson) {
-    RecordCommandWithBuffers(method, object, argsJson, {});
+// --------------------------------------------------------------------------------------------
+// Passes
+
+PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor *descriptor) {
+    PassTimingSlot slot;
+    if (!g_recording || commandBuffer == nil) return slot;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return slot;
+    EnsureTiming(((id<MTLCommandBuffer>)commandBuffer).device);
+    if (g_timing.buffer == nil) return slot;
+    if (@available(macOS 11.0, *)) {
+        if (g_timing.stageBoundary && descriptor != nil) {
+            // The first attachment slot the application is not using itself.
+            for (NSUInteger i = 0; i < 4; i++) {
+                MTLRenderPassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
+                if (a.sampleBuffer != nil) continue;
+                slot = ReserveSamples(false);
+                if (slot.sampleBuffer == nil) return slot;
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
+                a.startOfVertexSampleIndex = slot.startIndex;
+                a.endOfVertexSampleIndex = MTLCounterDontSample;
+                a.startOfFragmentSampleIndex = MTLCounterDontSample;
+                a.endOfFragmentSampleIndex = slot.endIndex;
+                return slot;
+            }
+            return slot;
+        }
+    }
+    if (g_timing.drawBoundary) slot = ReserveSamples(true);
+    return slot;
 }
 
-void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
-                              std::vector<uint64_t> bufferData) {
-    if (!g_recording) return;
-    RecordedCommand command;
-    command.method = method;
-    command.args = argsJson;
-    command.bufferData = std::move(bufferData);
-    command.objectId = IdOf(object);
-    if (command.objectId != 0 && object != nil) command.objectType = ClassName(object);
+PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescriptor *descriptor) {
+    PassTimingSlot slot;
+    if (!g_recording || commandBuffer == nil) return slot;
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_recording) return;
-    command.frame = g_frameIndex;
-    g_commands.push_back(std::move(command));
+    if (!g_recording) return slot;
+    EnsureTiming(((id<MTLCommandBuffer>)commandBuffer).device);
+    if (g_timing.buffer == nil) return slot;
+    if (@available(macOS 11.0, *)) {
+        if (g_timing.stageBoundary && descriptor != nil) {
+            for (NSUInteger i = 0; i < 4; i++) {
+                MTLComputePassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
+                if (a.sampleBuffer != nil) continue;
+                slot = ReserveSamples(false);
+                if (slot.sampleBuffer == nil) return slot;
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
+                a.startOfEncoderSampleIndex = slot.startIndex;
+                a.endOfEncoderSampleIndex = slot.endIndex;
+                return slot;
+            }
+            return slot;
+        }
+    }
+    if (g_timing.dispatchBoundary) slot = ReserveSamples(true);
+    return slot;
 }
 
-Internal::Internal() { ++g_internalDepth; }
-Internal::~Internal() { --g_internalDepth; }
-
-uint32_t BeginPass(id encoder, id commandBuffer) {
+PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *descriptor) {
+    PassTimingSlot slot;
+    if (!g_recording || commandBuffer == nil) return slot;
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return slot;
+    EnsureTiming(((id<MTLCommandBuffer>)commandBuffer).device);
+    if (g_timing.buffer == nil) return slot;
+    if (@available(macOS 11.0, *)) {
+        if (g_timing.stageBoundary && descriptor != nil) {
+            for (NSUInteger i = 0; i < 4; i++) {
+                MTLBlitPassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
+                if (a.sampleBuffer != nil) continue;
+                slot = ReserveSamples(false);
+                if (slot.sampleBuffer == nil) return slot;
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
+                a.startOfEncoderSampleIndex = slot.startIndex;
+                a.endOfEncoderSampleIndex = slot.endIndex;
+                return slot;
+            }
+            return slot;
+        }
+    }
+    if (g_timing.blitBoundary) slot = ReserveSamples(true);
+    return slot;
+}
+
+uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot &timing) {
     const void *cb = (__bridge const void *)commandBuffer;
-    const uint32_t index = g_passCounters[cb]++;
-    if (g_recording && encoder != nil) {
+    uint32_t index = 0;
+    bool recording = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        index = g_passCounters[cb]++;
+        recording = g_recording;
+    }
+    if (!recording || encoder == nil) return index;
+    // Outside the lock: tracking the command buffer talks to the tracker and the transport.
+    const uint64_t cbId = CommandBufferId(commandBuffer);
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
         OpenPass pass;
         pass.commandBuffer = commandBuffer;
+        pass.commandBufferId = cbId;
         pass.passIndex = index;
+        pass.kind = kind;
+        pass.timing = timing;
         g_openPasses[(__bridge const void *)encoder] = std::move(pass);
+    }
+    if (timing.sampleBuffer != nil && timing.onEncoder) {
+        if (@available(macOS 11.0, *)) {
+            Internal internal;
+            if ([encoder respondsToSelector:@selector(sampleCountersInBuffer:atSampleIndex:withBarrier:)]) {
+                [(id<MTLComputeCommandEncoder>)encoder
+                    sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.sampleBuffer
+                             atSampleIndex:timing.startIndex
+                               withBarrier:YES];
+            }
+        }
     }
     return index;
 }
 
-/** Called from the render encoder hook once the attachments are known. */
-void AddPassAttachment(id encoder, id textureObject, uint32_t attachment) {
-    id<MTLTexture> texture = (id<MTLTexture>)textureObject;
-    if (texture == nil) return;
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto it = g_openPasses.find((__bridge const void *)encoder);
-    if (it == g_openPasses.end()) return;
+void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_t index,
+                       bool depth) {
+    if (a == nil || a.texture == nil) return;
+    id<MTLTexture> texture = a.texture;
 
     PendingTexture pending;
     pending.textureId = IdOf(texture);
-    pending.frame = g_frameIndex;
-    pending.passIndex = it->second.passIndex;
-    pending.attachment = attachment;
-    pending.width = (uint32_t)texture.width;
-    pending.height = (uint32_t)texture.height;
-    const PixelFormatInfo info = PixelFormatDetails(texture.pixelFormat);
-    pending.format = info.name;
-    uint64_t bytesPerRow = 0;
-    const uint64_t imageSize = PixelFormatImageSize(info, pending.width, pending.height,
-                                                    &bytesPerRow);
-    if (pending.format.empty() || imageSize == 0) {
+    pending.attachment = index;
+    pending.aspect = depth ? "depth" : "color";
+
+    // Multisample attachments cannot be copied to a buffer; what can be read is the resolve.
+    id<MTLTexture> source = texture;
+    uint32_t level = (uint32_t)a.level;
+    uint32_t slice = (uint32_t)a.slice;
+    uint32_t depthPlane = (uint32_t)a.depthPlane;
+    if (texture.sampleCount > 1) {
+        if (a.resolveTexture != nil && (a.storeAction == MTLStoreActionMultisampleResolve
+                                        || a.storeAction == MTLStoreActionStoreAndMultisampleResolve)) {
+            source = a.resolveTexture;
+            level = (uint32_t)a.resolveLevel;
+            slice = (uint32_t)a.resolveSlice;
+            depthPlane = (uint32_t)a.resolveDepthPlane;
+        } else {
+            pending.error = "multisample attachment is not resolved, and cannot be read directly";
+        }
+    }
+    if (pending.error.empty() && source.framebufferOnly) {
+        pending.error = "texture is framebufferOnly and cannot be a copy source";
+    }
+    if (pending.error.empty() && source.storageMode == MTLStorageModeMemoryless) {
+        pending.error = "memoryless texture has no contents after the pass";
+    }
+
+    MTLBlitOption options = MTLBlitOptionNone;
+    PixelFormatInfo info = depth ? DepthReadbackDetails(source.pixelFormat, &options)
+                                 : PixelFormatDetails(source.pixelFormat);
+    if (pending.error.empty() && (info.name == nullptr || info.name[0] == '\0')) {
+        const char *enumName = PixelFormatEnumName(source.pixelFormat);
+        pending.error = std::string("unsupported pixel format ")
+            + (enumName[0] != '\0' ? enumName : std::to_string((int)source.pixelFormat));
+    }
+    if (pending.error.empty() && !depth && PixelFormatHasDepth(source.pixelFormat)) {
+        // A depth texture in a colour slot: read it as depth.
+        info = DepthReadbackDetails(source.pixelFormat, &options);
+        pending.aspect = "depth";
+    }
+
+    pending.width = (uint32_t)std::max<NSUInteger>(1, source.width >> level);
+    pending.height = (uint32_t)std::max<NSUInteger>(1, source.height >> level);
+    pending.level = level;
+    pending.slice = slice;
+    pending.depthPlane = source.textureType == MTLTextureType3D ? depthPlane : 0;
+    pending.options = options;
+    if (pending.error.empty()) {
+        pending.format = info.name;
+        uint64_t bytesPerRow = 0;
+        pending.size = (size_t)PixelFormatImageSize(info, pending.width, pending.height, &bytesPerRow);
+        pending.bytesPerRow = bytesPerRow;
+        pending.source = [source retain];
+    } else {
         // Reported, not dropped: an empty Render Targets section with no reason given is the
         // hardest kind of gap to notice.
-        const char *enumName = PixelFormatEnumName(texture.pixelFormat);
-        Log("render target: unsupported pixel format %s (%lu), not read back", enumName,
-            (unsigned long)texture.pixelFormat);
-        pending.error = std::string("unsupported pixel format ")
-            + (enumName[0] != '\0' ? enumName : std::to_string((int)texture.pixelFormat));
+        Log("render target: %s, not read back", pending.error.c_str());
+        const char *enumName = PixelFormatEnumName(source.pixelFormat);
+        pending.format = enumName;
         pending.size = 0;
-        it->second.attachments.push_back(std::move(pending));
-        it->second.textures.push_back(texture);
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_openPasses.find((__bridge const void *)encoder);
+    if (it == g_openPasses.end()) {
+        [pending.source release];
         return;
     }
-    pending.size = (size_t)imageSize;
-    pending.bytesPerRow = bytesPerRow;
+    pending.frame = g_frameIndex;
+    pending.commandBufferId = it->second.commandBufferId;
+    pending.passIndex = it->second.passIndex;
     it->second.attachments.push_back(std::move(pending));
-    it->second.textures.push_back(texture);
 }
 
-void EndRenderPass(id encoder) {
+void BeforeEndEncoding(id encoder) {
+    PassTimingSlot timing;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_openPasses.find((__bridge const void *)encoder);
+        if (it == g_openPasses.end()) return;
+        timing = it->second.timing;
+    }
+    if (timing.sampleBuffer == nil || !timing.onEncoder) return;
+    if (@available(macOS 11.0, *)) {
+        Internal internal;
+        if ([encoder respondsToSelector:@selector(sampleCountersInBuffer:atSampleIndex:withBarrier:)]) {
+            [(id<MTLComputeCommandEncoder>)encoder
+                sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.sampleBuffer
+                         atSampleIndex:timing.endIndex
+                           withBarrier:YES];
+        }
+    }
+}
+
+void AfterEndEncoding(id encoder) {
     OpenPass pass;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -455,8 +999,29 @@ void EndRenderPass(id encoder) {
         if (it == g_openPasses.end()) return;
         pass = std::move(it->second);
         g_openPasses.erase(it);
+        if (pass.timing.sampleBuffer != nil) {
+            PassTiming pt;
+            pt.frame = g_frameIndex;
+            pt.commandBufferId = pass.commandBufferId;
+            pt.passIndex = pass.passIndex;
+            pt.kind = pass.kind;
+            pt.startIndex = pass.timing.startIndex;
+            pt.endIndex = pass.timing.endIndex;
+            g_passTimings.push_back(pt);
+        }
     }
-    if (pass.attachments.empty() || pass.commandBuffer == nil) return;
+    if (pass.commandBuffer == nil) return;
+
+    bool anything = false;
+    for (const PendingTexture &t : pass.attachments) {
+        if (t.error.empty() && t.size != 0) anything = true;
+    }
+    anything = anything || !pass.deferredBuffers.empty();
+    if (!anything) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (PendingTexture &t : pass.attachments) g_textures.push_back(std::move(t));
+        return;
+    }
 
     // The application has ended its encoder, so the command buffer will take another. This is the
     // Metal counterpart of the layer appending barriers and vkCmdCopyImageToBuffer to the
@@ -465,44 +1030,122 @@ void EndRenderPass(id encoder) {
     id<MTLCommandBuffer> commandBuffer = (id<MTLCommandBuffer>)pass.commandBuffer;
     id<MTLDevice> device = commandBuffer.device;
     id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    if (blit == nil) {
+        Log("read-back: could not open a blit encoder on the command buffer");
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (PendingTexture &t : pass.attachments) {
+            t.error = "could not open a blit encoder for the read-back";
+            [t.source release];
+            t.source = nil;
+            g_textures.push_back(std::move(t));
+        }
+        return;
+    }
     blit.label = @"gpu-inspector readback";
-    for (size_t i = 0; i < pass.attachments.size(); i++) {
-        PendingTexture &t = pass.attachments[i];
-        if (!t.error.empty() || t.size == 0) continue;
-        id<MTLTexture> texture = pass.textures[i];
+    for (PendingTexture &t : pass.attachments) {
+        if (!t.error.empty() || t.size == 0 || t.source == nil) continue;
         t.staging = [device newBufferWithLength:t.size options:MTLResourceStorageModeShared];
-        if (t.staging == nil) continue;
-        [blit copyFromTexture:texture
-                  sourceSlice:0
-                  sourceLevel:0
-                 sourceOrigin:MTLOriginMake(0, 0, 0)
+        if (t.staging == nil) {
+            t.error = "could not allocate a staging buffer";
+            continue;
+        }
+        [blit copyFromTexture:t.source
+                  sourceSlice:t.slice
+                  sourceLevel:t.level
+                 sourceOrigin:MTLOriginMake(0, 0, t.depthPlane)
                    sourceSize:MTLSizeMake(t.width, t.height, 1)
                      toBuffer:t.staging
             destinationOffset:0
        destinationBytesPerRow:(NSUInteger)t.bytesPerRow
-     destinationBytesPerImage:t.size];
+     destinationBytesPerImage:t.size
+                      options:t.options];
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (uint64_t id : pass.deferredBuffers) {
+            for (CapturedBuffer &b : g_buffers) {
+                if (b.id != id || b.source == nil) continue;
+                if (b.managed) {
+                    [blit synchronizeResource:b.source];
+                } else {
+                    b.staging = [device newBufferWithLength:b.size
+                                                    options:MTLResourceStorageModeShared];
+                    if (b.staging == nil) {
+                        b.error = "could not allocate a staging buffer";
+                        continue;
+                    }
+                    [blit copyFromBuffer:b.source
+                            sourceOffset:b.offset
+                                toBuffer:b.staging
+                       destinationOffset:0
+                                    size:b.size];
+                }
+                break;
+            }
+        }
     }
     [blit endEncoding];
 
     std::lock_guard<std::mutex> lock(g_mutex);
-    for (PendingTexture &t : pass.attachments) {
-        if (t.staging != nil || !t.error.empty()) g_textures.push_back(std::move(t));
+    for (PendingTexture &t : pass.attachments) g_textures.push_back(std::move(t));
+}
+
+// --------------------------------------------------------------------------------------------
+// Frame boundaries
+
+void OnDrawableAcquired(id drawable, id texture) {
+    if (drawable == nil || texture == nil) return;
+    DrawableInfo info;
+    info.drawable = (__bridge const void *)drawable;
+    if ([drawable respondsToSelector:@selector(drawableID)]) {
+        info.drawableID = (uint64_t)[(id<MTLDrawable>)drawable drawableID];
     }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_drawableOfTexture[(__bridge const void *)texture] = info;
+}
+
+void OnRenderTarget(id commandBuffer, id texture) {
+    if (commandBuffer == nil || texture == nil) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_drawableOfTexture.find((__bridge const void *)texture);
+    if (it == g_drawableOfTexture.end()) return;
+    g_targetOfCommandBuffer[(__bridge const void *)commandBuffer] = it->second;
 }
 
 void OnPresentDrawable(id commandBuffer, id drawable) {
     if (commandBuffer == nil) return;
+    DrawableInfo info;
+    info.drawable = (__bridge const void *)drawable;
+    if (drawable != nil && [drawable respondsToSelector:@selector(drawableID)]) {
+        info.drawableID = (uint64_t)[(id<MTLDrawable>)drawable drawableID];
+    }
     std::lock_guard<std::mutex> lock(g_mutex);
     g_presenting.insert((__bridge const void *)commandBuffer);
-    if (drawable != nil) g_presentedByCommandBuffer.insert((__bridge const void *)drawable);
+    if (drawable != nil) g_presentedByCommandBuffer.push_back(info);
 }
 
 bool OnDrawablePresent(id drawable) {
+    if (drawable == nil) return false;
+    const void *pointer = (__bridge const void *)drawable;
+    uint64_t drawableID = 0;
+    if ([drawable respondsToSelector:@selector(drawableID)]) {
+        drawableID = (uint64_t)[(id<MTLDrawable>)drawable drawableID];
+    }
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        // Already accounted for: this is the convenience method calling through, not the
-        // application presenting the drawable itself.
-        if (g_presentedByCommandBuffer.erase((__bridge const void *)drawable) != 0) return false;
+        // Already accounted for: the convenience method calling through, not the application
+        // presenting the drawable itself. Matched by pointer, then by drawableID for a driver
+        // that hands the present a different object for the same drawable.
+        for (auto it = g_presentedByCommandBuffer.begin(); it != g_presentedByCommandBuffer.end(); ++it) {
+            if (it->drawable == pointer || (drawableID != 0 && it->drawableID == drawableID)) {
+                g_presentedByCommandBuffer.erase(it);
+                return false;
+            }
+        }
+        // The application presents drawables itself. From here on the frame ends at the commit
+        // of the command buffer that rendered into the drawable.
+        g_directPresent = true;
+        if (g_countedDrawables.erase(pointer) != 0) return false;
     }
     AdvanceFrame();
     return true;
@@ -511,14 +1154,38 @@ bool OnDrawablePresent(id drawable) {
 void OnCommit(id commandBuffer) {
     bool presents = false;
     bool recording = false;
+    bool boundary = false;
+    DrawableInfo target;
+    bool hasTarget = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         recording = g_recording;
         presents = g_presenting.erase((__bridge const void *)commandBuffer) != 0;
+        auto it = g_targetOfCommandBuffer.find((__bridge const void *)commandBuffer);
+        if (it != g_targetOfCommandBuffer.end()) {
+            target = it->second;
+            hasTarget = true;
+            g_targetOfCommandBuffer.erase(it);
+        }
+        g_passCounters.erase((__bridge const void *)commandBuffer);
+        boundary = presents;
+        if (!presents && hasTarget && g_directPresent
+            && g_countedDrawables.count(target.drawable) == 0) {
+            // The frame ends here; the drawable's own present, when it arrives from the
+            // scheduled handler, will find it already counted.
+            g_countedDrawables.insert(target.drawable);
+            boundary = true;
+        }
     }
-    // Before the hook forwards the commit, which is the only time this is allowed.
-    if (recording) TrackCompletion(commandBuffer);
-    if (presents) AdvanceFrame();
+    if (recording) {
+        // The present marker first, so a frame that ends through the drawable's own present
+        // still reads present-then-commit the way the convenience path does.
+        if (boundary && !presents) RecordPresentMarker(commandBuffer, target);
+        RecordCommand("commit", commandBuffer, {});
+        // Before the hook forwards the commit, which is the only time this is allowed.
+        TrackCompletion(commandBuffer);
+    }
+    if (boundary) AdvanceFrame();
 }
 
 }  // namespace mtlinsp

@@ -1,3 +1,20 @@
+## Unreleased
+
+### Added
+- Metal capture library (`metal/`, macOS, Apple Silicon verified): injected with
+  `DYLD_INSERT_LIBRARIES`, hooks the driver's classes rather than wrapping objects, and speaks
+  the Vulkan layer's protocol so the Inspect and Capture panels work unchanged. Tracks the
+  device, queues, buffers, textures and views, heaps, libraries and functions, samplers,
+  depth-stencil states, pipelines in every creation spelling, fences, events, argument encoders
+  and indirect command buffers, with `DeleteObjects` from a `dealloc` hook. Records about two
+  hundred selectors across the command buffer and the render, compute and blit encoders; reads
+  back colour and depth attachments (multisample through the resolve), bound buffers in shared,
+  managed and private storage, and inline constant blocks; times every pass with a counter
+  sample buffer. Frames end at the commit of the presenting command buffer on both
+  `presentDrawable:` and `[drawable present]` paths, the latter being what Unity's player uses.
+- Launch dialog on macOS launches a `.app` with the Metal library, and says how to re-sign a
+  hardened-runtime target that dyld would otherwise silently refuse.
+
 ## 0.7.0
 
 ### Added

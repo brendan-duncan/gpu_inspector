@@ -8,7 +8,7 @@
 import type { BoundIndexBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
 import type { CaptureCommand } from "../../shared/protocol.js";
 // Generic argument coercers that happen to live beside the Vulkan object model.
-import { num } from "../vulkan/vulkan_object.js";
+import { isObject, num } from "../vulkan/vulkan_object.js";
 
 const DRAW = new Set([
   "drawPrimitives:vertexStart:vertexCount:",
@@ -19,32 +19,52 @@ const DRAW = new Set([
   "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
   "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:",
   "drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+  "drawPatches:patchStart:patchCount:patchIndexBuffer:patchIndexBufferOffset:instanceCount:baseInstance:",
+  "drawPatches:patchIndexBuffer:patchIndexBufferOffset:indirectBuffer:indirectBufferOffset:",
+  "drawIndexedPatches:patchStart:patchCount:patchIndexBuffer:patchIndexBufferOffset:controlPointIndexBuffer:controlPointIndexBufferOffset:instanceCount:baseInstance:",
+  "drawIndexedPatches:patchIndexBuffer:patchIndexBufferOffset:controlPointIndexBuffer:controlPointIndexBufferOffset:indirectBuffer:indirectBufferOffset:",
   "drawMeshThreadgroups:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:",
   "drawMeshThreads:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:",
+  "drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:",
+  // An indirect command buffer executed in a render pass is a batch of draws.
+  "executeCommandsInBuffer:withRange:",
+  "executeCommandsInBuffer:indirectBuffer:indirectBufferOffset:",
 ]);
 
 const DISPATCH = new Set([
   "dispatchThreads:threadsPerThreadgroup:",
   "dispatchThreadgroups:threadsPerThreadgroup:",
   "dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:",
+  "dispatchThreadsPerTile:",
 ]);
 
 const INDIRECT = new Set([
   "drawPrimitives:indirectBuffer:indirectBufferOffset:",
   "drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+  "drawPatches:patchIndexBuffer:patchIndexBufferOffset:indirectBuffer:indirectBufferOffset:",
+  "drawIndexedPatches:patchIndexBuffer:patchIndexBufferOffset:controlPointIndexBuffer:controlPointIndexBufferOffset:indirectBuffer:indirectBufferOffset:",
+  "drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:",
   "dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:",
+  "executeCommandsInBuffer:withRange:",
+  "executeCommandsInBuffer:indirectBuffer:indirectBufferOffset:",
 ]);
 
-// A Metal encoder *is* the pass: creating one begins it and endEncoding closes it, for render and
-// compute alike. That is why COMPUTE_PASS_END is empty — there is no run of dispatches to bracket
-// the way the Vulkan layer has to.
+// A Metal encoder *is* the pass: creating one begins it and endEncoding closes it, for render,
+// compute and blit alike. That is why COMPUTE_PASS_END is empty — there is no run of dispatches
+// to bracket the way the Vulkan layer has to. A parallel render encoder's sub-encoders share its
+// pass, so their creation (`renderCommandEncoder`) is deliberately not here.
 const PASS_BEGIN = new Set([
   "renderCommandEncoderWithDescriptor:",
+  "parallelRenderCommandEncoderWithDescriptor:",
   "computeCommandEncoder",
   "computeCommandEncoderWithDescriptor:",
   "computeCommandEncoderWithDispatchType:",
   "blitCommandEncoder",
   "blitCommandEncoderWithDescriptor:",
+  "resourceStateCommandEncoder",
+  "resourceStateCommandEncoderWithDescriptor:",
+  "accelerationStructureCommandEncoder",
+  "accelerationStructureCommandEncoderWithDescriptor:",
 ]);
 const PASS_END = new Set(["endEncoding"]);
 
@@ -58,19 +78,24 @@ export const METAL_SETS: CommandSets = {
   LABEL_END: new Set(["popDebugGroup"]),
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:
   // between them they are what vkQueueSubmit and vkQueuePresentKHR are in a Vulkan capture.
+  // `present` is the marker the library records when the frame ends through the drawable's own
+  // present rather than through the command buffer (metal/README.md, "Frame boundaries").
   SUBMIT: new Set(["commit", "presentDrawable:", "presentDrawable:atTime:",
-                   "presentDrawable:afterMinimumDuration:"]),
+                   "presentDrawable:afterMinimumDuration:", "present"]),
   // Metal binds resources to an encoder directly rather than through a descriptor set object;
   // argument buffers are the closest thing and are not captured yet.
   BIND_DESCRIPTOR: new Set(),
   BIND_VERTEX: new Set([
     "setVertexBuffer:offset:atIndex:",
     "setVertexBuffers:offsets:withRange:",
-    "setVertexBytes:length:atIndex:",
   ]),
   // Metal has no separate index-buffer binding: the index buffer is an argument of the draw.
   BIND_INDEX: new Set(),
-  PUSH_CONSTANT: new Set(["setVertexBytes:length:atIndex:", "setFragmentBytes:length:atIndex:"]),
+  // Inline constant blocks, on every stage that has them.
+  PUSH_CONSTANT: new Set([
+    "setVertexBytes:length:atIndex:", "setFragmentBytes:length:atIndex:", "setBytes:length:atIndex:",
+    "setObjectBytes:length:atIndex:", "setMeshBytes:length:atIndex:", "setTileBytes:length:atIndex:",
+  ]),
   INDIRECT,
   COMPUTE_PASS_END: new Set(),
   bindPointOf(method: string): string {
@@ -85,18 +110,35 @@ export const METAL_SETS: CommandSets = {
 
   vertexBuffersOf(cmd: CaptureCommand): BoundVertexBuffer[] {
     const a = cmd.args;
-    if (!a || a.buffer === undefined) return [];
-    // One buffer per call. Metal's vertex stride lives in the pipeline's vertex descriptor rather
-    // than in the binding, so there is nothing to report for it here.
-    return [{
-      cmd,
-      binding: num(a.index),
-      buffer: a.buffer,
-      offset: num(a.offset),
-      size: null,
-      stride: null,
-      dataId: cmd.bufferData?.[0] ?? 0,
-    }];
+    if (!a) return [];
+    // Metal's vertex stride lives in the pipeline's vertex descriptor rather than in the
+    // binding, so there is nothing to report for it here.
+    if (a.buffer !== undefined) {
+      return [{
+        cmd,
+        binding: num(a.index),
+        buffer: a.buffer,
+        offset: num(a.offset),
+        size: null,
+        stride: null,
+        dataId: cmd.bufferData?.[0] ?? 0,
+      }];
+    }
+    // setVertexBuffers:offsets:withRange:, a range of slots in one call, like Vulkan's.
+    if (Array.isArray(a.buffers)) {
+      const first = isObject(a.range) ? num(a.range.location) : 0;
+      const offsets = Array.isArray(a.offsets) ? a.offsets : [];
+      return a.buffers.map((buffer, i) => ({
+        cmd,
+        binding: first + i,
+        buffer,
+        offset: num(offsets[i]),
+        size: null,
+        stride: null,
+        dataId: cmd.bufferData?.[i] ?? 0,
+      }));
+    }
+    return [];
   },
 
   indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null {

@@ -42,7 +42,7 @@ uint64_t g_nextId = 1;
 std::unordered_map<const void *, uint64_t> g_byPointer;
 std::unordered_map<uint64_t, TrackedObject> g_byId;
 // Insertion order, so a snapshot arrives parents-first and the UI never sees a child whose parent
-// it has not been told about.
+// it has not been told about. Ids of objects since deleted stay in it until it is compacted.
 std::vector<uint64_t> g_order;
 bool g_live = false;
 
@@ -78,6 +78,31 @@ std::string AddObjectMessage(const TrackedObject &o) {
     return std::move(w.str());
 }
 
+/**
+ * The end of a tracked object's life. Installed on every class that has had an instance tracked,
+ * and called for every instance of it, tracked or not: the lookup is what tells them apart.
+ *
+ * Nothing is sent to the object — it is half destroyed — only its pointer is looked up. Always
+ * forwarded, whatever the re-entry depth: a release can happen inside any other hook, and an
+ * entry left behind here is the pointer-reuse bug this exists to prevent.
+ */
+void Replaced_dealloc(id self, SEL _cmd) {
+    Reentry reentry(self, _cmd);
+    UntrackObject(self);
+    ((void (*)(id, SEL))reentry.original())(self, _cmd);
+}
+
+/** Under g_mutex. Drops deleted ids from the snapshot order once they outnumber the live ones. */
+void CompactOrder() {
+    if (g_order.size() < 2 * g_byId.size() + 1024) return;
+    std::vector<uint64_t> live;
+    live.reserve(g_byId.size());
+    for (uint64_t id : g_order) {
+        if (g_byId.count(id) != 0) live.push_back(id);
+    }
+    g_order.swap(live);
+}
+
 }  // namespace
 
 id LiveObject(uint64_t id) {
@@ -96,9 +121,17 @@ uint64_t IdOf(id object) {
     return it == g_byPointer.end() ? 0 : it->second;
 }
 
+uint64_t AllocateId() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_nextId++;
+}
+
 uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
                      const std::string &argsJson) {
     if (object == nil) return 0;
+    // The library's own staging buffers, read-back queue and counter buffers are not the
+    // application's objects, and the UI should never see them.
+    if (IsInternal()) return 0;
     const void *pointer = (__bridge const void *)object;
 
     std::string message;
@@ -126,12 +159,40 @@ uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
         g_order.push_back(tracked.id);
         auto &stored = g_byId[tracked.id] = std::move(tracked);
         objc_storeWeak(&stored.weakSlot, object);
-        if (!g_live) return id;
-        message = AddObjectMessage(stored);
+        if (g_live) message = AddObjectMessage(stored);
     }
-    // Outside the lock: the send queue has its own, and holding both is how deadlocks start.
-    Transport::Get().SendJson(std::move(message));
+    // Outside the lock: Hook has its own, and so does the send queue, and holding both is how
+    // deadlocks start. Idempotent per class, so the cost is one lookup after the first instance.
+    Hook(object_getClass(object), sel_registerName("dealloc"), (IMP)Replaced_dealloc);
+    if (!message.empty()) Transport::Get().SendJson(std::move(message));
     return id;
+}
+
+void UntrackObject(id object) {
+    if (object == nil) return;
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_byPointer.find((__bridge const void *)object);
+        if (it == g_byPointer.end()) return;
+        const uint64_t id = it->second;
+        g_byPointer.erase(it);
+        auto tracked = g_byId.find(id);
+        if (tracked != g_byId.end()) {
+            // Unregisters the slot with the runtime before the memory holding it goes away.
+            objc_storeWeak(&tracked->second.weakSlot, nil);
+            g_byId.erase(tracked);
+        }
+        CompactOrder();
+        if (!g_live) return;
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("DeleteObjects");
+        w.Key("ids"); w.BeginArray(); w.Uint(id); w.EndArray();
+        w.EndObject();
+        message = std::move(w.str());
+    }
+    Transport::Get().SendJson(std::move(message));
 }
 
 void AddBlob(id object, const char *name, const void *data, size_t size) {
@@ -182,7 +243,7 @@ void SendBlob(uint64_t objectId, uint32_t index) {
     w.Key("index"); w.Uint(index);
     w.Key("size"); w.Uint(data.size());
     w.EndObject();
-    Transport::Get().SendBinary(std::move(w.str()), data.data(), data.size());
+    Transport::Get().SendBinary(std::move(w.str()), std::move(data));
 }
 
 void TrackLabel(id object) {
@@ -215,7 +276,7 @@ void SendSnapshot() {
     std::vector<std::string> messages;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        messages.reserve(g_order.size());
+        messages.reserve(g_byId.size());
         for (uint64_t id : g_order) {
             auto it = g_byId.find(id);
             if (it != g_byId.end()) messages.push_back(AddObjectMessage(it->second));

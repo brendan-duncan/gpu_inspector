@@ -974,6 +974,20 @@ export class CommandInfoView {
 
   /** The vertex layout of one binding: stride, input rate and its attributes, from the pipeline or dynamic state. */
   private _vertexLayout(state: DrawState, binding: number, vb: BoundVertexBuffer): { stride: number; rate: string; attributes: { location: number; format: string; offset: number }[] } | null {
+    // Metal: the pipeline's MTLVertexDescriptor, with a layout per buffer index and attributes
+    // that name their buffer. Each attribute carries the protocol's format name beside Metal's,
+    // which is what the decoder below understands.
+    const vd = state.pipeline?.descriptor?.vertexDescriptor;
+    if (isObject(vd)) {
+      const layouts = Array.isArray(vd.layouts) ? vd.layouts : [];
+      const attrs = Array.isArray(vd.attributes) ? vd.attributes : [];
+      const layout = layouts.find((l) => isObject(l) && num(l.index) === binding);
+      if (!isObject(layout)) return null;
+      const attributes = attrs.filter((a): a is ArgObject => isObject(a) && num(a.bufferIndex) === binding)
+        .map((a) => ({ location: num(a.index), format: str(a.vkFormat ?? a.format), offset: num(a.offset) }))
+        .sort((x, y) => x.offset - y.offset);
+      return { stride: vb.stride ?? num(layout.stride), rate: str(layout.stepFunction).includes("PerInstance") ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX", attributes };
+    }
     const vi = state.vertexInput ?? (isObject(state.pipeline?.descriptor?.pVertexInputState) ? state.pipeline!.descriptor!.pVertexInputState : null);
     if (!isObject(vi)) return null;
     const bindings = Array.isArray(vi.pVertexBindingDescriptions) ? vi.pVertexBindingDescriptions : [];

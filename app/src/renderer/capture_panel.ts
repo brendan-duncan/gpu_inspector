@@ -645,7 +645,8 @@ export class CaptureView implements CaptureHost {
       }
       if (sets.LABEL_BEGIN.has(cmd.method)) {
         const info = cmd.args && (isObject(cmd.args.pLabelInfo) ? cmd.args.pLabelInfo : isObject(cmd.args.pMarkerInfo) ? cmd.args.pMarkerInfo : null);
-        const name = info ? str(info.pLabelName ?? info.pMarkerName) : cmd.method;
+        // Vulkan carries the name in a label-info struct; Metal's pushDebugGroup: has it as `label`.
+        const name = info ? str(info.pLabelName ?? info.pMarkerName) : cmd.args && cmd.args.label !== undefined ? str(cmd.args.label) : cmd.method;
         const block = new collapsible(current, { label: name, collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
         this._addRow(block.titleBar, cmd, true);
         stack.push(current);
@@ -694,6 +695,19 @@ export class CaptureView implements CaptureHost {
       const colors = Array.isArray(a.pRenderingInfo.pColorAttachments) ? a.pRenderingInfo.pColorAttachments.length : 0;
       return `Rendering ${passIndex}: ${colors} color attachment${colors === 1 ? "" : "s"}`;
     }
+    // Metal: a render pass descriptor names its attachments directly, and the first colour
+    // attachment's texture is the best short name for the pass.
+    if (a && Array.isArray(a.colorAttachments)) {
+      const first = a.colorAttachments.find((c) => isObject(c) && c.texture !== null);
+      const target = isObject(first) ? db.getObject(refId(first.texture)) : null;
+      const colors = a.colorAttachments.length;
+      const depth = isObject(a.depthAttachment) ? " + depth" : "";
+      return `Render Pass ${passIndex}: ${target?.name ?? `${colors} color attachment${colors === 1 ? "" : "s"}`}${depth}`;
+    }
+    if (cmd.method.startsWith("computeCommandEncoder")) return `Compute Pass ${passIndex}`;
+    if (cmd.method.startsWith("blitCommandEncoder")) return `Blit Pass ${passIndex}`;
+    if (cmd.method.startsWith("resourceStateCommandEncoder")) return `Resource State Pass ${passIndex}`;
+    if (cmd.method.startsWith("accelerationStructureCommandEncoder")) return `Acceleration Structure Pass ${passIndex}`;
     return `Pass ${passIndex}`;
   }
 

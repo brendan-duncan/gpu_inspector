@@ -186,6 +186,8 @@ export interface CaptureCommand {
   frame: number;                  // frame ordinal within the capture (0-based)
   method: string;                 // "vkCmdDraw", "vkQueueSubmit", ...
   object: HandleRef | null;       // command buffer or queue
+  /** Metal: the encoder the command was issued on, with an id that is never announced as an object. */
+  encoder?: HandleRef;
   args: ArgObject | null;
   result?: number;
   children?: CaptureChildBuffer[]; // secondary command buffers of vkCmdExecuteCommands

@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -29,13 +30,23 @@ uint16_t PortFromEnvironment() {
     return port > 0 && port < 65536 ? (uint16_t)port : kDefaultPort;
 }
 
+void AppendU32(std::string &frame, uint32_t value) {
+    frame.push_back((char)(value & 0xff));
+    frame.push_back((char)((value >> 8) & 0xff));
+    frame.push_back((char)((value >> 16) & 0xff));
+    frame.push_back((char)((value >> 24) & 0xff));
+}
+
 void AppendHeader(std::string &frame, uint32_t length, uint8_t kind) {
-    frame.push_back((char)(length & 0xff));
-    frame.push_back((char)((length >> 8) & 0xff));
-    frame.push_back((char)((length >> 16) & 0xff));
-    frame.push_back((char)((length >> 24) & 0xff));
+    AppendU32(frame, length);
     frame.push_back((char)kind);
 }
+
+/** One queued message: the framing and header, then an optional payload sent right after it. */
+struct Outgoing {
+    std::string head;
+    std::vector<uint8_t> payload;
+};
 
 }  // namespace
 
@@ -46,13 +57,13 @@ struct Transport::Impl {
 
     std::mutex queueMutex;
     std::condition_variable queueReady;
-    std::deque<std::string> queue;
+    std::deque<Outgoing> queue;
 
     std::function<void()> onConnect;
     std::function<void()> onDisconnect;
     std::function<void(const std::string &)> onMessage;
 
-    void Enqueue(std::string frame) {
+    void Enqueue(Outgoing frame) {
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             queue.push_back(std::move(frame));
@@ -60,10 +71,21 @@ struct Transport::Impl {
         queueReady.notify_one();
     }
 
+    bool SendAll(const void *data, size_t size) {
+        const char *bytes = static_cast<const char *>(data);
+        size_t sent = 0;
+        while (sent < size) {
+            const ssize_t n = send(client, bytes + sent, size - sent, 0);
+            if (n <= 0) return false;
+            sent += (size_t)n;
+        }
+        return true;
+    }
+
     /** Drains the queue onto the socket until the connection drops. */
     void SendLoop() {
         while (connected) {
-            std::string frame;
+            Outgoing frame;
             {
                 std::unique_lock<std::mutex> lock(queueMutex);
                 queueReady.wait(lock, [this] { return !queue.empty() || !connected; });
@@ -71,15 +93,11 @@ struct Transport::Impl {
                 frame = std::move(queue.front());
                 queue.pop_front();
             }
-            size_t sent = 0;
-            while (sent < frame.size()) {
-                const ssize_t n = send(client, frame.data() + sent, frame.size() - sent, 0);
-                if (n <= 0) {
-                    Log("send failed; disconnecting");
-                    connected = false;
-                    break;
-                }
-                sent += (size_t)n;
+            if (!SendAll(frame.head.data(), frame.head.size())
+                || !SendAll(frame.payload.data(), frame.payload.size())) {
+                Log("send failed; disconnecting");
+                connected = false;
+                break;
             }
         }
     }
@@ -87,19 +105,26 @@ struct Transport::Impl {
     /** Reads length-prefixed frames from the client until it goes away. */
     void ReceiveLoop() {
         std::string pending;
+        size_t consumed = 0;
         char buffer[4096];
         while (connected) {
             const ssize_t n = recv(client, buffer, sizeof(buffer), 0);
             if (n <= 0) break;
             pending.append(buffer, (size_t)n);
             for (;;) {
-                if (pending.size() < 5) break;
+                if (pending.size() - consumed < 5) break;
                 uint32_t length = 0;
-                memcpy(&length, pending.data(), 4);
-                if (pending.size() < 5 + length) break;
-                const uint8_t kind = (uint8_t)pending[4];
-                if (kind == 0 && onMessage) onMessage(pending.substr(5, length));
-                pending.erase(0, 5 + length);
+                memcpy(&length, pending.data() + consumed, 4);
+                if (pending.size() - consumed < 5 + length) break;
+                const uint8_t kind = (uint8_t)pending[consumed + 4];
+                if (kind == 0 && onMessage) onMessage(pending.substr(consumed + 5, length));
+                consumed += 5 + length;
+            }
+            // Erased in one go rather than per message, which for a burst of messages was
+            // quadratic in the buffer.
+            if (consumed > 0) {
+                pending.erase(0, consumed);
+                consumed = 0;
             }
         }
         connected = false;
@@ -137,6 +162,10 @@ struct Transport::Impl {
             if (accepted == kInvalidSocket) break;
             const int noDelay = 1;
             setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
+            // A client that goes away mid-send raises SIGPIPE by default, which would take the
+            // application down with it.
+            const int noSigPipe = 1;
+            setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
             client = accepted;
             connected = true;
             Log("client connected");
@@ -179,26 +208,28 @@ bool Transport::Connected() const {
 
 void Transport::SendJson(std::string json) {
     if (impl_ == nullptr || !impl_->connected) return;
-    std::string frame;
-    frame.reserve(json.size() + 5);
-    AppendHeader(frame, (uint32_t)json.size(), 0);
-    frame += json;
+    Outgoing frame;
+    frame.head.reserve(json.size() + 5);
+    AppendHeader(frame.head, (uint32_t)json.size(), 0);
+    frame.head += json;
+    impl_->Enqueue(std::move(frame));
+}
+
+void Transport::SendBinary(std::string headerJson, std::vector<uint8_t> payload) {
+    if (impl_ == nullptr || !impl_->connected) return;
+    Outgoing frame;
+    frame.head.reserve(headerJson.size() + 9);
+    AppendHeader(frame.head, (uint32_t)(4 + headerJson.size() + payload.size()), 1);
+    AppendU32(frame.head, (uint32_t)headerJson.size());
+    frame.head += headerJson;
+    frame.payload = std::move(payload);
     impl_->Enqueue(std::move(frame));
 }
 
 void Transport::SendBinary(std::string headerJson, const void *data, size_t size) {
     if (impl_ == nullptr || !impl_->connected) return;
-    std::string frame;
-    frame.reserve(headerJson.size() + size + 9);
-    AppendHeader(frame, (uint32_t)(4 + headerJson.size() + size), 1);
-    const uint32_t headerLength = (uint32_t)headerJson.size();
-    frame.push_back((char)(headerLength & 0xff));
-    frame.push_back((char)((headerLength >> 8) & 0xff));
-    frame.push_back((char)((headerLength >> 16) & 0xff));
-    frame.push_back((char)((headerLength >> 24) & 0xff));
-    frame += headerJson;
-    frame.append(static_cast<const char *>(data), size);
-    impl_->Enqueue(std::move(frame));
+    const uint8_t *bytes = static_cast<const uint8_t *>(data);
+    SendBinary(std::move(headerJson), std::vector<uint8_t>(bytes, bytes + size));
 }
 
 void Transport::SetOnConnect(std::function<void()> handler) {

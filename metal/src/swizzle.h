@@ -15,7 +15,9 @@
 // handles (docs/ARCHITECTURE.md, "Handles: pass-through"): the application keeps the real object,
 // state lives in side tables keyed by the pointer, and nothing has to be unwrapped on the way
 // back out. It matters more here than in Vulkan, because CoreAnimation and MetalKit inspect the
-// objects they are handed and a proxy class does not survive that.
+// objects they are handed and a proxy class does not survive that. (RenderDoc wraps, and has to
+// add Metal's private MTLTextureImplementation protocol to its proxy so the driver's assert
+// passes — exactly that problem.)
 #pragma once
 
 #import <objc/runtime.h>
@@ -26,19 +28,14 @@ namespace mtlinsp {
  * Replaces `cls`'s implementation of `sel` with `replacement`, once per class.
  *
  * Returns false if the class has no such method — expected, since a protocol carries optional
- * methods and API levels differ. Safe to call repeatedly for the same class and selector.
+ * methods and API levels differ — or if the class already carries a *different* replacement for
+ * the selector, which would chain two hooks and confuse the original resolution below. Safe to
+ * call repeatedly for the same class and selector.
+ *
+ * The original is published before the replacement is installed, so a call that lands on the
+ * new implementation from another thread always finds what to forward to.
  */
 bool Hook(Class cls, SEL sel, IMP replacement);
-
-/**
- * The implementation `sel` had before it was hooked, for the receiver's class. A hook always
- * calls this and forwards to it; returning without doing so would drop the application's call.
- *
- * Resolved by walking up from the receiver's class to the class the hook was installed on. Hooks
- * are added to that class alone rather than written over an inherited implementation, so a
- * sibling class that shares an ancestor is never affected. See Hook() in swizzle.mm.
- */
-IMP Original(id self, SEL sel);
 
 /**
  * True the first time a class is passed in, false afterwards. The hook installers are called on
@@ -47,32 +44,59 @@ IMP Original(id self, SEL sel);
  */
 bool FirstSighting(Class cls);
 
-
 /**
- * Suppresses everything but the outermost observation of one application call.
+ * One intercepted call: whether it is the application's, and what it should forward to.
  *
- * Metal wraps its own objects when its validation layers are on: with MTL_DEBUG_LAYER the
- * application holds an MTLDebugCommandBuffer, with MTL_SHADER_VALIDATION as well that wraps an
- * MTLGPUDebugCommandBuffer, and only the innermost is the driver's AGX* object. Each forwards to
- * the next, and since the hooks are installed per class every level is intercepted, so one
- * `presentDrawable:` from the application arrives here two or three times.
+ * Every hook constructs one of these first, forwards through `original()`, and records only when
+ * `outermost()`. Two things are decided here:
  *
- * The outermost call is the application's, so that is the one recorded; the rest are Metal
- * talking to itself. Every level still forwards — only the recording is skipped — so the
- * application's behaviour is unchanged either way.
+ * **Re-entry.** Metal wraps its own objects when its validation layers are on: with
+ * MTL_DEBUG_LAYER the application holds an MTLDebugCommandBuffer, with MTL_SHADER_VALIDATION as
+ * well that wraps an MTLGPUDebugCommandBuffer, and only the innermost is the driver's AGX* object.
+ * Each forwards to the next, and since the hooks are installed per class every level is
+ * intercepted, so one `presentDrawable:` from the application arrives two or three times. The
+ * outermost call is the application's, so that is the one recorded; the rest are Metal talking to
+ * itself. Every level still forwards, so behaviour is unchanged. Per thread, because Metal allows
+ * encoding from several threads at once. The library's own Metal calls, issued from inside a hook,
+ * are nested by construction and so never recorded either.
  *
- * Per thread, because Metal allows encoding from several threads at once.
+ * **Which original.** A hook lives on the exact class it was installed on, and an instance of a
+ * subclass reaches it by inheritance, so the original is found by walking up from the receiver's
+ * class. The one case that walk gets wrong is a hooked subclass whose own override calls `super`
+ * into a hooked ancestor: both levels run the same replacement, and resolving from the receiver's
+ * class twice returns the subclass's override twice, forever. So a nested observation of the same
+ * selector on the same object resolves from above where the outer one resolved. Metal's class
+ * trees are shaped that way on some GPUs (only Apple Silicon is verified), which is why it is
+ * handled rather than assumed away.
+ *
+ * Lookups are lock-free: the table of originals is an immutable snapshot replaced wholesale by
+ * Hook(), which happens a few dozen times in a process, and read by every intercepted draw.
  */
 class Reentry {
 public:
-    Reentry();
+    Reentry(id self, SEL sel);
     ~Reentry();
     /** True when this is the application's call rather than one wrapper calling the next. */
     bool outermost() const { return outermost_; }
+    /** The implementation this hook shadows for this receiver. Cast to the method's signature. */
+    IMP original() const { return original_; }
 
 private:
     bool outermost_;
+    IMP original_;
 };
+
+/**
+ * Marks Metal calls the library issues on its own behalf — read-back blits, staging buffers, the
+ * image read-back queue — so that the tracker does not announce them as the application's objects
+ * and the capture does not record them as the application's commands. Per thread.
+ */
+class Internal {
+public:
+    Internal();
+    ~Internal();
+};
+bool IsInternal();
 
 /** Logging: `MTLINSP_LOG=1` in the environment, matching the layer's VKINSP_LOG. */
 bool LogEnabled();

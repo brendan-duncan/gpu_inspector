@@ -8,6 +8,12 @@
 // protocol name the application sees (MTLBuffer, MTLRenderPipelineState) rather than the driver's
 // private class.
 //
+// Lifetime comes from a `dealloc` hook on each tracked class: when the application lets go of an
+// object, DeleteObjects goes out and the entry is dropped. That is what makes the pointer key
+// safe — without it a freed buffer's address, reused for a new one, would answer with the old
+// object's id — and it is what keeps the table from growing for as long as the game runs. It is
+// the same signal RenderDoc takes from its wrapper's dealloc, without the wrapper.
+//
 // Ids are stable and never reused, so the UI can hold on to one after the object is gone.
 #pragma once
 
@@ -27,13 +33,23 @@ namespace mtlinsp {
  * `argsJson` is the descriptor, already serialized, or empty.
  *
  * Returns the id, or the existing id when the object is already tracked — Metal hands the same
- * object back more than once (the device, most obviously).
+ * object back more than once (the device, most obviously). Returns 0, tracking nothing, for an
+ * object the library made for itself (see Internal in swizzle.h).
  */
 uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
                      const std::string &argsJson);
 
+/** Drops an object that is being deallocated, and streams DeleteObjects. No-op if untracked. */
+void UntrackObject(id object);
+
 /** Id of an already-tracked object, or 0. */
 uint64_t IdOf(id object);
+
+/**
+ * An id from the same sequence as tracked objects, for something the capture names but does not
+ * announce — a command encoder — so that it cannot collide with an object the UI knows.
+ */
+uint64_t AllocateId();
 
 /**
  * The tracked object with this id, if it is still alive, else nil.

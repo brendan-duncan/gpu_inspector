@@ -215,6 +215,7 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 153: return {"VK_FORMAT_BC7_SRGB_BLOCK", 4, 4, 16};
         case 250: return {"VK_FORMAT_D16_UNORM", 1, 1, 2};
         case 252: return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};
+        case 253: return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         case 255: return {"VK_FORMAT_D24_UNORM_S8_UINT", 1, 1, 4};
         case 260: return {"VK_FORMAT_D32_SFLOAT_S8_UINT", 1, 1, 8};
         default: return {"", 0, 0, 0};
@@ -244,6 +245,190 @@ const char *StorageModeEnumName(MTLStorageMode mode) {
         case MTLStorageModePrivate:    return "MTLStorageModePrivate";
         case MTLStorageModeMemoryless: return "MTLStorageModeMemoryless";
         default:                       return "";
+    }
+}
+
+PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption *option) {
+    if (option != nullptr) *option = MTLBlitOptionNone;
+    switch ((NSUInteger)format) {
+        case 250: return {"VK_FORMAT_D16_UNORM", 1, 1, 2};   // Depth16Unorm
+        case 252: return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};  // Depth32Float
+        case 255:                                            // Depth24Unorm_Stencil8
+            if (option != nullptr) *option = MTLBlitOptionDepthFromDepthStencil;
+            // The depth aspect alone lands in a 32-bit word per pixel; the decoder for the
+            // combined format reads the low 24 bits, which is where the depth is.
+            return {"VK_FORMAT_D24_UNORM_S8_UINT", 1, 1, 4};
+        case 260:                                            // Depth32Float_Stencil8
+            if (option != nullptr) *option = MTLBlitOptionDepthFromDepthStencil;
+            return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};
+        default: return {"", 0, 0, 0};
+    }
+}
+
+bool PixelFormatHasDepth(MTLPixelFormat format) {
+    switch ((NSUInteger)format) {
+        case 250: case 252: case 255: case 260: return true;
+        default: return false;
+    }
+}
+
+bool PixelFormatHasStencil(MTLPixelFormat format) {
+    switch ((NSUInteger)format) {
+        case 253: case 255: case 260: case 261: case 262: return true;
+        default: return false;
+    }
+}
+
+// MTLVertexFormat, from MTLVertexDescriptor.h. Numeric so the table does not depend on which
+// SDK it is compiled against.
+const char *VertexFormatEnumName(MTLVertexFormat format) {
+    switch ((NSUInteger)format) {
+        case 0: return "MTLVertexFormatInvalid";
+        case 1: return "MTLVertexFormatUChar2";
+        case 2: return "MTLVertexFormatUChar3";
+        case 3: return "MTLVertexFormatUChar4";
+        case 4: return "MTLVertexFormatChar2";
+        case 5: return "MTLVertexFormatChar3";
+        case 6: return "MTLVertexFormatChar4";
+        case 7: return "MTLVertexFormatUChar2Normalized";
+        case 8: return "MTLVertexFormatUChar3Normalized";
+        case 9: return "MTLVertexFormatUChar4Normalized";
+        case 10: return "MTLVertexFormatChar2Normalized";
+        case 11: return "MTLVertexFormatChar3Normalized";
+        case 12: return "MTLVertexFormatChar4Normalized";
+        case 13: return "MTLVertexFormatUShort2";
+        case 14: return "MTLVertexFormatUShort3";
+        case 15: return "MTLVertexFormatUShort4";
+        case 16: return "MTLVertexFormatShort2";
+        case 17: return "MTLVertexFormatShort3";
+        case 18: return "MTLVertexFormatShort4";
+        case 19: return "MTLVertexFormatUShort2Normalized";
+        case 20: return "MTLVertexFormatUShort3Normalized";
+        case 21: return "MTLVertexFormatUShort4Normalized";
+        case 22: return "MTLVertexFormatShort2Normalized";
+        case 23: return "MTLVertexFormatShort3Normalized";
+        case 24: return "MTLVertexFormatShort4Normalized";
+        case 25: return "MTLVertexFormatHalf2";
+        case 26: return "MTLVertexFormatHalf3";
+        case 27: return "MTLVertexFormatHalf4";
+        case 28: return "MTLVertexFormatFloat";
+        case 29: return "MTLVertexFormatFloat2";
+        case 30: return "MTLVertexFormatFloat3";
+        case 31: return "MTLVertexFormatFloat4";
+        case 32: return "MTLVertexFormatInt";
+        case 33: return "MTLVertexFormatInt2";
+        case 34: return "MTLVertexFormatInt3";
+        case 35: return "MTLVertexFormatInt4";
+        case 36: return "MTLVertexFormatUInt";
+        case 37: return "MTLVertexFormatUInt2";
+        case 38: return "MTLVertexFormatUInt3";
+        case 39: return "MTLVertexFormatUInt4";
+        case 40: return "MTLVertexFormatInt1010102Normalized";
+        case 41: return "MTLVertexFormatUInt1010102Normalized";
+        case 42: return "MTLVertexFormatUChar4Normalized_BGRA";
+        case 45: return "MTLVertexFormatUChar";
+        case 46: return "MTLVertexFormatChar";
+        case 47: return "MTLVertexFormatUCharNormalized";
+        case 48: return "MTLVertexFormatCharNormalized";
+        case 49: return "MTLVertexFormatUShort";
+        case 50: return "MTLVertexFormatShort";
+        case 51: return "MTLVertexFormatUShortNormalized";
+        case 52: return "MTLVertexFormatShortNormalized";
+        case 53: return "MTLVertexFormatHalf";
+        case 54: return "MTLVertexFormatFloatRG11B10";
+        case 55: return "MTLVertexFormatFloatRGB9E5";
+        default: return "";
+    }
+}
+
+const char *VertexFormatCanonicalName(MTLVertexFormat format) {
+    switch ((NSUInteger)format) {
+        case 1: return "VK_FORMAT_R8G8_UINT";
+        case 2: return "VK_FORMAT_R8G8B8_UINT";
+        case 3: return "VK_FORMAT_R8G8B8A8_UINT";
+        case 4: return "VK_FORMAT_R8G8_SINT";
+        case 5: return "VK_FORMAT_R8G8B8_SINT";
+        case 6: return "VK_FORMAT_R8G8B8A8_SINT";
+        case 7: return "VK_FORMAT_R8G8_UNORM";
+        case 8: return "VK_FORMAT_R8G8B8_UNORM";
+        case 9: return "VK_FORMAT_R8G8B8A8_UNORM";
+        case 10: return "VK_FORMAT_R8G8_SNORM";
+        case 11: return "VK_FORMAT_R8G8B8_SNORM";
+        case 12: return "VK_FORMAT_R8G8B8A8_SNORM";
+        case 13: return "VK_FORMAT_R16G16_UINT";
+        case 14: return "VK_FORMAT_R16G16B16_UINT";
+        case 15: return "VK_FORMAT_R16G16B16A16_UINT";
+        case 16: return "VK_FORMAT_R16G16_SINT";
+        case 17: return "VK_FORMAT_R16G16B16_SINT";
+        case 18: return "VK_FORMAT_R16G16B16A16_SINT";
+        case 19: return "VK_FORMAT_R16G16_UNORM";
+        case 20: return "VK_FORMAT_R16G16B16_UNORM";
+        case 21: return "VK_FORMAT_R16G16B16A16_UNORM";
+        case 22: return "VK_FORMAT_R16G16_SNORM";
+        case 23: return "VK_FORMAT_R16G16B16_SNORM";
+        case 24: return "VK_FORMAT_R16G16B16A16_SNORM";
+        case 25: return "VK_FORMAT_R16G16_SFLOAT";
+        case 26: return "VK_FORMAT_R16G16B16_SFLOAT";
+        case 27: return "VK_FORMAT_R16G16B16A16_SFLOAT";
+        case 28: return "VK_FORMAT_R32_SFLOAT";
+        case 29: return "VK_FORMAT_R32G32_SFLOAT";
+        case 30: return "VK_FORMAT_R32G32B32_SFLOAT";
+        case 31: return "VK_FORMAT_R32G32B32A32_SFLOAT";
+        case 32: return "VK_FORMAT_R32_SINT";
+        case 33: return "VK_FORMAT_R32G32_SINT";
+        case 34: return "VK_FORMAT_R32G32B32_SINT";
+        case 35: return "VK_FORMAT_R32G32B32A32_SINT";
+        case 36: return "VK_FORMAT_R32_UINT";
+        case 37: return "VK_FORMAT_R32G32_UINT";
+        case 38: return "VK_FORMAT_R32G32B32_UINT";
+        case 39: return "VK_FORMAT_R32G32B32A32_UINT";
+        case 40: return "VK_FORMAT_A2B10G10R10_SNORM_PACK32";
+        case 41: return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+        case 42: return "VK_FORMAT_B8G8R8A8_UNORM";
+        case 45: return "VK_FORMAT_R8_UINT";
+        case 46: return "VK_FORMAT_R8_SINT";
+        case 47: return "VK_FORMAT_R8_UNORM";
+        case 48: return "VK_FORMAT_R8_SNORM";
+        case 49: return "VK_FORMAT_R16_UINT";
+        case 50: return "VK_FORMAT_R16_SINT";
+        case 51: return "VK_FORMAT_R16_UNORM";
+        case 52: return "VK_FORMAT_R16_SNORM";
+        case 53: return "VK_FORMAT_R16_SFLOAT";
+        case 54: return "VK_FORMAT_B10G11R11_UFLOAT_PACK32";
+        case 55: return "VK_FORMAT_E5B9G9R9_UFLOAT_PACK32";
+        default: return "";
+    }
+}
+
+const char *LoadActionEnumName(MTLLoadAction action) {
+    switch (action) {
+        case MTLLoadActionDontCare: return "MTLLoadActionDontCare";
+        case MTLLoadActionLoad:     return "MTLLoadActionLoad";
+        case MTLLoadActionClear:    return "MTLLoadActionClear";
+        default:                    return "";
+    }
+}
+
+const char *StoreActionEnumName(MTLStoreAction action) {
+    switch (action) {
+        case MTLStoreActionDontCare:                   return "MTLStoreActionDontCare";
+        case MTLStoreActionStore:                      return "MTLStoreActionStore";
+        case MTLStoreActionMultisampleResolve:         return "MTLStoreActionMultisampleResolve";
+        case MTLStoreActionStoreAndMultisampleResolve: return "MTLStoreActionStoreAndMultisampleResolve";
+        case MTLStoreActionUnknown:                    return "MTLStoreActionUnknown";
+        case MTLStoreActionCustomSampleDepthStore:     return "MTLStoreActionCustomSampleDepthStore";
+        default:                                       return "";
+    }
+}
+
+const char *PrimitiveTypeEnumName(MTLPrimitiveType type) {
+    switch (type) {
+        case MTLPrimitiveTypePoint:         return "MTLPrimitiveTypePoint";
+        case MTLPrimitiveTypeLine:          return "MTLPrimitiveTypeLine";
+        case MTLPrimitiveTypeLineStrip:     return "MTLPrimitiveTypeLineStrip";
+        case MTLPrimitiveTypeTriangle:      return "MTLPrimitiveTypeTriangle";
+        case MTLPrimitiveTypeTriangleStrip: return "MTLPrimitiveTypeTriangleStrip";
+        default:                            return "";
     }
 }
 

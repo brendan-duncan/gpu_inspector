@@ -1,10 +1,10 @@
 # Metal capture
 
-A first cut at capturing Metal, the way `layer/` captures Vulkan. It discovers and hooks the
-Metal class tree, tracks the objects an application creates, records the command stream of a
-frame on request, and streams all of it to the inspector over the same protocol the Vulkan layer
-speaks. The Inspect and Capture panels both work against a Metal application today. Resource
-read-back — render targets and buffer contents — is not written yet.
+Capturing Metal, the way `layer/` captures Vulkan. It discovers and hooks the Metal class tree,
+tracks the objects an application creates and releases, records the command stream of a frame on
+request with its render targets, bound buffers and GPU pass timings, and streams all of it to the
+inspector over the same protocol the Vulkan layer speaks. The Inspect and Capture panels both
+work against a Metal application.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
@@ -50,8 +50,14 @@ indexed instanced draw, and a present.
 Metal has no loader and no layer mechanism — nothing like the Vulkan loader's manifests and
 dispatch chaining, and no supported extension point at all. The library is loaded by
 `DYLD_INSERT_LIBRARIES` and takes the only chokepoints the API has: the C functions that hand out
-a device (`MTLCreateSystemDefaultDevice`, `MTLCopyAllDevices`), interposed through a
-`__DATA,__interpose` section. Everything below those is an Objective-C protocol method.
+a device (`MTLCreateSystemDefaultDevice`, `MTLCopyAllDevices`, `MTLCopyAllDevicesWithObserver`,
+`CGDirectDisplayCopyCurrentMetalDevice`), interposed through a `__DATA,__interpose` section.
+Everything below those is an Objective-C protocol method.
+
+An application can also get its device without calling any of them — a `CAMetalLayer`'s
+`preferredDevice`, an `MTKView`'s default — and then nothing would ever be hooked. So the
+`nextDrawable` hook registers the layer's device too, since every device that draws to a window
+passes through it. RenderDoc registers the layer's device at the same spot.
 
 **Code signing decides whether this is possible at all**, measured on macOS 15 / Apple Silicon
 with a dylib whose constructor logs:
@@ -95,12 +101,22 @@ which is the argument against hard-coding any of it:
 The objects are never wrapped, only their classes hooked. That is the same decision the Vulkan
 layer makes for handles (`docs/ARCHITECTURE.md`, "Handles: pass-through") and it matters more
 here: CoreAnimation and MetalKit inspect the objects they are handed, and a proxy class of ours
-would not survive that.
+would not survive that. RenderDoc's Metal driver wraps, and has to add Metal's private
+`MTLTextureImplementation` protocol to its proxy so that the driver's own assert passes — the
+problem, met.
 
-## Two things this caught
+The hooks are in four files by the class they intercept: `hooks_device.mm` for the device and
+what it creates (heaps, libraries, textures and buffers included, since each of those creates
+objects of its own), `hooks_command_buffer.mm` for queues, command buffers and the parallel
+render encoder, `hooks_encoders.mm` for the render, compute and blit encoders, and
+`hooks_descriptors.mm` for the JSON a descriptor becomes. RenderDoc's `*_bridge.mm` files
+enumerate every method of each protocol and were the checklist; about two hundred selectors are
+hooked.
 
-Both were crashes or wrong data before they were fixed, and both are properties of Metal rather
-than of this code, so any Metal capture library will meet them.
+## Three things this caught
+
+All three were crashes or wrong data before they were fixed, and all are properties of Metal
+rather than of this code, so any Metal capture library will meet them.
 
 **Metal wraps its own objects, so one call is seen several times.** With the validation layers on
 the application holds an `MTLDebugCommandBuffer` that wraps an `MTLGPUDebugCommandBuffer` that
@@ -108,7 +124,10 @@ wraps the driver's. Each forwards to the next, every level is hooked, and one `p
 from the application arrived three times — the frame counter advanced three times a frame and the
 command counts landed on whichever observation drained them. `Reentry` in `swizzle.h` records
 only the outermost call, which is the application's; the rest are Metal talking to itself. Every
-level still forwards, so behaviour is unchanged.
+level still forwards, so behaviour is unchanged. The library's own Metal calls — read-back blits,
+staging buffers — are issued from inside a hook and so are nested by construction; `Internal`
+marks the ones issued from elsewhere (the image read-back on the transport thread) so that
+neither the tracker nor the capture takes them for the application's.
 
 **A hooked implementation can belong to an ancestor shared with sibling classes.**
 `class_getInstanceMethod` walks up, so hooking "the render encoder's `endEncoding`" may really be
@@ -129,17 +148,26 @@ original. When the class already has its own implementation there is no sharing 
 and it is replaced in place. Siblings are then unaffected by construction, and a per-class key
 with a walk up from the receiver is sound again.
 
+**Except for one shape: a hooked subclass whose override calls `super` into a hooked ancestor.**
+Both levels run the same replacement, and resolving "the original" from the receiver's class
+twice returns the subclass's override twice, forever. So `Reentry` keeps a per-thread stack of
+the calls in progress, and a nested observation of the same selector on the same object resolves
+from above where the outer one resolved. The table of originals is an immutable snapshot swapped
+by `Hook` and read without a lock, because every intercepted draw and bind reads it — the
+previous mutex was the most contended thing in the library. Only Apple Silicon's class tree has
+been checked for the super-chain shape; Intel and AMD trees are where it would show up.
+
 Verified after all of it: three frames, `2 encoders, 1 draw, 1 dispatch` each, clean exit, no
 `no original` warnings, in all three validation modes.
 
 ## What this says about the real thing
 
-Encouraging: one interposed entry point reaches the entire tree; the frame boundary
-(`presentDrawable:`) is unambiguous where Vulkan needed heuristics for OpenXR; Metal has a real
-compute encoder, so the "runs of dispatches are a compute pass" rule in `capture.cpp` has no
-counterpart to write; load and store actions are per-attachment and mutable, so forcing a store
-during a capture replaces the whole `StoreAllRenderPass` machinery; and on Apple Silicon a shared
-buffer can often be read with no copy at all.
+Encouraging: one interposed entry point reaches the entire tree; the frame boundary is a present
+where Vulkan needed heuristics for OpenXR; Metal has a real compute encoder, so the "runs of
+dispatches are a compute pass" rule in `capture.cpp` has no counterpart to write; load and store
+actions are per-attachment and mutable, so forcing a store during a capture replaces the whole
+`StoreAllRenderPass` machinery; and on Apple Silicon a shared buffer can often be read with no
+copy at all.
 
 Expensive: there is no `vk.xml`. The Vulkan layer is ~8,000 lines of which most is generated —
 dispatch tables, forwarders, serializers — and none of that generator transfers. Metal also has
@@ -150,14 +178,35 @@ about.
 ## Talking to the UI
 
 `transport.mm` is the Vulkan layer's wire format byte for byte, and `tracker.mm` emits the same
-`AddObject` / `ObjectSetLabel` messages, so the UI needed no change at all to display Metal: it
-groups the objects by type, links each to its owner, and renders the descriptor. That is the
-API-neutral protocol claim in `docs/ARCHITECTURE.md` actually being tested for the first time.
+`AddObject` / `DeleteObjects` / `ObjectSetLabel` messages, so the UI needed no change at all to
+display Metal: it groups the objects by type, links each to its owner, and renders the
+descriptor. That is the API-neutral protocol claim in `docs/ARCHITECTURE.md` actually being
+tested for the first time.
 
-What is tracked: the device, command queues, buffers, textures, libraries, and render and compute
-pipeline states, each with the selector that created it and a hand-written descriptor. Command
-buffers and encoders are deliberately not tracked as objects — a Metal command buffer lives for
-one frame, so the object list would grow without bound; they belong to frame capture instead.
+What is tracked: the device, command queues, buffers, textures and texture views, heaps and what
+is sub-allocated from them, libraries and functions, sampler and depth-stencil states, render and
+compute pipeline states in every spelling of their creation (engines ask for reflection with the
+pipeline, and build many asynchronously — an unhooked spelling means `setRenderPipelineState:`
+resolves to null in every capture), fences, events, argument encoders and indirect command
+buffers, each with the selector that created it and a hand-written descriptor. A pipeline's
+descriptor carries its vertex layout, blend state and attachment formats, which is what makes a
+captured vertex buffer decodable.
+
+**Lifetime.** Every tracked class gets a `dealloc` hook, installed the same way as the others,
+and an object's death is a `DeleteObjects`. That is what makes keying the side table by pointer
+safe: without it a freed buffer's address, reused for the next one, answered with the old
+object's id and the new object was never announced — drawable textures and per-frame temporaries
+hit that constantly. It is also what keeps the table from growing for as long as a game runs.
+RenderDoc takes the same signal from its wrapper's `dealloc`. Objects are otherwise held weakly,
+so the tool never keeps a texture resident.
+
+Command buffers and encoders live for a frame, so they are not tracked as objects — except that
+while a capture is recording, a command buffer is announced the first time a command is recorded
+against it and dropped through the `dealloc` hook once the application lets go. Every recorded
+command names its command buffer in `object`, the way a Vulkan capture does, so the UI groups the
+tree by it, numbers passes within it, and matches render targets and timings to it. The encoder
+the command was issued on is named in `encoder` with an id from the same sequence, never
+announced.
 
 Both paths are exercised by the test application, which allocates a labelled buffer every second
 on top of what it creates at start-up: objects created before the UI connects arrive in the
@@ -172,20 +221,19 @@ tree says "MTLLibrarys". Vulkan type names never hit that case.
 
 `capture.mm` follows the Vulkan layer's model: the UI's `Capture` message arms the library, the
 next frame's commands are recorded as they are encoded, and `CaptureFrameResults` plus batched
-`CaptureFrameCommands` go out when the frame ends. Each command carries its selector, its
-arguments, and `{"__id", "__class"}` references to the tracked objects it names, so the UI
-resolves a bound buffer or pipeline to the object it already knows.
+`CaptureFrameCommands` go out when the frame's command buffers have completed. Each command
+carries its selector, its arguments, and `{"__id", "__class"}` references to the tracked objects
+it names, so the UI resolves a bound buffer or pipeline to the object it already knows.
 
 ### Frame boundaries
 
 There are two, and an engine may use either.
 
 `[MTLCommandBuffer presentDrawable:]` is the documented convenience, and its boundary is the
-`commit` that follows it, not the call itself. Metal presents by asking a command buffer
-to, partway through encoding it, with the commit after — so arming at `presentDrawable:` starts
-the recording mid-command-buffer and its first command is the *previous* frame's `commit`. Vulkan
-has no such problem, since vkQueuePresentKHR is a queue operation that follows the submission.
-`presentDrawable:` only marks the command buffer; its commit is the boundary.
+`commit` that follows it, not the call itself. Metal presents by asking a command buffer to,
+partway through encoding it, with the commit after — so arming at `presentDrawable:` starts the
+recording mid-command-buffer and its first command is the *previous* frame's `commit`. Vulkan has
+no such problem, since vkQueuePresentKHR is a queue operation that follows the submission.
 
 `[MTLDrawable present]` is the other, and Unity's macOS player uses it: it presents the drawable
 itself from a `addScheduledHandler:` block rather than through the command buffer, deliberately,
@@ -193,12 +241,21 @@ to avoid the frame pacing the convenience method imposes
 (`PlatformDependent/OSX/MetalSurfaceHelper.mm`, case 1378985). Hooking only `presentDrawable:`
 means never seeing a frame boundary in a Unity player, so the capture never arms and nothing at
 all is recorded — which presents as "capture is broken" rather than "one selector is unhooked".
-Unity uses the convenience method on another path in the same file, so both have to work.
+RenderDoc hooks only the convenience method and would miss such a player entirely.
 
-The convenience method calls the drawable's own `present` internally, and does so *later and on
-another thread*, so the re-entry guard cannot pair them: without an explicit record of which
-drawables a command buffer was asked to present, both boundaries fire and every frame is counted
-twice.
+The drawable's own present has a problem of its own: it arrives on Metal's scheduled-handler
+thread, after the commit, by which time the next frame may already be encoding. A capture armed
+or ended there starts and stops partway into a frame. So once an application has been seen to
+present that way, the boundary is taken earlier and on the encoding thread instead: at the commit
+of the command buffer that rendered into the drawable's texture, which is the one whose handler
+will present it. `nextDrawable` remembers which drawable owns which texture, the render-encoder
+hook notes which command buffer draws into one, and `commit` decides. The present itself then
+only confirms a frame already counted, and a `present` marker is recorded before the `commit` so
+both paths read the same in the UI. The convenience method also calls the drawable's own present
+internally, later and on another thread, so the re-entry guard cannot pair them; the drawables a
+command buffer was asked to present are remembered, by pointer and by `drawableID`, so that call
+is recognised and not counted twice. An engine that draws into the drawable from two command
+buffers before presenting would have the second land in the next frame; none of the targets do.
 
 **`addCompletedHandler:` is only legal before a command buffer is committed.** The read-back
 needs a completion to know the staging holds pixels, and the obvious place to ask for one — the
@@ -216,9 +273,6 @@ reports in `CaptureFrameResults` (or that a `.gpucap` recorded — the file form
 field, hard-coded to `"vulkan"`). With that, a Metal capture groups into passes, counts its draws
 and dispatches, and resolves the pipeline bound at each draw.
 
-`"Profile passes: waiting for GPU timestamps..."` still waits forever, because no
-`CapturePassTimings` is sent yet.
-
 ### Argument shapes, not only method names
 
 Classifying commands by name gets the command tree, the pass grouping, the draw counts and the
@@ -229,10 +283,13 @@ Metal. So `CommandSets` carries accessors as well as sets — `vertexBuffersOf(c
 `BoundVertexBuffer` / `BoundIndexBuffer` whatever the arguments were called.
 
 The accessor is also where genuine structural differences go, not just naming ones. Vulkan binds a
-range of vertex bindings with one command carrying parallel arrays; Metal binds one per call.
-Vulkan binds an index buffer with its own command; Metal has no such command and names the index
-buffer in the indexed draw, so `indexBufferOf` answers on the draw there and on the binding
-command in Vulkan. Callers ask any command and rely on null.
+range of vertex bindings with one command carrying parallel arrays; Metal usually binds one per
+call, and `setVertexBuffers:offsets:withRange:` when it binds a range. Vulkan binds an index
+buffer with its own command; Metal has no such command and names the index buffer in the indexed
+draw, so `indexBufferOf` answers on the draw there and on the binding command in Vulkan. Callers
+ask any command and rely on null. The vertex layout comes from the pipeline in both APIs, from
+`pVertexInputState` in one and `vertexDescriptor` in the other; each attribute of the latter
+carries the protocol's format name beside Metal's, so the decoder needs no table of its own.
 
 One more constant needed the same treatment: the panel decided whether to show vertex and index
 buffers by comparing the bind point against the literal `"VK_PIPELINE_BIND_POINT_GRAPHICS"`, so
@@ -240,26 +297,36 @@ buffers by comparing the bind point against the literal `"VK_PIPELINE_BIND_POINT
 
 ## Buffer read-back
 
-Bound vertex buffers and an indexed draw's index buffer are read back with the capture and sent as
-`CaptureBuffers` plus a `CaptureBufferData` binary frame each, which is what the UI shows under a
-draw as "Vertex Buffer 0: vertices" and "Index Buffer: indices".
+Bound buffers — vertex, fragment, compute, tessellation-factor, indirect-argument — and an
+indexed draw's index buffer are read back with the capture and sent as `CaptureBuffers` plus a
+`CaptureBufferData` binary frame each, which is what the UI shows under a draw as "Vertex Buffer
+0: vertices" and "Index Buffer: indices". Inline constant blocks (`setVertexBytes:` and the rest)
+are recorded the way the UI reads push constants, with the bytes inline.
 
-Much cheaper than the Vulkan layer's equivalent. That records a GPU copy into staging memory and
-maps it after the frame; a Metal buffer in a shared or managed storage mode is mapped into the
-process the whole time, so reading it is a `memcpy` at record time with no GPU work at all — which
-is what unified memory buys. A private-storage buffer has no such pointer and is reported with an
-error rather than blitted; that is the case that would need the Vulkan approach.
+Three storage modes, three ways to read:
 
-Ranges are capped at 64 KB, matching the layer's default, and the cap is reported as
-`originalSize` so the UI can say a range was truncated.
+* **Shared** is mapped into the process the whole time, so it is a `memcpy` at bind time with no
+  GPU work at all — which is what unified memory buys, and much cheaper than the Vulkan layer's
+  equivalent.
+* **Managed** has a CPU copy that lags a GPU write, so `synchronizeResource:` is encoded at the
+  end of the pass and the bytes are read once the frame completes. RenderDoc does the same.
+* **Private** has no CPU copy at all. It is blitted into a staging buffer at the end of the pass,
+  the way the Vulkan layer reads every buffer. This is the mode that matters: Unity keeps its
+  vertex and index buffers private on macOS, so without it the primary target had nothing to
+  show.
+
+The blits go at `endEncoding`, beside the render targets', because a command buffer allows one
+encoder at a time. A range bound at every draw — a uniform block — is read once per capture, keyed
+by buffer, offset and size; ranges are capped at 64 KB, matching the layer's default, and the cap
+is reported as `originalSize` so the UI can say a range was truncated.
 
 ## Render target read-back
 
-A pass's colour attachments are blitted into staging buffers when the application ends its
-encoder, and sent as `CaptureTextureFrames` plus a `CaptureTextureData` binary frame each. The
-Capture panel shows the frame the application actually drew.
+A pass's colour and depth attachments are blitted into staging buffers when the application ends
+its encoder, and sent as `CaptureTextureFrames` plus a `CaptureTextureData` binary frame each.
+The Capture panel shows the frame the application actually drew.
 
-Three things have to be arranged for it, each the Metal counterpart of something the Vulkan layer
+Things that have to be arranged for it, each the Metal counterpart of something the Vulkan layer
 does:
 
 * **The attachment has to survive the pass.** `storeAction` `DontCare` leaves it undefined, so
@@ -273,15 +340,41 @@ does:
 * **The blit needs the command buffer, and it has to be free.** A command buffer allows one
   encoder at a time, so the read-back's blit encoder can only be created *after* the hook forwards
   the application's `endEncoding` — doing it before raises
-  `A command encoder is already encoding to this command buffer`. The encoder-to-command-buffer
-  map is built when the encoder is created.
+  `A command encoder is already encoding to this command buffer`. For a parallel render encoder
+  that is the parallel encoder's own end, not a sub-encoder's.
+* **Not everything can be a blit source.** A multisample texture cannot be copied to a buffer, so
+  a multisample attachment is read through its resolve texture when the pass resolves, and
+  reported as unreadable when it does not; a memoryless attachment has no contents after the
+  pass; a `framebufferOnly` drawable seen before the layer hook was in place cannot be copied
+  either. Each of these was a Metal validation failure, which aborts the application rather than
+  failing the read, so they are checked first. What cannot be read is reported with the reason,
+  because an empty Render Targets section with no reason given is the hardest kind of gap to
+  notice. The attachment's `level`, `slice` and `depthPlane` are honoured rather than assumed
+  zero.
 
 The capture is then sent from the command buffer's completion handler rather than at commit: the
-staging holds nothing until the GPU has run the blits. `Internal` in `capture.h` keeps the
-library's own Metal calls out of the recording, which would otherwise contain the commands the
-capture made.
+staging holds nothing until the GPU has run the blits.
 
 See "Pixel formats" below for how a format is named and which ones can be read back.
+
+## Pass timings
+
+The Metal counterpart of `vkCmdWriteTimestamp` is a counter sample buffer, `MTLCounterSampleBuffer`
+over the device's timestamp counter set. A render pass samples into it at its stage boundaries
+through `sampleBufferAttachments` on the pass descriptor — start of vertex work, end of fragment
+work — and a compute or blit pass likewise through its own descriptor. That is one more reason the
+descriptor is copied while recording; and since the plain `computeCommandEncoder` and
+`blitCommandEncoder` have no descriptor to carry a sample buffer, while recording they are opened
+through the descriptor forms with a descriptor that says the same thing, and the command is
+recorded under the selector the application called. A GPU that cannot sample at stage boundaries
+but can at draw, dispatch or blit boundaries takes the samples from the encoder instead
+(`sampleCountersInBuffer:atSampleIndex:withBarrier:` at its beginning and end); Apple Silicon is
+the former kind.
+
+The samples are resolved once the frame's command buffers have completed, mapped to nanoseconds
+with two CPU/GPU timestamp pairs taken around the capture, and sent as `CapturePassTimings` with
+the same keys the Vulkan layer uses, so the Profile view and the frame statistics needed no
+change. RenderDoc's Metal driver has no timing code.
 
 ## Texture views
 
@@ -290,7 +383,15 @@ answered with `ImageData` and the pixels (`image.mm`). A blit into a staging buf
 `-getBytes:`, because anything worth looking at — a render target above all — is in private
 storage and has no contents the CPU can see. It runs on a command queue of the library's own, so
 a read-back does not queue behind whatever the application has already scheduled, and waits for
-completion on the transport's receiver thread.
+completion on the transport's receiver thread. That thread is a plain `std::thread` with no
+autorelease pool, so the message handler makes one; without it the command buffer, the encoder
+and the texture leaked on every click.
+
+The same guards as the render-target read-back apply — multisample, memoryless, `framebufferOnly`,
+and the mip and layer being asked for having to exist — because Metal validation aborts the
+application on any of them. A depth-stencil texture is read one aspect at a time, depth. The
+queue and staging buffer the read-back makes are the library's own and are not announced to the
+UI as the application's objects.
 
 Objects are held **weakly**, which is what makes this safe to offer. Retaining every texture a
 game creates would keep hundreds of megabytes of VRAM alive for as long as the inspector is
@@ -310,16 +411,22 @@ different reasons:
 
 * **Metal's own name** — `MTLPixelFormatBGRA8Unorm` — is what a descriptor shows in the Inspect
   panel. It is what the application wrote and what the documentation calls it; a bare `80` is not
-  something anyone can act on. The same goes for `MTLTextureType2D` and `MTLStorageModePrivate`.
+  something anyone can act on. The same goes for `MTLTextureType2D`, `MTLStorageModePrivate`,
+  `MTLVertexFormatFloat3` and the load and store actions.
   These are generated from the SDK's `MTLPixelFormat.h` and cover all 139 formats Metal has, so
   a format the read-back cannot handle still says what it is.
 * **The protocol's name** — `VK_FORMAT_B8G8R8A8_UNORM` — travels with pixel data, because the
   UI's decoder is 570 lines built around those names and an identical memory layout can reuse all
-  of it. 65 formats are mapped, including the BC family; the UI decodes BC1–BC5 and recognises
-  BC6H and BC7.
+  of it. 66 formats are mapped, including the BC family; the UI decodes BC1–BC5 and recognises
+  BC6H and BC7. Vertex formats get the same pair, for the same reason.
 
 Block-compressed formats are sized by block rather than by pixel, rounded up to whole blocks, so
 a BC1 read-back asks for the right number of bytes and a row pitch the GPU accepts.
+
+A combined depth-stencil texture cannot be copied to a buffer whole: the blit picks one aspect
+with `MTLBlitOptionDepthFromDepthStencil`, and what lands in the buffer is that aspect alone —
+four bytes of depth per pixel for `MTLPixelFormatDepth32Float_Stencil8`, not eight.
+`DepthReadbackDetails` answers for that.
 
 A format with no mapping is reported by name — `unsupported pixel format MTLPixelFormatASTC_4x4_LDR`
 — rather than silently producing nothing. ASTC, ETC, PVRTC, the XR formats and the YUV formats are
@@ -331,16 +438,17 @@ Selecting an `MTLLibrary` shows what is in it. Two cases, and an engine uses bot
 `GpuProgramsMetal.mm` has `CreateMTLLibraryFromSource` and `CreateMTLLibraryFromBinary` side by
 side:
 
-* **Compiled here** (`newLibraryWithSource:options:error:`): the Metal Shading Language is
-  attached verbatim as a blob and shown as text.
+* **Compiled here** (`newLibraryWithSource:options:error:`, or its asynchronous form): the Metal
+  Shading Language is attached verbatim as a blob and shown as text.
 * **Loaded precompiled** (`newLibraryWithData:error:`, `newLibraryWithURL:error:`,
-  `newDefaultLibrary`): the metallib is AIR bitcode. Its bytes are attached so a capture or a bug
-  report carries them, but nothing here disassembles it — that needs Apple's Metal tooling — so
-  the panel says so rather than showing noise.
+  `newLibraryWithFile:error:`, `newDefaultLibrary`): the metallib is AIR bitcode. Its bytes are
+  attached so a capture or a bug report carries them, but nothing here disassembles it — that
+  needs Apple's Metal tooling — so the panel says so rather than showing noise.
 
 Either way the descriptor carries `functionNames`, read off the library itself. That is the part
 that always works, and for a shipped metallib it is the only way to see what is inside without a
-disassembler.
+disassembler. The functions an application then makes from the library are tracked as
+`MTLFunction` objects under it.
 
 Deliberately not the Vulkan shader section, which is built around SPIR-V: reflection,
 cross-compilation to GLSL and HLSL, and shader editing. MSL is already source, and none of those
@@ -348,15 +456,12 @@ apply to it.
 
 ## Not done
 
-Pass timings, which would fill in the profile view and clear the
-`"Profile passes: waiting for GPU timestamps..."` the panel still sits in. Depth attachments are
-not read back (colour only), nor are sampled images, and only the pixel formats in `FormatName`
-are supported. Those are the rest of what `layer/src/capture.cpp` does. Also `DeleteObjects`
-(nothing watches for released objects yet), blit and argument-buffer coverage,
-`MTLIndirectCommandBuffer`, `MTKView`/`CAMetalLayer` paths other than the one the test
-application uses, Intel and AMD class trees (only Apple Silicon is verified), re-signing a
-hardened target as part of the launch flow, and launching a target from the UI at all — today
-the application is started by hand and the UI attaches with `--connect`.
+Stencil attachments are not read back (colour and depth are), nor are sampled images, and only
+the pixel formats in `PixelFormatDetails` are supported. Argument buffers are recorded as the
+buffer binds they are, not decoded. Resource state and acceleration structure encoders are
+recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
+Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary
+timing path those GPUs would take. Re-signing a hardened target is left to the user, on purpose.
 
 `transport.mm` also duplicates `layer/src/transport.cpp`; see the note at the top of
 `transport.h` for why they are not one file yet.

@@ -1,9 +1,8 @@
 # The Metal capture library: a dylib loaded into the target with DYLD_INSERT_LIBRARIES, which
 # intercepts Metal by interposing its device entry points and hooking the Objective-C classes it
-# reaches from them. See src/interpose.mm and README.md.
-#
-# At this stage it is a spike: it logs the class tree and the frame's commands. It does not speak
-# the inspector's protocol yet.
+# reaches from them. It speaks the inspector's protocol — the Vulkan layer's, byte for byte — so
+# the Inspect and Capture panels work against a Metal application. See src/interpose.mm and
+# README.md.
 cmake_minimum_required(VERSION 3.20)
 project(GpuInspectorMetalCapture OBJCXX)
 
@@ -17,7 +16,11 @@ add_library(${CAPTURE_LIB} SHARED
     src/swizzle.h
     src/swizzle.mm
     src/hooks.h
-    src/hooks.mm
+    src/hooks_common.h
+    src/hooks_descriptors.mm
+    src/hooks_device.mm
+    src/hooks_command_buffer.mm
+    src/hooks_encoders.mm
     src/capture.h
     src/capture.mm
     src/formats.h
@@ -44,9 +47,13 @@ target_include_directories(${CAPTURE_LIB} PRIVATE
 # way. -fno-objc-arc is the default, but the intent is worth pinning down.
 target_compile_options(${CAPTURE_LIB} PRIVATE -fno-objc-arc -Wall -Wno-unused-parameter -g)
 
+# CoreGraphics for CGDirectDisplayCopyCurrentMetalDevice, one of the interposed entry points;
+# QuartzCore for CAMetalLayer.
 target_link_libraries(${CAPTURE_LIB} PRIVATE
     "-framework Foundation"
-    "-framework Metal")
+    "-framework Metal"
+    "-framework QuartzCore"
+    "-framework CoreGraphics")
 
 set_target_properties(${CAPTURE_LIB} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

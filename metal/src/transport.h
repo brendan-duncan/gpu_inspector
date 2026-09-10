@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace mtlinsp {
 
@@ -30,7 +31,13 @@ public:
     bool Connected() const;
 
     void SendJson(std::string json);
+    /**
+     * A binary frame. The payload is queued as its own buffer rather than appended to the
+     * header, so a render target of tens of megabytes is copied once, from the staging buffer,
+     * and the vector form is not copied at all.
+     */
     void SendBinary(std::string headerJson, const void *data, size_t size);
+    void SendBinary(std::string headerJson, std::vector<uint8_t> payload);
 
     /** Called on the listener thread once a client has connected, to send it a snapshot. */
     void SetOnConnect(std::function<void()> handler);
