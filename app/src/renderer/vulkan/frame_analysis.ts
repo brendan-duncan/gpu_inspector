@@ -23,6 +23,7 @@
 // Every finding names the command it is about so the UI can jump to it (findings per command
 // through byCommand()).
 import { DRAW_METHODS, PASS_BEGIN, PASS_END } from "./command_sets.js";
+import { decodePass, imageOfView, pNextChain, type AttachmentUse, type PassAttachments } from "./pass_info.js";
 import { isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./spirv_analysis.js";
 import type { CaptureData } from "../capture_data.js";
@@ -45,32 +46,9 @@ export interface FrameAnalysisDatabase extends ObjectLookup {
   allObjects: Map<number, VulkanObject>;
 }
 
-type AttachmentKind = "color" | "depth" | "resolve";
-
-interface AttachmentUse {
-  kind: AttachmentKind;
-  imageId: number | null;
-  viewId: number | null;
-  baseLayer: number;
-  format: string;
-  samples: number;
-  loadOp: string;
-  storeOp: string;
-  stencilLoadOp: string;
-  stencilStoreOp: string;
-  /** VkImageUsageFlags of the image ("" when unknown: a swapchain image without a create info). */
-  usage: string;
-  /** A color attachment that has a resolve target in the same subpass. */
-  resolved: boolean;
-}
-
-interface PassInfo {
+interface PassInfo extends PassAttachments {
   command: CaptureCommand;
   ordinal: number;
-  width: number;
-  height: number;
-  viewMask: number;
-  attachments: AttachmentUse[];
   draws: number;
   /** One entry per draw: the bound pipeline and the vertex count, the pass's "shape". */
   drawSignature: string[];
@@ -116,20 +94,6 @@ class Folded {
     this.count++;
     if (this.commands.length < 64) this.commands.push(cmd);
   }
-}
-
-function op(v: ArgValue | undefined): string {
-  return str(v).replace("VK_ATTACHMENT_LOAD_OP_", "").replace("VK_ATTACHMENT_STORE_OP_", "");
-}
-
-function sampleCount(v: ArgValue | undefined): number {
-  const m = /VK_SAMPLE_COUNT_(\d+)_BIT/.exec(str(v));
-  return m ? Number(m[1]) : 1;
-}
-
-function pNextChain(o: ArgObject | null | undefined): ArgObject[] {
-  const chain = o?.pNext;
-  return Array.isArray(chain) ? chain.filter(isObject) : [];
 }
 
 /** Every VkImageView referenced anywhere in a value (descriptor snapshots, attachment lists). */
@@ -398,87 +362,13 @@ export class FrameAnalysis {
   // ---------------------------------------------------------------------------- pass decoding
 
   private _passInfo(cmd: CaptureCommand, ordinal: number): PassInfo | null {
-    const a = cmd.args;
-    if (!a) return null;
-    const pass: PassInfo = { command: cmd, ordinal, width: 0, height: 0, viewMask: 0, attachments: [], draws: 0, drawSignature: [], clearedBefore: new Map() };
-    if (cmd.method.startsWith("vkCmdBeginRendering")) {
-      const info = isObject(a.pRenderingInfo) ? a.pRenderingInfo : null;
-      if (!info) return pass;
-      const extent = isObject(info.renderArea) && isObject(info.renderArea.extent) ? info.renderArea.extent : null;
-      pass.width = num(extent?.width);
-      pass.height = num(extent?.height);
-      pass.viewMask = num(info.viewMask);
-      const colors = Array.isArray(info.pColorAttachments) ? info.pColorAttachments.filter(isObject) : [];
-      for (const c of colors) pass.attachments.push(this._dynamicAttachment(c, "color"));
-      for (const key of ["pDepthAttachment", "pStencilAttachment"]) {
-        const d = info[key];
-        if (isObject(d) && refId(d.imageView) !== null) pass.attachments.push(this._dynamicAttachment(d, "depth"));
-      }
-      return pass;
-    }
-    const begin = isObject(a.pRenderPassBegin) ? a.pRenderPassBegin : null;
-    if (!begin) return pass;
-    const rp = this._db.getObject(refId(begin.renderPass))?.descriptor ?? null;
-    const fb = this._db.getObject(refId(begin.framebuffer))?.descriptor ?? null;
-    const extent = isObject(begin.renderArea) && isObject(begin.renderArea.extent) ? begin.renderArea.extent : null;
-    pass.width = num(extent?.width) || num(fb?.width);
-    pass.height = num(extent?.height) || num(fb?.height);
-    if (!rp) return pass;
-    // The view masks: VkRenderPassMultiviewCreateInfo (create info 1) or the subpasses' own (2).
-    const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
-    const mv = pNextChain(rp).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO");
-    const masks = mv && Array.isArray(mv.pViewMasks) ? mv.pViewMasks.map(num) : subpasses.map((s) => num(s.viewMask));
-    pass.viewMask = masks.reduce((m, v) => m | v, 0);
-    // Attachment views: the framebuffer's, or VkRenderPassAttachmentBeginInfo for an imageless one.
-    let views = Array.isArray(fb?.pAttachments) ? fb.pAttachments : [];
-    const imageless = pNextChain(begin).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO");
-    if (imageless && Array.isArray(imageless.pAttachments)) views = imageless.pAttachments;
-    const descs = Array.isArray(rp.pAttachments) ? rp.pAttachments : [];
-    const kinds = new Map<number, AttachmentKind>();
-    const resolvedColors = new Set<number>();
-    for (const s of subpasses) {
-      const refs = (key: string): number[] => (Array.isArray(s[key]) ? s[key] : []).filter(isObject).map((r) => num(r.attachment)).filter((i) => i < 0xffffffff);
-      const colors = refs("pColorAttachments");
-      const resolves = refs("pResolveAttachments");
-      colors.forEach((c, i) => { kinds.set(c, "color"); if (resolves[i] !== undefined) resolvedColors.add(c); });
-      for (const r of resolves) kinds.set(r, "resolve");
-      const ds = isObject(s.pDepthStencilAttachment) ? num(s.pDepthStencilAttachment.attachment) : 0xffffffff;
-      if (ds < 0xffffffff) kinds.set(ds, "depth");
-    }
-    descs.forEach((d, i) => {
-      if (!isObject(d)) return;
-      const kind = kinds.get(i);
-      if (!kind) return;
-      const viewId = refId(views[i]);
-      const view = this._db.getObject(viewId)?.descriptor ?? null;
-      const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
-      pass.attachments.push({
-        kind, viewId, imageId: this._imageOfView(viewId), baseLayer: num(range?.baseArrayLayer),
-        format: str(d.format), samples: sampleCount(d.samples),
-        loadOp: op(d.loadOp), storeOp: op(d.storeOp), stencilLoadOp: op(d.stencilLoadOp), stencilStoreOp: op(d.stencilStoreOp),
-        usage: "", resolved: resolvedColors.has(i),
-      });
-    });
-    return pass;
-  }
-
-  private _dynamicAttachment(att: ArgObject, kind: AttachmentKind): AttachmentUse {
-    const viewId = refId(att.imageView);
-    const view = this._db.getObject(viewId)?.descriptor ?? null;
-    const imageId = this._imageOfView(viewId);
-    const image = this._db.getObject(imageId)?.descriptor ?? null;
-    const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
-    return {
-      kind, viewId, imageId, baseLayer: num(range?.baseArrayLayer),
-      format: str(view?.format ?? image?.format), samples: sampleCount(image?.samples),
-      loadOp: op(att.loadOp), storeOp: op(att.storeOp), stencilLoadOp: op(att.loadOp), stencilStoreOp: op(att.storeOp),
-      usage: "", resolved: refId(att.resolveImageView) !== null,
-    };
+    const decoded = decodePass(cmd, this._db);
+    if (!decoded) return null;
+    return { command: cmd, ordinal, ...decoded, draws: 0, drawSignature: [], clearedBefore: new Map() };
   }
 
   private _imageOfView(viewId: number | null): number | null {
-    const view = this._db.getObject(viewId);
-    return view ? refId(view.descriptor?.image) : null;
+    return imageOfView(this._db, viewId);
   }
 
   private _imageUsage(imageId: number): string {

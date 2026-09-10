@@ -25,6 +25,10 @@ follow the same way. The feature list below describes the Vulkan layer.
   with the parsed contents of its uniform and storage buffers and the images it sampled, the
   decoded vertex and index buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
   files that reopen anywhere without the application, for bug reports and comparisons.
+* **Render graph** — the same frame as a dependency graph: which pass produced what each pass
+  reads, drawn as a resource lifetime chart with the selected pass's producers and consumers
+  beside it, its GPU time and the frame's critical path, what it reads from before the capture,
+  and which passes write something nothing reads.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
 project, and [TODO.md](TODO.md) for what is planned. Third-party code and licenses are listed in

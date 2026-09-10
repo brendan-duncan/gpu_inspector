@@ -326,10 +326,12 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
   `inspect_panel.ts` (live objects), `capture_panel.ts` (frame capture: command list, render
   targets), `capture_command_info.ts` (the selected command: bound state, descriptor sets, buffer
   contents, shaders), `buffer_data_view.ts` (typed buffer values), `shader_cache.ts` (SPIR-V
-  reflection on demand), `args_view.ts` (argument trees). `widget/` and `utils/` are TypeScript
-  ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds the object model,
-  database, texture decoding, SPIR-V reflection, vertex format decoding and the buffer layout
-  parser.
+  reflection on demand), `args_view.ts` (argument trees), `render_graph.ts` / `frame_graph.ts` /
+  `render_graph_view.ts` (the frame's pass dependency graph and its chart). `widget/` and
+  `utils/` are TypeScript ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds
+  the object model, database, texture decoding, SPIR-V reflection, vertex format decoding, the
+  buffer layout parser, the render pass decoder and the frame rules; `metal/` the Metal command
+  tables, reflection and resource source.
 
 #### Frame Stats
 
@@ -604,6 +606,51 @@ Every own-cost charge of the analysis is also charged to the source line of the 
 (`locations[ordinal]` from the debug info), giving `FunctionAnalysis.lines` (costliest first):
 the Shader Cost section's "Costliest lines" list and the flame graph's line frames under a
 function come from it.
+
+#### Render graph
+
+The same commands, read as a dependency graph instead of a list. `renderer/render_graph.ts` is
+the model and has no capture in it: it is given the frame's passes with what each one reads and
+writes and builds the graph. Two things make that a graph and not "which passes touched image
+12". Resources are identified per subresource — the mip level and array layer a pass actually
+touched — so a bloom chain that writes mip N and reads mip N-1 of one image is a chain and not a
+node with a self-loop. And every write starts a new *version* of the resource, with edges running
+from a version's producer to its readers, the SSA shape a render graph compiler uses: without it
+a pass that loads an attachment and stores it again is a cycle. Version 0 is what a resource held
+on entry to the capture, so reads of it are reported as external inputs (the previous frame, a
+host upload, a pass outside the captured range) rather than as edges. From the graph come the
+critical path (one backwards sweep, since the nodes are in execution order and the edges run
+forward with them), the resources read from before the frame, and the passes whose every write no
+later pass reads — stated as that and not as "dead", because the host or the next frame may read
+it, and because a binding the capture cannot see may too.
+
+The extraction is split the way `command_sets.ts` is. `renderer/frame_graph.ts` is API-neutral
+and does the segmentation: it walks the commands, cuts them into passes exactly as the capture
+panel's command tree does (render passes counted per command buffer, compute passes as runs of
+dispatches outside one, both keyed with `passKey()` so a node finds its GPU timing, all of it
+restarting per captured frame), folds the accesses collected for a pass so that five hundred
+draws sampling one shadow map are one edge, and asks a `ResourceSource` what each command
+touches. The sources are `renderer/vulkan/frame_resources.ts` and
+`renderer/metal/frame_resources.ts`: attachments (Vulkan's through `vulkan/pass_info.ts`, which
+`frame_analysis.ts` shares, so the graph and the frame rules read the same load and store ops),
+the descriptor sets snapshotted at each draw and dispatch — or, for Metal, what the encoder had
+bound — and the transfer commands, which name their two ends outright. What a source cannot
+resolve it counts rather than guesses at: bindings through descriptor buffers, shader objects or
+Metal's argument buffers are not in the capture, and the view says the graph is a lower bound on
+the frame's edges instead of implying those passes read nothing. Storage bindings are counted
+read-write for the same reason — without shader reflection a read-only storage buffer is
+indistinguishable from one the shader writes — and the view says so.
+
+`renderer/render_graph_view.ts` draws it. Not as a node-link diagram: a real frame has hundreds
+of passes and thousands of edges and lays out as a hairball whatever the algorithm. The main view
+is a resource lifetime chart — passes along the top in execution order, one row per resource, a
+bar across the passes where it is live, marked (filled for a write, outlined for a read, colored
+by usage class) at every pass that touched it. It needs no layout pass, scales to any frame, and
+"what does this pass depend on" is read up its column. The node-link drawing is kept for the one
+part small enough to be legible: the selected pass, its immediate producers on the left and its
+consumers on the right, with the resource on each edge — the "why is this pass here" question a
+graph is really asked. Rows and columns cross-highlight with the selection, and every pass and
+resource links back to the command list and the Inspect tab.
 
 #### Shader source maps
 

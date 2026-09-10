@@ -7,7 +7,7 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-dump, --screenshot, --quit-after-screenshot), then checks the JSON the renderer dumped at
+--debug-dump, --debug-view, --screenshot, --quit-after-screenshot), then checks the JSON the renderer dumped at
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
 expected of it ({"findings": {"rule": count, ...}}); without one the file only has to open with
@@ -180,6 +180,24 @@ def triangle_hazard(state, log):
         expect((s.get("validation") or 0) < 50, f"{s.get('validation')} distinct validation messages (the per-submission counters were not folded)")
 
 
+def graph(state):
+    return capture(state).get("renderGraph") or {}
+
+
+def triangle_graph(state, log):
+    g = graph(state)
+    # The frame is a compute pass that fills the wave buffer and a render pass that draws the cube
+    # into the swapchain image, so the graph must see both, the resources they touch, and the
+    # dependency the --hazard mode adds: vkCmdUpdateBuffer writes the vertex buffer the draw reads.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(g), "no render graph in the capture state") + \
+        expect((g.get("nodes") or 0) >= 9, f"{g.get('nodes')} graph nodes (a transfer, a compute pass and a render pass per captured frame expected)") + \
+        expect((g.get("resources") or 0) >= 5, f"{g.get('resources')} graph resources") + \
+        expect((g.get("edges") or 0) >= 1, "no dependency between passes: the vertex buffer update should feed the draw") + \
+        expect((g.get("unreadNodes") or 0) >= 1, "the compute pass writes a buffer nothing reads and was not reported as such") + \
+        expect(g.get("untimedNodes") == 0, f"{g.get('untimedNodes')} graph passes have no timing: the graph's pass keys no longer match the command tree's")
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -234,6 +252,10 @@ def triangle_cases(triangle):
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
         Case("hazard", launch + ["--args=--hazard", "--validation", "--sync-validation", "--debug-capture"], triangle_hazard, delay_ms=18000),
         Case("stacks", launch + ["--debug-capture", "--debug-capture-stacks", "--debug-command=9", "--debug-expand-stacks"], triangle_stacks, delay_ms=16000),
+        # The render graph, on the frames whose passes have a dependency to find, with the view
+        # open so the screenshot shows the chart. Three frames, because the pass indices the graph
+        # keys its timings by have to restart per frame the way the command tree's do.
+        Case("graph", launch + ["--args=--hazard", "--debug-capture=3", "--debug-view=graph"], triangle_graph, delay_ms=16000),
     ]
 
 

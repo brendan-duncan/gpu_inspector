@@ -890,6 +890,8 @@ function killAllTargets(): void {
 // a downloaded update is installed on quit or when the user asks to restart.
 
 const UPDATE_CHECK_DELAY_MS = 3000;
+/** How long --screenshot waits for a window to paint before giving up on it (see writeScreenshots). */
+const SCREENSHOT_TIMEOUT_MS = 10000;
 const canUpdate = app.isPackaged;
 
 function sendUpdate(status: UpdateStatus): void {
@@ -1219,6 +1221,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       captureStacks: cliFlag("debug-capture-stacks"),
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
+      showView: cliOption("debug-view"),
       waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
@@ -1409,7 +1412,19 @@ async function writeScreenshots(file: string): Promise<void> {
   const windows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
   let index = 0;
   for (const win of windows) {
-    const img = await win.webContents.capturePage();
+    // capturePage() asks the compositor for a frame, and that can both fail and never answer:
+    // it rejects with UnknownVizError when the GPU process will not produce one (which happens
+    // when the app runs with its output redirected, as the UI tests run it), and it has no
+    // timeout of its own. Either way an unhandled rejection here would skip the --screenshot
+    // caller's app.quit() and hang the run, so give up on a shot rather than on the run.
+    const img = await Promise.race([
+      win.webContents.capturePage().catch((e: unknown) => {
+        console.error(`screenshot failed: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }),
+      new Promise<null>((r) => setTimeout(() => r(null), SCREENSHOT_TIMEOUT_MS)),
+    ]);
+    if (!img) continue;
     // Main window -> <file>; other windows -> <file minus extension>.<n>.png
     const target = win === mainWin ? file : file.replace(/(\.[^.]+)?$/, `.${++index}$1`);
     fs.writeFileSync(target, img.toPNG());
@@ -1434,7 +1449,8 @@ void app.whenReady().then(() => {
         exe: androidPackage ?? exe ?? "",
         device: cliOption("device") ?? "",
         activity: cliOption("activity") ?? "",
-        args: cliOption("args") ?? "",
+        // --args is the launch dialog's field; --launch-args is the spelling metal/README.md uses.
+        args: cliOption("args") ?? cliOption("launch-args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),
         validation: cliFlag("validation"),
@@ -1446,7 +1462,16 @@ void app.whenReady().then(() => {
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }
           : { mode: "none", value: 0 },
       });
-      setTimeout(() => void launch(config), 300);
+      // --launch=<path> / --launch-android=<package>: the command-line form of the launch dialog,
+      // for scripting and for the UI tests. Everything not given takes its default from
+      // normalizeLaunch. This is the only place a launch happens: launching here *and* from a
+      // second handler started the application twice, which left a stray process behind every run
+      // and, with --args, a first session that had none of them.
+      setTimeout(() => {
+        void launch(config)
+          .then((r) => { if (!r.ok) console.error(`--launch failed: ${r.error}`); })
+          .catch((e) => console.error(`--launch threw: ${e instanceof Error ? e.stack : String(e)}`));
+      }, 300);
       // Testing aids for the session handling.
       if (cliFlag("debug-multi")) setTimeout(() => void launch(config), 1500);
       if (cliFlag("debug-relaunch")) {
@@ -1472,16 +1497,6 @@ void app.whenReady().then(() => {
         app.quit();
       });
       return;
-    }
-    // --launch=<path>: the command-line form of the launch dialog's local target, for scripting
-    // and for the UI tests. Everything else takes its default from normalizeLaunch.
-    const launchExe = cliOption("launch");
-    if (launchExe) {
-      void launch({ ...normalizeLaunch({} as LaunchConfig), target: "native", exe: launchExe,
-                    args: cliOption("launch-args") ?? "", port: Number(cliOption("port")) || DEFAULT_PORT,
-                    log: true })
-        .then((r) => { if (!r.ok) console.error(`--launch failed: ${r.error}`); })
-        .catch((e) => console.error(`--launch threw: ${e instanceof Error ? e.stack : String(e)}`));
     }
     // --connect=<port>: attach to an application that is already listening, the command-line form
     // of the Connect button. Unlike --wait-for-app it needs no layer of ours in the process, so it
@@ -1526,7 +1541,9 @@ void app.whenReady().then(() => {
             fs.writeFileSync(dump, JSON.stringify({ error: String(e) }));
           }
         }
-        await writeScreenshots(shot);
+        // Whatever the screenshots did, the quit has to happen: the harness's only other way out
+        // of a run is its timeout.
+        await writeScreenshots(shot).catch((e: unknown) => console.error(`screenshots failed: ${String(e)}`));
         if (cliFlag("quit-after-screenshot")) {
           killAllTargets();
           app.quit();
