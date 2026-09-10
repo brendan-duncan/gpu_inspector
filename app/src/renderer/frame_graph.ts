@@ -5,7 +5,7 @@
 // pass, with the same pass key and so the same GPU timing), and asks a per-API ResourceSource
 // what each command touches. The Vulkan and Metal sources are in vulkan/frame_resources.ts and
 // metal/frame_resources.ts; the graph model they feed is render_graph.ts.
-import { buildRenderGraph, type NodeKind, type RawAccess, type RawPass, type RenderGraph } from "./render_graph.js";
+import { buildRenderGraph, type NodeKind, type RawAccess, type RawPass, type RenderGraph, type SyncPoint } from "./render_graph.js";
 import { isAction, type CommandSets } from "./command_sets.js";
 import { passKey } from "./capture_data.js";
 import type { CaptureData } from "./capture_data.js";
@@ -38,6 +38,12 @@ export interface ResourceSource {
   transferAccesses(cmd: CaptureCommand): { label: string; accesses: RawAccess[] } | null;
   /** Label for a compute pass (a run of dispatches) that the API does not name itself. */
   computePassLabel(ordinal: number): string;
+  /**
+   * A barrier or event wait, and the subresources it names, or null when `cmd` is not one. An API
+   * that tracks hazards for the application (Metal, outside its untracked resources) leaves this
+   * out and the graph carries no sync points.
+   */
+  syncPoint?(cmd: CaptureCommand): Omit<SyncPoint, "after"> | null;
 }
 
 /**
@@ -91,8 +97,9 @@ interface OpenPass {
  * close the run), and both are keyed with passKey() so a node can look its GPU timing up. Any
  * change to the grouping there belongs here too.
  */
-export function collectPasses(data: CaptureData, sets: CommandSets, source: ResourceSource): RawPass[] {
+export function collectPasses(data: CaptureData, sets: CommandSets, source: ResourceSource): { passes: RawPass[]; syncPoints: SyncPoint[] } {
   const passes: RawPass[] = [];
+  const syncPoints: SyncPoint[] = [];
   const renderCounters = new Map<number, number>();
   const computeCounters = new Map<number, number>();
   // Held in an object rather than a plain local: the helpers below assign it, and a local would
@@ -140,6 +147,10 @@ export function collectPasses(data: CaptureData, sets: CommandSets, source: Reso
     }
     stream = `${objId}:${cmd.secondary ?? 0}`;
     source.observe(cmd, stream);
+    const sync = source.syncPoint?.(cmd);
+    // Recorded against the passes around it: `after` is the last pass begun, so a rule can ask
+    // what the frame had done by the time the barrier ran and what it did afterwards.
+    if (sync) syncPoints.push({ ...sync, after: passes.length - 1 });
 
     if (sets.PASS_BEGIN.has(cmd.method)) {
       finish();
@@ -205,14 +216,30 @@ export function collectPasses(data: CaptureData, sets: CommandSets, source: Reso
   }
   finish();
   // A pass that touched nothing the capture can name is noise in the graph, not information.
-  return passes.filter((p) => p.accesses.length > 0 || p.draws > 0);
+  // Dropping one renumbers the rest, so the sync points' ordinals move with them.
+  const kept = passes.filter((p) => p.accesses.length > 0 || p.draws > 0);
+  if (kept.length !== passes.length) {
+    const ordinals = new Map<RawPass, number>();
+    kept.forEach((p, i) => ordinals.set(p, i));
+    for (const sync of syncPoints) {
+      let after = -1;
+      for (let i = sync.after; i >= 0; i--) {
+        const ordinal = ordinals.get(passes[i]);
+        if (ordinal !== undefined) { after = ordinal; break; }
+      }
+      sync.after = after;
+    }
+  }
+  return { passes: kept, syncPoints };
 }
 
 /** The render graph of a capture, with GPU pass durations attached when the frame was profiled. */
 export function buildFrameGraph(data: CaptureData, sets: CommandSets, source: ResourceSource): RenderGraph {
-  const passes = collectPasses(data, sets, source);
+  const { passes, syncPoints } = collectPasses(data, sets, source);
   return buildRenderGraph(passes, {
+    api: data.api,
     durationOf: (key) => data.passTimings.get(key)?.durationMs ?? null,
+    syncPoints,
   });
 }
 

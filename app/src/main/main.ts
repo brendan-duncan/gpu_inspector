@@ -1222,6 +1222,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       showView: cliOption("debug-view"),
+      expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
@@ -1529,6 +1530,17 @@ void app.whenReady().then(() => {
           mainWin.webContents.sendInputEvent({ type: "mouseUp", x: mouse[0], y: mouse[1], button: "left", clickCount: 1 });
           mainWin.webContents.sendInputEvent({ type: "mouseMove", x: mouse[0] + 2, y: mouse[1] + 2 });
           await new Promise((r) => setTimeout(r, 400));
+        }
+        // Testing aid: --debug-expand=<text> opens the selected command's section with that text
+        // in its title (a shader's source, a buffer's contents), then waits for what it fetches.
+        const expand = cliOption("debug-expand");
+        if (expand && mainWin) {
+          const opened = await mainWin.webContents.executeJavaScript(
+            `window.__inspectorDebugExpand ? window.__inspectorDebugExpand(${JSON.stringify(expand)}) : false`);
+          if (!opened) console.error(`--debug-expand: no section titled ${JSON.stringify(expand)}`);
+          // The section fetches what it shows (a shader's source from a source root, a buffer's
+          // bytes from the layer) after it opens, and the dump below has to see the result.
+          await new Promise((r) => setTimeout(r, 1500));
         }
         // Testing aid: --debug-dump=<json> writes what the renderer knows (sessions, captures,
         // findings, validation) for tools/ui_tests.py to check.

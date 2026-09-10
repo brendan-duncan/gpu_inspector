@@ -539,8 +539,10 @@ export class CaptureView implements CaptureHost {
     this._infoPanel.html = "";
     this._selectedRow = null;
     this._rows = [];
-    this._analysis = analyzeFrame(this.data, this.window.database);
     this._renderGraph = null;
+    // The graph is built here rather than lazily: its rules contribute to Frame Issues and to the
+    // finding flags on the command rows, which are put on as the rows are built just below.
+    this._analysis = analyzeFrame(this.data, this.window.database, this.renderGraph());
     this._passBlocks.clear();
     this._textureCanvases.clear();
     this._drawCount = 0;
@@ -795,7 +797,7 @@ export class CaptureView implements CaptureHost {
     const d = this.data;
     const draws = d.commands.filter((c) => sets.DRAW.has(c.method) || sets.DISPATCH.has(c.method)).length;
     const passes = d.commands.filter((c) => sets.PASS_BEGIN.has(c.method)).length;
-    if (!this._analysis && d.commands.length) this._analysis = analyzeFrame(d, db);
+    if (!this._analysis && d.commands.length) this._analysis = analyzeFrame(d, db, this.renderGraph());
     return {
       status: this.status, frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
       textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
@@ -860,6 +862,22 @@ export class CaptureView implements CaptureHost {
     if (!row) return;
     row.element.scrollIntoView({ block: "center" });
     this._selectRow(row);
+  }
+
+  /**
+   * Opens the selected command's collapsible section whose title contains `text` (--debug-expand,
+   * tools/ui_tests.py). The UI tests used to reach these by clicking a screen coordinate, which
+   * any change to the capture bar's height silently broke.
+   */
+  expandSection(text: string): boolean {
+    const needle = text.toLowerCase();
+    for (const bar of this._infoPanel.element.querySelectorAll(".title_bar")) {
+      if (!(bar.textContent ?? "").toLowerCase().includes(needle)) continue;
+      const body = bar.parentElement?.querySelector(".collapsible_body");
+      if (body?.classList.contains("collapsed")) (bar as HTMLElement).click();
+      return true;
+    }
+    return false;
   }
 
   private _summarizeArgs(cmd: CaptureCommand): string {
@@ -1026,7 +1044,7 @@ export class CaptureView implements CaptureHost {
       return;
     }
     const db = this.window.database;
-    if (!this._analysis) this._analysis = analyzeFrame(this.data, db);
+    if (!this._analysis) this._analysis = analyzeFrame(this.data, db, this.renderGraph());
     renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
       { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) });
   }
@@ -1098,6 +1116,7 @@ export class CaptureView implements CaptureHost {
     renderRenderGraph(this._infoPanel, this.renderGraph(), {
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
+      onShowFrameStats: () => this._showStats(),
     });
   }
 

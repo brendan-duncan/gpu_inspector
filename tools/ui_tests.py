@@ -7,7 +7,7 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-dump, --debug-view, --screenshot, --quit-after-screenshot), then checks the JSON the renderer dumped at
+--debug-dump, --debug-view, --debug-expand, --screenshot, --quit-after-screenshot), then checks the JSON
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
 expected of it ({"findings": {"rule": count, ...}}); without one the file only has to open with
@@ -158,7 +158,11 @@ def triangle_msaa(state, log):
 
 def triangle_offscreen(state, log):
     s = session(state)
-    return check_connected(state, log) + check_capture_basic(state, log, textures=1) + \
+    # Nothing presents in this mode, so the render pass stores a colour attachment the capture
+    # never sees read: the render graph's rules (render_graph_analysis.ts) must say so, which also
+    # checks that they run at all and that their findings reach the capture's finding list.
+    return expect("unread-store" in findings(state), f"no unread-store finding for the offscreen target: {findings(state)}") + \
+        check_connected(state, log) + check_capture_basic(state, log, textures=1) + \
         expect(s.get("frameBoundary") == "wait", f"frame boundary {s.get('frameBoundary')!r} (expected the fence wait)") + \
         expect("no present after" in log, "the layer did not switch its frame boundary") + \
         expect(s.get("refreshSource") == "estimate", f"refresh source {s.get('refreshSource')!r} (expected the estimate)")
@@ -245,7 +249,8 @@ def triangle_cases(triangle):
         Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
              companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
         Case("plain", launch + ["--debug-capture"], triangle_plain),
-        Case("sources", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-command=5", "--debug-mouse=870,432"], triangle_sources, delay_ms=14000),
+        Case("sources", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-command=5",
+                                  "--debug-expand=Compute Shader"], triangle_sources, delay_ms=14000),
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),

@@ -47,6 +47,10 @@ interpreter and re-created pipelines.
 - Metal (macOS): the capture library in `metal/`, hooking the driver's classes without wrapping
   objects, with object tracking and lifetime, frame capture with render targets, buffers in
   every storage mode, pass timings and pipeline reflection (see `metal/README.md`).
+- Render graph suggestions: rules over the graph (unread stores per subresource and per write,
+  results overwritten before anything reads them, transient-attachment candidates, mergeable
+  passes, barriers that synchronize nothing), in the Render Graph view and Frame Issues, shared
+  by both APIs; they replace the per-command rules that answered the same questions by proxy.
 - Render Graph: the capture's passes and the resources connecting them, from attachments,
   descriptor sets and transfers, versioned per write and keyed per subresource; a resource
   lifetime chart with a node-link view of the selected pass' neighbourhood, GPU times, the

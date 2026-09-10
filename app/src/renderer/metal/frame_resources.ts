@@ -229,6 +229,7 @@ export class MetalResourceSource implements ResourceSource {
     accesses.push({
       resource, mode: "write", usage: `${kind} attachment (${load.toLowerCase() || "unknown"}/${store.toLowerCase() || "unknown"})`,
       discards: load !== "Load", dropped: !stores && store !== "MultisampleResolve",
+      resolved: store.includes("MultisampleResolve"),
     });
     if (kind === "color") targets.push(resource.label);
     // A store action that resolves writes the resolve texture as well as (or instead of) the

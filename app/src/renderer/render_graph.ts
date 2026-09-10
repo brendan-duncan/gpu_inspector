@@ -25,6 +25,8 @@
 // Everything above is API-neutral: this module is fed RawPass/RawAccess by a per-API extractor
 // (vulkan/frame_resources.ts, metal/frame_resources.ts), the same split as command_sets.ts.
 
+import type { CaptureApi } from "../shared/protocol.js";
+
 export type ResourceType = "image" | "buffer";
 export type AccessMode = "read" | "write" | "readwrite";
 export type NodeKind = "render" | "compute" | "transfer";
@@ -60,6 +62,12 @@ export interface RawAccess {
   discards?: boolean;
   /** The API throws the result away (store op DONT_CARE): nothing can read this version. */
   dropped?: boolean;
+  /**
+   * A multisampled attachment written alongside its resolve target. Nothing reads such an
+   * attachment, by design, so the rules leave it to the per-API msaa-store rule, which knows the
+   * resolve-only store ops to suggest.
+   */
+  resolved?: boolean;
 }
 
 /** One pass (or standalone transfer command) of the frame, in execution order. */
@@ -110,6 +118,12 @@ export interface GraphUse {
   usage: string;
   /** The version read, for a read; the version produced, for a write. */
   version: GraphVersion;
+  /** A write that replaced the subresource rather than adding to what was there (see RawAccess). */
+  discards: boolean;
+  /** A write the API throws away (store op DONT_CARE), so it never reaches memory. */
+  dropped: boolean;
+  /** A multisampled attachment written beside its resolve target (see RawAccess). */
+  resolved: boolean;
 }
 
 export interface GraphNode {
@@ -144,10 +158,33 @@ export interface GraphEdge {
   usage: string;
 }
 
+/**
+ * A synchronization command between two passes (a Vulkan pipeline barrier or event wait), kept
+ * beside the graph so the rules can compare what a frame declares it depends on with what it
+ * actually does. Not a node: it produces and consumes nothing.
+ */
+export interface SyncPoint {
+  commandIndex: number;
+  method: string;
+  /** Ordinal of the last pass that began before it, -1 when it precedes every pass. */
+  after: number;
+  /** The subresources the barrier names, by resource key. Empty for a global memory barrier. */
+  resources: string[];
+  /**
+   * The barrier also changes an image layout or moves a resource between queue families. Those
+   * are required whether or not any data depends on them, so such a barrier is never questioned.
+   */
+  structural: boolean;
+}
+
 export interface RenderGraph {
+  /** The API the capture came from, so a rule's advice can name that API's own spelling of a fix. */
+  api: CaptureApi;
   nodes: GraphNode[];
   resources: GraphResource[];
   edges: GraphEdge[];
+  /** Barriers and event waits, in command order (see SyncPoint). */
+  syncPoints: SyncPoint[];
   /** Resources whose first access reads contents from before the capture. */
   externalInputs: GraphResource[];
   /** Passes nothing downstream consumes; see GraphNode.unread for what that does and does not mean. */
@@ -160,8 +197,11 @@ export interface RenderGraph {
 }
 
 export interface BuildOptions {
+  api?: CaptureApi;
   /** GPU duration of a pass, by its passKey; absent when the frame was not profiled. */
   durationOf?: (passKey: string) => number | null;
+  /** The frame's barriers and event waits, in command order. */
+  syncPoints?: SyncPoint[];
 }
 
 /** Builds the graph from a frame's passes in execution order. */
@@ -205,7 +245,7 @@ export function buildRenderGraph(passes: RawPass[], options: BuildOptions = {}):
       // Such a write depends on the previous version but is not itself listed as a read: the pass'
       // access to the resource is the write, recorded in the round below.
       const isRead = access.mode !== "write";
-      const use: GraphUse = { node, resource, mode: access.mode, usage: access.usage, version };
+      const use: GraphUse = { node, resource, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
       if (isRead) {
         node.reads.push(use);
         resource.uses.push(use);
@@ -230,7 +270,7 @@ export function buildRenderGraph(passes: RawPass[], options: BuildOptions = {}):
       };
       resource.versions.push(version);
       current.set(resource.key, version);
-      const use: GraphUse = { node, resource, mode: access.mode, usage: access.usage, version };
+      const use: GraphUse = { node, resource, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
       node.writes.push(use);
       resource.uses.push(use);
       touch(resource, node);
@@ -244,7 +284,8 @@ export function buildRenderGraph(passes: RawPass[], options: BuildOptions = {}):
 
   const list = [...resources.values()];
   const graph: RenderGraph = {
-    nodes, resources: list, edges,
+    api: options.api ?? "vulkan",
+    nodes, resources: list, edges, syncPoints: options.syncPoints ?? [],
     externalInputs: list.filter((r) => r.externalInput),
     unreadNodes: nodes.filter((n) => n.unread),
     criticalPath: [], criticalPathMs: 0, warnings: [],
