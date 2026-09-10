@@ -73,8 +73,7 @@ struct PassTiming {
     uint64_t commandBufferId = 0;
     uint32_t passIndex = 0;
     PassKind kind = PassKind::Render;
-    uint32_t startIndex = 0;
-    uint32_t endIndex = 0;
+    PassTimingSlot slot;
 };
 
 // A pass in flight: what to blit and sample when the application ends the encoder.
@@ -165,11 +164,31 @@ constexpr size_t kCommandsPerBatch = 2000;
 
 constexpr uint32_t kSampleCapacity = 4096;
 
-struct Timing {
-    id<MTLDevice> device = nil;
+/** One counter set's sample buffer and how much of it a capture has used. */
+struct CounterBuffer {
     id<MTLCounterSampleBuffer> buffer = nil;
     uint32_t used = 0;
     uint32_t capacity = 0;
+    /** Two samples, start then end, or false when the buffer is absent or full. */
+    bool Reserve(uint32_t count, uint32_t *start) {
+        if (buffer == nil || used + count > capacity) return false;
+        *start = used;
+        used += count;
+        return true;
+    }
+};
+
+struct Timing {
+    id<MTLDevice> device = nil;
+    // Timestamps: the pass durations. `buffer`, `used` and `capacity` keep their names since
+    // the rest of the file reads them.
+    id<MTLCounterSampleBuffer> buffer = nil;
+    uint32_t used = 0;
+    uint32_t capacity = 0;
+    // The statistic set (vertex, fragment and kernel invocations, clipper counts) and the
+    // stage-utilization set (cycles per stage): Xcode's counters, when the GPU has them.
+    CounterBuffer statistic;
+    CounterBuffer utilization;
     bool tried = false;
     bool stageBoundary = false;
     bool drawBoundary = false;
@@ -193,54 +212,110 @@ void EnsureTiming(id<MTLDevice> device) {
         g_timing.dispatchBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
         g_timing.blitBoundary = [device supportsCounterSampling:MTLCounterSamplingPointAtBlitBoundary];
         id<MTLCounterSet> timestamps = nil;
+        id<MTLCounterSet> statistic = nil;
+        id<MTLCounterSet> utilization = nil;
         for (id<MTLCounterSet> set in device.counterSets) {
             if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+            else if ([set.name isEqualToString:MTLCommonCounterSetStatistic]) statistic = set;
+            else if ([set.name isEqualToString:MTLCommonCounterSetStageUtilization]) utilization = set;
         }
         if (timestamps == nil) {
             Log("pass timings: no timestamp counter set on %s", device.name.UTF8String);
             return;
         }
-        MTLCounterSampleBufferDescriptor *descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
-        descriptor.counterSet = timestamps;
-        descriptor.storageMode = MTLStorageModeShared;
-        descriptor.label = @"gpu-inspector pass timestamps";
         // The largest the device accepts, from a generous size down.
-        for (uint32_t capacity = kSampleCapacity; capacity >= 64; capacity /= 2) {
-            descriptor.sampleCount = capacity;
-            NSError *error = nil;
-            g_timing.buffer = [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
-            if (g_timing.buffer != nil) {
-                g_timing.capacity = capacity;
-                break;
+        auto make = [&](id<MTLCounterSet> set, NSString *label, uint32_t *capacity) -> id<MTLCounterSampleBuffer> {
+            MTLCounterSampleBufferDescriptor *descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
+            descriptor.counterSet = set;
+            descriptor.storageMode = MTLStorageModeShared;
+            descriptor.label = label;
+            id<MTLCounterSampleBuffer> buffer = nil;
+            for (uint32_t n = kSampleCapacity; n >= 64; n /= 2) {
+                descriptor.sampleCount = n;
+                NSError *error = nil;
+                buffer = [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+                if (buffer != nil) {
+                    *capacity = n;
+                    break;
+                }
             }
-        }
-        [descriptor release];
+            [descriptor release];
+            return buffer;
+        };
+        g_timing.buffer = make(timestamps, @"gpu-inspector pass timestamps", &g_timing.capacity);
         if (g_timing.buffer == nil) {
             Log("pass timings: could not create a counter sample buffer");
             return;
         }
+        if (statistic != nil) {
+            g_timing.statistic.buffer = make(statistic, @"gpu-inspector pass statistics", &g_timing.statistic.capacity);
+        }
+        if (utilization != nil) {
+            g_timing.utilization.buffer = make(utilization, @"gpu-inspector stage utilization", &g_timing.utilization.capacity);
+        }
         [device sampleTimestamps:&g_timing.cpuStart gpuTimestamp:&g_timing.gpuStart];
-        Log("pass timings: %u samples, stage boundary %d, draw %d, dispatch %d, blit %d",
+        Log("pass timings: %u samples, stage boundary %d, draw %d, dispatch %d, blit %d, statistics %d, utilization %d",
             g_timing.capacity, g_timing.stageBoundary, g_timing.drawBoundary,
-            g_timing.dispatchBoundary, g_timing.blitBoundary);
+            g_timing.dispatchBoundary, g_timing.blitBoundary, g_timing.statistic.buffer != nil,
+            g_timing.utilization.buffer != nil);
     }
 }
 
 /** Under g_mutex. Two sample indices for a pass, or a slot with no buffer. */
-PassTimingSlot ReserveSamples(bool onEncoder) {
+/**
+ * Timestamp samples for a pass — two, or four for a render pass sampled at every stage
+ * boundary — and a start and end in each counter buffer the device has. A counter set whose
+ * buffer is full is left out of the pass rather than failing the timestamps.
+ */
+PassTimingSlot ReserveSamples(bool onEncoder, bool fourStages) {
     PassTimingSlot slot;
-    if (g_timing.buffer == nil || g_timing.used + 2 > g_timing.capacity) return slot;
+    const uint32_t count = fourStages ? 4 : 2;
+    if (g_timing.buffer == nil || g_timing.used + count > g_timing.capacity) return slot;
     slot.sampleBuffer = g_timing.buffer;
     slot.startIndex = g_timing.used;
-    slot.endIndex = g_timing.used + 1;
+    if (fourStages) {
+        slot.vertexEndIndex = g_timing.used + 1;
+        slot.fragmentStartIndex = g_timing.used + 2;
+    }
+    slot.endIndex = g_timing.used + count - 1;
     slot.onEncoder = onEncoder;
-    g_timing.used += 2;
+    g_timing.used += count;
+    uint32_t start = 0;
+    if (g_timing.statistic.Reserve(2, &start)) {
+        slot.statisticBuffer = g_timing.statistic.buffer;
+        slot.statisticStart = start;
+        slot.statisticEnd = start + 1;
+    }
+    if (g_timing.utilization.Reserve(2, &start)) {
+        slot.utilizationBuffer = g_timing.utilization.buffer;
+        slot.utilizationStart = start;
+        slot.utilizationEnd = start + 1;
+    }
     return slot;
 }
 
 void ReleaseTiming(Timing &timing) {
     [timing.buffer release];
+    [timing.statistic.buffer release];
+    [timing.utilization.buffer release];
     timing = Timing();
+}
+
+/** The counter sets' end-minus-start for one pass, as JSON members; nothing when unresolved. */
+template <typename T>
+const T *ResolvedSamples(NSData *data, uint32_t count) {
+    if (data == nil || data.length < (NSUInteger)count * sizeof(T)) return nullptr;
+    return (const T *)data.bytes;
+}
+
+uint64_t Delta(uint64_t start, uint64_t end) {
+    if (start == MTLCounterErrorValue || end == MTLCounterErrorValue || end < start) return UINT64_MAX;
+    return end - start;
+}
+
+void WriteCounter(vkinsp::JsonWriter &w, const char *key, uint64_t delta) {
+    if (delta == UINT64_MAX) return;
+    w.Key(key); w.Uint(delta);
 }
 
 /** Resolves the samples, sends CapturePassTimings and releases the buffer. Not under g_mutex. */
@@ -273,10 +348,20 @@ void SendTimings(std::vector<PassTiming> &timings, Timing &timing) {
         };
         uint64_t earliest = UINT64_MAX;
         for (const PassTiming &pt : timings) {
-            if (valid(pt.startIndex) && valid(pt.endIndex)) {
-                earliest = std::min(earliest, samples[pt.startIndex].timestamp);
+            if (valid(pt.slot.startIndex) && valid(pt.slot.endIndex)) {
+                earliest = std::min(earliest, samples[pt.slot.startIndex].timestamp);
             }
         }
+        // The counter sets, resolved once each; a pass without a sample in one shows nothing.
+        const MTLCounterResultStatistic *statistics = timing.statistic.used == 0 ? nullptr
+            : ResolvedSamples<MTLCounterResultStatistic>(
+                  [timing.statistic.buffer resolveCounterRange:NSMakeRange(0, timing.statistic.used)],
+                  timing.statistic.used);
+        const MTLCounterResultStageUtilization *utilization = timing.utilization.used == 0 ? nullptr
+            : ResolvedSamples<MTLCounterResultStageUtilization>(
+                  [timing.utilization.buffer resolveCounterRange:NSMakeRange(0, timing.utilization.used)],
+                  timing.utilization.used);
+        const double toMs = nsPerTick / 1e6;
         vkinsp::JsonWriter w;
         w.BeginObject();
         w.Key("action"); w.String("CapturePassTimings");
@@ -284,17 +369,54 @@ void SendTimings(std::vector<PassTiming> &timings, Timing &timing) {
         w.Key("passes"); w.BeginArray();
         uint32_t sent = 0;
         for (const PassTiming &pt : timings) {
-            if (!valid(pt.startIndex) || !valid(pt.endIndex)) continue;
-            const uint64_t begin = samples[pt.startIndex].timestamp;
-            const uint64_t end = samples[pt.endIndex].timestamp;
+            const PassTimingSlot &s = pt.slot;
+            if (!valid(s.startIndex) || !valid(s.endIndex)) continue;
+            const uint64_t begin = samples[s.startIndex].timestamp;
+            const uint64_t end = samples[s.endIndex].timestamp;
             if (end < begin) continue;
             w.BeginObject();
             w.Key("frame"); w.Uint(pt.frame);
             w.Key("commandBuffer"); w.Uint(pt.commandBufferId);
             w.Key("passIndex"); w.Uint(pt.passIndex);
             w.Key("kind"); w.String(pt.kind == PassKind::Compute ? "compute" : "render");
-            w.Key("startMs"); w.Double((double)(begin - earliest) * nsPerTick / 1e6);
-            w.Key("durationMs"); w.Double((double)(end - begin) * nsPerTick / 1e6);
+            w.Key("startMs"); w.Double((double)(begin - earliest) * toMs);
+            w.Key("durationMs"); w.Double((double)(end - begin) * toMs);
+            // The stage split, where the four boundaries all sampled. On a tile-based GPU the
+            // two stages overlap, so the parts can sum to more than the whole.
+            if (s.vertexEndIndex != UINT32_MAX && valid(s.vertexEndIndex) && valid(s.fragmentStartIndex)) {
+                const uint64_t vertexEnd = samples[s.vertexEndIndex].timestamp;
+                const uint64_t fragmentStart = samples[s.fragmentStartIndex].timestamp;
+                if (vertexEnd >= begin) { w.Key("vertexMs"); w.Double((double)(vertexEnd - begin) * toMs); }
+                if (end >= fragmentStart) { w.Key("fragmentMs"); w.Double((double)(end - fragmentStart) * toMs); }
+            }
+            if (s.statisticBuffer != nil && statistics != nullptr && s.statisticEnd < timing.statistic.used) {
+                const MTLCounterResultStatistic &a = statistics[s.statisticStart];
+                const MTLCounterResultStatistic &b = statistics[s.statisticEnd];
+                w.Key("counters"); w.BeginObject();
+                WriteCounter(w, "vertexInvocations", Delta(a.vertexInvocations, b.vertexInvocations));
+                WriteCounter(w, "clipperInvocations", Delta(a.clipperInvocations, b.clipperInvocations));
+                WriteCounter(w, "clipperPrimitivesOut", Delta(a.clipperPrimitivesOut, b.clipperPrimitivesOut));
+                WriteCounter(w, "fragmentInvocations", Delta(a.fragmentInvocations, b.fragmentInvocations));
+                WriteCounter(w, "fragmentsPassed", Delta(a.fragmentsPassed, b.fragmentsPassed));
+                WriteCounter(w, "computeKernelInvocations", Delta(a.computeKernelInvocations, b.computeKernelInvocations));
+                WriteCounter(w, "tessellationInputPatches", Delta(a.tessellationInputPatches, b.tessellationInputPatches));
+                WriteCounter(w, "postTessellationVertexInvocations",
+                             Delta(a.postTessellationVertexInvocations, b.postTessellationVertexInvocations));
+                w.EndObject();
+            }
+            if (s.utilizationBuffer != nil && utilization != nullptr && s.utilizationEnd < timing.utilization.used) {
+                const MTLCounterResultStageUtilization &a = utilization[s.utilizationStart];
+                const MTLCounterResultStageUtilization &b = utilization[s.utilizationEnd];
+                w.Key("utilization"); w.BeginObject();
+                WriteCounter(w, "totalCycles", Delta(a.totalCycles, b.totalCycles));
+                WriteCounter(w, "vertexCycles", Delta(a.vertexCycles, b.vertexCycles));
+                WriteCounter(w, "tessellationCycles", Delta(a.tessellationCycles, b.tessellationCycles));
+                WriteCounter(w, "postTessellationVertexCycles",
+                             Delta(a.postTessellationVertexCycles, b.postTessellationVertexCycles));
+                WriteCounter(w, "fragmentCycles", Delta(a.fragmentCycles, b.fragmentCycles));
+                WriteCounter(w, "renderTargetCycles", Delta(a.renderTargetCycles, b.renderTargetCycles));
+                w.EndObject();
+            }
             w.EndObject();
             sent++;
         }
@@ -816,22 +938,40 @@ PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor
     if (@available(macOS 11.0, *)) {
         if (g_timing.stageBoundary && descriptor != nil) {
             // The first attachment slot the application is not using itself.
+            // The free attachment slots, the application's own left alone: one for the
+            // timestamps, then one each for the counter sets the device has.
+            std::vector<MTLRenderPassSampleBufferAttachmentDescriptor *> free;
             for (NSUInteger i = 0; i < 4; i++) {
                 MTLRenderPassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
-                if (a.sampleBuffer != nil) continue;
-                slot = ReserveSamples(false);
-                if (slot.sampleBuffer == nil) return slot;
-                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
-                a.startOfVertexSampleIndex = slot.startIndex;
-                a.endOfVertexSampleIndex = MTLCounterDontSample;
-                a.startOfFragmentSampleIndex = MTLCounterDontSample;
-                a.endOfFragmentSampleIndex = slot.endIndex;
-                return slot;
+                if (a.sampleBuffer == nil) free.push_back(a);
+            }
+            if (free.empty()) return slot;
+            slot = ReserveSamples(false, true);
+            if (slot.sampleBuffer == nil) return slot;
+            size_t next = 0;
+            auto attach = [&](id buffer, uint32_t start, uint32_t vertexEnd, uint32_t fragmentStart, uint32_t end) {
+                if (next >= free.size()) return false;
+                MTLRenderPassSampleBufferAttachmentDescriptor *a = free[next++];
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)buffer;
+                a.startOfVertexSampleIndex = start;
+                a.endOfVertexSampleIndex = vertexEnd;
+                a.startOfFragmentSampleIndex = fragmentStart;
+                a.endOfFragmentSampleIndex = end;
+                return true;
+            };
+            attach(slot.sampleBuffer, slot.startIndex, slot.vertexEndIndex, slot.fragmentStartIndex, slot.endIndex);
+            if (slot.statisticBuffer != nil
+                && !attach(slot.statisticBuffer, slot.statisticStart, MTLCounterDontSample, MTLCounterDontSample, slot.statisticEnd)) {
+                slot.statisticBuffer = nil;
+            }
+            if (slot.utilizationBuffer != nil
+                && !attach(slot.utilizationBuffer, slot.utilizationStart, MTLCounterDontSample, MTLCounterDontSample, slot.utilizationEnd)) {
+                slot.utilizationBuffer = nil;
             }
             return slot;
         }
     }
-    if (g_timing.drawBoundary) slot = ReserveSamples(true);
+    if (g_timing.drawBoundary) slot = ReserveSamples(true, false);
     return slot;
 }
 
@@ -844,20 +984,33 @@ PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescript
     if (g_timing.buffer == nil) return slot;
     if (@available(macOS 11.0, *)) {
         if (g_timing.stageBoundary && descriptor != nil) {
+            std::vector<MTLComputePassSampleBufferAttachmentDescriptor *> free;
             for (NSUInteger i = 0; i < 4; i++) {
                 MTLComputePassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
-                if (a.sampleBuffer != nil) continue;
-                slot = ReserveSamples(false);
-                if (slot.sampleBuffer == nil) return slot;
-                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
-                a.startOfEncoderSampleIndex = slot.startIndex;
-                a.endOfEncoderSampleIndex = slot.endIndex;
-                return slot;
+                if (a.sampleBuffer == nil) free.push_back(a);
+            }
+            if (free.empty()) return slot;
+            slot = ReserveSamples(false, false);
+            if (slot.sampleBuffer == nil) return slot;
+            // Cycles per stage mean nothing to a compute pass; the statistic set does.
+            slot.utilizationBuffer = nil;
+            size_t next = 0;
+            auto attach = [&](id buffer, uint32_t start, uint32_t end) {
+                if (next >= free.size()) return false;
+                MTLComputePassSampleBufferAttachmentDescriptor *a = free[next++];
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)buffer;
+                a.startOfEncoderSampleIndex = start;
+                a.endOfEncoderSampleIndex = end;
+                return true;
+            };
+            attach(slot.sampleBuffer, slot.startIndex, slot.endIndex);
+            if (slot.statisticBuffer != nil && !attach(slot.statisticBuffer, slot.statisticStart, slot.statisticEnd)) {
+                slot.statisticBuffer = nil;
             }
             return slot;
         }
     }
-    if (g_timing.dispatchBoundary) slot = ReserveSamples(true);
+    if (g_timing.dispatchBoundary) slot = ReserveSamples(true, false);
     return slot;
 }
 
@@ -873,8 +1026,10 @@ PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *de
             for (NSUInteger i = 0; i < 4; i++) {
                 MTLBlitPassSampleBufferAttachmentDescriptor *a = descriptor.sampleBufferAttachments[i];
                 if (a.sampleBuffer != nil) continue;
-                slot = ReserveSamples(false);
+                slot = ReserveSamples(false, false);
                 if (slot.sampleBuffer == nil) return slot;
+                slot.statisticBuffer = nil;
+                slot.utilizationBuffer = nil;
                 a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
                 a.startOfEncoderSampleIndex = slot.startIndex;
                 a.endOfEncoderSampleIndex = slot.endIndex;
@@ -883,7 +1038,11 @@ PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *de
             return slot;
         }
     }
-    if (g_timing.blitBoundary) slot = ReserveSamples(true);
+    if (g_timing.blitBoundary) slot = ReserveSamples(true, false);
+    if (slot.sampleBuffer != nil) {
+        slot.statisticBuffer = nil;
+        slot.utilizationBuffer = nil;
+    }
     return slot;
 }
 
@@ -917,6 +1076,12 @@ uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTiming
                     sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.sampleBuffer
                              atSampleIndex:timing.startIndex
                                withBarrier:YES];
+                if (timing.statisticBuffer != nil) {
+                    [(id<MTLComputeCommandEncoder>)encoder
+                        sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.statisticBuffer
+                                 atSampleIndex:timing.statisticStart
+                                   withBarrier:NO];
+                }
             }
         }
     }
@@ -1025,6 +1190,12 @@ void BeforeEndEncoding(id encoder) {
                 sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.sampleBuffer
                          atSampleIndex:timing.endIndex
                            withBarrier:YES];
+            if (timing.statisticBuffer != nil) {
+                [(id<MTLComputeCommandEncoder>)encoder
+                    sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)timing.statisticBuffer
+                             atSampleIndex:timing.statisticEnd
+                               withBarrier:NO];
+            }
         }
     }
 }
@@ -1043,8 +1214,7 @@ void AfterEndEncoding(id encoder) {
             pt.commandBufferId = pass.commandBufferId;
             pt.passIndex = pass.passIndex;
             pt.kind = pass.kind;
-            pt.startIndex = pass.timing.startIndex;
-            pt.endIndex = pass.timing.endIndex;
+            pt.slot = pass.timing;
             g_passTimings.push_back(pt);
         }
     }

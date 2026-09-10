@@ -306,6 +306,13 @@ export interface PassTiming {
   /** Start relative to the earliest timed pass of the capture. */
   startMs: number;
   durationMs: number;
+  /** Metal render passes sampled at every stage boundary: the vertex and fragment stages' own spans (they overlap on a tile-based GPU). */
+  vertexMs?: number;
+  fragmentMs?: number;
+  /** Metal: the statistic counter set's deltas over the pass (vertexInvocations, fragmentInvocations, ...). */
+  counters?: Record<string, number>;
+  /** Metal: the stage-utilization counter set's cycle deltas over the pass (totalCycles, vertexCycles, fragmentCycles, ...). */
+  utilization?: Record<string, number>;
 }
 
 export interface CapturePassTimingsMessage { action: "CapturePassTimings"; timestampPeriodNs: number; count: number; passes: PassTiming[] }

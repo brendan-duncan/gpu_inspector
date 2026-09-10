@@ -52,7 +52,11 @@ export class VulkanObject {
     // Metal objects with a name of their own: a function is its entry point's name, the device
     // the GPU's. Better than a number in every list they appear in.
     const own = this.args?.name;
-    if (typeof own === "string" && own && this.type.startsWith("MTL")) return own;
+    if (typeof own === "string" && own && this.type.startsWith("MTL")) {
+      // A function's stage tells its entry points apart in a list: "main (vertex)".
+      const kind = this.type === "MTLFunction" ? this.args?.functionType : undefined;
+      return typeof kind === "string" && kind ? `${own} (${kind})` : own;
+    }
     return `${this.shortType} ${this.id}`;
   }
 

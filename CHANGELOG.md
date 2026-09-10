@@ -37,6 +37,9 @@
   Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
   Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
   slots and objects, a pass's target.
+- Metal pass counters: the vertex and fragment stages' own spans beside every render pass's
+  duration, and the GPU's statistic and stage-utilization counter sets over each pass
+  (invocations, clipper counts, cycles per stage) in the pass header's tooltip.
 - Frame Issues for Metal captures: undefined and first-use loads, unread stores, multisample
   stores, memoryless candidates, mergeable back-to-back passes, redundant binds, tiny draws and
   single-threadgroup dispatches, read off the pass descriptors' load and store actions.
