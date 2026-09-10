@@ -152,8 +152,9 @@ bool LooksLikeMetalValidation(NSString *text) {
         @"MTLDebug", @"MTLGPUDebug", @"Metal API Validation", @"failed assertion",
         @"Shader validation", @"MTLShaderValidation",
     };
-    for (NSString *mark in kMarks) {
-        if ([text rangeOfString:mark].location != NSNotFound) return true;
+    // A C array, not a collection: fast enumeration does not apply.
+    for (size_t i = 0; i < sizeof(kMarks) / sizeof(kMarks[0]); i++) {
+        if ([text rangeOfString:kMarks[i]].location != NSNotFound) return true;
     }
     return false;
 }
