@@ -59,20 +59,22 @@ export function metalStages(pipeline: VulkanObject | null | undefined): MetalSta
   for (const [stage, value] of Object.entries(refl)) {
     if (!isObject(value)) continue;
     const s: MetalStageReflection = { stage, buffers: new Map(), textures: new Map(), samplers: new Map() };
+    // `used` is MTLArgument.isActive / MTLBinding.isUsed: false for a declared binding the
+    // compiler optimized away, which the shader therefore never reads.
     for (const b of Array.isArray(value.buffers) ? value.buffers : []) {
-      if (!isObject(b)) continue;
+      if (!isObject(b) || b.used === false) continue;
       // A buffer the shader only reads is a uniform block to the UI; anything writable is storage.
       const r = resource(b, str(b.access) === "readOnly" ? "uniform" : "storage");
       if (r) s.buffers.set(r.binding, r);
     }
     for (const t of Array.isArray(value.textures) ? value.textures : []) {
-      if (!isObject(t)) continue;
+      if (!isObject(t) || t.used === false) continue;
       const name = `${str(t.textureType).replace(/^MTLTextureType/, "texture")}<${str(t.dataType) || "float"}>`;
       const r = resource(t, str(t.access) === "readOnly" ? "sampledImage" : "storageImage", { kind: "opaque", name });
       if (r) s.textures.set(r.binding, r);
     }
     for (const sa of Array.isArray(value.samplers) ? value.samplers : []) {
-      if (!isObject(sa)) continue;
+      if (!isObject(sa) || sa.used === false) continue;
       const r = resource(sa, "sampler", { kind: "opaque", name: "sampler" });
       if (r) s.samplers.set(r.binding, r);
     }

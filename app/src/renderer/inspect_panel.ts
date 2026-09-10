@@ -61,6 +61,28 @@ const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap"
 
 const PLURALS: Record<string, string> = { VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains" };
 
+/**
+ * The line defining `name` in Metal Shading Language: one whose declaration carries a stage
+ * qualifier first (`vertex float4 name(`), else the first `type name(` that is not a call, else
+ * the first mention. -1 when the name is absent (a stitched or specialized function).
+ */
+function functionLine(source: string, name: string): number {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declaration = new RegExp(`[\\w>\\]]\\s+${escaped}\\s*\\(`);
+  const mention = new RegExp(`(^|[^\\w])${escaped}\\s*\\(`);
+  const lines = source.split("\n");
+  let plain = -1;
+  let first = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!mention.test(line)) continue;
+    if (/^\s*(vertex|fragment|kernel|visible|intersection|\[\[)/.test(line) && declaration.test(line)) return i;
+    if (plain < 0 && declaration.test(line) && !/^\s*return\b/.test(line)) plain = i;
+    if (first < 0) first = i;
+  }
+  return plain >= 0 ? plain : first;
+}
+
 function typeLabel(type: string): string {
   if (PLURALS[type]) return PLURALS[type];
   const t = type.replace(/^Vk/, "").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
@@ -195,7 +217,12 @@ export class InspectPanel {
   private _filters: Filters = InspectPanel._emptyFilters();
   private _shaderViews = new Map<number, ShaderView>();
   /** MTLLibrary payloads: the Metal Shading Language source, or the metallib bytes. */
-  private _libraryViews = new Map<number, { pre: Widget; name: string }>();
+  /**
+   * The library payloads on show, by blob index: the library's own when an MTLLibrary is
+   * inspected, or its parent's when an MTLFunction is (`ownerId` says whose, `focus` the
+   * function to scroll to).
+   */
+  private _libraryViews = new Map<number, { pre: Widget; name: string; ownerId: number; focus?: string }>();
   /** Shader edits by "<object id>:<blob index>"; the layer holds the applied state. */
   private _shaderEdits = new Map<string, ShaderEdit>();
   /** The editor currently open, to route ShaderReplaced answers to its status line. */
@@ -989,6 +1016,7 @@ export class InspectPanel {
 
     if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
+    if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
     if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
@@ -1121,9 +1149,32 @@ export class InspectPanel {
     object.blobs.forEach((blob, index) => {
       const grp = new collapsible(this.inspectPanel, { label: `${blob.name} (${formatBytes(blob.size)})`, collapsed: index > 0 });
       const pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
-      this._libraryViews.set(index, { pre, name: blob.name });
+      this._libraryViews.set(index, { pre, name: blob.name, ownerId: object.id });
       void this.window.send({ action: "RequestBlob", id: object.id, index });
     });
+  }
+
+  /**
+   * An MTLFunction is one entry point of its library, so its code is the library's source,
+   * shown here scrolled to the definition. A library built from a metallib has no source.
+   */
+  private _buildFunctionSection(object: VulkanObject): void {
+    this._libraryViews = new Map();
+    const library = this.database.getObject(object.parentId);
+    if (!library || library.type !== "MTLLibrary") return;
+    const name = str(object.args?.name);
+    const grp = new collapsible(this.inspectPanel, { label: `Source: ${name || "function"}`, collapsed: false });
+    const row = new Div(grp.body, { class: "font-md text-muted" });
+    new Span(row, { text: "In library ", style: "margin-right: 4px;" });
+    objectLink(row, library, (o) => this.revealObject(o));
+    const index = library.blobs.findIndex((b) => b.name !== "metallib");
+    if (index < 0) {
+      new Div(grp.body, { text: library.blobs.length ? "The library is a compiled metallib (AIR bitcode): no source to show." : "No source recorded for the library.", class: "text-muted" });
+      return;
+    }
+    const pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
+    this._libraryViews.set(index, { pre, name: library.blobs[index].name, ownerId: library.id, focus: name || undefined });
+    void this.window.send({ action: "RequestBlob", id: library.id, index });
   }
 
   private _buildShaderSection(object: VulkanObject): void {
@@ -1248,9 +1299,9 @@ export class InspectPanel {
   }
 
   private _objectBlob(id: number, index: number, data: Uint8Array | null): void {
-    if (this.inspectedObject?.id !== id) return;
+    // A library payload may belong to the inspected library or to the inspected function's.
     const library = this._libraryViews.get(index);
-    if (library) {
+    if (library && library.ownerId === id && (this.inspectedObject?.id === id || this.inspectedObject?.parentId === id)) {
       if (!data) {
         library.pre.text = "Not available.";
       } else if (library.name === "metallib") {
@@ -1260,10 +1311,19 @@ export class InspectPanel {
           + "under Arguments.";
       } else {
         // Metal Shading Language, as the application compiled it.
-        library.pre.html = highlight(new TextDecoder().decode(data), "msl");
+        const text = new TextDecoder().decode(data);
+        const at = library.focus ? functionLine(text, library.focus) : -1;
+        if (at < 0) {
+          library.pre.html = highlight(text, "msl");
+        } else {
+          library.pre.html = highlightLines(text, "msl")
+            .map((line, i) => `<span class="code-line${i === at ? " code-line-active" : ""}">${line}</span>`).join("\n");
+          library.pre.element.querySelector(".code-line-active")?.scrollIntoView({ block: "center" });
+        }
       }
       return;
     }
+    if (this.inspectedObject?.id !== id) return;
     const view = this._shaderViews.get(index);
     if (!view) return;
     if (!data) {

@@ -64,10 +64,15 @@ export class VulkanObject {
     return !!this.invalidReason;
   }
 
-  /** The create-info struct for this object, when the creating call has one. */
+  /**
+   * The create-info struct for this object, when the creating call has one. A Metal object's
+   * arguments are its descriptor (metal/src/tracker.h): the library flattens the creating
+   * call's descriptor into `args`, reflection included.
+   */
   get descriptor(): ArgObject | null {
     const a = this.args;
     if (!a) return null;
+    if (this.type.startsWith("MTL")) return a;
     if (isObject(a.pCreateInfo)) return a.pCreateInfo;
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
     if (Array.isArray(a.pCreateInfos)) {
