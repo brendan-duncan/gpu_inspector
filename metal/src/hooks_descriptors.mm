@@ -177,15 +177,35 @@ void WritePassAttachment(vkinsp::JsonWriter &w, MTLRenderPassAttachmentDescripto
 
 }  // namespace
 
-std::string BufferArgs(NSUInteger length, MTLResourceOptions options) {
+void WriteGpuIds(Args &a, id object) {
+    if (object == nil) return;
+    char hex[32];
+    const SEL address = sel_registerName("gpuAddress");
+    if ([object respondsToSelector:address]) {
+        const uint64_t value = ((uint64_t (*)(id, SEL))objc_msgSend)(object, address);
+        snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value);
+        a.c("gpuAddress", hex);
+    }
+#if defined(__MAC_13_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_13_0
+    const SEL resourceId = sel_registerName("gpuResourceID");
+    if ([object respondsToSelector:resourceId]) {
+        const MTLResourceID value = ((MTLResourceID (*)(id, SEL))objc_msgSend)(object, resourceId);
+        snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value._impl);
+        a.c("gpuResourceID", hex);
+    }
+#endif
+}
+
+std::string BufferArgs(id buffer, NSUInteger length, MTLResourceOptions options) {
     Args a;
     a.u("length", length).u("options", (uint64_t)options);
     const MTLStorageMode storage = (MTLStorageMode)((options & MTLResourceStorageModeMask) >> MTLResourceStorageModeShift);
     a.e("storageMode", StorageModeEnumName(storage), (uint64_t)storage);
+    WriteGpuIds(a, buffer);
     return a.str();
 }
 
-std::string TextureDescriptorArgs(MTLTextureDescriptor *d) {
+std::string TextureDescriptorArgs(MTLTextureDescriptor *d, id texture) {
     Args a;
     a.e("textureType", TextureTypeEnumName(d.textureType), (uint64_t)d.textureType)
      .e("pixelFormat", PixelFormatEnumName(d.pixelFormat), (uint64_t)d.pixelFormat)
@@ -197,6 +217,7 @@ std::string TextureDescriptorArgs(MTLTextureDescriptor *d) {
      .u("cpuCacheMode", (uint64_t)d.cpuCacheMode)
      .u("hazardTrackingMode", (uint64_t)d.hazardTrackingMode)
      .b("allowGPUOptimizedContents", d.allowGPUOptimizedContents);
+    WriteGpuIds(a, texture);
     return a.str();
 }
 
@@ -210,6 +231,7 @@ std::string TextureObjectArgs(id<MTLTexture> t) {
      .c("usage", UsageFlags(t.usage).c_str())
      .e("storageMode", StorageModeEnumName(t.storageMode), (uint64_t)t.storageMode)
      .b("framebufferOnly", t.framebufferOnly);
+    WriteGpuIds(a, t);
     return a.str();
 }
 
@@ -225,6 +247,7 @@ std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextu
         a.u("width", view.width).u("height", view.height).u("depth", view.depth)
          .u("mipmapLevelCount", view.mipmapLevelCount).u("arrayLength", view.arrayLength)
          .c("usage", UsageFlags(view.usage).c_str());
+        WriteGpuIds(a, view);
     }
     return a.str();
 }
@@ -368,7 +391,7 @@ std::string FunctionArgs(id<MTLFunction> function) {
     return a.str();
 }
 
-std::string SamplerArgs(MTLSamplerDescriptor *d) {
+std::string SamplerArgs(MTLSamplerDescriptor *d, id sampler) {
     Args a;
     a.s("label", d.label)
      .u("minFilter", (uint64_t)d.minFilter).u("magFilter", (uint64_t)d.magFilter)
@@ -381,6 +404,7 @@ std::string SamplerArgs(MTLSamplerDescriptor *d) {
      .d("lodMinClamp", d.lodMinClamp).d("lodMaxClamp", d.lodMaxClamp)
      .u("compareFunction", (uint64_t)d.compareFunction)
      .b("supportArgumentBuffers", d.supportArgumentBuffers);
+    WriteGpuIds(a, sampler);
     return a.str();
 }
 

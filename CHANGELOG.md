@@ -37,6 +37,9 @@
   Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
   Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
   slots and objects, a pass's target.
+- Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
+  offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
+  resource id every object now reports.
 - Metal pass counters: the vertex and fragment stages' own spans beside every render pass's
   duration, and the GPU's statistic and stage-utilization counter sets over each pass
   (invocations, clipper counts, cycles per stage) in the pass header's tooltip.

@@ -184,9 +184,14 @@ private:
 // Vulkan layer serializes a VkCreateInfo into. Written by hand, one per creating call — there is
 // no vk.xml for Metal to generate them from, which is the main cost of this backend.
 // (hooks_descriptors.mm)
-std::string BufferArgs(NSUInteger length, MTLResourceOptions options);
-std::string TextureDescriptorArgs(MTLTextureDescriptor *descriptor);
+std::string BufferArgs(id buffer, NSUInteger length, MTLResourceOptions options);
+std::string TextureDescriptorArgs(MTLTextureDescriptor *descriptor, id texture);
 std::string TextureObjectArgs(id<MTLTexture> texture);
+/**
+ * A buffer's GPU address and a texture's or sampler's GPU resource id, as hex strings: what an
+ * argument buffer holds for them, so the UI can match its bytes back to objects.
+ */
+void WriteGpuIds(Args &a, id object);
 std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextureType type,
                             NSRange levels, NSRange slices);
 // A pipeline's descriptor carries the reflection the hooks asked for with it (reflection.h),
@@ -211,7 +216,7 @@ std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *descript
 constexpr MTLPipelineOption kReflectionOptions = (MTLPipelineOption)((1 << 0) | (1 << 1));
 std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sourceLength);
 std::string FunctionArgs(id<MTLFunction> function);
-std::string SamplerArgs(MTLSamplerDescriptor *descriptor);
+std::string SamplerArgs(MTLSamplerDescriptor *descriptor, id sampler);
 std::string DepthStencilArgs(MTLDepthStencilDescriptor *descriptor);
 std::string HeapArgs(MTLHeapDescriptor *descriptor);
 std::string RenderPassArgs(MTLRenderPassDescriptor *descriptor);

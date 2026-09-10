@@ -80,6 +80,7 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
                  .u("usage", (uint64_t)texture.usage)
                  .b("framebufferOnly", wasFramebufferOnly)
                  .b("drawable", true);
+                WriteGpuIds(a, texture);
                 // A layer cycles a small pool of drawables, so this registers each of them once.
                 Track(texture, "MTLTexture", "CAMetalLayer nextDrawable", layer.device, a.str());
                 Log("nextDrawable -> texture %s %lux%lu", ClassName(texture),
@@ -158,7 +159,7 @@ id D_newBufferWithLength(id self, SEL _cmd, NSUInteger length, MTLResourceOption
     Reentry reentry(self, _cmd);
     id buffer = ORIG(id (*)(id, SEL, NSUInteger, MTLResourceOptions))(self, _cmd, length, options);
     if (reentry.outermost()) {
-        Track(buffer, "MTLBuffer", "newBufferWithLength:options:", self, BufferArgs(length, options));
+        Track(buffer, "MTLBuffer", "newBufferWithLength:options:", self, BufferArgs(buffer, length, options));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -171,7 +172,7 @@ id D_newBufferWithBytes(id self, SEL _cmd, const void *bytes, NSUInteger length,
         self, _cmd, bytes, length, options);
     if (reentry.outermost()) {
         Track(buffer, "MTLBuffer", "newBufferWithBytes:length:options:", self,
-              BufferArgs(length, options));
+              BufferArgs(buffer, length, options));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -184,7 +185,7 @@ id D_newBufferWithBytesNoCopy(id self, SEL _cmd, void *pointer, NSUInteger lengt
         self, _cmd, pointer, length, options, deallocator);
     if (reentry.outermost()) {
         Track(buffer, "MTLBuffer", "newBufferWithBytesNoCopy:length:options:deallocator:", self,
-              BufferArgs(length, options));
+              BufferArgs(buffer, length, options));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -198,7 +199,7 @@ id D_newTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *descripto
             (unsigned long)descriptor.width, (unsigned long)descriptor.height,
             (unsigned long)descriptor.pixelFormat, ClassName(texture));
         Track(texture, "MTLTexture", "newTextureWithDescriptor:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;
@@ -211,7 +212,7 @@ id D_newTextureWithDescriptorIOSurface(id self, SEL _cmd, MTLTextureDescriptor *
         self, _cmd, descriptor, surface, plane);
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "newTextureWithDescriptor:iosurface:plane:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;
@@ -222,7 +223,7 @@ id D_newSharedTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *des
     id texture = ORIG(id (*)(id, SEL, MTLTextureDescriptor *))(self, _cmd, descriptor);
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "newSharedTextureWithDescriptor:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;
@@ -244,7 +245,7 @@ id D_newSamplerStateWithDescriptor(id self, SEL _cmd, MTLSamplerDescriptor *desc
     id sampler = ORIG(id (*)(id, SEL, MTLSamplerDescriptor *))(self, _cmd, descriptor);
     if (reentry.outermost()) {
         Track(sampler, "MTLSamplerState", "newSamplerStateWithDescriptor:", self,
-              SamplerArgs(descriptor));
+              SamplerArgs(descriptor, sampler));
     }
     return sampler;
 }
@@ -769,7 +770,7 @@ id H_newBufferWithLength(id self, SEL _cmd, NSUInteger length, MTLResourceOption
     id buffer = ORIG(id (*)(id, SEL, NSUInteger, MTLResourceOptions))(self, _cmd, length, options);
     if (reentry.outermost()) {
         Track(buffer, "MTLBuffer", "heap newBufferWithLength:options:", self,
-              BufferArgs(length, options));
+              BufferArgs(buffer, length, options));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -783,6 +784,7 @@ id H_newBufferWithLengthOffset(id self, SEL _cmd, NSUInteger length, MTLResource
     if (reentry.outermost()) {
         Args a;
         a.u("length", length).u("options", (uint64_t)options).u("heapOffset", offset);
+        WriteGpuIds(a, buffer);
         Track(buffer, "MTLBuffer", "heap newBufferWithLength:options:offset:", self, a.str());
     }
     HookBufferClass(buffer);
@@ -794,7 +796,7 @@ id H_newTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *descripto
     id texture = ORIG(id (*)(id, SEL, MTLTextureDescriptor *))(self, _cmd, descriptor);
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "heap newTextureWithDescriptor:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;
@@ -807,7 +809,7 @@ id H_newTextureWithDescriptorOffset(id self, SEL _cmd, MTLTextureDescriptor *des
         self, _cmd, descriptor, offset);
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "heap newTextureWithDescriptor:offset:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;
@@ -919,7 +921,7 @@ id B_newTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *descripto
         self, _cmd, descriptor, offset, bytesPerRow);
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "buffer newTextureWithDescriptor:offset:bytesPerRow:", self,
-              TextureDescriptorArgs(descriptor));
+              TextureDescriptorArgs(descriptor, texture));
     }
     HookTextureClass(texture);
     return texture;

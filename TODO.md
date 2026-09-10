@@ -159,8 +159,9 @@ backend does. Ordered by value per effort.
       repeat counts.
 - [x] Leak report at process exit from the tracker.
 - [ ] Creation stack traces (`backtrace` + `dladdr`) answering `RequestStacktraces`.
-- [ ] Argument buffers decoded through the reflection's pointer types (the bytes are already
-      captured as buffer binds).
+- [x] Argument buffers decoded: the reflection marks pointer, texture and sampler members,
+      objects report their GPU address or resource id, and a draw's argument buffer lists each
+      member resolved to its buffer (with offset), texture or sampler.
 
 ### What Xcode's frame capture has
 - [x] "Xcode Trace" in the capture bar: `MTLCaptureManager` writing the next frame as a

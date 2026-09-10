@@ -166,7 +166,9 @@ uint64_t WriteType(vkinsp::JsonWriter &w, MTLDataType type, MTLStructType *struc
         return stride * arrayType.arrayLength;
     }
     if (type == MTLDataTypePointer && pointerType != nil) {
-        // A pointer inside an argument buffer: what it points at, named as such.
+        // A pointer inside an argument buffer: eight bytes holding a buffer's GPU address, which
+        // the UI matches to the buffer whose range holds it (metal/argument_buffer.ts). Named
+        // by what it points at; a nested argument buffer's struct comes along as `element`.
         w.BeginObject();
         w.Key("kind"); w.String("opaque");
         std::string name = "device ";
@@ -177,6 +179,13 @@ uint64_t WriteType(vkinsp::JsonWriter &w, MTLDataType type, MTLStructType *struc
         else name += "T";
         name += " *";
         w.Key("name"); w.String(name.c_str());
+        w.Key("metal"); w.String("pointer");
+        w.Key("size"); w.Uint(8);
+        if (pointerType.elementIsArgumentBuffer) { w.Key("argumentBuffer"); w.Boolean(true); }
+        if (pointerType.elementStructType != nil) {
+            w.Key("element");
+            WriteStruct(w, pointerType.elementStructType, nullptr, pointerType.dataSize);
+        }
         w.EndObject();
         return 8;
     }
@@ -209,11 +218,19 @@ uint64_t WriteType(vkinsp::JsonWriter &w, MTLDataType type, MTLStructType *struc
         w.EndObject();
         return count * scalar.width / 8;
     }
+    // A texture, sampler, acceleration structure or function table: in an argument buffer an
+    // eight-byte resource id, which the UI matches to the object that reported it.
+    const char *opaque = OpaqueName(type);
+    const bool handle = type == MTLDataTypeTexture || type == MTLDataTypeSampler || (NSUInteger)type >= 78;
     w.BeginObject();
     w.Key("kind"); w.String("opaque");
-    w.Key("name"); w.String(OpaqueName(type));
+    w.Key("name"); w.String(opaque);
+    if (handle) {
+        w.Key("metal"); w.String(opaque);
+        w.Key("size"); w.Uint(8);
+    }
     w.EndObject();
-    return 0;
+    return handle ? 8 : 0;
 }
 
 const char *AccessName(NSUInteger access) {
@@ -257,6 +274,7 @@ void WriteStage(vkinsp::JsonWriter &w, NSArray *bindings) {
             // An argument buffer: the struct it encodes.
             WriteStruct(w, pointerType.elementStructType, name == nil ? nullptr : name.UTF8String,
                         pointerType.dataSize);
+            if (pointerType.elementIsArgumentBuffer) { w.Key("argumentBuffer"); w.Boolean(true); }
         } else {
             // `device float4 *positions`: as many as the bound range holds.
             w.BeginObject();

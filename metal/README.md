@@ -485,6 +485,20 @@ same `ShaderResource` objects the Vulkan side builds, so a draw's stage buffers 
 vertex buffers — render as typed blocks with the Format editor, and a pipeline object in the
 Inspect panel gets a Reflection section per stage.
 
+## Argument buffers
+
+Metal's bindless path: an argument buffer's bytes hold, for each member the shader declared, a
+buffer's GPU address, a texture's or sampler's resource id, or an inline value. Two things make
+them readable. The reflection marks each handle member with what it is (`metal: "pointer"`,
+`"texture"`, `"sampler"`, a function table) and its eight bytes, with a nested argument buffer's
+struct along as `element`; and every buffer, texture and sampler the tracker announces carries
+its `gpuAddress` or `gpuResourceID`, as hex strings since they are 64-bit. A draw's bound
+argument buffer is then shown member by member (`app/src/renderer/metal/argument_buffer.ts`):
+a pointer resolves to the buffer whose range holds the address, with the offset into it, and a
+texture or sampler to the object with that id, each a link. That is Xcode's argument buffer view.
+Only Apple GPUs encode handles this way (Tier 2 argument buffers); a Tier 1 encoding is
+driver-defined and shows as unresolved values.
+
 ## Texture views
 
 Clicking an `MTLTexture` in the Inspect panel reads it back live: the UI's `RequestImage` is
@@ -579,8 +593,8 @@ apply to it.
 ## Not done
 
 Stencil attachments are not read back (colour and depth are), nor are sampled images, and only
-the pixel formats in `PixelFormatDetails` are supported. Argument buffers are recorded as the
-buffer binds they are; the reflection names their pointer members but nothing decodes them yet. Resource state and acceleration structure encoders are
+the pixel formats in `PixelFormatDetails` are supported. What an argument buffer points at is resolved one level
+deep: the buffers it names are not themselves read back. Resource state and acceleration structure encoders are
 recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary
 timing path those GPUs would take. Re-signing a hardened target is left to the user, on purpose.
