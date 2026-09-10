@@ -6,13 +6,18 @@ same shape as Apple's and Unity's guidance for Xcode's Metal frame capture, beca
 is the same; what differs is that the numbers here come out of a capture you can save, reopen and
 compare.
 
-**Vulkan and Metal.** Steps 1, 2, 5 and 6 work the same for both: the frame budget, finding the
-slowest pass, the rules over the command stream and the render graph, and comparing captures.
-Steps 3 and 4b are Metal only, and marked as such. They rest on two things the Metal capture
-library samples and the Vulkan layer does not: the per-stage timestamps that split a pass into its
-vertex and fragment spans, and the statistic counter set behind overdraw, fragments per primitive
-and depth rejection. Vulkan can express most of the second through pipeline statistics queries,
-which is on the TODO; the stage split has no portable equivalent.
+**Vulkan and Metal.** Almost all of this works for both. The Metal library samples Metal's counter
+sets around every pass and the Vulkan layer a pipeline statistics query beside its timestamps, so
+overdraw, fragments per primitive and the geometry counts come out of either. Two measurements are
+Metal only and are marked where they appear: the vertex and fragment spans of a pass, which need
+timestamps at its stage boundaries and have no portable Vulkan equivalent, and depth rejection,
+which needs the count of fragments that survived the depth test — Metal's statistic set has it and
+Vulkan's pipeline statistics do not.
+
+On Vulkan the counters need the `pipelineStatisticsQuery` device feature, which an application
+that does not profile itself has no reason to enable. The layer adds it at device creation, and
+falls back to creating the device exactly as the application asked if the driver refuses.
+`VKINSP_NO_PIPELINE_STATISTICS=1` turns that off.
 
 ## Before you capture
 
@@ -53,7 +58,7 @@ Work on the slowest pass. This sounds obvious and is routinely ignored: a 12 ms 
 The report names the slowest pass at the top of **What to look at**, with the stage it waits on
 and the first thing to try. Everything below that is a specific measured problem, worst first.
 
-## Step 3: which stage (Metal)
+## Step 3: which stage (Metal only)
 
 The **Vertex / fragment** column is a bar: blue is the vertex stage's own span, orange the
 fragment stage's. On a tile-based GPU, which is every Apple GPU, the two stages of one pass
@@ -92,11 +97,11 @@ A common cause on Unity projects is per-vertex evaluation of something that coul
 or the reverse. Moving lighting work between stages changes which stage pays; the report tells you
 which one can afford it.
 
-## Step 4b: a fragment-bound pass (Metal)
+## Step 4b: a fragment-bound pass
 
-This is the more common case, and there are three measurements that name the cause. All three come
-from the statistic counter set, which the Metal capture library samples around each pass (see
-*What cannot be measured here* below for when even that is missing).
+This is the more common case, and there are three measurements that name the cause. The first two
+come from the GPU counters either backend samples; the third, depth rejection, is Metal only (see
+*What cannot be measured here* below).
 
 ### Overdraw
 
@@ -127,7 +132,7 @@ or a mesh authored for a close-up used everywhere. The fix is mesh level of deta
 objects that have become smaller than their own triangles. It is not a shader problem, and making
 the shader cheaper will not help much.
 
-### Depth rejection
+### Depth rejection (Metal only)
 
 **Depth reject** is the share of shaded fragments that the depth and stencil tests threw away. A
 high number is *healthy*: it means the depth test is doing its job and rejecting work early.
@@ -147,9 +152,9 @@ go back to the overdraw section.
 ## Step 5: the rules that do not need counters
 
 **Reports → Frame Stats** ends with **Frame Issues**: rules over the whole capture, each linked to
-the command that raised it. The ones that bear on GPU cost, in the order they usually matter. The
-first three and the last but one are Metal only, because they read the counters or Metal's own
-state; the rest have a counterpart in both APIs, sometimes under a slightly different name:
+the command that raised it. The ones that bear on GPU cost, in the order they usually matter.
+`late-depth-rejection` is Metal only; the rest apply to both APIs, sometimes under a slightly
+different name:
 
 | Rule | What it means |
 |---|---|
@@ -192,11 +197,13 @@ document. Open it in Xcode and you have the full Metal debugger, on the same fra
 looking at. The two tools are complementary: use this one to find the pass and the cause, and
 Xcode when you need to know which unit inside a shader is the limit.
 
-There is also a hardware limit to be aware of. The statistic and stage-utilization counter sets
-are exposed by some GPUs and not others; through public Metal, Apple Silicon exposes only
-timestamps. When they are missing, the GPU Bottlenecks report says so and the columns that need
-them are empty — the pass durations and the vertex/fragment split still work, so steps 1 to 3 are
-unaffected. The library logs which sets it found when a session starts.
+There is also a hardware limit to be aware of. Metal's statistic and stage-utilization counter
+sets are exposed by some GPUs and not others; through public Metal, Apple Silicon exposes only
+timestamps. On Vulkan the equivalent is a device that does not support `pipelineStatisticsQuery`,
+or an application whose device the driver would not create with the feature added. When the
+counters are missing, the GPU Bottlenecks report says so and the columns that need them are empty;
+the pass durations still work, so steps 1 and 2 are unaffected. Both backends log what they found
+when a capture is taken.
 
 ## Reference: the numbers and their thresholds
 
@@ -207,7 +214,7 @@ unaffected. The library logs which sets it found when a session starts.
 | Vertex versus fragment span | GPU Bottlenecks | — | whichever is 1.3x the other |
 | Overdraw | GPU Bottlenecks | about 1.2 | above 2 |
 | Fragments per primitive | GPU Bottlenecks | above 4 | below 4 |
-| Depth rejection | GPU Bottlenecks | high | below 25% with overdraw above 1.5 |
+| Depth rejection (Metal) | GPU Bottlenecks | high | below 25% with overdraw above 1.5 |
 | Sampled texture without mips | Frame Issues | — | 1 megapixel and up |
 | Draws of very few vertices | Frame Issues | — | 32 draws of 12 vertices or fewer |
 

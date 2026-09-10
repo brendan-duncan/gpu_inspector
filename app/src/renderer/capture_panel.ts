@@ -27,8 +27,8 @@ import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./cap
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
-import { renderBottleneckReport } from "./metal/bottleneck_report.js";
-import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./metal/pass_metrics.js";
+import { renderBottleneckReport } from "./bottleneck_report.js";
+import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -470,10 +470,8 @@ export class CaptureView implements CaptureHost {
     const timed: TimelinePassCommand[] = [];
     // The derived per-pass figures, so a pass header says the same as the GPU Bottlenecks report.
     const metrics = new Map<string, PassMetrics>();
-    if (this.data.api === "metal") {
-      for (const m of collectPassMetrics(this.data, this.window.database).passes) {
-        metrics.set(passKey(m.frame, m.commandBuffer, m.passIndex, m.compute), m);
-      }
+    for (const m of collectPassMetrics(this.data, this.window.database).passes) {
+      metrics.set(passKey(m.frame, m.commandBuffer, m.passIndex, m.compute), m);
     }
     for (const [key, p] of this._passBlocks) {
       const k = parsePassKey(key);
@@ -824,6 +822,8 @@ export class CaptureView implements CaptureHost {
       textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       buffers: d.buffers.size, passTimings: d.passTimings.size,
+      // Passes whose GPU counters arrived: what the GPU Bottlenecks report is built from.
+      passCounters: [...d.passTimings.values()].filter((t) => t.counters && Object.keys(t.counters).length).length,
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
       renderGraph: d.commands.length ? (() => {
         const g = this.renderGraph();

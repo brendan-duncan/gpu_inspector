@@ -43,19 +43,27 @@
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
   offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
   resource id every object now reports.
-- "GPU Bottlenecks" in the capture's Reports menu: every pass measured in the terms a bottleneck
-  is described in. Which stage it waits on (from the vertex and fragment spans, or the cycle
-  counters, which can also name a target-write bound pass), how many times each pixel was shaded,
-  how many fragments its average triangle covered, and how much the depth test rejected — each
-  divided out of the GPU counters the Metal library already sampled, each with what usually causes
-  it and what to try. Passes are listed slowest first and link to their commands. A GPU that
-  exposes only timestamps still gets the stage split, and the report says so rather than showing
-  zeroes. [docs/PROFILING.md](docs/PROFILING.md) walks through using it.
+- "GPU Bottlenecks" in the capture's Reports menu, for Vulkan and Metal: every pass measured in
+  the terms a bottleneck is described in. How many times each pixel was shaded, how many fragments
+  its average triangle covered, which stage it waits on and how much the depth test rejected —
+  each divided out of the GPU counters the capture sampled, each with what usually causes it and
+  what to try. Passes are listed slowest first and link to their commands. Two of those are Metal
+  only: the vertex and fragment spans need timestamps at a pass's stage boundaries, and depth
+  rejection needs the count of fragments that survived the test. Where a measurement is missing
+  the report says so rather than showing zeroes. [docs/PROFILING.md](docs/PROFILING.md) walks
+  through using it.
+- Vulkan pass counters: the layer runs a pipeline statistics query alongside its timestamps
+  (`layer/src/pipeline_stats.h`), carrying the same invocation and primitive counts Metal's
+  statistic set does, so the report and its rules work for Vulkan captures. The query needs the
+  `pipelineStatisticsQuery` device feature, which the layer adds at device creation the way it
+  already adds a refresh-period extension, falling back to the application's own create info if
+  the driver refuses. `VKINSP_NO_PIPELINE_STATISTICS=1` turns it off.
 - Four Frame Issues rules from those measurements: `high-overdraw` (a pass shading each pixel more
   than twice over), `microtriangles` (triangles covering fewer than four fragments, which wastes
   the rasterizer's 2x2 quad), `late-depth-rejection` (a pass that overdraws while its depth test
-  rejects almost nothing) and `unmipped-texture` (a megapixel content texture sampled with no mip
-  chain). Pass headers gained the same figures in their tooltips.
+  rejects almost nothing, Metal only) and `unmipped-texture` (a megapixel content texture sampled
+  with no mip chain, from the descriptors alone rather than a counter). Pass headers gained the
+  same figures in their tooltips.
 - Compressed textures decode in the image viewer: BC6H and BC7, ETC2 and EAC, every ASTC
   footprint, and PVRTC, alongside the BC1-BC5 that were already there. Metal captures also read
   back the ASTC, ETC2, EAC, PVRTC, extended-range and packed 4:2:2 formats, which used to report

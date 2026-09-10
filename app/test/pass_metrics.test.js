@@ -1,5 +1,5 @@
 // The per-pass measurements the GPU Bottlenecks report and the counter rules are built on
-// (renderer/metal/pass_metrics.ts): that passes are numbered the way the capture library numbers
+// (renderer/pass_metrics.ts): that passes are numbered the way the capture library numbers
 // them, and that each derived figure is the division it claims to be.
 //
 //     cd app && npm test
@@ -12,12 +12,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const out = join(mkdtempSync(join(tmpdir(), "passmetrics-")), "pass_metrics.mjs");
-buildSync({
-  entryPoints: [join(here, "..", "src", "renderer", "metal", "pass_metrics.ts")],
-  bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
-});
-const { collectPassMetrics } = await import(pathToFileURL(out).href);
+const dir = mkdtempSync(join(tmpdir(), "passmetrics-"));
+const bundle = (name) => {
+  const out = join(dir, `${name}.mjs`);
+  buildSync({
+    entryPoints: [join(here, "..", "src", "renderer", `${name}.ts`)],
+    bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
+  });
+  return import(pathToFileURL(out).href);
+};
+const { collectPassMetrics } = await bundle("pass_metrics");
+const { setsFor } = await bundle("command_sets");
 
 const COMMAND_BUFFER = 7;
 const COLOR_TEXTURE = 42;
@@ -25,12 +30,12 @@ const COLOR_TEXTURE = 42;
 /** A capture built from a list of [method, args] pairs, all in one command buffer and frame. */
 function capture(commands, timings, api = "metal") {
   const list = commands.map(([method, args], index) => ({
-    index, frame: 0, method, object: { __id: COMMAND_BUFFER, __class: "MTLCommandBuffer" }, args: args ?? null,
+    index, frame: 0, method, object: { __id: COMMAND_BUFFER, __class: "CommandBuffer" }, args: args ?? null,
   }));
   const byKey = new Map();
   for (const t of timings) byKey.set(`0:${COMMAND_BUFFER}:${t.kind === "compute" ? "c" : ""}${t.passIndex}`, t);
   return {
-    api, commands: list,
+    api, commands: list, sets: setsFor(api),
     passTiming: (frame, cb, passIndex, compute) => byKey.get(`${frame}:${cb}:${compute ? "c" : ""}${passIndex}`) ?? null,
   };
 }
@@ -123,15 +128,63 @@ test("the stage-utilization cycles can name a target-write bound pass", () => {
   assert.ok(Math.abs(p.cycleShare.target - 0.6) < 1e-9);
 });
 
-test("an untimed pass is listed without measurements, and a Vulkan capture is not usable", () => {
+test("an untimed pass is listed without measurements", () => {
   const data = capture([["renderCommandEncoderWithDescriptor:", colorPass], ["endEncoding", {}]], []);
   const m = collectPassMetrics(data, db);
   assert.equal(m.passes.length, 1);
   assert.equal(m.passes[0].durationMs, null);
   assert.equal(m.timed, 0);
   assert.equal(m.usable, false);
+});
 
-  const vulkan = capture([["renderCommandEncoderWithDescriptor:", colorPass], ["endEncoding", {}]],
-    [{ frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 1, startMs: 0 }], "vulkan");
-  assert.equal(collectPassMetrics(vulkan, db).usable, false, "the report is Metal-only");
+// ------------------------------------------------------------------------------------------
+// Vulkan: the layer numbers render passes and runs of dispatches separately, states the render
+// area outright, and its pipeline statistics carry the invocation counts but not the fragments
+// that survived the depth test.
+
+const vulkanPass = { pRenderPassBegin: { renderArea: { extent: { width: 200, height: 50 } } } };
+
+test("a Vulkan capture measures overdraw from the render area", () => {
+  const data = capture([
+    ["vkCmdBeginRenderPass", vulkanPass],
+    ["vkCmdDraw", { vertexCount: 6, instanceCount: 1 }],
+    ["vkCmdEndRenderPass", {}],
+  ], [{
+    frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 2, startMs: 0,
+    counters: { vertexInvocations: 6, fragmentInvocations: 20000, clipperPrimitivesOut: 2000 },
+  }], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.equal(m.usable, true, "a timed Vulkan capture is usable");
+  const p = m.passes[0];
+  assert.equal(p.pixels, 10000, "200 x 50 of render area");
+  assert.equal(p.overdraw, 2, "20000 fragment invocations over 10000 pixels");
+  assert.equal(p.fragmentsPerPrimitive, 10);
+  assert.equal(p.depthRejectRate, null, "pipeline statistics do not count fragments passed");
+  assert.equal(p.vertexMs, null, "Vulkan has no per-stage split");
+  assert.equal(p.bound, null);
+  assert.equal(m.withCounters, 1);
+  assert.match(p.label, /^Render Pass 0/);
+});
+
+test("a Vulkan run of dispatches is its own pass, numbered apart from render passes", () => {
+  const data = capture([
+    ["vkCmdBeginRenderPass", vulkanPass],
+    ["vkCmdDraw", { vertexCount: 3 }],
+    ["vkCmdEndRenderPass", {}],
+    ["vkCmdDispatch", { groupCountX: 4, groupCountY: 1, groupCountZ: 1 }],
+    ["vkCmdDispatch", { groupCountX: 4, groupCountY: 1, groupCountZ: 1 }],
+    ["vkCmdPipelineBarrier", {}],
+    ["vkCmdDispatch", { groupCountX: 4, groupCountY: 1, groupCountZ: 1 }],
+  ], [
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 1, startMs: 0 },
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, kind: "compute", durationMs: 2, startMs: 1 },
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 1, kind: "compute", durationMs: 3, startMs: 3 },
+  ], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.equal(m.passes.length, 3, "one render pass and two runs of dispatches");
+  assert.deepEqual(m.passes.map((p) => p.compute), [false, true, true]);
+  // The render pass and the first compute run are both index 0: two separate counters.
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 0, 1]);
+  assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2, 3]);
+  assert.deepEqual(m.passes.map((p) => p.draws), [1, 2, 1], "the barrier ended the first run");
 });

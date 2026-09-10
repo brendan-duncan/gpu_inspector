@@ -59,6 +59,8 @@ add_library(${LAYER_LIB} SHARED
     src/refresh_rate.cpp
     src/depth_resolve.h
     src/depth_resolve.cpp
+    src/pipeline_stats.h
+    src/pipeline_stats.cpp
     src/capture.h
     src/capture.cpp
     src/image_readback.h

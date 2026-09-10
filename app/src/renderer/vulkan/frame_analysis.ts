@@ -35,6 +35,8 @@ import type { RenderGraph } from "../render_graph.js";
 import type { CaptureData } from "../capture_data.js";
 import type { ObjectLookup } from "./vulkan_object.js";
 import { analyzeMetalFrame } from "../metal/frame_analysis.js";
+import { analyzeCounters } from "../counter_rules.js";
+import { analyzeSampling } from "../sampling_rules.js";
 import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.js";
 
 export interface FrameFinding {
@@ -423,18 +425,27 @@ export class FrameAnalysis {
  */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
   const base = data.api === "metal" ? analyzeMetalFrame(data, db) : perCommandAnalysis(data, db);
-  if (!graph) return base;
-  const fromGraph = analyzeRenderGraph(graph);
+  // The rules over the GPU counters read the same measurements for either API (counter_rules.ts),
+  // and say nothing when the capture carries none; the sampling rules read descriptors both APIs
+  // record (sampling_rules.ts).
+  const sources = [base, analyzeCounters(data, db), analyzeSampling(data, db)];
+  if (graph) sources.push(analyzeRenderGraph(graph));
 
-  const findings = [...base.findings.filter((f) => !SUPERSEDED_RULES.has(f.rule)), ...fromGraph.findings];
+  const findings: FrameFinding[] = [];
   const byCommand = new Map<number, FrameFinding[]>();
-  for (const [index, list] of base.byCommand) {
-    const kept = list.filter((f) => !SUPERSEDED_RULES.has(f.rule));
-    if (kept.length) byCommand.set(index, kept);
-  }
-  for (const [index, list] of fromGraph.byCommand) {
-    const existing = byCommand.get(index);
-    if (existing) existing.push(...list); else byCommand.set(index, [...list]);
+  for (const source of sources) {
+    // The graph answers exactly what a few per-command rules can only approximate, so those are
+    // dropped in its favour rather than reported twice in two wordings.
+    const drop = graph && source === base ? SUPERSEDED_RULES : null;
+    for (const f of source.findings) {
+      if (!drop || !drop.has(f.rule)) findings.push(f);
+    }
+    for (const [index, list] of source.byCommand) {
+      const kept = drop ? list.filter((f) => !drop.has(f.rule)) : list;
+      if (!kept.length) continue;
+      const existing = byCommand.get(index);
+      if (existing) existing.push(...kept); else byCommand.set(index, [...kept]);
+    }
   }
   findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   return { findings, byCommand };

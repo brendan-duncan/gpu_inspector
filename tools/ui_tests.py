@@ -137,7 +137,9 @@ def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
         expect((c.get("textures") or 0) >= textures, f"{c.get('textures')} render targets read back") + \
         expect((c.get("textureErrors") or 0) == 0, f"{c.get('textureErrors')} render targets failed to read back") + \
         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every render target's data arrived") + \
-        expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings")
+        expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings") +         expect(not timings or (c.get("passCounters") or 0) >= 1,
+               "no pass carried GPU counters: the layer's pipeline statistics query (layer/src/pipeline_stats.h) "
+               "is what the GPU Bottlenecks report is built from")
 
 
 def triangle_plain(state, log):
@@ -202,6 +204,13 @@ def triangle_graph(state, log):
         expect(g.get("untimedNodes") == 0, f"{g.get('untimedNodes')} graph passes have no timing: the graph's pass keys no longer match the command tree's")
 
 
+def triangle_bottlenecks(state, log):
+    c = capture(state)
+    # The counters the report divides out have to survive the whole path: the layer's query, the
+    # protocol, and the UI's pass keying (a pass whose key does not resolve carries no counters).
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect("with counters" in log, "the layer never reported pass counters") +         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters")
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -261,6 +270,9 @@ def triangle_cases(triangle):
         # open so the screenshot shows the chart. Three frames, because the pass indices the graph
         # keys its timings by have to restart per frame the way the command tree's do.
         Case("graph", launch + ["--args=--hazard", "--debug-capture=3", "--debug-view=graph"], triangle_graph, delay_ms=16000),
+        # The GPU Bottlenecks report rendering at all: a throw while building it would leave the
+        # details pane empty and the renderer's console with the error.
+        Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
     ]
 
 
