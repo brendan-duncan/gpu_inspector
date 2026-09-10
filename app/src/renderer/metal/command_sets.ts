@@ -5,7 +5,7 @@
 // method. Where Vulkan needs several spellings of the same command for its extensions and core
 // versions, Metal needs one per overload — `drawPrimitives:` has four, differing only in whether
 // instancing and base-instance arguments are present.
-import type { BoundIndexBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
+import type { BoundIndexBuffer, BoundStageBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
 import type { CaptureCommand } from "../../shared/protocol.js";
 // Generic argument coercers that happen to live beside the Vulkan object model.
 import { isObject, num } from "../vulkan/vulkan_object.js";
@@ -67,6 +67,27 @@ const PASS_BEGIN = new Set([
   "accelerationStructureCommandEncoderWithDescriptor:",
 ]);
 const PASS_END = new Set(["endEncoding"]);
+
+// Buffers bound to a stage by index, and the inline-bytes forms that stand in for one. The
+// stage is what the pipeline's reflection is keyed by (metal/reflection.ts).
+const STAGE_BUFFER_METHODS: Record<string, { stage: string; kind: "one" | "many" | "bytes" }> = {
+  "setVertexBuffer:offset:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexBuffers:offsets:withRange:": { stage: "vertex", kind: "many" },
+  "setVertexBytes:length:atIndex:": { stage: "vertex", kind: "bytes" },
+  "setFragmentBuffer:offset:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentBuffers:offsets:withRange:": { stage: "fragment", kind: "many" },
+  "setFragmentBytes:length:atIndex:": { stage: "fragment", kind: "bytes" },
+  "setBuffer:offset:atIndex:": { stage: "compute", kind: "one" },
+  "setBuffers:offsets:withRange:": { stage: "compute", kind: "many" },
+  "setBytes:length:atIndex:": { stage: "compute", kind: "bytes" },
+  "setObjectBuffer:offset:atIndex:": { stage: "object", kind: "one" },
+  "setObjectBytes:length:atIndex:": { stage: "object", kind: "bytes" },
+  "setMeshBuffer:offset:atIndex:": { stage: "mesh", kind: "one" },
+  "setMeshBytes:length:atIndex:": { stage: "mesh", kind: "bytes" },
+  "setTileBuffer:offset:atIndex:": { stage: "tile", kind: "one" },
+  "setTileBytes:length:atIndex:": { stage: "tile", kind: "bytes" },
+};
+const BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
 
 export const METAL_SETS: CommandSets = {
   DRAW,
@@ -139,6 +160,26 @@ export const METAL_SETS: CommandSets = {
       }));
     }
     return [];
+  },
+
+  BIND_STAGE_BUFFER,
+
+  stageBuffersOf(cmd: CaptureCommand): BoundStageBuffer[] {
+    const entry = STAGE_BUFFER_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    if (entry.kind === "bytes") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), buffer: null, offset: 0, dataId: cmd.bufferData?.[0] ?? 0, inline: true }];
+    }
+    if (entry.kind === "one") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), buffer: a.buffer ?? null, offset: num(a.offset), dataId: cmd.bufferData?.[0] ?? 0, inline: false }];
+    }
+    if (!Array.isArray(a.buffers)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    const offsets = Array.isArray(a.offsets) ? a.offsets : [];
+    return a.buffers.map((buffer, i) => ({
+      cmd, stage: entry.stage, index: first + i, buffer, offset: num(offsets[i]), dataId: cmd.bufferData?.[i] ?? 0, inline: false,
+    }));
   },
 
   indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null {

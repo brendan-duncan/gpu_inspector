@@ -1,5 +1,6 @@
 // The descriptors: what an AddObject's "args" and a pass's arguments look like. See hooks_common.h.
 #include "hooks_common.h"
+#include "reflection.h"
 
 #import <objc/message.h>
 
@@ -214,7 +215,7 @@ std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextu
     return a.str();
 }
 
-std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d) {
+std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d, MTLRenderPipelineReflection *reflection) {
     Args a;
     a.s("label", d.label)
      .s("vertexFunction", d.vertexFunction == nil ? nil : d.vertexFunction.name)
@@ -243,10 +244,11 @@ std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d) {
         a.u("maxTessellationFactor", d.maxTessellationFactor)
          .u("tessellationPartitionMode", (uint64_t)d.tessellationPartitionMode);
     }
+    a.raw("reflection", RenderReflectionJson(reflection));
     return a.str();
 }
 
-std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *d) {
+std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *d, MTLRenderPipelineReflection *reflection) {
     Args a;
     a.s("label", d.label)
      .s("tileFunction", d.tileFunction == nil ? nil : d.tileFunction.name)
@@ -265,10 +267,11 @@ std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *d) {
         a.writer().EndObject();
     }
     a.writer().EndArray();
+    a.raw("reflection", RenderReflectionJson(reflection));
     return a.str();
 }
 
-std::string MeshRenderPipelineArgs(id d) {
+std::string MeshRenderPipelineArgs(id d, MTLRenderPipelineReflection *reflection) {
     // MTLMeshRenderPipelineDescriptor needs the macOS 13 SDK; read through selectors so the file
     // builds against an older one and still describes the object on a newer system.
     Args a;
@@ -281,6 +284,7 @@ std::string MeshRenderPipelineArgs(id d) {
     if ([d respondsToSelector:rasterSampleCount]) {
         a.u("rasterSampleCount", ((NSUInteger (*)(id, SEL))objc_msgSend)(d, rasterSampleCount));
     }
+    a.raw("reflection", RenderReflectionJson(reflection));
     return a.str();
 }
 
@@ -293,15 +297,18 @@ void WriteComputeState(Args &a, id<MTLComputePipelineState> state) {
 }
 }  // namespace
 
-std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state) {
+std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state,
+                                        MTLComputePipelineReflection *reflection) {
     Args a;
     a.s("function", function == nil ? nil : function.name);
     WriteComputeState(a, state);
+    a.raw("reflection", ComputeReflectionJson(reflection));
     return a.str();
 }
 
 std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *d,
-                                          id<MTLComputePipelineState> state) {
+                                          id<MTLComputePipelineState> state,
+                                          MTLComputePipelineReflection *reflection) {
     Args a;
     a.s("label", d.label)
      .s("function", d.computeFunction == nil ? nil : d.computeFunction.name)
@@ -309,6 +316,7 @@ std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *d,
      .u("maxTotalThreadsPerThreadgroupRequested", d.maxTotalThreadsPerThreadgroup)
      .b("supportIndirectCommandBuffers", d.supportIndirectCommandBuffers);
     WriteComputeState(a, state);
+    a.raw("reflection", ComputeReflectionJson(reflection));
     return a.str();
 }
 

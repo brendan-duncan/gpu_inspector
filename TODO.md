@@ -44,6 +44,9 @@ interpreter and re-created pipelines.
 - Capture files (`.gpucap`): save from the capture bar or tab menu, open from the launch bar or by
   drag and drop into a session of their own with the object graph, shaders, buffers, render
   targets and timings; "Open in New Tab" copies a capture in memory.
+- Metal (macOS): the capture library in `metal/`, hooking the driver's classes without wrapping
+  objects, with object tracking and lifetime, frame capture with render targets, buffers in
+  every storage mode, pass timings and pipeline reflection (see `metal/README.md`).
 
 ## Next
 
@@ -127,6 +130,55 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.
 - [ ] Push descriptors with templates in descriptor snapshots.
 - [ ] Ray tracing pipelines: shader groups in pipeline state, acceleration structure objects.
+
+## Metal
+
+The Metal capture library (`metal/`) reaches the Inspect and Capture panels through the same
+protocol as the Vulkan layer. What it lacks falls into two groups: what the UI already does for
+Vulkan and only needs the library to send, and what Xcode's Metal Debugger has that neither
+backend does. Ordered by value per effort.
+
+### Parity with the Vulkan side of the UI
+- [x] Typed buffer views through reflection: every pipeline creation asks Metal for argument
+      and buffer-type reflection, the pipeline's descriptor carries it per stage, and a draw's
+      stage buffers and inline bytes render as named fields with the Format editor; pipeline
+      objects get a Reflection section per stage.
+- [ ] `FrameStats` (frame time, min, max, refresh rate) from the commit boundary, so the
+      frame-time meter and the Frame Bound card fill in; refresh from the display link or the
+      drawable's presented time.
+- [ ] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
+      `captureTextures` (the library reads only `frameCount`).
+- [ ] Validation messages: the command buffer's error and encoder execution status when a
+      command buffer faults, the shader validation layer's reports, and `MTLLogContainer`
+      output from shader logging, as `ValidationMessage` with the command buffer id.
+- [ ] Leak report at process exit from the tracker (the dealloc hook knows what is alive).
+- [ ] Creation stack traces (`backtrace` + `dladdr`) answering `RequestStacktraces`.
+- [ ] Argument buffers decoded through the reflection's pointer types (the bytes are already
+      captured as buffer binds).
+
+### What Xcode's frame capture has
+- [ ] "Save Xcode trace": `MTLCaptureManager` writing a `.gputrace` for the next frame from
+      inside the process, so Xcode's shader debugger and per-line profiler open the same frame.
+- [ ] Per-encoder GPU counters beyond timestamps: the statistic counter set (vertex, fragment
+      and compute invocations, clipped primitives) and the stage-utilization set, through the
+      counter sample buffer the pass timings already use; into pass headers and Frame Stats.
+- [ ] Vertex-versus-fragment split timing: the render pass sample attachment's end-of-vertex
+      and start-of-fragment indices beside the two used now.
+- [ ] Insights as Frame Issues rules keyed by Metal selectors: unnecessary loads and stores,
+      attachments that could be memoryless, redundant state, consecutive passes to the same
+      target that could be merged (the most valuable on a tile-based GPU).
+- [ ] Memory viewer: `allocatedSize`, heap and purgeable state per resource, the device's
+      `currentAllocatedSize`, into the memory totals meter.
+- [ ] Pass dependency graph from the recorded attachments and bound textures, doubling as the
+      "Affected by" section the Vulkan side shows on buffers.
+
+### Robustness
+- [ ] Intel and AMD class trees and the encoder-boundary timing path (only Apple Silicon and
+      stage-boundary sampling are verified).
+- [ ] Metal 4 command buffers and encoders: a separate class tree with different selectors.
+- [ ] Test app coverage for the read-back paths: a private-storage vertex buffer, an MSAA pass
+      with resolve, a parallel render encoder.
+- [ ] Stencil attachment read-back; ASTC, ETC, PVRTC, XR and YUV pixel formats.
 
 ## Distribution
 - [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).

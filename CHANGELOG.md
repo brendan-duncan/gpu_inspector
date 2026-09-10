@@ -14,6 +14,9 @@
   `presentDrawable:` and `[drawable present]` paths, the latter being what Unity's player uses.
 - Launch dialog on macOS launches a `.app` with the Metal library, and says how to re-sign a
   hardened-runtime target that dyld would otherwise silently refuse.
+- Metal pipeline reflection: every pipeline creation asks Metal for argument and buffer-type
+  reflection, so a draw's stage buffers and inline constant bytes show as named, typed fields
+  with the Format editor, and pipeline objects get a Reflection section per stage in Inspect.
 
 ## 0.7.0
 
