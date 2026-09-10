@@ -166,11 +166,11 @@ backend does. Ordered by value per effort.
 - [x] "Xcode Trace" in the capture bar: `MTLCaptureManager` writing the next frame as a
       `.gputrace` from inside the process, so Xcode's shader debugger and per-line profiler
       open the same frame.
-- [ ] Per-encoder GPU counters beyond timestamps: the statistic counter set (vertex, fragment
-      and compute invocations, clipped primitives) and the stage-utilization set, through the
-      counter sample buffer the pass timings already use; into pass headers and Frame Stats.
-- [ ] Vertex-versus-fragment split timing: the render pass sample attachment's end-of-vertex
-      and start-of-fragment indices beside the two used now.
+- [x] Per-pass GPU counters beyond timestamps: the statistic set (vertex, fragment and kernel
+      invocations, clipper counts) and the stage-utilization set (cycles per stage), each in its
+      own counter sample buffer on the pass descriptor, in the pass header's tooltip.
+- [x] Vertex-versus-fragment split timing from all four stage-boundary samples of a render
+      pass, in the pass header.
 - [x] Insights as Frame Issues rules over Metal captures (`metal/frame_analysis.ts`): undefined
       loads, first-use loads, unread stores, multisample stores, memoryless candidates,
       mergeable back-to-back passes, redundant binds, tiny draws, single-threadgroup dispatches.

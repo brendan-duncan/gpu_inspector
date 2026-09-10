@@ -37,7 +37,7 @@ import { isAction } from "./command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import { getHostPlatform } from "./launch_dialog.js";
-import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
+import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
 import type { ValidationEntry } from "./vulkan/object_database.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 
@@ -330,6 +330,26 @@ export class CapturePanel {
 // ---------------------------------------------------------------------------------------------
 
 /** One capture: its data, command list and command details. `root` is the capture tab's contents. */
+/** The GPU counters of a pass as tooltip lines: invocations, then cycles per stage as shares of the total. */
+function passCountersText(t: PassTiming): string {
+  const lines: string[] = [];
+  const c = t.counters ?? {};
+  const names: [string, string][] = [["vertexInvocations", "vertex invocations"], ["clipperPrimitivesOut", "primitives out of the clipper"],
+    ["fragmentInvocations", "fragment invocations"], ["fragmentsPassed", "fragments passed"], ["computeKernelInvocations", "kernel invocations"]];
+  for (const [key, label] of names) if (c[key] !== undefined) lines.push(`${label}: ${c[key].toLocaleString()}`);
+  const u = t.utilization ?? {};
+  const total = u.totalCycles ?? 0;
+  if (total > 0) {
+    const share = (key: string, label: string): void => {
+      if (u[key] !== undefined) lines.push(`${label}: ${(100 * u[key] / total).toFixed(0)}% of ${total.toLocaleString()} cycles`);
+    };
+    share("vertexCycles", "vertex");
+    share("fragmentCycles", "fragment");
+    share("renderTargetCycles", "render target");
+  }
+  return lines.join("\n");
+}
+
 export class CaptureView implements CaptureHost {
   readonly window: SessionContext;
   readonly data = new CaptureData();
@@ -442,7 +462,9 @@ export class CaptureView implements CaptureHost {
         p.block.label.text = p.label;
         continue;
       }
-      p.block.label.text = `${p.label}  ${t.durationMs.toFixed(3)} ms`;
+      const split = t.vertexMs !== undefined && t.fragmentMs !== undefined ? `  (vertex ${t.vertexMs.toFixed(3)} / fragment ${t.fragmentMs.toFixed(3)})` : "";
+      p.block.label.text = `${p.label}  ${t.durationMs.toFixed(3)} ms${split}`;
+      p.row.tooltip = passCountersText(t);
       timed.push({
         method: k.compute ? "beginComputePass" : "beginRenderPass", startTime: t.startMs, endTime: t.startMs + t.durationMs, duration: t.durationMs,
         args: [{ label: p.label.replace(/^(Render Pass|Rendering|Pass|Compute) \d+: ?/, "") || p.label }], _passIndex: k.passIndex, header: p.row,

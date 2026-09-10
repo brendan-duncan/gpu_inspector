@@ -447,6 +447,16 @@ with two CPU/GPU timestamp pairs taken around the capture, and sent as `CaptureP
 the same keys the Vulkan layer uses, so the Profile view and the frame statistics needed no
 change. RenderDoc's Metal driver has no timing code.
 
+A render pass samples all four stage boundaries, so beside the pass's span the vertex and
+fragment stages' own spans are sent (`vertexMs`, `fragmentMs`) and shown in the pass header.
+On a tile-based GPU the two overlap, so they can sum to more than the whole. Two more counter
+sets ride on the same descriptor, each in a sample buffer of its own on the next free attachment
+slot: the statistic set (vertex, fragment and kernel invocations, clipper counts) and the
+stage-utilization set (cycles per stage), differenced over the pass and sent as `counters` and
+`utilization`, which the pass header shows as a tooltip. That is Xcode's per-encoder counters
+view. A GPU without a set leaves it out; the encoder-boundary fallback samples the statistic set
+beside the timestamps and has no stage split.
+
 ## Reflection
 
 What turns a captured buffer's bytes into named fields. The Vulkan side gets that from the

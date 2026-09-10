@@ -115,6 +115,17 @@ struct PassTimingSlot {
     id sampleBuffer = nil;          // id<MTLCounterSampleBuffer>, or nil for no timing
     uint32_t startIndex = 0;
     uint32_t endIndex = 0;
+    /** A render pass sampled at all four stage boundaries: the vertex end and fragment start. */
+    uint32_t vertexEndIndex = UINT32_MAX;
+    uint32_t fragmentStartIndex = UINT32_MAX;
+    /** The statistic counter set (invocations), sampled beside the timestamps; nil without. */
+    id statisticBuffer = nil;
+    uint32_t statisticStart = 0;
+    uint32_t statisticEnd = 0;
+    /** The stage-utilization counter set (cycles per stage); nil without. */
+    id utilizationBuffer = nil;
+    uint32_t utilizationStart = 0;
+    uint32_t utilizationEnd = 0;
     /** Sampled by the encoder at its beginning and end rather than by the pass descriptor. */
     bool onEncoder = false;
 };
