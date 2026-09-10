@@ -43,6 +43,12 @@
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
   offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
   resource id every object now reports.
+- Metal draw details: only the stage buffer slots the bound pipeline's shaders read are listed,
+  the rest folded into one line (an engine leaves dozens bound, most to nothing); bindings the
+  compiler dropped count as unread; no Vulkan "no descriptor sets" note in a Metal capture; and
+  the pipeline's reflection now reaches the buffer views, which had read it from the wrong
+  place.
+- Metal functions in Inspect show their library's source, scrolled to the definition.
 - Metal memory: every buffer's and texture's allocatedSize, heap and offset, purgeable and
   aliasable state (kept current as the application changes them), heaps with their usage, and
   the device's allocated total against its recommended working set in the Inspect memory meter.

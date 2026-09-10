@@ -141,6 +141,29 @@ function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: CaptureCommand
   return true;
 }
 
+/** "vertex 3, 5-9; fragment 1": the slots by stage, runs of consecutive indices folded. */
+function slotRanges(slots: BoundStageBuffer[]): string {
+  const byStage = new Map<string, number[]>();
+  for (const sb of slots) {
+    const list = byStage.get(sb.stage) ?? [];
+    list.push(sb.index);
+    byStage.set(sb.stage, list);
+  }
+  const parts: string[] = [];
+  for (const [stage, indices] of byStage) {
+    indices.sort((a, b) => a - b);
+    const runs: string[] = [];
+    for (let i = 0; i < indices.length;) {
+      let j = i;
+      while (j + 1 < indices.length && indices[j + 1] === indices[j] + 1) j++;
+      runs.push(j > i ? `${indices[i]}-${indices[j]}` : `${indices[i]}`);
+      i = j + 1;
+    }
+    parts.push(`${stage} ${runs.join(", ")}`);
+  }
+  return parts.join("; ");
+}
+
 export class CommandInfoView {
   readonly panel: CaptureHost;
   private _token = 0;
@@ -568,7 +591,8 @@ export class CommandInfoView {
 
   private _renderDescriptorSets(container: Widget, state: DrawState, sets: BoundSet[], token: number): void {
     if (!sets.length) {
-      new Div(container, { text: "No descriptor sets bound.", class: "text-muted capture-note" });
+      // Metal has no descriptor sets: its bindings are the stage buffers, textures and samplers.
+      if (this.panel.data.api !== "metal") new Div(container, { text: "No descriptor sets bound.", class: "text-muted capture-note" });
       return;
     }
     const host = new Div(container);
@@ -1092,15 +1116,27 @@ export class CommandInfoView {
    * typed by the pipeline's reflection at that stage and index (metal/reflection.ts). Vertex-stage
    * slots the vertex descriptor lays out are vertex buffers and are rendered as such instead.
    */
+  /**
+   * The stage buffers bound at a draw. An engine binds many slots an individual pipeline never
+   * reads (Unity leaves sixty-odd set, most of them to nothing), so with the pipeline's
+   * reflection at hand only the slots its shaders read are listed, and the rest are one line;
+   * without reflection every slot with a buffer is listed and the empty ones are the one line.
+   */
   private _renderStageBuffers(container: Widget, state: DrawState, buffers: BoundStageBuffer[]): void {
     const db = this.db;
-    const shown = buffers
+    const candidates = buffers
       .filter((sb) => !(sb.stage === "vertex" && !sb.inline && this._vertexLayout(state, sb.index, { cmd: sb.cmd, binding: sb.index, buffer: sb.buffer, offset: sb.offset, size: null, stride: null, dataId: sb.dataId })))
       .sort((a, b) => a.stage === b.stage ? a.index - b.index : a.stage.localeCompare(b.stage));
-    if (!shown.length) return;
     const reflected = hasMetalReflection(state.pipeline);
-    for (const sb of shown) {
+    const shown: { sb: BoundStageBuffer; res: ShaderResource | null }[] = [];
+    const hidden: BoundStageBuffer[] = [];
+    for (const sb of candidates) {
       const res = metalBufferResource(state.pipeline, sb.stage, sb.index);
+      if (reflected ? !res : !res && !sb.inline && !sb.buffer) hidden.push(sb);
+      else shown.push({ sb, res });
+    }
+    if (!shown.length && !hidden.length) return;
+    for (const { sb, res } of shown) {
       const buf = sb.buffer ? db.getObject(refId(sb.buffer)) : null;
       const stage = sb.stage.charAt(0).toUpperCase() + sb.stage.slice(1);
       const what = sb.inline ? "inline bytes" : buf ? buf.name : "(none)";
@@ -1125,6 +1161,13 @@ export class CommandInfoView {
         const entries = argumentBufferEntries(res.type, captured.data, db);
         if (entries.length) renderArgumentBuffer(body, entries, this._link);
       }
+    }
+    if (hidden.length) {
+      const bound = hidden.filter((sb) => sb.inline || sb.buffer).length;
+      const what = reflected
+        ? `not read by the bound pipeline's shaders${bound < hidden.length ? ` (${hidden.length - bound} bound to nothing)` : ""}`
+        : "bound to nothing";
+      new Div(container, { text: `${hidden.length} other slot${hidden.length === 1 ? "" : "s"} ${what}: ${slotRanges(hidden)}`, class: "text-muted capture-note font-sm" });
     }
   }
 
