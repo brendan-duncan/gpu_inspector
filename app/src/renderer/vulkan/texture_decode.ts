@@ -2,9 +2,14 @@
 //   decodeTexels():  raw bytes -> one float per channel per texel (the values the tooltip shows),
 //   displayTexels(): floats -> RGBA8 for the canvas, applying the display settings (channel
 //                    selection, exposure, auto range, sRGB encoding of linear data).
-// Covers the common color and depth formats and the BC1-BC5 block-compressed formats. BC6H/BC7,
-// ETC2 and ASTC are recognized but not decoded yet.
+// Covers the color and depth formats, the BC1-BC7 block formats, ETC2 / EAC, ASTC (LDR
+// endpoints; HDR blocks show the error colour), PVRTC1 and Metal's packed 422 and extended
+// range formats.
 import type { ImageDataInfo } from "../../shared/protocol.js";
+import { decodeAstcBlock } from "./astc_decode.js";
+import { decodeBc6hBlock, decodeBc7Block } from "./bc67_decode.js";
+import { decodeEacR11, decodeEacRg11, decodeEtc2Rgb, decodeEtc2Rgba1, decodeEtc2Rgba8 } from "./etc_decode.js";
+import { decodePvrtc } from "./pvrtc_decode.js";
 
 /** Decoded texel values of one image slice. `values` holds 4 floats per texel (unused = 0). */
 export interface TexelData {
@@ -58,6 +63,8 @@ interface Format {
   channels: number;
   linear?: boolean;
   integer?: boolean;
+  /** Channel names when they are not R, G, B, A (an alpha-only format, YCbCr). */
+  names?: string[];
   read: Reader;
 }
 
@@ -67,6 +74,30 @@ const u16n = (s: DataView, t: number): number => s.getUint16(t, true) / 65535;
 const s16n = (s: DataView, t: number): number => Math.max(-1, s.getInt16(t, true) / 32767);
 const f16 = (s: DataView, t: number): number => halfToFloat(s.getUint16(t, true));
 const f32 = (s: DataView, t: number): number => s.getFloat32(t, true);
+const u16 = (s: DataView, t: number): number => s.getUint16(t, true);
+const s16 = (s: DataView, t: number): number => s.getInt16(t, true);
+const u32 = (s: DataView, t: number): number => s.getUint32(t, true);
+const s32 = (s: DataView, t: number): number => s.getInt32(t, true);
+const u8i = (s: DataView, t: number): number => s.getUint8(t);
+const s8i = (s: DataView, t: number): number => s.getInt8(t);
+
+/** Metal's extended-range 10-bit encoding: 0 at 384, 1 at 894, so -0.75..1.25 fits. */
+const xr10 = (v: number): number => (v - 384) / 510;
+
+/** A 5-bit unsigned float with `mantissaBits` mantissa bits (the shared-exponent and 11/10-bit packed formats). */
+function smallFloat(bits: number, mantissaBits: number): number {
+  const e = (bits >> mantissaBits) & 0x1f;
+  const m = bits & ((1 << mantissaBits) - 1);
+  const scale = 1 << mantissaBits;
+  return e === 0 ? Math.pow(2, -14) * (m / scale) : Math.pow(2, e - 15) * (1 + m / scale);
+}
+
+/** An integer format: `count` channels of `size` bytes read by `fn`. */
+function ints(fn: (s: DataView, t: number) => number, size: number, count: number): Format {
+  const order: number[] = [];
+  for (let i = 0; i < count; i++) order.push(i);
+  return { bytes: size * count, channels: count, integer: true, read: ch(fn, size, order) };
+}
 
 /** Builds a reader from per-channel readers and byte offsets. */
 function ch(fn: (s: DataView, t: number) => number, size: number, order: number[]): Reader {
@@ -76,6 +107,69 @@ function ch(fn: (s: DataView, t: number) => number, size: number, order: number[
 }
 
 const FORMATS: Record<string, Format> = {
+  VK_FORMAT_A8_UNORM_KHR: { bytes: 1, channels: 1, names: ["A"], read: ch(u8, 1, [0]) },
+  VK_FORMAT_R8G8_SINT: ints(s8i, 1, 2),
+  VK_FORMAT_R8G8B8A8_SINT: ints(s8i, 1, 4),
+  VK_FORMAT_R16_SINT: ints(s16, 2, 1),
+  VK_FORMAT_R16G16_UINT: ints(u16, 2, 2),
+  VK_FORMAT_R16G16_SINT: ints(s16, 2, 2),
+  VK_FORMAT_R16G16B16A16_UINT: ints(u16, 2, 4),
+  VK_FORMAT_R16G16B16A16_SINT: ints(s16, 2, 4),
+  VK_FORMAT_R32G32_UINT: ints(u32, 4, 2),
+  VK_FORMAT_R32G32_SINT: ints(s32, 4, 2),
+  VK_FORMAT_R32G32B32A32_UINT: ints(u32, 4, 4),
+  VK_FORMAT_R32G32B32A32_SINT: ints(s32, 4, 4),
+  VK_FORMAT_A2B10G10R10_UINT_PACK32: { bytes: 4, channels: 4, integer: true, read: (s, t, out, o) => {
+    const v = s.getUint32(t, true);
+    out[o] = v & 0x3ff; out[o + 1] = (v >> 10) & 0x3ff; out[o + 2] = (v >> 20) & 0x3ff; out[o + 3] = (v >>> 30) & 3;
+  } },
+  VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: { bytes: 4, channels: 3, linear: true, read: (s, t, out, o) => {
+    const v = s.getUint32(t, true);
+    const scale = Math.pow(2, ((v >>> 27) & 0x1f) - 15 - 9);
+    out[o] = (v & 0x1ff) * scale; out[o + 1] = ((v >> 9) & 0x1ff) * scale; out[o + 2] = ((v >> 18) & 0x1ff) * scale;
+  } },
+  VK_FORMAT_R5G5B5A1_UNORM_PACK16: { bytes: 2, channels: 4, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o] = ((v >> 11) & 0x1f) / 31; out[o + 1] = ((v >> 6) & 0x1f) / 31; out[o + 2] = ((v >> 1) & 0x1f) / 31; out[o + 3] = v & 1;
+  } },
+  VK_FORMAT_A1R5G5B5_UNORM_PACK16: { bytes: 2, channels: 4, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o] = ((v >> 10) & 0x1f) / 31; out[o + 1] = ((v >> 5) & 0x1f) / 31; out[o + 2] = (v & 0x1f) / 31; out[o + 3] = (v >> 15) & 1;
+  } },
+  VK_FORMAT_B5G5R5A1_UNORM_PACK16: { bytes: 2, channels: 4, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o + 2] = ((v >> 11) & 0x1f) / 31; out[o + 1] = ((v >> 6) & 0x1f) / 31; out[o] = ((v >> 1) & 0x1f) / 31; out[o + 3] = v & 1;
+  } },
+  VK_FORMAT_R4G4B4A4_UNORM_PACK16: { bytes: 2, channels: 4, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o] = ((v >> 12) & 0xf) / 15; out[o + 1] = ((v >> 8) & 0xf) / 15; out[o + 2] = ((v >> 4) & 0xf) / 15; out[o + 3] = (v & 0xf) / 15;
+  } },
+  VK_FORMAT_B4G4R4A4_UNORM_PACK16: { bytes: 2, channels: 4, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o + 2] = ((v >> 12) & 0xf) / 15; out[o + 1] = ((v >> 8) & 0xf) / 15; out[o] = ((v >> 4) & 0xf) / 15; out[o + 3] = (v & 0xf) / 15;
+  } },
+  VK_FORMAT_B5G6R5_UNORM_PACK16: { bytes: 2, channels: 3, read: (s, t, out, o) => {
+    const v = s.getUint16(t, true);
+    out[o + 2] = ((v >> 11) & 0x1f) / 31; out[o + 1] = ((v >> 5) & 0x3f) / 63; out[o] = (v & 0x1f) / 31;
+  } },
+  // Metal's extended-range formats (no Vulkan spelling): 10 bits per channel, B lowest. The
+  // 64-bit form keeps each channel's 10 bits in the low bits of a 16-bit word.
+  MTLPixelFormatBGR10_XR: { bytes: 4, channels: 3, linear: true, read: (s, t, out, o) => {
+    const v = s.getUint32(t, true);
+    out[o + 2] = xr10(v & 0x3ff); out[o + 1] = xr10((v >> 10) & 0x3ff); out[o] = xr10((v >> 20) & 0x3ff);
+  } },
+  MTLPixelFormatBGR10_XR_sRGB: { bytes: 4, channels: 3, read: (s, t, out, o) => {
+    const v = s.getUint32(t, true);
+    out[o + 2] = xr10(v & 0x3ff); out[o + 1] = xr10((v >> 10) & 0x3ff); out[o] = xr10((v >> 20) & 0x3ff);
+  } },
+  MTLPixelFormatBGRA10_XR: { bytes: 8, channels: 4, linear: true, read: (s, t, out, o) => {
+    out[o + 2] = xr10(s.getUint16(t, true) & 0x3ff); out[o + 1] = xr10(s.getUint16(t + 2, true) & 0x3ff);
+    out[o] = xr10(s.getUint16(t + 4, true) & 0x3ff); out[o + 3] = xr10(s.getUint16(t + 6, true) & 0x3ff);
+  } },
+  MTLPixelFormatBGRA10_XR_sRGB: { bytes: 8, channels: 4, read: (s, t, out, o) => {
+    out[o + 2] = xr10(s.getUint16(t, true) & 0x3ff); out[o + 1] = xr10(s.getUint16(t + 2, true) & 0x3ff);
+    out[o] = xr10(s.getUint16(t + 4, true) & 0x3ff); out[o + 3] = xr10(s.getUint16(t + 6, true) & 0x3ff);
+  } },
   VK_FORMAT_R8_UNORM: { bytes: 1, channels: 1, read: ch(u8, 1, [0]) },
   VK_FORMAT_R8_SRGB: { bytes: 1, channels: 1, read: ch(u8, 1, [0]) },
   VK_FORMAT_R8_SNORM: { bytes: 1, channels: 1, read: ch(s8, 1, [0]) },
@@ -115,11 +209,9 @@ const FORMATS: Record<string, Format> = {
   VK_FORMAT_R32G32B32A32_SFLOAT: { bytes: 16, channels: 4, linear: true, read: ch(f32, 4, [0, 1, 2, 3]) },
   VK_FORMAT_B10G11R11_UFLOAT_PACK32: { bytes: 4, channels: 3, linear: true, read: (s, t, out, o) => {
     const v = s.getUint32(t, true);
-    const f11 = (bits: number): number => { const e = (bits >> 6) & 0x1f; const m = bits & 0x3f; return e === 0 ? Math.pow(2, -14) * (m / 64) : Math.pow(2, e - 15) * (1 + m / 64); };
-    const f10 = (bits: number): number => { const e = (bits >> 5) & 0x1f; const m = bits & 0x1f; return e === 0 ? Math.pow(2, -14) * (m / 32) : Math.pow(2, e - 15) * (1 + m / 32); };
-    out[o] = f11(v & 0x7ff);
-    out[o + 1] = f11((v >> 11) & 0x7ff);
-    out[o + 2] = f10((v >> 22) & 0x3ff);
+    out[o] = smallFloat(v & 0x7ff, 6);
+    out[o + 1] = smallFloat((v >> 11) & 0x7ff, 6);
+    out[o + 2] = smallFloat((v >> 22) & 0x3ff, 5);
   } },
   VK_FORMAT_A2B10G10R10_UNORM_PACK32: { bytes: 4, channels: 4, read: (s, t, out, o) => {
     const v = s.getUint32(t, true);
@@ -153,13 +245,19 @@ const DEPTH_FORMATS: Record<string, { bytes: number; read: (s: DataView, t: numb
 };
 
 // ---------------------------------------------------------------------------------------------
-// Block compression (BC1-BC5). Blocks are 4x4 texels, stored row-major over the padded image.
-// Decoders write 16 texels of RGBA floats (0..1) into px.
+// Block compression. Blocks of `width` x `height` texels are stored row-major over the padded
+// image; a decoder writes the block's texels as RGBA floats (0..1) into px, row-major. A
+// format whose texels depend on neighbouring blocks (PVRTC) decodes the whole image instead.
 
 interface BlockFormat {
   bytes: number;
+  width: number;
+  height: number;
   channels: number;
-  decode: (s: DataView, block: number, px: Float32Array) => void;
+  linear?: boolean;
+  names?: string[];
+  decode?: (s: DataView, block: number, px: Float32Array) => void;
+  decodeImage?: (s: DataView, width: number, height: number, values: Float32Array) => void;
 }
 
 function rgb565(v: number): [number, number, number] {
@@ -215,20 +313,20 @@ function decodeBc4Channel(s: DataView, t: number, px: Float32Array, channel: num
   }
 }
 
-const BC1: BlockFormat = { bytes: 8, channels: 4, decode: (s, b, px) => decodeBc1(s, b, px, true) };
-const BC2: BlockFormat = { bytes: 16, channels: 4, decode: (s, b, px) => {
+const BC1: BlockFormat = { bytes: 8, width: 4, height: 4, channels: 4, decode: (s, b, px) => decodeBc1(s, b, px, true) };
+const BC2: BlockFormat = { bytes: 16, width: 4, height: 4, channels: 4, decode: (s, b, px) => {
   decodeBc1(s, b + 8, px, false);
   for (let i = 0; i < 16; i++) px[i * 4 + 3] = ((s.getUint16(b + (i >> 2) * 2, true) >> ((i & 3) * 4)) & 0xf) / 15;
 } };
-const BC3: BlockFormat = { bytes: 16, channels: 4, decode: (s, b, px) => {
+const BC3: BlockFormat = { bytes: 16, width: 4, height: 4, channels: 4, decode: (s, b, px) => {
   decodeBc1(s, b + 8, px, false);
   decodeBc4Channel(s, b, px, 3, false);
 } };
-const bc4 = (signed: boolean): BlockFormat => ({ bytes: 8, channels: 1, decode: (s, b, px) => {
+const bc4 = (signed: boolean): BlockFormat => ({ bytes: 8, width: 4, height: 4, channels: 1, decode: (s, b, px) => {
   px.fill(0);
   decodeBc4Channel(s, b, px, 0, signed);
 } });
-const bc5 = (signed: boolean): BlockFormat => ({ bytes: 16, channels: 2, decode: (s, b, px) => {
+const bc5 = (signed: boolean): BlockFormat => ({ bytes: 16, width: 4, height: 4, channels: 2, decode: (s, b, px) => {
   px.fill(0);
   decodeBc4Channel(s, b, px, 0, signed);
   decodeBc4Channel(s, b + 8, px, 1, signed);
@@ -241,7 +339,44 @@ const BLOCK_FORMATS: Record<string, BlockFormat> = {
   VK_FORMAT_BC3_UNORM_BLOCK: BC3, VK_FORMAT_BC3_SRGB_BLOCK: BC3,
   VK_FORMAT_BC4_UNORM_BLOCK: bc4(false), VK_FORMAT_BC4_SNORM_BLOCK: bc4(true),
   VK_FORMAT_BC5_UNORM_BLOCK: bc5(false), VK_FORMAT_BC5_SNORM_BLOCK: bc5(true),
+  VK_FORMAT_BC6H_UFLOAT_BLOCK: { bytes: 16, width: 4, height: 4, channels: 3, linear: true, decode: (s, b, px) => decodeBc6hBlock(s, b, px, false) },
+  VK_FORMAT_BC6H_SFLOAT_BLOCK: { bytes: 16, width: 4, height: 4, channels: 3, linear: true, decode: (s, b, px) => decodeBc6hBlock(s, b, px, true) },
+  VK_FORMAT_BC7_UNORM_BLOCK: { bytes: 16, width: 4, height: 4, channels: 4, decode: decodeBc7Block },
+  VK_FORMAT_BC7_SRGB_BLOCK: { bytes: 16, width: 4, height: 4, channels: 4, decode: decodeBc7Block },
+  VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: { bytes: 8, width: 4, height: 4, channels: 3, decode: decodeEtc2Rgb },
+  VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK: { bytes: 8, width: 4, height: 4, channels: 3, decode: decodeEtc2Rgb },
+  VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: { bytes: 8, width: 4, height: 4, channels: 4, decode: decodeEtc2Rgba1 },
+  VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK: { bytes: 8, width: 4, height: 4, channels: 4, decode: decodeEtc2Rgba1 },
+  VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: { bytes: 16, width: 4, height: 4, channels: 4, decode: decodeEtc2Rgba8 },
+  VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: { bytes: 16, width: 4, height: 4, channels: 4, decode: decodeEtc2Rgba8 },
+  VK_FORMAT_EAC_R11_UNORM_BLOCK: { bytes: 8, width: 4, height: 4, channels: 1, decode: (s, b, px) => decodeEacR11(s, b, px, false) },
+  VK_FORMAT_EAC_R11_SNORM_BLOCK: { bytes: 8, width: 4, height: 4, channels: 1, decode: (s, b, px) => decodeEacR11(s, b, px, true) },
+  VK_FORMAT_EAC_R11G11_UNORM_BLOCK: { bytes: 16, width: 4, height: 4, channels: 2, decode: (s, b, px) => decodeEacRg11(s, b, px, false) },
+  VK_FORMAT_EAC_R11G11_SNORM_BLOCK: { bytes: 16, width: 4, height: 4, channels: 2, decode: (s, b, px) => decodeEacRg11(s, b, px, true) },
+  VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG: { bytes: 8, width: 8, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, true, v) },
+  VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG: { bytes: 8, width: 8, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, true, v) },
+  VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
+  VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
+  // Packed 4:2:2: two texels share their chroma. Shown as the stored Y, Cb and Cr values in
+  // the G, B and R channels, the way Metal's sampler returns them, without a colour conversion.
+  VK_FORMAT_G8B8G8R8_422_UNORM: { bytes: 4, width: 2, height: 1, channels: 3, names: ["R (Cr)", "G (Y)", "B (Cb)"], decode: (s, b, px) => {
+    const g0 = s.getUint8(b) / 255, cb = s.getUint8(b + 1) / 255, g1 = s.getUint8(b + 2) / 255, cr = s.getUint8(b + 3) / 255;
+    px[0] = cr; px[1] = g0; px[2] = cb; px[3] = 1; px[4] = cr; px[5] = g1; px[6] = cb; px[7] = 1;
+  } },
+  VK_FORMAT_B8G8R8G8_422_UNORM: { bytes: 4, width: 2, height: 1, channels: 3, names: ["R (Cr)", "G (Y)", "B (Cb)"], decode: (s, b, px) => {
+    const cb = s.getUint8(b) / 255, g0 = s.getUint8(b + 1) / 255, cr = s.getUint8(b + 2) / 255, g1 = s.getUint8(b + 3) / 255;
+    px[0] = cr; px[1] = g0; px[2] = cb; px[3] = 1; px[4] = cr; px[5] = g1; px[6] = cb; px[7] = 1;
+  } },
 };
+
+// ASTC: every footprint, in UNORM, sRGB and (HDR profile) float flavours. The float flavour
+// decodes the LDR blocks of an HDR image; its HDR blocks show the error colour.
+for (const [w, h] of [[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]]) {
+  const ldr = (srgb: boolean): BlockFormat => ({ bytes: 16, width: w, height: h, channels: 4, decode: (s, b, px) => decodeAstcBlock(s, b, w, h, px, srgb) });
+  BLOCK_FORMATS[`VK_FORMAT_ASTC_${w}x${h}_UNORM_BLOCK`] = ldr(false);
+  BLOCK_FORMATS[`VK_FORMAT_ASTC_${w}x${h}_SRGB_BLOCK`] = ldr(true);
+  BLOCK_FORMATS[`VK_FORMAT_ASTC_${w}x${h}_SFLOAT_BLOCK`] = { ...ldr(false), linear: true };
+}
 
 // ---------------------------------------------------------------------------------------------
 
@@ -252,7 +387,7 @@ export function sliceBytes(info: ImageDataInfo): number {
   if (info.aspect === "depth") return (DEPTH_FORMATS[info.format]?.bytes ?? 0) * w * h;
   if (info.aspect === "stencil") return w * h;
   const block = BLOCK_FORMATS[info.format];
-  if (block) return Math.ceil(w / 4) * Math.ceil(h / 4) * block.bytes;
+  if (block) return Math.ceil(w / block.width) * Math.ceil(h / block.height) * block.bytes;
   return (FORMATS[info.format]?.bytes ?? 0) * w * h;
 }
 
@@ -310,22 +445,29 @@ export function decodeTexels(info: ImageDataInfo, data: Uint8Array, slice = 0): 
   }
   const block = BLOCK_FORMATS[info.format];
   if (block) {
-    const bw = Math.ceil(w / 4);
-    const bh = Math.ceil(h / 4);
-    const px = new Float32Array(64);
+    tex.channels = block.channels;
+    tex.linear = !!block.linear;
+    if (block.names) tex.names = block.names;
+    if (block.decodeImage) {
+      block.decodeImage(view, w, h, values);
+      return finish(tex);
+    }
+    const bw = Math.ceil(w / block.width);
+    const bh = Math.ceil(h / block.height);
+    const texels = block.width * block.height;
+    const px = new Float32Array(texels * 4);
     for (let by = 0; by < bh; by++) {
       for (let bx = 0; bx < bw; bx++) {
-        block.decode(view, (by * bw + bx) * block.bytes, px);
-        for (let i = 0; i < 16; i++) {
-          const x = bx * 4 + (i & 3);
-          const y = by * 4 + (i >> 2);
+        block.decode?.(view, (by * bw + bx) * block.bytes, px);
+        for (let i = 0; i < texels; i++) {
+          const x = bx * block.width + (i % block.width);
+          const y = by * block.height + Math.floor(i / block.width);
           if (x >= w || y >= h) continue;
           const o = (y * w + x) * 4;
           values[o] = px[i * 4]; values[o + 1] = px[i * 4 + 1]; values[o + 2] = px[i * 4 + 2]; values[o + 3] = px[i * 4 + 3];
         }
       }
     }
-    tex.channels = block.channels;
     return finish(tex);
   }
   const f = FORMATS[info.format];
@@ -334,6 +476,7 @@ export function decodeTexels(info: ImageDataInfo, data: Uint8Array, slice = 0): 
   tex.channels = f.channels;
   tex.linear = !!f.linear;
   tex.integer = !!f.integer;
+  if (f.names) tex.names = f.names;
   return finish(tex);
 }
 

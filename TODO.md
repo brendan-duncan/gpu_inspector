@@ -188,7 +188,9 @@ backend does. Ordered by value per effort.
 - [ ] Metal 4 command buffers and encoders: a separate class tree with different selectors.
 - [x] Test app coverage for the read-back paths: a private-storage vertex buffer, an MSAA pass
       with resolve through a parallel render encoder, a sampled texture and inline constants.
-- [ ] Stencil attachment read-back; ASTC, ETC, PVRTC, XR and YUV pixel formats.
+- [x] ASTC, ETC2 / EAC, PVRTC and the extended-range and packed 4:2:2 pixel formats, in the
+      read-back table and the UI's decoder, with reference vectors.
+- [ ] Stencil attachment read-back; the multi-planar YUV formats.
 
 ## Distribution
 - [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).
