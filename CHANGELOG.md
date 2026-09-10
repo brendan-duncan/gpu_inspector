@@ -1,6 +1,15 @@
-## Unreleased
+## 0.8.0
 
 ### Added
+- Render Graph: a capture's passes and the resources that connect them, from the "Render Graph"
+  button in the capture bar. Attachments, the descriptor sets bound at each draw and dispatch and
+  the transfer commands are rolled up per pass into a dependency graph, keyed on the mip level and
+  array layer each pass touched and versioned per write, so a mip chain is a chain and an
+  attachment a pass loads and stores again is not a cycle. Shown as a resource lifetime chart —
+  passes along the top in execution order, one row per resource, marked where each pass reads or
+  writes it — with the selected pass' immediate producers and consumers drawn as a node-link
+  diagram beside it, its GPU time, the frame's critical path, resources read from before the
+  capture, and passes whose output nothing in the capture reads. Vulkan and Metal.
 - Metal capture library (`metal/`, macOS, Apple Silicon verified): injected with
   `DYLD_INSERT_LIBRARIES`, hooks the driver's classes rather than wrapping objects, and speaks
   the Vulkan layer's protocol so the Inspect and Capture panels work unchanged. Tracks the
@@ -23,6 +32,21 @@
 - Metal validation messages: command buffer errors with the faulting encoder, Metal's
   validation layer through the launch dialog's "Validation layer" switch, and shader logs, in
   the Inspect panel's message list with repeat counts; a leak report at process exit.
+
+### Changed
+- The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render
+  Graph) moved from four buttons into one "Reports" menu at the right of the filter row, which
+  the filter field now fills. Four buttons wrapped the row, and the menu holds however many
+  reports there come to be; the entry whose report is showing is marked.
+
+### Fixed
+- `--launch` started the application twice: it was acted on by two separate handlers, so every
+  run left a stray process behind, and the second launch ignored `--args`, `--validation` and
+  the rest, which left the UI tests checking the wrong session.
+- `--screenshot` could hang the run instead of writing a shot: `capturePage()` rejects with
+  `UnknownVizError` when the GPU process will not produce a frame (which is what happens with
+  the process's output redirected, as the UI tests run it), and the unhandled rejection skipped
+  the `--quit-after-screenshot` quit. A failed or slow capture is now reported and skipped.
 
 ## 0.7.0
 

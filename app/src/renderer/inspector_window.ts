@@ -205,6 +205,7 @@ export class InspectorWindow extends Window {
     if (opts.recent !== false) void window.inspector.addRecentCapture(path);
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.selectCommand !== null && this._debug?.selectCommand !== undefined) panel.capturePanel.activeView?.selectCommand(this._debug.selectCommand);
+    if (this._debug?.showView) panel.capturePanel.activeView?.showView(this._debug.showView);
   }
 
   private async _openCaptureDialog(): Promise<void> {
@@ -499,6 +500,9 @@ export class InspectorWindow extends Window {
       // --debug-command=<index>: select a command once the capture has arrived.
       const selectCommand = this._debug?.selectCommand;
       if (selectCommand !== null && selectCommand !== undefined) setTimeout(() => panel.capturePanel.activeView?.selectCommand(selectCommand), 3000);
+      // --debug-view=<name>: open one of the capture's reports, so a screenshot shows it.
+      const view = this._debug?.showView;
+      if (view) setTimeout(() => panel.capturePanel.activeView?.showView(view), 3500);
       // --debug-save=<file>: save the capture once its data has had time to arrive.
       const save = this._debug?.saveCapture;
       if (save) {

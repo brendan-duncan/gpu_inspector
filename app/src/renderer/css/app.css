@@ -709,3 +709,102 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 /* Costliest lines in the Shader Cost section. */
 .perf-lines-head { margin-top: 6px; }
 .perf-line-row .perf-cost-name { flex: 1 1 auto; }
+
+/* Render Graph (capture): the resource lifetime chart and the neighbourhood diagram */
+.render-graph { padding: 12px 16px; }
+.render-graph-summary { margin-bottom: 6px; }
+.render-graph-warning {
+  background: var(--info-warning-bg); border-left: 3px solid var(--accent-warning);
+  padding: 5px 8px; margin-bottom: 6px; border-radius: var(--radius-sm); color: var(--fg-primary);
+}
+.render-graph-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 4px; margin-bottom: 8px; }
+.render-graph-zoom { width: 90px; }
+.render-graph-chart { margin-bottom: 12px; }
+.render-graph-scroll { overflow-x: auto; overflow-y: auto; max-height: 460px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-secondary); }
+.render-graph-grid { position: relative; }
+/* The pass header stays put while the rows scroll under it. */
+.render-graph-header { display: flex; position: sticky; top: 0; z-index: 2; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); height: 40px; }
+.render-graph-corner { flex: 0 0 auto; padding: 4px 6px; font-size: 9pt; color: var(--fg-muted); border-right: 1px solid var(--border-color); box-sizing: border-box; position: sticky; left: 0; background: var(--bg-tertiary); z-index: 3; }
+.render-graph-header-track { position: relative; flex: 0 0 auto; height: 100%; }
+.render-graph-pass { position: absolute; bottom: 0; top: 2px; cursor: pointer; display: flex; align-items: flex-end; background: var(--bg-primary); }
+.render-graph-pass-bar { width: 100%; min-height: 2px; background: var(--rg-render); }
+.render-graph-pass-compute .render-graph-pass-bar { background: var(--rg-compute); }
+.render-graph-pass-transfer .render-graph-pass-bar { background: var(--rg-transfer); }
+.render-graph-pass:hover { outline: 1px solid var(--accent-primary); }
+.render-graph-pass.render-graph-unread .render-graph-pass-bar { background: var(--rg-unread); }
+.render-graph-pass.render-graph-onpath { box-shadow: inset 0 2px 0 0 var(--timeline-budget); }
+.render-graph-pass.render-graph-related { background: var(--bg-hover); }
+.render-graph-pass.render-graph-selected { outline: 2px solid var(--accent-primary); z-index: 1; }
+.render-graph-body { position: relative; }
+.render-graph-row { display: flex; align-items: center; }
+.render-graph-row:hover { background: var(--bg-hover); }
+.render-graph-row.render-graph-related { background: var(--rg-related-bg); }
+.render-graph-row.render-graph-selected { background: var(--rg-selected-bg); }
+.render-graph-label {
+  flex: 0 0 auto; box-sizing: border-box; padding: 0 6px; font-size: 9pt; cursor: pointer;
+  display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden;
+  position: sticky; left: 0; background: inherit; z-index: 1; border-right: 1px solid var(--border-color);
+}
+.render-graph-row .render-graph-label { background: var(--bg-secondary); }
+.render-graph-row:hover .render-graph-label { background: var(--bg-hover); }
+.render-graph-row.render-graph-related .render-graph-label { background: var(--rg-related-bg); }
+.render-graph-row.render-graph-selected .render-graph-label { background: var(--rg-selected-bg); }
+.render-graph-name { overflow: hidden; text-overflow: ellipsis; }
+.render-graph-buffer .render-graph-name { font-style: italic; }
+.render-graph-detail-text { font-size: 8pt; flex: 0 0 auto; }
+.render-graph-track { position: relative; flex: 0 0 auto; height: 100%; }
+/* The lifetime bar: from the first pass that touched the resource to the last. */
+.render-graph-life { position: absolute; top: 50%; transform: translateY(-50%); height: 2px; background: var(--rg-life); }
+.render-graph-external { position: absolute; top: 50%; transform: translateY(-50%); width: 3px; height: 10px; background: var(--rg-external); }
+.render-graph-use { position: absolute; top: 3px; bottom: 3px; cursor: pointer; box-sizing: border-box; }
+.render-graph-use:hover { outline: 1px solid var(--accent-primary); }
+/* Writes are filled, reads are outlined: which way the data went is the point of the chart. */
+.render-graph-use-read { background: transparent; border: 1px solid currentColor; }
+.render-graph-use-write, .render-graph-use-readwrite { background: currentColor; }
+.render-graph-use-readwrite { border-top: 2px solid var(--bg-secondary); }
+.render-graph-usage-attachment { color: var(--rg-attachment); }
+.render-graph-usage-sampled { color: var(--rg-sampled); }
+.render-graph-usage-storage { color: var(--rg-storage); }
+.render-graph-usage-transfer { color: var(--rg-transfer); }
+.render-graph-usage-input { color: var(--rg-input); }
+.render-graph-usage-other { color: var(--fg-muted); }
+.render-graph-legend { display: flex; gap: 12px; flex-wrap: wrap; padding: 4px 2px; }
+.render-graph-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.render-graph-swatch { width: 10px; height: 10px; background: currentColor; display: inline-block; border-radius: 2px; }
+.render-graph-swatch.render-graph-use-read { background: transparent; border: 1px solid var(--fg-muted); }
+.render-graph-detail-head { display: flex; align-items: baseline; gap: 10px; }
+.render-graph-detail-heading { font-weight: 600; margin: 8px 0 4px 0; }
+.render-graph-note { background: var(--info-warning-bg); border-radius: var(--radius-sm); padding: 4px 8px; margin: 6px 0; }
+.render-graph-use-row { cursor: default; }
+/* The neighbourhood diagram: the one part of the graph small enough to draw as a node-link view. */
+.render-graph-dag { display: block; margin: 8px 0; width: 100%; height: auto; }
+.render-graph-dag-node { cursor: pointer; }
+.render-graph-dag-node rect { fill: var(--bg-elevated); stroke: var(--border-color); }
+.render-graph-dag-node text { fill: var(--fg-primary); font-size: 10px; }
+.render-graph-dag-node:hover rect { stroke: var(--accent-primary); }
+.render-graph-dag-self rect { fill: var(--rg-selected-bg); stroke: var(--accent-primary); }
+.render-graph-dag-edge { fill: none; stroke: var(--rg-life); stroke-width: 1.2; }
+.render-graph-dag-edge-label { fill: var(--fg-secondary); font-size: 9px; }
+/* The summary and the caveats wrap: they are sentences, and the panel is narrow. */
+.render-graph-summary, .render-graph-warning, .render-graph-note { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.render-graph-pass-name { font-size: 8pt; color: var(--fg-primary); padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: absolute; top: 2px; left: 0; right: 0; }
+.render-graph-pass { overflow: hidden; }
+
+/* Reports menu (capture bar): the whole-capture views, in one dropdown rather than a button each */
+button.btn-menu { display: inline-flex; align-items: center; gap: 5px; }
+.btn-menu svg { width: 13px; height: 13px; display: block; }
+.menu-caret { font-size: 8pt; opacity: 0.8; }
+/* Right-aligned with its button, which sits at the right end of the filter row. */
+.reports-menu { min-width: 300px; left: auto; right: 0; }
+.reports-menu-item { display: flex; align-items: flex-start; gap: 9px; padding: 7px 12px; }
+.reports-menu-icon svg { width: 15px; height: 15px; display: block; margin-top: 1px; }
+.reports-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.reports-menu-detail { font-size: 8.5pt; color: var(--fg-secondary); }
+/* The hovered row inverts, so the second line has to come with it. */
+.reports-menu-item:hover .reports-menu-detail { color: var(--fg-on-accent); opacity: 0.85; }
+.reports-menu-item.active { font-weight: 600; }
+.reports-menu-item.active::after { content: "\2022"; margin-left: auto; padding-left: 8px; color: var(--accent-primary); }
+.reports-menu-item.active:hover::after { color: var(--fg-on-accent); }
+/* The filter takes the row's spare width; the Reports menu sits at the right end of it. */
+.capture-filter-row .capture-filter-input { flex: 1 1 auto; width: auto; min-width: 60px; }
+.capture-filter-row .menu-container { margin-left: auto; }

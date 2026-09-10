@@ -25,6 +25,9 @@ import { pipelineStages, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
+import { frameRenderGraph } from "./frame_graph.js";
+import { renderRenderGraph } from "./render_graph_view.js";
+import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
@@ -49,6 +52,18 @@ interface CommandRow extends Widget {
 
 // Capture bar icon (inline SVG in the button's text color): a floppy disk for Save.
 const ICON_SAVE = '<svg viewBox="0 0 16 16" aria-label="Save"><path d="M2.5 2.5h8.6l2.4 2.4v8.6h-11z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 2.5v3.5h5v-3.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4.5" y="9" width="7" height="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+
+// The Reports menu and its entries. Four reports as four buttons filled the filter row and
+// wrapped it; one menu holds them, and the next report to be added as well.
+const ICON_REPORTS = '<svg viewBox="0 0 16 16" aria-label="Reports"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+/** Bar chart: counts of things in the frame. */
+const ICON_STATS = '<svg viewBox="0 0 16 16"><path d="M3 13.2V8.5M8 13.2V3.2M13 13.2V6.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+/** Magnifier over a document: static analysis of the shaders. */
+const ICON_ANALYZE = '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.2 10.2 14 14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M5 7h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+/** Stacked frames narrowing upwards: a flame graph. */
+const ICON_FLAME = '<svg viewBox="0 0 16 16"><rect x="2" y="10.5" width="12" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2" y="6.5" width="7.5" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2" y="2.5" width="4" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+/** Nodes joined by edges: the pass dependency graph. */
+const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="3.8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="12.2" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.4 7.2 10.6 4.6M5.4 8.8l5.2 2.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 
 export class CapturePanel {
   readonly window: SessionContext;
@@ -318,6 +333,10 @@ export class CaptureView implements CaptureHost {
   private _rows: CommandRow[] = [];
   /** The frame analysis of the current commands (Frame Issues and the row markers). */
   _analysis: { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } | null = null;
+  /** The capture's render graph, built on demand (see renderGraph()). */
+  private _renderGraph: RenderGraph | null = null;
+  /** Entries of the Reports menu by id, for marking the one being shown. */
+  private _reportItems = new Map<string, Div>();
   private _validationListener: (entry: ValidationEntry) => void;
   private _timeline: TimelineWidget;
   private _profile: boolean;
@@ -362,14 +381,12 @@ export class CaptureView implements CaptureHost {
     const left = new Div(leftRow, { class: "capture-left" });
     const filterRow = new Div(left, { class: "capture-filter-row" });
     new Span(filterRow, { text: "Filter", class: "inspector-filter-label-sm" });
-    this._filterInput = new TextInput(filterRow, { placeholder: "filter...", class: "inspector-filter-input-sm", style: "width: 80px;" });
+    this._filterInput = new TextInput(filterRow, { placeholder: "filter...", class: "inspector-filter-input-sm capture-filter-input" });
     this._filterInput.element.oninput = () => {
       this._filter = this._filterInput.value.trim().toLowerCase();
       this._applyCommandFilter();
     };
-    new Button(filterRow, { label: "Frame Stats", class: "btn btn-sm", tooltip: "Statistics of the captured frame: commands, passes, pipelines, bindings, memory traffic, geometry", callback: () => this._showStats() });
-    new Button(filterRow, { label: "Analyze Shaders", class: "btn btn-sm", tooltip: "Static performance analysis of every shader the frame's draws and dispatches used, worst first", callback: () => void this._analyzeShaders() });
-    new Button(filterRow, { label: "Flame Graph", class: "btn btn-sm", tooltip: "Shader Flame Graph: the frame's GPU work by pass, pipeline, shader stage and function (measured pass times, modeled split)", callback: () => void this._showFlameGraph() });
+    this._buildReportsMenu(filterRow);
     // GPU pass timeline (Profile passes): stays at 0 height until timestamp data arrives.
     this._timeline = new TimelineWidget(left);
     this._listPanel = new Div(left, { class: "capture-commands" });
@@ -482,6 +499,7 @@ export class CaptureView implements CaptureHost {
     this._selectedRow = null;
     this._rows = [];
     this._analysis = analyzeFrame(this.data, this.window.database);
+    this._renderGraph = null;
     this._passBlocks.clear();
     this._textureCanvases.clear();
     this._drawCount = 0;
@@ -743,6 +761,17 @@ export class CaptureView implements CaptureHost {
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
+      renderGraph: d.commands.length ? (() => {
+        const g = this.renderGraph();
+        return {
+          nodes: g.nodes.length, resources: g.resources.length, edges: g.edges.length,
+          externalInputs: g.externalInputs.length, unreadNodes: g.unreadNodes.length,
+          criticalPath: g.criticalPath.length, warnings: g.warnings.length,
+          // Nodes whose pass key does not resolve to a timing when the frame was profiled: the
+          // graph's pass grouping drifting from the command tree's shows up here first.
+          untimedNodes: d.passTimings.size ? g.nodes.filter((n) => n.passKey && !d.passTimings.has(n.passKey)).length : null,
+        };
+      })() : null,
       commandsWithStacks: d.commands.filter((c) => c.stack && c.stack.length).length,
       commandsWithValidation: d.commands.filter((c) => db.validationForCommand(c.secondary ?? c.object?.__id, c.slot).length).length,
     };
@@ -781,6 +810,7 @@ export class CaptureView implements CaptureHost {
     if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
     this._selectedRow = row;
     row.classList.add("capture_command_selected");
+    this._markReport(null);
     this._showCommand(row.command);
   }
 
@@ -848,7 +878,7 @@ export class CaptureView implements CaptureHost {
    * renderer/vulkan/spirv_analysis.ts), reported worst first in the details panel.
    */
   private async _analyzeShaders(): Promise<void> {
-    const status = this._startReport("Analyzing shaders...");
+    const status = this._startReport("Analyzing shaders...", "shaders");
     if (!status) return;
     const db = this.window.database;
     const reports: FrameShaderReport[] = [];
@@ -877,7 +907,7 @@ export class CaptureView implements CaptureHost {
    * pass timings and the static cost model of every shader the frame used (frame_cost_tree.ts).
    */
   private async _showFlameGraph(): Promise<void> {
-    const status = this._startReport("Analyzing shaders...");
+    const status = this._startReport("Analyzing shaders...", "flame");
     if (!status) return;
     const db = this.window.database;
     const models = new Map<number, StageModel[]>();
@@ -911,9 +941,10 @@ export class CaptureView implements CaptureHost {
   }
 
   /** Clears the details panel for a frame-wide report; null (a note shown instead) without a capture. */
-  private _startReport(text: string): Div | null {
+  private _startReport(text: string, report: string): Div | null {
     if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
     this._selectedRow = null;
+    this._markReport(report);
     this._infoPanel.html = "";
     if (!this.data.commands.length) {
       new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
@@ -944,6 +975,7 @@ export class CaptureView implements CaptureHost {
   private _showStats(): void {
     if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
     this._selectedRow = null;
+    this._markReport("stats");
     this._infoPanel.html = "";
     if (!this.data.commands.length) {
       new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
@@ -955,9 +987,91 @@ export class CaptureView implements CaptureHost {
       { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) });
   }
 
+  /**
+   * The Reports menu: the whole-capture views, which all replace the command details. One menu
+   * rather than one button each, so the filter row holds them however many there come to be. The
+   * entry whose report is showing is marked, and the mark clears as soon as a command is selected
+   * and the details pane is that command's again.
+   */
+  private _buildReportsMenu(row: Widget): void {
+    const container = new Div(row, { class: "menu-container" });
+    const button = new Button(container, {
+      html: `${ICON_REPORTS}<span>Reports</span><span class="menu-caret">▾</span>`,
+      class: "btn btn-sm btn-menu", tooltip: "Reports over the whole capture, instead of one command",
+    });
+    const menu = new Div(container, { class: "menu-dropdown reports-menu" });
+    button.callback = () => menu.classList.toggle("open");
+    // `detail` is the one-line gloss under the name; `tooltip` the full sentence on hover, so
+    // the menu stays scannable without losing what each report actually contains.
+    const reports: { id: string; icon: string; label: string; detail: string; tooltip: string; open: () => void }[] = [
+      { id: "stats", icon: ICON_STATS, label: "Frame Stats", open: () => this._showStats(),
+        detail: "Commands, passes, bindings, memory, geometry",
+        tooltip: "Statistics of the captured frame: commands by kind, passes and attachments, pipelines and stages bound, descriptor sets, memory traffic and geometry" },
+      { id: "shaders", icon: ICON_ANALYZE, label: "Analyze Shaders", open: () => void this._analyzeShaders(),
+        detail: "Static analysis of every shader the frame used",
+        tooltip: "Static performance analysis of every shader the frame's draws and dispatches used, worst first" },
+      { id: "flame", icon: ICON_FLAME, label: "Shader Flame Graph", open: () => void this._showFlameGraph(),
+        detail: "GPU time by pass, pipeline, stage and function",
+        tooltip: "The frame's GPU work by pass, pipeline, shader stage and function: measured pass times with the cost model's split within each" },
+      { id: "graph", icon: ICON_GRAPH, label: "Render Graph", open: () => this._showRenderGraph(),
+        detail: "Passes and the resources connecting them",
+        tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
+    ];
+    for (const report of reports) {
+      const item = new Div(menu, { class: "menu-item reports-menu-item" });
+      new Span(item, { html: report.icon, class: "reports-menu-icon" });
+      const text = new Div(item, { class: "reports-menu-text" });
+      new Div(text, { text: report.label });
+      new Div(text, { text: report.detail, class: "reports-menu-detail" });
+      item.tooltip = report.tooltip;
+      item.element.onclick = () => {
+        menu.classList.remove("open");
+        report.open();
+      };
+      this._reportItems.set(report.id, item);
+    }
+    // Clicking anywhere else closes the menu, the way the theme picker's does.
+    document.addEventListener("mousedown", (e) => {
+      if (!container.element.contains(e.target as Node)) menu.classList.remove("open");
+    });
+  }
+
+  /** Marks the menu entry whose report the details pane is showing, or none. */
+  private _markReport(id: string | null): void {
+    for (const [key, item] of this._reportItems) item.classList.toggle("active", key === id);
+  }
+
+  /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
+  private _showRenderGraph(): void {
+    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
+    this._selectedRow = null;
+    this._markReport("graph");
+    this._infoPanel.html = "";
+    if (!this.data.commands.length) {
+      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    renderRenderGraph(this._infoPanel, this.renderGraph(), {
+      onSelectCommand: (index) => this.selectCommand(index),
+      onInspect: (id) => this.window.showObject(id),
+    });
+  }
+
+  /** The capture's render graph, built once and kept for the Render Graph view and the UI tests. */
+  renderGraph(): RenderGraph {
+    if (!this._renderGraph) this._renderGraph = frameRenderGraph(this.data, this.window.database);
+    return this._renderGraph;
+  }
+
   /** Shows the Frame Stats view (the Frame Issues card) in the details pane. */
   showFrameStats(): void {
     this._showStats();
+  }
+
+  /** Opens one of the capture's reports by name (--debug-view, tools/ui_tests.py). */
+  showView(name: string): void {
+    if (name === "graph" || name === "render-graph") this._showRenderGraph();
+    else if (name === "stats") this._showStats();
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */

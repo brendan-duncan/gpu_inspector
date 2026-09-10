@@ -126,6 +126,21 @@
   --checker-b: #2a2a2a;
   --tooltip-bg: rgba(225, 225, 170, 0.96);
   --tooltip-fg: #101010;
+  --info-warning-bg: rgba(220, 220, 170, 0.12);
+
+  /* Render graph: pass kinds, resource usage classes, lifetime bars */
+  --rg-render: #4a8db8;
+  --rg-compute: #a87cd0;
+  --rg-transfer: #6a9a6a;
+  --rg-unread: #8a5a5a;
+  --rg-attachment: #4a8db8;
+  --rg-sampled: #c98a3a;
+  --rg-storage: #a87cd0;
+  --rg-input: #6c7a89;
+  --rg-life: #555555;
+  --rg-external: #c98a3a;
+  --rg-related-bg: rgba(74, 141, 184, 0.10);
+  --rg-selected-bg: rgba(74, 141, 184, 0.22);
 
   /* Capture list and argument syntax */
   --drawcall-fg: #dcdcaa;
@@ -259,6 +274,20 @@
   --checker-b: #e8e8e8;
   --tooltip-bg: rgba(255, 250, 205, 0.97);
   --tooltip-fg: #101010;
+  --info-warning-bg: rgba(150, 120, 0, 0.10);
+
+  --rg-render: #2a6d98;
+  --rg-compute: #7a4cb0;
+  --rg-transfer: #3a7a3a;
+  --rg-unread: #a04040;
+  --rg-attachment: #2a6d98;
+  --rg-sampled: #a05f10;
+  --rg-storage: #7a4cb0;
+  --rg-input: #566470;
+  --rg-life: #b0b0b0;
+  --rg-external: #a05f10;
+  --rg-related-bg: rgba(42, 109, 152, 0.10);
+  --rg-selected-bg: rgba(42, 109, 152, 0.20);
 
   --drawcall-fg: #7a5c00;
   --syntax-key: #0451a5;

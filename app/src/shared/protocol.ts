@@ -584,6 +584,8 @@ export interface AppConfig {
     waitForApp: boolean;
     /** --debug-command=<index>: select that command of the debug capture or the opened file. */
     selectCommand: number | null;
+    /** --debug-view=<stats|graph>: open that report of the capture instead of a command. */
+    showView: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
   };
