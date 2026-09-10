@@ -48,6 +48,7 @@ struct PassTiming {
     uint32_t passIndex = 0;
     bool compute = false;          // a run of dispatches (its own index sequence) rather than a render pass
     uint32_t query = 0;            // begin query; end is query + 1
+    uint32_t statsQuery = UINT32_MAX;  // pipeline statistics query over the pass, or none
 };
 
 // One command buffer executed by a submit, with its frozen command list.
@@ -191,6 +192,10 @@ private:
     void ReleaseQueryPool(DeviceData* dev);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
     uint32_t BeginTimestamp(DeviceData* dev, CommandRecorder* rec);
+    // Resets and begins a pipeline statistics query over a render pass; UINT32_MAX when the
+    // device has no such pool. Render passes only: the statistics include graphics stages, which
+    // a compute-only queue may not support.
+    uint32_t BeginPipelineStatistics(DeviceData* dev, CommandRecorder* rec);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
     struct StagingChunk {
@@ -246,11 +251,15 @@ private:
     std::unordered_map<uint64_t, uint32_t> _imageCaptureByView;
     uint64_t _imageBytes = 0;
 
-    // Pass profiling: one timestamp query pool per capture (created on the capturing device).
+    // Pass profiling: one timestamp query pool per capture (created on the capturing device),
+    // and beside it a pipeline statistics pool when the device has the feature (pipeline_stats.h).
     VkQueryPool _queryPool = VK_NULL_HANDLE;
     VkDevice _queryDevice = VK_NULL_HANDLE;
     uint32_t _queryCount = 0;
     std::atomic<uint32_t> _queriesUsed{0};
+    VkQueryPool _statsPool = VK_NULL_HANDLE;
+    uint32_t _statsCount = 0;
+    std::atomic<uint32_t> _statsUsed{0};
     std::vector<PassTiming> _passTimings;
     std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;

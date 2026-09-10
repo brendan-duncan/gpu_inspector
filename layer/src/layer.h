@@ -62,6 +62,8 @@ struct DeviceData {
     bool displayTiming = false;   // VK_GOOGLE_display_timing
     // Dynamic rendering usable on the device (see depth_resolve.h): multisampled depth read-back.
     bool dynamicRendering = false;
+    /** pipelineStatisticsQuery is enabled, so passes can carry counters (pipeline_stats.h). */
+    bool pipelineStatistics = false;
 
     // Frame boundaries (EndFrame in layer.cpp): a swapchain present ends a frame. An application
     // that never presents (OpenXR: the runtime composites) gets its frames from its own

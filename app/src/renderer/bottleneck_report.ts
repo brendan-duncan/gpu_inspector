@@ -10,15 +10,15 @@
 // command stream, and a pass whose counters the GPU does not expose shows what is known and says
 // so, with a pointer at the Xcode trace for the rest. docs/PROFILING.md is the how-to that walks
 // through using it.
-import { Div } from "../widget/div.js";
-import { Span } from "../widget/span.js";
-import { Widget } from "../widget/widget.js";
+import { Div } from "./widget/div.js";
+import { Span } from "./widget/span.js";
+import { Widget } from "./widget/widget.js";
 import {
   HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
   collectPassMetrics, formatPercent, formatRatio, type Bound, type FrameMetrics, type PassMetrics,
 } from "./pass_metrics.js";
-import type { ObjectLookup } from "../vulkan/vulkan_object.js";
-import type { CaptureData } from "../capture_data.js";
+import type { ObjectLookup } from "./vulkan/vulkan_object.js";
+import type { CaptureData } from "./capture_data.js";
 
 const BOUND_LABEL: Record<Bound, string> = {
   vertex: "Vertex bound",
@@ -116,13 +116,6 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
 
   if (!m.passes.length) {
     new Div(root, { text: "No passes in this capture.", class: "text-muted" });
-    return;
-  }
-  if (data.api !== "metal") {
-    new Div(root, {
-      text: "GPU counters are read by the Metal capture library only. A Vulkan capture has pass timings, in the pass headers and the Shader Flame Graph.",
-      class: "perf-empty text-muted",
-    });
     return;
   }
   if (!m.timed) {
@@ -234,14 +227,24 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
   // ---- What this cannot measure, and where to get it.
   const limits = new Div(root, { class: "frame-stats-section" });
   new Div(limits, { text: "Going further", class: "frame-stats-heading" });
+  const metal = data.api === "metal";
   const counterNote = m.withCounters === 0
-    ? "This GPU exposes only the timestamp counter set through public Metal, so the columns above that need invocation counts are empty."
-    : `${m.withCounters} of ${m.timed} timed passes carried the statistic counter set.`;
+    ? (metal
+      ? "This GPU exposes only the timestamp counter set through public Metal, so the columns above that need invocation counts are empty."
+      : "No pass carried counters. The device may not support pipelineStatisticsQuery, or the application enabled a feature set that excludes it; the layer's log says which.")
+    : `${m.withCounters} of ${m.timed} timed passes carried counters.`;
   new Div(limits, { text: counterNote, class: "text-muted" });
-  new Div(limits, {
-    text: "Shader occupancy, the ALU and texture limiters, and per-line shader cost come from Apple's own instrumentation and have no public Metal API. \"Xcode Trace\" in the capture bar writes the next frame as a .gputrace document, which opens in Xcode's Metal debugger with all of them.",
-    class: "text-muted",
-  });
+  if (!metal) {
+    new Div(limits, {
+      text: "Two columns are Metal only. The vertex and fragment spans come from timestamps at a pass's stage boundaries, which Vulkan has no portable equivalent for, and depth rejection needs the count of fragments that survived the depth test, which pipeline statistics do not carry.",
+      class: "text-muted",
+    });
+  } else {
+    new Div(limits, {
+      text: "Shader occupancy, the ALU and texture limiters, and per-line shader cost come from Apple's own instrumentation and have no public Metal API. \"Xcode Trace\" in the capture bar writes the next frame as a .gputrace document, which opens in Xcode's Metal debugger with all of them.",
+      class: "text-muted",
+    });
+  }
   new Div(limits, {
     text: "docs/PROFILING.md walks through finding a bottleneck with these numbers, and what each one means when it is high.",
     class: "text-muted",

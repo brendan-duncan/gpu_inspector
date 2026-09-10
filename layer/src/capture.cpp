@@ -1,5 +1,7 @@
 #include "capture.h"
 
+#include "pipeline_stats.h"
+
 #include "depth_resolve.h"
 
 #include "image_readback.h"
@@ -58,6 +60,7 @@ void CaptureManager::Start(DeviceData* dev) {
     _imageBytes = 0;
     _passTimings.clear();
     _queriesUsed.store(0, std::memory_order_relaxed);
+    _statsUsed.store(0, std::memory_order_relaxed);
     if (_options.profilePasses) EnsureQueryPool(dev);
     _commandTotal = 0;
     _frameIndex = dev->frameIndex;
@@ -341,15 +344,37 @@ void CaptureManager::EnsureQueryPool(DeviceData* dev) {
     }
     _queryDevice = dev->device;
     _queryCount = ci.queryCount;
+
+    // The counters behind the GPU Bottlenecks report. Optional: without the feature, or without a
+    // pool, passes still carry their durations and the report says the columns are unavailable.
+    if (!dev->pipelineStatistics) {
+        Log("pass counters: pipelineStatisticsQuery is not enabled on this device");
+        return;
+    }
+    VkQueryPoolCreateInfo sci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    sci.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+    sci.queryCount = 8192;                        // one per pass, matching the timestamp pairs
+    sci.pipelineStatistics = kPipelineStatistics;
+    if (dev->dispatch.CreateQueryPool(dev->device, &sci, nullptr, &_statsPool) != VK_SUCCESS) {
+        _statsPool = VK_NULL_HANDLE;
+        Log("pass counters: vkCreateQueryPool failed");
+        return;
+    }
+    _statsCount = sci.queryCount;
 }
 
 void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
     if (!_queryPool) return;
     DeviceData* d = _queryDevice == dev->device ? dev : GetDeviceData(_queryDevice);
-    if (d) d->dispatch.DestroyQueryPool(_queryDevice, _queryPool, nullptr);
+    if (d) {
+        d->dispatch.DestroyQueryPool(_queryDevice, _queryPool, nullptr);
+        if (_statsPool) d->dispatch.DestroyQueryPool(_queryDevice, _statsPool, nullptr);
+    }
     _queryPool = VK_NULL_HANDLE;
     _queryDevice = VK_NULL_HANDLE;
     _queryCount = 0;
+    _statsPool = VK_NULL_HANDLE;
+    _statsCount = 0;
 }
 
 uint32_t CaptureManager::BeginTimestamp(DeviceData* dev, CommandRecorder* rec) {
@@ -363,9 +388,26 @@ uint32_t CaptureManager::BeginTimestamp(DeviceData* dev, CommandRecorder* rec) {
     return q;
 }
 
+uint32_t CaptureManager::BeginPipelineStatistics(DeviceData* dev, CommandRecorder* rec) {
+    if (!_statsPool || _queryDevice != dev->device) return UINT32_MAX;
+    if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
+    uint32_t q = _statsUsed.fetch_add(1, std::memory_order_relaxed);
+    if (q >= _statsCount) return UINT32_MAX;            // pool exhausted: later passes go uncounted
+    VkCommandBuffer cb = rec->commandBuffer();
+    // Both of these are outside the render pass: the layer's begin hook runs before the driver's
+    // vkCmdBeginRenderPass and its end hook after vkCmdEndRenderPass, so the query brackets the
+    // whole pass without landing inside a subpass.
+    dev->dispatch.CmdResetQueryPool(cb, _statsPool, q, 1);
+    dev->dispatch.CmdBeginQuery(cb, _statsPool, q, 0);
+    return q;
+}
+
 void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
     OnEndComputePass(dev, rec);
     rec->pendingQuery = BeginTimestamp(dev, rec);
+    // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
+    // report shows the counters against the pass's duration.
+    rec->pendingStatsQuery = rec->pendingQuery == UINT32_MAX ? UINT32_MAX : BeginPipelineStatistics(dev, rec);
 }
 
 void CaptureManager::OnBeforeDispatch(DeviceData* dev, CommandRecorder* rec) {
@@ -400,7 +442,9 @@ void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, co
     p.renderArea = info->renderArea;
     p.passIndex = rec->NextPassIndex();
     p.query = rec->pendingQuery;
+    p.statsQuery = rec->pendingStatsQuery;
     rec->pendingQuery = UINT32_MAX;
+    rec->pendingStatsQuery = UINT32_MAX;
 
     FramebufferInfo fb;
     if (ResourceRegistry::Get().GetFramebuffer(info->framebuffer, fb)) {
@@ -436,7 +480,9 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
         if (info->viewMask & (1u << bit)) p.layerCount = std::max(p.layerCount, bit + 1);   // multiview
     p.passIndex = rec->NextPassIndex();
     p.query = rec->pendingQuery;
+    p.statsQuery = rec->pendingStatsQuery;
     rec->pendingQuery = UINT32_MAX;
+    rec->pendingStatsQuery = UINT32_MAX;
     auto add = [&](const VkRenderingAttachmentInfo* a) {
         if (!a || !a->imageView) return;
         p.attachments.push_back(a->imageView);
@@ -470,12 +516,17 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     // The pass's end timestamp: after every command of the pass has completed.
     if (p.query != UINT32_MAX && _queryPool && _queryDevice == dev->device) {
         dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, p.query + 1);
+        if (p.statsQuery != UINT32_MAX && _statsPool) dev->dispatch.CmdEndQuery(rec->commandBuffer(), _statsPool, p.statsQuery);
         PassTiming pt;
         pt.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
         pt.passIndex = p.passIndex;
         pt.query = p.query;
+        pt.statsQuery = p.statsQuery;
         std::lock_guard lock(_mutex);
         _passTimings.push_back(pt);
+    } else if (p.statsQuery != UINT32_MAX && _statsPool && _queryDevice == dev->device) {
+        // Begun but not going to be reported: it still has to end, or the command buffer is invalid.
+        dev->dispatch.CmdEndQuery(rec->commandBuffer(), _statsPool, p.statsQuery);
     }
     // Buffers and images bound during the pass are copied now that transfer commands are allowed again.
     FlushBufferCopies(dev, rec);
@@ -1291,6 +1342,26 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         Log("pass profiling: vkGetQueryPoolResults failed (%d)", (int)res);
         return;
     }
+    // The pass counters, when the device had a statistics pool. Each query writes one value per
+    // requested statistic and then its availability (pipeline_stats.h).
+    constexpr size_t kStatsStride = kPipelineStatisticCount + 1;
+    std::vector<uint64_t> stats;
+    uint32_t statsUsed = 0;
+    if (_statsPool) {
+        statsUsed = std::min(_statsUsed.load(std::memory_order_relaxed), _statsCount);
+        if (statsUsed) {
+            stats.assign((size_t)statsUsed * kStatsStride, 0);
+            VkResult sres = dev->dispatch.GetQueryPoolResults(
+                dev->device, _statsPool, 0, statsUsed, stats.size() * sizeof(uint64_t), stats.data(),
+                kStatsStride * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (sres != VK_SUCCESS && sres != VK_NOT_READY) {
+                Log("pass counters: vkGetQueryPoolResults failed (%d)", (int)sres);
+                stats.clear();
+                statsUsed = 0;
+            }
+        }
+    }
+
     const double period = dev->properties.limits.timestampPeriod;   // nanoseconds per tick
     uint64_t earliest = UINT64_MAX;
     for (auto& pt : timings) {
@@ -1305,6 +1376,7 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
     w.Key("timestampPeriodNs"); w.Double(period);
     w.Key("passes"); w.BeginArray();
     uint32_t sent = 0;
+    uint32_t counted = 0;
     for (auto& pt : timings) {
         if (pt.frame == UINT32_MAX || pt.query + 1 >= used) continue;
         uint64_t begin = results[(size_t)pt.query * 2];
@@ -1317,6 +1389,18 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         w.Key("kind"); w.String(pt.compute ? "compute" : "render");
         w.Key("startMs"); w.Double((double)(begin - earliest) * period / 1e6);
         w.Key("durationMs"); w.Double((double)(end - begin) * period / 1e6);
+        if (pt.statsQuery != UINT32_MAX && pt.statsQuery < statsUsed && !stats.empty()) {
+            const uint64_t* v = &stats[(size_t)pt.statsQuery * kStatsStride];
+            if (v[kPipelineStatisticCount]) {   // the pass ran and its counters are readable
+                w.Key("counters"); w.BeginObject();
+                for (uint32_t i = 0; i < kPipelineStatisticCount; ++i) {
+                    w.Key(kPipelineStatisticNames[i]);
+                    w.Uint(v[i]);
+                }
+                w.EndObject();
+                counted++;
+            }
+        }
         w.EndObject();
         sent++;
     }
@@ -1324,7 +1408,7 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
     w.Key("count"); w.Uint(sent);
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
-    Log("pass profiling: %u of %zu passes timed", sent, timings.size());
+    Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
 }
 
 void CaptureManager::ReleaseStaging(DeviceData* dev) {

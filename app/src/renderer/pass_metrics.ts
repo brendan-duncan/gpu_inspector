@@ -1,21 +1,21 @@
-// Per-pass measurements of a Metal capture, in the terms a bottleneck is actually described in.
+// Per-pass measurements, in the terms a bottleneck is actually described in.
 //
-// The library samples Metal's counter sets around every pass (metal/src/capture.mm): timestamps at
-// the four stage boundaries, the statistic set (invocations and primitive counts) and the
-// stage-utilization set (cycles per stage). Those are raw totals. What a profiling session asks is
+// Both capture backends sample GPU counters around every pass: the Metal library takes Metal's
+// counter sets (metal/src/capture.mm) and the Vulkan layer a pipeline statistics query beside its
+// timestamps (layer/src/pipeline_stats.h). Those are raw totals. What a profiling session asks is
 // "how many times was each pixel shaded", "how big are the triangles", "is the depth test doing
 // its job" — each of which is one division away, against the render target's size or another
 // counter. This module does those divisions once, so the report, the rules and the pass headers
-// all say the same numbers.
+// all say the same numbers, whichever API produced the capture.
 //
-// Everything here is optional. A GPU that exposes only the timestamp counter set (Apple Silicon
-// through public Metal, as far as this has been able to tell) still gives durations and the
-// vertex/fragment split, and every derived field is null instead. The report says which case it
-// is rather than showing a zero.
-import { METAL_SETS } from "./command_sets.js";
-import { isObject, num, refId, str, type ObjectLookup } from "../vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, CaptureCommand, PassTiming } from "../../shared/protocol.js";
-import type { CaptureData } from "../capture_data.js";
+// Everything here is optional, and the two APIs offer different subsets. Metal alone splits a
+// pass into its vertex and fragment spans and counts the fragments that survived the depth test;
+// Vulkan's pipeline statistics carry the invocation and primitive counts but neither of those.
+// A GPU that exposes no counters at all still gives durations. Every field a capture cannot
+// answer is null rather than zero, and the report says which case it is.
+import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
+import type { ArgObject, ArgValue, CaptureCommand, PassTiming } from "../shared/protocol.js";
+import type { CaptureData } from "./capture_data.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
 export const HEALTHY_OVERDRAW = 1.2;
@@ -80,7 +80,7 @@ export interface FrameMetrics {
   /** Passes that carry statistic counters, and how many were timed at all. */
   withCounters: number;
   timed: number;
-  /** True when the capture is Metal and at least one pass was timed. */
+  /** True when at least one pass was timed, so the report has something to say. */
   usable: boolean;
   /** Frame-wide totals, when the counters are there. */
   totals: { vertexInvocations: number; fragmentInvocations: number; primitives: number; fragmentsPassed: number } | null;
@@ -109,57 +109,77 @@ function drawVertices(a: ArgObject): number {
  * whether or not they were timed.
  */
 export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMetrics {
-  const sets = METAL_SETS;
+  const sets = data.sets;
   const passes: PassMetrics[] = [];
-  // A Metal encoder is the pass, and the library numbers every encoder of a command buffer from
-  // one counter whatever its kind (g_passCounters in metal/src/capture.mm). Compute encoders are
-  // keyed apart from the rest in the timing map, so the kind has to come along.
+  // How a pass is numbered differs, and both backends have to be matched exactly or a pass finds
+  // no timing. A Metal encoder is the pass and every encoder of a command buffer takes the next
+  // number whatever its kind, with compute encoders keyed apart (g_passCounters in
+  // metal/src/capture.mm). Vulkan's PASS_BEGIN is render-only and its runs of dispatches are
+  // counted separately (NextPassIndex / NextComputeIndex in layer/src/command_recorder.h). One
+  // counter per command buffer for PASS_BEGIN, and a second for compute runs, does both.
   const passIndexOf = new Map<number, number>();
+  const computeIndexOf = new Map<number, number>();
   let open: PassMetrics | null = null;
+  let computeRun: PassMetrics | null = null;
+  let inPass = false;
+  let currentCb = -1;
+  let currentSecondary = 0;
 
-  const targetOf = (att: ArgValue | undefined): { pixels: number; samples: number } | null => {
-    if (!isObject(att)) return null;
-    const id = refId(att.texture);
-    if (id === null) return null;
-    const d = db.getObject(id)?.descriptor;
-    if (!d) return null;
-    const pixels = num(d.width) * num(d.height);
-    return pixels > 0 ? { pixels, samples: Math.max(1, num(d.sampleCount)) } : null;
+  const closeComputeRun = (): void => {
+    computeRun = null;
   };
 
   for (const cmd of data.commands) {
     const m = cmd.method;
     const cb = cmd.object?.__id ?? 0;
     const a = cmd.args;
+    if (cb !== currentCb || (cmd.secondary ?? 0) !== currentSecondary) {
+      closeComputeRun();
+      currentCb = cb;
+      currentSecondary = cmd.secondary ?? 0;
+    }
 
     if (sets.PASS_BEGIN.has(m)) {
+      closeComputeRun();
+      inPass = true;
       const index = passIndexOf.get(cb) ?? 0;
       passIndexOf.set(cb, index + 1);
-      // The first colour attachment is the one whose size the fragment work scales with; a
-      // depth-only pass falls back to the depth attachment.
-      let target: { pixels: number; samples: number } | null = null;
-      if (a && Array.isArray(a.colorAttachments)) {
-        for (const c of a.colorAttachments) {
-          target = targetOf(c);
-          if (target) break;
-        }
-      }
-      if (!target && a) target = targetOf(a.depthAttachment);
-      open = blank(cmd, index, sets.passIsCompute?.(m) ?? false, cb, target);
+      open = blank(cmd, index, sets.passIsCompute?.(m) ?? false, cb, targetOf(cmd, db));
       passes.push(open);
       continue;
     }
     if (sets.PASS_END.has(m)) {
+      inPass = false;
       open = null;
       continue;
     }
-    if (!a || !open) continue;
+    if (sets.SUBMIT.has(m) || m === "vkEndCommandBuffer" || sets.COMPUTE_PASS_END.has(m)
+        || sets.LABEL_BEGIN.has(m) || sets.LABEL_END.has(m)) {
+      closeComputeRun();
+    }
+    if (!a) continue;
     if (sets.DRAW.has(m)) {
-      open.draws++;
-      open.vertices += drawVertices(a);
+      if (open) {
+        open.draws++;
+        open.vertices += drawVertices(a);
+      }
       continue;
     }
-    if (sets.DISPATCH.has(m)) open.draws++;
+    if (sets.DISPATCH.has(m)) {
+      if (open) {
+        open.draws++;                        // Metal: the dispatch belongs to its compute encoder
+      } else if (!inPass) {
+        // Vulkan: a run of dispatches outside a render pass is its own timed pass.
+        if (!computeRun) {
+          const key = cmd.secondary || cb;
+          const index = computeIndexOf.get(key) ?? 0;
+          computeIndexOf.set(key, index + 1);
+          computeRun = blank(cmd, index, true, key, null);
+          passes.push(computeRun);
+        }
+        computeRun.draws++;
+      }
+    }
   }
 
   let gpuMs = 0;
@@ -216,9 +236,43 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
 
   return {
     passes, gpuMs, vertexMs, fragmentMs, withCounters, timed,
-    usable: data.api === "metal" && timed > 0,
+    usable: timed > 0,
     totals: anyCounters ? totals : null,
   };
+}
+
+/**
+ * Pixels the pass rendered over, which is what fragment work scales with. Vulkan states it
+ * outright as the render area; a Metal pass descriptor names its attachments, so the first
+ * colour target's size (or the depth target's) stands in.
+ */
+function targetOf(cmd: CaptureCommand, db: ObjectLookup): { pixels: number; samples: number } | null {
+  const a = cmd.args;
+  if (!a) return null;
+  for (const key of ["pRenderPassBegin", "pRenderingInfo"]) {
+    const info = a[key];
+    if (!isObject(info) || !isObject(info.renderArea)) continue;
+    const extent = info.renderArea.extent;
+    if (!isObject(extent)) continue;
+    const pixels = num(extent.width) * num(extent.height);
+    if (pixels > 0) return { pixels, samples: 1 };
+  }
+  const attachment = (att: ArgValue | undefined): { pixels: number; samples: number } | null => {
+    if (!isObject(att)) return null;
+    const id = refId(att.texture);
+    if (id === null) return null;
+    const d = db.getObject(id)?.descriptor;
+    if (!d) return null;
+    const pixels = num(d.width) * num(d.height);
+    return pixels > 0 ? { pixels, samples: Math.max(1, num(d.sampleCount)) } : null;
+  };
+  if (Array.isArray(a.colorAttachments)) {
+    for (const c of a.colorAttachments) {
+      const hit = attachment(c);
+      if (hit) return hit;
+    }
+  }
+  return attachment(a.depthAttachment);
 }
 
 function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: number,
@@ -241,7 +295,9 @@ function passLabel(cmd: CaptureCommand, passIndex: number): string {
   const m = cmd.method;
   const kind = m.startsWith("computeCommandEncoder") ? "Compute"
     : m.startsWith("blitCommandEncoder") ? "Blit"
-    : m.startsWith("renderCommandEncoder") || m.startsWith("parallelRenderCommandEncoder") ? "Render Pass" : "Pass";
+    : m.startsWith("renderCommandEncoder") || m.startsWith("parallelRenderCommandEncoder") ? "Render Pass"
+    : m.startsWith("vkCmdBeginRender") ? "Render Pass"
+    : m.startsWith("vkCmdDispatch") ? "Compute" : "Pass";
   return label ? `${kind} ${passIndex}: ${label}` : `${kind} ${passIndex}`;
 }
 

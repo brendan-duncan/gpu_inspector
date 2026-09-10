@@ -13,6 +13,7 @@
 #include "tracker.h"
 #include "transport.h"
 #include "depth_resolve.h"
+#include "pipeline_stats.h"
 #include "refresh_rate.h"
 #include "stacktrace.h"
 #include "validation.h"
@@ -501,13 +502,17 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // Dynamic rendering for multisampled depth read-back (see depth_resolve.h).
     DynamicRenderingSetup dynamicRendering;
     PlanDynamicRendering(instance, physicalDevice, createInfo, dynamicRendering);
+    // Pipeline statistics for the per-pass counters (see pipeline_stats.h).
+    PipelineStatisticsSetup pipelineStats;
+    PlanPipelineStatistics(instance, physicalDevice, createInfo, pipelineStats);
 
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
-    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added)) {
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added)) {
         // The driver refused the additions: create the device as the application asked.
         Log("vkCreateDevice with the layer's extensions failed (%d); retrying without", (int)res);
         refresh = RefreshDeviceSetup{};
         dynamicRendering = DynamicRenderingSetup{};
+        pipelineStats = PipelineStatisticsSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
     if (res != VK_SUCCESS) return res;
@@ -520,6 +525,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->presentTiming = refresh.presentTiming;
     data->displayTiming = refresh.displayTiming;
     data->dynamicRendering = dynamicRendering.enabled;
+    data->pipelineStatistics = pipelineStats.enabled;
     {
         // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
         const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");

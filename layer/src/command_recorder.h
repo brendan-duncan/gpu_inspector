@@ -55,6 +55,7 @@ struct ActivePass {
     uint32_t layerCount = 1;
     uint32_t passIndex = 0;                  // index of this pass within the command buffer
     uint32_t query = UINT32_MAX;             // timestamp query pair (begin, begin + 1) when profiling
+    uint32_t statsQuery = UINT32_MAX;        // pipeline statistics query over the pass, when available
 };
 
 // A run of dispatches outside a render pass, timed as one "compute pass": from the first dispatch
@@ -147,6 +148,7 @@ public:
     std::vector<PendingImageCopy>& pendingImages() { return _pendingImages; }
     // Query pair written by the pass-begin pre-hook, claimed by the pass when it starts.
     uint32_t pendingQuery = UINT32_MAX;
+    uint32_t pendingStatsQuery = UINT32_MAX;
 
     VkDevice device() const { return _device; }
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }

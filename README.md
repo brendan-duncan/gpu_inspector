@@ -25,9 +25,10 @@ follow the same way. The feature list below describes the Vulkan layer.
   with the parsed contents of its uniform and storage buffers and the images it sampled, the
   decoded vertex and index buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
   files that reopen anywhere without the application, for bug reports and comparisons.
-* **GPU bottlenecks** — every pass measured in the terms a bottleneck is described in: which
-  stage it waits on, how many times each pixel is shaded, how large its triangles are, and whether
-  the depth test is rejecting work, each with what usually causes it.
+* **GPU bottlenecks** — every pass measured in the terms a bottleneck is described in: how many
+  times each pixel is shaded, how large its triangles are, which stage it waits on and whether the
+  depth test is rejecting work, each with what usually causes it. Both APIs; the counters come
+  from a pipeline statistics query on Vulkan and Metal's counter sets on macOS.
   [docs/PROFILING.md](docs/PROFILING.md) is the walkthrough.
 * **Render graph** — the same frame as a dependency graph: which pass produced what each pass
   reads, drawn as a resource lifetime chart with the selected pass's producers and consumers

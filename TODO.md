@@ -59,14 +59,13 @@ interpreter and re-created pipelines.
 ## Next
 
 ### Captures
-- [ ] Pipeline statistics queries per pass on Vulkan (`VK_QUERY_TYPE_PIPELINE_STATISTICS`
-      alongside the timestamp pool in `layer/src/capture.cpp`), which carry almost the same
-      counters as Metal's statistic set: fragment and vertex shader invocations and clipping
-      primitives give overdraw, fragments per primitive and vertex cost, so the GPU Bottlenecks
-      report and its rules work for Vulkan captures too. Needs `pipelineStatisticsQuery` added to
-      the enabled device features in `vkCreateDevice`, with a fallback when the device lacks it.
-      Depth rejection would need an occlusion query, which nests badly with an application's own;
-      the vertex/fragment stage split has no portable equivalent (see `docs/PROFILING.md`).
+- [x] Pipeline statistics queries per pass on Vulkan (`layer/src/pipeline_stats.h`), carrying the
+      same counters Metal's statistic set does, so the GPU Bottlenecks report and its rules work
+      for Vulkan captures too.
+- [ ] Depth rejection on Vulkan: an occlusion query around each pass counts the samples that
+      passed the depth and stencil tests, which is what `late-depth-rejection` needs. It nests
+      badly with an application's own occlusion queries, so the layer would have to track whether
+      one is active and skip those passes.
 - [ ] Multisampled stencil read-back (the depth resolve covers the depth aspect; stencil would
       need a stencil resolve attachment), and multisampled read-back on Vulkan 1.0 devices.
 - [ ] Sampled images bound through descriptor buffers / shader objects.
