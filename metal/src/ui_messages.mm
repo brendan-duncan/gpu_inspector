@@ -35,8 +35,20 @@ void HandleMessage(const std::string &text) {
         } else if (action == "RequestSnapshot") {
             SendSnapshot();
         } else if (action == "Capture") {
+            // The same fields the Vulkan layer reads (layer.cpp); what the Metal side cannot
+            // honour (sampled images, stack traces) is left at its default.
             CaptureOptions options;
             options.frameCount = (uint32_t)message.GetNumber("frameCount", 1);
+            if (const vkinsp::JsonValue *v = message.Get("atFrame")) {
+                if (v->kind == vkinsp::JsonValue::Number && v->num >= 0) options.atFrame = (uint64_t)v->num;
+            }
+            options.maxBufferSize = (uint64_t)message.GetNumber("maxBufferSize", (double)options.maxBufferSize);
+            options.maxBufferTotal = (uint64_t)message.GetNumber("maxBufferTotal", (double)options.maxBufferTotal);
+            options.maxTextureSize = (uint64_t)message.GetNumber("maxTextureSize", (double)options.maxTextureSize);
+            options.captureTextures = message.GetBool("captureTextures", true);
+            options.captureBuffers = message.GetBool("captureBuffers", true);
+            options.profilePasses = message.GetBool("profilePasses", true);
+            if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
         } else if (action == "RequestBlob") {
             SendBlob((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("index"));

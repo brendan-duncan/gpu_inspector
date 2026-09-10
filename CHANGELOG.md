@@ -17,6 +17,9 @@
 - Metal pipeline reflection: every pipeline creation asks Metal for argument and buffer-type
   reflection, so a draw's stage buffers and inline constant bytes show as named, typed fields
   with the Format editor, and pipeline objects get a Reflection section per stage in Inspect.
+- Metal frame stats (frame time, submit time, refresh rate) for the session bar and Frame
+  Stats, and the capture bar's options (frame to capture at, buffer and texture limits, the
+  read-back and profiling switches) honoured by the Metal library.
 
 ## 0.7.0
 

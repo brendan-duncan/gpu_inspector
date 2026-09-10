@@ -25,6 +25,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/capture.mm
     src/formats.h
     src/formats.mm
+    src/frame_stats.h
+    src/frame_stats.mm
     src/image.h
     src/image.mm
     src/reflection.h

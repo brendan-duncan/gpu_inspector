@@ -357,6 +357,25 @@ staging holds nothing until the GPU has run the blits.
 
 See "Pixel formats" below for how a format is named and which ones can be read back.
 
+## Frame timing and capture options
+
+`frame_stats.mm` is the Vulkan layer's frame report: at every frame boundary the interval since
+the last is accumulated, and ten times a second a `FrameStats` message carries the average,
+shortest and longest frame, the CPU time spent in `commit` (the counterpart of the layer's
+vkQueueSubmit time), and the refresh period. That last one comes from the display when
+CoreGraphics or AppKit will say — the built-in panel of an Apple Silicon laptop answers only
+through `NSScreen`, which is asked through the runtime so that AppKit is not linked into an
+application that may not have it — and from the layer's interval estimate otherwise, verbatim.
+A `CAMetalLayer` with display sync off is Vulkan's immediate mode, and no refresh is reported
+for it. The frame counter the report carries is the one a queued capture names.
+
+The `Capture` message's options are read the way the layer reads them: `atFrame` waits for
+that frame (a frame already passed captures the next), `maxBufferSize` truncates a range,
+`maxBufferTotal` is the per-capture budget past which further ranges are reported as over it,
+`maxTextureSize` skips an attachment larger than it, and `captureTextures`, `captureBuffers`
+and `profilePasses` switch the read-backs and the timestamps off. Sampled images and creation
+stack traces have no Metal counterpart yet, so those switches are ignored.
+
 ## Pass timings
 
 The Metal counterpart of `vkCmdWriteTimestamp` is a counter sample buffer, `MTLCounterSampleBuffer`

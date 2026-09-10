@@ -1,6 +1,7 @@
 #include "capture.h"
 
 #include "formats.h"
+#include "frame_stats.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -111,8 +112,10 @@ std::mutex g_mutex;
 // Armed but not started: the next frame boundary begins the capture.
 bool g_pending = false;
 std::atomic<bool> g_recording{false};
+CaptureOptions g_options;
 uint32_t g_wantFrames = 1;
 uint32_t g_frameIndex = 0;
+uint64_t g_bufferBytes = 0;   // captured so far, against maxBufferTotal
 std::vector<RecordedCommand> g_commands;
 std::vector<CapturedBuffer> g_buffers;
 // (buffer id, offset, size) -> CapturedBuffer id, so a range bound at every draw is read once.
@@ -143,10 +146,6 @@ std::unordered_map<const void *, DrawableInfo> g_targetOfCommandBuffer;
 std::set<const void *> g_countedDrawables;                    // frame ended at commit already
 bool g_directPresent = false;
 void (*g_commitBoundaryLogger)(id) = nullptr;                                 // the app presents drawables itself
-
-// Matches the Vulkan layer's default: enough for a vertex or uniform buffer, not so much that a
-// large storage buffer floods the connection.
-constexpr uint64_t kMaxBufferSize = 64 * 1024;
 
 // A capture's commands go out in batches rather than one message, so a frame with tens of
 // thousands of commands does not become a single enormous JSON string.
@@ -183,6 +182,7 @@ Timing g_timing;
 void EnsureTiming(id<MTLDevice> device) {
     if (g_timing.tried || device == nil) return;
     g_timing.tried = true;
+    if (!g_options.profilePasses) return;
     g_timing.device = device;
     if (@available(macOS 11.0, *)) {
         Internal internal;
@@ -515,6 +515,8 @@ void Finish() {
 
 /** A frame ended. Arms a pending capture, counts a recorded frame, or finishes one. */
 void AdvanceFrame() {
+    // The frame counter and the timing report, on every boundary.
+    const uint64_t frame = OnFrameEnded();
     bool finishNow = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -524,6 +526,9 @@ void AdvanceFrame() {
             g_finishPending = true;
             finishNow = g_outstanding == 0;
         } else if (g_pending) {
+            // A queued capture waits for its frame: the frame that starts now is `frame`, so a
+            // frame already passed captures this one.
+            if (g_options.atFrame != UINT64_MAX && frame < g_options.atFrame) return;
             g_pending = false;
             g_frameIndex = 0;
             g_commands.clear();
@@ -534,6 +539,7 @@ void AdvanceFrame() {
             g_openPasses.clear();
             g_passCounters.clear();
             g_nextBufferId = 1;
+            g_bufferBytes = 0;
             g_outstanding = 0;
             g_finishPending = false;
             ReleaseTiming(g_timing);
@@ -599,9 +605,11 @@ void RecordPresentMarker(id commandBuffer, const DrawableInfo &drawable) {
 
 void RequestCapture(const CaptureOptions &options) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    g_options = options;
     g_wantFrames = options.frameCount > 0 ? options.frameCount : 1;
     g_pending = true;
-    Log("capture requested: %u frame(s)", g_wantFrames);
+    if (options.atFrame == UINT64_MAX) Log("capture requested: %u frame(s)", g_wantFrames);
+    else Log("capture requested: %u frame(s) at frame %llu", g_wantFrames, (unsigned long long)options.atFrame);
 }
 
 bool Recording() {
@@ -679,7 +687,7 @@ void RecordCommandWithBuffers(const char *method, id object, const std::string &
 }
 
 uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size) {
-    if (!g_recording || buffer == nil) return 0;
+    if (!g_recording || buffer == nil || !g_options.captureBuffers) return 0;
     const uint64_t bufferId = IdOf(buffer);
     if (bufferId == 0) return 0;
 
@@ -692,9 +700,9 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
     CapturedBuffer captured;
     captured.bufferId = bufferId;
     captured.offset = offset;
-    if (want > kMaxBufferSize) {
+    if (want > g_options.maxBufferSize) {
         captured.originalSize = want;
-        want = kMaxBufferSize;
+        want = g_options.maxBufferSize;
     }
     captured.size = want;
 
@@ -737,7 +745,18 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
     captured.frame = g_frameIndex;
     const bool deferred = captured.source != nil;
     const uint64_t id = captured.captureId;
-    if (deferred) {
+    // The per-capture budget, so a frame binding thousands of ranges does not swamp the
+    // connection; what is over it is reported, not silently dropped.
+    if (g_bufferBytes + captured.size > g_options.maxBufferTotal) {
+        captured.error = "buffer capture budget exceeded";
+        captured.data.clear();
+        [captured.source release];
+        captured.source = nil;
+        captured.managed = false;
+    } else {
+        g_bufferBytes += captured.size;
+    }
+    if (deferred && captured.source != nil) {
         auto pass = g_openPasses.find((__bridge const void *)encoder);
         if (pass == g_openPasses.end()) {
             // A parallel render encoder's sub-encoder: the pass is its parent's.
@@ -761,9 +780,9 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
 }
 
 uint64_t QueueBytesCapture(const void *bytes, uint64_t size) {
-    if (!g_recording || bytes == nullptr || size == 0) return 0;
+    if (!g_recording || bytes == nullptr || size == 0 || !g_options.captureBuffers) return 0;
     CapturedBuffer captured;
-    captured.size = std::min<uint64_t>(size, kMaxBufferSize);
+    captured.size = std::min<uint64_t>(size, g_options.maxBufferSize);
     if (size > captured.size) captured.originalSize = size;
     const uint8_t *data = static_cast<const uint8_t *>(bytes);
     captured.data.assign(data, data + captured.size);
@@ -771,6 +790,12 @@ uint64_t QueueBytesCapture(const void *bytes, uint64_t size) {
     if (!g_recording) return 0;
     captured.captureId = g_nextBufferId++;
     captured.frame = g_frameIndex;
+    if (g_bufferBytes + captured.size > g_options.maxBufferTotal) {
+        captured.error = "buffer capture budget exceeded";
+        captured.data.clear();
+    } else {
+        g_bufferBytes += captured.size;
+    }
     g_buffers.push_back(std::move(captured));
     return g_buffers.back().captureId;
 }
@@ -897,7 +922,7 @@ uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTiming
 
 void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_t index,
                        bool depth) {
-    if (a == nil || a.texture == nil) return;
+    if (a == nil || a.texture == nil || !g_options.captureTextures) return;
     id<MTLTexture> texture = a.texture;
 
     PendingTexture pending;
@@ -953,8 +978,14 @@ void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_
         uint64_t bytesPerRow = 0;
         pending.size = (size_t)PixelFormatImageSize(info, pending.width, pending.height, &bytesPerRow);
         pending.bytesPerRow = bytesPerRow;
-        pending.source = [source retain];
-    } else {
+        if (pending.size > g_options.maxTextureSize) {
+            pending.error = "exceeds max texture size";
+            pending.size = 0;
+        } else {
+            pending.source = [source retain];
+        }
+    }
+    if (!pending.error.empty()) {
         // Reported, not dropped: an empty Render Targets section with no reason given is the
         // hardest kind of gap to notice.
         Log("render target: %s, not read back", pending.error.c_str());
