@@ -2,6 +2,7 @@
 // MTLLibrary, MTLTexture and MTLBuffer. See hooks_common.h for the shape every hook has.
 #include "hooks.h"
 #include "hooks_common.h"
+#include "frame_stats.h"
 
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -63,6 +64,9 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
     id drawable = ORIG(id (*)(id, SEL))(self, _cmd);
     if (reentry.outermost() && drawable != nil) {
         HookDrawableClass(drawable);
+        // Whether presents run in step with the display decides whether a refresh rate is
+        // reported at all: with sync off the frame interval says nothing about the display.
+        NoteDisplaySync(layer.displaySyncEnabled);
         id<CAMetalDrawable> metalDrawable = (id<CAMetalDrawable>)drawable;
         id<MTLTexture> texture = metalDrawable.texture;
         if (texture != nil) {

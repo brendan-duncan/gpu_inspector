@@ -22,8 +22,17 @@
 
 namespace mtlinsp {
 
+/** The UI's `Capture` message, with the Vulkan layer's defaults for what it leaves out. */
 struct CaptureOptions {
     uint32_t frameCount = 1;
+    /** Frame number to start at (frame_stats.h's counter); UINT64_MAX for the next boundary. */
+    uint64_t atFrame = UINT64_MAX;
+    uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range (longer ranges are truncated)
+    uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
+    uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
+    bool captureTextures = true;
+    bool captureBuffers = true;
+    bool profilePasses = true;
 };
 
 /** Arms a capture, from the UI's `Capture` message. */

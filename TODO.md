@@ -143,11 +143,11 @@ backend does. Ordered by value per effort.
       and buffer-type reflection, the pipeline's descriptor carries it per stage, and a draw's
       stage buffers and inline bytes render as named fields with the Format editor; pipeline
       objects get a Reflection section per stage.
-- [ ] `FrameStats` (frame time, min, max, refresh rate) from the commit boundary, so the
-      frame-time meter and the Frame Bound card fill in; refresh from the display link or the
-      drawable's presented time.
-- [ ] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
-      `captureTextures` (the library reads only `frameCount`).
+- [x] `FrameStats` (frame time, min, max, submit time, refresh rate) from the frame boundary,
+      so the frame-time meter and the Frame Bound card fill in; the refresh period from the
+      display, or the layer's interval estimate, and none with display sync off.
+- [x] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
+      `captureTextures`, `captureBuffers`, `profilePasses`.
 - [ ] Validation messages: the command buffer's error and encoder execution status when a
       command buffer faults, the shader validation layer's reports, and `MTLLogContainer`
       output from shader logging, as `ValidationMessage` with the command buffer id.

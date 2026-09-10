@@ -2,6 +2,9 @@
 // where frames end. See hooks_common.h for the shape every hook has.
 #include "hooks.h"
 #include "hooks_common.h"
+#include "frame_stats.h"
+
+#include <chrono>
 
 namespace mtlinsp {
 namespace {
@@ -329,13 +332,19 @@ void CB_presentDrawableAfterMinimumDuration(id self, SEL _cmd, id drawable, CFTi
 
 void CB_commit(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost()) {
-        Log("commandBuffer.commit label=\"%s\"", LabelOf(self));
-        // Records the commit, drives the capture state machine: arms, counts a frame, or
-        // finishes and sends.
-        OnCommit(self);
+    if (!reentry.outermost()) {
+        ORIG(void (*)(id, SEL))(self, _cmd);
+        return;
     }
+    Log("commandBuffer.commit label=\"%s\"", LabelOf(self));
+    // Records the commit, drives the capture state machine: arms, counts a frame, or finishes
+    // and sends.
+    OnCommit(self);
+    // The commit's own CPU time is the frame report's submit time, as vkQueueSubmit's is.
+    const auto begin = std::chrono::steady_clock::now();
     ORIG(void (*)(id, SEL))(self, _cmd);
+    AddSubmitTime((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now() - begin).count());
 }
 
 void CB_enqueue(id self, SEL _cmd) {
