@@ -59,6 +59,14 @@ interpreter and re-created pipelines.
 ## Next
 
 ### Captures
+- [ ] Pipeline statistics queries per pass on Vulkan (`VK_QUERY_TYPE_PIPELINE_STATISTICS`
+      alongside the timestamp pool in `layer/src/capture.cpp`), which carry almost the same
+      counters as Metal's statistic set: fragment and vertex shader invocations and clipping
+      primitives give overdraw, fragments per primitive and vertex cost, so the GPU Bottlenecks
+      report and its rules work for Vulkan captures too. Needs `pipelineStatisticsQuery` added to
+      the enabled device features in `vkCreateDevice`, with a fallback when the device lacks it.
+      Depth rejection would need an occlusion query, which nests badly with an application's own;
+      the vertex/fragment stage split has no portable equivalent (see `docs/PROFILING.md`).
 - [ ] Multisampled stencil read-back (the depth resolve covers the depth aspect; stencil would
       need a stencil resolve attachment), and multisampled read-back on Vulkan 1.0 devices.
 - [ ] Sampled images bound through descriptor buffers / shader objects.
@@ -183,6 +191,12 @@ backend does. Ordered by value per effort.
       mergeable back-to-back passes, redundant binds, tiny draws, single-threadgroup dispatches.
 - [x] Memory viewer: `allocatedSize`, heap and purgeable state per resource, the device's
       `currentAllocatedSize`, into the memory totals meter.
+- [x] Bottleneck analysis over the pass counters: overdraw, fragments per primitive, depth
+      rejection and the bound stage per pass, as a report and as Frame Issues rules
+      (`metal/pass_metrics.ts`, `metal/bottleneck_report.ts`, `docs/PROFILING.md`).
+- [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
+      `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
+      rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.
 - [ ] Pass dependency graph from the recorded attachments and bound textures, doubling as the
       "Affected by" section the Vulkan side shows on buffers.
 

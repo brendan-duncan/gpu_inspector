@@ -27,6 +27,8 @@ import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./cap
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
+import { renderBottleneckReport } from "./metal/bottleneck_report.js";
+import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./metal/pass_metrics.js";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -63,6 +65,8 @@ const ICON_STATS = '<svg viewBox="0 0 16 16"><path d="M3 13.2V8.5M8 13.2V3.2M13 
 const ICON_ANALYZE = '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.2 10.2 14 14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M5 7h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
 /** Stacked frames narrowing upwards: a flame graph. */
 const ICON_FLAME = '<svg viewBox="0 0 16 16"><rect x="2" y="10.5" width="12" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2" y="6.5" width="7.5" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2" y="2.5" width="4" height="3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+/** A gauge needle: what limits each pass. */
+const ICON_BOTTLENECK = '<svg viewBox="0 0 16 16"><path d="M2.2 12a6.4 6.4 0 0 1 11.6 0" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 12 11 6.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="12" r="1.1" fill="currentColor"/></svg>';
 /** Nodes joined by edges: the pass dependency graph. */
 const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="3.8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="12.2" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.4 7.2 10.6 4.6M5.4 8.8l5.2 2.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 
@@ -331,8 +335,17 @@ export class CapturePanel {
 
 /** One capture: its data, command list and command details. `root` is the capture tab's contents. */
 /** The GPU counters of a pass as tooltip lines: invocations, then cycles per stage as shares of the total. */
-function passCountersText(t: PassTiming): string {
+function passCountersText(t: PassTiming, m?: PassMetrics): string {
   const lines: string[] = [];
+  // The derived figures first: they are what a bottleneck is described in, and the GPU Bottlenecks
+  // report shows the same ones (metal/pass_metrics.ts).
+  if (m) {
+    if (m.bound) lines.push(`${m.bound === "target" ? "Target write" : m.bound[0].toUpperCase() + m.bound.slice(1)} bound: ${m.boundReason}`);
+    if (m.overdraw !== null) lines.push(`overdraw: ${formatRatio(m.overdraw)} shader runs per pixel`);
+    if (m.fragmentsPerPrimitive !== null) lines.push(`fragments per primitive: ${formatRatio(m.fragmentsPerPrimitive, 1)}`);
+    if (m.depthRejectRate !== null) lines.push(`depth and stencil rejected: ${formatPercent(m.depthRejectRate)} of shaded fragments`);
+    if (lines.length) lines.push("");
+  }
   const c = t.counters ?? {};
   const names: [string, string][] = [["vertexInvocations", "vertex invocations"], ["clipperPrimitivesOut", "primitives out of the clipper"],
     ["fragmentInvocations", "fragment invocations"], ["fragmentsPassed", "fragments passed"], ["computeKernelInvocations", "kernel invocations"]];
@@ -455,6 +468,13 @@ export class CaptureView implements CaptureHost {
   /** Pass durations into the pass headers and the timeline (Profile passes). */
   private _applyPassTimings(): void {
     const timed: TimelinePassCommand[] = [];
+    // The derived per-pass figures, so a pass header says the same as the GPU Bottlenecks report.
+    const metrics = new Map<string, PassMetrics>();
+    if (this.data.api === "metal") {
+      for (const m of collectPassMetrics(this.data, this.window.database).passes) {
+        metrics.set(passKey(m.frame, m.commandBuffer, m.passIndex, m.compute), m);
+      }
+    }
     for (const [key, p] of this._passBlocks) {
       const k = parsePassKey(key);
       const t = this.data.passTiming(k.frame, k.commandBuffer, k.passIndex, k.compute);
@@ -464,7 +484,7 @@ export class CaptureView implements CaptureHost {
       }
       const split = t.vertexMs !== undefined && t.fragmentMs !== undefined ? `  (vertex ${t.vertexMs.toFixed(3)} / fragment ${t.fragmentMs.toFixed(3)})` : "";
       p.block.label.text = `${p.label}  ${t.durationMs.toFixed(3)} ms${split}`;
-      p.row.tooltip = passCountersText(t);
+      p.row.tooltip = passCountersText(t, metrics.get(key));
       timed.push({
         method: k.compute ? "beginComputePass" : "beginRenderPass", startTime: t.startMs, endTime: t.startMs + t.durationMs, duration: t.durationMs,
         args: [{ label: p.label.replace(/^(Render Pass|Rendering|Pass|Compute) \d+: ?/, "") || p.label }], _passIndex: k.passIndex, header: p.row,
@@ -687,7 +707,8 @@ export class CaptureView implements CaptureHost {
         const block = new collapsible(current, { label, collapsed: false, class: "capture_renderpass_block" });
         const row = this._addRow(block.titleBar, cmd, true);
         row.element.dataset.passIndex = String(passIndex);
-        this._passBlocks.set(passKey(frame, objId, passIndex), { block, row, label, frame });
+        // A compute encoder is timed under its own key, so its block has to be filed there too.
+        this._passBlocks.set(passKey(frame, objId, passIndex, sets.passIsCompute?.(cmd.method) ?? false), { block, row, label, frame });
         stack.push(current);
         current = block.body;
         continue;
@@ -1075,6 +1096,9 @@ export class CaptureView implements CaptureHost {
       { id: "flame", icon: ICON_FLAME, label: "Shader Flame Graph", open: () => void this._showFlameGraph(),
         detail: "GPU time by pass, pipeline, stage and function",
         tooltip: "The frame's GPU work by pass, pipeline, shader stage and function: measured pass times with the cost model's split within each" },
+      { id: "bottlenecks", icon: ICON_BOTTLENECK, label: "GPU Bottlenecks", open: () => this._showBottlenecks(),
+        detail: "What limits each pass, and what to do about it",
+        tooltip: "Each pass measured in the terms a bottleneck is described in: which stage it waits on, how many times each pixel is shaded, how large its triangles are, and whether the depth test is rejecting work" },
       { id: "graph", icon: ICON_GRAPH, label: "Render Graph", open: () => this._showRenderGraph(),
         detail: "Passes and the resources connecting them",
         tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
@@ -1101,6 +1125,19 @@ export class CaptureView implements CaptureHost {
   /** Marks the menu entry whose report the details pane is showing, or none. */
   private _markReport(id: string | null): void {
     for (const [key, item] of this._reportItems) item.classList.toggle("active", key === id);
+  }
+
+  /** "GPU Bottlenecks": what limits each pass, measured (metal/bottleneck_report.ts). */
+  private _showBottlenecks(): void {
+    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
+    this._selectedRow = null;
+    this._markReport("bottlenecks");
+    this._infoPanel.html = "";
+    if (!this.data.commands.length) {
+      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    renderBottleneckReport(this._infoPanel, this.data, this.window.database, (index) => this.selectCommand(index));
   }
 
   /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
@@ -1134,6 +1171,7 @@ export class CaptureView implements CaptureHost {
   /** Opens one of the capture's reports by name (--debug-view, tools/ui_tests.py). */
   showView(name: string): void {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
+    else if (name === "bottlenecks") this._showBottlenecks();
     else if (name === "stats") this._showStats();
   }
 

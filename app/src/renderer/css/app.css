@@ -813,3 +813,30 @@ button.btn-menu { display: inline-flex; align-items: center; gap: 5px; }
 .render-graph-suggestions { margin-bottom: 10px; }
 .render-graph-suggestions .frame-stats-section { margin-bottom: 0; }
 .render-graph-suggestions .perf-findings { max-height: 220px; overflow-y: auto; }
+
+/* GPU Bottlenecks report (metal/bottleneck_report.ts): the frame's verdict, the advice cards and
+   the per-pass table. The table is a grid so the numeric columns line up down the page. */
+.bottleneck-verdict { font-size: 11pt; font-weight: 600; padding: 2px 0 8px 0; }
+.bottleneck-summary .frame-stats-list { margin-top: 2px; }
+.bottleneck-advice { border-left: 3px solid var(--border-color); background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 6px 10px; margin-bottom: 6px; }
+.bottleneck-advice-high { border-left-color: var(--accent-error); }
+.bottleneck-advice-medium { border-left-color: var(--accent-warning); }
+.bottleneck-advice-low { border-left-color: var(--accent-info); }
+.bottleneck-advice-info { border-left-color: var(--accent-primary); }
+.bottleneck-advice-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.bottleneck-advice-title { font-weight: 600; }
+.bottleneck-advice-body { margin-top: 3px; line-height: 1.45; white-space: normal; }
+.bottleneck-table { display: grid; grid-template-columns: minmax(140px, 2fr) repeat(2, minmax(72px, 1fr)) minmax(52px, 0.6fr) repeat(3, minmax(72px, 1fr)) minmax(110px, 1.2fr); font-size: 10pt; }
+.bottleneck-row { display: contents; }
+.bottleneck-cell { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border-subtle); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.bottleneck-header .bottleneck-cell { color: var(--fg-secondary); font-weight: 600; border-bottom: 1px solid var(--border-color); }
+.bottleneck-pass-name { cursor: pointer; font-variant-numeric: normal; }
+.bottleneck-pass-name:hover { color: var(--accent-primary); text-decoration: underline; }
+.bottleneck-bar { display: flex; height: 10px; width: 100%; min-width: 48px; border-radius: 5px; overflow: hidden; background: var(--bg-primary); margin-top: 3px; }
+.bottleneck-bar-vertex { background: #4a8db8; }
+.bottleneck-bar-fragment { background: #c08040; }
+.bottleneck-tag { display: inline-block; border-radius: 3px; padding: 1px 6px; font-size: 8.5pt; font-weight: 600; white-space: nowrap; }
+.bottleneck-tag-vertex { background: #4a8db8; color: var(--fg-on-accent); }
+.bottleneck-tag-fragment { background: #c08040; color: #000; }
+.bottleneck-tag-target { background: var(--accent-warning); color: #000; }
+.bottleneck-tag-balanced { background: var(--bg-hover); color: var(--fg-primary); }

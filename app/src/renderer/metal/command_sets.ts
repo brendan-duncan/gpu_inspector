@@ -213,6 +213,13 @@ export const METAL_SETS: CommandSets = {
   ]),
   INDIRECT,
   COMPUTE_PASS_END: new Set(),
+
+  // Every encoder is a pass and they share one counter per command buffer, but the library times
+  // a compute encoder under the compute kind (PassKind::Compute in metal/src/capture.mm), which
+  // is a separate key. A blit or resource-state encoder is timed as a render pass.
+  passIsCompute(method: string): boolean {
+    return method.startsWith("computeCommandEncoder");
+  },
   bindPointOf(method: string): string {
     return DISPATCH.has(method) ? "compute" : "render";
   },
