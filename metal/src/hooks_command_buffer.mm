@@ -3,6 +3,8 @@
 #include "hooks.h"
 #include "hooks_common.h"
 #include "frame_stats.h"
+#include "transport.h"
+#include "validation.h"
 
 #include <chrono>
 
@@ -12,18 +14,50 @@ namespace {
 // --------------------------------------------------------------------------------------------
 // MTLCommandQueue
 
+// While a client is connected, a command buffer is made with encoder execution status on, so
+// that a GPU fault names the encoder it happened in (validation.mm). The plain forms have no
+// descriptor to say so on, so they are opened through the descriptor form with one that says the
+// same thing — the unretained-references form keeps its unretained references. Apple documents a
+// small cost to the option, which is why it is only paid with someone watching.
+
 id Q_commandBuffer(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
-    id commandBuffer = ORIG(id (*)(id, SEL))(self, _cmd);
-    if (reentry.outermost()) Log("queue.%s -> %s", sel_getName(_cmd), ClassName(commandBuffer));
+    id commandBuffer = nil;
+    if (reentry.outermost() && Transport::Get().Connected()) {
+        if (@available(macOS 11.0, *)) {
+            MTLCommandBufferDescriptor *d = [[MTLCommandBufferDescriptor alloc] init];
+            d.retainedReferences = !sel_isEqual(_cmd, @selector(commandBufferWithUnretainedReferences));
+            d.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+            // Through the hook for that selector, which is nested and so only forwards.
+            commandBuffer = [(id<MTLCommandQueue>)self commandBufferWithDescriptor:d];
+            [d release];
+        }
+    }
+    if (commandBuffer == nil) commandBuffer = ORIG(id (*)(id, SEL))(self, _cmd);
+    if (reentry.outermost()) {
+        Log("queue.%s -> %s", sel_getName(_cmd), ClassName(commandBuffer));
+        WatchCommandBuffer(commandBuffer);
+    }
     HookCommandBufferClass(commandBuffer);
     return commandBuffer;
 }
 
 id Q_commandBufferWithDescriptor(id self, SEL _cmd, id descriptor) {
     Reentry reentry(self, _cmd);
-    id commandBuffer = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
-    if (reentry.outermost()) Log("queue.commandBufferWithDescriptor: -> %s", ClassName(commandBuffer));
+    id commandBuffer = nil;
+    if (reentry.outermost() && descriptor != nil && Transport::Get().Connected()) {
+        if (@available(macOS 11.0, *)) {
+            MTLCommandBufferDescriptor *d = [(MTLCommandBufferDescriptor *)descriptor copy];
+            d.errorOptions = d.errorOptions | MTLCommandBufferErrorOptionEncoderExecutionStatus;
+            commandBuffer = ORIG(id (*)(id, SEL, id))(self, _cmd, d);
+            [d release];
+        }
+    }
+    if (commandBuffer == nil) commandBuffer = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost()) {
+        Log("queue.commandBufferWithDescriptor: -> %s", ClassName(commandBuffer));
+        WatchCommandBuffer(commandBuffer);
+    }
     HookCommandBufferClass(commandBuffer);
     return commandBuffer;
 }

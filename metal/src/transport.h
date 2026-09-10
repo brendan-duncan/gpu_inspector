@@ -32,6 +32,11 @@ public:
 
     void SendJson(std::string json);
     /**
+     * Waits until everything queued has been written, or the timeout. For the last messages
+     * before the process exits, which the sender thread would otherwise not get to.
+     */
+    void Flush(uint32_t timeoutMs);
+    /**
      * A binary frame. The payload is queued as its own buffer rather than appended to the
      * header, so a render target of tens of megabytes is copied once, from the staging buffer,
      * and the vector form is not copied at all.

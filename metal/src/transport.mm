@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -57,7 +58,9 @@ struct Transport::Impl {
 
     std::mutex queueMutex;
     std::condition_variable queueReady;
+    std::condition_variable queueDrained;
     std::deque<Outgoing> queue;
+    bool sending = false;
 
     std::function<void()> onConnect;
     std::function<void()> onDisconnect;
@@ -92,14 +95,22 @@ struct Transport::Impl {
                 if (!connected) break;
                 frame = std::move(queue.front());
                 queue.pop_front();
+                sending = true;
             }
-            if (!SendAll(frame.head.data(), frame.head.size())
-                || !SendAll(frame.payload.data(), frame.payload.size())) {
+            const bool ok = SendAll(frame.head.data(), frame.head.size())
+                && SendAll(frame.payload.data(), frame.payload.size());
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                sending = false;
+            }
+            queueDrained.notify_all();
+            if (!ok) {
                 Log("send failed; disconnecting");
                 connected = false;
                 break;
             }
         }
+        queueDrained.notify_all();
     }
 
     /** Reads length-prefixed frames from the client until it goes away. */
@@ -213,6 +224,14 @@ void Transport::SendJson(std::string json) {
     AppendHeader(frame.head, (uint32_t)json.size(), 0);
     frame.head += json;
     impl_->Enqueue(std::move(frame));
+}
+
+void Transport::Flush(uint32_t timeoutMs) {
+    if (impl_ == nullptr || !impl_->connected) return;
+    std::unique_lock<std::mutex> lock(impl_->queueMutex);
+    impl_->queueDrained.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
+        return (impl_->queue.empty() && !impl_->sending) || !impl_->connected;
+    });
 }
 
 void Transport::SendBinary(std::string headerJson, std::vector<uint8_t> payload) {

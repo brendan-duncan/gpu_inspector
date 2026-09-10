@@ -2,6 +2,7 @@
 
 #include "formats.h"
 #include "frame_stats.h"
+#include "validation.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -515,8 +516,9 @@ void Finish() {
 
 /** A frame ended. Arms a pending capture, counts a recorded frame, or finishes one. */
 void AdvanceFrame() {
-    // The frame counter and the timing report, on every boundary.
+    // The frame counter and the timing report, on every boundary; the validation counts too.
     const uint64_t frame = OnFrameEnded();
+    FlushValidation();
     bool finishNow = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);

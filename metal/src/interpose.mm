@@ -15,6 +15,7 @@
 #include "hooks.h"
 #include "swizzle.h"
 #include "tracker.h"
+#include "transport.h"
 
 #import <CoreGraphics/CGDirectDisplayMetal.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -82,6 +83,16 @@ __attribute__((constructor)) void Loaded(void) {
     mtlinsp::StartTracking();
     mtlinsp::HookDrawableSource();
     mtlinsp::InstallFrameLogging();
+}
+
+/**
+ * The end: what the application never released, as a LeakReport. The Vulkan layer sends its at
+ * device destruction; a Metal application has nothing to destroy, so process exit is the
+ * moment. Flushed synchronously, since the sender thread would not get another turn.
+ */
+__attribute__((destructor)) void Unloading(void) {
+    mtlinsp::SendLeakReport();
+    mtlinsp::Transport::Get().Flush(500);
 }
 
 }  // namespace

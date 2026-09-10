@@ -11,6 +11,7 @@
 #include "swizzle.h"
 #include "tracker.h"
 #include "transport.h"
+#include "validation.h"
 
 #import <Foundation/Foundation.h>
 
@@ -34,6 +35,7 @@ void HandleMessage(const std::string &text) {
             Transport::Get().SendJson("{\"action\":\"Pong\"}");
         } else if (action == "RequestSnapshot") {
             SendSnapshot();
+            SendValidationSnapshot();
         } else if (action == "Capture") {
             // The same fields the Vulkan layer reads (layer.cpp); what the Metal side cannot
             // honour (sampled images, stack traces) is left at its default.

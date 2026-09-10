@@ -35,6 +35,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/tracker.mm
     src/ui_messages.h
     src/ui_messages.mm
+    src/validation.h
+    src/validation.mm
     src/transport.h
     src/transport.mm
     src/interpose.mm)
