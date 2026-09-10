@@ -18,6 +18,7 @@ import { decodeBase64 } from "./utils/base64.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
+import { argumentBufferEntries, isArgumentBufferType, renderArgumentBuffer } from "./metal/argument_buffer.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import {
   typeName, type ReflType, type ShaderReflection, type ShaderResource, type ShaderStage, type StructMember, type StructType,
@@ -1116,7 +1117,14 @@ export class CommandInfoView {
       if (!res && reflected) new Div(body, { text: "The bound pipeline's shader does not read this slot.", class: "text-muted font-sm" });
       else if (!res) new Div(body, { text: "No reflection for the bound pipeline: raw view.", class: "text-muted font-sm" });
       const key = `metal:${state.pipeline?.id ?? 0}:${sb.stage}:${sb.index}`;
-      this._renderBufferContents(body, key, res?.kind === "storage" ? "storage" : "uniform", res, this.panel.data.buffer(sb.dataId));
+      const captured = this.panel.data.buffer(sb.dataId);
+      this._renderBufferContents(body, key, res?.kind === "storage" ? "storage" : "uniform", res, captured);
+      // An argument buffer: its members are GPU addresses and resource ids, matched back to the
+      // buffers, textures and samplers that reported them.
+      if (res && captured?.data && isArgumentBufferType(res.type)) {
+        const entries = argumentBufferEntries(res.type, captured.data, db);
+        if (entries.length) renderArgumentBuffer(body, entries, this._link);
+      }
     }
   }
 
