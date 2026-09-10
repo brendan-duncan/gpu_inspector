@@ -37,6 +37,10 @@
   Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
   Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
   slots and objects, a pass's target.
+- "Xcode Trace" in the capture bar on macOS writes the next frame as a .gputrace document for
+  Xcode's Metal debugger. The Metal test application now draws through a private-storage vertex
+  buffer, a multisampled pass with a resolve through a parallel encoder, and a sampled textured
+  pass with inline constants, so every read-back path has a test.
 
 ### Changed
 - The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render

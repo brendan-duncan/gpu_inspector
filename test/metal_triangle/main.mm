@@ -1,7 +1,9 @@
 // A small Metal application, the counterpart of test/triangle: something to point the Metal
 // capture library at without needing a Unity build. It exercises the parts of the API the
-// library has to intercept — a device, a command queue, buffers, a library compiled at run time,
-// a render pipeline, a render pass with an indexed instanced draw, a compute pass, and a present.
+// library has to intercept — a device, a command queue, buffers in shared and private storage, a
+// library compiled at run time, two render pipelines, a sampler, a compute pass, a multisampled
+// render pass through a parallel encoder resolving into a texture, a render pass to the drawable
+// that samples it with inline constants bound, and a present.
 //
 //   mtlinsp_triangle              a window, until it is closed
 //   mtlinsp_triangle --frames N   render N frames and exit (no interaction needed)
@@ -28,7 +30,9 @@ const float kVertices[] = {
 };
 const uint16_t kIndices[] = { 0, 1, 2 };
 
-// Both stages in one library, plus a compute kernel, so the run keeps a compute pass in it.
+// Both stages in one library, plus a compute kernel, so the run keeps a compute pass in it, and
+// the pass that copies the resolved triangle to the drawable: a full-screen triangle from the
+// vertex id, sampling the resolve with a tint bound as inline bytes.
 NSString *const kShaderSource = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
@@ -36,6 +40,22 @@ using namespace metal;
 struct VertexIn  { float2 position [[attribute(0)]]; float3 colour [[attribute(1)]]; };
 struct VertexOut { float4 position [[position]];     float3 colour; };
 struct Uniforms  { float angle; float scale; };
+struct BlitOut   { float4 position [[position]];     float2 uv; };
+
+vertex BlitOut blit_vertex(uint vid [[vertex_id]]) {
+    float2 p = float2((vid << 1) & 2, vid & 2);
+    BlitOut out;
+    out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = float2(p.x, 1.0 - p.y);
+    return out;
+}
+
+fragment float4 blit_fragment(BlitOut in [[stage_in]],
+                              texture2d<float> source [[texture(0)]],
+                              sampler smp [[sampler(0)]],
+                              constant float4 &tint [[buffer(0)]]) {
+    return source.sample(smp, in.uv) * tint;
+}
 
 vertex VertexOut vertex_main(VertexIn in [[stage_in]],
                              constant Uniforms &u [[buffer(1)]],
@@ -85,8 +105,15 @@ constexpr NSUInteger kWaveCount = 256;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _queue;
     id<MTLRenderPipelineState> _pipeline;
+    id<MTLRenderPipelineState> _blit;
     id<MTLComputePipelineState> _wave;
+    id<MTLSamplerState> _sampler;
+    // The triangle is drawn into a 4x multisampled target resolved into _resolved, which the
+    // drawable pass then samples. The private-storage vertices are what an engine binds.
+    id<MTLTexture> _msaaTarget;
+    id<MTLTexture> _resolved;
     id<MTLBuffer> _vertices;
+    id<MTLBuffer> _verticesPrivate;
     id<MTLBuffer> _indices;
     id<MTLBuffer> _uniforms;
     id<MTLBuffer> _waveOut;
@@ -127,11 +154,56 @@ constexpr NSUInteger kWaveCount = 256;
     pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"];
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
     pipelineDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
+    pipelineDescriptor.rasterSampleCount = 4;
     _pipeline = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     if (!_pipeline) {
         NSLog(@"pipeline creation failed: %@", error);
         exit(1);
     }
+
+    // The drawable pass, made through the form an engine uses: options and reflection.
+    MTLRenderPipelineDescriptor *blitDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    blitDescriptor.label = @"blit pipeline";
+    blitDescriptor.vertexFunction = [library newFunctionWithName:@"blit_vertex"];
+    blitDescriptor.fragmentFunction = [library newFunctionWithName:@"blit_fragment"];
+    blitDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
+    MTLAutoreleasedRenderPipelineReflection reflection = nil;
+    _blit = [_device newRenderPipelineStateWithDescriptor:blitDescriptor
+                                                  options:MTLPipelineOptionNone
+                                               reflection:&reflection
+                                                    error:&error];
+    if (!_blit) {
+        NSLog(@"blit pipeline creation failed: %@", error);
+        exit(1);
+    }
+
+    MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+    samplerDescriptor.label = @"linear clamp";
+    samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
+    samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
+    samplerDescriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    _sampler = [_device newSamplerStateWithDescriptor:samplerDescriptor];
+
+    const CGSize size = layer.drawableSize;
+    MTLTextureDescriptor *msaa = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
+                                                                                    width:(NSUInteger)size.width
+                                                                                   height:(NSUInteger)size.height
+                                                                                mipmapped:NO];
+    msaa.textureType = MTLTextureType2DMultisample;
+    msaa.sampleCount = 4;
+    msaa.usage = MTLTextureUsageRenderTarget;
+    msaa.storageMode = MTLStorageModePrivate;
+    _msaaTarget = [_device newTextureWithDescriptor:msaa];
+    _msaaTarget.label = @"triangle msaa";
+    MTLTextureDescriptor *resolved = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
+                                                                                        width:(NSUInteger)size.width
+                                                                                       height:(NSUInteger)size.height
+                                                                                    mipmapped:NO];
+    resolved.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    resolved.storageMode = MTLStorageModePrivate;
+    _resolved = [_device newTextureWithDescriptor:resolved];
+    _resolved.label = @"triangle resolved";
 
     _wave = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"wave_main"]
                                                    error:&error];
@@ -143,6 +215,22 @@ constexpr NSUInteger kWaveCount = 256;
     _vertices = [_device newBufferWithBytes:kVertices length:sizeof(kVertices)
                                     options:MTLResourceStorageModeShared];
     _vertices.label = @"vertices";
+    // Private storage, filled by a blit the way an engine uploads its meshes: the vertices the
+    // draw actually uses, so that a capture has to read a buffer with no CPU side.
+    _verticesPrivate = [_device newBufferWithLength:sizeof(kVertices)
+                                            options:MTLResourceStorageModePrivate];
+    _verticesPrivate.label = @"vertices (private)";
+    {
+        id<MTLCommandBuffer> upload = [_queue commandBuffer];
+        upload.label = @"upload";
+        id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
+        blit.label = @"vertex upload";
+        [blit copyFromBuffer:_vertices sourceOffset:0 toBuffer:_verticesPrivate destinationOffset:0
+                        size:sizeof(kVertices)];
+        [blit endEncoding];
+        [upload commit];
+        [upload waitUntilCompleted];
+    }
     _indices = [_device newBufferWithBytes:kIndices length:sizeof(kIndices)
                                    options:MTLResourceStorageModeShared];
     _indices.label = @"indices";
@@ -176,19 +264,24 @@ constexpr NSUInteger kWaveCount = 256;
        threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
     [compute endEncoding];
 
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = drawable.texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.08, 0.09, 0.11, 1.0);
-    // Store, so a capture that reads the attachment back sees the result. A pass that did not
-    // store would be the Metal counterpart of Vulkan's storeOp DONT_CARE problem.
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    // The triangle, into the multisampled target, resolved: a capture reads the resolve, since a
+    // multisample texture cannot be copied to a buffer. Through a parallel encoder, whose
+    // sub-encoder does the drawing, the way a multithreaded engine records a pass.
+    MTLRenderPassDescriptor *trianglePass = [MTLRenderPassDescriptor renderPassDescriptor];
+    trianglePass.colorAttachments[0].texture = _msaaTarget;
+    trianglePass.colorAttachments[0].resolveTexture = _resolved;
+    trianglePass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    trianglePass.colorAttachments[0].clearColor = MTLClearColorMake(0.08, 0.09, 0.11, 1.0);
+    trianglePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
 
-    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+    id<MTLParallelRenderCommandEncoder> parallel =
+        [commandBuffer parallelRenderCommandEncoderWithDescriptor:trianglePass];
+    parallel.label = @"triangle (parallel)";
+    id<MTLRenderCommandEncoder> encoder = [parallel renderCommandEncoder];
     encoder.label = @"triangle";
     [encoder pushDebugGroup:@"triangles"];
     [encoder setRenderPipelineState:_pipeline];
-    [encoder setVertexBuffer:_vertices offset:0 atIndex:0];
+    [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
     [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                         indexCount:sizeof(kIndices) / sizeof(kIndices[0])
@@ -198,6 +291,25 @@ constexpr NSUInteger kWaveCount = 256;
                      instanceCount:3];
     [encoder popDebugGroup];
     [encoder endEncoding];
+    [parallel endEncoding];
+
+    // The resolve onto the drawable, tinted through inline constants. Store, so a capture that
+    // reads the attachment back sees the result. A pass that did not store would be the Metal
+    // counterpart of Vulkan's storeOp DONT_CARE problem.
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> blit = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+    blit.label = @"blit";
+    [blit setRenderPipelineState:_blit];
+    [blit setFragmentTexture:_resolved atIndex:0];
+    [blit setFragmentSamplerState:_sampler atIndex:0];
+    const float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    [blit setFragmentBytes:tint length:sizeof(tint) atIndex:0];
+    [blit drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [blit endEncoding];
 
     if (self.presentDirect) {
         // What Unity's macOS player does: present the drawable itself from a scheduled handler

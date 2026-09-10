@@ -114,6 +114,9 @@ export function captureEnvironment(library: string, port: number, log: boolean, 
     DYLD_INSERT_LIBRARIES: [library, ...(process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : [])].join(":"),
     MTLINSP_PORT: String(port),
     MTLINSP_LOG: log ? "1" : "0",
+    // Lets the library write an Xcode GPU trace of a frame on request (metal/src/gpu_trace.mm);
+    // without it MTLCaptureManager refuses the document destination.
+    ...(process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }),
   };
   if (validation) {
     const defaults: Record<string, string> = {

@@ -91,6 +91,11 @@ export class SessionPanel extends Div implements SessionContext {
     this.database.onSnapshotBegin.addListener((count) => this.appendLog(`snapshot: ${count} live objects`));
     // Shader edits are logged too, so their outcome is visible even when the editor is closed.
     this.database.onOtherMessage.addListener((msg) => {
+      if (msg.action === "GpuTrace") {
+        this.appendLog(msg.ok ? `Xcode trace: frame ${msg.frame} written to ${msg.path}` : `Xcode trace failed: ${msg.error ?? "unknown error"}`);
+        this.capturePanel.setStatus(msg.ok ? `Xcode trace written: ${msg.path}` : `Xcode trace failed: ${msg.error ?? "unknown error"}`);
+        return;
+      }
       if (msg.action !== "ShaderReplaced") return;
       const pipeline = this.database.getObject(msg.pipeline);
       const name = pipeline ? pipeline.name : `Pipeline ${msg.pipeline}`;

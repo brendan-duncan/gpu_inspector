@@ -163,8 +163,9 @@ backend does. Ordered by value per effort.
       captured as buffer binds).
 
 ### What Xcode's frame capture has
-- [ ] "Save Xcode trace": `MTLCaptureManager` writing a `.gputrace` for the next frame from
-      inside the process, so Xcode's shader debugger and per-line profiler open the same frame.
+- [x] "Xcode Trace" in the capture bar: `MTLCaptureManager` writing the next frame as a
+      `.gputrace` from inside the process, so Xcode's shader debugger and per-line profiler
+      open the same frame.
 - [ ] Per-encoder GPU counters beyond timestamps: the statistic counter set (vertex, fragment
       and compute invocations, clipped primitives) and the stage-utilization set, through the
       counter sample buffer the pass timings already use; into pass headers and Frame Stats.
@@ -182,8 +183,8 @@ backend does. Ordered by value per effort.
 - [ ] Intel and AMD class trees and the encoder-boundary timing path (only Apple Silicon and
       stage-boundary sampling are verified).
 - [ ] Metal 4 command buffers and encoders: a separate class tree with different selectors.
-- [ ] Test app coverage for the read-back paths: a private-storage vertex buffer, an MSAA pass
-      with resolve, a parallel render encoder.
+- [x] Test app coverage for the read-back paths: a private-storage vertex buffer, an MSAA pass
+      with resolve through a parallel render encoder, a sampled texture and inline constants.
 - [ ] Stencil attachment read-back; ASTC, ETC, PVRTC, XR and YUV pixel formats.
 
 ## Distribution

@@ -32,6 +32,9 @@ let hostPlatform = "";
 export function setHostPlatform(platform: string): void {
   hostPlatform = platform;
 }
+export function getHostPlatform(): string {
+  return hostPlatform;
+}
 function hostTargets(): Target[] {
   return hostPlatform === "darwin" ? TARGETS.filter(([, t]) => t !== "implicit") : TARGETS;
 }
