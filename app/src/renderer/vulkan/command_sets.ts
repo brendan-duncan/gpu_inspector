@@ -1,9 +1,9 @@
 // Vulkan's command classification. The Metal counterpart is ../metal/command_sets.ts, and the
 // interface both fill in is ../command_sets.ts.
 import type { CommandSets } from "../command_sets.js";
-import type { ArgObject, CaptureCommand } from "../../shared/protocol.js";
+import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.js";
 import type { BoundIndexBuffer, BoundVertexBuffer } from "../command_sets.js";
-import { num, str } from "./vulkan_object.js";
+import { fmt, isObject, num, str } from "./vulkan_object.js";
 
 export const DRAW_METHODS = new Set([
   "vkCmdDraw", "vkCmdDrawIndexed", "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDrawIndirectCount",
@@ -94,5 +94,42 @@ export const VULKAN_SETS: CommandSets = {
     if (!a) return null;
     return { cmd, buffer: a.buffer, offset: num(a.offset), indexType: str(a.indexType),
              dataId: cmd.bufferData?.[0] ?? 0 };
+  },
+
+  summarize(cmd: CaptureCommand, name: (v: ArgValue | undefined) => string): string {
+    const a = cmd.args;
+    if (!a) return "";
+    switch (cmd.method) {
+      case "vkCmdDraw": return `${num(a.vertexCount)} verts x${num(a.instanceCount)}`;
+      case "vkCmdDrawIndexed": return `${num(a.indexCount)} idx x${num(a.instanceCount)}`;
+      case "vkCmdDrawIndirect":
+      case "vkCmdDrawIndexedIndirect": return `${name(a.buffer)} x${num(a.drawCount)}`;
+      case "vkCmdDispatch": return `${num(a.groupCountX)}x${num(a.groupCountY)}x${num(a.groupCountZ)}`;
+      case "vkCmdBindPipeline": return `${fmt(a.pipelineBindPoint)} ${name(a.pipeline)}`;
+      case "vkCmdBindDescriptorSets": return `set ${num(a.firstSet)} +${num(a.descriptorSetCount)}`;
+      case "vkCmdPushDescriptorSet":
+      case "vkCmdPushDescriptorSetKHR": return `set ${num(a.set)}: ${num(a.descriptorWriteCount)} writes`;
+      case "vkCmdBindVertexBuffers":
+      case "vkCmdBindVertexBuffers2":
+      case "vkCmdBindVertexBuffers2EXT": return `binding ${num(a.firstBinding)} +${num(a.bindingCount)}`;
+      case "vkCmdBindIndexBuffer":
+      case "vkCmdBindIndexBuffer2":
+      case "vkCmdBindIndexBuffer2KHR": return `${name(a.buffer)} ${fmt(a.indexType)}`;
+      case "vkCmdPushConstants": return `${fmt(a.stageFlags)} ${num(a.size)} bytes`;
+      case "vkCmdPipelineBarrier": return `${num(a.memoryBarrierCount)}m ${num(a.bufferMemoryBarrierCount)}b ${num(a.imageMemoryBarrierCount)}i`;
+      case "vkCmdCopyBufferToImage": return `${name(a.srcBuffer)} -> ${name(a.dstImage)}`;
+      case "vkCmdCopyImage": return `${name(a.srcImage)} -> ${name(a.dstImage)}`;
+      case "vkCmdCopyBuffer": return `${name(a.srcBuffer)} -> ${name(a.dstBuffer)}`;
+      case "vkCmdSetViewport": {
+        const v = Array.isArray(a.pViewports) && isObject(a.pViewports[0]) ? a.pViewports[0] : null;
+        return v ? `${num(v.width)}x${num(v.height)}` : "";
+      }
+      case "vkCmdSetScissor": {
+        const s = Array.isArray(a.pScissors) && isObject(a.pScissors[0]) && isObject(a.pScissors[0].extent) ? a.pScissors[0].extent : null;
+        return s ? `${num(s.width)}x${num(s.height)}` : "";
+      }
+      case "vkQueueSubmit": return `${Array.isArray(a.pSubmits) ? a.pSubmits.length : 0} submit(s)`;
+      default: return "";
+    }
   },
 };

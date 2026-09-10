@@ -1,0 +1,13 @@
+{
+  "name": "gpu-inspector",
+  "version": "0.1.0",
+  "description": "Debug and profile Vulkan and Metal frames with Claude: GPU Inspector captures (.gpucap) read with GPU Inspector's own analyses — frame issues, GPU bottlenecks, the render graph, the state at a draw, buffers, render targets and shaders.",
+  "author": {
+    "name": "Brendan Duncan",
+    "url": "https://github.com/brendan-duncan/gpu_inspector"
+  },
+  "homepage": "https://github.com/brendan-duncan/gpu_inspector",
+  "repository": "https://github.com/brendan-duncan/gpu_inspector",
+  "license": "MIT",
+  "keywords": ["vulkan", "metal", "graphics", "gpu", "debugging", "profiling"]
+}

@@ -4,7 +4,7 @@
 import { setsFor, type CommandSets } from "./command_sets.js";
 import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
-import type { LoadedCapture } from "./capture_file.js";
+import type { LoadedCapture } from "./capture_format.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {

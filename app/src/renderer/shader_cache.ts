@@ -1,7 +1,10 @@
 // Shader reflection on demand: fetches an object's SPIR-V payload from the layer (RequestBlob)
-// once, parses it, and keeps the result for every later draw that uses the same shader.
+// once, parses it, and keeps the result for every later draw that uses the same shader. Also
+// where each stage of a pipeline keeps its code, and which pipelines a capture's draws used.
 import { reflectSpirv, type ShaderReflection, type ShaderStage } from "./vulkan/spirv_reflect.js";
-import { isObject, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { isObject, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { isAction } from "./command_sets.js";
+import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type { UiRequest } from "../shared/protocol.js";
 
@@ -45,7 +48,7 @@ export function stageLabel(stage: ShaderStage): string {
  * ("vertex:main"); when it could not (module destroyed before the pipeline was created, older
  * captures), the stage's shader module is used instead.
  */
-export function pipelineStages(pipeline: VulkanObject, db: ObjectDatabase): StageSource[] {
+export function pipelineStages(pipeline: VulkanObject, db: ObjectLookup): StageSource[] {
   const d = pipeline.descriptor;
   if (!d) return [];
   const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
@@ -62,6 +65,25 @@ export function pipelineStages(pipeline: VulkanObject, db: ObjectDatabase): Stag
     else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
   }
   return out;
+}
+
+/** Uses per pipeline: the pipeline bound on the stream and bind point of each draw or dispatch. */
+export function pipelineUses(data: CaptureData): Map<number, number> {
+  const sets = data.sets;
+  const bound = new Map<string, number>();
+  const uses = new Map<number, number>();
+  for (const c of data.commands) {
+    if (!c || sets.SUBMIT.has(c.method)) continue;
+    const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
+    if (sets.BIND_PIPELINE.has(c.method) && c.args) {
+      const id = refId(c.args.pipeline);
+      if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c.method, c.args)}`, id);
+    } else if (isAction(sets, c.method)) {
+      const id = bound.get(`${stream}:${sets.bindPointOf(c.method)}`);
+      if (id !== undefined) uses.set(id, (uses.get(id) ?? 0) + 1);
+    }
+  }
+  return uses;
 }
 
 export class ShaderReflectionCache {

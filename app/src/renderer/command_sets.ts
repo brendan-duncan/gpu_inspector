@@ -9,6 +9,7 @@
 // The tables themselves live beside the rest of each API's code, in `vulkan/` and `metal/`.
 import { METAL_SETS } from "./metal/command_sets.js";
 import { VULKAN_SETS } from "./vulkan/command_sets.js";
+import { isObject, str } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, CaptureApi, CaptureCommand } from "../shared/protocol.js";
 
 /**
@@ -122,8 +123,8 @@ export interface CommandSets {
 
   /**
    * The short text shown beside a command in the tree: the arguments worth reading at a glance,
-   * with `nameOf` resolving an object reference to its name. Undefined leaves the summary to
-   * the panel's own table (Vulkan's lives there).
+   * with `nameOf` resolving an object reference to its name. The command list shows it, and the
+   * MCP server's command listing (src/mcp/) returns it. Undefined shows no summary.
    */
   summarize?(cmd: CaptureCommand, nameOf: (v: ArgValue | undefined) => string): string | undefined;
 }
@@ -131,6 +132,13 @@ export interface CommandSets {
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */
 export function isAction(sets: CommandSets, method: string): boolean {
   return sets.DRAW.has(method) || sets.DISPATCH.has(method) || sets.TRACE.has(method);
+}
+
+/** The name a debug group command opens: Vulkan's label-info struct, or Metal's `label` (pushDebugGroup:). */
+export function labelNameOf(cmd: CaptureCommand): string {
+  const a = cmd.args;
+  const info = a && (isObject(a.pLabelInfo) ? a.pLabelInfo : isObject(a.pMarkerInfo) ? a.pMarkerInfo : null);
+  return info ? str(info.pLabelName ?? info.pMarkerName) : a && a.label !== undefined ? str(a.label) : cmd.method;
 }
 
 export function setsFor(api: CaptureApi): CommandSets {

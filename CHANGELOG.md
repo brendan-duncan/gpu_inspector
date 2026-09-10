@@ -1,3 +1,27 @@
+## Unreleased
+
+### Added
+- Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
+  an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
+  Its tools cover:
+  - the capture summary with the Frame Bound verdict
+  - Frame Issues
+  - GPU Bottlenecks per pass
+  - the render graph
+  - the command list, and the state bound at a draw (pipeline and fixed-function state, descriptor
+    sets with uniform values decoded by reflection, vertex and index buffers, push constants,
+    render targets)
+  - objects and validation messages
+  - read-back images, returned as PNG with statistics
+  - buffers read through GLSL struct layouts
+  - vertices with per-attribute bounds
+  - shader reflection, embedded source, cross-compiled GLSL, HLSL and MSL, disassembly and static
+    analysis
+  - comparing captures before and after a change
+
+  A capture analysis skill and four commands come with it: `analyze`, `profile`, `debug` and
+  `compare`. The server is one dependency-free file that runs on Node.js 18+.
+
 ## 0.8.0
 
 ### Added

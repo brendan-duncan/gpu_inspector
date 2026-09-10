@@ -16,14 +16,16 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
-import { CAPTURE_FILE_FILTERS, captureFileName, fetchBlob, parseCaptureFile, serializeCapture, type LoadedCapture } from "./capture_file.js";
+import { fetchBlob, serializeCapture } from "./capture_file.js";
+import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, type LoadedCapture } from "./capture_format.js";
 import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_view.js";
 import { renderFrameFlameGraph } from "./frame_flamegraph.js";
 import type { StageModel } from "./frame_cost_tree.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
-import { pipelineStages, stageLabel } from "./shader_cache.js";
+import { pipelineStages, pipelineUses, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
-import { CaptureStatistics, renderFrameStats, type FrameTimingInfo } from "./capture_statistics.js";
+import { CaptureStatistics } from "./capture_statistics.js";
+import { renderFrameStats, type FrameTimingInfo } from "./frame_stats_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
@@ -35,8 +37,8 @@ import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
-import { isAction } from "./command_sets.js";
-import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
+import { isAction, labelNameOf } from "./command_sets.js";
+import { fmt, isObject, refId } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import { getHostPlatform } from "./launch_dialog.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
@@ -724,9 +726,7 @@ export class CaptureView implements CaptureHost {
         compute!.dispatches++;
       }
       if (sets.LABEL_BEGIN.has(cmd.method)) {
-        const info = cmd.args && (isObject(cmd.args.pLabelInfo) ? cmd.args.pLabelInfo : isObject(cmd.args.pMarkerInfo) ? cmd.args.pMarkerInfo : null);
-        // Vulkan carries the name in a label-info struct; Metal's pushDebugGroup: has it as `label`.
-        const name = info ? str(info.pLabelName ?? info.pMarkerName) : cmd.args && cmd.args.label !== undefined ? str(cmd.args.label) : cmd.method;
+        const name = labelNameOf(cmd);
         const block = new collapsible(current, { label: name, collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
         this._addRow(block.titleBar, cmd, true);
         stack.push(current);
@@ -902,49 +902,13 @@ export class CaptureView implements CaptureHost {
   }
 
   private _summarizeArgs(cmd: CaptureCommand): string {
-    const a = cmd.args;
-    if (!a) return "";
+    if (!cmd.args) return "";
     const db = this.window.database;
     const name = (v: ArgValue | undefined): string => {
       const o = db.getObject(refId(v));
       return o ? o.name : "";
     };
-    // An API with a summary table of its own (Metal); the Vulkan one is below.
-    const own = this.data.sets.summarize?.(cmd, name);
-    if (own !== undefined) return own;
-    switch (cmd.method) {
-      case "vkCmdDraw": return `${num(a.vertexCount)} verts x${num(a.instanceCount)}`;
-      case "vkCmdDrawIndexed": return `${num(a.indexCount)} idx x${num(a.instanceCount)}`;
-      case "vkCmdDrawIndirect":
-      case "vkCmdDrawIndexedIndirect": return `${name(a.buffer)} x${num(a.drawCount)}`;
-      case "vkCmdDispatch": return `${num(a.groupCountX)}x${num(a.groupCountY)}x${num(a.groupCountZ)}`;
-      case "vkCmdBindPipeline": return `${fmt(a.pipelineBindPoint)} ${name(a.pipeline)}`;
-      case "vkCmdBindDescriptorSets": return `set ${num(a.firstSet)} +${num(a.descriptorSetCount)}`;
-      case "vkCmdPushDescriptorSet":
-      case "vkCmdPushDescriptorSetKHR": return `set ${num(a.set)}: ${num(a.descriptorWriteCount)} writes`;
-      case "vkCmdBindVertexBuffers":
-      case "vkCmdBindVertexBuffers2":
-      case "vkCmdBindVertexBuffers2EXT": return `binding ${num(a.firstBinding)} +${num(a.bindingCount)}`;
-      case "vkCmdBindIndexBuffer":
-      case "vkCmdBindIndexBuffer2":
-      case "vkCmdBindIndexBuffer2KHR": return `${name(a.buffer)} ${fmt(a.indexType)}`;
-      case "vkCmdPushConstants": return `${fmt(a.stageFlags)} ${num(a.size)} bytes`;
-      case "vkCmdPipelineBarrier": return `${num(a.memoryBarrierCount)}m ${num(a.bufferMemoryBarrierCount)}b ${num(a.imageMemoryBarrierCount)}i`;
-      case "vkCmdCopyBufferToImage": return `${name(a.srcBuffer)} -> ${name(a.dstImage)}`;
-      case "vkCmdCopyImage": return `${name(a.srcImage)} -> ${name(a.dstImage)}`;
-      case "vkCmdCopyBuffer": return `${name(a.srcBuffer)} -> ${name(a.dstBuffer)}`;
-      case "vkCmdSetViewport": {
-        const v = Array.isArray(a.pViewports) && isObject(a.pViewports[0]) ? a.pViewports[0] : null;
-        return v ? `${num(v.width)}x${num(v.height)}` : "";
-      }
-      case "vkCmdSetScissor": {
-        const s = Array.isArray(a.pScissors) && isObject(a.pScissors[0]) && isObject(a.pScissors[0].extent) ? a.pScissors[0].extent : null;
-        return s ? `${num(s.width)}x${num(s.height)}` : "";
-      }
-      case "vkQueueSubmit": return `${Array.isArray(a.pSubmits) ? a.pSubmits.length : 0} submit(s)`;
-      case "vkQueuePresentKHR": return "";
-      default: return "";
-    }
+    return this.data.sets.summarize?.(cmd, name) ?? "";
   }
 
   // ---------------------------------------------------------------------------------------
@@ -965,7 +929,7 @@ export class CaptureView implements CaptureHost {
     if (!status) return;
     const db = this.window.database;
     const reports: FrameShaderReport[] = [];
-    for (const [pipelineId, count] of this._pipelineUses()) {
+    for (const [pipelineId, count] of pipelineUses(this.data)) {
       const pipeline = db.getObject(pipelineId);
       if (!pipeline) continue;
       for (const source of pipelineStages(pipeline, db)) {
@@ -994,7 +958,7 @@ export class CaptureView implements CaptureHost {
     if (!status) return;
     const db = this.window.database;
     const models = new Map<number, StageModel[]>();
-    for (const pipelineId of this._pipelineUses().keys()) {
+    for (const pipelineId of pipelineUses(this.data).keys()) {
       const pipeline = db.getObject(pipelineId);
       if (!pipeline) continue;
       const stages: StageModel[] = [];
@@ -1034,25 +998,6 @@ export class CaptureView implements CaptureHost {
       return null;
     }
     return new Div(this._infoPanel, { text, class: "text-muted", style: "padding: 12px;" });
-  }
-
-  /** Uses per pipeline: the pipeline bound on the stream and bind point of each draw or dispatch. */
-  private _pipelineUses(): Map<number, number> {
-    const sets = this.data.sets;
-    const bound = new Map<string, number>();
-    const uses = new Map<number, number>();
-    for (const c of this.data.commands) {
-      if (!c || sets.SUBMIT.has(c.method)) continue;
-      const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
-      if (sets.BIND_PIPELINE.has(c.method) && c.args) {
-        const id = refId(c.args.pipeline);
-        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c.method, c.args)}`, id);
-      } else if (isAction(sets, c.method)) {
-        const id = bound.get(`${stream}:${sets.bindPointOf(c.method)}`);
-        if (id !== undefined) uses.set(id, (uses.get(id) ?? 0) + 1);
-      }
-    }
-    return uses;
   }
 
   private _showStats(): void {

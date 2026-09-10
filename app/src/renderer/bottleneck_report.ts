@@ -14,66 +14,11 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import {
-  HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
-  collectPassMetrics, formatPercent, formatRatio, type Bound, type FrameMetrics, type PassMetrics,
+  BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, MICROTRIANGLE_LIMIT,
+  collectPassMetrics, formatPercent, formatRatio, frameStageVerdict, passAdvice,
 } from "./pass_metrics.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
-
-const BOUND_LABEL: Record<Bound, string> = {
-  vertex: "Vertex bound",
-  fragment: "Fragment bound",
-  target: "Target write bound",
-  balanced: "Balanced",
-};
-
-/** What to try first for a pass limited by each stage. */
-const BOUND_ADVICE: Record<Bound, string> = {
-  vertex: "Cut vertices or vertex-stage work: mesh level of detail at distance, fewer or cheaper vertex attributes, and per-fragment rather than per-vertex evaluation of anything the fragment stage could do itself.",
-  fragment: "Cut fragments or fragment-stage work: fewer overlapping surfaces, a smaller render target, cheaper texture sampling, and simpler shader maths.",
-  target: "The pass spends its time writing the attachment rather than shading it. A smaller target, fewer targets, or a store action of DontCare on anything nothing reads afterwards.",
-  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbour, or skip it when nothing reads its output.",
-};
-
-interface Advice {
-  severity: "high" | "medium" | "low";
-  title: string;
-  body: string;
-}
-
-/** The measured problems of one pass, worst first. */
-function adviceFor(p: PassMetrics): Advice[] {
-  const out: Advice[] = [];
-  if (p.overdraw !== null && p.overdraw > OVERDRAW_LIMIT) {
-    out.push({
-      severity: "high",
-      title: `Each pixel is shaded ${formatRatio(p.overdraw)} times`,
-      body: `A frame doing well sits near ${HEALTHY_OVERDRAW}. Overdraw this high is usually transparent surfaces stacking up, a full-screen effect drawn more than once, or opaque geometry drawn back to front so the depth test cannot reject anything.`,
-    });
-  }
-  if (p.fragmentsPerPrimitive !== null && p.fragmentsPerPrimitive < MICROTRIANGLE_LIMIT) {
-    out.push({
-      severity: "high",
-      title: `Triangles cover ${formatRatio(p.fragmentsPerPrimitive)} fragments each`,
-      body: `The rasterizer shades in 2x2 quads, so a triangle covering fewer than ${MICROTRIANGLE_LIMIT} fragments wastes lanes it has already paid for. This is dense geometry drawn small: add mesh level of detail, or cull the meshes that are far enough away to be smaller than their own triangles.`,
-    });
-  }
-  if (p.depthRejectRate !== null && p.overdraw !== null && p.overdraw > 1.5 && p.depthRejectRate < LOW_REJECTION_RATE) {
-    out.push({
-      severity: "medium",
-      title: `The depth test rejects only ${formatPercent(p.depthRejectRate)} of shaded fragments`,
-      body: "Fragments are being shaded and then thrown away by something later, or not thrown away at all. Drawing opaque geometry front to back lets the depth test reject work before the fragment shader runs; a depth prepass does the same for a scene that cannot be sorted.",
-    });
-  }
-  if (p.bound === "target" && p.cycleShare) {
-    out.push({
-      severity: "medium",
-      title: "Most of the pass is spent writing the render target",
-      body: "Fewer or smaller attachments, or a store action of DontCare on the ones nothing reads afterwards. On a tile-based GPU a target that is only read by the pass that follows never has to reach memory at all.",
-    });
-  }
-  return out;
-}
 
 function bar(parent: Widget, vertexMs: number, fragmentMs: number): void {
   const total = vertexMs + fragmentMs;
@@ -93,16 +38,6 @@ function cell(row: Widget, text: string, tooltip?: string): Div {
   const d = new Div(row, { text, class: "bottleneck-cell" });
   if (tooltip) d.tooltip = tooltip;
   return d;
-}
-
-/** The frame's verdict in one sentence, from the stage times summed over every timed pass. */
-function frameVerdict(m: FrameMetrics): string {
-  const staged = m.vertexMs + m.fragmentMs;
-  if (staged <= 0) return "The stage split is not available for this capture, so the frame's balance cannot be stated.";
-  const fragmentShare = m.fragmentMs / staged;
-  if (fragmentShare > 0.65) return `This frame is fragment bound: ${formatPercent(fragmentShare)} of stage time is fragment work.`;
-  if (fragmentShare < 0.35) return `This frame is vertex bound: ${formatPercent(1 - fragmentShare)} of stage time is vertex work.`;
-  return `Vertex and fragment work are close to balanced (${formatPercent(fragmentShare)} fragment).`;
 }
 
 /**
@@ -128,7 +63,7 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
 
   // ---- The frame in one card.
   const summary = new Div(root, { class: "frame-stats-section bottleneck-summary" });
-  new Div(summary, { text: frameVerdict(m), class: "bottleneck-verdict" });
+  new Div(summary, { text: frameStageVerdict(m), class: "bottleneck-verdict" });
   const facts = new Div(summary, { class: "frame-stats-list" });
   const fact = (label: string, value: string, tooltip?: string): void => {
     const line = new Div(facts, { class: "frame-stats-row" });
@@ -154,7 +89,7 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
   // ---- What to do, worst pass first.
   const ranked = m.passes
     .filter((p) => p.durationMs !== null)
-    .map((p) => ({ pass: p, advice: adviceFor(p) }))
+    .map((p) => ({ pass: p, advice: passAdvice(p) }))
     .sort((a, b) => (b.pass.durationMs ?? 0) - (a.pass.durationMs ?? 0));
   const withAdvice = ranked.filter((r) => r.advice.length);
 
