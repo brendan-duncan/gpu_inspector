@@ -550,19 +550,19 @@ function summarize(cmd, nameOf) {
   if (a.texture !== void 0 && a.index !== void 0) return slot(nameOf(a.texture) || "(none)");
   if (a.sampler !== void 0 && a.index !== void 0) return slot(nameOf(a.sampler) || "(none)");
   if (Array.isArray(a.buffers) && isObject(a.range)) return `[${num(a.range.location)}] +${num(a.range.length)}`;
-  const parts = [];
+  const parts2 = [];
   for (const [key, value] of Object.entries(a)) {
-    if (parts.length >= 4) break;
+    if (parts2.length >= 4) break;
     if (value === null || value === void 0) continue;
-    if (typeof value === "number") parts.push(`${key} ${value}`);
-    else if (typeof value === "boolean") parts.push(`${key} ${value}`);
-    else if (typeof value === "string") parts.push(value.startsWith("MTL") ? enumShort(key, value) : `${key} ${str(value)}`);
+    if (typeof value === "number") parts2.push(`${key} ${value}`);
+    else if (typeof value === "boolean") parts2.push(`${key} ${value}`);
+    else if (typeof value === "string") parts2.push(value.startsWith("MTL") ? enumShort(key, value) : `${key} ${str(value)}`);
     else if (isObject(value) && typeof value.__id === "number") {
       const n = nameOf(value);
-      if (n) parts.push(n);
-    } else if (isObject(value) && value.width !== void 0 && value.height !== void 0) parts.push(`${key} ${size(value)}`);
+      if (n) parts2.push(n);
+    } else if (isObject(value) && value.width !== void 0 && value.height !== void 0) parts2.push(`${key} ${size(value)}`);
   }
-  return parts.join(", ");
+  return parts2.join(", ");
 }
 var METAL_SETS = {
   DRAW,
@@ -1777,7 +1777,7 @@ function buildRenderGraph(passes, options = {}) {
     return r;
   };
   for (const pass of passes) {
-    const node = {
+    const node2 = {
       ordinal: nodes.length,
       kind: pass.kind,
       label: pass.label,
@@ -1794,24 +1794,24 @@ function buildRenderGraph(passes, options = {}) {
       unread: false,
       pathMs: 0
     };
-    nodes.push(node);
+    nodes.push(node2);
     for (const access of pass.accesses) {
       if (access.mode === "write" && access.discards) continue;
       const resource2 = resourceOf(access.resource);
       const version = current.get(resource2.key);
       const isRead = access.mode !== "write";
-      const use = { node, resource: resource2, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
+      const use = { node: node2, resource: resource2, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
       if (isRead) {
-        node.reads.push(use);
+        node2.reads.push(use);
         resource2.uses.push(use);
-        touch(resource2, node);
+        touch(resource2, node2);
       }
-      if (!version.readers.includes(node)) version.readers.push(node);
-      if (version.producer && version.producer !== node) {
-        const edge = { from: version.producer, to: node, version, usage: access.usage };
+      if (!version.readers.includes(node2)) version.readers.push(node2);
+      if (version.producer && version.producer !== node2) {
+        const edge = { from: version.producer, to: node2, version, usage: access.usage };
         edges.push(edge);
         version.producer.outputs.push(edge);
-        node.inputs.push(edge);
+        node2.inputs.push(edge);
       } else if (!version.producer) {
         resource2.externalInput = true;
       }
@@ -1822,20 +1822,20 @@ function buildRenderGraph(passes, options = {}) {
       const version = {
         resource: resource2,
         index: resource2.versions.length,
-        producer: node,
+        producer: node2,
         readers: [],
         dropped: !!access.dropped
       };
       resource2.versions.push(version);
       current.set(resource2.key, version);
-      const use = { node, resource: resource2, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
-      node.writes.push(use);
+      const use = { node: node2, resource: resource2, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
+      node2.writes.push(use);
       resource2.uses.push(use);
-      touch(resource2, node);
+      touch(resource2, node2);
     }
   }
-  for (const node of nodes) {
-    node.unread = node.writes.length > 0 && node.writes.every((w) => w.version.readers.length === 0 && !w.resource.presented);
+  for (const node2 of nodes) {
+    node2.unread = node2.writes.length > 0 && node2.writes.every((w) => w.version.readers.length === 0 && !w.resource.presented);
   }
   const list = [...resources.values()];
   const graph = {
@@ -1863,36 +1863,36 @@ function buildRenderGraph(passes, options = {}) {
   }
   return graph;
 }
-function touch(resource2, node) {
-  resource2.first = Math.min(resource2.first, node.ordinal);
-  resource2.last = Math.max(resource2.last, node.ordinal);
+function touch(resource2, node2) {
+  resource2.first = Math.min(resource2.first, node2.ordinal);
+  resource2.last = Math.max(resource2.last, node2.ordinal);
 }
 function computeCriticalPath(graph) {
   const next = /* @__PURE__ */ new Map();
   let head = null;
   let best = 0;
   for (let i = graph.nodes.length - 1; i >= 0; i--) {
-    const node = graph.nodes[i];
+    const node2 = graph.nodes[i];
     let bestChild = null;
     let bestChildMs = 0;
-    for (const edge of node.outputs) {
-      if (edge.to.ordinal <= node.ordinal) continue;
+    for (const edge of node2.outputs) {
+      if (edge.to.ordinal <= node2.ordinal) continue;
       if (edge.to.pathMs > bestChildMs) {
         bestChildMs = edge.to.pathMs;
         bestChild = edge.to;
       }
     }
-    node.pathMs = (node.durationMs ?? 0) + bestChildMs;
-    next.set(node, bestChild);
-    if (node.pathMs > best) {
-      best = node.pathMs;
-      head = node;
+    node2.pathMs = (node2.durationMs ?? 0) + bestChildMs;
+    next.set(node2, bestChild);
+    if (node2.pathMs > best) {
+      best = node2.pathMs;
+      head = node2;
     }
   }
   if (!head || best <= 0) return;
-  const path7 = [];
-  for (let n = head; n; n = next.get(n) ?? null) path7.push(n);
-  graph.criticalPath = path7;
+  const path10 = [];
+  for (let n = head; n; n = next.get(n) ?? null) path10.push(n);
+  graph.criticalPath = path10;
   graph.criticalPathMs = best;
 }
 function usageClass(usage) {
@@ -3276,27 +3276,46 @@ function parseSpirvDebugInfo(data) {
   if (mainFile < 0 && files.length) mainFile = files.findIndex((f) => f.text !== null);
   return { language, languageVersion, generator, files, mainFile, form, locations, processed };
 }
+function sourceLineMap(text) {
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const lineOf = new Array(lines.length).fill(0);
+  const physicalOf = /* @__PURE__ */ new Map();
+  let logical = 1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*#\s*line\s+(\d+)/.exec(lines[i]);
+    if (m) {
+      logical = Number(m[1]);
+      continue;
+    }
+    lineOf[i] = logical;
+    physicalOf.set(logical, i);
+    logical++;
+  }
+  for (let i = 0; i < lines.length; i++) if (lineOf[i] && physicalOf.get(lineOf[i]) !== i) lineOf[i] = 0;
+  return { lines, lineOf, physicalOf };
+}
 function hasEmbeddedSource(info) {
   return !!info && info.files.some((f) => f.text !== null);
 }
 function describeDebugInfo(info) {
   if (!info) return "";
-  const parts = [];
+  const parts2 = [];
   const withText = info.files.filter((f) => f.text !== null);
   if (withText.length && withText.every((f) => f.fromHost)) {
-    parts.push(`Source from this machine (source roots): ${withText.map((f) => f.name).join(", ")}`);
+    parts2.push(`Source from this machine (source roots): ${withText.map((f) => f.name).join(", ")}`);
   } else if (withText.length) {
-    parts.push(`Embedded source: ${withText.map((f) => f.name).join(", ")}`);
+    parts2.push(`Embedded source: ${withText.map((f) => f.name).join(", ")}`);
   } else if (info.files.length) {
-    parts.push(`Source file name only: ${info.files.map((f) => f.name).join(", ")}`);
+    parts2.push(`Source file name only: ${info.files.map((f) => f.name).join(", ")}`);
   } else {
-    parts.push("No embedded source");
+    parts2.push("No embedded source");
   }
   const lang = info.language !== "Unknown" ? `${info.language}${info.languageVersion ? ` ${info.languageVersion}` : ""}` : "";
   const lines = info.form === "none" ? "no line mapping" : `line mapping via ${info.form}`;
-  parts.push([lang, info.generator, lines].filter(Boolean).join(", "));
-  if (info.processed.length) parts.push(`processed by ${info.processed.join("; ")}`);
-  return parts.join(" | ");
+  parts2.push([lang, info.generator, lines].filter(Boolean).join(", "));
+  if (info.processed.length) parts2.push(`processed by ${info.processed.join("; ")}`);
+  return parts2.join(" | ");
 }
 
 // src/renderer/vulkan/spirv_analysis.ts
@@ -3962,10 +3981,10 @@ var Folded = class {
   nodes = [];
   /** What the finding names: the first few resources involved. */
   subjects = [];
-  add(node, subject) {
-    if (!this.first) this.first = node;
+  add(node2, subject) {
+    if (!this.first) this.first = node2;
     this.count++;
-    if (this.nodes.length < 64) this.nodes.push(node);
+    if (this.nodes.length < 64) this.nodes.push(node2);
     if (this.subjects.length < 3 && !this.subjects.includes(subject)) this.subjects.push(subject);
   }
   /** "Bloom mip 1, Bloom mip 2 and 4 more". */
@@ -4014,14 +4033,14 @@ var GraphAnalysis = class {
    */
   _unreadStores() {
     const folded = new Folded();
-    for (const node of this._graph.nodes) {
-      for (const write of node.writes) {
+    for (const node2 of this._graph.nodes) {
+      for (const write of node2.writes) {
         if (usageClass(write.usage) !== "attachment") continue;
         if (write.dropped || write.resource.presented) continue;
         if (write.resolved) continue;
         if (write.version.readers.length) continue;
-        if (node.unresolvedReads && node.writes.length === 1) continue;
-        folded.add(node, write.resource.label);
+        if (node2.unresolvedReads && node2.writes.length === 1) continue;
+        folded.add(node2, write.resource.label);
       }
     }
     if (!folded.count) return;
@@ -4162,9 +4181,9 @@ var GraphAnalysis = class {
   }
   // ------------------------------------------------------------------------------- mechanics
   /** True when `use`'s version was produced by `node` (its immediately preceding version). */
-  _producedBy(use, node) {
+  _producedBy(use, node2) {
     const previous = use.resource.versions[use.version.index - 1];
-    return !!previous && previous.producer === node;
+    return !!previous && previous.producer === node2;
   }
   _blindClause() {
     return this._blind ? ", and some of the frame's bindings could not be resolved to a resource at all" : "";
@@ -4172,7 +4191,7 @@ var GraphAnalysis = class {
   _add(rule, severity, confidence, message, folded) {
     const f = { rule, severity, confidence, message, commandIndex: folded.first?.commandIndex, count: folded.count };
     this._findings.push(f);
-    for (const node of folded.nodes) this._attach(node.commandIndex, f);
+    for (const node2 of folded.nodes) this._attach(node2.commandIndex, f);
   }
   _attach(commandIndex, f) {
     const list = this._byCommand.get(commandIndex);
@@ -4180,8 +4199,8 @@ var GraphAnalysis = class {
     else this._byCommand.set(commandIndex, [f]);
   }
 };
-function targetKey(node) {
-  return node.writes.filter((w) => usageClass(w.usage) === "attachment").map((w) => w.resource.key).sort().join("|");
+function targetKey(node2) {
+  return node2.writes.filter((w) => usageClass(w.usage) === "attachment").map((w) => w.resource.key).sort().join("|");
 }
 function sameTargets(a, b) {
   const key = targetKey(a);
@@ -5909,9 +5928,9 @@ function reflectSpirv(data) {
 
 // src/mcp/capture_store.ts
 var Capture = class {
-  constructor(id, path7, mtimeMs, bytes) {
+  constructor(id, path10, mtimeMs, bytes) {
     this.id = id;
-    this.path = path7;
+    this.path = path10;
     this.mtimeMs = mtimeMs;
     const capture = parseCaptureFile(bytes);
     const m = capture.manifest;
@@ -6094,13 +6113,16 @@ function settingsFile() {
   const base = process.platform === "win32" ? process.env.APPDATA ?? path.join(home, "AppData", "Roaming") : process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
   return path.join(base, "gpu-inspector", "settings.json");
 }
-function recentCaptureFiles() {
+function appSetting(key) {
   try {
-    const settings = JSON.parse(fs.readFileSync(settingsFile(), "utf8"));
-    return Array.isArray(settings.recentCaptures) ? settings.recentCaptures.filter((p) => typeof p === "string" && !!p) : [];
+    return JSON.parse(fs.readFileSync(settingsFile(), "utf8"))[key];
   } catch {
-    return [];
+    return void 0;
   }
+}
+function recentCaptureFiles() {
+  const recent = appSetting("recentCaptures");
+  return Array.isArray(recent) ? recent.filter((p) => typeof p === "string" && !!p) : [];
 }
 
 // src/renderer/utils/base64.ts
@@ -6108,11 +6130,11 @@ var _uint8Proto = Uint8Array.prototype;
 var _uint8Ctor = Uint8Array;
 var _hasNativeToBase64 = typeof _uint8Proto.toBase64 === "function";
 var _hasNativeFromBase64 = typeof _uint8Ctor.fromBase64 === "function";
-function decodeBase64(str2) {
+function decodeBase64(str3) {
   if (_hasNativeFromBase64) {
-    return _uint8Ctor.fromBase64(str2);
+    return _uint8Ctor.fromBase64(str3);
   }
-  const binary = atob(str2);
+  const binary = atob(str3);
   const len = binary.length;
   const out = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
@@ -6289,6 +6311,85 @@ function vertexLayout(state, binding, vb) {
   if (!isObject(b)) return null;
   const attributes = attrs.filter((a) => isObject(a) && num(a.binding) === binding).map((a) => ({ location: num(a.location), format: str(a.format), offset: num(a.offset) })).sort((x, y) => x.offset - y.offset);
   return { stride: vb.stride ?? num(b.stride), rate: str(b.inputRate), attributes };
+}
+
+// src/renderer/metal/argument_buffer.ts
+function handleOf(type) {
+  if (type.kind !== "opaque") return null;
+  const raw = type;
+  return typeof raw.metal === "string" ? { metal: raw.metal, name: type.name } : null;
+}
+function isArgumentBufferType(type, depth = 0) {
+  if (depth > 8) return false;
+  if (handleOf(type)) return true;
+  if (type.kind === "struct") return type.members.some((m) => isArgumentBufferType(m.type, depth + 1));
+  if (type.kind === "array") return isArgumentBufferType(type.element, depth + 1);
+  return false;
+}
+var HandleIndex = class {
+  _buffers = [];
+  _byResourceId = /* @__PURE__ */ new Map();
+  constructor(db) {
+    for (const o of db.allObjects.values()) {
+      if (!o.type.startsWith("MTL") || !o.args) continue;
+      const address = o.args.gpuAddress;
+      if (typeof address === "string" && address.startsWith("0x")) {
+        const start = BigInt(address);
+        const length = BigInt(Math.max(0, num(o.args.length)));
+        this._buffers.push({ start, end: start + length, object: o });
+      }
+      const id = o.args.gpuResourceID;
+      if (typeof id === "string" && id.startsWith("0x")) this._byResourceId.set(id.toLowerCase(), o);
+    }
+  }
+  buffer(address) {
+    for (const b of this._buffers) {
+      if (address >= b.start && address < b.end) return { object: b.object, offset: Number(address - b.start) };
+    }
+    return null;
+  }
+  resource(id) {
+    return this._byResourceId.get(`0x${id.toString(16)}`) ?? null;
+  }
+};
+var MAX_ENTRIES = 512;
+function argumentBufferEntries(type, data, db) {
+  const index = new HandleIndex(db);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const out = [];
+  const walk = (t, offset, path10, depth) => {
+    if (out.length >= MAX_ENTRIES || depth > 8) return;
+    const handle = handleOf(t);
+    if (handle) {
+      let value = null;
+      if (offset + 8 <= data.byteLength) value = view.getBigUint64(offset, true);
+      let object = null;
+      let objectOffset = null;
+      if (value !== null && value !== 0n) {
+        if (handle.metal === "pointer") {
+          const hit = index.buffer(value);
+          if (hit) {
+            object = hit.object;
+            objectOffset = hit.offset;
+          }
+        } else {
+          object = index.resource(value);
+        }
+      }
+      out.push({ path: path10, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
+      return;
+    }
+    if (t.kind === "struct") {
+      for (const m of t.members) walk(m.type, offset + m.offset, path10 ? `${path10}.${m.name}` : m.name, depth + 1);
+    } else if (t.kind === "array") {
+      const stride = t.stride || (t.element.kind === "opaque" ? 8 : t.element.size);
+      if (stride <= 0) return;
+      const count2 = t.count > 0 ? t.count : Math.floor((data.byteLength - offset) / stride);
+      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path10}[${i}]`, depth + 1);
+    }
+  };
+  walk(type, 0, "", 0);
+  return out;
 }
 
 // src/renderer/metal/reflection.ts
@@ -6658,6 +6759,320 @@ function page(items, args, defaultLimit, maxLimit) {
   return { items: slice, total: items.length, offset, ...offset + slice.length < items.length ? { nextOffset: offset + slice.length } : {} };
 }
 
+// src/mcp/search_paths.ts
+import fs4 from "node:fs";
+
+// src/main/shader_sources.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+var SEARCH_DEPTH = 6;
+var MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", ".svn", "__pycache__"]);
+var indexCache = /* @__PURE__ */ new Map();
+function indexRoot(root) {
+  const cached = indexCache.get(root);
+  if (cached) return cached;
+  const byName = /* @__PURE__ */ new Map();
+  const visit = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs2.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path2.join(dir, e.name);
+      if (e.isFile()) {
+        const key = e.name.toLowerCase();
+        const list = byName.get(key);
+        if (list) list.push(full);
+        else byName.set(key, [full]);
+      } else if (e.isDirectory() && depth < SEARCH_DEPTH && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".")) {
+        visit(full, depth + 1);
+      }
+    }
+  };
+  visit(root, 0);
+  indexCache.set(root, byName);
+  return byName;
+}
+function forgetSourceIndex() {
+  indexCache.clear();
+}
+function parts(p) {
+  return p.replace(/\\/g, "/").split("/").filter((s) => s && s !== ".");
+}
+function suffixMatch(name, candidate) {
+  const c2 = parts(candidate).map((s) => s.toLowerCase());
+  let n = 0;
+  while (n < name.length && n < c2.length && name[name.length - 1 - n].toLowerCase() === c2[c2.length - 1 - n]) n++;
+  return n;
+}
+function readText(file) {
+  try {
+    if (fs2.statSync(file).size > MAX_SOURCE_BYTES) return null;
+    return fs2.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+function findShaderSources(names, roots) {
+  const out = {};
+  const cleanRoots = roots.map((r) => r.trim()).filter((r) => r && fs2.existsSync(r));
+  for (const name of names) {
+    if (!name) continue;
+    if (path2.isAbsolute(name) && fs2.existsSync(name)) {
+      const text2 = readText(name);
+      if (text2 !== null) {
+        out[name] = text2;
+        continue;
+      }
+    }
+    const nameParts = parts(name);
+    const base = nameParts[nameParts.length - 1]?.toLowerCase();
+    if (!base) continue;
+    let best = null;
+    for (const root of cleanRoots) {
+      for (const file of indexRoot(root).get(base) ?? []) {
+        const score = suffixMatch(nameParts, file);
+        if (!best || score > best.score) best = { file, score };
+      }
+    }
+    if (!best) continue;
+    const text = readText(best.file);
+    if (text !== null) out[name] = text;
+  }
+  return out;
+}
+
+// src/main/symbolize.ts
+import { execFile } from "node:child_process";
+import fs3 from "node:fs";
+import os2 from "node:os";
+import path3 from "node:path";
+var SEARCH_DEPTH2 = 5;
+var SYMBOLIZER_TIMEOUT_MS = 3e4;
+function findSymbolizer() {
+  const exe = process.platform === "win32" ? ".exe" : "";
+  const roots = [];
+  for (const v of ["ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK"]) if (process.env[v]) roots.push(process.env[v]);
+  const sdks = [];
+  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) if (process.env[v]) sdks.push(process.env[v]);
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) sdks.push(path3.join(process.env.LOCALAPPDATA, "Android", "Sdk"));
+  else if (process.platform === "darwin") sdks.push(path3.join(os2.homedir(), "Library", "Android", "sdk"));
+  else sdks.push(path3.join(os2.homedir(), "Android", "Sdk"));
+  for (const sdk of sdks) {
+    const ndk = path3.join(sdk, "ndk");
+    if (fs3.existsSync(ndk)) for (const v of fs3.readdirSync(ndk).sort().reverse()) roots.push(path3.join(ndk, v));
+  }
+  for (const root of roots) {
+    const prebuilt = path3.join(root, "toolchains", "llvm", "prebuilt");
+    if (!fs3.existsSync(prebuilt)) continue;
+    for (const host of fs3.readdirSync(prebuilt)) {
+      const candidate = path3.join(prebuilt, host, "bin", `llvm-symbolizer${exe}`);
+      if (fs3.existsSync(candidate)) return { exe: candidate, llvm: true };
+    }
+  }
+  for (const dir of (process.env.PATH ?? "").split(path3.delimiter)) {
+    if (!dir) continue;
+    for (const [name, llvm] of [["llvm-symbolizer", true], ["addr2line", false]]) {
+      const candidate = path3.join(dir, name + exe);
+      if (fs3.existsSync(candidate)) return { exe: candidate, llvm };
+    }
+  }
+  return null;
+}
+function findModule(module, dirs) {
+  let best = null;
+  const visit = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs3.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path3.join(dir, e.name);
+      if (e.isFile() && e.name === module) {
+        const size2 = fs3.statSync(full).size;
+        if (!best || size2 > best.size) best = { file: full, size: size2 };
+      } else if (e.isDirectory() && depth < SEARCH_DEPTH2 && !e.name.startsWith(".") && e.name !== "node_modules") {
+        visit(full, depth + 1);
+      }
+    }
+  };
+  for (const d of dirs) if (d) visit(d, 0);
+  return best ? best.file : null;
+}
+function run(exe, args) {
+  return new Promise((resolve) => {
+    execFile(exe, args, { timeout: SYMBOLIZER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err ? "" : stdout));
+  });
+}
+var moduleCache = /* @__PURE__ */ new Map();
+async function symbolizeFrames(frames, dirs) {
+  const wanted = frames.filter((f) => f.module && f.offset > 0 && !f.file && !f.internal);
+  if (!wanted.length || !dirs.length) return [];
+  const tool = findSymbolizer();
+  if (!tool) return [];
+  const byModule = /* @__PURE__ */ new Map();
+  for (const f of wanted) {
+    const list = byModule.get(f.module);
+    if (list) list.push(f);
+    else byModule.set(f.module, [f]);
+  }
+  const out = [];
+  for (const [module, list] of byModule) {
+    const key = `${dirs.join(";")}|${module}`;
+    let file = moduleCache.get(key);
+    if (file === void 0) {
+      file = findModule(module, dirs);
+      moduleCache.set(key, file);
+    }
+    if (!file) continue;
+    const offsets = list.map((f) => `0x${f.offset.toString(16)}`);
+    if (tool.llvm) {
+      const text2 = await run(tool.exe, [`--obj=${file}`, "--functions=linkage", "--demangle", "--inlining=true", "--output-style=JSON", ...offsets]);
+      let entries = [];
+      try {
+        entries = JSON.parse(text2);
+      } catch {
+        continue;
+      }
+      for (let i = 0; i < list.length && i < entries.length; ++i) {
+        const symbols = (entries[i].Symbol ?? []).map((s) => ({
+          function: s.FunctionName && s.FunctionName !== "??" ? s.FunctionName : void 0,
+          file: s.FileName && s.FileName !== "??" && (s.Line ?? 0) > 0 ? s.FileName : void 0,
+          line: (s.Line ?? 0) > 0 ? s.Line : void 0
+        }));
+        const inner = symbols[0];
+        if (!inner || !inner.function && !inner.file) continue;
+        const resolved = { ...list[i] };
+        if (inner.function) resolved.function = inner.function;
+        if (inner.file) {
+          resolved.file = inner.file;
+          resolved.line = inner.line;
+        }
+        const callers = symbols.slice(1).filter((s) => s.function || s.file);
+        if (callers.length) resolved.inlinedInto = callers;
+        out.push(resolved);
+      }
+      continue;
+    }
+    const text = await run(tool.exe, ["-C", "-f", "-e", file, ...offsets]);
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length);
+    for (let i = 0; i < list.length && 2 * i + 1 < lines.length; ++i) {
+      const fn = lines[2 * i];
+      const loc = /^(.*?):(\d+)(?::\d+)?$/.exec(lines[2 * i + 1]);
+      const f = list[i];
+      const resolved = { ...f };
+      let gained = false;
+      if (fn && fn !== "??") {
+        resolved.function = fn;
+        gained = true;
+      }
+      if (loc && loc[1] !== "??" && Number(loc[2]) > 0) {
+        resolved.file = loc[1];
+        resolved.line = Number(loc[2]);
+        gained = true;
+      }
+      if (gained) out.push(resolved);
+    }
+  }
+  return out;
+}
+
+// src/mcp/search_paths.ts
+var ENV = { sourceRoots: "GPU_INSPECTOR_SOURCE_ROOTS", symbolDirs: "GPU_INSPECTOR_SYMBOL_DIRS" };
+var overrides = {};
+function splitPaths(value) {
+  const items = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(";") : [];
+  return items.map((s) => s.trim()).filter(Boolean);
+}
+function searchPaths(kind) {
+  const set = overrides[kind];
+  if (set) return { dirs: set, from: "set_search_paths" };
+  const env = splitPaths(process.env[ENV[kind]]);
+  if (env.length) return { dirs: env, from: ENV[kind] };
+  const saved = splitPaths(appSetting(kind));
+  if (saved.length) return { dirs: saved, from: "GPU Inspector's settings" };
+  return { dirs: [], from: "none" };
+}
+function setSearchPaths(kind, dirs) {
+  if (dirs.length) overrides[kind] = dirs;
+  else delete overrides[kind];
+  if (kind === "sourceRoots") forgetSourceIndex();
+}
+function describeSearchPaths() {
+  const describe = (kind) => {
+    const { dirs, from } = searchPaths(kind);
+    const missing = dirs.filter((d) => !fs4.existsSync(d));
+    return { dirs, from, missing: missing.length ? missing : void 0 };
+  };
+  const symbolizer = findSymbolizer();
+  return {
+    sourceRoots: describe("sourceRoots"),
+    symbolDirs: describe("symbolDirs"),
+    symbolizer: symbolizer ? symbolizer.exe : "None found: llvm-symbolizer from the Android NDK (ANDROID_NDK_HOME), or llvm-symbolizer or addr2line on PATH, resolves frames under symbolDirs."
+  };
+}
+function debugInfoWithSources(spirv) {
+  const info = parseSpirvDebugInfo(spirv);
+  if (!info) return { info, found: [] };
+  const missing = info.files.filter((f) => f.text === null && f.name);
+  if (missing.length) {
+    const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
+    for (const f of missing) {
+      const text = texts[f.name];
+      if (typeof text !== "string") continue;
+      f.text = text;
+      f.fromHost = true;
+    }
+    if (info.mainFile < 0) info.mainFile = info.files.findIndex((f) => f.text !== null);
+  }
+  return { info, found: info.files.filter((f) => f.fromHost).map((f) => f.name) };
+}
+function sourceLineTexts(info) {
+  const out = /* @__PURE__ */ new Map();
+  for (const f of info?.files ?? []) {
+    if (f.text === null) continue;
+    const map = sourceLineMap(f.text);
+    const byLine = /* @__PURE__ */ new Map();
+    map.lines.forEach((text, i) => {
+      if (map.lineOf[i] > 0) byLine.set(map.lineOf[i], text.trim());
+    });
+    out.set(f.name, byLine);
+    const base = f.name.split(/[\\/]/).pop();
+    if (base && !out.has(base)) out.set(base, byLine);
+  }
+  return out;
+}
+function codeAt(texts, file, line) {
+  if (!line) return void 0;
+  const base = file?.split(/[\\/]/).pop();
+  const byLine = file ? texts.get(file) ?? (base ? texts.get(base) : void 0) : texts.size === 1 ? [...texts.values()][0] : void 0;
+  const code = byLine?.get(line);
+  if (!code) return void 0;
+  return code.length > 200 ? `${code.slice(0, 200)}...` : code;
+}
+async function symbolizeOnHost(frames) {
+  const dirs = searchPaths("symbolDirs").dirs;
+  if (!dirs.length || !frames.some((f) => f.module && f.offset > 0 && !f.file && !f.internal)) return frames;
+  const resolved = await symbolizeFrames(frames, dirs);
+  if (!resolved.length) return frames;
+  const byKey = new Map(resolved.map((f) => [`${f.module}+${f.offset}`, f]));
+  return frames.map((f) => byKey.get(`${f.module}+${f.offset}`) ?? f);
+}
+async function symbolizeSymbolMap(db, frames) {
+  const list = [...frames.values()];
+  const resolved = await symbolizeOnHost(list);
+  resolved.forEach((f, i) => {
+    if (f === list[i]) return;
+    frames.set(f.address, f);
+    db.symbols.set(f.address, f);
+  });
+}
+
 // src/mcp/command_tools.ts
 var KINDS = ["all", "draw", "dispatch", "action", "pass", "bind", "label", "submit", "issue", "validation"];
 var SEVERITY_ORDER = ["error", "warning", "info", "verbose"];
@@ -6865,6 +7280,7 @@ var StateReader = class {
         unread++;
         continue;
       }
+      const bytes = this.c.data.buffer(sb.dataId)?.data;
       slots.push({
         stage: sb.stage,
         index: sb.index,
@@ -6873,7 +7289,8 @@ var StateReader = class {
         buffer: sb.inline ? "inline bytes" : refText(db, sb.buffer),
         offset: sb.offset,
         boundAt: sb.cmd.index,
-        ...this.captured(sb.dataId, res?.type ?? null)
+        ...this.captured(sb.dataId, res?.type ?? null),
+        argumentBuffer: res && bytes && isArgumentBufferType(res.type) ? argumentBufferBrief(db, argumentBufferEntries(res.type, bytes, db)) : void 0
       });
     }
     return { slots, unreadSlots: unread || void 0 };
@@ -6922,6 +7339,20 @@ var StateReader = class {
     return this.c.data.texturesForPass(cmd.frame, cmd.object?.__id ?? 0, pass.passIndex).map((t) => textureBrief(this.c, t));
   }
 };
+var MAX_ARGUMENT_ENTRIES = 64;
+function argumentBufferBrief(db, entries) {
+  if (!entries.length) return void 0;
+  const out = entries.slice(0, MAX_ARGUMENT_ENTRIES).map((e) => ({
+    member: e.path,
+    kind: e.kind,
+    type: e.typeName,
+    resource: e.object ? refText(db, e.object.id) : void 0,
+    offset: e.objectOffset || void 0,
+    value: e.object ? void 0 : e.value === null ? "past the captured range" : e.value === "0x0" ? "null" : `${e.value}: no tracked ${e.kind === "pointer" ? "buffer holds this address" : "object has this id"}`
+  }));
+  if (entries.length > MAX_ARGUMENT_ENTRIES) out.push(`... ${entries.length - MAX_ARGUMENT_ENTRIES} more members`);
+  return out;
+}
 function commandDetail(c2, cmd, values) {
   const d = c2.data;
   const db = c2.db;
@@ -6975,6 +7406,29 @@ function commandDetail(c2, cmd, values) {
     out.renderTargets = new StateReader(c2, emptyDrawState(""), values).targetsOf(cmd);
   }
   return out;
+}
+function objectDetail(db, o) {
+  const dependencies = [...o.dependencies];
+  const dependents = [...o.dependents];
+  return {
+    id: o.id,
+    type: o.type,
+    name: o.name !== `${o.shortType} ${o.id}` ? o.name : void 0,
+    handle: o.handle,
+    createdBy: o.cmd,
+    parent: refText(db, o.parentId),
+    destroyed: o.isDeleted || void 0,
+    invalid: o.invalidReason ?? void 0,
+    summary: o.summary(db) || void 0,
+    memoryBytes: objectMemoryBytes(o, db) || void 0,
+    args: compact(o.args, db),
+    updates: Object.keys(o.updates).length ? compact(o.updates, db) : void 0,
+    fixedFunction: fixedFunctionState(o),
+    dependsOn: dependencies.length ? dependencies.slice(0, 100).map((x) => refText(db, x.id)) : void 0,
+    dependents: dependents.length ? dependents.slice(0, 100).map((x) => refText(db, x.id)) : void 0,
+    moreDependents: dependents.length > 100 ? dependents.length - 100 : void 0,
+    payloads: o.blobs.length ? o.blobs.map((b, i) => ({ index: i, name: b.name, bytes: b.size })) : void 0
+  };
 }
 function commandTools(store) {
   return [
@@ -7059,19 +7513,21 @@ function commandTools(store) {
     },
     {
       name: "get_command",
-      description: "One command in full: its arguments (object references as Type#id), pass and debug groups, the Frame Issues and validation messages on it, its recording stack when captured, and for a draw, dispatch or binding command the state bound at it \u2014 the pipeline with its shader stages and fixed-function state (topology, cull mode, depth test, blending), every descriptor set with each binding's shader name and its uniform or storage buffer values decoded by the shader's reflection, sampled images (with their read-back texture numbers), vertex buffers with the layout and first vertices, the index buffer with the first indices, push constants with values, viewports and scissors, indirect arguments, and the pass's render targets. Use it to see what a draw actually read.",
+      description: "One command in full: its arguments (object references as Type#id), pass and debug groups, the Frame Issues and validation messages on it, its recording stack when captured, and for a draw, dispatch or binding command the state bound at it \u2014 the pipeline with its shader stages and fixed-function state (topology, cull mode, depth test, blending), every descriptor set with each binding's shader name and its uniform or storage buffer values decoded by the shader's reflection, sampled images (with their read-back texture numbers), vertex buffers with the layout and first vertices, the index buffer with the first indices, push constants with values, viewports and scissors, indirect arguments, the pass's render targets, and on Metal the stage buffers, with an argument buffer's members resolved to the buffers, textures and samplers they hold. Use it to see what a draw actually read.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         index: { type: "integer", minimum: 0, description: "The command's index (from list_commands, a finding or a message)." },
         values: { type: "boolean", description: "Decode buffer and push constant values (default true); false for the structure alone." }
       }, ["index"]),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         const index = requireInt(args, "index");
         const cmd = c2.data.commands[index];
         if (!cmd) throw new Error(`No command ${index}: ${c2.id} has ${c2.data.commands.length} commands (0-${c2.data.commands.length - 1}).`);
-        return jsonResult(commandDetail(c2, cmd, boolArg(args, "values", true)));
+        const detail = commandDetail(c2, cmd, boolArg(args, "values", true));
+        if (cmd.stack?.length) detail.stack = stackLines(await symbolizeOnHost(cmd.stack.map((a) => c2.db.symbols.get(a) ?? { address: a, offset: 0 })));
+        return jsonResult(detail);
       }
     },
     {
@@ -7118,15 +7574,13 @@ function commandTools(store) {
         id: { type: "integer", minimum: 0, description: "The object's id: the number after # in a reference like VkImage#12." }
       }, ["id"]),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         const db = c2.db;
         const d = c2.data;
         const id = requireInt(args, "id");
         const o = db.getObject(id);
         if (!o) throw new Error(`No object ${id} in ${c2.id}.`);
-        const dependencies = [...o.dependencies];
-        const dependents = [...o.dependents];
         const stack = db.stacks.get(o.id);
         const shaderTypes = ["VkPipeline", "VkShaderModule", "MTLLibrary", "MTLFunction", "MTLRenderPipelineState", "MTLComputePipelineState"];
         const images = d.textures.filter((t) => t.info.id === o.id).map((t) => d.textures.indexOf(t));
@@ -7134,28 +7588,13 @@ function commandTools(store) {
         const validation = db.validationFor(o.id);
         return jsonResult({
           capture: c2.id,
-          id: o.id,
-          type: o.type,
-          name: o.name !== `${o.shortType} ${o.id}` ? o.name : void 0,
-          handle: o.handle,
-          createdBy: o.cmd,
-          parent: refText(db, o.parentId),
-          destroyed: o.isDeleted || void 0,
-          invalid: o.invalidReason ?? void 0,
-          summary: o.summary(db) || void 0,
-          memoryBytes: objectMemoryBytes(o, db) || void 0,
-          args: compact(o.args, db),
-          updates: Object.keys(o.updates).length ? compact(o.updates, db) : void 0,
-          fixedFunction: fixedFunctionState(o),
-          dependsOn: dependencies.length ? dependencies.slice(0, 100).map((x) => refText(db, x.id)) : void 0,
-          dependents: dependents.length ? dependents.slice(0, 100).map((x) => refText(db, x.id)) : void 0,
-          moreDependents: dependents.length > 100 ? dependents.length - 100 : void 0,
+          ...objectDetail(db, o),
           payloads: o.blobs.length ? o.blobs.map((b, i) => ({ index: i, name: b.name, bytes: b.size, inFile: db.blobData.has(`${o.id}:${i}`) })) : void 0,
           shader: shaderTypes.includes(o.type) ? "get_shader shows this object's code, reflection and analysis." : void 0,
           textures: images.length ? images : void 0,
           bufferRanges: ranges.length ? ranges.slice(0, 50).map((b) => ({ data: b.info.id, offset: b.info.offset, bytes: b.info.size, error: b.info.error })) : void 0,
           validation: validation.length ? validation.slice(0, 20).map((v) => validationBrief(c2, v, 600)) : void 0,
-          creationStack: stack?.length ? stackLines(stack) : void 0
+          creationStack: stack?.length ? stackLines(await symbolizeOnHost(stack)) : void 0
         });
       }
     },
@@ -7192,12 +7631,401 @@ function commandTools(store) {
 }
 
 // src/mcp/live_session.ts
-import { spawn } from "node:child_process";
-import fs4 from "node:fs";
+import { spawn as spawn2 } from "node:child_process";
+import fs8 from "node:fs";
 import net2 from "node:net";
+import os5 from "node:os";
+import path7 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/main/android.ts
+import { execFile as execFile2, execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
+import fs5 from "node:fs";
 import os3 from "node:os";
 import path4 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var LAYER_LIB = "libVkLayer_inspector_capture.so";
+var LAYER_APK = "gpu_inspector_layer.apk";
+var DEVICE_TMP = "/data/local/tmp";
+var ADB_TIMEOUT_MS = 2e4;
+var INSTALL_TIMEOUT_MS = 18e4;
+var START_TIMEOUT_MS = 6e4;
+var PID_RETRIES = 20;
+var PID_RETRY_MS = 500;
+var POLL_MS = 2e3;
+var MIN_SDK = 28;
+var LAYER_APP_SDK = 29;
+function findAdb() {
+  const exe = process.platform === "win32" ? "adb.exe" : "adb";
+  const candidates = [];
+  if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
+  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
+    if (process.env[v]) candidates.push(path4.join(process.env[v], "platform-tools", exe));
+  }
+  if (process.platform === "win32") {
+    if (process.env.LOCALAPPDATA) candidates.push(path4.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+  } else if (process.platform === "darwin") {
+    candidates.push(path4.join(os3.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+  } else {
+    candidates.push(path4.join(os3.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+  }
+  for (const c2 of candidates) if (fs5.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path4.delimiter)) {
+    if (dir && fs5.existsSync(path4.join(dir, exe))) return path4.join(dir, exe);
+  }
+  return null;
+}
+function adbArgs(serial, args) {
+  return serial ? ["-s", serial, ...args] : args;
+}
+function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
+        reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+function shell(adbPath, serial, command, timeoutMs = ADB_TIMEOUT_MS) {
+  return adb(adbPath, serial, ["shell", command], timeoutMs);
+}
+function parseDevices(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("List of devices") || line.startsWith("*")) continue;
+    const parts2 = line.split(/\s+/);
+    if (parts2.length < 2) continue;
+    const model = parts2.find((p) => p.startsWith("model:"))?.substring(6).replace(/_/g, " ") ?? "";
+    out.push({ serial: parts2[0], state: parts2[1], model });
+  }
+  return out;
+}
+async function listDevices(adbPath) {
+  const listed = parseDevices(await adb(adbPath, null, ["devices", "-l"]));
+  const devices = [];
+  for (const d of listed) {
+    const dev = { serial: d.serial, state: d.state, model: d.model, sdk: 0, abi: "" };
+    if (d.state === "device") {
+      try {
+        const props = (await shell(adbPath, d.serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.manufacturer; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+        dev.sdk = Number(props[0]) || 0;
+        dev.abi = props[1] ?? "";
+        if (!dev.model) dev.model = [props[2], props[3]].filter(Boolean).join(" ");
+      } catch {
+      }
+    }
+    devices.push(dev);
+  }
+  return devices;
+}
+async function listPackages(adbPath, serial) {
+  const text = await shell(adbPath, serial, "pm list packages -3");
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("package:")).map((l) => l.substring(8)).sort();
+}
+async function resolveActivity(adbPath, serial, pkg) {
+  try {
+    const text = await shell(adbPath, serial, `cmd package resolve-activity --brief ${pkg}`);
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const component = lines.reverse().find((l) => l.startsWith(`${pkg}/`));
+    return component ?? null;
+  } catch {
+    return null;
+  }
+}
+function findAndroidLayer(candidates) {
+  for (const dir of candidates) {
+    const libRoot = path4.join(dir, "lib");
+    if (!fs5.existsSync(libRoot)) continue;
+    const libs = {};
+    for (const abi of fs5.readdirSync(libRoot)) {
+      const lib = path4.join(libRoot, abi, LAYER_LIB);
+      if (fs5.existsSync(lib)) libs[abi] = lib;
+    }
+    if (!Object.keys(libs).length) continue;
+    const apk = path4.join(dir, LAYER_APK);
+    let apkInfo = null;
+    if (fs5.existsSync(apk)) {
+      try {
+        apkInfo = JSON.parse(fs5.readFileSync(`${apk}.json`, "utf8"));
+      } catch {
+        apkInfo = null;
+      }
+    }
+    return { dir, libs, apk: apkInfo ? apk : null, apkInfo };
+  }
+  return null;
+}
+var AndroidTarget = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  pid = null;
+  _logcat = null;
+  _poll = null;
+  _polling = false;
+  _stopped = false;
+  /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
+  async start() {
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    const log = this.opts.onLog;
+    const props = (await shell(adbPath, serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.cpu.abilist; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+    const sdk = Number(props[0]) || 0;
+    const abi = props[1] ?? "";
+    const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
+    log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
+    if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
+    const how = await this._installLayer(sdk, abilist);
+    log(`layer: ${how}`);
+    await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+    await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
+    await shell(adbPath, serial, `am force-stop ${pkg}`);
+    for (let i = 0; i < 20 && !this._stopped; ++i) {
+      const pid = await this._findPid();
+      if (pid === null) break;
+      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!this._stopped) {
+      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
+      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
+    }
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
+    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
+    if (this._stopped) return;
+    this._startLogcat();
+    let activity = this.opts.activity.trim();
+    if (!activity) activity = await resolveActivity(adbPath, serial, pkg) ?? "";
+    if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
+    if (activity) {
+      log(`starting ${activity}`);
+      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
+      const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
+      if (error) throw new Error(`${error.trim()} (activity ${activity})`);
+    } else {
+      log(`starting ${pkg} (no launchable activity resolved; using the launcher intent)`);
+      const out = await shell(adbPath, serial, `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, START_TIMEOUT_MS);
+      if (/No activities found|monkey aborted/i.test(out)) throw new Error(`no launchable activity in ${pkg}`);
+    }
+    for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
+      this.pid = await this._findPid();
+      if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
+      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
+    }
+    if (this._stopped) return;
+    if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
+    await this._launchDiagnostics(false);
+    this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
+  }
+  /** The layer's abstract socket on the device: the port and the package (see transport.cpp). */
+  get socketName() {
+    return `vkinsp:${this.opts.port}:${this.opts.package}`;
+  }
+  /**
+   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
+   * device disconnects, and a headset's USB link blips when it changes power state, so a
+   * connection attempt refused on the host side is checked against `adb forward --list`.
+   * Resolves true when the forward had to be re-created.
+   */
+  async ensureForward() {
+    if (this._stopped) return false;
+    const { adb: adbPath, serial, port } = this.opts;
+    const target = `localabstract:${this.socketName}`;
+    const list = await adb(adbPath, serial, ["forward", "--list"]);
+    const present = list.split(/\r?\n/).some((l) => {
+      const f = l.trim().split(/\s+/);
+      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
+    });
+    if (present || this._stopped) return false;
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
+    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
+    return true;
+  }
+  /** Terminates the application, the port forward and the watches. */
+  async stop() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    try {
+      await shell(adbPath, serial, `am force-stop ${pkg}`);
+    } catch {
+    }
+    try {
+      await adb(adbPath, serial, ["forward", "--remove", `tcp:${port}`]);
+    } catch {
+    }
+  }
+  /** stop() for application exit, where nothing can be awaited. */
+  stopSync() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
+      try {
+        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
+      } catch {
+      }
+    }
+  }
+  _stopWatching() {
+    this._stopped = true;
+    if (this._poll) {
+      clearInterval(this._poll);
+      this._poll = null;
+    }
+    if (this._logcat) {
+      try {
+        this._logcat.kill();
+      } catch {
+      }
+      this._logcat = null;
+    }
+  }
+  /**
+   * Gets the layer where the device's loader will find it. Android 10+ with the layer APK:
+   * install it (when the installed version differs) and point gpu_debug_layer_app at it. Otherwise
+   * copy the .so into the target's data directory with run-as, skipped when the copy there
+   * already matches.
+   */
+  async _installLayer(sdk, abilist) {
+    const { adb: adbPath, serial, package: pkg, layer } = this.opts;
+    const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo.abis.includes(a)) : void 0;
+    if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
+      const info = layer.apkInfo;
+      let installed = "";
+      try {
+        const dump = await shell(adbPath, serial, `dumpsys package ${info.package}`);
+        installed = /versionName=(\S+)/.exec(dump)?.[1] ?? "";
+      } catch {
+        installed = "";
+      }
+      if (installed !== info.versionName) {
+        this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
+        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+      }
+      await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
+      return `${info.package} ${info.versionName} (${apkAbi})`;
+    }
+    const abi = abilist.find((a) => layer.libs[a]);
+    if (!abi) {
+      throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
+    }
+    const lib = layer.libs[abi];
+    const local = crypto.createHash("md5").update(fs5.readFileSync(lib)).digest("hex");
+    let remote = "";
+    try {
+      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
+        throw new Error(`${pkg} is not debuggable: Android only loads layers into debuggable applications (a Unity Development Build) or on rooted devices`);
+      }
+      remote = "";
+    }
+    if (remote !== local) {
+      this.opts.onLog(`copying ${LAYER_LIB} (${abi}) into ${pkg}'s data directory`);
+      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${LAYER_LIB}`], INSTALL_TIMEOUT_MS);
+      try {
+        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${LAYER_LIB} . && run-as ${pkg} chmod 700 ${LAYER_LIB}`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
+      }
+    }
+    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
+    return `${LAYER_LIB} (${abi}) in ${pkg}'s data directory`;
+  }
+  _startLogcat() {
+    const { adb: adbPath, serial } = this.opts;
+    const proc = spawn(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", "vkinsp:*", "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    this._logcat = proc;
+    let rest = "";
+    proc.stdout?.on("data", (d) => {
+      rest += d.toString("utf8");
+      const lines = rest.split(/\r?\n/);
+      rest = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.length || line.startsWith("--------- beginning of")) continue;
+        this.opts.onLog(line.startsWith("I/vkinsp") ? `[vkinsp] ${line.replace(/^I\/vkinsp\s*:\s?/, "")}` : line);
+      }
+    });
+    proc.on("exit", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+    proc.on("error", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+  }
+  /**
+   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
+   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
+   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
+   * which then blocks every later launch until the shell restarts.
+   */
+  async _launchDiagnostics(noProcess) {
+    const { adb: adbPath, serial } = this.opts;
+    const log = this.opts.onLog;
+    try {
+      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
+      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
+      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
+    } catch {
+    }
+    try {
+      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
+      if (Number(windows.trim()) > 0) {
+        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+      }
+    } catch {
+    }
+    if (!noProcess) return;
+    try {
+      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
+      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
+      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+    } catch {
+    }
+  }
+  async _findPid() {
+    try {
+      const out = (await shell(this.opts.adb, this.opts.serial, `pidof ${this.opts.package}`)).trim();
+      const pid = Number(out.split(/\s+/)[0]);
+      return pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+  async _pollProcess() {
+    if (this._polling || this._stopped) return;
+    this._polling = true;
+    try {
+      const pid = await this._findPid();
+      if (this._stopped) return;
+      if (pid === null || this.pid !== null && pid !== this.pid) {
+        this._stopWatching();
+        this.opts.onExit();
+      }
+    } finally {
+      this._polling = false;
+    }
+  }
+};
+async function disableLayer(adbPath, serial) {
+  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app"]) {
+    try {
+      await shell(adbPath, serial, `settings delete global ${key}`);
+    } catch {
+    }
+  }
+}
 
 // src/main/layer_protocol.ts
 function encodeRequest(msg) {
@@ -7242,24 +8070,24 @@ var FrameReader = class {
 };
 
 // src/main/launch_env.ts
-import { execFile } from "node:child_process";
-import fs2 from "node:fs";
+import { execFile as execFile3 } from "node:child_process";
+import fs6 from "node:fs";
 import net from "node:net";
-import os2 from "node:os";
-import path2 from "node:path";
-var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+import os4 from "node:os";
+import path5 from "node:path";
+var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
 var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
 var DEFAULT_PORT = 47531;
 function findLayerDir(roots, packaged = []) {
   if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
   const candidates = [];
   for (const root of roots) {
-    const bin = path2.join(root, "build", "bin");
-    candidates.push(path2.join(bin, "Release"), path2.join(bin, "RelWithDebInfo"), path2.join(bin, "Debug"), bin);
+    const bin = path5.join(root, "build", "bin");
+    candidates.push(path5.join(bin, "Release"), path5.join(bin, "RelWithDebInfo"), path5.join(bin, "Debug"), bin);
   }
   candidates.push(...packaged);
   for (const dir of candidates) {
-    if (fs2.existsSync(path2.join(dir, `${LAYER_NAME}.json`))) return dir;
+    if (fs6.existsSync(path5.join(dir, `${LAYER_NAME2}.json`))) return dir;
   }
   return null;
 }
@@ -7267,12 +8095,12 @@ function findValidationLayerDir() {
   const manifest = "VkLayer_khronos_validation.json";
   const candidates = [];
   const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path2.join(sdk, "Bin"), path2.join(sdk, "share", "vulkan", "explicit_layer.d"), path2.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (sdk) candidates.push(path5.join(sdk, "Bin"), path5.join(sdk, "share", "vulkan", "explicit_layer.d"), path5.join(sdk, "etc", "vulkan", "explicit_layer.d"));
   if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path2.join(os2.homedir(), "VulkanSDK")]) {
+    for (const root of ["C:\\VulkanSDK", path5.join(os4.homedir(), "VulkanSDK")]) {
       try {
-        const versions = fs2.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path2.join(root, v, "Bin"));
+        const versions = fs6.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path5.join(root, v, "Bin"));
       } catch {
       }
     }
@@ -7281,21 +8109,21 @@ function findValidationLayerDir() {
       "/usr/share/vulkan/explicit_layer.d",
       "/usr/local/share/vulkan/explicit_layer.d",
       "/etc/vulkan/explicit_layer.d",
-      path2.join(os2.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+      path5.join(os4.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
     );
   }
-  for (const c2 of candidates) if (fs2.existsSync(path2.join(c2, manifest))) return c2;
+  for (const c2 of candidates) if (fs6.existsSync(path5.join(c2, manifest))) return c2;
   return null;
 }
 function vulkanLayerEnvironment(o) {
-  const layers = [LAYER_NAME, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
   const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
   return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path2.delimiter),
+    VK_ADD_LAYER_PATH: layerPaths.join(path5.delimiter),
     VK_LOADER_LAYERS_ENABLE: layers.join(","),
     // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path2.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path2.delimiter),
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path5.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path5.delimiter),
     VKINSP_PORT: String(o.port),
     VKINSP_LOG: o.log ? "1" : "0",
     ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
@@ -7332,7 +8160,7 @@ async function findFreePort(start, taken = () => false) {
 }
 function terminate(proc) {
   if (process.platform === "win32" && proc.pid) {
-    execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+    execFile3("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
       try {
         proc.kill();
       } catch {
@@ -7344,44 +8172,44 @@ function terminate(proc) {
 }
 
 // src/main/metal.ts
-import { execFileSync, spawnSync } from "node:child_process";
-import fs3 from "node:fs";
-import path3 from "node:path";
+import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import fs7 from "node:fs";
+import path6 from "node:path";
 import { fileURLToPath } from "node:url";
-var moduleDir = path3.dirname(fileURLToPath(import.meta.url));
+var moduleDir = path6.dirname(fileURLToPath(import.meta.url));
 var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path3.resolve(moduleDir, "..", "..", "..")], packaged = [path3.join(process.resourcesPath ?? "", "layer")]) {
+function findCaptureLibrary(roots = [path6.resolve(moduleDir, "..", "..", "..")], packaged = [path6.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
     for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path3.join(root, dir, CAPTURE_LIBRARY));
+      candidates.push(path6.join(root, dir, CAPTURE_LIBRARY));
     }
   }
-  for (const dir of packaged) candidates.push(path3.join(dir, CAPTURE_LIBRARY));
-  return candidates.find((p) => fs3.existsSync(p)) ?? null;
+  for (const dir of packaged) candidates.push(path6.join(dir, CAPTURE_LIBRARY));
+  return candidates.find((p) => fs7.existsSync(p)) ?? null;
 }
 function resolveExecutable(exe) {
   if (!exe.endsWith(".app")) return exe;
-  const macOS = path3.join(exe, "Contents", "MacOS");
-  const plist = path3.join(exe, "Contents", "Info.plist");
-  if (fs3.existsSync(plist)) {
+  const macOS = path6.join(exe, "Contents", "MacOS");
+  const plist = path6.join(exe, "Contents", "Info.plist");
+  if (fs7.existsSync(plist)) {
     try {
-      const name = execFileSync(
+      const name = execFileSync2(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
       ).trim();
-      const candidate = path3.join(macOS, name);
-      if (name && fs3.existsSync(candidate)) return candidate;
+      const candidate = path6.join(macOS, name);
+      if (name && fs7.existsSync(candidate)) return candidate;
     } catch {
     }
   }
-  const byBundleName = path3.join(macOS, path3.basename(exe, ".app"));
-  if (fs3.existsSync(byBundleName)) return byBundleName;
+  const byBundleName = path6.join(macOS, path6.basename(exe, ".app"));
+  if (fs7.existsSync(byBundleName)) return byBundleName;
   try {
-    const entries = fs3.readdirSync(macOS);
-    if (entries.length === 1) return path3.join(macOS, entries[0]);
+    const entries = fs7.readdirSync(macOS);
+    if (entries.length === 1) return path6.join(macOS, entries[0]);
   } catch {
   }
   return exe;
@@ -7397,7 +8225,7 @@ function injectionBlockedReason(exe) {
   const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
   const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
   if (hasDyld && hasLibrary) return null;
-  return `${path3.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+  return `${path6.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
 
   /usr/bin/codesign --force --deep --sign - --options runtime \\
     --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
@@ -7469,9 +8297,9 @@ function requestStacks(session, ids) {
     });
   });
 }
-async function resolveSymbols(session, addresses, symbolizeOnHost) {
+async function resolveSymbols(session, addresses, symbolizeOnHost2) {
   const out = await resolveFromLayer(session, addresses);
-  if (symbolizeOnHost) await symbolizeOnHost(out);
+  if (symbolizeOnHost2) await symbolizeOnHost2(out);
   return out;
 }
 function resolveFromLayer(session, addresses) {
@@ -7664,28 +8492,36 @@ var KILL_TIMEOUT_MS = 3e3;
 var CAPTURE_ACTIONS = /* @__PURE__ */ new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings"]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path4.join(os3.tmpdir(), "gpu-inspector-captures");
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path7.join(os5.tmpdir(), "gpu-inspector-captures");
 }
 function checkoutRoots() {
   const roots = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path4.resolve(path4.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  roots.push(path7.resolve(path7.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
   return roots;
 }
 function installedLayerDirs() {
-  const home = os3.homedir();
+  const home = os5.homedir();
   if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path4.join(home, "AppData", "Local");
-    const apps = [path4.join(local, "Programs", "gpu-inspector"), path4.join(local, "Programs", "GPU Inspector")];
+    const local = process.env.LOCALAPPDATA ?? path7.join(home, "AppData", "Local");
+    const apps = [path7.join(local, "Programs", "gpu-inspector"), path7.join(local, "Programs", "GPU Inspector")];
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path4.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(path7.join(programFiles, "GPU Inspector"));
     }
-    return apps.map((dir) => path4.join(dir, "resources", "layer"));
+    return apps.map((dir) => path7.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path4.join(home, "Applications")].map((dir) => path4.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    return ["/Applications", path7.join(home, "Applications")].map((dir) => path7.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
   }
   return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+}
+function androidLayer() {
+  const candidates = [
+    process.env.INSPECTOR_ANDROID_LAYER_DIR,
+    ...checkoutRoots().map((root) => path7.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path7.join(dir, "android"))
+  ].filter((d) => !!d);
+  return findAndroidLayer(candidates);
 }
 function applicationName(db) {
   for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
@@ -7731,6 +8567,13 @@ var LiveSession = class {
   _capturing = false;
   /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
   _stopping = false;
+  /** The launched application is gone: it exited, failed to start, or was stopped. */
+  _ended = false;
+  /**
+   * A launched target that is not a child process of this server (an Android application): how
+   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
+   */
+  remote = null;
   get connected() {
     return this._socket !== null && !this._socket.destroyed;
   }
@@ -7778,7 +8621,7 @@ var LiveSession = class {
   }
   /** Starts the application; its output goes to the session's log. */
   startProcess(exe, args, cwd, env) {
-    const proc = spawn(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn2(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     this._proc = proc;
     this.pid = proc.pid ?? null;
     for (const stream of [proc.stdout, proc.stderr]) {
@@ -7794,6 +8637,7 @@ var LiveSession = class {
       if (this._proc !== proc) return;
       this._proc = null;
       this.pid = null;
+      this._ended = true;
       this.exitCode = String(signal ?? code);
       this._disconnect();
       this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
@@ -7803,6 +8647,7 @@ var LiveSession = class {
       this._proc = null;
       this.pid = null;
       this._disconnect();
+      this._ended = true;
       this.setState("error", e.message);
     });
   }
@@ -7813,18 +8658,23 @@ var LiveSession = class {
   async connect(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     this.setState("connecting", `port ${this.port}`);
+    let attempts = 0;
     while (Date.now() < deadline) {
-      if (this.launched && !this._proc) return false;
+      if (this._ended) return false;
       const sock = await this._tryConnect();
+      attempts++;
       if (sock) {
-        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS);
+        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
         this._attach(sock);
-        await snapshot;
-        const name = applicationName(this.database);
-        if (name && !this.launched) this.name = name;
-        return this.connected;
+        if (await snapshot !== "closed" || this.connected) {
+          const name = applicationName(this.database);
+          if (name && !this.launched) this.name = name;
+          return this.connected;
+        }
+      } else if (this.remote?.repair && attempts % 4 === 0) {
+        await this.remote.repair().catch(() => void 0);
       }
-      await sleep(this.launched ? 250 : 500);
+      await sleep(this.launched && !this.remote ? 250 : 500);
     }
     this.setState("disconnected", `nothing answered on port ${this.port}`);
     return false;
@@ -7846,7 +8696,12 @@ var LiveSession = class {
     sock.setNoDelay(true);
     this._socket = sock;
     const reader = new FrameReader();
+    let heard = false;
     sock.on("data", (chunk2) => {
+      if (!heard) {
+        heard = true;
+        this.setState("connected", `port ${this.port}`);
+      }
       const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
       for (const msg of messages) {
         this.database.handleMessage(msg);
@@ -7860,30 +8715,35 @@ var LiveSession = class {
     };
     sock.on("error", gone);
     sock.on("close", gone);
-    this.setState("connected", `port ${this.port}`);
     void this.send({ action: "Ping" });
   }
-  /** Resolves when the snapshot the capture library sends on connection has arrived, or after `timeoutMs`. */
-  _waitForSnapshot(timeoutMs) {
+  /**
+   * Resolves when the snapshot the capture library sends on connection has arrived, when the
+   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
+   */
+  _waitForSnapshot(timeoutMs, sock) {
     const db = this.database;
     return new Promise((resolve) => {
       let started = false;
-      const done = () => {
+      const done = (outcome) => {
         clearTimeout(timer);
         db.onSnapshotBegin.disconnect(begin);
         db.onAddObject.disconnect(add);
-        resolve();
+        sock.off("close", closed);
+        resolve(outcome);
       };
       const begin = (count2) => {
         started = true;
-        if (count2 === 0) done();
+        if (count2 === 0) done("snapshot");
       };
       const add = (_object, inSnapshot) => {
-        if (started && !inSnapshot) done();
+        if (started && !inSnapshot) done("snapshot");
       };
-      const timer = setTimeout(done, timeoutMs);
+      const closed = () => done(started ? "snapshot" : "closed");
+      const timer = setTimeout(() => done("timeout"), timeoutMs);
       db.onSnapshotBegin.addListener(begin);
       db.onAddObject.addListener(add);
+      sock.once("close", closed);
     });
   }
   _disconnect() {
@@ -7951,19 +8811,21 @@ var LiveSession = class {
   }
   /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
   async saveCapture(data, file) {
-    const bytes = await serializeCapture(this, data);
+    const bytes = await serializeCapture(this, data, {
+      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames))
+    });
     let target;
     if (file) {
-      target = path4.resolve(file);
-      fs4.mkdirSync(path4.dirname(target), { recursive: true });
+      target = path7.resolve(file);
+      fs8.mkdirSync(path7.dirname(target), { recursive: true });
     } else {
       const dir = capturesDir();
-      fs4.mkdirSync(dir, { recursive: true });
+      fs8.mkdirSync(dir, { recursive: true });
       const name = captureFileName(this.name, data.frame, data.frames);
-      target = path4.join(dir, name);
-      for (let n = 2; fs4.existsSync(target); n++) target = path4.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+      target = path7.join(dir, name);
+      for (let n = 2; fs8.existsSync(target); n++) target = path7.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }
-    fs4.writeFileSync(target, bytes);
+    fs8.writeFileSync(target, bytes);
     return target;
   }
   /**
@@ -7981,10 +8843,40 @@ var LiveSession = class {
     await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
     return answer;
   }
+  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
+  async readImage(id, mip, layer, timeoutMs) {
+    const answer = this.waitFor((msg) => msg.action === "ImageData" && msg.id === id ? msg : void 0, timeoutMs);
+    await this.send({ action: "RequestImage", id, mip, layer });
+    return answer;
+  }
+  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
+  async readDescriptorSet(id, timeoutMs = 1e4) {
+    const answer = this.waitFor((msg) => msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : void 0, timeoutMs);
+    await this.send({ action: "RequestDescriptorSet", id });
+    return await answer ?? false;
+  }
+  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
+  remoteEnded(state, detail) {
+    if (this._ended) return;
+    this._ended = true;
+    this.pid = null;
+    this._disconnect();
+    this.setState(state, detail);
+  }
   /** Terminates a launched application; an attached one is only disconnected. */
   async stop() {
     const proc = this._proc;
+    const remote = this.remote;
     this._disconnect();
+    if (remote) {
+      this.remote = null;
+      if (!this._ended) {
+        this._stopping = true;
+        await remote.stop().catch(() => void 0);
+        this.remoteEnded("exited", "terminated by stop_app");
+      }
+      return;
+    }
     if (!proc) {
       if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
       return;
@@ -8011,8 +8903,8 @@ var SessionManager = class {
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
   async launch(o, waitMs) {
-    const requested = path4.resolve(o.exe);
-    if (!fs4.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const requested = path7.resolve(o.exe);
+    if (!fs8.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
     const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
@@ -8049,13 +8941,81 @@ var SessionManager = class {
       };
       note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
     }
-    const session = new LiveSession(`app-${++this._counter}`, `${path4.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    const session = new LiveSession(`app-${++this._counter}`, `${path7.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${args.join(" ")}`);
     session.appendLog(note);
     this._sessions.set(session.id, session);
     this._latest = session;
-    session.startProcess(exe, args, o.cwd && fs4.existsSync(o.cwd) ? o.cwd : path4.dirname(exe), env);
+    session.startProcess(exe, args, o.cwd && fs8.existsSync(o.cwd) ? o.cwd : path7.dirname(exe), env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
+  async androidDevices() {
+    const adb2 = findAdb();
+    return { adb: adb2, devices: adb2 ? await listDevices(adb2) : [], layer: androidLayer()?.dir ?? null };
+  }
+  /**
+   * Starts an Android package on a device with the layer installed and enabled for it, and waits
+   * for the layer to connect over the adb forward. A launch that fails on the device is reported
+   * through the session's state and log rather than thrown.
+   */
+  async launchAndroid(o, waitMs) {
+    const adb2 = findAdb();
+    if (!adb2) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
+    const layer = androidLayer();
+    if (!layer) {
+      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
+    }
+    const devices = await listDevices(adb2);
+    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
+    let device;
+    if (o.device) {
+      device = devices.find((d) => d.serial === o.device);
+      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
+      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
+    } else {
+      const usable = devices.filter((d) => d.state === "device");
+      if (usable.length !== 1) {
+        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
+      }
+      device = usable[0];
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const serial = device.serial;
+    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    const target = new AndroidTarget({
+      adb: adb2,
+      serial,
+      package: o.package,
+      activity: o.activity ?? "",
+      port,
+      log: true,
+      recordAlways: !!o.recordAlways,
+      stacktraces: o.stacktraces ?? true,
+      layer,
+      onLog: (line) => session.appendLog(line),
+      onExit: () => session.remoteEnded("exited", "the application exited on the device")
+    });
+    const stop = async () => {
+      await target.stop();
+      await disableLayer(adb2, serial);
+    };
+    session.remote = { stop, repair: () => target.ensureForward() };
+    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
+    try {
+      await target.start();
+    } catch (e) {
+      session.remote = null;
+      await stop().catch(() => void 0);
+      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
+      return session;
+    }
+    session.pid = target.pid;
+    await session.connect(waitMs);
     return session;
   }
   /** Attaches to an application whose capture library already listens on `port`. */
@@ -8087,26 +9047,26 @@ var SessionManager = class {
 };
 
 // src/main/shader_tools.ts
-import { execFile as execFile2 } from "node:child_process";
-import fs5 from "node:fs";
-import os4 from "node:os";
-import path5 from "node:path";
+import { execFile as execFile4 } from "node:child_process";
+import fs9 from "node:fs";
+import os6 from "node:os";
+import path8 from "node:path";
 var tempCounter = 0;
 function tempBase() {
-  return path5.join(os4.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+  return path8.join(os6.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
 }
 function findTool(name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path5.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path5.join(process.env.VULKAN_SDK, "Bin", exe), path5.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs5.existsSync(c2)) return c2;
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path8.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path8.join(process.env.VULKAN_SDK, "Bin", exe), path8.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs9.existsSync(c2)) return c2;
   return exe;
 }
 function shaderText(spirv, mode) {
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
-    fs5.writeFileSync(tmp, Buffer.from(spirv));
+    fs9.writeFileSync(tmp, Buffer.from(spirv));
     let tool;
     let args;
     if (mode === "dis") {
@@ -8119,12 +9079,12 @@ function shaderText(spirv, mode) {
       else if (mode === "msl") args.push("--msl");
       else args.push("--vulkan-semantics", "--version", "460");
     }
-    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs5.unlinkSync(tmp);
+        fs9.unlinkSync(tmp);
       } catch {
       }
-      if (err) resolve({ ok: false, text: `${path5.basename(tool)} failed: ${stderr || err.message}` });
+      if (err) resolve({ ok: false, text: `${path8.basename(tool)} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
     });
   });
@@ -8173,7 +9133,7 @@ function compileShader(source, language, stage, entryPoint, spirvVersion) {
     const base = tempBase();
     const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
-    fs5.writeFileSync(src, source);
+    fs9.writeFileSync(src, source);
     const entry = entryPoint || "main";
     let tool;
     let args;
@@ -8200,21 +9160,21 @@ function compileShader(source, language, stage, entryPoint, spirvVersion) {
         src
       ];
     }
-    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
       let spirv;
       try {
-        if (fs5.existsSync(out)) spirv = new Uint8Array(fs5.readFileSync(out));
+        if (fs9.existsSync(out)) spirv = new Uint8Array(fs9.readFileSync(out));
       } catch {
         spirv = void 0;
       }
       for (const f of [src, out]) {
         try {
-          fs5.unlinkSync(f);
+          fs9.unlinkSync(f);
         } catch {
         }
       }
-      const name = path5.basename(tool);
+      const name = path8.basename(tool);
       if (err || !spirv || spirv.byteLength < 20) {
         const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
         resolve({ ok: false, log: reason, tool: name });
@@ -8223,976 +9183,6 @@ function compileShader(source, language, stage, entryPoint, spirvVersion) {
       }
     });
   });
-}
-
-// src/mcp/tools.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
-var SEVERITIES = ["high", "medium", "low", "info"];
-function unique(values) {
-  return values.length ? [...new Set(values)] : void 0;
-}
-function frameTiming(c2) {
-  const db = c2.db;
-  const timings = [...c2.data.passTimings.values()];
-  let start = Infinity;
-  let end = -Infinity;
-  for (const t of timings) {
-    start = Math.min(start, t.startMs);
-    end = Math.max(end, t.startMs + t.durationMs);
-  }
-  const gpuSpanMs = timings.length ? end - start : 0;
-  const bound = timings.length ? frameBound({ frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs, frames: c2.data.frames }) : null;
-  return {
-    frameMs: round(db.frameTimeMs) || void 0,
-    submitMs: round(db.submitMs) || void 0,
-    refreshMs: round(db.refreshMs) || void 0,
-    refreshSource: db.refreshSource ? REFRESH_SOURCE_NOTE[db.refreshSource] ?? db.refreshSource : void 0,
-    frameBoundary: db.frameBoundary || void 0,
-    profiled: timings.length > 0,
-    gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
-    gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
-    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0
-  };
-}
-function captureNotes(c2) {
-  const d = c2.data;
-  const notes = [];
-  if (!d.passTimings.size) {
-    notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
-  } else if (!c2.metrics.withCounters) {
-    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
-  }
-  const failedImages = d.textures.filter((t) => t.info.error).length;
-  if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
-  if (!d.textures.length) notes.push("No render targets or images were read back.");
-  const buffers = [...d.buffers.values()];
-  const failedBuffers = buffers.filter((b) => b.info.error).length;
-  if (failedBuffers) notes.push(`${failedBuffers} buffer read-backs failed.`);
-  const truncated = buffers.filter((b) => b.info.originalSize).length;
-  if (truncated) notes.push(`${truncated} buffer ranges were cut to the capture's buffer size limit.`);
-  return notes;
-}
-function passBrief(c2, i) {
-  const p = c2.metrics.passes[i];
-  return { pass: i, label: c2.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? void 0 };
-}
-function passMeasurements(c2, p, i, gpuMs) {
-  const problems = passAdvice(p);
-  return {
-    pass: i,
-    label: c2.passName(i),
-    command: p.commandIndex,
-    kind: p.compute ? "compute" : "render",
-    ms: round(p.durationMs),
-    shareOfGpu: gpuMs > 0 && p.durationMs !== null ? round(p.durationMs / gpuMs) : void 0,
-    vertexMs: round(p.vertexMs),
-    fragmentMs: round(p.fragmentMs),
-    draws: p.draws,
-    vertices: p.vertices || void 0,
-    pixels: p.pixels || void 0,
-    overdraw: round(p.overdraw),
-    fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
-    depthRejectRate: round(p.depthRejectRate),
-    nsPerVertex: round(p.nsPerVertex),
-    nsPerFragment: round(p.nsPerFragment),
-    cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,
-    bound: p.bound ?? void 0,
-    boundReason: p.boundReason || void 0,
-    problems: problems.length ? problems : void 0
-  };
-}
-function captureSummary(c2) {
-  const d = c2.data;
-  const db = c2.db;
-  const sets = d.sets;
-  let draws = 0;
-  let dispatches = 0;
-  for (const cmd of d.commands) {
-    if (sets.DRAW.has(cmd.method)) draws++;
-    else if (sets.DISPATCH.has(cmd.method)) dispatches++;
-  }
-  const passes = c2.metrics.passes;
-  const findings = c2.analysis.findings;
-  const bySeverity = {};
-  for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
-  const [errors, warnings] = db.validationCounts;
-  const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
-  const g = c2.graph;
-  const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
-  return {
-    capture: c2.id,
-    file: c2.path,
-    application: c2.manifest.source?.name || void 0,
-    api: d.api,
-    savedAt: c2.manifest.savedAt,
-    frame: d.frame,
-    frames: d.frames,
-    counts: {
-      commands: d.commands.length,
-      draws,
-      dispatches,
-      renderPasses: passes.filter((p) => !p.compute).length,
-      computePasses: passes.filter((p) => p.compute).length,
-      objects: db.allObjects.size + db.destroyedObjects.size,
-      pipelinesUsed: pipelineUses(d).size,
-      renderTargets: d.textures.length - sampled,
-      sampledImages: sampled,
-      bufferRanges: d.buffers.size
-    },
-    timing: frameTiming(c2),
-    slowestPasses: slowest.length ? slowest.map((x) => passBrief(c2, x.i)) : void 0,
-    issues: { total: findings.length, bySeverity, top: findings.slice(0, 8).map((f) => findingBrief(c2, f)) },
-    validation: {
-      errors,
-      warnings,
-      total: db.validation.length,
-      first: db.validation.length ? db.validation.slice(0, 5).map((v) => validationBrief(c2, v, 400)) : void 0
-    },
-    renderGraph: {
-      passes: g.nodes.length,
-      resources: g.resources.length,
-      externalInputs: g.externalInputs.length,
-      unreadPasses: g.unreadNodes.length,
-      criticalPathMs: round(g.criticalPathMs) || void 0,
-      warnings: g.warnings.length ? g.warnings : void 0
-    },
-    statistics: Object.fromEntries(c2.statistics.sections().map((s) => [s.title, Object.fromEntries(s.rows.filter((r) => r.value).map((r) => [r.label, r.value]))])),
-    notes: captureNotes(c2)
-  };
-}
-function nodeDetail(c2, n) {
-  const db = c2.db;
-  const resource2 = (r) => ({ resource: r.label, detail: r.detail || void 0, object: refText(db, r.objectId), key: r.key });
-  return {
-    capture: c2.id,
-    node: n.ordinal,
-    label: n.label,
-    kind: n.kind,
-    command: n.commandIndex,
-    ms: round(n.durationMs),
-    draws: n.draws || void 0,
-    pathMs: round(n.pathMs) || void 0,
-    unread: n.unread || void 0,
-    unresolvedReads: n.unresolvedReads || void 0,
-    reads: n.reads.map((u) => ({
-      ...resource2(u.resource),
-      usage: u.usage,
-      version: u.version.index,
-      from: u.version.producer ? u.version.producer.ordinal : "before the capture"
-    })),
-    writes: n.writes.map((u) => ({
-      ...resource2(u.resource),
-      usage: u.usage,
-      version: u.version.index,
-      readBy: u.version.readers.map((r) => r.ordinal),
-      replacesContents: u.discards || void 0,
-      discardedByStoreOp: u.dropped || void 0,
-      presented: u.resource.presented || void 0
-    }))
-  };
-}
-function passKeys(c2) {
-  const seen = /* @__PURE__ */ new Map();
-  const out = /* @__PURE__ */ new Map();
-  c2.metrics.passes.forEach((p, i) => {
-    const base = `${p.compute ? "compute" : "render"}|${c2.labelsOf(p.commandIndex)}|${p.label.replace(/^[A-Za-z ]+ \d+:?\s*/, "")}`;
-    const n = seen.get(base) ?? 0;
-    seen.set(base, n + 1);
-    out.set(`${base}#${n}`, i);
-  });
-  return out;
-}
-function change(before, after) {
-  if ((before ?? null) === null && (after ?? null) === null) return void 0;
-  const out = { before: round(before), after: round(after) };
-  if (typeof before === "number" && typeof after === "number") {
-    out.change = round(after - before);
-    if (before) out.percent = round((after - before) / before * 100);
-  }
-  return out;
-}
-function captureTools(store) {
-  return [
-    {
-      name: "open_capture",
-      description: `Open a GPU Inspector capture file (.gpucap: a Vulkan or Metal frame saved from GPU Inspector's capture bar) and return its summary. The capture stays open under the returned id ("cap-1") for the other tools; opening an unchanged file again returns the capture already open.`,
-      inputSchema: schema({ path: { type: "string", description: "Path of the .gpucap file." } }, ["path"]),
-      readOnly: true,
-      handler: (args) => {
-        const { capture, reused } = store.open(requireString(args, "path"));
-        return jsonResult({ ...captureSummary(capture), reused: reused || void 0 });
-      }
-    },
-    {
-      name: "list_captures",
-      description: "List the captures open in this server, and the capture files GPU Inspector opened or saved most recently (from its settings), so a capture can be found without asking for its path.",
-      inputSchema: schema({}),
-      readOnly: true,
-      handler: () => {
-        const open = store.list();
-        const recent = [...new Set(recentCaptureFiles().map((p) => path6.normalize(p)))];
-        return jsonResult({
-          open: open.map((c2) => ({
-            capture: c2.id,
-            file: c2.path,
-            application: c2.manifest.source?.name || void 0,
-            api: c2.data.api,
-            frame: c2.data.frame,
-            frames: c2.data.frames > 1 ? c2.data.frames : void 0,
-            commands: c2.data.commands.length,
-            megabytes: round(c2.fileBytes / 1048576)
-          })),
-          recent: recent.map((file) => ({
-            file,
-            missing: fs6.existsSync(file) ? void 0 : true,
-            open: open.find((c2) => c2.path === path6.resolve(file))?.id
-          })),
-          note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
-        });
-      }
-    },
-    {
-      name: "close_capture",
-      description: "Close an open capture and free its memory (captures with many read-back images can be hundreds of megabytes).",
-      inputSchema: schema({ capture: { type: "string", description: "The capture's id or file path." } }, ["capture"]),
-      handler: (args) => jsonResult({ closed: store.close(requireString(args, "capture")) })
-    },
-    {
-      name: "get_capture_summary",
-      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
-      inputSchema: schema({ capture: CAPTURE_PARAM }),
-      readOnly: true,
-      handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture"))))
-    },
-    {
-      name: "get_frame_issues",
-      description: "The Frame Issues of a capture: the rules GPU Inspector runs over the frame (attachment load and store ops, clears outside passes, transient and memoryless candidates, MSAA stores, one pass per eye without multiview, redundant binds, barriers, tiny draws, overdraw and microtriangles from the GPU counters, unmipped textures, and the render graph's unread stores, overwritten results and mergeable passes). Each finding names the command it is about; a finding over many commands names the first and counts the rest. Worst first.",
-      inputSchema: schema({
-        capture: CAPTURE_PARAM,
-        severity: { type: "string", enum: SEVERITIES, description: "The lowest severity to list (default info: all)." },
-        rule: { type: "string", description: 'Only this rule, by name ("tiny-draws").' },
-        ...PAGE_PARAMS
-      }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const min = SEVERITY_RANK[enumArg(args, "severity", SEVERITIES, "info")];
-        const rule = stringArg(args, "rule");
-        const all = c2.analysis.findings;
-        const rules = {};
-        for (const f of all) {
-          const r = rules[f.rule] ??= { severity: f.severity, findings: 0, commands: 0 };
-          if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[r.severity]) r.severity = f.severity;
-          r.findings++;
-          r.commands += f.count;
-        }
-        const list = all.filter((f) => SEVERITY_RANK[f.severity] >= min && (!rule || f.rule === rule));
-        const p = page(list, args, 50, 200);
-        return jsonResult({ capture: c2.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, rules, findings: p.items.map((f) => findingBrief(c2, f)) });
-      }
-    },
-    {
-      name: "get_bottlenecks",
-      description: 'The GPU Bottlenecks report: every timed pass, slowest first, measured the way a bottleneck is described \u2014 GPU time and share of the frame, draws and vertices, overdraw (fragment shader runs per target pixel), fragments per primitive (microtriangles below 4), depth rejection and the vertex/fragment split (Metal), which stage the pass is bound by, and each measured problem with what usually causes it. Needs a capture taken with "Profile passes"; the counters also need a GPU that exposes them. docs/PROFILING.md in GPU Inspector is the method behind it.',
-      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const m = c2.metrics;
-        if (!m.passes.length) return jsonResult({ capture: c2.id, note: "The capture has no passes." });
-        if (!m.timed) {
-          return jsonResult({
-            capture: c2.id,
-            passes: m.passes.length,
-            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.'
-          });
-        }
-        const ranked = m.passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
-        const slowest = ranked[0];
-        const metal = c2.data.api === "metal";
-        const notes = [];
-        if (!m.withCounters) {
-          notes.push(metal ? "The GPU exposes only the timestamp counter set through public Metal, so overdraw, fragments per primitive and depth rejection are not measured." : "No pass carried pipeline statistics (the device may lack pipelineStatisticsQuery), so overdraw and fragments per primitive are not measured.");
-        } else {
-          notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
-        }
-        if (!metal) notes.push("The vertex/fragment split and depth rejection are Metal only: Vulkan has no portable stage-boundary timestamps, and pipeline statistics do not count the fragments that survived the depth test.");
-        const totals = m.totals;
-        const p = page(ranked, args, 30, 200);
-        return jsonResult({
-          capture: c2.id,
-          api: c2.data.api,
-          verdict: frameStageVerdict(m),
-          gpuMs: round(m.gpuMs),
-          vertexMs: round(m.vertexMs) || void 0,
-          fragmentMs: round(m.fragmentMs) || void 0,
-          timedPasses: m.timed,
-          untimedPasses: m.passes.length - m.timed || void 0,
-          totals: totals ? {
-            vertexInvocations: totals.vertexInvocations,
-            fragmentInvocations: totals.fragmentInvocations,
-            primitives: totals.primitives,
-            fragmentsPerPrimitive: totals.primitives ? round(totals.fragmentInvocations / totals.primitives) : void 0
-          } : void 0,
-          thresholds: { healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT, microtrianglesBelow: MICROTRIANGLE_LIMIT, lowDepthRejectionBelow: LOW_REJECTION_RATE },
-          slowest: slowest ? {
-            pass: slowest.i,
-            label: c2.passName(slowest.i),
-            ms: round(slowest.p.durationMs),
-            bound: slowest.p.bound ? BOUND_LABEL[slowest.p.bound] : void 0,
-            reason: slowest.p.boundReason || void 0,
-            firstThingToTry: slowest.p.bound ? BOUND_ADVICE[slowest.p.bound] : void 0
-          } : void 0,
-          total: p.total,
-          offset: p.offset,
-          nextOffset: p.nextOffset,
-          passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
-          notes
-        });
-      }
-    },
-    {
-      name: "get_render_graph",
-      description: "The capture's render graph: its passes (nodes, numbered in execution order) with the passes they read from and write for, the critical path by GPU time, resources read from before the capture, passes whose output nothing reads, and the graph rules' suggestions. With `node`, one pass in full: every resource it reads (and which pass produced that version) and writes (and which passes read it). Node numbers are the graph's own, not get_bottlenecks' pass numbers.",
-      inputSchema: schema({
-        capture: CAPTURE_PARAM,
-        node: { type: "integer", minimum: 0, description: "One node to show in full." },
-        ...PAGE_PARAMS
-      }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const g = c2.graph;
-        const nodeIndex = optionalInt(args, "node");
-        if (nodeIndex !== void 0) {
-          const n = g.nodes.find((x) => x.ordinal === nodeIndex);
-          if (!n) throw new Error(`No node ${nodeIndex}: the graph has ${g.nodes.length} nodes.`);
-          return jsonResult(nodeDetail(c2, n));
-        }
-        const critical = new Set(g.criticalPath.map((n) => n.ordinal));
-        const suggestions = analyzeRenderGraph(g).findings;
-        const p = page(g.nodes, args, 100, 500);
-        return jsonResult({
-          capture: c2.id,
-          nodes: g.nodes.length,
-          resources: g.resources.length,
-          edges: g.edges.length,
-          criticalPath: g.criticalPath.map((n) => n.ordinal),
-          criticalPathMs: round(g.criticalPathMs) || void 0,
-          warnings: g.warnings.length ? g.warnings : void 0,
-          externalInputs: g.externalInputs.length ? g.externalInputs.slice(0, 40).map((r) => r.detail ? `${r.label} (${r.detail})` : r.label) : void 0,
-          unreadNodes: unique(g.unreadNodes.map((n) => n.ordinal)),
-          suggestions: suggestions.length ? suggestions.map((f) => findingBrief(c2, f)) : void 0,
-          offset: p.offset,
-          nextOffset: p.nextOffset,
-          list: p.items.map((n) => ({
-            node: n.ordinal,
-            label: n.label,
-            kind: n.kind,
-            command: n.commandIndex,
-            frame: c2.data.frames > 1 ? n.frame : void 0,
-            ms: round(n.durationMs),
-            draws: n.draws || void 0,
-            reads: n.reads.length,
-            writes: n.writes.length,
-            inputsFrom: unique(n.inputs.map((e) => e.from.ordinal)),
-            outputsTo: unique(n.outputs.map((e) => e.to.ordinal)),
-            unread: n.unread || void 0,
-            critical: critical.has(n.ordinal) || void 0,
-            unresolvedReads: n.unresolvedReads || void 0
-          }))
-        });
-      }
-    },
-    {
-      name: "compare_captures",
-      description: "Compare two captures of the same application, before and after a change: frame, submit and GPU time, the statistics that differ, Frame Issues by rule, validation counts, and per pass (matched by debug groups and label) the GPU time, draws, overdraw and fragments per primitive, largest change first. Confirms whether a fix moved anything.",
-      inputSchema: schema({
-        before: { type: "string", description: "The capture before the change: an open capture's id or a .gpucap path." },
-        after: { type: "string", description: "The capture after the change: an open capture's id or a .gpucap path." }
-      }, ["before", "after"]),
-      readOnly: true,
-      handler: (args) => {
-        const a = store.resolve(requireString(args, "before"));
-        const b = store.resolve(requireString(args, "after"));
-        const sa = a.statistics;
-        const sb = b.statistics;
-        const counts = {};
-        const keys = [
-          "apiCalls",
-          "submits",
-          "draws",
-          "dispatches",
-          "renderPasses",
-          "computePasses",
-          "bindPipeline",
-          "uniquePipelines",
-          "descriptorSetsBound",
-          "uniqueDescriptorSets",
-          "totalVertices",
-          "totalTriangles",
-          "updateBufferBytes",
-          "bufferCopyBytes"
-        ];
-        for (const key of keys) if (sa[key] !== sb[key]) counts[key] = change(sa[key], sb[key]);
-        const ka = passKeys(a);
-        const kb = passKeys(b);
-        const rows = [];
-        for (const [key, ia] of ka) {
-          const ib = kb.get(key);
-          if (ib === void 0) continue;
-          const pa = a.metrics.passes[ia];
-          const pb = b.metrics.passes[ib];
-          rows.push({
-            label: b.passName(ib),
-            before: ia,
-            after: ib,
-            ms: change(pa.durationMs, pb.durationMs),
-            draws: pa.draws !== pb.draws ? change(pa.draws, pb.draws) : void 0,
-            overdraw: change(pa.overdraw, pb.overdraw),
-            fragmentsPerPrimitive: change(pa.fragmentsPerPrimitive, pb.fragmentsPerPrimitive)
-          });
-        }
-        const magnitude = (r) => Math.abs(typeof r.ms?.change === "number" ? r.ms.change : 0);
-        rows.sort((x, y) => magnitude(y) - magnitude(x));
-        const ruleCounts = (c2) => {
-          const out = /* @__PURE__ */ new Map();
-          for (const f of c2.analysis.findings) out.set(f.rule, (out.get(f.rule) ?? 0) + f.count);
-          return out;
-        };
-        const ra = ruleCounts(a);
-        const rb = ruleCounts(b);
-        const issues = [.../* @__PURE__ */ new Set([...ra.keys(), ...rb.keys()])].map((rule) => ({ rule, before: ra.get(rule) ?? 0, after: rb.get(rule) ?? 0 })).filter((r) => r.before !== r.after);
-        const profiled = a.data.passTimings.size > 0 && b.data.passTimings.size > 0;
-        const [ea, wa] = a.db.validationCounts;
-        const [eb, wb] = b.db.validationCounts;
-        return jsonResult({
-          before: { capture: a.id, file: a.path, frame: a.data.frame },
-          after: { capture: b.id, file: b.path, frame: b.data.frame },
-          timing: {
-            frameMs: change(a.db.frameTimeMs, b.db.frameTimeMs),
-            submitMs: change(a.db.submitMs, b.db.submitMs),
-            gpuPassMs: profiled ? change(a.metrics.gpuMs, b.metrics.gpuMs) : void 0
-          },
-          counts: Object.keys(counts).length ? counts : void 0,
-          issuesByRule: issues.length ? issues : void 0,
-          validation: ea !== eb || wa !== wb ? { errors: change(ea, eb), warnings: change(wa, wb) } : void 0,
-          passes: rows.slice(0, 60),
-          onlyBefore: [...ka].filter(([key]) => !kb.has(key)).map(([, i]) => a.passName(i)),
-          onlyAfter: [...kb].filter(([key]) => !ka.has(key)).map(([, i]) => b.passName(i)),
-          notes: profiled ? void 0 : ["At least one capture was taken without Profile passes, so GPU times cannot be compared."]
-        });
-      }
-    }
-  ];
-}
-
-// src/mcp/live_tools.ts
-var SESSION_PARAM = { type: "string", description: `A live session's id ("app-1"). Defaults to the session started most recently.` };
-var LANGUAGES = ["glsl", "hlsl", "spirv-asm"];
-var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function deviceName(db) {
-  for (const o of db.objectsByType.get("VkPhysicalDevice")?.values() ?? []) {
-    const summary = o.summary(db).trim();
-    if (summary) return summary;
-  }
-  const metal = db.objectsByType.get("MTLDevice")?.values().next().value;
-  return metal ? metal.name : void 0;
-}
-function sessionStatus(s) {
-  const db = s.database;
-  const byType = [...db.objectsByType].filter(([, objects]) => objects.size).sort((a, b) => b[1].size - a[1].size).slice(0, 12);
-  const last = s.frameStats.at(-1)?.msg;
-  const [errors, warnings] = db.validationCounts;
-  return {
-    session: s.id,
-    name: s.name,
-    state: s.state,
-    detail: s.detail || void 0,
-    launched: s.launched,
-    pid: s.pid ?? void 0,
-    port: s.port,
-    exitCode: s.exitCode ?? void 0,
-    api: s.api ?? void 0,
-    device: deviceName(db),
-    uptimeSeconds: round((Date.now() - s.startedAt) / 1e3),
-    frame: last ? {
-      index: last.frame,
-      frameMs: round(last.frameTimeMs),
-      fps: last.frameTimeMs > 0 ? round(1e3 / last.frameTimeMs) : void 0,
-      submitMs: round(last.submitMs),
-      refreshMs: round(last.refreshMs) || void 0,
-      presentMode: last.presentMode || void 0,
-      droppedTotal: last.droppedTotal || void 0
-    } : void 0,
-    objects: { live: db.allObjects.size, byType: Object.fromEntries(byType.map(([type, objects]) => [type, objects.size])) },
-    memoryBytes: {
-      deviceMemory: db.memory.device || void 0,
-      buffers: db.memory.buffers || void 0,
-      images: db.memory.images || void 0,
-      reportedByDriver: db.memory.reported || void 0
-    },
-    validation: { errors, warnings, total: db.validation.length },
-    leakedObjects: db.leakCount || void 0,
-    recentLog: s.log.slice(-15),
-    note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : void 0
-  };
-}
-var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
-function compilerLog(log) {
-  return log.split(/\r?\n/).filter((line) => line.trim().replace(TEMP_SOURCE, "") !== "").join("\n").replace(TEMP_SOURCE, "source").trim();
-}
-function stageOf(s, pipelineId, stage) {
-  const pipeline = s.database.getObject(pipelineId);
-  if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
-  const stages = pipelineStages(pipeline, s.database);
-  const source = stages.find((x) => x.stage === stage.toLowerCase());
-  if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
-  return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
-}
-function liveTools(sessions2, store) {
-  return [
-    {
-      name: "launch_app",
-      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on macOS the Metal library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's own output is in it, which is where to look when it does not connect). The application runs until stop_app or until this server exits.",
-      inputSchema: schema({
-        exe: { type: "string", description: "The executable (on macOS an .app bundle works too)." },
-        args: { type: "string", description: "Command line arguments, quoted as in a shell." },
-        cwd: { type: "string", description: "Working directory (default the executable's directory)." },
-        env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
-        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK) or Metal's validation, so validation messages reach the captures (default false)." },
-        syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
-        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
-        recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
-        port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
-        layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
-        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." }
-      }, ["exe"]),
-      handler: async (args) => {
-        const env = args.env && typeof args.env === "object" ? Object.fromEntries(Object.entries(args.env).map(([k, v]) => [k, String(v)])) : void 0;
-        const s = await sessions2.launch({
-          exe: requireString(args, "exe"),
-          args: stringArg(args, "args"),
-          cwd: stringArg(args, "cwd"),
-          env,
-          validation: boolArg(args, "validation", false),
-          syncValidation: boolArg(args, "syncValidation", false),
-          stacktraces: boolArg(args, "stacktraces", true),
-          recordAlways: boolArg(args, "recordAlways", false),
-          port: optionalInt(args, "port"),
-          layerDir: stringArg(args, "layerDir")
-        }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
-        const result = jsonResult({
-          ...sessionStatus(s),
-          problem: s.connected ? void 0 : "The capture library did not connect. recentLog (and get_session_log) has the application's and the layer's output: a crash, an application that does not use Vulkan, or a layer the loader did not load."
-        });
-        if (!s.connected) result.isError = true;
-        return result;
-      }
-    },
-    {
-      name: "attach_app",
-      description: "Connect to an application whose capture library already listens on a port: one started with GPU Inspector's implicit layer (VKINSP_ENABLE=1 and VKINSP_PORT), by hand, or by GPU Inspector itself. The capture library serves one client at a time, so attaching disconnects GPU Inspector from that application if it was connected.",
-      inputSchema: schema({
-        port: { type: "integer", minimum: 1, maximum: 65535, description: "The port (default 47531)." },
-        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to keep trying (default 10)." }
-      }),
-      handler: async (args) => {
-        const s = await sessions2.attach(intArg(args, "port", 47531, 1, 65535), (numberArg(args, "waitSeconds") ?? 10) * 1e3);
-        return jsonResult(sessionStatus(s));
-      }
-    },
-    {
-      name: "list_sessions",
-      description: "List the live sessions this server has launched or attached to, with their state.",
-      inputSchema: schema({}),
-      readOnly: true,
-      handler: () => jsonResult({
-        sessions: sessions2.list().map((s) => ({
-          session: s.id,
-          name: s.name,
-          state: s.state,
-          pid: s.pid ?? void 0,
-          port: s.port,
-          api: s.api ?? void 0,
-          frame: s.frameStats.at(-1)?.msg.frame
-        })),
-        capturesDirectory: capturesDir()
-      })
-    },
-    {
-      name: "get_session_status",
-      description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, and the recent log.",
-      inputSchema: schema({ session: SESSION_PARAM }),
-      readOnly: true,
-      handler: (args) => jsonResult(sessionStatus(sessions2.get(stringArg(args, "session"))))
-    },
-    {
-      name: "get_live_frame_stats",
-      description: "Watch a running application's frame reports for a few seconds, without capturing: average, shortest and longest frame time, frame rate, CPU time inside queue submission, the display refresh period and where it came from, dropped frames, and a verdict on whether the frame meets the refresh or is bound by submission. GPU time is not measured live: capture_frames with profilePasses measures each pass.",
-      inputSchema: schema({
-        session: SESSION_PARAM,
-        seconds: { type: "number", minimum: 0.3, maximum: 30, description: "How long to watch (default 2)." }
-      }),
-      readOnly: true,
-      handler: async (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
-        const seconds = Math.min(30, Math.max(0.3, numberArg(args, "seconds") ?? 2));
-        const since = Date.now();
-        await sleep2(seconds * 1e3);
-        const reports = s.frameStats.filter((f) => f.at >= since).map((f) => f.msg);
-        if (!reports.length) {
-          return jsonResult({ session: s.id, seconds, note: "No frame reports arrived: the application is not presenting frames (minimized, paused, loading, or not rendering)." });
-        }
-        let frames = 0;
-        let weightedMs = 0;
-        let weightedSubmit = 0;
-        let min = Infinity;
-        let max = 0;
-        let dropped = 0;
-        for (const m of reports) {
-          const n = Math.max(1, m.frames ?? 1);
-          frames += n;
-          weightedMs += m.frameTimeMs * n;
-          weightedSubmit += (m.submitMs ?? 0) * n;
-          min = Math.min(min, m.minMs ?? m.frameTimeMs);
-          max = Math.max(max, m.maxMs ?? m.frameTimeMs);
-          dropped += m.dropped ?? 0;
-        }
-        const last = reports[reports.length - 1];
-        const frameMs = weightedMs / frames;
-        const submitMs = weightedSubmit / frames;
-        const refresh = last.refreshMs ?? 0;
-        let verdict;
-        if (refresh > 0 && frameMs <= refresh * 1.1) verdict = "Meeting the display refresh: the frame waits for vsync, so there is headroom.";
-        else if (frameMs > 0 && submitMs / frameMs > 0.8) verdict = "Bound by submission: most of each frame is spent inside queue submit on the CPU.";
-        else verdict = `${refresh > 0 ? "Missing the display refresh" : "Vsync is off"}, and submission is not what takes the time: the GPU, presentation, or the application's own CPU work. capture_frames with profilePasses measures the GPU passes.`;
-        return jsonResult({
-          session: s.id,
-          seconds,
-          frames,
-          frame: last.frame,
-          frameMs: round(frameMs),
-          fps: round(1e3 / frameMs),
-          shortestMs: round(min),
-          longestMs: round(max),
-          submitMs: round(submitMs),
-          refreshMs: refresh > 0 ? round(refresh) : void 0,
-          refreshSource: last.refreshSource ? REFRESH_SOURCE_NOTE[last.refreshSource] ?? last.refreshSource : void 0,
-          presentMode: last.presentMode || void 0,
-          frameBoundary: last.frameBoundary || void 0,
-          droppedFrames: dropped || void 0,
-          droppedTotal: last.droppedTotal || void 0,
-          driverAllocatedBytes: last.allocatedBytes,
-          verdict
-        });
-      }
-    },
-    {
-      name: "capture_frames",
-      description: "Capture frames of a running application: every command of the frame with its bound state, the render targets read back at the end of each pass, bound buffers and images, and (profilePasses) GPU timestamps and counters per pass. The capture is saved as a .gpucap file and opened, and its summary returned: the capture tools (get_bottlenecks, get_frame_issues, get_command, read_texture...) work on it by the returned capture id. Capture while the application shows what is slow or wrong.",
-      inputSchema: schema({
-        session: SESSION_PARAM,
-        frames: { type: "integer", minimum: 1, maximum: 16, description: "Frames to capture (default 1)." },
-        atFrame: { type: "integer", minimum: 0, description: "Capture that frame (the capture library's present counter) instead of the next one." },
-        delaySeconds: { type: "number", minimum: 0, maximum: 600, description: "Wait this long before requesting the capture." },
-        profilePasses: { type: "boolean", description: "GPU timestamps and counters around every pass (default true)." },
-        renderTargets: { type: "boolean", description: "Read back every pass's attachments (default true)." },
-        buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
-        images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
-        stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
-        maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
-        recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
-        timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
-        saveAs: { type: "string", description: `Where to save the .gpucap (default a new file in ${capturesDir()}).` }
-      }),
-      handler: async (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        const delay = numberArg(args, "delaySeconds");
-        if (delay) await sleep2(delay * 1e3);
-        if (args.recordAlways !== void 0) await s.send({ action: "Settings", recordAlways: boolArg(args, "recordAlways", false) });
-        const result = await s.capture({
-          frames: intArg(args, "frames", 1, 1, 16),
-          atFrame: optionalInt(args, "atFrame"),
-          profilePasses: boolArg(args, "profilePasses", true),
-          renderTargets: boolArg(args, "renderTargets", true),
-          buffers: boolArg(args, "buffers", true),
-          images: boolArg(args, "images", true),
-          stacktraces: boolArg(args, "stacktraces", false),
-          maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024,
-          timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1e3
-        });
-        const file = await s.saveCapture(result.data, stringArg(args, "saveAs"));
-        const { capture } = store.open(file);
-        const notes = [];
-        if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
-        if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
-        return jsonResult({
-          session: s.id,
-          file,
-          megabytes: round(capture.fileBytes / 1048576),
-          secondsToCapture: round(result.elapsedMs / 1e3),
-          captureNotes: notes.length ? notes : void 0,
-          ...captureSummary(capture)
-        });
-      }
-    },
-    {
-      name: "replace_shader",
-      description: `Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again.`,
-      inputSchema: schema({
-        session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures)." },
-        stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
-        source: { type: "string", description: "The complete new source of the stage." },
-        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
-        entryPoint: { type: "string", description: "The entry point in the source (default the stage's own)." }
-      }, ["pipeline", "stage", "source"]),
-      handler: async (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        if (s.api === "metal") throw new Error("Shader replacement is Vulkan only.");
-        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
-        const pipelineId = requireInt(args, "pipeline");
-        const stageName = requireString(args, "stage").toLowerCase();
-        const { flag, entryPoint, source } = stageOf(s, pipelineId, stageName);
-        const original = await fetchBlob(s, source.object, source.blobIndex);
-        const version = original && reflectSpirv(original)?.version || "";
-        const language = enumArg(args, "language", LANGUAGES, "glsl");
-        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version);
-        if (!compiled.ok || !compiled.spirv) {
-          const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12e3) });
-          failed.isError = true;
-          return failed;
-        }
-        const reply = await s.replaceShader(pipelineId, flag, stageName, compiled.spirv);
-        const result = jsonResult({
-          ok: reply?.ok ?? false,
-          pipeline: refText(s.database, pipelineId),
-          stage: stageName,
-          spirvVersion: version || void 0,
-          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `VkPipeline#${reply.replacement}` : void 0,
-          error: reply ? reply.error : "The layer did not answer within 15 s.",
-          layerNote: reply?.note,
-          compilerLog: compilerLog(compiled.log) ? clip(compilerLog(compiled.log), 4e3) : void 0
-        });
-        if (!reply?.ok) result.isError = true;
-        return result;
-      }
-    },
-    {
-      name: "restore_shader",
-      description: "Undo replace_shader: the pipeline binds its original code again, for one stage or every replaced stage.",
-      inputSchema: schema({
-        session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id." },
-        stage: { type: "string", description: "The stage to restore (default every replaced stage)." }
-      }, ["pipeline"]),
-      handler: async (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
-        const pipelineId = requireInt(args, "pipeline");
-        const stage = stringArg(args, "stage");
-        const flag = stage ? stageOf(s, pipelineId, stage).flag : void 0;
-        const reply = await s.restoreShader(pipelineId, flag);
-        return jsonResult({ ok: reply?.ok ?? false, pipeline: refText(s.database, pipelineId), stage, error: reply ? reply.error : "The layer did not answer within 15 s." });
-      }
-    },
-    {
-      name: "get_session_log",
-      description: "A live session's log: the application's standard output and error, the capture library's own log, connection changes, validation messages and shader edits, most recent last.",
-      inputSchema: schema({
-        session: SESSION_PARAM,
-        lines: { type: "integer", minimum: 1, maximum: 2e3, description: "How many of the most recent lines (default 100)." },
-        match: { type: "string", description: "Regular expression: only lines that match." }
-      }),
-      readOnly: true,
-      handler: (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        const match = regexArg(args, "match");
-        const lines = (match ? s.log.filter((l) => match.test(l)) : s.log).slice(-intArg(args, "lines", 100, 1, 2e3));
-        return jsonResult({ session: s.id, state: s.state, lines });
-      }
-    },
-    {
-      name: "stop_app",
-      description: "End a live session: a launched application is terminated (with the processes it started), an attached one is disconnected.",
-      inputSchema: schema({ session: SESSION_PARAM }),
-      handler: async (args) => {
-        const s = sessions2.get(stringArg(args, "session"));
-        await s.stop();
-        return jsonResult({ session: s.id, state: s.state, detail: s.detail || void 0, exitCode: s.exitCode ?? void 0 });
-      }
-    }
-  ];
-}
-
-// src/renderer/vulkan/buffer_layout.ts
-var SCALARS = {
-  float: { kind: "scalar", base: "float", width: 32, size: 4 },
-  double: { kind: "scalar", base: "float", width: 64, size: 8 },
-  float16_t: { kind: "scalar", base: "float", width: 16, size: 2 },
-  half: { kind: "scalar", base: "float", width: 16, size: 2 },
-  int: { kind: "scalar", base: "int", width: 32, size: 4 },
-  uint: { kind: "scalar", base: "uint", width: 32, size: 4 },
-  bool: { kind: "scalar", base: "bool", width: 32, size: 4 },
-  int8_t: { kind: "scalar", base: "int", width: 8, size: 1 },
-  uint8_t: { kind: "scalar", base: "uint", width: 8, size: 1 },
-  int16_t: { kind: "scalar", base: "int", width: 16, size: 2 },
-  uint16_t: { kind: "scalar", base: "uint", width: 16, size: 2 },
-  int64_t: { kind: "scalar", base: "int", width: 64, size: 8 },
-  uint64_t: { kind: "scalar", base: "uint", width: 64, size: 8 }
-};
-var VEC_PREFIX = {
-  vec: "float",
-  dvec: "double",
-  f16vec: "float16_t",
-  ivec: "int",
-  uvec: "uint",
-  bvec: "bool",
-  i8vec: "int8_t",
-  u8vec: "uint8_t",
-  i16vec: "int16_t",
-  u16vec: "uint16_t",
-  i64vec: "int64_t",
-  u64vec: "uint64_t"
-};
-var MAT_PREFIX = { mat: "float", dmat: "double", f16mat: "float16_t" };
-function alignUp(v, a) {
-  return a > 0 ? Math.ceil(v / a) * a : v;
-}
-function alignment(t, rules) {
-  switch (t.kind) {
-    case "scalar":
-      return t.size;
-    case "vector":
-      return (t.count === 3 ? 4 : t.count) * t.element.size;
-    case "matrix":
-      return rules === "std140" ? Math.max(16, t.stride) : t.stride;
-    case "array":
-      return rules === "std140" ? Math.max(16, alignment(t.element, rules)) : alignment(t.element, rules);
-    case "struct": {
-      let a = 1;
-      for (const m of t.members) a = Math.max(a, alignment(m.type, rules));
-      return rules === "std140" ? Math.max(16, a) : a;
-    }
-    default:
-      return 4;
-  }
-}
-function parseTypeName(name, structs, rules) {
-  const s = SCALARS[name];
-  if (s) return s;
-  const st = structs.get(name);
-  if (st) return st;
-  const v = /^([a-z0-9]*vec)([234])$/.exec(name);
-  if (v && VEC_PREFIX[v[1]]) {
-    const element = SCALARS[VEC_PREFIX[v[1]]];
-    const count2 = Number(v[2]);
-    return { kind: "vector", element, count: count2, size: count2 * element.size };
-  }
-  const m = /^([a-z0-9]*mat)([234])(?:x([234]))?$/.exec(name);
-  if (m && MAT_PREFIX[m[1]]) {
-    const element = SCALARS[MAT_PREFIX[m[1]]];
-    const columns = Number(m[2]);
-    const rows = m[3] ? Number(m[3]) : columns;
-    const column = { kind: "vector", element, count: rows, size: rows * element.size };
-    let stride = alignment(column, rules);
-    if (rules === "std140") stride = Math.max(16, stride);
-    return { kind: "matrix", element, columns, rows, stride, rowMajor: false, size: columns * stride };
-  }
-  return null;
-}
-function parseLayout(text, rules, preferredName) {
-  const structs = /* @__PURE__ */ new Map();
-  const src = text.replace(/\/\/[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
-  const re = /struct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}\s*;?/g;
-  let last = null;
-  let match;
-  while (match = re.exec(src)) {
-    const name = match[1];
-    const members = [];
-    let offset = 0;
-    let maxAlign = 1;
-    for (const decl of match[2].split(";")) {
-      const d = decl.trim();
-      if (!d) continue;
-      const dm = /^(?:layout\s*\([^)]*\)\s*)?(?:(?:highp|mediump|lowp)\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*((?:\[\s*\d*\s*\])*)$/.exec(d);
-      if (!dm) throw new Error(`cannot parse "${d}"`);
-      const base = parseTypeName(dm[1], structs, rules);
-      if (!base) throw new Error(`unknown type "${dm[1]}" in "${d}"`);
-      let type = base;
-      const dims = [...dm[3].matchAll(/\[\s*(\d*)\s*\]/g)].map((x) => x[1] === "" ? 0 : Number(x[1])).reverse();
-      for (const count2 of dims) {
-        const stride = alignUp(sizeOfType(type), alignment({ kind: "array", element: type, count: count2, stride: 0, size: 0 }, rules));
-        const arr = { kind: "array", element: type, count: count2, stride, size: count2 * stride };
-        type = arr;
-      }
-      const a = alignment(type, rules);
-      offset = alignUp(offset, a);
-      members.push({ name: dm[2], offset, type });
-      offset += sizeOfType(type);
-      maxAlign = Math.max(maxAlign, a);
-    }
-    const structAlign = rules === "std140" ? Math.max(16, maxAlign) : maxAlign;
-    const st = { kind: "struct", name, members, size: alignUp(offset, structAlign) };
-    structs.set(name, st);
-    last = st;
-  }
-  if (!last) throw new Error("no struct declaration found");
-  if (preferredName && structs.has(preferredName)) return structs.get(preferredName);
-  return last;
-}
-function sizeOfType(t) {
-  return t.kind === "opaque" ? 0 : t.size;
-}
-function layoutText(type, rootName = "Buffer") {
-  const out = [];
-  const names = /* @__PURE__ */ new Map();
-  const usedNames = /* @__PURE__ */ new Set();
-  const memberText = (t) => {
-    const inner = innermost(t);
-    if (inner.kind === "struct") return names.get(inner) ?? inner.name ?? "Struct";
-    if (inner.kind === "matrix") return typeName(matrixColumnMajor(inner));
-    return typeName(inner);
-  };
-  const emit = (s) => {
-    if (names.has(s)) return;
-    for (const m of s.members) {
-      const inner = innermost(m.type);
-      if (inner.kind === "struct") emit(inner);
-    }
-    let name = s.name.replace(/[^A-Za-z0-9_]/g, "_") || "Struct";
-    if (/^[0-9]/.test(name)) name = `_${name}`;
-    while (usedNames.has(name)) name += "_";
-    usedNames.add(name);
-    names.set(s, name);
-    const lines = s.members.map((m) => `    ${memberText(m.type)} ${m.name}${arraySuffix(m.type)};  // offset ${m.offset}`);
-    out.push(`struct ${name} {
-${lines.join("\n")}
-};`);
-  };
-  if (type.kind === "struct") emit(type);
-  else out.push(`struct ${rootName} {
-    ${memberText(type)} value${arraySuffix(type)};
-};`);
-  return out.join("\n\n");
-}
-function innermost(t) {
-  return t.kind === "array" ? innermost(t.element) : t;
-}
-function matrixColumnMajor(m) {
-  return m.rowMajor ? { ...m, rowMajor: false } : m;
-}
-function arraySuffix(t) {
-  let s = "";
-  let cur = t;
-  while (cur.kind === "array") {
-    s += `[${cur.count || ""}]`;
-    cur = cur.element;
-  }
-  return s;
 }
 
 // src/renderer/vulkan/astc_decode.ts
@@ -9758,11 +9748,11 @@ function decodeAstcBlock(s, block, bw, bh, px, srgb) {
     for (let x = 0; x < bw; x++) {
       const gs = ds * x * (gw - 1) + 32 >> 6;
       const js = gs >> 4;
-      const fs7 = gs & 15;
-      const w11 = fs7 * ft + 8 >> 4;
+      const fs11 = gs & 15;
+      const w11 = fs11 * ft + 8 >> 4;
       const w10 = ft - w11;
-      const w01 = fs7 - w11;
-      const w00 = 16 - fs7 - ft + w11;
+      const w01 = fs11 - w11;
+      const w00 = 16 - fs11 - ft + w11;
       const infill = (plane) => weightAt(plane, js, jt) * w00 + weightAt(plane, js + 1, jt) * w01 + weightAt(plane, js, jt + 1) * w10 + weightAt(plane, js + 1, jt + 1) * w11 + 8 >> 4;
       const w0 = infill(0);
       const w1 = dual ? infill(1) : w0;
@@ -13437,6 +13427,556 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
   return out;
 }
 
+// src/renderer/frame_cost_tree.ts
+var MAX_LINE_FRAMES = 16;
+function node(kind, name, totalCost = 0, children = []) {
+  return { kind, name, totalCost, selfCost: 0, children };
+}
+function rollup(n) {
+  let total = 0;
+  for (const c2 of n.children) {
+    total += c2.totalCost;
+    n.estimated = n.estimated || c2.estimated;
+  }
+  n.totalCost = total;
+  return n;
+}
+function scaleSubtree(n, factor) {
+  n.totalCost *= factor;
+  n.selfCost *= factor;
+  for (const c2 of n.children) scaleSubtree(c2, factor);
+}
+function readU32(data, offset) {
+  if (offset + 4 > data.byteLength) return null;
+  return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(offset, true);
+}
+function drawInvocations(cmd, data) {
+  const a = cmd.args;
+  if (!a) return null;
+  switch (cmd.method) {
+    case "vkCmdDraw":
+      return num(a.vertexCount) * Math.max(1, num(a.instanceCount));
+    case "vkCmdDrawIndexed":
+      return num(a.indexCount) * Math.max(1, num(a.instanceCount));
+    case "vkCmdDrawIndirect":
+    case "vkCmdDrawIndexedIndirect": {
+      const captured = data.buffer(cmd.bufferData?.[0]);
+      if (!captured || !captured.data) return null;
+      const count2 = Math.max(0, num(a.drawCount));
+      const stride = Math.max(16, num(a.stride));
+      let total = 0;
+      for (let i = 0; i < count2; i++) {
+        const n = readU32(captured.data, i * stride);
+        const inst = readU32(captured.data, i * stride + 4);
+        if (n === null || inst === null) return null;
+        total += n * Math.max(1, inst);
+      }
+      return total;
+    }
+    default:
+      return null;
+  }
+}
+function dispatchGroups(cmd, data) {
+  const a = cmd.args;
+  if (!a) return null;
+  switch (cmd.method) {
+    case "vkCmdDispatch":
+    case "vkCmdDispatchBase":
+      return num(a.groupCountX) * num(a.groupCountY) * num(a.groupCountZ);
+    case "vkCmdDispatchIndirect": {
+      const captured = data.buffer(cmd.bufferData?.[0]);
+      if (!captured || !captured.data) return null;
+      const x = readU32(captured.data, 0), y = readU32(captured.data, 4), z = readU32(captured.data, 8);
+      return x === null || y === null || z === null ? null : x * y * z;
+    }
+    default:
+      return null;
+  }
+}
+function rectArea(v) {
+  if (!isObject(v)) return null;
+  const extent = isObject(v.extent) ? v.extent : null;
+  if (!extent) return null;
+  const w = num(extent.width), h = num(extent.height);
+  return w > 0 && h > 0 ? w * h : null;
+}
+function collectPasses2(o) {
+  const { data, models } = o;
+  const sets = data.sets;
+  const passes = [];
+  const notes = [];
+  let missingModels = 0;
+  for (let frame = 0; frame < Math.max(1, data.frames); frame++) {
+    const commands = data.commandsForFrame(frame);
+    const passCounters = /* @__PURE__ */ new Map();
+    const computeCounters = /* @__PURE__ */ new Map();
+    const bound = /* @__PURE__ */ new Map();
+    const scissor = /* @__PURE__ */ new Map();
+    let currentCb = -1;
+    let currentSecondary = 0;
+    let renderPass = null;
+    let compute = null;
+    const closeCompute = () => {
+      compute = null;
+    };
+    const closeSecondary = () => {
+      closeCompute();
+      currentSecondary = 0;
+    };
+    const closeCommandBuffer = () => {
+      closeSecondary();
+      currentCb = -1;
+      renderPass = null;
+    };
+    for (const cmd of commands) {
+      if (!cmd) continue;
+      const objId = cmd.object?.__id ?? 0;
+      if ((cmd.secondary ?? 0) !== currentSecondary) {
+        closeSecondary();
+        currentSecondary = cmd.secondary ?? 0;
+      }
+      if (sets.SUBMIT.has(cmd.method)) {
+        closeCommandBuffer();
+        continue;
+      }
+      if (objId !== currentCb) {
+        closeCommandBuffer();
+        currentCb = objId;
+        if (cmd.method.startsWith("<")) continue;
+      }
+      const stream = `${objId}:${cmd.secondary ?? 0}`;
+      const a = cmd.args;
+      if (sets.PASS_BEGIN.has(cmd.method)) {
+        closeCompute();
+        const index = passCounters.get(objId) ?? 0;
+        passCounters.set(objId, index + 1);
+        const key = passKey(frame, objId, index);
+        const timing = data.passTimings.get(key);
+        let area = null;
+        if (a && isObject(a.pRenderPassBegin)) area = rectArea(a.pRenderPassBegin.renderArea);
+        else if (a && isObject(a.pRenderingInfo)) area = rectArea(a.pRenderingInfo.renderArea);
+        renderPass = { key, kind: "render", label: `Render Pass ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area };
+        passes.push(renderPass);
+        continue;
+      }
+      if (sets.PASS_END.has(cmd.method)) {
+        renderPass = null;
+        continue;
+      }
+      if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
+      if (sets.BIND_PIPELINE.has(cmd.method) && a) {
+        const id = refId(a.pipeline);
+        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(cmd.method, a)}`, id);
+        continue;
+      }
+      if ((cmd.method === "vkCmdSetScissor" || cmd.method === "vkCmdSetScissorWithCount" || cmd.method === "vkCmdSetScissorWithCountEXT") && a) {
+        const rects = a.pScissors;
+        scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
+        continue;
+      }
+      if (!isAction(sets, cmd.method)) continue;
+      const isDispatch = sets.DISPATCH.has(cmd.method);
+      const pipelineId = bound.get(`${stream}:${sets.bindPointOf(cmd.method)}`);
+      if (pipelineId === void 0) continue;
+      let pass;
+      if (isDispatch && !renderPass) {
+        if (!compute) {
+          const index = computeCounters.get(objId) ?? 0;
+          computeCounters.set(objId, index + 1);
+          const key = passKey(frame, objId, index, true);
+          const timing = data.passTimings.get(key);
+          compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null };
+          passes.push(compute);
+        }
+        pass = compute;
+      } else {
+        pass = renderPass;
+      }
+      if (!pass) continue;
+      const stageModels2 = models.get(pipelineId);
+      if (!stageModels2) {
+        missingModels++;
+        continue;
+      }
+      const stages = [];
+      if (isDispatch) {
+        const groups = dispatchGroups(cmd, data);
+        for (const m of stageModels2) {
+          const wg = m.workgroupSize ? m.workgroupSize[0] * m.workgroupSize[1] * m.workgroupSize[2] : null;
+          const inv = groups !== null && wg !== null ? groups * wg : null;
+          stages.push({ model: m, invocations: inv, confidence: inv === null ? "unknown" : "exact" });
+        }
+      } else {
+        const vertices = drawInvocations(cmd, data);
+        const scissorArea = scissor.get(stream);
+        const fragmentArea = o.estimateFragments ? scissorArea != null && pass.area != null ? Math.min(scissorArea, pass.area) : scissorArea ?? pass.area ?? null : null;
+        for (const m of stageModels2) {
+          if (m.stage === "fragment") {
+            stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
+          } else if (m.stage === "vertex") {
+            stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "exact" });
+          } else {
+            stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "estimated" });
+          }
+        }
+      }
+      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages });
+    }
+  }
+  if (missingModels) notes.push(`${missingModels} draw(s) or dispatch(es) use a pipeline whose shaders could not be fetched and are left out.`);
+  return { passes, notes };
+}
+function entryOf(model) {
+  const a = model.analysis;
+  if (!a) return null;
+  return a.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? a.entryPoints.find((e) => e.name === model.entryPoint) ?? a.entryPoints.find((e) => e.stage === model.stage) ?? null;
+}
+function functionTree(fn, byId, factor, path10, depth) {
+  const n = node("function", fn.name || `function ${fn.id}`);
+  n.totalCost = weighCost(fn.inclusive) * factor;
+  n.selfCost = weighCost(fn.cost) * factor;
+  n.dimension = dominantDimension(fn.inclusive);
+  if (depth < 24) {
+    path10.add(fn.id);
+    for (const calleeId of fn.calls) {
+      const callee = byId.get(calleeId);
+      if (!callee || path10.has(calleeId)) continue;
+      n.children.push(functionTree(callee, byId, factor, path10, depth + 1));
+    }
+    path10.delete(fn.id);
+  }
+  if (fn.lines.length) {
+    const shown = fn.lines.slice(0, MAX_LINE_FRAMES);
+    for (const l of shown) {
+      const ln = node("line", `${l.file ? `${l.file}:` : "line "}${l.line}`, l.weighted * factor);
+      ln.selfCost = ln.totalCost;
+      ln.dimension = l.dominant;
+      ln.line = l.line;
+      ln.file = l.file;
+      n.children.push(ln);
+    }
+    const rest = fn.lines.slice(MAX_LINE_FRAMES).reduce((acc, l) => acc + l.weighted, 0);
+    if (rest > 0) n.children.push(node("more", `+ ${fn.lines.length - MAX_LINE_FRAMES} more lines`, rest * factor));
+  }
+  const sum = n.children.reduce((s, c2) => s + c2.totalCost, 0);
+  if (sum > n.totalCost && sum > 0) for (const c2 of n.children) scaleSubtree(c2, n.totalCost / sum);
+  return n;
+}
+function buildFrameCostTree(o) {
+  const { db } = o;
+  const maxFramesPerPass = o.maxFramesPerPass ?? 32;
+  const { passes, notes } = collectPasses2(o);
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0 };
+  const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
+  const allMeasured = passes.length > 0 && measured.length === passes.length;
+  const units = allMeasured ? "ms" : "ops";
+  if (!allMeasured && measured.length > 0) {
+    notes.push(`Only ${measured.length} of ${passes.length} passes have GPU timings, so the graph is in modeled op units rather than milliseconds.`);
+  } else if (!allMeasured && passes.length > 0) {
+    notes.push('No GPU pass timings in this capture, so the graph is in modeled op units. Capture with "Profile passes" to scale it to measured milliseconds.');
+  }
+  const passNodes = [];
+  for (const pass of passes) {
+    stats.items += pass.items.length;
+    const buckets = /* @__PURE__ */ new Map();
+    for (const item of pass.items) {
+      const key = o.perDraw ? `d${item.command.index}` : `p${item.pipelineId}`;
+      let b = buckets.get(key);
+      if (!b) {
+        b = { key, pipelineId: item.pipelineId, items: [] };
+        buckets.set(key, b);
+      }
+      b.items.push(item);
+    }
+    const resolved = [];
+    for (const bucket of buckets.values()) {
+      const totals = /* @__PURE__ */ new Map();
+      for (const item of bucket.items) {
+        for (const s of item.stages) {
+          const key = `${s.model.stage}:${s.model.objectId}:${s.model.entryPoint}`;
+          let acc = totals.get(key);
+          if (!acc) {
+            acc = { model: s.model, invocations: 0, confidence: s.confidence, unknown: false };
+            totals.set(key, acc);
+          }
+          if (s.invocations === null) acc.unknown = true;
+          else {
+            acc.invocations += s.invocations;
+            if (s.confidence === "estimated") acc.confidence = "estimated";
+          }
+        }
+      }
+      const stages = [];
+      let cost = 0;
+      for (const acc of totals.values()) {
+        const entry = entryOf(acc.model);
+        const usable = !!entry && !acc.unknown && acc.invocations > 0;
+        if (!usable) stats.unknownStages++;
+        else if (acc.confidence === "estimated") stats.estimatedStages++;
+        const c2 = usable ? weighCost(entry.cost) * acc.invocations : 0;
+        cost += c2;
+        stages.push({ ...acc, cost: c2 });
+      }
+      resolved.push({ bucket, stages, cost });
+    }
+    let kept = resolved;
+    let collapsed = null;
+    if (resolved.length > maxFramesPerPass) {
+      const sorted = resolved.slice().sort((x, y) => y.cost - x.cost);
+      kept = sorted.slice(0, maxFramesPerPass);
+      const tail = sorted.slice(maxFramesPerPass);
+      collapsed = { count: tail.length, draws: tail.reduce((s, r) => s + r.bucket.items.length, 0), cost: tail.reduce((s, r) => s + r.cost, 0) };
+      stats.collapsed += tail.length;
+    }
+    const itemNodes = [];
+    for (const { bucket, stages } of kept) {
+      const stageNodes = [];
+      for (const s of stages) {
+        const label = `${s.model.stage}: ${s.model.entryPoint}`;
+        const entry = entryOf(s.model);
+        if (!entry || s.unknown || s.invocations <= 0) {
+          const reason = !entry ? s.model.analysis ? "entry point not found" : "not analyzable" : "invocation count unknown";
+          const n2 = node("stage", `${label} (${reason})`);
+          n2.estimated = true;
+          n2.reason = reason;
+          n2.objectId = s.model.objectId;
+          n2.stage = s.model.stage;
+          n2.entryPoint = s.model.entryPoint;
+          stageNodes.push(n2);
+          continue;
+        }
+        const byId = new Map(s.model.analysis.functions.map((f) => [f.id, f]));
+        const root2 = byId.get(entry.functionId);
+        const suffix = s.confidence === "estimated" ? " estimated" : "";
+        const n = node("stage", `${label}: ${s.invocations.toLocaleString()}${suffix} invocations`, s.cost);
+        n.dimension = entry.dominant;
+        n.invocations = s.invocations;
+        n.confidence = s.confidence;
+        n.estimated = s.confidence !== "exact";
+        n.objectId = s.model.objectId;
+        n.stage = s.model.stage;
+        n.entryPoint = s.model.entryPoint;
+        n.command = bucket.items[0].command;
+        if (root2) {
+          const tree = functionTree(root2, byId, s.invocations, /* @__PURE__ */ new Set(), 0);
+          const tag = (c2) => {
+            c2.objectId = s.model.objectId;
+            c2.stage = s.model.stage;
+            for (const cc of c2.children) tag(cc);
+          };
+          for (const c2 of tree.children) tag(c2);
+          n.children = tree.children;
+          n.selfCost = tree.selfCost;
+          const sum = n.children.reduce((acc, c2) => acc + c2.totalCost, 0);
+          if (sum > n.totalCost && sum > 0) for (const c2 of n.children) scaleSubtree(c2, n.totalCost / sum);
+        }
+        stageNodes.push(n);
+      }
+      const first = bucket.items[0];
+      const pipeline = db.getObject(bucket.pipelineId);
+      const count2 = bucket.items.length;
+      const noun = first.kind === "draw" ? count2 === 1 ? "draw" : "draws" : count2 === 1 ? "dispatch" : "dispatches";
+      const name = o.perDraw ? `${first.command.method.replace(/^vkCmd/, "")} #${first.command.index}${pipeline ? ` (${pipeline.name})` : ""}` : `${pipeline ? pipeline.name : `Pipeline ${bucket.pipelineId}`}: ${count2} ${noun}`;
+      const itemNode = rollup(node("item", name, 0, stageNodes));
+      itemNode.command = first.command;
+      itemNode.objectId = bucket.pipelineId;
+      itemNodes.push(itemNode);
+    }
+    if (collapsed) {
+      const label = o.perDraw ? `+ ${collapsed.count} more draws` : `+ ${collapsed.count} more pipelines (${collapsed.draws} draws)`;
+      itemNodes.push(node("more", label, collapsed.cost));
+    }
+    const passNode = rollup(node("pass", pass.label, 0, itemNodes));
+    passNode.command = pass.command ?? void 0;
+    passNode.durationMs = pass.durationMs;
+    if (units === "ms") {
+      const modeled = passNode.totalCost;
+      if (modeled > 0) scaleSubtree(passNode, pass.durationMs / modeled);
+      else {
+        passNode.children = [];
+        passNode.estimated = true;
+      }
+      passNode.totalCost = pass.durationMs;
+    }
+    passNodes.push(passNode);
+  }
+  const root = rollup(node("frame", "Frame", 0, passNodes));
+  if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
+  if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
+  if (stats.estimatedStages > 0) notes.push(`Fragment stages are weighted by the scissor (or render) area: an upper bound without overdraw and before the depth test, so the split between vertex and fragment work is an estimate.`);
+  else if (o.estimateFragments === false) notes.push("Fragment stages are unweighted: only rasterization knows their invocation counts. Enable the scissor-area estimate to weight them.");
+  if (stats.collapsed > 0) notes.push(`${stats.collapsed} lower-cost ${o.perDraw ? "draw" : "pipeline"} group(s) are collapsed into "+ more" frames (the ${maxFramesPerPass} costliest per pass are shown). Their cost still counts in the pass totals.`);
+  return { root, units, notes, stats };
+}
+
+// src/renderer/vulkan/buffer_layout.ts
+var SCALARS = {
+  float: { kind: "scalar", base: "float", width: 32, size: 4 },
+  double: { kind: "scalar", base: "float", width: 64, size: 8 },
+  float16_t: { kind: "scalar", base: "float", width: 16, size: 2 },
+  half: { kind: "scalar", base: "float", width: 16, size: 2 },
+  int: { kind: "scalar", base: "int", width: 32, size: 4 },
+  uint: { kind: "scalar", base: "uint", width: 32, size: 4 },
+  bool: { kind: "scalar", base: "bool", width: 32, size: 4 },
+  int8_t: { kind: "scalar", base: "int", width: 8, size: 1 },
+  uint8_t: { kind: "scalar", base: "uint", width: 8, size: 1 },
+  int16_t: { kind: "scalar", base: "int", width: 16, size: 2 },
+  uint16_t: { kind: "scalar", base: "uint", width: 16, size: 2 },
+  int64_t: { kind: "scalar", base: "int", width: 64, size: 8 },
+  uint64_t: { kind: "scalar", base: "uint", width: 64, size: 8 }
+};
+var VEC_PREFIX = {
+  vec: "float",
+  dvec: "double",
+  f16vec: "float16_t",
+  ivec: "int",
+  uvec: "uint",
+  bvec: "bool",
+  i8vec: "int8_t",
+  u8vec: "uint8_t",
+  i16vec: "int16_t",
+  u16vec: "uint16_t",
+  i64vec: "int64_t",
+  u64vec: "uint64_t"
+};
+var MAT_PREFIX = { mat: "float", dmat: "double", f16mat: "float16_t" };
+function alignUp(v, a) {
+  return a > 0 ? Math.ceil(v / a) * a : v;
+}
+function alignment(t, rules) {
+  switch (t.kind) {
+    case "scalar":
+      return t.size;
+    case "vector":
+      return (t.count === 3 ? 4 : t.count) * t.element.size;
+    case "matrix":
+      return rules === "std140" ? Math.max(16, t.stride) : t.stride;
+    case "array":
+      return rules === "std140" ? Math.max(16, alignment(t.element, rules)) : alignment(t.element, rules);
+    case "struct": {
+      let a = 1;
+      for (const m of t.members) a = Math.max(a, alignment(m.type, rules));
+      return rules === "std140" ? Math.max(16, a) : a;
+    }
+    default:
+      return 4;
+  }
+}
+function parseTypeName(name, structs, rules) {
+  const s = SCALARS[name];
+  if (s) return s;
+  const st = structs.get(name);
+  if (st) return st;
+  const v = /^([a-z0-9]*vec)([234])$/.exec(name);
+  if (v && VEC_PREFIX[v[1]]) {
+    const element = SCALARS[VEC_PREFIX[v[1]]];
+    const count2 = Number(v[2]);
+    return { kind: "vector", element, count: count2, size: count2 * element.size };
+  }
+  const m = /^([a-z0-9]*mat)([234])(?:x([234]))?$/.exec(name);
+  if (m && MAT_PREFIX[m[1]]) {
+    const element = SCALARS[MAT_PREFIX[m[1]]];
+    const columns = Number(m[2]);
+    const rows = m[3] ? Number(m[3]) : columns;
+    const column = { kind: "vector", element, count: rows, size: rows * element.size };
+    let stride = alignment(column, rules);
+    if (rules === "std140") stride = Math.max(16, stride);
+    return { kind: "matrix", element, columns, rows, stride, rowMajor: false, size: columns * stride };
+  }
+  return null;
+}
+function parseLayout(text, rules, preferredName) {
+  const structs = /* @__PURE__ */ new Map();
+  const src = text.replace(/\/\/[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
+  const re = /struct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}\s*;?/g;
+  let last = null;
+  let match;
+  while (match = re.exec(src)) {
+    const name = match[1];
+    const members = [];
+    let offset = 0;
+    let maxAlign = 1;
+    for (const decl of match[2].split(";")) {
+      const d = decl.trim();
+      if (!d) continue;
+      const dm = /^(?:layout\s*\([^)]*\)\s*)?(?:(?:highp|mediump|lowp)\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*((?:\[\s*\d*\s*\])*)$/.exec(d);
+      if (!dm) throw new Error(`cannot parse "${d}"`);
+      const base = parseTypeName(dm[1], structs, rules);
+      if (!base) throw new Error(`unknown type "${dm[1]}" in "${d}"`);
+      let type = base;
+      const dims = [...dm[3].matchAll(/\[\s*(\d*)\s*\]/g)].map((x) => x[1] === "" ? 0 : Number(x[1])).reverse();
+      for (const count2 of dims) {
+        const stride = alignUp(sizeOfType(type), alignment({ kind: "array", element: type, count: count2, stride: 0, size: 0 }, rules));
+        const arr = { kind: "array", element: type, count: count2, stride, size: count2 * stride };
+        type = arr;
+      }
+      const a = alignment(type, rules);
+      offset = alignUp(offset, a);
+      members.push({ name: dm[2], offset, type });
+      offset += sizeOfType(type);
+      maxAlign = Math.max(maxAlign, a);
+    }
+    const structAlign = rules === "std140" ? Math.max(16, maxAlign) : maxAlign;
+    const st = { kind: "struct", name, members, size: alignUp(offset, structAlign) };
+    structs.set(name, st);
+    last = st;
+  }
+  if (!last) throw new Error("no struct declaration found");
+  if (preferredName && structs.has(preferredName)) return structs.get(preferredName);
+  return last;
+}
+function sizeOfType(t) {
+  return t.kind === "opaque" ? 0 : t.size;
+}
+function layoutText(type, rootName = "Buffer") {
+  const out = [];
+  const names = /* @__PURE__ */ new Map();
+  const usedNames = /* @__PURE__ */ new Set();
+  const memberText = (t) => {
+    const inner = innermost(t);
+    if (inner.kind === "struct") return names.get(inner) ?? inner.name ?? "Struct";
+    if (inner.kind === "matrix") return typeName(matrixColumnMajor(inner));
+    return typeName(inner);
+  };
+  const emit = (s) => {
+    if (names.has(s)) return;
+    for (const m of s.members) {
+      const inner = innermost(m.type);
+      if (inner.kind === "struct") emit(inner);
+    }
+    let name = s.name.replace(/[^A-Za-z0-9_]/g, "_") || "Struct";
+    if (/^[0-9]/.test(name)) name = `_${name}`;
+    while (usedNames.has(name)) name += "_";
+    usedNames.add(name);
+    names.set(s, name);
+    const lines = s.members.map((m) => `    ${memberText(m.type)} ${m.name}${arraySuffix(m.type)};  // offset ${m.offset}`);
+    out.push(`struct ${name} {
+${lines.join("\n")}
+};`);
+  };
+  if (type.kind === "struct") emit(type);
+  else out.push(`struct ${rootName} {
+    ${memberText(type)} value${arraySuffix(type)};
+};`);
+  return out.join("\n\n");
+}
+function innermost(t) {
+  return t.kind === "array" ? innermost(t.element) : t;
+}
+function matrixColumnMajor(m) {
+  return m.rowMajor ? { ...m, rowMajor: false } : m;
+}
+function arraySuffix(t) {
+  let s = "";
+  let cur = t;
+  while (cur.kind === "array") {
+    s += `[${cur.count || ""}]`;
+    cur = cur.element;
+  }
+  return s;
+}
+
 // src/mcp/png.ts
 import { deflateSync } from "node:zlib";
 var CRC_TABLE = (() => {
@@ -13475,15 +14015,15 @@ function encodePng(rgba, width, height) {
   hv.setUint32(4, height);
   header[8] = 8;
   header[9] = 6;
-  const parts = [
+  const parts2 = [
     new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk("IHDR", header),
     chunk("IDAT", new Uint8Array(deflateSync(raw))),
     chunk("IEND", new Uint8Array(0))
   ];
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  const out = new Uint8Array(parts2.reduce((n, p) => n + p.byteLength, 0));
   let pos = 0;
-  for (const p of parts) {
+  for (const p of parts2) {
     out.set(p, pos);
     pos += p.byteLength;
   }
@@ -13512,9 +14052,19 @@ function fitPixels(rgba, width, height, max) {
 
 // src/mcp/resource_tools.ts
 var COST_MODEL = "Modeled cost of one invocation, not a measurement: instructions weighted ALU 1, special functions 4, texture 20, memory 8, with loops counted as 8 iterations per nesting level. It ranks shaders and functions against each other.";
+var FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
+var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
 var CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"];
 var SCALAR_BYTES = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 };
+var IMAGE_PARAMS = {
+  channels: { type: "string", enum: CHANNELS, description: "What the image shows (default rgb)." },
+  exposure: { type: "number", description: "Multiplier applied before display (default 1)." },
+  autoRange: { type: "boolean", description: "Stretch the value range to black..white (default on for depth and integer formats)." },
+  image: { type: "boolean", description: "Return the PNG (default true); false for the numbers alone." },
+  maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
+  texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." }
+};
 function texelStats(tex) {
   const n = tex.width * tex.height;
   const out = [];
@@ -13553,6 +14103,47 @@ function texel(tex, x, y) {
   const v = [];
   for (let ch2 = 0; ch2 < tex.channels; ch2++) v.push(tidy(tex.values[o + ch2]));
   return v;
+}
+function texelAnswer(tex, args, head, aspect) {
+  const grid = [];
+  for (let gy = 0; gy < 3; gy++) {
+    for (let gx = 0; gx < 3; gx++) {
+      const x = Math.min(tex.width - 1, Math.floor((gx + 0.5) * tex.width / 3));
+      const y = Math.min(tex.height - 1, Math.floor((gy + 0.5) * tex.height / 3));
+      grid.push({ x, y, value: texel(tex, x, y) });
+    }
+  }
+  const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
+  const texels = requested.map((pt) => {
+    const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
+    const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
+    if (!(x >= 0 && x < tex.width && y >= 0 && y < tex.height)) throw new Error(`texel [${String(pt)}] is outside the ${tex.width}x${tex.height} image.`);
+    return { x: Math.floor(x), y: Math.floor(y), value: texel(tex, Math.floor(x), Math.floor(y)) };
+  });
+  const stats = texelStats(tex);
+  const uniform = tex.min.slice(0, tex.channels).every((v, ch2) => v === tex.max[ch2]);
+  const result = jsonResult({
+    ...head,
+    width: tex.width,
+    height: tex.height,
+    channels: tex.names,
+    linear: tex.linear || void 0,
+    integer: tex.integer || void 0,
+    uniform: uniform || void 0,
+    stats,
+    sampleGrid: grid,
+    texels: texels.length ? texels : void 0
+  });
+  if (boolArg(args, "image", true)) {
+    const rgba = displayTexels(tex, {
+      channels: enumArg(args, "channels", CHANNELS, "rgb"),
+      exposure: numberArg(args, "exposure") ?? 1,
+      autoRange: boolArg(args, "autoRange", aspect !== "color" || tex.integer)
+    });
+    const fit = fitPixels(rgba, tex.width, tex.height, intArg(args, "maxSize", 512, 16, 2048));
+    result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
+  }
+  return result;
 }
 function usersOf(c2, dataId) {
   const out = [];
@@ -13615,24 +14206,27 @@ function reflectionDetail(r) {
   };
 }
 function sourceDetail(spirv, maxChars) {
-  const info = parseSpirvDebugInfo(spirv);
+  const { info, found } = debugInfoWithSources(spirv);
   if (!info || !hasEmbeddedSource(info)) {
+    const named = (info?.files ?? []).map((f) => f.name).filter(Boolean);
+    const roots = searchPaths("sourceRoots").dirs;
     return {
       debugInfo: describeDebugInfo(info),
-      note: 'No source is embedded. Compiling with -g (glslc, glslangValidator), -gVS (glslangValidator) or -fspv-debug=vulkan-with-source (dxc) embeds it; the "glsl" or "hlsl" view cross-compiles the SPIR-V instead.'
+      note: named.length ? `The debug information names ${named.join(", ")} without the text, and ${roots.length ? `the source roots (${roots.join("; ")}) do not hold it` : "no source roots are set"}: set_search_paths with the directory holding the shader sources finds it. The "glsl" or "hlsl" view cross-compiles the SPIR-V instead.` : 'No source is embedded. Compiling with -g (glslc, glslangValidator), -gVS (glslangValidator) or -fspv-debug=vulkan-with-source (dxc) embeds it; the "glsl" or "hlsl" view cross-compiles the SPIR-V instead.'
     };
   }
   let left = maxChars;
   const files = info.files.map((f, i) => ({ f, i })).filter((x) => x.f.text !== null).map(({ f, i }) => {
     const text = clip(f.text, Math.max(200, left));
     left -= f.text.length;
-    return { name: f.name || void 0, main: i === info.mainFile || void 0, text };
+    return { name: f.name || void 0, main: i === info.mainFile || void 0, fromThisMachine: f.fromHost || void 0, text };
   });
-  return { language: info.language, debugInfo: describeDebugInfo(info), files };
+  return { language: info.language, debugInfo: describeDebugInfo(info), foundOnThisMachine: found.length ? found : void 0, files };
 }
 function analysisDetail(spirv, entryPoint) {
   const a = analyzeSpirvCached(spirv);
   if (!a) return { note: "The SPIR-V could not be analyzed." };
+  const texts = sourceLineTexts(debugInfoWithSources(spirv).info);
   const named = a.entryPoints.filter((e) => e.name === entryPoint);
   const entries = named.length ? named : a.entryPoints;
   const lines = a.functions.flatMap((f) => f.lines.map((l) => ({ fn: f.name, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, 12);
@@ -13661,9 +14255,10 @@ function analysisDetail(spirv, entryPoint) {
       line: f.line ? f.file ? `${f.file}:${f.line}` : String(f.line) : void 0,
       loopDepth: f.loopDepth || void 0,
       count: f.count > 1 ? f.count : void 0,
+      code: codeAt(texts, f.file, f.line),
       message: f.message
     })),
-    costliestLines: a.hasLines ? lines.map(({ fn, l }) => ({ line: `${l.file}:${l.line}`, function: fn, cost: round(l.weighted), dominant: l.dominant })) : void 0,
+    costliestLines: a.hasLines ? lines.map(({ fn, l }) => ({ line: `${l.file}:${l.line}`, code: codeAt(texts, l.file, l.line), function: fn, cost: round(l.weighted), dominant: l.dominant })) : void 0,
     totals: a.totals
   };
 }
@@ -13723,6 +14318,114 @@ function metalShader(c2, o, view, maxChars) {
     payloads
   };
 }
+function stageModels(c2) {
+  const db = c2.db;
+  const models = /* @__PURE__ */ new Map();
+  const spirv = /* @__PURE__ */ new Map();
+  for (const pipelineId of pipelineUses(c2.data).keys()) {
+    const pipeline = db.getObject(pipelineId);
+    if (!pipeline) continue;
+    models.set(pipelineId, pipelineStages(pipeline, db).map((s) => {
+      const bytes = c2.spirv(s.object, s.blobIndex);
+      if (bytes) spirv.set(`${s.object.id}|${s.stage}`, bytes);
+      const reflection = s.stage === "compute" ? c2.reflection(s.object, s.blobIndex) : null;
+      const entry = reflection?.entryPoints.find((e) => e.name === s.entryPoint) ?? reflection?.entryPoints[0] ?? null;
+      return {
+        stage: s.stage,
+        entryPoint: s.entryPoint,
+        objectId: s.object.id,
+        analysis: bytes ? analyzeSpirvCached(bytes) : null,
+        workgroupSize: entry?.workgroupSize ?? null
+      };
+    }));
+  }
+  return { models, spirv };
+}
+function shareOf(cost, total) {
+  return total > 0 ? round(cost / total) : void 0;
+}
+function flameFrame(v, n, level) {
+  const db = v.c.db;
+  const out = { kind: n.kind, name: n.name, cost: round(n.totalCost), share: shareOf(n.totalCost, v.total) };
+  if (n.kind === "pass") {
+    const pass = n.command ? v.c.passOf(n.command.index) : -1;
+    if (pass >= 0) {
+      out.pass = pass;
+      out.name = v.c.passName(pass);
+    }
+    out.command = n.command?.index;
+    out.measuredMs = round(n.durationMs);
+    if (!n.children.length && n.totalCost > 0) out.note = "Nothing in this pass could be weighed: it has no draws or dispatches, or their shaders have no analysis.";
+  } else if (n.kind === "item") {
+    out.command = n.command?.index;
+    out.pipeline = refText(db, n.objectId);
+  } else if (n.kind === "stage") {
+    if (n.stage) out.name = `${n.stage}: ${n.entryPoint}`;
+    out.shader = refText(db, n.objectId);
+    out.invocations = n.invocations;
+    out.invocationCount = n.confidence;
+    out.unweighted = n.reason;
+  } else if (n.kind === "function") {
+    out.own = round(n.selfCost) || void 0;
+  }
+  out.dominant = n.dimension;
+  if (!n.children.length) return out;
+  if (level >= v.depth) {
+    out.hiddenChildren = n.children.length;
+    return out;
+  }
+  const sorted = [...n.children].sort((x, y) => y.totalCost - x.totalCost);
+  const kept = sorted.filter((ch2) => v.total <= 0 || ch2.totalCost / v.total >= v.minShare);
+  const folded = sorted.slice(kept.length);
+  const children = kept.map((ch2) => flameFrame(v, ch2, level + 1));
+  const foldedCost = folded.reduce((sum, ch2) => sum + ch2.totalCost, 0);
+  if (folded.length && (v.total <= 0 || foldedCost / v.total >= 1e-3)) {
+    const cost = foldedCost;
+    children.push({ kind: "other", name: `${folded.length} smaller frame${folded.length === 1 ? "" : "s"}`, cost: round(cost), share: shareOf(cost, v.total) });
+  }
+  out.children = children;
+  return out;
+}
+function flameHotspots(c2, root, total, top, codeOf) {
+  const functions = /* @__PURE__ */ new Map();
+  const lines = /* @__PURE__ */ new Map();
+  const unweighted = /* @__PURE__ */ new Map();
+  const add = (map, key, spot, cost) => {
+    const s = map.get(key) ?? { ...spot, cost: 0 };
+    s.cost += cost;
+    map.set(key, s);
+  };
+  const walk = (n, fn) => {
+    let name = fn;
+    if (n.kind === "stage" || n.kind === "function") {
+      name = n.kind === "stage" ? n.entryPoint ?? "" : n.name;
+      if (n.selfCost > 0) add(functions, `${n.objectId}|${n.stage}|${name}`, { function: name, stage: n.stage, object: n.objectId }, n.selfCost);
+      if (n.reason) {
+        unweighted.set(`${n.objectId}|${n.stage}|${name}`, { stage: n.stage, entryPoint: n.entryPoint, shader: refText(c2.db, n.objectId), reason: n.reason });
+      }
+    } else if (n.kind === "line") {
+      add(lines, `${n.objectId}|${n.stage}|${n.name}`, { function: fn, stage: n.stage, object: n.objectId, line: n.name, file: n.file, lineNo: n.line }, n.totalCost);
+    }
+    for (const ch2 of n.children) walk(ch2, name);
+  };
+  walk(root, "");
+  const ranked = (map) => [...map.values()].sort((x, y) => y.cost - x.cost).slice(0, top).map((s) => ({
+    function: s.function,
+    line: s.line,
+    code: s.lineNo ? codeOf(s.object, s.stage, s.file, s.lineNo) : void 0,
+    stage: s.stage,
+    shader: refText(c2.db, s.object),
+    cost: round(s.cost),
+    share: shareOf(s.cost, total)
+  }));
+  const f = ranked(functions);
+  const l = ranked(lines);
+  return {
+    hottestFunctions: f.length ? f : void 0,
+    hottestLines: l.length ? l : void 0,
+    unweightedStages: unweighted.size ? [...unweighted.values()].slice(0, 20) : void 0
+  };
+}
 function resourceTools(store) {
   return [
     {
@@ -13754,12 +14457,7 @@ function resourceTools(store) {
         texture: { type: "integer", minimum: 0, description: "The texture number from list_textures or get_command's renderTargets." },
         mip: { type: "integer", minimum: 0, description: "Mip level, for sampled images read back with their mips (default the first read back)." },
         layer: { type: "integer", minimum: 0, description: "Array layer or 3D slice (default 0)." },
-        channels: { type: "string", enum: CHANNELS, description: "What the image shows (default rgb)." },
-        exposure: { type: "number", description: "Multiplier applied before display (default 1)." },
-        autoRange: { type: "boolean", description: "Stretch the value range to black..white (default on for depth and integer formats)." },
-        image: { type: "boolean", description: "Return the PNG (default true); false for the numbers alone." },
-        maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
-        texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." }
+        ...IMAGE_PARAMS
       }, ["texture"]),
       readOnly: true,
       handler: (args) => {
@@ -13793,48 +14491,7 @@ function resourceTools(store) {
         const layer = intArg(args, "layer", 0, 0, slices - 1);
         const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf(mip)), layer);
         if (!tex) return jsonResult({ ...brief, note: "The pixel data is shorter than the image's size says." });
-        const grid = [];
-        for (let gy = 0; gy < 3; gy++) {
-          for (let gx = 0; gx < 3; gx++) {
-            const x = Math.min(tex.width - 1, Math.floor((gx + 0.5) * tex.width / 3));
-            const y = Math.min(tex.height - 1, Math.floor((gy + 0.5) * tex.height / 3));
-            grid.push({ x, y, value: texel(tex, x, y) });
-          }
-        }
-        const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
-        const texels = requested.map((pt) => {
-          const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
-          const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
-          if (!(x >= 0 && x < tex.width && y >= 0 && y < tex.height)) throw new Error(`texel [${String(pt)}] is outside the ${tex.width}x${tex.height} image.`);
-          return { x: Math.floor(x), y: Math.floor(y), value: texel(tex, Math.floor(x), Math.floor(y)) };
-        });
-        const stats = texelStats(tex);
-        const uniform = tex.min.slice(0, tex.channels).every((v, ch2) => v === tex.max[ch2]);
-        const result = jsonResult({
-          ...brief,
-          mip,
-          layer,
-          slices: slices > 1 ? slices : void 0,
-          width: tex.width,
-          height: tex.height,
-          channels: tex.names,
-          linear: tex.linear || void 0,
-          integer: tex.integer || void 0,
-          uniform: uniform || void 0,
-          stats,
-          sampleGrid: grid,
-          texels: texels.length ? texels : void 0
-        });
-        if (boolArg(args, "image", true)) {
-          const rgba = displayTexels(tex, {
-            channels: enumArg(args, "channels", CHANNELS, "rgb"),
-            exposure: numberArg(args, "exposure") ?? 1,
-            autoRange: boolArg(args, "autoRange", info.aspect !== "color" || tex.integer)
-          });
-          const fit = fitPixels(rgba, tex.width, tex.height, intArg(args, "maxSize", 512, 16, 2048));
-          result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
-        }
-        return result;
+        return texelAnswer(tex, args, { ...brief, mip, layer, slices: slices > 1 ? slices : void 0 }, info.aspect);
       }
     },
     {
@@ -14100,6 +14757,1146 @@ function resourceTools(store) {
           stages: p.items.map((r) => r.row)
         });
       }
+    },
+    {
+      name: "get_shader_flame_graph",
+      description: "The Shader Flame Graph of a Vulkan capture: the frame's GPU work by pass, pipeline (or draw), shader stage, function and source line, with the frame's hottest functions and lines. Each stage weighs its modeled per-invocation cost times its invocations: vertex and compute counts are exact (from the draw and dispatch arguments, indirect ones from the captured buffers), fragment counts estimated from the scissor area. When every pass was timed (Profile passes) the costs are milliseconds, each pass its measured GPU time with only the split inside it modeled; otherwise modeled op units. Where analyze_shaders ranks shaders, this shows where the frame's shading work goes.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        pass: { type: "integer", minimum: 0, description: "Only this pass (the pass number get_bottlenecks and list_commands give); shares are then of the pass." },
+        perDraw: { type: "boolean", description: "One frame per draw or dispatch instead of one per pipeline (default false)." },
+        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area, an upper bound without overdraw (default true); false leaves them unweighted." },
+        depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
+        minShare: { type: "number", minimum: 0, maximum: 1, description: 'Fold frames below this share of the total into one "other" frame, left out when it is under 0.001 (default 0.01).' },
+        top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." }
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api === "metal") {
+          return jsonResult({ capture: c2.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        const { models, spirv } = stageModels(c2);
+        const result = buildFrameCostTree({
+          data: c2.data,
+          db: c2.db,
+          models,
+          perDraw: boolArg(args, "perDraw", false),
+          estimateFragments: boolArg(args, "estimateFragments", true)
+        });
+        const texts = /* @__PURE__ */ new Map();
+        const codeOf = (object, stage, file, line) => {
+          const key = `${object}|${stage}`;
+          let t = texts.get(key);
+          if (!t) {
+            const bytes = spirv.get(key);
+            t = bytes ? sourceLineTexts(debugInfoWithSources(bytes).info) : /* @__PURE__ */ new Map();
+            texts.set(key, t);
+          }
+          return codeAt(t, file, line);
+        };
+        let root = result.root;
+        const pass = optionalInt(args, "pass");
+        if (pass !== void 0) {
+          const found = root.children.find((n) => n.command && c2.passOf(n.command.index) === pass);
+          if (!found) throw new Error(`Pass ${pass} is not in the flame graph: it has ${root.children.length} passes with draws or dispatches (get_bottlenecks lists every pass).`);
+          root = found;
+        }
+        const total = root.totalCost;
+        const view = { c: c2, total, depth: intArg(args, "depth", 6, 1, 32), minShare: Math.min(1, Math.max(0, numberArg(args, "minShare") ?? 0.01)) };
+        return jsonResult({
+          capture: c2.id,
+          units: result.units,
+          meaning: result.units === "ms" ? FLAME_MS : FLAME_OPS,
+          model: COST_MODEL,
+          total: round(total),
+          passes: pass === void 0 ? result.stats.passes : void 0,
+          drawsAndDispatches: pass === void 0 ? result.stats.items : void 0,
+          graph: flameFrame(view, root, 0),
+          ...flameHotspots(c2, root, total, intArg(args, "top", 15, 0, 100), codeOf),
+          notes: result.notes.length ? result.notes : void 0
+        });
+      }
+    }
+  ];
+}
+
+// src/mcp/tools.ts
+import fs10 from "node:fs";
+import path9 from "node:path";
+var SEVERITIES = ["high", "medium", "low", "info"];
+function unique(values) {
+  return values.length ? [...new Set(values)] : void 0;
+}
+function frameTiming(c2) {
+  const db = c2.db;
+  const timings = [...c2.data.passTimings.values()];
+  let start = Infinity;
+  let end = -Infinity;
+  for (const t of timings) {
+    start = Math.min(start, t.startMs);
+    end = Math.max(end, t.startMs + t.durationMs);
+  }
+  const gpuSpanMs = timings.length ? end - start : 0;
+  const bound = timings.length ? frameBound({ frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs, frames: c2.data.frames }) : null;
+  return {
+    frameMs: round(db.frameTimeMs) || void 0,
+    submitMs: round(db.submitMs) || void 0,
+    refreshMs: round(db.refreshMs) || void 0,
+    refreshSource: db.refreshSource ? REFRESH_SOURCE_NOTE[db.refreshSource] ?? db.refreshSource : void 0,
+    frameBoundary: db.frameBoundary || void 0,
+    profiled: timings.length > 0,
+    gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
+    gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
+    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0
+  };
+}
+function captureNotes(c2) {
+  const d = c2.data;
+  const notes = [];
+  if (!d.passTimings.size) {
+    notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
+  } else if (!c2.metrics.withCounters) {
+    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+  }
+  const failedImages = d.textures.filter((t) => t.info.error).length;
+  if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
+  if (!d.textures.length) notes.push("No render targets or images were read back.");
+  const buffers = [...d.buffers.values()];
+  const failedBuffers = buffers.filter((b) => b.info.error).length;
+  if (failedBuffers) notes.push(`${failedBuffers} buffer read-backs failed.`);
+  const truncated = buffers.filter((b) => b.info.originalSize).length;
+  if (truncated) notes.push(`${truncated} buffer ranges were cut to the capture's buffer size limit.`);
+  return notes;
+}
+function passBrief(c2, i) {
+  const p = c2.metrics.passes[i];
+  return { pass: i, label: c2.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? void 0 };
+}
+function passMeasurements(c2, p, i, gpuMs) {
+  const problems = passAdvice(p);
+  return {
+    pass: i,
+    label: c2.passName(i),
+    command: p.commandIndex,
+    kind: p.compute ? "compute" : "render",
+    ms: round(p.durationMs),
+    shareOfGpu: gpuMs > 0 && p.durationMs !== null ? round(p.durationMs / gpuMs) : void 0,
+    vertexMs: round(p.vertexMs),
+    fragmentMs: round(p.fragmentMs),
+    draws: p.draws,
+    vertices: p.vertices || void 0,
+    pixels: p.pixels || void 0,
+    overdraw: round(p.overdraw),
+    fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
+    depthRejectRate: round(p.depthRejectRate),
+    nsPerVertex: round(p.nsPerVertex),
+    nsPerFragment: round(p.nsPerFragment),
+    cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,
+    bound: p.bound ?? void 0,
+    boundReason: p.boundReason || void 0,
+    problems: problems.length ? problems : void 0
+  };
+}
+function captureSummary(c2) {
+  const d = c2.data;
+  const db = c2.db;
+  const sets = d.sets;
+  let draws = 0;
+  let dispatches = 0;
+  for (const cmd of d.commands) {
+    if (sets.DRAW.has(cmd.method)) draws++;
+    else if (sets.DISPATCH.has(cmd.method)) dispatches++;
+  }
+  const passes = c2.metrics.passes;
+  const findings = c2.analysis.findings;
+  const bySeverity = {};
+  for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+  const [errors, warnings] = db.validationCounts;
+  const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
+  const g = c2.graph;
+  const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
+  return {
+    capture: c2.id,
+    file: c2.path,
+    application: c2.manifest.source?.name || void 0,
+    api: d.api,
+    savedAt: c2.manifest.savedAt,
+    frame: d.frame,
+    frames: d.frames,
+    counts: {
+      commands: d.commands.length,
+      draws,
+      dispatches,
+      renderPasses: passes.filter((p) => !p.compute).length,
+      computePasses: passes.filter((p) => p.compute).length,
+      objects: db.allObjects.size + db.destroyedObjects.size,
+      pipelinesUsed: pipelineUses(d).size,
+      renderTargets: d.textures.length - sampled,
+      sampledImages: sampled,
+      bufferRanges: d.buffers.size
+    },
+    timing: frameTiming(c2),
+    slowestPasses: slowest.length ? slowest.map((x) => passBrief(c2, x.i)) : void 0,
+    issues: { total: findings.length, bySeverity, top: findings.slice(0, 8).map((f) => findingBrief(c2, f)) },
+    validation: {
+      errors,
+      warnings,
+      total: db.validation.length,
+      first: db.validation.length ? db.validation.slice(0, 5).map((v) => validationBrief(c2, v, 400)) : void 0
+    },
+    renderGraph: {
+      passes: g.nodes.length,
+      resources: g.resources.length,
+      externalInputs: g.externalInputs.length,
+      unreadPasses: g.unreadNodes.length,
+      criticalPathMs: round(g.criticalPathMs) || void 0,
+      warnings: g.warnings.length ? g.warnings : void 0
+    },
+    statistics: Object.fromEntries(c2.statistics.sections().map((s) => [s.title, Object.fromEntries(s.rows.filter((r) => r.value).map((r) => [r.label, r.value]))])),
+    notes: captureNotes(c2)
+  };
+}
+function nodeDetail(c2, n) {
+  const db = c2.db;
+  const resource2 = (r) => ({ resource: r.label, detail: r.detail || void 0, object: refText(db, r.objectId), key: r.key });
+  return {
+    capture: c2.id,
+    node: n.ordinal,
+    label: n.label,
+    kind: n.kind,
+    command: n.commandIndex,
+    ms: round(n.durationMs),
+    draws: n.draws || void 0,
+    pathMs: round(n.pathMs) || void 0,
+    unread: n.unread || void 0,
+    unresolvedReads: n.unresolvedReads || void 0,
+    reads: n.reads.map((u) => ({
+      ...resource2(u.resource),
+      usage: u.usage,
+      version: u.version.index,
+      from: u.version.producer ? u.version.producer.ordinal : "before the capture"
+    })),
+    writes: n.writes.map((u) => ({
+      ...resource2(u.resource),
+      usage: u.usage,
+      version: u.version.index,
+      readBy: u.version.readers.map((r) => r.ordinal),
+      replacesContents: u.discards || void 0,
+      discardedByStoreOp: u.dropped || void 0,
+      presented: u.resource.presented || void 0
+    }))
+  };
+}
+function passKeys(c2) {
+  const seen = /* @__PURE__ */ new Map();
+  const out = /* @__PURE__ */ new Map();
+  c2.metrics.passes.forEach((p, i) => {
+    const base = `${p.compute ? "compute" : "render"}|${c2.labelsOf(p.commandIndex)}|${p.label.replace(/^[A-Za-z ]+ \d+:?\s*/, "")}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    out.set(`${base}#${n}`, i);
+  });
+  return out;
+}
+function change(before, after) {
+  if ((before ?? null) === null && (after ?? null) === null) return void 0;
+  const out = { before: round(before), after: round(after) };
+  if (typeof before === "number" && typeof after === "number") {
+    out.change = round(after - before);
+    if (before) out.percent = round((after - before) / before * 100);
+  }
+  return out;
+}
+function captureTools(store) {
+  return [
+    {
+      name: "open_capture",
+      description: `Open a GPU Inspector capture file (.gpucap: a Vulkan or Metal frame saved from GPU Inspector's capture bar) and return its summary. The capture stays open under the returned id ("cap-1") for the other tools; opening an unchanged file again returns the capture already open.`,
+      inputSchema: schema({ path: { type: "string", description: "Path of the .gpucap file." } }, ["path"]),
+      readOnly: true,
+      handler: (args) => {
+        const { capture, reused } = store.open(requireString(args, "path"));
+        return jsonResult({ ...captureSummary(capture), reused: reused || void 0 });
+      }
+    },
+    {
+      name: "list_captures",
+      description: "List the captures open in this server, and the capture files GPU Inspector opened or saved most recently (from its settings), so a capture can be found without asking for its path.",
+      inputSchema: schema({}),
+      readOnly: true,
+      handler: () => {
+        const open = store.list();
+        const recent = [...new Set(recentCaptureFiles().map((p) => path9.normalize(p)))];
+        return jsonResult({
+          open: open.map((c2) => ({
+            capture: c2.id,
+            file: c2.path,
+            application: c2.manifest.source?.name || void 0,
+            api: c2.data.api,
+            frame: c2.data.frame,
+            frames: c2.data.frames > 1 ? c2.data.frames : void 0,
+            commands: c2.data.commands.length,
+            megabytes: round(c2.fileBytes / 1048576)
+          })),
+          recent: recent.map((file) => ({
+            file,
+            missing: fs10.existsSync(file) ? void 0 : true,
+            open: open.find((c2) => c2.path === path9.resolve(file))?.id
+          })),
+          note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
+        });
+      }
+    },
+    {
+      name: "set_search_paths",
+      description: "Where to look on this machine for what captures only name. sourceRoots: the directories holding the shader sources, for shaders compiled with line information but no embedded text (dxc -Zi, glslc without -g, stripped builds), so get_shader shows their source and the analyses quote their costliest lines. symbolDirs: the directories holding the application's unstripped libraries (the build tree), so stack frames named only by module and offset (Android, Linux) resolve to functions, files and lines. A list replaces the previous one for this server; an empty list goes back to GPU_INSPECTOR_SOURCE_ROOTS / GPU_INSPECTOR_SYMBOL_DIRS, else the directories GPU Inspector's launch dialog used last. Without arguments it shows what is in effect.",
+      inputSchema: schema({
+        sourceRoots: { type: "array", items: { type: "string" }, description: "Directories searched (six levels deep) for the shader files debug information names." },
+        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name." }
+      }),
+      handler: (args) => {
+        if (args.sourceRoots !== void 0) setSearchPaths("sourceRoots", splitPaths(args.sourceRoots));
+        if (args.symbolDirs !== void 0) setSearchPaths("symbolDirs", splitPaths(args.symbolDirs));
+        return jsonResult(describeSearchPaths());
+      }
+    },
+    {
+      name: "close_capture",
+      description: "Close an open capture and free its memory (captures with many read-back images can be hundreds of megabytes).",
+      inputSchema: schema({ capture: { type: "string", description: "The capture's id or file path." } }, ["capture"]),
+      handler: (args) => jsonResult({ closed: store.close(requireString(args, "capture")) })
+    },
+    {
+      name: "get_capture_summary",
+      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
+      inputSchema: schema({ capture: CAPTURE_PARAM }),
+      readOnly: true,
+      handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture"))))
+    },
+    {
+      name: "get_frame_issues",
+      description: "The Frame Issues of a capture: the rules GPU Inspector runs over the frame (attachment load and store ops, clears outside passes, transient and memoryless candidates, MSAA stores, one pass per eye without multiview, redundant binds, barriers, tiny draws, overdraw and microtriangles from the GPU counters, unmipped textures, and the render graph's unread stores, overwritten results and mergeable passes). Each finding names the command it is about; a finding over many commands names the first and counts the rest. Worst first.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        severity: { type: "string", enum: SEVERITIES, description: "The lowest severity to list (default info: all)." },
+        rule: { type: "string", description: 'Only this rule, by name ("tiny-draws").' },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const min = SEVERITY_RANK[enumArg(args, "severity", SEVERITIES, "info")];
+        const rule = stringArg(args, "rule");
+        const all = c2.analysis.findings;
+        const rules = {};
+        for (const f of all) {
+          const r = rules[f.rule] ??= { severity: f.severity, findings: 0, commands: 0 };
+          if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[r.severity]) r.severity = f.severity;
+          r.findings++;
+          r.commands += f.count;
+        }
+        const list = all.filter((f) => SEVERITY_RANK[f.severity] >= min && (!rule || f.rule === rule));
+        const p = page(list, args, 50, 200);
+        return jsonResult({ capture: c2.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, rules, findings: p.items.map((f) => findingBrief(c2, f)) });
+      }
+    },
+    {
+      name: "get_bottlenecks",
+      description: 'The GPU Bottlenecks report: every timed pass, slowest first, measured the way a bottleneck is described \u2014 GPU time and share of the frame, draws and vertices, overdraw (fragment shader runs per target pixel), fragments per primitive (microtriangles below 4), depth rejection and the vertex/fragment split (Metal), which stage the pass is bound by, and each measured problem with what usually causes it. Needs a capture taken with "Profile passes"; the counters also need a GPU that exposes them. docs/PROFILING.md in GPU Inspector is the method behind it.',
+      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const m = c2.metrics;
+        if (!m.passes.length) return jsonResult({ capture: c2.id, note: "The capture has no passes." });
+        if (!m.timed) {
+          return jsonResult({
+            capture: c2.id,
+            passes: m.passes.length,
+            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.'
+          });
+        }
+        const ranked = m.passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
+        const slowest = ranked[0];
+        const metal = c2.data.api === "metal";
+        const notes = [];
+        if (!m.withCounters) {
+          notes.push(metal ? "The GPU exposes only the timestamp counter set through public Metal, so overdraw, fragments per primitive and depth rejection are not measured." : "No pass carried pipeline statistics (the device may lack pipelineStatisticsQuery), so overdraw and fragments per primitive are not measured.");
+        } else {
+          notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
+        }
+        if (!metal) notes.push("The vertex/fragment split and depth rejection are Metal only: Vulkan has no portable stage-boundary timestamps, and pipeline statistics do not count the fragments that survived the depth test.");
+        const totals = m.totals;
+        const p = page(ranked, args, 30, 200);
+        return jsonResult({
+          capture: c2.id,
+          api: c2.data.api,
+          verdict: frameStageVerdict(m),
+          gpuMs: round(m.gpuMs),
+          vertexMs: round(m.vertexMs) || void 0,
+          fragmentMs: round(m.fragmentMs) || void 0,
+          timedPasses: m.timed,
+          untimedPasses: m.passes.length - m.timed || void 0,
+          totals: totals ? {
+            vertexInvocations: totals.vertexInvocations,
+            fragmentInvocations: totals.fragmentInvocations,
+            primitives: totals.primitives,
+            fragmentsPerPrimitive: totals.primitives ? round(totals.fragmentInvocations / totals.primitives) : void 0
+          } : void 0,
+          thresholds: { healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT, microtrianglesBelow: MICROTRIANGLE_LIMIT, lowDepthRejectionBelow: LOW_REJECTION_RATE },
+          slowest: slowest ? {
+            pass: slowest.i,
+            label: c2.passName(slowest.i),
+            ms: round(slowest.p.durationMs),
+            bound: slowest.p.bound ? BOUND_LABEL[slowest.p.bound] : void 0,
+            reason: slowest.p.boundReason || void 0,
+            firstThingToTry: slowest.p.bound ? BOUND_ADVICE[slowest.p.bound] : void 0
+          } : void 0,
+          total: p.total,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
+          notes
+        });
+      }
+    },
+    {
+      name: "get_render_graph",
+      description: "The capture's render graph: its passes (nodes, numbered in execution order) with the passes they read from and write for, the critical path by GPU time, resources read from before the capture, passes whose output nothing reads, and the graph rules' suggestions. With `node`, one pass in full: every resource it reads (and which pass produced that version) and writes (and which passes read it). Node numbers are the graph's own, not get_bottlenecks' pass numbers.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        node: { type: "integer", minimum: 0, description: "One node to show in full." },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const g = c2.graph;
+        const nodeIndex = optionalInt(args, "node");
+        if (nodeIndex !== void 0) {
+          const n = g.nodes.find((x) => x.ordinal === nodeIndex);
+          if (!n) throw new Error(`No node ${nodeIndex}: the graph has ${g.nodes.length} nodes.`);
+          return jsonResult(nodeDetail(c2, n));
+        }
+        const critical = new Set(g.criticalPath.map((n) => n.ordinal));
+        const suggestions = analyzeRenderGraph(g).findings;
+        const p = page(g.nodes, args, 100, 500);
+        return jsonResult({
+          capture: c2.id,
+          nodes: g.nodes.length,
+          resources: g.resources.length,
+          edges: g.edges.length,
+          criticalPath: g.criticalPath.map((n) => n.ordinal),
+          criticalPathMs: round(g.criticalPathMs) || void 0,
+          warnings: g.warnings.length ? g.warnings : void 0,
+          externalInputs: g.externalInputs.length ? g.externalInputs.slice(0, 40).map((r) => r.detail ? `${r.label} (${r.detail})` : r.label) : void 0,
+          unreadNodes: unique(g.unreadNodes.map((n) => n.ordinal)),
+          suggestions: suggestions.length ? suggestions.map((f) => findingBrief(c2, f)) : void 0,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          list: p.items.map((n) => ({
+            node: n.ordinal,
+            label: n.label,
+            kind: n.kind,
+            command: n.commandIndex,
+            frame: c2.data.frames > 1 ? n.frame : void 0,
+            ms: round(n.durationMs),
+            draws: n.draws || void 0,
+            reads: n.reads.length,
+            writes: n.writes.length,
+            inputsFrom: unique(n.inputs.map((e) => e.from.ordinal)),
+            outputsTo: unique(n.outputs.map((e) => e.to.ordinal)),
+            unread: n.unread || void 0,
+            critical: critical.has(n.ordinal) || void 0,
+            unresolvedReads: n.unresolvedReads || void 0
+          }))
+        });
+      }
+    },
+    {
+      name: "compare_captures",
+      description: "Compare two captures of the same application, before and after a change: frame, submit and GPU time, the statistics that differ, Frame Issues by rule, validation counts, and per pass (matched by debug groups and label) the GPU time, draws, overdraw and fragments per primitive, largest change first. Confirms whether a fix moved anything.",
+      inputSchema: schema({
+        before: { type: "string", description: "The capture before the change: an open capture's id or a .gpucap path." },
+        after: { type: "string", description: "The capture after the change: an open capture's id or a .gpucap path." }
+      }, ["before", "after"]),
+      readOnly: true,
+      handler: (args) => {
+        const a = store.resolve(requireString(args, "before"));
+        const b = store.resolve(requireString(args, "after"));
+        const sa = a.statistics;
+        const sb = b.statistics;
+        const counts = {};
+        const keys = [
+          "apiCalls",
+          "submits",
+          "draws",
+          "dispatches",
+          "renderPasses",
+          "computePasses",
+          "bindPipeline",
+          "uniquePipelines",
+          "descriptorSetsBound",
+          "uniqueDescriptorSets",
+          "totalVertices",
+          "totalTriangles",
+          "updateBufferBytes",
+          "bufferCopyBytes"
+        ];
+        for (const key of keys) if (sa[key] !== sb[key]) counts[key] = change(sa[key], sb[key]);
+        const ka = passKeys(a);
+        const kb = passKeys(b);
+        const rows = [];
+        for (const [key, ia] of ka) {
+          const ib = kb.get(key);
+          if (ib === void 0) continue;
+          const pa = a.metrics.passes[ia];
+          const pb = b.metrics.passes[ib];
+          rows.push({
+            label: b.passName(ib),
+            before: ia,
+            after: ib,
+            ms: change(pa.durationMs, pb.durationMs),
+            draws: pa.draws !== pb.draws ? change(pa.draws, pb.draws) : void 0,
+            overdraw: change(pa.overdraw, pb.overdraw),
+            fragmentsPerPrimitive: change(pa.fragmentsPerPrimitive, pb.fragmentsPerPrimitive)
+          });
+        }
+        const magnitude = (r) => Math.abs(typeof r.ms?.change === "number" ? r.ms.change : 0);
+        rows.sort((x, y) => magnitude(y) - magnitude(x));
+        const ruleCounts = (c2) => {
+          const out = /* @__PURE__ */ new Map();
+          for (const f of c2.analysis.findings) out.set(f.rule, (out.get(f.rule) ?? 0) + f.count);
+          return out;
+        };
+        const ra = ruleCounts(a);
+        const rb = ruleCounts(b);
+        const issues = [.../* @__PURE__ */ new Set([...ra.keys(), ...rb.keys()])].map((rule) => ({ rule, before: ra.get(rule) ?? 0, after: rb.get(rule) ?? 0 })).filter((r) => r.before !== r.after);
+        const profiled = a.data.passTimings.size > 0 && b.data.passTimings.size > 0;
+        const [ea, wa] = a.db.validationCounts;
+        const [eb, wb] = b.db.validationCounts;
+        return jsonResult({
+          before: { capture: a.id, file: a.path, frame: a.data.frame },
+          after: { capture: b.id, file: b.path, frame: b.data.frame },
+          timing: {
+            frameMs: change(a.db.frameTimeMs, b.db.frameTimeMs),
+            submitMs: change(a.db.submitMs, b.db.submitMs),
+            gpuPassMs: profiled ? change(a.metrics.gpuMs, b.metrics.gpuMs) : void 0
+          },
+          counts: Object.keys(counts).length ? counts : void 0,
+          issuesByRule: issues.length ? issues : void 0,
+          validation: ea !== eb || wa !== wb ? { errors: change(ea, eb), warnings: change(wa, wb) } : void 0,
+          passes: rows.slice(0, 60),
+          onlyBefore: [...ka].filter(([key]) => !kb.has(key)).map(([, i]) => a.passName(i)),
+          onlyAfter: [...kb].filter(([key]) => !ka.has(key)).map(([, i]) => b.passName(i)),
+          notes: profiled ? void 0 : ["At least one capture was taken without Profile passes, so GPU times cannot be compared."]
+        });
+      }
+    }
+  ];
+}
+
+// src/mcp/live_tools.ts
+var SESSION_PARAM = { type: "string", description: `A live session's id ("app-1"). Defaults to the session started most recently.` };
+var LANGUAGES = ["glsl", "hlsl", "spirv-asm"];
+var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function deviceName(db) {
+  for (const o of db.objectsByType.get("VkPhysicalDevice")?.values() ?? []) {
+    const summary = o.summary(db).trim();
+    if (summary) return summary;
+  }
+  const metal = db.objectsByType.get("MTLDevice")?.values().next().value;
+  return metal ? metal.name : void 0;
+}
+function sessionStatus(s) {
+  const db = s.database;
+  const byType = [...db.objectsByType].filter(([, objects]) => objects.size).sort((a, b) => b[1].size - a[1].size).slice(0, 12);
+  const last = s.frameStats.at(-1)?.msg;
+  const [errors, warnings] = db.validationCounts;
+  return {
+    session: s.id,
+    name: s.name,
+    state: s.state,
+    detail: s.detail || void 0,
+    launched: s.launched,
+    pid: s.pid ?? void 0,
+    port: s.port,
+    exitCode: s.exitCode ?? void 0,
+    api: s.api ?? void 0,
+    device: deviceName(db),
+    uptimeSeconds: round((Date.now() - s.startedAt) / 1e3),
+    frame: last ? {
+      index: last.frame,
+      frameMs: round(last.frameTimeMs),
+      fps: last.frameTimeMs > 0 ? round(1e3 / last.frameTimeMs) : void 0,
+      submitMs: round(last.submitMs),
+      refreshMs: round(last.refreshMs) || void 0,
+      presentMode: last.presentMode || void 0,
+      droppedTotal: last.droppedTotal || void 0
+    } : void 0,
+    objects: { live: db.allObjects.size, byType: Object.fromEntries(byType.map(([type, objects]) => [type, objects.size])) },
+    memoryBytes: {
+      deviceMemory: db.memory.device || void 0,
+      buffers: db.memory.buffers || void 0,
+      images: db.memory.images || void 0,
+      reportedByDriver: db.memory.reported || void 0
+    },
+    validation: { errors, warnings, total: db.validation.length },
+    leakedObjects: db.leakCount || void 0,
+    recentLog: s.log.slice(-15),
+    note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : void 0
+  };
+}
+var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
+function compilerLog(log) {
+  return log.split(/\r?\n/).filter((line) => line.trim().replace(TEMP_SOURCE, "") !== "").join("\n").replace(TEMP_SOURCE, "source").trim();
+}
+function stageOf(s, pipelineId, stage) {
+  const pipeline = s.database.getObject(pipelineId);
+  if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
+  const stages = pipelineStages(pipeline, s.database);
+  const source = stages.find((x) => x.stage === stage.toLowerCase());
+  if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
+  return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
+}
+function liveDescriptor(db, d) {
+  if (d.buffer !== void 0) return { buffer: refText(db, d.buffer), offset: d.offset, range: d.range };
+  if (d.imageView !== void 0 || d.sampler !== void 0) {
+    return {
+      imageView: refText(db, d.imageView),
+      image: refText(db, imageOfView(db, refId(d.imageView ?? void 0))),
+      layout: d.imageLayout,
+      sampler: refText(db, d.sampler),
+      immutableSampler: d.immutable || void 0
+    };
+  }
+  return compact(d, db);
+}
+function discardNote(db, imageId) {
+  const views = /* @__PURE__ */ new Set();
+  for (const v of db.objectsByType.get("VkImageView")?.values() ?? []) if (refId(v.descriptor?.image) === imageId) views.add(v.id);
+  let stored = 0;
+  let discarded = 0;
+  for (const fb of db.objectsByType.get("VkFramebuffer")?.values() ?? []) {
+    const d = fb.descriptor;
+    const attachments = d && Array.isArray(d.pAttachments) ? d.pAttachments : [];
+    const pass = db.getObject(refId(d?.renderPass));
+    const descriptions = pass?.descriptor && Array.isArray(pass.descriptor.pAttachments) ? pass.descriptor.pAttachments : [];
+    attachments.forEach((a, i) => {
+      const view = refId(a);
+      const description = descriptions[i];
+      if (view === null || !views.has(view) || !isObject(description)) return;
+      if (str(description.storeOp).endsWith("DONT_CARE")) discarded++;
+      else stored++;
+    });
+  }
+  return discarded && !stored ? "Every render pass that draws into this image discards it (storeOp DONT_CARE), so what it holds between frames is undefined: capture_frames reads attachments at the end of each pass instead." : void 0;
+}
+function requireConnected(s) {
+  if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}${s.detail ? `: ${s.detail}` : ""}).`);
+}
+function liveTools(sessions2, store) {
+  return [
+    {
+      name: "launch_app",
+      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on macOS the Metal library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's own output is in it, which is where to look when it does not connect). The application runs until stop_app or until this server exits.",
+      inputSchema: schema({
+        exe: { type: "string", description: "The executable (on macOS an .app bundle works too)." },
+        args: { type: "string", description: "Command line arguments, quoted as in a shell." },
+        cwd: { type: "string", description: "Working directory (default the executable's directory)." },
+        env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
+        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK) or Metal's validation, so validation messages reach the captures (default false)." },
+        syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
+        layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." }
+      }, ["exe"]),
+      handler: async (args) => {
+        const env = args.env && typeof args.env === "object" ? Object.fromEntries(Object.entries(args.env).map(([k, v]) => [k, String(v)])) : void 0;
+        const s = await sessions2.launch({
+          exe: requireString(args, "exe"),
+          args: stringArg(args, "args"),
+          cwd: stringArg(args, "cwd"),
+          env,
+          validation: boolArg(args, "validation", false),
+          syncValidation: boolArg(args, "syncValidation", false),
+          stacktraces: boolArg(args, "stacktraces", true),
+          recordAlways: boolArg(args, "recordAlways", false),
+          port: optionalInt(args, "port"),
+          layerDir: stringArg(args, "layerDir")
+        }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? void 0 : "The capture library did not connect. recentLog (and get_session_log) has the application's and the layer's output: a crash, an application that does not use Vulkan, or a layer the loader did not load."
+        });
+        if (!s.connected) result.isError = true;
+        return result;
+      }
+    },
+    {
+      name: "attach_app",
+      description: "Connect to an application whose capture library already listens on a port: one started with GPU Inspector's implicit layer (VKINSP_ENABLE=1 and VKINSP_PORT), by hand, or by GPU Inspector itself. The capture library serves one client at a time, so attaching disconnects GPU Inspector from that application if it was connected.",
+      inputSchema: schema({
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "The port (default 47531)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to keep trying (default 10)." }
+      }),
+      handler: async (args) => {
+        const s = await sessions2.attach(intArg(args, "port", 47531, 1, 65535), (numberArg(args, "waitSeconds") ?? 10) * 1e3);
+        return jsonResult(sessionStatus(s));
+      }
+    },
+    {
+      name: "list_android_devices",
+      description: "The Android devices adb sees (serial, state, model, Android API level, ABI) and whether GPU Inspector's Android layer is available; with `device`, also the third-party packages installed on that device, for launch_android_app.",
+      inputSchema: schema({ device: { type: "string", description: "A device's serial: also list the packages installed on it." } }),
+      readOnly: true,
+      handler: async (args) => {
+        const { adb: adb2, devices, layer } = await sessions2.androidDevices();
+        const device = stringArg(args, "device");
+        return jsonResult({
+          adb: adb2 ?? "not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB",
+          devices: devices.map((d) => ({ serial: d.serial, state: d.state, model: d.model || void 0, sdk: d.sdk || void 0, abi: d.abi || void 0 })),
+          layer: layer ?? "not found: build it with tools/build_android.py (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR",
+          packages: adb2 && device ? await listPackages(adb2, device) : void 0,
+          note: devices.some((d) => d.state === "unauthorized") ? "An unauthorized device is waiting for its USB debugging prompt to be accepted." : void 0
+        });
+      }
+    },
+    {
+      name: "launch_android_app",
+      description: "Launch an Android application with GPU Inspector's Vulkan layer and connect to it, for the same live tools as launch_app (get_live_frame_stats, capture_frames, read_live_image, replace_shader...). The layer is installed on the device (the layer package on Android 10+, else copied into the application's data), enabled for the package through Android's GPU debug layer settings, and reached through an adb port forward. The application must be debuggable (a development build) unless the device is rooted. Logcat's layer output and crashes go to get_session_log; stop_app ends the application and turns the debug layer settings off.",
+      inputSchema: schema({
+        package: { type: "string", description: "The package name (list_android_devices lists the installed ones)." },
+        device: { type: "string", description: "The device's serial (default the only connected device)." },
+        activity: { type: "string", description: "The activity to start (default the package's launcher activity)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command buffer as it is built, for applications that reuse command buffers recorded once (default false)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Host port for the forward (default 47531, or the next free one)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the layer to connect once the application has started (default 60)." }
+      }, ["package"]),
+      handler: async (args) => {
+        const s = await sessions2.launchAndroid({
+          package: requireString(args, "package"),
+          device: stringArg(args, "device"),
+          activity: stringArg(args, "activity"),
+          stacktraces: boolArg(args, "stacktraces", true),
+          recordAlways: boolArg(args, "recordAlways", false),
+          port: optionalInt(args, "port")
+        }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? void 0 : s.state === "error" ? `The launch failed on the device: ${s.detail}` : "The layer did not connect. recentLog (and get_session_log) has logcat's layer output and crashes: an application that is not debuggable or does not use Vulkan, or a device that is asleep."
+        });
+        if (!s.connected) result.isError = true;
+        return result;
+      }
+    },
+    {
+      name: "list_sessions",
+      description: "List the live sessions this server has launched or attached to, with their state.",
+      inputSchema: schema({}),
+      readOnly: true,
+      handler: () => jsonResult({
+        sessions: sessions2.list().map((s) => ({
+          session: s.id,
+          name: s.name,
+          state: s.state,
+          pid: s.pid ?? void 0,
+          port: s.port,
+          api: s.api ?? void 0,
+          frame: s.frameStats.at(-1)?.msg.frame
+        })),
+        capturesDirectory: capturesDir()
+      })
+    },
+    {
+      name: "get_session_status",
+      description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, and the recent log.",
+      inputSchema: schema({ session: SESSION_PARAM }),
+      readOnly: true,
+      handler: (args) => jsonResult(sessionStatus(sessions2.get(stringArg(args, "session"))))
+    },
+    {
+      name: "get_live_frame_stats",
+      description: "Watch a running application's frame reports for a few seconds, without capturing: average, shortest and longest frame time, frame rate, CPU time inside queue submission, the display refresh period and where it came from, dropped frames, and a verdict on whether the frame meets the refresh or is bound by submission. GPU time is not measured live: capture_frames with profilePasses measures each pass.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        seconds: { type: "number", minimum: 0.3, maximum: 30, description: "How long to watch (default 2)." }
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const seconds = Math.min(30, Math.max(0.3, numberArg(args, "seconds") ?? 2));
+        const since = Date.now();
+        await sleep2(seconds * 1e3);
+        const reports = s.frameStats.filter((f) => f.at >= since).map((f) => f.msg);
+        if (!reports.length) {
+          return jsonResult({ session: s.id, seconds, note: "No frame reports arrived: the application is not presenting frames (minimized, paused, loading, or not rendering)." });
+        }
+        let frames = 0;
+        let weightedMs = 0;
+        let weightedSubmit = 0;
+        let min = Infinity;
+        let max = 0;
+        let dropped = 0;
+        for (const m of reports) {
+          const n = Math.max(1, m.frames ?? 1);
+          frames += n;
+          weightedMs += m.frameTimeMs * n;
+          weightedSubmit += (m.submitMs ?? 0) * n;
+          min = Math.min(min, m.minMs ?? m.frameTimeMs);
+          max = Math.max(max, m.maxMs ?? m.frameTimeMs);
+          dropped += m.dropped ?? 0;
+        }
+        const last = reports[reports.length - 1];
+        const frameMs = weightedMs / frames;
+        const submitMs = weightedSubmit / frames;
+        const refresh = last.refreshMs ?? 0;
+        let verdict;
+        if (refresh > 0 && frameMs <= refresh * 1.1) verdict = "Meeting the display refresh: the frame waits for vsync, so there is headroom.";
+        else if (frameMs > 0 && submitMs / frameMs > 0.8) verdict = "Bound by submission: most of each frame is spent inside queue submit on the CPU.";
+        else verdict = `${refresh > 0 ? "Missing the display refresh" : "Vsync is off"}, and submission is not what takes the time: the GPU, presentation, or the application's own CPU work. capture_frames with profilePasses measures the GPU passes.`;
+        return jsonResult({
+          session: s.id,
+          seconds,
+          frames,
+          frame: last.frame,
+          frameMs: round(frameMs),
+          fps: round(1e3 / frameMs),
+          shortestMs: round(min),
+          longestMs: round(max),
+          submitMs: round(submitMs),
+          refreshMs: refresh > 0 ? round(refresh) : void 0,
+          refreshSource: last.refreshSource ? REFRESH_SOURCE_NOTE[last.refreshSource] ?? last.refreshSource : void 0,
+          presentMode: last.presentMode || void 0,
+          frameBoundary: last.frameBoundary || void 0,
+          droppedFrames: dropped || void 0,
+          droppedTotal: last.droppedTotal || void 0,
+          driverAllocatedBytes: last.allocatedBytes,
+          verdict
+        });
+      }
+    },
+    {
+      name: "capture_frames",
+      description: "Capture frames of a running application: every command of the frame with its bound state, the render targets read back at the end of each pass, bound buffers and images, and (profilePasses) GPU timestamps and counters per pass. The capture is saved as a .gpucap file and opened, and its summary returned: the capture tools (get_bottlenecks, get_frame_issues, get_command, read_texture...) work on it by the returned capture id. Capture while the application shows what is slow or wrong.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        frames: { type: "integer", minimum: 1, maximum: 16, description: "Frames to capture (default 1)." },
+        atFrame: { type: "integer", minimum: 0, description: "Capture that frame (the capture library's present counter) instead of the next one." },
+        delaySeconds: { type: "number", minimum: 0, maximum: 600, description: "Wait this long before requesting the capture." },
+        profilePasses: { type: "boolean", description: "GPU timestamps and counters around every pass (default true)." },
+        renderTargets: { type: "boolean", description: "Read back every pass's attachments (default true)." },
+        buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
+        images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
+        stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
+        maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
+        recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
+        timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
+        saveAs: { type: "string", description: `Where to save the .gpucap (default a new file in ${capturesDir()}).` }
+      }),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const delay = numberArg(args, "delaySeconds");
+        if (delay) await sleep2(delay * 1e3);
+        if (args.recordAlways !== void 0) await s.send({ action: "Settings", recordAlways: boolArg(args, "recordAlways", false) });
+        const result = await s.capture({
+          frames: intArg(args, "frames", 1, 1, 16),
+          atFrame: optionalInt(args, "atFrame"),
+          profilePasses: boolArg(args, "profilePasses", true),
+          renderTargets: boolArg(args, "renderTargets", true),
+          buffers: boolArg(args, "buffers", true),
+          images: boolArg(args, "images", true),
+          stacktraces: boolArg(args, "stacktraces", false),
+          maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024,
+          timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1e3
+        });
+        const file = await s.saveCapture(result.data, stringArg(args, "saveAs"));
+        const { capture } = store.open(file);
+        const notes = [];
+        if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
+        if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
+        return jsonResult({
+          session: s.id,
+          file,
+          megabytes: round(capture.fileBytes / 1048576),
+          secondsToCapture: round(result.elapsedMs / 1e3),
+          captureNotes: notes.length ? notes : void 0,
+          ...captureSummary(capture)
+        });
+      }
+    },
+    {
+      name: "list_live_objects",
+      description: "List a running application's live objects (images, buffers, pipelines, descriptor sets, Metal textures...) as the capture library tracks them now, with a one-line summary each; without a type filter it also counts them by type. Object ids are the same in the session's captures.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        type: { type: "string", description: 'Only this type: "VkImage", "VkDescriptorSet", "MTLTexture" (the Vk prefix may be left out).' },
+        name: { type: "string", description: "Regular expression on the object's name or label." },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const db = s.database;
+        const type = stringArg(args, "type")?.toLowerCase();
+        const name = regexArg(args, "name");
+        const all = [...db.allObjects.values()].sort((a, b) => a.id - b.id);
+        const list = all.filter((o) => (!type || o.type.toLowerCase() === type || o.shortType.toLowerCase() === type) && (!name || name.test(o.name) || name.test(o.label)));
+        const types = {};
+        if (!type) for (const o of all) types[o.type] = (types[o.type] ?? 0) + 1;
+        const p = page(list, args, 100, 500);
+        return jsonResult({
+          session: s.id,
+          state: s.state,
+          types: type ? void 0 : types,
+          total: p.total,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          objects: p.items.map((o) => ({
+            id: o.id,
+            type: o.type,
+            name: o.name !== `${o.shortType} ${o.id}` ? o.name : void 0,
+            summary: o.summary(db) || void 0,
+            destroyed: o.isDeleted || void 0
+          }))
+        });
+      }
+    },
+    {
+      name: "get_live_object",
+      description: "One live object of a running application in full: the call that created it with its arguments, later updates (memory bindings, descriptor contents read so far), its owner, what it depends on and what depends on it, its payloads, the validation messages naming it, and its creation stack, fetched from the capture library (launched with stack traces, the default). The stack is where a leaked or misconfigured object came from.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        id: { type: "integer", minimum: 0, description: "The object's id: the number after # in a reference like VkImage#12." },
+        stack: { type: "boolean", description: "Fetch the creation stack (default true)." }
+      }, ["id"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const db = s.database;
+        const id = requireInt(args, "id");
+        const o = db.getObject(id);
+        if (!o) throw new Error(`No live object ${id} in ${s.id} (list_live_objects lists them).`);
+        let stack;
+        let stackNote;
+        if (boolArg(args, "stack", true)) {
+          stack = db.stacks.get(id) ?? (s.connected ? (await requestStacks(s, [id]))?.get(id) : void 0);
+          if (!stack?.length) {
+            stackNote = db.stacksAvailable === false ? "The capture library records no stacks: the application was launched without stack traces." : s.connected ? "No creation stack was recorded for this object." : "Not connected, so the creation stack cannot be fetched.";
+          }
+        }
+        const validation = db.validationFor(id);
+        const contents = ["VkImage", "VkImageView", "MTLTexture"].includes(o.type) ? "read_live_image shows its current contents." : o.type === "VkDescriptorSet" ? "get_live_descriptor_set reads what it binds now." : void 0;
+        return jsonResult({
+          session: s.id,
+          ...objectDetail(db, o),
+          validation: validation.length ? validation.slice(0, 20).map((v) => ({
+            severity: v.severity,
+            id: v.idName ?? void 0,
+            count: v.count > 1 ? v.count : void 0,
+            frame: v.frame,
+            message: clip(v.message, 600)
+          })) : void 0,
+          creationStack: stack?.length ? stackLines(await symbolizeOnHost(stack)) : void 0,
+          stackNote,
+          contents
+        });
+      }
+    },
+    {
+      name: "read_live_image",
+      description: "Look at an image of a running application as it is now, without capturing: the capture library copies one mip level and array layer at the application's next frame (a VkImageView reads its image at the view's first mip and layer). Returns what read_texture returns: the PNG, per-channel minimum, maximum and mean, the share of zero texels, NaN and infinity counts, a 3x3 grid of texel values and exact values at requested texels. Quicker than a capture for checking a target after replace_shader. An image the library cannot copy from (transient attachments, an unknown layout) comes back with the reason; an attachment every render pass discards (storeOp DONT_CARE) holds undefined contents between frames, which the answer notes.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        object: { type: "integer", minimum: 1, description: "The VkImage, VkImageView or MTLTexture object id (list_live_objects lists them)." },
+        mip: { type: "integer", minimum: 0, description: "Mip level (default 0, or the view's first)." },
+        layer: { type: "integer", minimum: 0, description: "Array layer, or the slice of a 3D image (default 0, or the view's first layer)." },
+        ...IMAGE_PARAMS,
+        timeoutSeconds: { type: "number", minimum: 1, maximum: 120, description: "How long to wait for the application's next frame (default 15)." }
+      }, ["object"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        requireConnected(s);
+        const db = s.database;
+        const requested = requireInt(args, "object");
+        let o = db.getObject(requested);
+        if (!o) throw new Error(`No live object ${requested} in ${s.id} (list_live_objects lists them).`);
+        let mip = optionalInt(args, "mip");
+        let layer = optionalInt(args, "layer");
+        if (o.type === "VkImageView") {
+          const view = o.descriptor;
+          const range = view && isObject(view.subresourceRange) ? view.subresourceRange : null;
+          mip ??= num(range?.baseMipLevel);
+          layer ??= num(range?.baseArrayLayer);
+          const image = db.getObject(refId(view?.image));
+          if (!image) throw new Error(`${refText(db, o.id)} names no live image.`);
+          o = image;
+        }
+        if (o.type !== "VkImage" && o.type !== "MTLTexture") {
+          throw new Error(`${refText(db, o.id)} is not an image: read_live_image takes a VkImage, a VkImageView or an MTLTexture.`);
+        }
+        const d = o.descriptor;
+        const is3D = /3D/.test(`${str(d?.imageType)}${str(d?.textureType)}`);
+        const timeoutMs = (numberArg(args, "timeoutSeconds") ?? 15) * 1e3;
+        const msg = await s.readImage(o.id, mip ?? 0, is3D ? 0 : layer ?? 0, timeoutMs);
+        if (!msg) {
+          throw new Error(`${refText(db, o.id)} was not read back within ${timeoutMs / 1e3} s: the capture library copies images at the application's next frame, so it may not be rendering.`);
+        }
+        const slices = Math.max(1, msg.depth || 1);
+        const slice = slices > 1 ? Math.min(layer ?? 0, slices - 1) : void 0;
+        const head = {
+          session: s.id,
+          image: refText(db, o.id),
+          format: msg.format || void 0,
+          aspect: msg.aspect,
+          mip: msg.mip,
+          layer: slices > 1 ? void 0 : msg.layer,
+          slice,
+          slices: slices > 1 ? slices : void 0,
+          note: o.type === "VkImage" ? discardNote(db, o.id) : void 0
+        };
+        if (msg.error) {
+          const failed = jsonResult({ ...head, error: msg.error });
+          failed.isError = true;
+          return failed;
+        }
+        if (!msg.__binary) return jsonResult({ ...head, note: "The answer carried no pixel data." });
+        if (!isFormatSupported(msg)) return jsonResult({ ...head, note: `Decoding ${msg.format} is not supported.` });
+        const tex = decodeTexels(msg, msg.__binary, slice ?? 0);
+        if (!tex) return jsonResult({ ...head, note: "The pixel data is shorter than the image's size says." });
+        return texelAnswer(tex, args, head, msg.aspect);
+      }
+    },
+    {
+      name: "get_live_descriptor_set",
+      description: "What a running application's descriptor set binds now (Vulkan): each binding's type and stages, and each descriptor's buffer with offset and range, image view with its image and layout, or sampler. A capture shows the sets bound at each draw with their buffer contents; this reads a set between captures.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        set: { type: "integer", minimum: 1, description: "The VkDescriptorSet's object id." }
+      }, ["set"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        requireConnected(s);
+        const db = s.database;
+        const id = requireInt(args, "set");
+        const o = db.getObject(id);
+        if (!o || o.type !== "VkDescriptorSet") throw new Error(`${o ? refText(db, id) : `Object ${id}`} is not a live VkDescriptorSet of ${s.id}.`);
+        if (!await s.readDescriptorSet(id)) throw new Error("The layer did not answer within 10 s.");
+        const u = o.updates;
+        if (u.tracked === false) {
+          return jsonResult({ session: s.id, set: refText(db, id), note: "The layer has no record of this set's contents: it was freed, or its pool was reset." });
+        }
+        const bindings = Array.isArray(u.bindings) ? u.bindings : [];
+        return jsonResult({
+          session: s.id,
+          set: refText(db, id),
+          layout: refText(db, u.layout),
+          bindings: bindings.map((b) => {
+            const shown = b.descriptors.slice(0, 32);
+            return {
+              binding: b.binding,
+              type: b.type,
+              stages: b.stages,
+              descriptors: shown.map((x) => x ? liveDescriptor(db, x) : "not written"),
+              more: b.descriptors.length > shown.length ? b.descriptors.length - shown.length : void 0
+            };
+          }),
+          note: bindings.length ? void 0 : "The set has no bindings."
+        });
+      }
+    },
+    {
+      name: "replace_shader",
+      description: `Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again.`,
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures)." },
+        stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
+        source: { type: "string", description: "The complete new source of the stage." },
+        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
+        entryPoint: { type: "string", description: "The entry point in the source (default the stage's own)." }
+      }, ["pipeline", "stage", "source"]),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (s.api === "metal") throw new Error("Shader replacement is Vulkan only.");
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const pipelineId = requireInt(args, "pipeline");
+        const stageName = requireString(args, "stage").toLowerCase();
+        const { flag, entryPoint, source } = stageOf(s, pipelineId, stageName);
+        const original = await fetchBlob(s, source.object, source.blobIndex);
+        const version = original && reflectSpirv(original)?.version || "";
+        const language = enumArg(args, "language", LANGUAGES, "glsl");
+        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version);
+        if (!compiled.ok || !compiled.spirv) {
+          const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12e3) });
+          failed.isError = true;
+          return failed;
+        }
+        const reply = await s.replaceShader(pipelineId, flag, stageName, compiled.spirv);
+        const result = jsonResult({
+          ok: reply?.ok ?? false,
+          pipeline: refText(s.database, pipelineId),
+          stage: stageName,
+          spirvVersion: version || void 0,
+          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `VkPipeline#${reply.replacement}` : void 0,
+          error: reply ? reply.error : "The layer did not answer within 15 s.",
+          layerNote: reply?.note,
+          compilerLog: compilerLog(compiled.log) ? clip(compilerLog(compiled.log), 4e3) : void 0
+        });
+        if (!reply?.ok) result.isError = true;
+        return result;
+      }
+    },
+    {
+      name: "restore_shader",
+      description: "Undo replace_shader: the pipeline binds its original code again, for one stage or every replaced stage.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id." },
+        stage: { type: "string", description: "The stage to restore (default every replaced stage)." }
+      }, ["pipeline"]),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const pipelineId = requireInt(args, "pipeline");
+        const stage = stringArg(args, "stage");
+        const flag = stage ? stageOf(s, pipelineId, stage).flag : void 0;
+        const reply = await s.restoreShader(pipelineId, flag);
+        return jsonResult({ ok: reply?.ok ?? false, pipeline: refText(s.database, pipelineId), stage, error: reply ? reply.error : "The layer did not answer within 15 s." });
+      }
+    },
+    {
+      name: "get_session_log",
+      description: "A live session's log: the application's standard output and error, the capture library's own log, connection changes, validation messages and shader edits, most recent last.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        lines: { type: "integer", minimum: 1, maximum: 2e3, description: "How many of the most recent lines (default 100)." },
+        match: { type: "string", description: "Regular expression: only lines that match." }
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const match = regexArg(args, "match");
+        const lines = (match ? s.log.filter((l) => match.test(l)) : s.log).slice(-intArg(args, "lines", 100, 1, 2e3));
+        return jsonResult({ session: s.id, state: s.state, lines });
+      }
+    },
+    {
+      name: "stop_app",
+      description: "End a live session: a launched application is terminated (with the processes it started), an attached one is disconnected.",
+      inputSchema: schema({ session: SESSION_PARAM }),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        await s.stop();
+        return jsonResult({ session: s.id, state: s.state, detail: s.detail || void 0, exitCode: s.exitCode ?? void 0 });
+      }
     }
   ];
 }
@@ -14198,9 +15995,9 @@ var McpStdioServer = class {
 // src/mcp/server.ts
 var INSTRUCTIONS = [
   "These tools read GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications, with the analyses GPU Inspector runs, and drive running applications.",
-  "Open a saved capture with open_capture (list_captures shows the files GPU Inspector saved recently), or launch_app an application and capture_frames it; then start from get_capture_summary.",
-  "For performance: get_bottlenecks (needs profiled passes), get_frame_issues, get_render_graph, analyze_shaders, get_live_frame_stats, and compare_captures to check a fix.",
-  "To debug rendering: read_texture shows what a pass wrote; list_commands finds draws by pass, label or kind; get_command shows the state a draw read (pipeline, decoded uniforms, vertex and index buffers, render targets); read_vertices, read_buffer and get_shader go deeper; get_validation lists real errors. replace_shader tries a shader fix in the running application.",
+  "Open a saved capture with open_capture (list_captures shows the files GPU Inspector saved recently), or launch_app an application (launch_android_app on Android) and capture_frames it; then start from get_capture_summary.",
+  "For performance: get_bottlenecks (needs profiled passes), get_frame_issues, get_render_graph, analyze_shaders, get_shader_flame_graph, get_live_frame_stats, and compare_captures to check a fix.",
+  "To debug rendering: read_texture shows what a pass wrote; list_commands finds draws by pass, label or kind; get_command shows the state a draw read (pipeline, decoded uniforms, vertex and index buffers, render targets); read_vertices, read_buffer and get_shader go deeper; get_validation lists real errors. replace_shader tries a shader fix in the running application, and read_live_image looks at an image without capturing.",
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
 function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
@@ -14214,8 +16011,8 @@ function createServer(store = new CaptureStore(), sessions2 = new SessionManager
 }
 
 // src/mcp/main.ts
-console.log = console.info = console.debug = (...parts) => {
-  process2.stderr.write(`${parts.map(String).join(" ")}
+console.log = console.info = console.debug = (...parts2) => {
+  process2.stderr.write(`${parts2.map(String).join(" ")}
 `);
 };
 var sessions = new SessionManager();

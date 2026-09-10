@@ -33,6 +33,12 @@ report matches what the user sees in its Capture tab.
   validation messages (the "Validation layer" launch option), recording stacks ("Stack traces").
   `get_capture_summary`'s `notes` say what is missing. Tell the user how to capture again when a
   missing piece is what the question needs.
+- **From this machine**: two things a capture may only name can be read from the user's source
+  and build trees. Ask the user where those trees are, and pass them to `set_search_paths`:
+  - the source of a shader compiled with line information but no text
+  - the functions and lines of stack frames named by module and offset
+
+  With sources, the shader analyses quote the code of their costliest lines.
 
 ## Reading the tools' answers
 
@@ -93,10 +99,20 @@ each step.
    Confirm each finding against the command it names with `get_command`, and against the render
    graph with `get_render_graph` (`node`). Say whether it is real here or a pattern that may be
    intentional.
-6. **Shaders**: `analyze_shaders` ranks the stages in use by uses times modeled cost (Vulkan only).
-   `get_shader` with view `analysis` gives costs per function and source line, and findings such as
-   texture samples in loops, non-constant division and derivatives in branches. The cost is a
-   *model*, not a measurement: use it to compare shaders, and never present it as milliseconds.
+6. **Shaders** (Vulkan only):
+   - `analyze_shaders` ranks the stages in use by uses times modeled cost.
+   - `get_shader_flame_graph` shows where the frame's shading work goes: each stage's modeled cost
+     times its invocations, by pass, pipeline, stage, function and source line, with the hottest
+     functions and lines. Pass it the slowest pass from step 2 with `pass`.
+     - With every pass timed, its numbers are milliseconds, but only each pass's total is measured:
+       the split inside a pass is modeled.
+     - Vertex and compute invocation counts are exact. Fragment counts come from the scissor area,
+       so they are an upper bound that ignores overdraw.
+   - `get_shader` with view `analysis` gives costs per function and source line, and findings such
+     as texture samples in loops, non-constant division and derivatives in branches.
+
+   The cost is a *model*, not a measurement: use it to compare shaders, and never present a modeled
+   split as measured time.
 7. **Confirm the fix** with `compare_captures` on a capture taken after the change. A change that
    moves no measured number did not address the bottleneck.
 
@@ -129,8 +145,14 @@ each step.
 ## Live applications
 
 `launch_app` starts an application with the capture library in it; `attach_app` connects to one
-already listening. The capture library serves one client, so attaching takes it over from GPU
-Inspector.
+already listening.
+
+On Android:
+- `list_android_devices` finds the device and the package.
+- `launch_android_app` starts the package with the layer over adb.
+- The package must be debuggable (a development build).
+
+The capture library serves one client, so attaching takes it over from GPU Inspector.
 
 - **Before capturing,** `get_live_frame_stats` says whether the frame meets the display refresh or is
   bound by submission. It measures no GPU time.
@@ -151,6 +173,12 @@ Inspector.
 
   The replacement exists only in the running process: report the source change for the application
   to make.
+- **Between captures:**
+  - `read_live_image` shows an image as it is now. It is quicker than a capture for a look at a
+    target after `replace_shader`.
+  - `get_live_descriptor_set` shows what a set binds now.
+  - `list_live_objects` and `get_live_object` show the live objects. A live object's creation stack
+    is where a leak or a misconfigured object came from.
 - **When a session misbehaves,** `get_session_log` has the application's output and the capture
   library's own log.
 - **Clean up** with `stop_app` when done.
@@ -159,6 +187,9 @@ Inspector.
 
 - Metal binds buffers per stage by index (`stageBuffers`), not through descriptor sets. Its
   pipeline reflection names each slot. Vertex buffers are the slots the vertex descriptor lays out.
+  An argument buffer's members are resolved (`argumentBuffer`) to the buffer with an offset, the
+  texture or the sampler each one holds. A value that no tracked object claims is a stale or wrong
+  handle.
 - Metal passes can have the vertex/fragment split, depth rejection and stage utilization.
   Vulkan pipeline statistics give invocation and primitive counts only.
 - SPIR-V tools (`analyze_shaders`, `get_shader` source, analysis and cross-compilation) are Vulkan

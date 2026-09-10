@@ -1,19 +1,28 @@
 // The MCP server's live tools: launching an application with GPU Inspector's capture library in it
-// (or attaching to one already running), watching its frame statistics and log, capturing frames
-// into .gpucap files that the capture tools then read, and replacing a pipeline's shader while the
-// application runs.
+// (or attaching to one already running), watching its frame statistics and log, reading its live
+// objects, images and descriptor sets, capturing frames into .gpucap files that the capture tools
+// then read, and replacing a pipeline's shader while the application runs.
+import { listPackages } from "../main/android.js";
 import { compileShader } from "../main/shader_tools.js";
 import { fetchBlob } from "../renderer/capture_file.js";
 import { REFRESH_SOURCE_NOTE } from "../renderer/capture_statistics.js";
 import { pipelineStages } from "../renderer/shader_cache.js";
+import { requestStacks } from "../renderer/stack_requests.js";
 import { reflectSpirv } from "../renderer/vulkan/spirv_reflect.js";
 import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
-import type { ShaderLanguage } from "../shared/protocol.js";
+import { imageOfView } from "../renderer/vulkan/pass_info.js";
+import { decodeTexels, isFormatSupported } from "../renderer/vulkan/texture_decode.js";
+import { isObject, num, refId, str } from "../renderer/vulkan/vulkan_object.js";
+import type { CaptureDescriptor, CaptureDescriptorBinding, ShaderLanguage, StackFrame } from "../shared/protocol.js";
 import type { CaptureStore } from "./capture_store.js";
+import { objectDetail } from "./command_tools.js";
 import {
-  boolArg, clip, enumArg, intArg, jsonResult, numberArg, optionalInt, refText, regexArg, requireInt, requireString, round, schema, stringArg,
+  PAGE_PARAMS, boolArg, clip, compact, enumArg, intArg, jsonResult, numberArg, optionalInt, page, refText, regexArg, requireInt, requireString, round,
+  schema, stackLines, stringArg,
 } from "./describe.js";
 import { capturesDir, type LiveSession, type SessionManager } from "./live_session.js";
+import { IMAGE_PARAMS, texelAnswer } from "./resource_tools.js";
+import { symbolizeOnHost } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 import { captureSummary } from "./tools.js";
 
@@ -75,6 +84,45 @@ function stageOf(s: LiveSession, pipelineId: number, stage: string): { flag: str
   return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
 }
 
+/** A descriptor a live set holds, as get_live_descriptor_set lists it. */
+function liveDescriptor(db: ObjectDatabase, d: CaptureDescriptor): Record<string, unknown> {
+  if (d.buffer !== undefined) return { buffer: refText(db, d.buffer), offset: d.offset, range: d.range };
+  if (d.imageView !== undefined || d.sampler !== undefined) {
+    return {
+      imageView: refText(db, d.imageView), image: refText(db, imageOfView(db, refId(d.imageView ?? undefined))), layout: d.imageLayout,
+      sampler: refText(db, d.sampler), immutableSampler: d.immutable || undefined,
+    };
+  }
+  return compact(d, db) as Record<string, unknown>;
+}
+
+/** A note when every render pass that draws into the image discards it: its contents between frames are then undefined. */
+function discardNote(db: ObjectDatabase, imageId: number): string | undefined {
+  const views = new Set<number>();
+  for (const v of db.objectsByType.get("VkImageView")?.values() ?? []) if (refId(v.descriptor?.image) === imageId) views.add(v.id);
+  let stored = 0;
+  let discarded = 0;
+  for (const fb of db.objectsByType.get("VkFramebuffer")?.values() ?? []) {
+    const d = fb.descriptor;
+    const attachments = d && Array.isArray(d.pAttachments) ? d.pAttachments : [];
+    const pass = db.getObject(refId(d?.renderPass));
+    const descriptions = pass?.descriptor && Array.isArray(pass.descriptor.pAttachments) ? pass.descriptor.pAttachments : [];
+    attachments.forEach((a, i) => {
+      const view = refId(a);
+      const description = descriptions[i];
+      if (view === null || !views.has(view) || !isObject(description)) return;
+      if (str(description.storeOp).endsWith("DONT_CARE")) discarded++; else stored++;
+    });
+  }
+  return discarded && !stored
+    ? "Every render pass that draws into this image discards it (storeOp DONT_CARE), so what it holds between frames is undefined: capture_frames reads attachments at the end of each pass instead."
+    : undefined;
+}
+
+function requireConnected(s: LiveSession): void {
+  if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}${s.detail ? `: ${s.detail}` : ""}).`);
+}
+
 export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDefinition[] {
   return [
     {
@@ -125,6 +173,57 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
       handler: async (args) => {
         const s = await sessions.attach(intArg(args, "port", 47531, 1, 65535), (numberArg(args, "waitSeconds") ?? 10) * 1000);
         return jsonResult(sessionStatus(s));
+      },
+    },
+    {
+      name: "list_android_devices",
+      description: "The Android devices adb sees (serial, state, model, Android API level, ABI) and whether GPU Inspector's " +
+        "Android layer is available; with `device`, also the third-party packages installed on that device, for " +
+        "launch_android_app.",
+      inputSchema: schema({ device: { type: "string", description: "A device's serial: also list the packages installed on it." } }),
+      readOnly: true,
+      handler: async (args) => {
+        const { adb, devices, layer } = await sessions.androidDevices();
+        const device = stringArg(args, "device");
+        return jsonResult({
+          adb: adb ?? "not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB",
+          devices: devices.map((d) => ({ serial: d.serial, state: d.state, model: d.model || undefined, sdk: d.sdk || undefined, abi: d.abi || undefined })),
+          layer: layer ?? "not found: build it with tools/build_android.py (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR",
+          packages: adb && device ? await listPackages(adb, device) : undefined,
+          note: devices.some((d) => d.state === "unauthorized") ? "An unauthorized device is waiting for its USB debugging prompt to be accepted." : undefined,
+        });
+      },
+    },
+    {
+      name: "launch_android_app",
+      description: "Launch an Android application with GPU Inspector's Vulkan layer and connect to it, for the same live tools " +
+        "as launch_app (get_live_frame_stats, capture_frames, read_live_image, replace_shader...). The layer is installed " +
+        "on the device (the layer package on Android 10+, else copied into the application's data), enabled for the " +
+        "package through Android's GPU debug layer settings, and reached through an adb port forward. The application must " +
+        "be debuggable (a development build) unless the device is rooted. Logcat's layer output and crashes go to " +
+        "get_session_log; stop_app ends the application and turns the debug layer settings off.",
+      inputSchema: schema({
+        package: { type: "string", description: "The package name (list_android_devices lists the installed ones)." },
+        device: { type: "string", description: "The device's serial (default the only connected device)." },
+        activity: { type: "string", description: "The activity to start (default the package's launcher activity)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command buffer as it is built, for applications that reuse command buffers recorded once (default false)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Host port for the forward (default 47531, or the next free one)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the layer to connect once the application has started (default 60)." },
+      }, ["package"]),
+      handler: async (args) => {
+        const s = await sessions.launchAndroid({
+          package: requireString(args, "package"), device: stringArg(args, "device"), activity: stringArg(args, "activity"),
+          stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), port: optionalInt(args, "port"),
+        }, (numberArg(args, "waitSeconds") ?? 60) * 1000);
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? undefined : s.state === "error"
+            ? `The launch failed on the device: ${s.detail}`
+            : "The layer did not connect. recentLog (and get_session_log) has logcat's layer output and crashes: an application that is not debuggable or does not use Vulkan, or a device that is asleep.",
+        });
+        if (!s.connected) result.isError = true;
+        return result;
       },
     },
     {
@@ -244,6 +343,179 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         return jsonResult({
           session: s.id, file, megabytes: round(capture.fileBytes / 1048576), secondsToCapture: round(result.elapsedMs / 1000),
           captureNotes: notes.length ? notes : undefined, ...captureSummary(capture),
+        });
+      },
+    },
+    {
+      name: "list_live_objects",
+      description: "List a running application's live objects (images, buffers, pipelines, descriptor sets, Metal textures...) " +
+        "as the capture library tracks them now, with a one-line summary each; without a type filter it also counts them by " +
+        "type. Object ids are the same in the session's captures.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        type: { type: "string", description: "Only this type: \"VkImage\", \"VkDescriptorSet\", \"MTLTexture\" (the Vk prefix may be left out)." },
+        name: { type: "string", description: "Regular expression on the object's name or label." },
+        ...PAGE_PARAMS,
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const s = sessions.get(stringArg(args, "session"));
+        const db = s.database;
+        const type = stringArg(args, "type")?.toLowerCase();
+        const name = regexArg(args, "name");
+        const all = [...db.allObjects.values()].sort((a, b) => a.id - b.id);
+        const list = all.filter((o) => (!type || o.type.toLowerCase() === type || o.shortType.toLowerCase() === type) && (!name || name.test(o.name) || name.test(o.label)));
+        const types: Record<string, number> = {};
+        if (!type) for (const o of all) types[o.type] = (types[o.type] ?? 0) + 1;
+        const p = page(list, args, 100, 500);
+        return jsonResult({
+          session: s.id, state: s.state, types: type ? undefined : types, total: p.total, offset: p.offset, nextOffset: p.nextOffset,
+          objects: p.items.map((o) => ({
+            id: o.id, type: o.type, name: o.name !== `${o.shortType} ${o.id}` ? o.name : undefined,
+            summary: o.summary(db) || undefined, destroyed: o.isDeleted || undefined,
+          })),
+        });
+      },
+    },
+    {
+      name: "get_live_object",
+      description: "One live object of a running application in full: the call that created it with its arguments, later " +
+        "updates (memory bindings, descriptor contents read so far), its owner, what it depends on and what depends on it, its " +
+        "payloads, the validation messages naming it, and its creation stack, fetched from the capture library (launched with " +
+        "stack traces, the default). The stack is where a leaked or misconfigured object came from.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        id: { type: "integer", minimum: 0, description: "The object's id: the number after # in a reference like VkImage#12." },
+        stack: { type: "boolean", description: "Fetch the creation stack (default true)." },
+      }, ["id"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions.get(stringArg(args, "session"));
+        const db = s.database;
+        const id = requireInt(args, "id");
+        const o = db.getObject(id);
+        if (!o) throw new Error(`No live object ${id} in ${s.id} (list_live_objects lists them).`);
+        let stack: StackFrame[] | undefined;
+        let stackNote: string | undefined;
+        if (boolArg(args, "stack", true)) {
+          stack = db.stacks.get(id) ?? (s.connected ? (await requestStacks(s, [id]))?.get(id) : undefined);
+          if (!stack?.length) {
+            stackNote = db.stacksAvailable === false ? "The capture library records no stacks: the application was launched without stack traces."
+              : s.connected ? "No creation stack was recorded for this object." : "Not connected, so the creation stack cannot be fetched.";
+          }
+        }
+        const validation = db.validationFor(id);
+        const contents = ["VkImage", "VkImageView", "MTLTexture"].includes(o.type) ? "read_live_image shows its current contents."
+          : o.type === "VkDescriptorSet" ? "get_live_descriptor_set reads what it binds now." : undefined;
+        return jsonResult({
+          session: s.id, ...objectDetail(db, o),
+          validation: validation.length ? validation.slice(0, 20).map((v) => ({
+            severity: v.severity, id: v.idName ?? undefined, count: v.count > 1 ? v.count : undefined, frame: v.frame, message: clip(v.message, 600),
+          })) : undefined,
+          creationStack: stack?.length ? stackLines(await symbolizeOnHost(stack)) : undefined, stackNote, contents,
+        });
+      },
+    },
+    {
+      name: "read_live_image",
+      description: "Look at an image of a running application as it is now, without capturing: the capture library copies one " +
+        "mip level and array layer at the application's next frame (a VkImageView reads its image at the view's first mip " +
+        "and layer). Returns what read_texture returns: the PNG, per-channel minimum, maximum and mean, the share of zero " +
+        "texels, NaN and infinity counts, a 3x3 grid of texel values and exact values at requested texels. Quicker than a " +
+        "capture for checking a target after replace_shader. An image the library cannot copy from (transient attachments, " +
+        "an unknown layout) comes back with the reason; an attachment every render pass discards (storeOp DONT_CARE) holds " +
+        "undefined contents between frames, which the answer notes.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        object: { type: "integer", minimum: 1, description: "The VkImage, VkImageView or MTLTexture object id (list_live_objects lists them)." },
+        mip: { type: "integer", minimum: 0, description: "Mip level (default 0, or the view's first)." },
+        layer: { type: "integer", minimum: 0, description: "Array layer, or the slice of a 3D image (default 0, or the view's first layer)." },
+        ...IMAGE_PARAMS,
+        timeoutSeconds: { type: "number", minimum: 1, maximum: 120, description: "How long to wait for the application's next frame (default 15)." },
+      }, ["object"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions.get(stringArg(args, "session"));
+        requireConnected(s);
+        const db = s.database;
+        const requested = requireInt(args, "object");
+        let o = db.getObject(requested);
+        if (!o) throw new Error(`No live object ${requested} in ${s.id} (list_live_objects lists them).`);
+        let mip = optionalInt(args, "mip");
+        let layer = optionalInt(args, "layer");
+        if (o.type === "VkImageView") {
+          const view = o.descriptor;
+          const range = view && isObject(view.subresourceRange) ? view.subresourceRange : null;
+          mip ??= num(range?.baseMipLevel);
+          layer ??= num(range?.baseArrayLayer);
+          const image = db.getObject(refId(view?.image));
+          if (!image) throw new Error(`${refText(db, o.id)} names no live image.`);
+          o = image;
+        }
+        if (o.type !== "VkImage" && o.type !== "MTLTexture") {
+          throw new Error(`${refText(db, o.id)} is not an image: read_live_image takes a VkImage, a VkImageView or an MTLTexture.`);
+        }
+        // A 3D image's read-back holds every depth slice; `layer` picks one of them.
+        const d = o.descriptor;
+        const is3D = /3D/.test(`${str(d?.imageType)}${str(d?.textureType)}`);
+        const timeoutMs = (numberArg(args, "timeoutSeconds") ?? 15) * 1000;
+        const msg = await s.readImage(o.id, mip ?? 0, is3D ? 0 : layer ?? 0, timeoutMs);
+        if (!msg) {
+          throw new Error(`${refText(db, o.id)} was not read back within ${timeoutMs / 1000} s: the capture library copies images at the application's next frame, so it may not be rendering.`);
+        }
+        const slices = Math.max(1, msg.depth || 1);
+        const slice = slices > 1 ? Math.min(layer ?? 0, slices - 1) : undefined;
+        const head = {
+          session: s.id, image: refText(db, o.id), format: msg.format || undefined, aspect: msg.aspect, mip: msg.mip,
+          layer: slices > 1 ? undefined : msg.layer, slice, slices: slices > 1 ? slices : undefined,
+          note: o.type === "VkImage" ? discardNote(db, o.id) : undefined,
+        };
+        if (msg.error) {
+          const failed = jsonResult({ ...head, error: msg.error });
+          failed.isError = true;
+          return failed;
+        }
+        if (!msg.__binary) return jsonResult({ ...head, note: "The answer carried no pixel data." });
+        if (!isFormatSupported(msg)) return jsonResult({ ...head, note: `Decoding ${msg.format} is not supported.` });
+        const tex = decodeTexels(msg, msg.__binary, slice ?? 0);
+        if (!tex) return jsonResult({ ...head, note: "The pixel data is shorter than the image's size says." });
+        return texelAnswer(tex, args, head, msg.aspect);
+      },
+    },
+    {
+      name: "get_live_descriptor_set",
+      description: "What a running application's descriptor set binds now (Vulkan): each binding's type and stages, and each " +
+        "descriptor's buffer with offset and range, image view with its image and layout, or sampler. A capture shows the sets " +
+        "bound at each draw with their buffer contents; this reads a set between captures.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        set: { type: "integer", minimum: 1, description: "The VkDescriptorSet's object id." },
+      }, ["set"]),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions.get(stringArg(args, "session"));
+        requireConnected(s);
+        const db = s.database;
+        const id = requireInt(args, "set");
+        const o = db.getObject(id);
+        if (!o || o.type !== "VkDescriptorSet") throw new Error(`${o ? refText(db, id) : `Object ${id}`} is not a live VkDescriptorSet of ${s.id}.`);
+        if (!(await s.readDescriptorSet(id))) throw new Error("The layer did not answer within 10 s.");
+        const u = o.updates;
+        if (u.tracked === false) {
+          return jsonResult({ session: s.id, set: refText(db, id), note: "The layer has no record of this set's contents: it was freed, or its pool was reset." });
+        }
+        const bindings = Array.isArray(u.bindings) ? (u.bindings as unknown as CaptureDescriptorBinding[]) : [];
+        return jsonResult({
+          session: s.id, set: refText(db, id), layout: refText(db, u.layout),
+          bindings: bindings.map((b) => {
+            const shown = b.descriptors.slice(0, 32);
+            return {
+              binding: b.binding, type: b.type, stages: b.stages,
+              descriptors: shown.map((x) => (x ? liveDescriptor(db, x) : "not written")),
+              more: b.descriptors.length > shown.length ? b.descriptors.length - shown.length : undefined,
+            };
+          }),
+          note: bindings.length ? undefined : "The set has no bindings.",
         });
       },
     },

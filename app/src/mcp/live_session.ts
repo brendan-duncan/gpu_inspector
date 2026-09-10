@@ -1,5 +1,6 @@
 // Live applications the MCP server drives. An application is launched with GPU Inspector's capture
-// library in it (the Vulkan layer's environment, or the Metal library injected on macOS), or an
+// library in it (the Vulkan layer's environment, or the Metal library injected on macOS), an
+// Android package is started over adb with the layer enabled for it (main/android.ts), or an
 // application already listening is attached to on its port. The capture library's socket feeds
 // an ObjectDatabase as it feeds the app's session: live objects, frame statistics, validation
 // messages. A capture is requested, streamed into a CaptureData and saved as a .gpucap file, which
@@ -10,15 +11,18 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, type AndroidLayerFiles } from "../main/android.js";
 import { FrameReader, encodeRequest } from "../main/layer_protocol.js";
 import { DEFAULT_PORT, findFreePort, findLayerDir, findValidationLayerDir, splitArgs, terminate, vulkanLayerEnvironment } from "../main/launch_env.js";
 import { captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "../main/metal.js";
 import { CaptureData } from "../renderer/capture_data.js";
 import { serializeCapture } from "../renderer/capture_file.js";
 import { captureFileName } from "../renderer/capture_format.js";
+import { resolveSymbols } from "../renderer/stack_requests.js";
 import { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { isObject, str } from "../renderer/vulkan/vulkan_object.js";
-import type { CaptureRequest, FrameStatsMessage, LayerMessage, ShaderReplacedMessage, UiRequest } from "../shared/protocol.js";
+import type { AndroidDevice, CaptureRequest, FrameStatsMessage, ImageDataMessage, LayerMessage, ShaderReplacedMessage, UiRequest } from "../shared/protocol.js";
+import { symbolizeSymbolMap } from "./search_paths.js";
 
 const MAX_LOG_LINES = 2000;
 /** A minute of the capture library's frame reports (one every 100 ms). */
@@ -99,6 +103,27 @@ function installedLayerDirs(): string[] {
   return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 
+/** The Android layer (tools/build_android.py): INSPECTOR_ANDROID_LAYER_DIR, a checkout's build tree, or an installed GPU Inspector. */
+function androidLayer(): AndroidLayerFiles | null {
+  const candidates = [
+    process.env.INSPECTOR_ANDROID_LAYER_DIR,
+    ...checkoutRoots().map((root) => path.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path.join(dir, "android")),
+  ].filter((d): d is string => !!d);
+  return findAndroidLayer(candidates);
+}
+
+export interface AndroidLaunchOptions {
+  package: string;
+  /** The device's serial; the only connected device when absent. */
+  device?: string;
+  /** The activity to start; the package's launcher activity when absent. */
+  activity?: string;
+  port?: number;
+  stacktraces?: boolean;
+  recordAlways?: boolean;
+}
+
 /** The application name a Vulkan application gave its instance, when it gave one. */
 function applicationName(db: ObjectDatabase): string | null {
   for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
@@ -125,6 +150,13 @@ export class LiveSession {
   private _capturing = false;
   /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
   private _stopping = false;
+  /** The launched application is gone: it exited, failed to start, or was stopped. */
+  private _ended = false;
+  /**
+   * A launched target that is not a child process of this server (an Android application): how
+   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
+   */
+  remote: { stop(): Promise<void>; repair?(): Promise<unknown> } | null = null;
 
   constructor(readonly id: string, public name: string, readonly port: number, readonly launched: boolean) {
     const db = this.database;
@@ -211,6 +243,7 @@ export class LiveSession {
       if (this._proc !== proc) return;
       this._proc = null;
       this.pid = null;
+      this._ended = true;
       this.exitCode = String(signal ?? code);
       this._disconnect();
       this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
@@ -220,6 +253,7 @@ export class LiveSession {
       this._proc = null;
       this.pid = null;
       this._disconnect();
+      this._ended = true;
       this.setState("error", e.message);
     });
   }
@@ -231,18 +265,26 @@ export class LiveSession {
   async connect(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     this.setState("connecting", `port ${this.port}`);
+    let attempts = 0;
     while (Date.now() < deadline) {
-      if (this.launched && !this._proc) return false;
+      if (this._ended) return false;
       const sock = await this._tryConnect();
+      attempts++;
       if (sock) {
-        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS);
+        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
         this._attach(sock);
-        await snapshot;
-        const name = applicationName(this.database);
-        if (name && !this.launched) this.name = name;
-        return this.connected;
+        // Closed before the capture library said anything: adb accepts a forwarded connection
+        // before the layer listens on the device, so that is not an answer yet.
+        if ((await snapshot) !== "closed" || this.connected) {
+          const name = applicationName(this.database);
+          if (name && !this.launched) this.name = name;
+          return this.connected;
+        }
+      } else if (this.remote?.repair && attempts % 4 === 0) {
+        // Refused: adb may have lost the port forward (the device reconnected).
+        await this.remote.repair().catch(() => undefined);
       }
-      await sleep(this.launched ? 250 : 500);
+      await sleep(this.launched && !this.remote ? 250 : 500);
     }
     this.setState("disconnected", `nothing answered on port ${this.port}`);
     return false;
@@ -266,7 +308,13 @@ export class LiveSession {
     sock.setNoDelay(true);
     this._socket = sock;
     const reader = new FrameReader();
+    let heard = false;
     sock.on("data", (chunk: Buffer) => {
+      // Connected once the capture library speaks, not when the socket opens (adb accepts first).
+      if (!heard) {
+        heard = true;
+        this.setState("connected", `port ${this.port}`);
+      }
       const messages = reader.push(chunk, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
       for (const msg of messages) {
         this.database.handleMessage(msg);
@@ -280,31 +328,36 @@ export class LiveSession {
     };
     sock.on("error", gone);
     sock.on("close", gone);
-    this.setState("connected", `port ${this.port}`);
     void this.send({ action: "Ping" });
   }
 
-  /** Resolves when the snapshot the capture library sends on connection has arrived, or after `timeoutMs`. */
-  private _waitForSnapshot(timeoutMs: number): Promise<void> {
+  /**
+   * Resolves when the snapshot the capture library sends on connection has arrived, when the
+   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
+   */
+  private _waitForSnapshot(timeoutMs: number, sock: net.Socket): Promise<"snapshot" | "closed" | "timeout"> {
     const db = this.database;
     return new Promise((resolve) => {
       let started = false;
-      const done = (): void => {
+      const done = (outcome: "snapshot" | "closed" | "timeout"): void => {
         clearTimeout(timer);
         db.onSnapshotBegin.disconnect(begin);
         db.onAddObject.disconnect(add);
-        resolve();
+        sock.off("close", closed);
+        resolve(outcome);
       };
       const begin = (count: number): void => {
         started = true;
-        if (count === 0) done();
+        if (count === 0) done("snapshot");
       };
       const add = (_object: unknown, inSnapshot: boolean): void => {
-        if (started && !inSnapshot) done();
+        if (started && !inSnapshot) done("snapshot");
       };
-      const timer = setTimeout(done, timeoutMs);
+      const closed = (): void => done(started ? "snapshot" : "closed");
+      const timer = setTimeout(() => done("timeout"), timeoutMs);
       db.onSnapshotBegin.addListener(begin);
       db.onAddObject.addListener(add);
+      sock.once("close", closed);
     });
   }
 
@@ -369,7 +422,10 @@ export class LiveSession {
 
   /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
   async saveCapture(data: CaptureData, file?: string): Promise<string> {
-    const bytes = await serializeCapture(this, data);
+    // Frames the capture library names by module and offset only are resolved on this machine first.
+    const bytes = await serializeCapture(this, data, {
+      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames)),
+    });
     let target: string;
     if (file) {
       target = path.resolve(file);
@@ -402,10 +458,43 @@ export class LiveSession {
     return answer;
   }
 
+  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
+  async readImage(id: number, mip: number, layer: number, timeoutMs: number): Promise<ImageDataMessage | null> {
+    const answer = this.waitFor((msg) => (msg.action === "ImageData" && msg.id === id ? msg : undefined), timeoutMs);
+    await this.send({ action: "RequestImage", id, mip, layer });
+    return answer;
+  }
+
+  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
+  async readDescriptorSet(id: number, timeoutMs = 10000): Promise<boolean> {
+    const answer = this.waitFor((msg) => (msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : undefined), timeoutMs);
+    await this.send({ action: "RequestDescriptorSet", id });
+    return (await answer) ?? false;
+  }
+
+  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
+  remoteEnded(state: "exited" | "error", detail: string): void {
+    if (this._ended) return;
+    this._ended = true;
+    this.pid = null;
+    this._disconnect();
+    this.setState(state, detail);
+  }
+
   /** Terminates a launched application; an attached one is only disconnected. */
   async stop(): Promise<void> {
     const proc = this._proc;
+    const remote = this.remote;
     this._disconnect();
+    if (remote) {
+      this.remote = null;
+      if (!this._ended) {
+        this._stopping = true;
+        await remote.stop().catch(() => undefined);
+        this.remoteEnded("exited", "terminated by stop_app");
+      }
+      return;
+    }
     if (!proc) {
       if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
       return;
@@ -472,6 +561,70 @@ export class SessionManager {
     this._latest = session;
     session.startProcess(exe, args, o.cwd && fs.existsSync(o.cwd) ? o.cwd : path.dirname(exe), env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+
+  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
+  async androidDevices(): Promise<{ adb: string | null; devices: AndroidDevice[]; layer: string | null }> {
+    const adb = findAdb();
+    return { adb, devices: adb ? await listDevices(adb) : [], layer: androidLayer()?.dir ?? null };
+  }
+
+  /**
+   * Starts an Android package on a device with the layer installed and enabled for it, and waits
+   * for the layer to connect over the adb forward. A launch that fails on the device is reported
+   * through the session's state and log rather than thrown.
+   */
+  async launchAndroid(o: AndroidLaunchOptions, waitMs: number): Promise<LiveSession> {
+    const adb = findAdb();
+    if (!adb) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
+    const layer = androidLayer();
+    if (!layer) {
+      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
+    }
+    const devices = await listDevices(adb);
+    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
+    let device: AndroidDevice | undefined;
+    if (o.device) {
+      device = devices.find((d) => d.serial === o.device);
+      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
+      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
+    } else {
+      const usable = devices.filter((d) => d.state === "device");
+      if (usable.length !== 1) {
+        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
+      }
+      device = usable[0];
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const serial = device.serial;
+    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    const target = new AndroidTarget({
+      adb, serial, package: o.package, activity: o.activity ?? "", port, log: true,
+      recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, layer,
+      onLog: (line) => session.appendLog(line),
+      onExit: () => session.remoteEnded("exited", "the application exited on the device"),
+    });
+    // Stopping also turns the debug layer settings off, or the package would load the layer again when started from the device.
+    const stop = async (): Promise<void> => {
+      await target.stop();
+      await disableLayer(adb, serial);
+    };
+    session.remote = { stop, repair: () => target.ensureForward() };
+    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
+    try {
+      await target.start();
+    } catch (e) {
+      session.remote = null;
+      await stop().catch(() => undefined);
+      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
+      return session;
+    }
+    session.pid = target.pid;
+    await session.connect(waitMs);
     return session;
   }
 

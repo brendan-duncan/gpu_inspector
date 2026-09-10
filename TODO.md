@@ -59,24 +59,20 @@ interpreter and re-created pipelines.
   built on the renderer's own analysis modules (split out of the UI for it).
   - Tools: summary, Frame Issues, GPU Bottlenecks, render graph, command list and bound state,
     objects, validation, read-back images as PNG, buffers through GLSL layouts, vertices with
-    bounds, shader reflection, source, cross-compiled text and analysis, and before/after
-    comparison.
+    bounds, shader reflection, source, cross-compiled text and analysis, the Shader Flame Graph
+    with the hottest functions and lines, and before/after comparison. Shader sources and stack
+    symbols come from this machine's source and build trees (`set_search_paths`). A Metal draw's
+    argument buffers list the resources their members hold.
   - A capture analysis skill, and analyze / profile / debug / compare commands.
   - Live sessions without the app: launch or attach, frame statistics, captures saved as
     `.gpucap`, and shader replacement for an edit, capture, compare loop, with a `live` command.
+    Between captures: live images, descriptor sets, and objects with their creation stacks.
+    Android applications are launched over adb (`launch_android_app`).
     The capture libraries end a capture's stream with `CaptureComplete`.
 
 ## Next
 
 ### Claude Code
-- [ ] Android targets for live sessions (`main/android.ts` has no Electron in it).
-- [ ] Live read-backs without a capture: an image (`RequestImage`) and a descriptor set's current
-      contents (`RequestDescriptorSet`), and the live object list as tools.
-- [ ] Shader source roots in `get_shader` for modules with line information but no text
-      (`main/shader_sources.ts`), and host symbolization of stacks (`main/symbolize.ts`).
-- [ ] The shader flame graph as a tool (`frame_cost_tree.ts` needs no DOM).
-- [ ] Metal argument buffers in `get_command` (`argumentBufferEntries` is pure, but its module
-      imports widgets).
 - [ ] CI: run `npm test` in the release workflow, and fail when the committed MCP bundle is older
       than its sources.
 

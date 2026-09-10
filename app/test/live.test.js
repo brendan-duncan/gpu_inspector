@@ -1,8 +1,8 @@
 // The MCP server's live sessions (src/mcp/live_session.ts, live_tools.ts) against a fake capture
 // library: a TCP server speaking the layer's framing (layer/src/transport.h) that sends a snapshot
-// and frame reports, streams a capture when asked, and answers blob, stack and shader requests.
-// Attaching, frame statistics, capturing into a saved and reopened .gpucap (with and without the
-// CaptureComplete marker), shader restore, the log and stopping.
+// and frame reports, streams a capture when asked, and answers blob, stack, image, descriptor set
+// and shader requests. Attaching, frame statistics, capturing into a saved and reopened .gpucap
+// (with and without the CaptureComplete marker), live reads, shader restore, the log and stopping.
 //
 //     cd app && npm test
 import { test, after } from "node:test";
@@ -24,7 +24,11 @@ const { createServer, CaptureStore, SessionManager } = await import(pathToFileUR
 
 const sessions = new SessionManager();
 const server = createServer(new CaptureStore(), sessions);
-after(() => sessions.stopAll());
+const layers = [];
+after(async () => {
+  await sessions.stopAll();
+  for (const layer of layers) layer.close();
+});
 
 let nextId = 1;
 async function call(name, args = {}) {
@@ -55,7 +59,7 @@ const binary = (msg, bytes) => {
 const spirv = new Uint8Array(new Uint32Array([0x07230203, 0x00010300, 0, 1, 0, 0x00020011, 1]).buffer);
 const CB = { __id: 6, __class: "VkCommandBuffer" };
 
-function fakeLayer({ marker }) {
+function fakeLayer({ marker, dropFirst = 0 }) {
   const add = (id, type, cmd, args, extra = {}) => ({ action: "AddObject", id, parent: 0, type, cmd, index: 0, handle: `0x${id}`, label: null, args, ...extra });
   const objects = [
     add(1, "VkInstance", "vkCreateInstance", { pCreateInfo: { pApplicationInfo: { pApplicationName: "Fake App" } } }),
@@ -63,6 +67,11 @@ function fakeLayer({ marker }) {
     add(5, "VkPipeline", "vkCreateGraphicsPipelines", { pCreateInfos: [{ pStages: [{ stage: "VK_SHADER_STAGE_VERTEX_BIT", pName: "main" }] }] },
       { blobs: [{ name: "vertex:main", size: spirv.byteLength }] }),
     add(6, "VkCommandBuffer", "vkAllocateCommandBuffers", { pAllocateInfo: {} }),
+    add(7, "VkImageView", "vkCreateImageView", { pCreateInfo: { image: { __id: 3, __class: "VkImage" }, subresourceRange: { baseMipLevel: 0, levelCount: 1, baseArrayLayer: 0, layerCount: 1 } } }),
+    add(8, "VkDescriptorSet", "vkAllocateDescriptorSets", { pAllocateInfo: {} }),
+    add(9, "VkBuffer", "vkCreateBuffer", { pCreateInfo: { size: 64 } }),
+    add(10, "VkRenderPass", "vkCreateRenderPass", { pCreateInfo: { pAttachments: [{ format: "VK_FORMAT_R8G8B8A8_UNORM", storeOp: "VK_ATTACHMENT_STORE_OP_DONT_CARE" }] } }),
+    add(11, "VkFramebuffer", "vkCreateFramebuffer", { pCreateInfo: { renderPass: { __id: 10, __class: "VkRenderPass" }, pAttachments: [{ __id: 7, __class: "VkImageView" }] } }),
   ];
   const requests = [];
   const sockets = new Set();
@@ -93,6 +102,18 @@ function fakeLayer({ marker }) {
       case "RequestStacktraces":
         sock.write(frame({ action: "Stacktraces", available: false, stacks: [] }));
         break;
+      case "RequestImage": {
+        const head = { action: "ImageData", id: msg.id, mip: msg.mip, layer: msg.layer, depth: 1, layers: 1, format: "VK_FORMAT_R8G8B8A8_UNORM", aspect: "color", width: 2, height: 2 };
+        if (msg.mip > 0) sock.write(frame({ ...head, size: 0, error: "The image's layout is not readable." }));
+        else sock.write(binary({ ...head, size: 16 }, new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255])));
+        break;
+      }
+      case "RequestDescriptorSet":
+        sock.write(frame({ action: "ObjectUpdate", id: msg.id, tracked: true, layout: null, bindings: [
+          { binding: 0, type: "VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER", stages: "VK_SHADER_STAGE_VERTEX_BIT", descriptors: [{ buffer: { __id: 9, __class: "VkBuffer" }, offset: 0, range: 64 }] },
+          { binding: 1, type: "VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER", descriptors: [{ imageView: { __id: 7, __class: "VkImageView" }, imageLayout: "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL" }, null] },
+        ] }));
+        break;
       case "RestoreShader":
         sock.write(frame({ action: "ShaderReplaced", pipeline: msg.pipeline, stage: msg.stage ?? "", ok: true }));
         break;
@@ -100,7 +121,14 @@ function fakeLayer({ marker }) {
         break;
     }
   };
+  // The first connections are accepted and closed at once, as adb does before the layer listens on the device.
+  let dropped = 0;
   const tcp = net.createServer((sock) => {
+    if (dropped < dropFirst) {
+      dropped++;
+      sock.destroy();
+      return;
+    }
     sockets.add(sock);
     sock.on("error", () => {});
     sock.write(frame({ action: "Snapshot", count: objects.length }));
@@ -122,10 +150,16 @@ function fakeLayer({ marker }) {
       }
     });
   });
-  return new Promise((resolve) => tcp.listen(0, "127.0.0.1", () => resolve({
-    port: tcp.address().port, requests,
-    close: () => { for (const s of sockets) s.destroy(); tcp.close(); },
-  })));
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    for (const s of sockets) s.destroy();
+    tcp.close();
+  };
+  // Closed after the tests too, so a failed assertion does not leave the process running.
+  layers.push({ close });
+  return new Promise((resolve) => tcp.listen(0, "127.0.0.1", () => resolve({ port: tcp.address().port, requests, close, dropped: () => dropped })));
 }
 
 // ------------------------------------------------------------------------------------------
@@ -136,7 +170,7 @@ test("an attached application is watched, captured, saved and reopened", async (
   assert.equal(status.state, "connected");
   assert.equal(status.name, "Fake App", "named after the instance's application name");
   assert.equal(status.api, "vulkan");
-  assert.equal(status.objects.live, 4, "the snapshot arrived before attach_app returned");
+  assert.equal(status.objects.live, 9, "the snapshot arrived before attach_app returned");
 
   const stats = (await call("get_live_frame_stats", { seconds: 0.4 })).json;
   assert.ok(stats.frames >= 6);
@@ -159,6 +193,26 @@ test("an attached application is watched, captured, saved and reopened", async (
   assert.equal((await call("get_shader", { capture: captured.capture, object: 5 })).json.stages[0].spirvVersion, "1.3");
   assert.equal((await call("read_texture", { capture: captured.capture, texture: 0 })).result.content[0].type, "image");
 
+  // Reads between captures: an image through its view, a descriptor set, the live objects.
+  const image = await call("read_live_image", { object: 7, texels: [[1, 1]] });
+  assert.equal(image.result.content[0].type, "image", image.text);
+  assert.equal(image.json.image, "VkImage#3");
+  assert.deepEqual(image.json.texels[0].value, [1, 0, 0, 1]);
+  assert.match(image.json.note, /discards it/, "the only render pass drawing into it does not store it");
+  assert.equal(layer.requests.find((r) => r.action === "RequestImage").id, 3, "a view reads its image");
+  const unreadable = await call("read_live_image", { object: 3, mip: 1 });
+  assert.equal(unreadable.result.isError, true);
+  assert.match(unreadable.text, /layout is not readable/);
+  const set = (await call("get_live_descriptor_set", { set: 8 })).json;
+  assert.equal(set.bindings[0].descriptors[0].buffer, "VkBuffer#9");
+  assert.equal(set.bindings[1].descriptors[0].image, "VkImage#3");
+  assert.equal(set.bindings[1].descriptors[1], "not written");
+  assert.deepEqual((await call("list_live_objects", { type: "image" })).json.objects.map((o) => o.id), [3]);
+  const view = (await call("get_live_object", { id: 7 })).json;
+  assert.equal(view.createdBy, "vkCreateImageView");
+  assert.match(view.contents, /read_live_image/);
+  assert.match(view.stackNote, /records no stacks/);
+
   const restored = (await call("restore_shader", { pipeline: 5, stage: "vertex" })).json;
   assert.equal(restored.ok, true);
   assert.equal(layer.requests.find((r) => r.action === "RestoreShader").stage, "VK_SHADER_STAGE_VERTEX_BIT");
@@ -178,6 +232,18 @@ test("a capture library without the end marker completes once its stream goes qu
   const captured = (await call("capture_frames", {})).json;
   assert.equal(captured.counts.draws, 1);
   assert.match(captured.captureNotes[0], /stream went quiet/);
+  await call("stop_app", {});
+  layer.close();
+});
+
+test("a connection closed before the capture library speaks is tried again, as over an adb forward", async () => {
+  const layer = await fakeLayer({ marker: true, dropFirst: 2 });
+  const status = (await call("attach_app", { port: layer.port })).json;
+  assert.equal(status.state, "connected");
+  assert.equal(status.objects.live, 9);
+  assert.equal(layer.dropped(), 2);
+  const lines = (await call("get_session_log", {})).json.lines;
+  assert.equal(lines.filter((l) => l.startsWith("[disconnected]")).length, 0, "the dropped attempts are not reported as disconnections");
   await call("stop_app", {});
   layer.close();
 });

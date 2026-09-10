@@ -17,7 +17,8 @@ import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
-import { argumentBufferEntries, isArgumentBufferType, renderArgumentBuffer } from "./metal/argument_buffer.js";
+import { argumentBufferEntries, isArgumentBufferType } from "./metal/argument_buffer.js";
+import { renderArgumentBuffer } from "./metal/argument_buffer_view.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import {
   typeName, type ReflType, type ShaderReflection, type ShaderResource, type ShaderStage, type StructMember, type StructType,

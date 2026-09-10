@@ -829,6 +829,23 @@ schema validator, an HTTP stack and a schema library with it.
   version, then sends `ReplaceShader`.
 - **One client.** The capture library serves one client at a time, so attaching to an application
   the app is connected to takes it over.
+- **Android.** A package starts through `main/android.ts`'s `AndroidTarget`, as in the app, and is
+  reached over the adb forward.
+  - adb accepts a forwarded connection before the layer listens on the device. So a session counts
+    as connected only once the capture library sends something. A connection that closes before
+    then is retried, and the forward is re-created when connections are refused.
+  - Stopping the session also turns the package's debug layer settings off.
+- **Between captures.** Some tools read a running application directly:
+  - `read_live_image` (`RequestImage`)
+  - `get_live_descriptor_set` (`RequestDescriptorSet`)
+  - the live object tools, which fetch creation stacks with `stack_requests.ts`
+
+  The image and object details share their code with `read_texture` and `get_object`.
+- **Search paths.** `search_paths.ts` resolves where the files named by debug information and stack
+  frames live on this machine: the `set_search_paths` tool, then the environment, then the app's
+  settings (`sourceRoots`, `symbolDirs`). It uses `main/shader_sources.ts` for shader files and
+  `main/symbolize.ts` for stack frames. The shader analyses and the flame graph quote the code of a
+  line through it.
 
 ## Building
 

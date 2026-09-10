@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,6 +16,10 @@ import { buildSync } from "esbuild";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "mcp-"));
+// Nothing from this machine's GPU Inspector settings or environment: the search paths start empty.
+process.env.GPU_INSPECTOR_SETTINGS = join(dir, "settings.json");
+delete process.env.GPU_INSPECTOR_SOURCE_ROOTS;
+delete process.env.GPU_INSPECTOR_SYMBOL_DIRS;
 const bundle = (entry, name) => {
   const out = join(dir, `${name}.mjs`);
   buildSync({ entryPoints: [join(here, "..", "src", entry)], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
@@ -81,8 +85,26 @@ commands.push({ index: commands.length, frame: 0, method: "vkQueueSubmit", objec
 const pixels = new Uint8Array(64);
 for (let i = 0; i < 16; i++) pixels.set([255, 0, 0, 255], i * 4);
 const vertices = new Uint8Array(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, NaN]).buffer);
-// The pipeline's vertex stage: a SPIR-V header and OpCapability Shader.
-const spirv = new Uint8Array(new Uint32Array([0x07230203, 0x00010300, 0, 1, 0, 0x00020011, 1]).buffer);
+// The pipeline's vertex stage: a named main that adds two constants, so the shader tools have an
+// entry point to weigh, with line information naming shader.frag but not embedding its text.
+const spirv = new Uint8Array(new Uint32Array([
+  0x07230203, 0x00010300, 0, 9, 0,
+  0x00020011, 1,                    // OpCapability Shader
+  0x0005000f, 0, 4, 0x6e69616d, 0,  // OpEntryPoint Vertex %4 "main"
+  0x00050007, 8, 0x64616873, 0x662e7265, 0x00676172,  // %8 = OpString "shader.frag"
+  0x00040003, 2, 450, 8,            // OpSource GLSL 450 %8, without text
+  0x00040005, 4, 0x6e69616d, 0,     // OpName %4 "main"
+  0x00020013, 1,                    // %1 = OpTypeVoid
+  0x00030021, 2, 1,                 // %2 = OpTypeFunction %1
+  0x00030016, 3, 32,                // %3 = OpTypeFloat 32
+  0x0004002b, 3, 5, 0x3f800000,     // %5 = OpConstant %3 1.0
+  0x00050036, 1, 4, 0, 2,           // %4 = OpFunction %1 None %2
+  0x000200f8, 6,                    // OpLabel
+  0x00040008, 8, 3, 0,              // OpLine %8 3 0
+  0x00050081, 3, 7, 5, 5,           // %7 = OpFAdd %3 %5 %5
+  0x000100fd,                       // OpReturn
+  0x00010038,                       // OpFunctionEnd
+]).buffer);
 
 /**
  * Writes the capture with the SPIR-V payload at a file offset that is not a multiple of four, as
@@ -243,11 +265,96 @@ test("a shader payload reads at any offset in the file", async () => {
   assert.equal((await call("get_shader", { object: 14 })).json.stages[0].spirvVersion, "1.3");
 });
 
+test("the shader flame graph spreads the measured pass over its stages", async () => {
+  const { json, text } = await call("get_shader_flame_graph", { capture: before });
+  assert.ok(json, text);
+  assert.equal(json.units, "ms");
+  assert.equal(json.total, 2.5);
+  const pass = json.graph.children[0];
+  assert.equal(pass.pass, 0);
+  assert.match(pass.name, /Main Pass \[Opaque\]/);
+  const item = pass.children[0];
+  assert.equal(item.pipeline, 'VkPipeline#14 "Opaque"');
+  assert.equal(item.command, FIRST_DRAW);
+  const stage = item.children[0];
+  assert.equal(stage.name, "vertex: main");
+  assert.equal(stage.invocations, 120, "40 draws of 3 vertices");
+  assert.equal(stage.invocationCount, "exact");
+  assert.equal(stage.cost, 2.5);
+  assert.deepEqual([json.hottestFunctions[0].function, json.hottestFunctions[0].stage, json.hottestFunctions[0].share], ["main", "vertex", 1]);
+  assert.equal((await call("get_shader_flame_graph", { pass: 0, depth: 1 })).json.graph.children[0].hiddenChildren, 1);
+  assert.equal((await call("get_shader_flame_graph", { pass: 3 })).result.isError, true);
+});
+
+test("a shader's source file named by its line information is found under the source roots", async () => {
+  const missing = (await call("get_shader", { capture: before, object: 14, view: "source" })).json.stages[0];
+  assert.match(missing.note, /names shader\.frag.*set_search_paths/);
+  const roots = join(dir, "sources");
+  mkdirSync(join(roots, "shaders"), { recursive: true });
+  writeFileSync(join(roots, "shaders", "shader.frag"), "#version 450\nvoid main() {\n  float x = 1.0 + 1.0;\n}\n");
+  const paths = (await call("set_search_paths", { sourceRoots: [roots] })).json;
+  assert.deepEqual(paths.sourceRoots, { dirs: [roots], from: "set_search_paths" });
+
+  const found = (await call("get_shader", { capture: before, object: 14, view: "source" })).json.stages[0];
+  assert.deepEqual(found.foundOnThisMachine, ["shader.frag"]);
+  assert.match(found.files[0].text, /float x = 1\.0 \+ 1\.0;/);
+  const analysis = (await call("get_shader", { capture: before, object: 14, view: "analysis" })).json.stages[0];
+  assert.equal(analysis.costliestLines[0].code, "float x = 1.0 + 1.0;");
+  assert.equal((await call("get_shader_flame_graph", { capture: before })).json.hottestLines[0].code, "float x = 1.0 + 1.0;");
+  assert.equal((await call("set_search_paths", { sourceRoots: [] })).json.sourceRoots.from, "none");
+});
+
 test("two captures compare pass by pass", async () => {
   const { json } = await call("compare_captures", { before, after });
   assert.equal(json.timing.gpuPassMs.change, -1.5);
   assert.equal(json.passes[0].ms.change, -1.5);
   assert.equal(json.onlyBefore.length, 0);
+});
+
+test("a Metal draw's argument buffer resolves to the buffers and textures it holds", async () => {
+  const MCB = 34;
+  const metalObjects = [
+    object(30, "MTLBuffer", "newBufferWithLength:options:", { length: 64, gpuAddress: "0x100000" }, "Material params"),
+    object(31, "MTLTexture", "newTextureWithDescriptor:", { width: 4, height: 4, gpuResourceID: "0x77" }, "Albedo"),
+    object(32, "MTLBuffer", "newBufferWithLength:options:", { length: 16, gpuAddress: "0x200000" }, "Arguments"),
+    object(33, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:", { reflection: { fragment: { buffers: [{
+      index: 0, name: "material", access: "readOnly",
+      type: { kind: "struct", name: "Material", size: 16, members: [
+        { name: "albedo", offset: 0, type: { kind: "opaque", name: "texture2d<float>", metal: "texture" } },
+        { name: "params", offset: 8, type: { kind: "opaque", name: "constant Params *", metal: "pointer" } },
+      ] },
+    }] } } }, "Lit"),
+    object(MCB, "MTLCommandBuffer", "commandBuffer", {}),
+  ];
+  const metalCommands = [];
+  const encode = (method, args = {}, extra = {}) => metalCommands.push({ index: metalCommands.length, frame: 0, method, object: ref(MCB, "MTLCommandBuffer"), args, ...extra });
+  encode("renderCommandEncoderWithDescriptor:", { colorAttachments: [] });
+  encode("setRenderPipelineState:", { pipeline: ref(33, "MTLRenderPipelineState") });
+  encode("setFragmentBuffer:offset:atIndex:", { buffer: ref(32, "MTLBuffer"), offset: 0, index: 0 }, { bufferData: [5] });
+  const draw = metalCommands.length;
+  encode("drawPrimitives:vertexStart:vertexCount:", { primitiveType: "MTLPrimitiveTypeTriangle", vertexStart: 0, vertexCount: 3 });
+  encode("endEncoding");
+  encode("commit");
+  // The argument buffer: the texture's resource id, then an address 16 bytes into the params buffer.
+  const argumentBytes = new Uint8Array(16);
+  new DataView(argumentBytes.buffer).setBigUint64(0, 0x77n, true);
+  new DataView(argumentBytes.buffer).setBigUint64(8, 0x100010n, true);
+  const file = join(dir, "metal.gpucap");
+  writeFileSync(file, encodeCaptureFile({
+    format: "gpu-inspector-capture", version: 1, api: "metal", application: "GPU Inspector", savedAt: "2026-09-10T00:00:00.000Z",
+    source: { name: "metal.app" }, frame: 3, frames: 1, objects: metalObjects, commands: metalCommands, textures: [],
+    buffers: [{ info: { id: 5, buffer: 32, frame: 0, commandBuffer: MCB, offset: 0, size: 16 }, payload: [0, 16] }],
+    passTimings: [], validation: [],
+  }, [argumentBytes]));
+
+  const { json, text } = await call("get_command", { capture: file, index: draw });
+  assert.ok(json, text);
+  const slot = json.state.stageBuffers.slots[0];
+  assert.equal(slot.name, "material");
+  assert.deepEqual(slot.argumentBuffer, [
+    { member: "albedo", kind: "texture", type: "texture2d<float>", resource: 'MTLTexture#31 "Albedo"' },
+    { member: "params", kind: "pointer", type: "constant Params *", resource: 'MTLBuffer#30 "Material params"', offset: 16 },
+  ]);
 });
 
 test("failures are tool errors the model reads, unknown tools protocol errors", async () => {
