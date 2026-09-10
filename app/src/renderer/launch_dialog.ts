@@ -204,10 +204,10 @@ export class LaunchDialog extends Dialog {
         tooltip: "Record the call stack of every object creation, shown in the object's details (symbols from the application's PDBs or exports). A few microseconds per created object." });
       // Vulkan-only options. The Metal library has no "record always" — a Metal command buffer is
       // encoded and submitted once, so there is no earlier recording a capture could have missed —
-      // no synchronization validation, and no creation stacks yet. "Validation layer" stays: on
-      // macOS it is Metal's own API and shader validation (metal/README.md).
+      // and no synchronization validation. "Validation layer" stays: on macOS it is Metal's own
+      // API and shader validation (metal/README.md); "Stack traces" is the same option there.
       if (hostPlatform === "darwin") {
-        for (const c of [this._recordAlways, this._syncValidation, this._stacktraces]) {
+        for (const c of [this._recordAlways, this._syncValidation]) {
           c.element.style.display = "none";
         }
       }

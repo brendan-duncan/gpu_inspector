@@ -3,6 +3,7 @@
 #include "formats.h"
 #include "frame_stats.h"
 #include "gpu_trace.h"
+#include "stacktrace.h"
 #include "validation.h"
 #include "json_writer.h"
 #include "swizzle.h"
@@ -95,6 +96,7 @@ struct RecordedCommand {
     const char *encoderType = nullptr;
     std::string args;
     std::vector<uint64_t> bufferData;  // CapturedBuffer ids, in the order the UI expects
+    StackTrace stack;                  // where the application issued it, when asked for
 };
 
 struct EncoderInfo {
@@ -459,6 +461,11 @@ void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t inde
         for (uint64_t id : c.bufferData) w.Uint(id);
         w.EndArray();
     }
+    if (!c.stack.empty()) {
+        w.Key("stack"); w.BeginArray();
+        for (uint64_t address : c.stack) w.String(HexAddress(address));
+        w.EndArray();
+    }
     w.EndObject();
 }
 
@@ -802,6 +809,9 @@ void RecordCommandWithBuffers(const char *method, id object, const std::string &
     command.method = method;
     command.args = argsJson;
     command.bufferData = std::move(bufferData);
+    // Two frames above: RecordCommand and the hook; the application's call follows Metal's
+    // own frames, which the symbolizer marks internal.
+    if (g_options.stacktraces) command.stack = CaptureStack(2);
     id commandBuffer = nil;
     Attribute(object, &commandBuffer, &command.encoderId, &command.encoderType);
     command.commandBufferId = CommandBufferId(commandBuffer);
@@ -949,7 +959,9 @@ PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor
             slot = ReserveSamples(false, true);
             if (slot.sampleBuffer == nil) return slot;
             size_t next = 0;
-            auto attach = [&](id buffer, uint32_t start, uint32_t vertexEnd, uint32_t fragmentStart, uint32_t end) {
+            // NSUInteger throughout: MTLCounterDontSample is NSUIntegerMax, and truncating it to
+            // 32 bits would ask for a sample at index 4294967295 instead of none.
+            auto attach = [&](id buffer, NSUInteger start, NSUInteger vertexEnd, NSUInteger fragmentStart, NSUInteger end) {
                 if (next >= free.size()) return false;
                 MTLRenderPassSampleBufferAttachmentDescriptor *a = free[next++];
                 a.sampleBuffer = (id<MTLCounterSampleBuffer>)buffer;
@@ -995,7 +1007,7 @@ PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescript
             // Cycles per stage mean nothing to a compute pass; the statistic set does.
             slot.utilizationBuffer = nil;
             size_t next = 0;
-            auto attach = [&](id buffer, uint32_t start, uint32_t end) {
+            auto attach = [&](id buffer, NSUInteger start, NSUInteger end) {
                 if (next >= free.size()) return false;
                 MTLComputePassSampleBufferAttachmentDescriptor *a = free[next++];
                 a.sampleBuffer = (id<MTLCounterSampleBuffer>)buffer;

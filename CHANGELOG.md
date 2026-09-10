@@ -37,6 +37,9 @@
   Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
   Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
   slots and objects, a pass's target.
+- Metal stack traces: where each object was created and, with the capture bar's switch, where
+  each captured command was issued, symbolized on demand through the dynamic linker with the
+  library's, Metal's and the driver's frames folded away.
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
   offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
   resource id every object now reports.

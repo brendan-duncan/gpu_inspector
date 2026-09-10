@@ -1,6 +1,7 @@
 #include "tracker.h"
 
 #include "json_writer.h"
+#include "stacktrace.h"
 #include "swizzle.h"
 #include "transport.h"
 #include "ui_messages.h"
@@ -38,6 +39,8 @@ struct TrackedObject {
     std::string args;   // JSON descriptor, or empty
     /** Named payloads the UI can ask for: shader source, a metallib. */
     std::vector<std::pair<std::string, std::vector<uint8_t>>> blobs;
+    /** Where the application created it: return addresses, when stack traces are on. */
+    StackTrace stack;
 };
 
 std::mutex g_mutex;
@@ -136,6 +139,11 @@ uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
     // application's objects, and the UI should never see them.
     if (IsInternal()) return 0;
     const void *pointer = (__bridge const void *)object;
+    // Before the lock: the addresses are cheap, the symbols are looked up only on request.
+    // Two frames above this one are the hook and Track(); what remains starts at the
+    // application's call, or at Metal's own frames when it made the object itself.
+    StackTrace stack;
+    if (StackTracesEnabled()) stack = CaptureStack(2);
 
     std::string message;
     uint64_t id = 0;
@@ -158,6 +166,7 @@ uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
         tracked.pointer = pointer;
         tracked.args = argsJson;
         tracked.label = LabelOf(object);
+        tracked.stack = std::move(stack);
         g_byPointer[pointer] = tracked.id;
         g_order.push_back(tracked.id);
         auto &stored = g_byId[tracked.id] = std::move(tracked);
@@ -247,6 +256,32 @@ void SendBlob(uint64_t objectId, uint32_t index) {
     w.Key("size"); w.Uint(data.size());
     w.EndObject();
     Transport::Get().SendBinary(std::move(w.str()), std::move(data));
+}
+
+void SendStacktraces(const std::vector<uint64_t> &ids) {
+    // The stacks are copied out under the lock and symbolized outside it: dladdr is slow.
+    std::vector<std::pair<uint64_t, StackTrace>> stacks;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (uint64_t id : ids) {
+            auto it = g_byId.find(id);
+            if (it != g_byId.end() && !it->second.stack.empty()) stacks.emplace_back(id, it->second.stack);
+        }
+    }
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("Stacktraces");
+    w.Key("available"); w.Boolean(StackTracesEnabled());
+    w.Key("stacks"); w.BeginArray();
+    for (const auto &[id, stack] : stacks) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(id);
+        w.Key("frames"); WriteStackFrames(w, Symbolize(stack));
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void TrackLabel(id object) {

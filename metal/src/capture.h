@@ -33,6 +33,8 @@ struct CaptureOptions {
     bool captureTextures = true;
     bool captureBuffers = true;
     bool profilePasses = true;
+    /** The call stack of every recorded command, symbolized by the UI on demand. */
+    bool stacktraces = false;
 };
 
 /** Arms a capture, from the UI's `Capture` message. */

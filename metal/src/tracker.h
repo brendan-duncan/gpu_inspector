@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #import <objc/runtime.h>
 
@@ -72,6 +73,9 @@ void AddBlob(id object, const char *name, const void *data, size_t size);
 
 /** Answers `RequestBlob` with an `ObjectBlob` message and the bytes. */
 void SendBlob(uint64_t objectId, uint32_t index);
+
+/** Answers `RequestStacktraces` with the symbolized creation stacks of the ids that have one. */
+void SendStacktraces(const std::vector<uint64_t> &ids);
 
 /** Streams ObjectSetLabel when an object's label has changed since it was last seen. */
 void TrackLabel(id object);
