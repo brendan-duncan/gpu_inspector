@@ -9,6 +9,7 @@
 #include "gpu_trace.h"
 #include "image.h"
 #include "json_parse.h"
+#include "stacktrace.h"
 #include "swizzle.h"
 #include "tracker.h"
 #include "transport.h"
@@ -51,10 +52,34 @@ void HandleMessage(const std::string &text) {
             options.captureTextures = message.GetBool("captureTextures", true);
             options.captureBuffers = message.GetBool("captureBuffers", true);
             options.profilePasses = message.GetBool("profilePasses", true);
+            options.stacktraces = message.GetBool("stacktraces", false);
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
         } else if (action == "SaveGpuTrace") {
             RequestGpuTrace(message.GetString("path"));
+        } else if (action == "RequestStacktraces") {
+            std::vector<uint64_t> ids;
+            if (const vkinsp::JsonValue *list = message.Get("ids")) {
+                for (const vkinsp::JsonValue &v : list->arr) {
+                    if (v.kind == vkinsp::JsonValue::Number) ids.push_back((uint64_t)v.num);
+                }
+            }
+            SendStacktraces(ids);
+        } else if (action == "RequestSymbols") {
+            // The addresses a capture's commands carry: a frame per address, in request order.
+            StackTrace addresses;
+            if (const vkinsp::JsonValue *list = message.Get("addresses")) {
+                for (const vkinsp::JsonValue &v : list->arr) {
+                    if (v.kind == vkinsp::JsonValue::String) addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
+                    else if (v.kind == vkinsp::JsonValue::Number) addresses.push_back((uint64_t)v.num);
+                }
+            }
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("action"); w.String("Symbols");
+            w.Key("frames"); WriteStackFrames(w, Symbolize(addresses));
+            w.EndObject();
+            Transport::Get().SendJson(std::move(w.str()));
         } else if (action == "RequestBlob") {
             SendBlob((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("index"));
         } else if (action == "RequestImage") {

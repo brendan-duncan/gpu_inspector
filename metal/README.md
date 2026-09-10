@@ -379,6 +379,18 @@ that frame (a frame already passed captures the next), `maxBufferSize` truncates
 and `profilePasses` switch the read-backs and the timestamps off. Sampled images and creation
 stack traces have no Metal counterpart yet, so those switches are ignored.
 
+## Stack traces
+
+With the launch dialog's "Stack traces" on, the tracker takes the return addresses at every
+object creation (`stacktrace.mm`, `backtrace`, cheap), and a capture with the capture bar's
+switch on takes them at every recorded command. Symbols are looked up only when the UI asks
+(`RequestStacktraces` for objects, `RequestSymbols` for a command's addresses), through `dladdr`:
+an exported symbol, demangled, when one is within reach, else the module and offset, which is
+what an engine's own frames come to in a stripped build. Frames inside this library, Metal, its
+driver and the Objective-C runtime are marked internal, so the application's call is the first
+frame shown, the way the Vulkan loader's frames are hidden. The host-side symbolizer the Android
+path uses reads ELF objects, so a stripped Mach-O module stays at module and offset.
+
 ## Validation messages and the leak report
 
 Vulkan has a debug messenger; Metal has three things that say the same kinds of things, and

@@ -33,6 +33,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/image.mm
     src/reflection.h
     src/reflection.mm
+    src/stacktrace.h
+    src/stacktrace.mm
     src/tracker.h
     src/tracker.mm
     src/ui_messages.h

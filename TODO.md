@@ -158,7 +158,9 @@ backend does. Ordered by value per effort.
       `MTL_DEBUG_LAYER` and shader validation), and shader logs, as `ValidationMessage` with
       repeat counts.
 - [x] Leak report at process exit from the tracker.
-- [ ] Creation stack traces (`backtrace` + `dladdr`) answering `RequestStacktraces`.
+- [x] Creation stack traces (`backtrace` + `dladdr`) for objects and captured commands,
+      answering `RequestStacktraces` and `RequestSymbols`; the launch dialog's "Stack traces"
+      and the capture bar's switch reach the library.
 - [x] Argument buffers decoded: the reflection marks pointer, texture and sampler members,
       objects report their GPU address or resource id, and a draw's argument buffer lists each
       member resolved to its buffer (with offset), texture or sampler.

@@ -108,8 +108,10 @@ export function injectionBlockedReason(exe: string): string | null {
  * those lines as validation messages (metal/src/validation.mm). A variable the user already set
  * wins, so a launch can pick another mode.
  */
-export function captureEnvironment(library: string, port: number, log: boolean, validation = false): NodeJS.ProcessEnv {
+export function captureEnvironment(library: string, port: number, log: boolean, validation = false, stacktraces = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
+    // A stack at every object creation (metal/src/stacktrace.mm), the launch dialog's option.
+    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
     // Appended rather than replacing: another inserted library is the caller's business.
     DYLD_INSERT_LIBRARIES: [library, ...(process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : [])].join(":"),
     MTLINSP_PORT: String(port),

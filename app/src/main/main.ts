@@ -604,7 +604,7 @@ function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResul
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...parseEnvLines(config.env ?? ""),
-    ...captureEnvironment(library, s.port, config.log ?? true, config.validation),
+    ...captureEnvironment(library, s.port, config.log ?? true, config.validation, config.stacktraces),
   };
   return runTarget(s, exe, env, `capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`);
 }
