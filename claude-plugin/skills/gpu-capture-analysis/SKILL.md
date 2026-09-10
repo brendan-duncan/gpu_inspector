@@ -4,8 +4,9 @@ description: >-
   Interpret GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications — the command
   stream, passes, the state bound at a draw, render targets, buffers, shaders, validation messages,
   Frame Issues, GPU Bottlenecks and the render graph — to debug rendering problems and find what
-  limits a frame. Use with the gpu-inspector MCP tools whenever a .gpucap file or a GPU Inspector
-  capture comes up, or a native Vulkan or Metal rendering or GPU performance problem does.
+  limits a frame, including in running applications the tools launch, capture and edit shaders of.
+  Use with the gpu-inspector MCP tools whenever a .gpucap file or a GPU Inspector capture comes up,
+  or a native Vulkan or Metal rendering or GPU performance problem does.
 ---
 
 # GPU Inspector capture analysis
@@ -124,6 +125,35 @@ each step.
    - **Shaders**: `get_shader`. `source` when it is embedded, `glsl` or `hlsl` otherwise, and
      `reflection` to check the bindings the shader expects against what `get_command` shows bound.
 5. **Compare with a draw that works**: `get_command` on both, and diff the state.
+
+## Live applications
+
+`launch_app` starts an application with the capture library in it; `attach_app` connects to one
+already listening. The capture library serves one client, so attaching takes it over from GPU
+Inspector.
+
+- **Before capturing,** `get_live_frame_stats` says whether the frame meets the display refresh or is
+  bound by submission. It measures no GPU time.
+- **`capture_frames`** saves a `.gpucap` and returns its summary. The capture tools take the
+  returned `capture` id.
+  - Capture while the application shows the problem: ask the user to get it there, or use
+    `delaySeconds` or `atFrame`.
+  - No commands means the application reuses command buffers recorded earlier: capture again with
+    `recordAlways: true`.
+- **Object ids are the same** in the live session and in its captures, so a pipeline id from
+  `get_command` is what `replace_shader` takes.
+- **A shader experiment:**
+  1. Get the stage's source with `get_shader` (`source`, else `glsl`) and edit it.
+  2. Call `replace_shader`. A compile failure comes back with the compiler's errors, by line.
+  3. Call `capture_frames` again, then `compare_captures`, and `read_texture` on the same target
+     before and after.
+  4. Call `restore_shader` to undo it.
+
+  The replacement exists only in the running process: report the source change for the application
+  to make.
+- **When a session misbehaves,** `get_session_log` has the application's output and the capture
+  library's own log.
+- **Clean up** with `stop_app` when done.
 
 ## Vulkan and Metal differences
 

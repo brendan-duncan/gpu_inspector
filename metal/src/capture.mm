@@ -639,6 +639,17 @@ void Finish() {
     SendBuffers(buffers);
     SendTextures(textures);
     SendTimings(timings, timing);
+    // The end of the capture's stream, whichever sections it had (the empty ones are not sent): a
+    // client waiting for the capture (the MCP server) knows nothing more of it is coming.
+    {
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("CaptureComplete");
+        w.Key("frame"); w.Uint(0);
+        w.Key("frames"); w.Uint(frames);
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
+    }
     Log("capture finished: %zu commands over %u frame(s), %zu batch(es), %zu buffer(s), "
         "%zu render target(s)", commands.size(), frames, batches, buffers.size(), textures.size());
   }

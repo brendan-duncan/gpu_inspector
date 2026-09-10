@@ -1251,9 +1251,32 @@ var CaptureData = class {
 };
 
 // src/renderer/capture_format.ts
+var CAPTURE_FILE_EXTENSION = "gpucap";
 var MAGIC = "GPUCAP 1\n";
 var CAPTURE_FORMAT = "gpu-inspector-capture";
 var CAPTURE_VERSION = 1;
+function captureFileName(source, frame, frames) {
+  const base = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
+  return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
+}
+function encodeCaptureFile(manifest, payloads) {
+  const json = new TextEncoder().encode(JSON.stringify(manifest));
+  const magic = new TextEncoder().encode(MAGIC);
+  const payloadBytes = payloads.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + payloadBytes);
+  let pos = 0;
+  out.set(magic, pos);
+  pos += magic.byteLength;
+  new DataView(out.buffer).setUint32(pos, json.byteLength, true);
+  pos += 4;
+  out.set(json, pos);
+  pos += json.byteLength;
+  for (const p of payloads) {
+    out.set(p, pos);
+    pos += p.byteLength;
+  }
+  return out;
+}
 function parseCaptureFile(bytes) {
   const magic = new TextEncoder().encode(MAGIC);
   if (bytes.byteLength < magic.byteLength + 4) throw new Error("The file is too short to be a capture.");
@@ -1867,9 +1890,9 @@ function computeCriticalPath(graph) {
     }
   }
   if (!head || best <= 0) return;
-  const path4 = [];
-  for (let n = head; n; n = next.get(n) ?? null) path4.push(n);
-  graph.criticalPath = path4;
+  const path7 = [];
+  for (let n = head; n; n = next.get(n) ?? null) path7.push(n);
+  graph.criticalPath = path7;
   graph.criticalPathMs = best;
 }
 function usageClass(usage) {
@@ -5886,9 +5909,9 @@ function reflectSpirv(data) {
 
 // src/mcp/capture_store.ts
 var Capture = class {
-  constructor(id, path4, mtimeMs, bytes) {
+  constructor(id, path7, mtimeMs, bytes) {
     this.id = id;
-    this.path = path4;
+    this.path = path7;
     this.mtimeMs = mtimeMs;
     const capture = parseCaptureFile(bytes);
     const m = capture.manifest;
@@ -7168,24 +7191,922 @@ function commandTools(store) {
   ];
 }
 
-// src/main/shader_tools.ts
+// src/mcp/live_session.ts
+import { spawn } from "node:child_process";
+import fs4 from "node:fs";
+import net2 from "node:net";
+import os3 from "node:os";
+import path4 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/main/layer_protocol.ts
+function encodeRequest(msg) {
+  const payload = Buffer.from(JSON.stringify(msg), "utf8");
+  const header = Buffer.alloc(5);
+  header.writeUInt32LE(payload.length, 0);
+  header.writeUInt8(0, 4);
+  return Buffer.concat([header, payload]);
+}
+var FrameReader = class {
+  _buffered = Buffer.alloc(0);
+  /** The messages `chunk` completes, in order; a frame that does not parse goes to `onError` and is skipped. */
+  push(chunk2, onError) {
+    this._buffered = this._buffered.length ? Buffer.concat([this._buffered, chunk2]) : chunk2;
+    const out = [];
+    while (this._buffered.length >= 5) {
+      const len = this._buffered.readUInt32LE(0);
+      const kind = this._buffered.readUInt8(4);
+      if (this._buffered.length < 5 + len) break;
+      const payload = this._buffered.subarray(5, 5 + len);
+      this._buffered = this._buffered.subarray(5 + len);
+      if (kind === 0) {
+        try {
+          out.push(JSON.parse(payload.toString("utf8")));
+        } catch (e) {
+          onError?.({ kind: "json", error: String(e), payload });
+        }
+      } else if (kind === 1) {
+        const hl = payload.readUInt32LE(0);
+        let header;
+        try {
+          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8"));
+        } catch (e) {
+          onError?.({ kind: "header", error: String(e), payload });
+          continue;
+        }
+        out.push({ ...header, __binary: new Uint8Array(payload.subarray(4 + hl)) });
+      }
+    }
+    return out;
+  }
+};
+
+// src/main/launch_env.ts
 import { execFile } from "node:child_process";
 import fs2 from "node:fs";
+import net from "node:net";
 import os2 from "node:os";
 import path2 from "node:path";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
+var DEFAULT_PORT = 47531;
+function findLayerDir(roots, packaged = []) {
+  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
+  const candidates = [];
+  for (const root of roots) {
+    const bin = path2.join(root, "build", "bin");
+    candidates.push(path2.join(bin, "Release"), path2.join(bin, "RelWithDebInfo"), path2.join(bin, "Debug"), bin);
+  }
+  candidates.push(...packaged);
+  for (const dir of candidates) {
+    if (fs2.existsSync(path2.join(dir, `${LAYER_NAME}.json`))) return dir;
+  }
+  return null;
+}
+function findValidationLayerDir() {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path2.join(sdk, "Bin"), path2.join(sdk, "share", "vulkan", "explicit_layer.d"), path2.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    for (const root of ["C:\\VulkanSDK", path2.join(os2.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs2.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path2.join(root, v, "Bin"));
+      } catch {
+      }
+    }
+  } else {
+    candidates.push(
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/local/share/vulkan/explicit_layer.d",
+      "/etc/vulkan/explicit_layer.d",
+      path2.join(os2.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+    );
+  }
+  for (const c2 of candidates) if (fs2.existsSync(path2.join(c2, manifest))) return c2;
+  return null;
+}
+function vulkanLayerEnvironment(o) {
+  const layers = [LAYER_NAME, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
+  return {
+    VK_ADD_LAYER_PATH: layerPaths.join(path2.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
+    // Older loaders:
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path2.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path2.delimiter),
+    VKINSP_PORT: String(o.port),
+    VKINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
+    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
+    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
+  };
+}
+function splitArgs(s) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
+  });
+}
+async function findFreePort(start, taken = () => false) {
+  for (let port = start; port < start + 100 && port < 65536; port++) {
+    if (taken(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return start;
+}
+function terminate(proc) {
+  if (process.platform === "win32" && proc.pid) {
+    execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+      try {
+        proc.kill();
+      } catch {
+      }
+    });
+    return;
+  }
+  proc.kill();
+}
+
+// src/main/metal.ts
+import { execFileSync, spawnSync } from "node:child_process";
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { fileURLToPath } from "node:url";
+var moduleDir = path3.dirname(fileURLToPath(import.meta.url));
+var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
+function findCaptureLibrary(roots = [path3.resolve(moduleDir, "..", "..", "..")], packaged = [path3.join(process.resourcesPath ?? "", "layer")]) {
+  const candidates = [];
+  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
+  for (const root of roots) {
+    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
+      candidates.push(path3.join(root, dir, CAPTURE_LIBRARY));
+    }
+  }
+  for (const dir of packaged) candidates.push(path3.join(dir, CAPTURE_LIBRARY));
+  return candidates.find((p) => fs3.existsSync(p)) ?? null;
+}
+function resolveExecutable(exe) {
+  if (!exe.endsWith(".app")) return exe;
+  const macOS = path3.join(exe, "Contents", "MacOS");
+  const plist = path3.join(exe, "Contents", "Info.plist");
+  if (fs3.existsSync(plist)) {
+    try {
+      const name = execFileSync(
+        "/usr/libexec/PlistBuddy",
+        ["-c", "Print :CFBundleExecutable", plist],
+        { encoding: "utf8" }
+      ).trim();
+      const candidate = path3.join(macOS, name);
+      if (name && fs3.existsSync(candidate)) return candidate;
+    } catch {
+    }
+  }
+  const byBundleName = path3.join(macOS, path3.basename(exe, ".app"));
+  if (fs3.existsSync(byBundleName)) return byBundleName;
+  try {
+    const entries = fs3.readdirSync(macOS);
+    if (entries.length === 1) return path3.join(macOS, entries[0]);
+  } catch {
+  }
+  return exe;
+}
+function injectionBlockedReason(exe) {
+  const r = spawnSync(
+    "codesign",
+    ["-d", "-v", "--entitlements", "-", "--xml", exe],
+    { encoding: "utf8" }
+  );
+  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+  if (!/flags=[^\s]*runtime/.test(output)) return null;
+  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
+  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
+  if (hasDyld && hasLibrary) return null;
+  return `${path3.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+
+  /usr/bin/codesign --force --deep --sign - --options runtime \\
+    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
+    "<the .app>"
+
+This invalidates the application's signature and notarization, so do it to a development build rather than to a shipping copy.`;
+}
+function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
+  const env = {
+    // A stack at every object creation (metal/src/stacktrace.mm), the launch dialog's option.
+    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
+    // Appended rather than replacing: another inserted library is the caller's business.
+    DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
+    MTLINSP_PORT: String(port),
+    MTLINSP_LOG: log ? "1" : "0",
+    // Lets the library write an Xcode GPU trace of a frame on request (metal/src/gpu_trace.mm);
+    // without it MTLCaptureManager refuses the document destination.
+    ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
+  };
+  if (validation) {
+    const defaults = {
+      MTL_DEBUG_LAYER: "1",
+      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
+      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
+      MTL_SHADER_VALIDATION: "1",
+      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1"
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!process.env[key]) env[key] = value;
+    }
+  }
+  return env;
+}
+
+// src/renderer/stack_requests.ts
+var REQUEST_TIMEOUT_MS = 15e3;
+function requestStacks(session, ids) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const id of ids) {
+    const cached = db.stacks.get(id);
+    if (cached) out.set(id, cached);
+    else missing.push(id);
+  }
+  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onStacktraces.disconnect(listener);
+      if (!ok) {
+        resolve(out.size ? out : null);
+        return;
+      }
+      for (const id of missing) {
+        const s = db.stacks.get(id);
+        if (s) out.set(id, s);
+      }
+      resolve(out);
+    };
+    const listener = () => finish2(true);
+    const timer = setTimeout(() => finish2(false), REQUEST_TIMEOUT_MS);
+    db.onStacktraces.addListener(listener);
+    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => {
+      if (!ok) finish2(false);
+    });
+  });
+}
+async function resolveSymbols(session, addresses, symbolizeOnHost) {
+  const out = await resolveFromLayer(session, addresses);
+  if (symbolizeOnHost) await symbolizeOnHost(out);
+  return out;
+}
+function resolveFromLayer(session, addresses) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const a of addresses) {
+    const cached = db.symbols.get(a);
+    if (cached) out.set(a, cached);
+    else if (!missing.includes(a)) missing.push(a);
+  }
+  if (!missing.length) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onSymbols.disconnect(listener);
+      for (const a of missing) {
+        const f = db.symbols.get(a);
+        if (f) out.set(a, f);
+      }
+      resolve(out);
+    };
+    const listener = () => finish2();
+    const timer = setTimeout(finish2, REQUEST_TIMEOUT_MS);
+    db.onSymbols.addListener(listener);
+    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => {
+      if (!ok) finish2();
+    });
+  });
+}
+
+// src/renderer/capture_file.ts
+var BLOB_TIMEOUT_MS = 15e3;
+function fetchBlob(session, object, index) {
+  const db = session.database;
+  const key = `${object.id}:${index}`;
+  const cached = db.blobData.get(key);
+  if (cached) return Promise.resolve(cached);
+  if (!session.connected) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (data) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onObjectBlob.disconnect(listener);
+      resolve(data);
+    };
+    const listener = (id, idx, data) => {
+      if (id === object.id && idx === index) finish2(data);
+    };
+    const timer = setTimeout(() => finish2(null), BLOB_TIMEOUT_MS);
+    db.onObjectBlob.addListener(listener);
+    void session.send({ action: "RequestBlob", id: object.id, index }).then((ok) => {
+      if (!ok) finish2(null);
+    });
+  });
+}
+function referencedObjects(session, data) {
+  const db = session.database;
+  const ids = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) {
+    if (c2.object) ids.add(c2.object.__id);
+    if (c2.secondary) ids.add(c2.secondary);
+    db.collectReferences(c2.args, ids);
+    db.collectReferences(c2.descriptors, ids);
+  }
+  for (const t of data.textures) {
+    ids.add(t.info.id);
+    ids.add(t.info.commandBuffer);
+  }
+  for (const b of data.buffers.values()) {
+    ids.add(b.info.buffer);
+    ids.add(b.info.commandBuffer);
+  }
+  for (const v of db.validation) db.collectReferences(v.objects, ids);
+  const out = /* @__PURE__ */ new Map();
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop();
+    if (out.has(id)) continue;
+    const o = db.getObject(id);
+    if (!o) continue;
+    out.set(id, o);
+    if (o.parentId && !out.has(o.parentId)) queue.push(o.parentId);
+    for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
+    const more = /* @__PURE__ */ new Set();
+    db.collectReferences(o.updates, more);
+    for (const m of more) if (!out.has(m)) queue.push(m);
+  }
+  return [...out.values()].sort((a, b) => a.id - b.id);
+}
+async function serializeCapture(session, data, options = {}) {
+  const onProgress = options.onProgress;
+  const payloads = [];
+  let payloadBytes = 0;
+  const addPayload = (bytes) => {
+    if (!bytes) return void 0;
+    const p = [payloadBytes, bytes.byteLength];
+    payloads.push(bytes);
+    payloadBytes += bytes.byteLength;
+    return p;
+  };
+  const objects = referencedObjects(session, data);
+  const records = [];
+  let fetched = 0;
+  const withBlobs = objects.filter((o) => o.blobs.length).length;
+  for (const o of objects) {
+    const blobs = [];
+    for (let i = 0; i < o.blobs.length; i++) {
+      const b = o.blobs[i];
+      if (onProgress) onProgress(`saving: shader ${++fetched} of ${withBlobs}...`);
+      const bytes = await fetchBlob(session, o, i);
+      blobs.push({ name: b.name, size: b.size, ...bytes ? { payload: addPayload(bytes) } : {} });
+    }
+    records.push({
+      id: o.id,
+      parent: o.parentId,
+      type: o.type,
+      cmd: o.cmd,
+      index: o.index,
+      handle: o.handle,
+      label: o.label || null,
+      args: o.args,
+      blobs,
+      updates: o.updates,
+      deleted: o.isDeleted
+    });
+  }
+  const db = session.database;
+  const addresses = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
+  let symbols;
+  if (addresses.size) {
+    if (onProgress) onProgress("saving: symbols...");
+    const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
+    symbols = {};
+    for (const [a, f] of resolved) symbols[a] = f;
+  }
+  let stacks;
+  if (db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+    if (onProgress) onProgress("saving: stack traces...");
+    const got = await requestStacks(session, objects.map((o) => o.id));
+    if (got && db.stacksAvailable !== false) {
+      stacks = {};
+      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
+    }
+  }
+  if (onProgress) onProgress("saving: writing...");
+  const manifest = {
+    format: CAPTURE_FORMAT,
+    version: CAPTURE_VERSION,
+    api: data.api,
+    application: "GPU Inspector",
+    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    source: { name: session.name },
+    frame: data.frame,
+    frames: data.frames,
+    frameTimeMs: db.frameTimeMs,
+    submitMs: db.submitMs,
+    refreshMs: db.refreshMs,
+    refreshSource: db.refreshSource,
+    displayRefreshMs: db.displayRefreshMs,
+    frameBoundary: db.frameBoundary,
+    objects: records,
+    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
+    commands: data.commands.map((c2) => {
+      const { children: _children, ...rest } = c2;
+      return rest;
+    }),
+    textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
+    buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
+    passTimings: [...data.passTimings.values()],
+    validation: db.validation,
+    ...symbols ? { symbols } : {},
+    ...stacks ? { stacks } : {}
+  };
+  return encodeCaptureFile(manifest, payloads);
+}
+
+// src/mcp/live_session.ts
+var MAX_LOG_LINES = 2e3;
+var MAX_FRAME_STATS = 600;
+var DEFAULT_QUIET_MS = 2e3;
+var SNAPSHOT_TIMEOUT_MS = 1e4;
+var KILL_TIMEOUT_MS = 3e3;
+var CAPTURE_ACTIONS = /* @__PURE__ */ new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings"]);
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function capturesDir() {
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path4.join(os3.tmpdir(), "gpu-inspector-captures");
+}
+function checkoutRoots() {
+  const roots = [];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  roots.push(path4.resolve(path4.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  return roots;
+}
+function installedLayerDirs() {
+  const home = os3.homedir();
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA ?? path4.join(home, "AppData", "Local");
+    const apps = [path4.join(local, "Programs", "gpu-inspector"), path4.join(local, "Programs", "GPU Inspector")];
+    for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
+      if (programFiles) apps.push(path4.join(programFiles, "GPU Inspector"));
+    }
+    return apps.map((dir) => path4.join(dir, "resources", "layer"));
+  }
+  if (process.platform === "darwin") {
+    return ["/Applications", path4.join(home, "Applications")].map((dir) => path4.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+  }
+  return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+}
+function applicationName(db) {
+  for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
+    const info = o.descriptor?.pApplicationInfo;
+    const name = isObject(info) ? str(info.pApplicationName) : "";
+    if (name) return name;
+  }
+  return null;
+}
+var LiveSession = class {
+  constructor(id, name, port, launched) {
+    this.id = id;
+    this.name = name;
+    this.port = port;
+    this.launched = launched;
+    const db = this.database;
+    db.onFrameStats.addListener((msg) => {
+      this.frameStats.push({ at: Date.now(), msg });
+      if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
+    });
+    db.onValidationMessage.addListener((entry, isNew) => {
+      if (isNew) this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${entry.message.split("\n")[0].slice(0, 300)}`);
+    });
+    db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
+    db.onOtherMessage.addListener((msg) => {
+      if (msg.action === "ShaderReplaced") {
+        this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
+      }
+    });
+  }
+  database = new ObjectDatabase();
+  log = [];
+  /** Frame reports with the time each arrived. */
+  frameStats = [];
+  startedAt = Date.now();
+  state = "connecting";
+  detail = "";
+  pid = null;
+  exitCode = null;
+  _proc = null;
+  _socket = null;
+  _listeners = /* @__PURE__ */ new Set();
+  _capturing = false;
+  /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
+  _stopping = false;
+  get connected() {
+    return this._socket !== null && !this._socket.destroyed;
+  }
+  /** The API the capture library reports objects of; null before any arrived. */
+  get api() {
+    for (const type of this.database.objectsByType.keys()) if (type.startsWith("MTL")) return "metal";
+    return this.database.allObjects.size ? "vulkan" : null;
+  }
+  appendLog(line) {
+    this.log.push(line);
+    if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
+  }
+  setState(state, detail = "") {
+    this.state = state;
+    this.detail = detail;
+    this.appendLog(`[${state}]${detail ? ` ${detail}` : ""}`);
+  }
+  send(msg) {
+    if (!this._socket || this._socket.destroyed) return Promise.resolve(false);
+    this._socket.write(encodeRequest(msg));
+    return Promise.resolve(true);
+  }
+  /** Hears every message from the capture library, after the object database; returns the unsubscribe. */
+  onMessage(listener) {
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
+  }
+  /** The first message `match` accepts (its return value), or null after `timeoutMs`. */
+  waitFor(match, timeoutMs) {
+    return new Promise((resolve) => {
+      const off = this.onMessage((msg) => {
+        const hit = match(msg);
+        if (hit === void 0) return;
+        clearTimeout(timer);
+        off();
+        resolve(hit);
+      });
+      const timer = setTimeout(() => {
+        off();
+        resolve(null);
+      }, timeoutMs);
+    });
+  }
+  /** Starts the application; its output goes to the session's log. */
+  startProcess(exe, args, cwd, env) {
+    const proc = spawn(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    this._proc = proc;
+    this.pid = proc.pid ?? null;
+    for (const stream of [proc.stdout, proc.stderr]) {
+      let rest = "";
+      stream?.on("data", (d) => {
+        rest += d.toString("utf8");
+        const lines = rest.split(/\r?\n/);
+        rest = lines.pop() ?? "";
+        for (const line of lines) if (line.length) this.appendLog(line);
+      });
+    }
+    proc.on("exit", (code, signal) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this.exitCode = String(signal ?? code);
+      this._disconnect();
+      this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
+    });
+    proc.on("error", (e) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this._disconnect();
+      this.setState("error", e.message);
+    });
+  }
+  /**
+   * Connects to the capture library, retrying until it answers, the launched process exits, or
+   * `timeoutMs` passes; resolves once the snapshot of live objects that follows a connection is in.
+   */
+  async connect(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    this.setState("connecting", `port ${this.port}`);
+    while (Date.now() < deadline) {
+      if (this.launched && !this._proc) return false;
+      const sock = await this._tryConnect();
+      if (sock) {
+        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS);
+        this._attach(sock);
+        await snapshot;
+        const name = applicationName(this.database);
+        if (name && !this.launched) this.name = name;
+        return this.connected;
+      }
+      await sleep(this.launched ? 250 : 500);
+    }
+    this.setState("disconnected", `nothing answered on port ${this.port}`);
+    return false;
+  }
+  _tryConnect() {
+    return new Promise((resolve) => {
+      const sock = net2.createConnection({ host: "127.0.0.1", port: this.port });
+      sock.once("connect", () => {
+        sock.removeAllListeners("error");
+        resolve(sock);
+      });
+      sock.once("error", () => {
+        sock.destroy();
+        resolve(null);
+      });
+    });
+  }
+  _attach(sock) {
+    sock.setNoDelay(true);
+    this._socket = sock;
+    const reader = new FrameReader();
+    sock.on("data", (chunk2) => {
+      const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
+      for (const msg of messages) {
+        this.database.handleMessage(msg);
+        for (const listener of [...this._listeners]) listener(msg);
+      }
+    });
+    const gone = () => {
+      if (this._socket !== sock) return;
+      this._socket = null;
+      if (this.state === "connected") this.setState("disconnected", "the connection closed (the application exited, or another client connected to it)");
+    };
+    sock.on("error", gone);
+    sock.on("close", gone);
+    this.setState("connected", `port ${this.port}`);
+    void this.send({ action: "Ping" });
+  }
+  /** Resolves when the snapshot the capture library sends on connection has arrived, or after `timeoutMs`. */
+  _waitForSnapshot(timeoutMs) {
+    const db = this.database;
+    return new Promise((resolve) => {
+      let started = false;
+      const done = () => {
+        clearTimeout(timer);
+        db.onSnapshotBegin.disconnect(begin);
+        db.onAddObject.disconnect(add);
+        resolve();
+      };
+      const begin = (count2) => {
+        started = true;
+        if (count2 === 0) done();
+      };
+      const add = (_object, inSnapshot) => {
+        if (started && !inSnapshot) done();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      db.onSnapshotBegin.addListener(begin);
+      db.onAddObject.addListener(add);
+    });
+  }
+  _disconnect() {
+    const sock = this._socket;
+    this._socket = null;
+    sock?.destroy();
+  }
+  /**
+   * Requests a capture and waits for all of it: until the capture library marks its end, or, for
+   * one built before that marker existed, until the stream has been silent for a while after the
+   * commands and buffers are in.
+   */
+  async capture(o) {
+    if (!this.connected) throw new Error(`${this.id} is not connected (${this.state}${this.detail ? `: ${this.detail}` : ""}).`);
+    if (this._capturing) throw new Error(`${this.id} is already capturing.`);
+    this._capturing = true;
+    const data = new CaptureData();
+    const started = Date.now();
+    let commandsComplete = false;
+    let marker = false;
+    let lastTraffic = 0;
+    const onCommands = () => {
+      commandsComplete = true;
+    };
+    data.onCommandsComplete.addListener(onCommands);
+    const off = this.onMessage((msg) => {
+      if (msg.action === "CaptureComplete") {
+        marker = true;
+      } else if (CAPTURE_ACTIONS.has(msg.action)) {
+        lastTraffic = Date.now();
+        data.handleMessage(msg);
+      }
+    });
+    const quietMs = Number(process.env.GPU_INSPECTOR_CAPTURE_QUIET_MS) || DEFAULT_QUIET_MS;
+    try {
+      const request = {
+        action: "Capture",
+        frameCount: o.frames,
+        ...o.atFrame !== void 0 ? { atFrame: o.atFrame } : {},
+        captureTextures: o.renderTargets,
+        captureBuffers: o.buffers,
+        captureImages: o.images,
+        profilePasses: o.profilePasses,
+        stacktraces: o.stacktraces,
+        maxBufferSize: o.maxBufferBytes
+      };
+      await this.send(request);
+      for (; ; ) {
+        await sleep(50);
+        const now = Date.now();
+        if (marker) return { data, completion: "marker", elapsedMs: now - started };
+        if (commandsComplete && lastTraffic && now - lastTraffic >= quietMs && !data.buffersLoading) return { data, completion: "quiet", elapsedMs: now - started };
+        if (!this.connected) {
+          throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
+        }
+        if (now - started > o.timeoutMs) {
+          throw new Error(lastTraffic ? `The capture did not finish streaming within ${o.timeoutMs / 1e3} s.` : `No capture arrived within ${o.timeoutMs / 1e3} s: a capture starts at ${o.atFrame !== void 0 ? `frame ${o.atFrame}` : "the next frame"}, so the application may not be rendering (minimized, paused, or waiting).`);
+        }
+      }
+    } finally {
+      off();
+      data.onCommandsComplete.disconnect(onCommands);
+      this._capturing = false;
+    }
+  }
+  /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
+  async saveCapture(data, file) {
+    const bytes = await serializeCapture(this, data);
+    let target;
+    if (file) {
+      target = path4.resolve(file);
+      fs4.mkdirSync(path4.dirname(target), { recursive: true });
+    } else {
+      const dir = capturesDir();
+      fs4.mkdirSync(dir, { recursive: true });
+      const name = captureFileName(this.name, data.frame, data.frames);
+      target = path4.join(dir, name);
+      for (let n = 2; fs4.existsSync(target); n++) target = path4.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+    }
+    fs4.writeFileSync(target, bytes);
+    return target;
+  }
+  /**
+   * Rebuilds a pipeline with one stage's code replaced (Vulkan); the layer's answer, or null without
+   * one. The request names the stage by its flag, the answer by the layer's stage name ("fragment").
+   */
+  async replaceShader(pipeline, stageFlag, stageName, spirv, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline && (msg.stage === stageName || msg.stage === stageFlag) ? msg : void 0, timeoutMs);
+    await this.send({ action: "ReplaceShader", pipeline, stage: stageFlag, spirv: Buffer.from(spirv).toString("base64") });
+    return answer;
+  }
+  /** Drops the replacement of one stage (or every stage) of a pipeline. */
+  async restoreShader(pipeline, stageFlag, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline ? msg : void 0, timeoutMs);
+    await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
+    return answer;
+  }
+  /** Terminates a launched application; an attached one is only disconnected. */
+  async stop() {
+    const proc = this._proc;
+    this._disconnect();
+    if (!proc) {
+      if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
+      return;
+    }
+    this._stopping = true;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, KILL_TIMEOUT_MS);
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      try {
+        terminate(proc);
+      } catch {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  }
+};
+var SessionManager = class {
+  _sessions = /* @__PURE__ */ new Map();
+  _counter = 0;
+  _latest = null;
+  /** Launches an application with the capture library in it and waits for it to connect. */
+  async launch(o, waitMs) {
+    const requested = path4.resolve(o.exe);
+    if (!fs4.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    let exe = requested;
+    let env;
+    let note;
+    if (process.platform === "darwin") {
+      const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
+      if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
+      exe = resolveExecutable(requested);
+      const blocked = injectionBlockedReason(exe);
+      if (blocked) throw new Error(blocked);
+      env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
+      note = `capture library: ${library}`;
+    } else {
+      const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
+      if (!layerDir) {
+        throw new Error("The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
+      }
+      const validationDir = o.validation ? findValidationLayerDir() : null;
+      env = {
+        ...process.env,
+        ...o.env,
+        ...vulkanLayerEnvironment({
+          layerDir,
+          validationDir,
+          port,
+          log: true,
+          recordAlways: !!o.recordAlways,
+          stacktraces: o.stacktraces ?? true,
+          validation: !!o.validation,
+          syncValidation: !!o.syncValidation
+        })
+      };
+      note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
+    }
+    const session = new LiveSession(`app-${++this._counter}`, `${path4.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    session.appendLog(`launching ${exe} ${args.join(" ")}`);
+    session.appendLog(note);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    session.startProcess(exe, args, o.cwd && fs4.existsSync(o.cwd) ? o.cwd : path4.dirname(exe), env);
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+  /** Attaches to an application whose capture library already listens on `port`. */
+  async attach(port, waitMs) {
+    const session = new LiveSession(`app-${++this._counter}`, `port ${port}`, port, false);
+    if (!await session.connect(waitMs)) {
+      throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
+    }
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    return session;
+  }
+  /** A session by id, or the one started most recently. */
+  get(id) {
+    if (!id) {
+      if (!this._latest) throw new Error("No live session: launch_app starts an application with the capture library, attach_app connects to one already running.");
+      return this._latest;
+    }
+    const s = this._sessions.get(id);
+    if (!s) throw new Error(`No live session "${id}". ${this._sessions.size ? `Sessions: ${[...this._sessions.keys()].join(", ")}.` : "There are none."}`);
+    return s;
+  }
+  list() {
+    return [...this._sessions.values()];
+  }
+  async stopAll() {
+    await Promise.all([...this._sessions.values()].map((s) => s.stop()));
+  }
+};
+
+// src/main/shader_tools.ts
+import { execFile as execFile2 } from "node:child_process";
+import fs5 from "node:fs";
+import os4 from "node:os";
+import path5 from "node:path";
 var tempCounter = 0;
+function tempBase() {
+  return path5.join(os4.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+}
 function findTool(name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path2.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path2.join(process.env.VULKAN_SDK, "Bin", exe), path2.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs2.existsSync(c2)) return c2;
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path5.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path5.join(process.env.VULKAN_SDK, "Bin", exe), path5.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs5.existsSync(c2)) return c2;
   return exe;
 }
 function shaderText(spirv, mode) {
   return new Promise((resolve) => {
-    const tmp = path2.join(os2.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}.spv`);
-    fs2.writeFileSync(tmp, Buffer.from(spirv));
+    const tmp = `${tempBase()}.spv`;
+    fs5.writeFileSync(tmp, Buffer.from(spirv));
     let tool;
     let args;
     if (mode === "dis") {
@@ -7198,15 +8119,913 @@ function shaderText(spirv, mode) {
       else if (mode === "msl") args.push("--msl");
       else args.push("--vulkan-semantics", "--version", "460");
     }
-    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs2.unlinkSync(tmp);
+        fs5.unlinkSync(tmp);
       } catch {
       }
-      if (err) resolve({ ok: false, text: `${path2.basename(tool)} failed: ${stderr || err.message}` });
+      if (err) resolve({ ok: false, text: `${path5.basename(tool)} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
     });
   });
+}
+var GLSL_STAGES = {
+  vertex: "vert",
+  tess_control: "tesc",
+  tess_eval: "tese",
+  geometry: "geom",
+  fragment: "frag",
+  compute: "comp",
+  task: "task",
+  mesh: "mesh",
+  raygen: "rgen",
+  intersection: "rint",
+  any_hit: "rahit",
+  closest_hit: "rchit",
+  miss: "rmiss",
+  callable: "rcall"
+};
+var HLSL_PROFILES = {
+  vertex: "vs_6_0",
+  tess_control: "hs_6_0",
+  tess_eval: "ds_6_0",
+  geometry: "gs_6_0",
+  fragment: "ps_6_0",
+  compute: "cs_6_0",
+  task: "as_6_5",
+  mesh: "ms_6_5",
+  raygen: "lib_6_3",
+  intersection: "lib_6_3",
+  any_hit: "lib_6_3",
+  closest_hit: "lib_6_3",
+  miss: "lib_6_3",
+  callable: "lib_6_3"
+};
+function targetEnv(spirvVersion, tool) {
+  const v = spirvVersion || "1.5";
+  if (tool === "spirv-as") return `spv${v}`;
+  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
+  const env = glslang[v] ?? "vulkan1.2";
+  return tool === "dxc" ? env : env.replace("spirv", "spv");
+}
+function compileShader(source, language, stage, entryPoint, spirvVersion) {
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const out = base + ".spv";
+    fs5.writeFileSync(src, source);
+    const entry = entryPoint || "main";
+    let tool;
+    let args;
+    if (language === "spirv-asm") {
+      tool = findTool("spirv-as");
+      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
+    } else if (language === "hlsl") {
+      tool = findTool("dxc");
+      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+    } else {
+      tool = findTool("glslangValidator");
+      args = [
+        "-V",
+        "-S",
+        GLSL_STAGES[stage] ?? "frag",
+        "--target-env",
+        targetEnv(spirvVersion, "glslang"),
+        "--source-entrypoint",
+        "main",
+        "-e",
+        entry,
+        "-o",
+        out,
+        src
+      ];
+    }
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let spirv;
+      try {
+        if (fs5.existsSync(out)) spirv = new Uint8Array(fs5.readFileSync(out));
+      } catch {
+        spirv = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs5.unlinkSync(f);
+        } catch {
+        }
+      }
+      const name = path5.basename(tool);
+      if (err || !spirv || spirv.byteLength < 20) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
+        resolve({ ok: false, log: reason, tool: name });
+      } else {
+        resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
+
+// src/mcp/tools.ts
+import fs6 from "node:fs";
+import path6 from "node:path";
+var SEVERITIES = ["high", "medium", "low", "info"];
+function unique(values) {
+  return values.length ? [...new Set(values)] : void 0;
+}
+function frameTiming(c2) {
+  const db = c2.db;
+  const timings = [...c2.data.passTimings.values()];
+  let start = Infinity;
+  let end = -Infinity;
+  for (const t of timings) {
+    start = Math.min(start, t.startMs);
+    end = Math.max(end, t.startMs + t.durationMs);
+  }
+  const gpuSpanMs = timings.length ? end - start : 0;
+  const bound = timings.length ? frameBound({ frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs, frames: c2.data.frames }) : null;
+  return {
+    frameMs: round(db.frameTimeMs) || void 0,
+    submitMs: round(db.submitMs) || void 0,
+    refreshMs: round(db.refreshMs) || void 0,
+    refreshSource: db.refreshSource ? REFRESH_SOURCE_NOTE[db.refreshSource] ?? db.refreshSource : void 0,
+    frameBoundary: db.frameBoundary || void 0,
+    profiled: timings.length > 0,
+    gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
+    gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
+    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0
+  };
+}
+function captureNotes(c2) {
+  const d = c2.data;
+  const notes = [];
+  if (!d.passTimings.size) {
+    notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
+  } else if (!c2.metrics.withCounters) {
+    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+  }
+  const failedImages = d.textures.filter((t) => t.info.error).length;
+  if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
+  if (!d.textures.length) notes.push("No render targets or images were read back.");
+  const buffers = [...d.buffers.values()];
+  const failedBuffers = buffers.filter((b) => b.info.error).length;
+  if (failedBuffers) notes.push(`${failedBuffers} buffer read-backs failed.`);
+  const truncated = buffers.filter((b) => b.info.originalSize).length;
+  if (truncated) notes.push(`${truncated} buffer ranges were cut to the capture's buffer size limit.`);
+  return notes;
+}
+function passBrief(c2, i) {
+  const p = c2.metrics.passes[i];
+  return { pass: i, label: c2.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? void 0 };
+}
+function passMeasurements(c2, p, i, gpuMs) {
+  const problems = passAdvice(p);
+  return {
+    pass: i,
+    label: c2.passName(i),
+    command: p.commandIndex,
+    kind: p.compute ? "compute" : "render",
+    ms: round(p.durationMs),
+    shareOfGpu: gpuMs > 0 && p.durationMs !== null ? round(p.durationMs / gpuMs) : void 0,
+    vertexMs: round(p.vertexMs),
+    fragmentMs: round(p.fragmentMs),
+    draws: p.draws,
+    vertices: p.vertices || void 0,
+    pixels: p.pixels || void 0,
+    overdraw: round(p.overdraw),
+    fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
+    depthRejectRate: round(p.depthRejectRate),
+    nsPerVertex: round(p.nsPerVertex),
+    nsPerFragment: round(p.nsPerFragment),
+    cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,
+    bound: p.bound ?? void 0,
+    boundReason: p.boundReason || void 0,
+    problems: problems.length ? problems : void 0
+  };
+}
+function captureSummary(c2) {
+  const d = c2.data;
+  const db = c2.db;
+  const sets = d.sets;
+  let draws = 0;
+  let dispatches = 0;
+  for (const cmd of d.commands) {
+    if (sets.DRAW.has(cmd.method)) draws++;
+    else if (sets.DISPATCH.has(cmd.method)) dispatches++;
+  }
+  const passes = c2.metrics.passes;
+  const findings = c2.analysis.findings;
+  const bySeverity = {};
+  for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+  const [errors, warnings] = db.validationCounts;
+  const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
+  const g = c2.graph;
+  const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
+  return {
+    capture: c2.id,
+    file: c2.path,
+    application: c2.manifest.source?.name || void 0,
+    api: d.api,
+    savedAt: c2.manifest.savedAt,
+    frame: d.frame,
+    frames: d.frames,
+    counts: {
+      commands: d.commands.length,
+      draws,
+      dispatches,
+      renderPasses: passes.filter((p) => !p.compute).length,
+      computePasses: passes.filter((p) => p.compute).length,
+      objects: db.allObjects.size + db.destroyedObjects.size,
+      pipelinesUsed: pipelineUses(d).size,
+      renderTargets: d.textures.length - sampled,
+      sampledImages: sampled,
+      bufferRanges: d.buffers.size
+    },
+    timing: frameTiming(c2),
+    slowestPasses: slowest.length ? slowest.map((x) => passBrief(c2, x.i)) : void 0,
+    issues: { total: findings.length, bySeverity, top: findings.slice(0, 8).map((f) => findingBrief(c2, f)) },
+    validation: {
+      errors,
+      warnings,
+      total: db.validation.length,
+      first: db.validation.length ? db.validation.slice(0, 5).map((v) => validationBrief(c2, v, 400)) : void 0
+    },
+    renderGraph: {
+      passes: g.nodes.length,
+      resources: g.resources.length,
+      externalInputs: g.externalInputs.length,
+      unreadPasses: g.unreadNodes.length,
+      criticalPathMs: round(g.criticalPathMs) || void 0,
+      warnings: g.warnings.length ? g.warnings : void 0
+    },
+    statistics: Object.fromEntries(c2.statistics.sections().map((s) => [s.title, Object.fromEntries(s.rows.filter((r) => r.value).map((r) => [r.label, r.value]))])),
+    notes: captureNotes(c2)
+  };
+}
+function nodeDetail(c2, n) {
+  const db = c2.db;
+  const resource2 = (r) => ({ resource: r.label, detail: r.detail || void 0, object: refText(db, r.objectId), key: r.key });
+  return {
+    capture: c2.id,
+    node: n.ordinal,
+    label: n.label,
+    kind: n.kind,
+    command: n.commandIndex,
+    ms: round(n.durationMs),
+    draws: n.draws || void 0,
+    pathMs: round(n.pathMs) || void 0,
+    unread: n.unread || void 0,
+    unresolvedReads: n.unresolvedReads || void 0,
+    reads: n.reads.map((u) => ({
+      ...resource2(u.resource),
+      usage: u.usage,
+      version: u.version.index,
+      from: u.version.producer ? u.version.producer.ordinal : "before the capture"
+    })),
+    writes: n.writes.map((u) => ({
+      ...resource2(u.resource),
+      usage: u.usage,
+      version: u.version.index,
+      readBy: u.version.readers.map((r) => r.ordinal),
+      replacesContents: u.discards || void 0,
+      discardedByStoreOp: u.dropped || void 0,
+      presented: u.resource.presented || void 0
+    }))
+  };
+}
+function passKeys(c2) {
+  const seen = /* @__PURE__ */ new Map();
+  const out = /* @__PURE__ */ new Map();
+  c2.metrics.passes.forEach((p, i) => {
+    const base = `${p.compute ? "compute" : "render"}|${c2.labelsOf(p.commandIndex)}|${p.label.replace(/^[A-Za-z ]+ \d+:?\s*/, "")}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    out.set(`${base}#${n}`, i);
+  });
+  return out;
+}
+function change(before, after) {
+  if ((before ?? null) === null && (after ?? null) === null) return void 0;
+  const out = { before: round(before), after: round(after) };
+  if (typeof before === "number" && typeof after === "number") {
+    out.change = round(after - before);
+    if (before) out.percent = round((after - before) / before * 100);
+  }
+  return out;
+}
+function captureTools(store) {
+  return [
+    {
+      name: "open_capture",
+      description: `Open a GPU Inspector capture file (.gpucap: a Vulkan or Metal frame saved from GPU Inspector's capture bar) and return its summary. The capture stays open under the returned id ("cap-1") for the other tools; opening an unchanged file again returns the capture already open.`,
+      inputSchema: schema({ path: { type: "string", description: "Path of the .gpucap file." } }, ["path"]),
+      readOnly: true,
+      handler: (args) => {
+        const { capture, reused } = store.open(requireString(args, "path"));
+        return jsonResult({ ...captureSummary(capture), reused: reused || void 0 });
+      }
+    },
+    {
+      name: "list_captures",
+      description: "List the captures open in this server, and the capture files GPU Inspector opened or saved most recently (from its settings), so a capture can be found without asking for its path.",
+      inputSchema: schema({}),
+      readOnly: true,
+      handler: () => {
+        const open = store.list();
+        const recent = [...new Set(recentCaptureFiles().map((p) => path6.normalize(p)))];
+        return jsonResult({
+          open: open.map((c2) => ({
+            capture: c2.id,
+            file: c2.path,
+            application: c2.manifest.source?.name || void 0,
+            api: c2.data.api,
+            frame: c2.data.frame,
+            frames: c2.data.frames > 1 ? c2.data.frames : void 0,
+            commands: c2.data.commands.length,
+            megabytes: round(c2.fileBytes / 1048576)
+          })),
+          recent: recent.map((file) => ({
+            file,
+            missing: fs6.existsSync(file) ? void 0 : true,
+            open: open.find((c2) => c2.path === path6.resolve(file))?.id
+          })),
+          note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
+        });
+      }
+    },
+    {
+      name: "close_capture",
+      description: "Close an open capture and free its memory (captures with many read-back images can be hundreds of megabytes).",
+      inputSchema: schema({ capture: { type: "string", description: "The capture's id or file path." } }, ["capture"]),
+      handler: (args) => jsonResult({ closed: store.close(requireString(args, "capture")) })
+    },
+    {
+      name: "get_capture_summary",
+      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
+      inputSchema: schema({ capture: CAPTURE_PARAM }),
+      readOnly: true,
+      handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture"))))
+    },
+    {
+      name: "get_frame_issues",
+      description: "The Frame Issues of a capture: the rules GPU Inspector runs over the frame (attachment load and store ops, clears outside passes, transient and memoryless candidates, MSAA stores, one pass per eye without multiview, redundant binds, barriers, tiny draws, overdraw and microtriangles from the GPU counters, unmipped textures, and the render graph's unread stores, overwritten results and mergeable passes). Each finding names the command it is about; a finding over many commands names the first and counts the rest. Worst first.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        severity: { type: "string", enum: SEVERITIES, description: "The lowest severity to list (default info: all)." },
+        rule: { type: "string", description: 'Only this rule, by name ("tiny-draws").' },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const min = SEVERITY_RANK[enumArg(args, "severity", SEVERITIES, "info")];
+        const rule = stringArg(args, "rule");
+        const all = c2.analysis.findings;
+        const rules = {};
+        for (const f of all) {
+          const r = rules[f.rule] ??= { severity: f.severity, findings: 0, commands: 0 };
+          if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[r.severity]) r.severity = f.severity;
+          r.findings++;
+          r.commands += f.count;
+        }
+        const list = all.filter((f) => SEVERITY_RANK[f.severity] >= min && (!rule || f.rule === rule));
+        const p = page(list, args, 50, 200);
+        return jsonResult({ capture: c2.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, rules, findings: p.items.map((f) => findingBrief(c2, f)) });
+      }
+    },
+    {
+      name: "get_bottlenecks",
+      description: 'The GPU Bottlenecks report: every timed pass, slowest first, measured the way a bottleneck is described \u2014 GPU time and share of the frame, draws and vertices, overdraw (fragment shader runs per target pixel), fragments per primitive (microtriangles below 4), depth rejection and the vertex/fragment split (Metal), which stage the pass is bound by, and each measured problem with what usually causes it. Needs a capture taken with "Profile passes"; the counters also need a GPU that exposes them. docs/PROFILING.md in GPU Inspector is the method behind it.',
+      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const m = c2.metrics;
+        if (!m.passes.length) return jsonResult({ capture: c2.id, note: "The capture has no passes." });
+        if (!m.timed) {
+          return jsonResult({
+            capture: c2.id,
+            passes: m.passes.length,
+            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.'
+          });
+        }
+        const ranked = m.passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
+        const slowest = ranked[0];
+        const metal = c2.data.api === "metal";
+        const notes = [];
+        if (!m.withCounters) {
+          notes.push(metal ? "The GPU exposes only the timestamp counter set through public Metal, so overdraw, fragments per primitive and depth rejection are not measured." : "No pass carried pipeline statistics (the device may lack pipelineStatisticsQuery), so overdraw and fragments per primitive are not measured.");
+        } else {
+          notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
+        }
+        if (!metal) notes.push("The vertex/fragment split and depth rejection are Metal only: Vulkan has no portable stage-boundary timestamps, and pipeline statistics do not count the fragments that survived the depth test.");
+        const totals = m.totals;
+        const p = page(ranked, args, 30, 200);
+        return jsonResult({
+          capture: c2.id,
+          api: c2.data.api,
+          verdict: frameStageVerdict(m),
+          gpuMs: round(m.gpuMs),
+          vertexMs: round(m.vertexMs) || void 0,
+          fragmentMs: round(m.fragmentMs) || void 0,
+          timedPasses: m.timed,
+          untimedPasses: m.passes.length - m.timed || void 0,
+          totals: totals ? {
+            vertexInvocations: totals.vertexInvocations,
+            fragmentInvocations: totals.fragmentInvocations,
+            primitives: totals.primitives,
+            fragmentsPerPrimitive: totals.primitives ? round(totals.fragmentInvocations / totals.primitives) : void 0
+          } : void 0,
+          thresholds: { healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT, microtrianglesBelow: MICROTRIANGLE_LIMIT, lowDepthRejectionBelow: LOW_REJECTION_RATE },
+          slowest: slowest ? {
+            pass: slowest.i,
+            label: c2.passName(slowest.i),
+            ms: round(slowest.p.durationMs),
+            bound: slowest.p.bound ? BOUND_LABEL[slowest.p.bound] : void 0,
+            reason: slowest.p.boundReason || void 0,
+            firstThingToTry: slowest.p.bound ? BOUND_ADVICE[slowest.p.bound] : void 0
+          } : void 0,
+          total: p.total,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
+          notes
+        });
+      }
+    },
+    {
+      name: "get_render_graph",
+      description: "The capture's render graph: its passes (nodes, numbered in execution order) with the passes they read from and write for, the critical path by GPU time, resources read from before the capture, passes whose output nothing reads, and the graph rules' suggestions. With `node`, one pass in full: every resource it reads (and which pass produced that version) and writes (and which passes read it). Node numbers are the graph's own, not get_bottlenecks' pass numbers.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        node: { type: "integer", minimum: 0, description: "One node to show in full." },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const g = c2.graph;
+        const nodeIndex = optionalInt(args, "node");
+        if (nodeIndex !== void 0) {
+          const n = g.nodes.find((x) => x.ordinal === nodeIndex);
+          if (!n) throw new Error(`No node ${nodeIndex}: the graph has ${g.nodes.length} nodes.`);
+          return jsonResult(nodeDetail(c2, n));
+        }
+        const critical = new Set(g.criticalPath.map((n) => n.ordinal));
+        const suggestions = analyzeRenderGraph(g).findings;
+        const p = page(g.nodes, args, 100, 500);
+        return jsonResult({
+          capture: c2.id,
+          nodes: g.nodes.length,
+          resources: g.resources.length,
+          edges: g.edges.length,
+          criticalPath: g.criticalPath.map((n) => n.ordinal),
+          criticalPathMs: round(g.criticalPathMs) || void 0,
+          warnings: g.warnings.length ? g.warnings : void 0,
+          externalInputs: g.externalInputs.length ? g.externalInputs.slice(0, 40).map((r) => r.detail ? `${r.label} (${r.detail})` : r.label) : void 0,
+          unreadNodes: unique(g.unreadNodes.map((n) => n.ordinal)),
+          suggestions: suggestions.length ? suggestions.map((f) => findingBrief(c2, f)) : void 0,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          list: p.items.map((n) => ({
+            node: n.ordinal,
+            label: n.label,
+            kind: n.kind,
+            command: n.commandIndex,
+            frame: c2.data.frames > 1 ? n.frame : void 0,
+            ms: round(n.durationMs),
+            draws: n.draws || void 0,
+            reads: n.reads.length,
+            writes: n.writes.length,
+            inputsFrom: unique(n.inputs.map((e) => e.from.ordinal)),
+            outputsTo: unique(n.outputs.map((e) => e.to.ordinal)),
+            unread: n.unread || void 0,
+            critical: critical.has(n.ordinal) || void 0,
+            unresolvedReads: n.unresolvedReads || void 0
+          }))
+        });
+      }
+    },
+    {
+      name: "compare_captures",
+      description: "Compare two captures of the same application, before and after a change: frame, submit and GPU time, the statistics that differ, Frame Issues by rule, validation counts, and per pass (matched by debug groups and label) the GPU time, draws, overdraw and fragments per primitive, largest change first. Confirms whether a fix moved anything.",
+      inputSchema: schema({
+        before: { type: "string", description: "The capture before the change: an open capture's id or a .gpucap path." },
+        after: { type: "string", description: "The capture after the change: an open capture's id or a .gpucap path." }
+      }, ["before", "after"]),
+      readOnly: true,
+      handler: (args) => {
+        const a = store.resolve(requireString(args, "before"));
+        const b = store.resolve(requireString(args, "after"));
+        const sa = a.statistics;
+        const sb = b.statistics;
+        const counts = {};
+        const keys = [
+          "apiCalls",
+          "submits",
+          "draws",
+          "dispatches",
+          "renderPasses",
+          "computePasses",
+          "bindPipeline",
+          "uniquePipelines",
+          "descriptorSetsBound",
+          "uniqueDescriptorSets",
+          "totalVertices",
+          "totalTriangles",
+          "updateBufferBytes",
+          "bufferCopyBytes"
+        ];
+        for (const key of keys) if (sa[key] !== sb[key]) counts[key] = change(sa[key], sb[key]);
+        const ka = passKeys(a);
+        const kb = passKeys(b);
+        const rows = [];
+        for (const [key, ia] of ka) {
+          const ib = kb.get(key);
+          if (ib === void 0) continue;
+          const pa = a.metrics.passes[ia];
+          const pb = b.metrics.passes[ib];
+          rows.push({
+            label: b.passName(ib),
+            before: ia,
+            after: ib,
+            ms: change(pa.durationMs, pb.durationMs),
+            draws: pa.draws !== pb.draws ? change(pa.draws, pb.draws) : void 0,
+            overdraw: change(pa.overdraw, pb.overdraw),
+            fragmentsPerPrimitive: change(pa.fragmentsPerPrimitive, pb.fragmentsPerPrimitive)
+          });
+        }
+        const magnitude = (r) => Math.abs(typeof r.ms?.change === "number" ? r.ms.change : 0);
+        rows.sort((x, y) => magnitude(y) - magnitude(x));
+        const ruleCounts = (c2) => {
+          const out = /* @__PURE__ */ new Map();
+          for (const f of c2.analysis.findings) out.set(f.rule, (out.get(f.rule) ?? 0) + f.count);
+          return out;
+        };
+        const ra = ruleCounts(a);
+        const rb = ruleCounts(b);
+        const issues = [.../* @__PURE__ */ new Set([...ra.keys(), ...rb.keys()])].map((rule) => ({ rule, before: ra.get(rule) ?? 0, after: rb.get(rule) ?? 0 })).filter((r) => r.before !== r.after);
+        const profiled = a.data.passTimings.size > 0 && b.data.passTimings.size > 0;
+        const [ea, wa] = a.db.validationCounts;
+        const [eb, wb] = b.db.validationCounts;
+        return jsonResult({
+          before: { capture: a.id, file: a.path, frame: a.data.frame },
+          after: { capture: b.id, file: b.path, frame: b.data.frame },
+          timing: {
+            frameMs: change(a.db.frameTimeMs, b.db.frameTimeMs),
+            submitMs: change(a.db.submitMs, b.db.submitMs),
+            gpuPassMs: profiled ? change(a.metrics.gpuMs, b.metrics.gpuMs) : void 0
+          },
+          counts: Object.keys(counts).length ? counts : void 0,
+          issuesByRule: issues.length ? issues : void 0,
+          validation: ea !== eb || wa !== wb ? { errors: change(ea, eb), warnings: change(wa, wb) } : void 0,
+          passes: rows.slice(0, 60),
+          onlyBefore: [...ka].filter(([key]) => !kb.has(key)).map(([, i]) => a.passName(i)),
+          onlyAfter: [...kb].filter(([key]) => !ka.has(key)).map(([, i]) => b.passName(i)),
+          notes: profiled ? void 0 : ["At least one capture was taken without Profile passes, so GPU times cannot be compared."]
+        });
+      }
+    }
+  ];
+}
+
+// src/mcp/live_tools.ts
+var SESSION_PARAM = { type: "string", description: `A live session's id ("app-1"). Defaults to the session started most recently.` };
+var LANGUAGES = ["glsl", "hlsl", "spirv-asm"];
+var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function deviceName(db) {
+  for (const o of db.objectsByType.get("VkPhysicalDevice")?.values() ?? []) {
+    const summary = o.summary(db).trim();
+    if (summary) return summary;
+  }
+  const metal = db.objectsByType.get("MTLDevice")?.values().next().value;
+  return metal ? metal.name : void 0;
+}
+function sessionStatus(s) {
+  const db = s.database;
+  const byType = [...db.objectsByType].filter(([, objects]) => objects.size).sort((a, b) => b[1].size - a[1].size).slice(0, 12);
+  const last = s.frameStats.at(-1)?.msg;
+  const [errors, warnings] = db.validationCounts;
+  return {
+    session: s.id,
+    name: s.name,
+    state: s.state,
+    detail: s.detail || void 0,
+    launched: s.launched,
+    pid: s.pid ?? void 0,
+    port: s.port,
+    exitCode: s.exitCode ?? void 0,
+    api: s.api ?? void 0,
+    device: deviceName(db),
+    uptimeSeconds: round((Date.now() - s.startedAt) / 1e3),
+    frame: last ? {
+      index: last.frame,
+      frameMs: round(last.frameTimeMs),
+      fps: last.frameTimeMs > 0 ? round(1e3 / last.frameTimeMs) : void 0,
+      submitMs: round(last.submitMs),
+      refreshMs: round(last.refreshMs) || void 0,
+      presentMode: last.presentMode || void 0,
+      droppedTotal: last.droppedTotal || void 0
+    } : void 0,
+    objects: { live: db.allObjects.size, byType: Object.fromEntries(byType.map(([type, objects]) => [type, objects.size])) },
+    memoryBytes: {
+      deviceMemory: db.memory.device || void 0,
+      buffers: db.memory.buffers || void 0,
+      images: db.memory.images || void 0,
+      reportedByDriver: db.memory.reported || void 0
+    },
+    validation: { errors, warnings, total: db.validation.length },
+    leakedObjects: db.leakCount || void 0,
+    recentLog: s.log.slice(-15),
+    note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : void 0
+  };
+}
+var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
+function compilerLog(log) {
+  return log.split(/\r?\n/).filter((line) => line.trim().replace(TEMP_SOURCE, "") !== "").join("\n").replace(TEMP_SOURCE, "source").trim();
+}
+function stageOf(s, pipelineId, stage) {
+  const pipeline = s.database.getObject(pipelineId);
+  if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
+  const stages = pipelineStages(pipeline, s.database);
+  const source = stages.find((x) => x.stage === stage.toLowerCase());
+  if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
+  return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
+}
+function liveTools(sessions2, store) {
+  return [
+    {
+      name: "launch_app",
+      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on macOS the Metal library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's own output is in it, which is where to look when it does not connect). The application runs until stop_app or until this server exits.",
+      inputSchema: schema({
+        exe: { type: "string", description: "The executable (on macOS an .app bundle works too)." },
+        args: { type: "string", description: "Command line arguments, quoted as in a shell." },
+        cwd: { type: "string", description: "Working directory (default the executable's directory)." },
+        env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
+        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK) or Metal's validation, so validation messages reach the captures (default false)." },
+        syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
+        layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." }
+      }, ["exe"]),
+      handler: async (args) => {
+        const env = args.env && typeof args.env === "object" ? Object.fromEntries(Object.entries(args.env).map(([k, v]) => [k, String(v)])) : void 0;
+        const s = await sessions2.launch({
+          exe: requireString(args, "exe"),
+          args: stringArg(args, "args"),
+          cwd: stringArg(args, "cwd"),
+          env,
+          validation: boolArg(args, "validation", false),
+          syncValidation: boolArg(args, "syncValidation", false),
+          stacktraces: boolArg(args, "stacktraces", true),
+          recordAlways: boolArg(args, "recordAlways", false),
+          port: optionalInt(args, "port"),
+          layerDir: stringArg(args, "layerDir")
+        }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? void 0 : "The capture library did not connect. recentLog (and get_session_log) has the application's and the layer's output: a crash, an application that does not use Vulkan, or a layer the loader did not load."
+        });
+        if (!s.connected) result.isError = true;
+        return result;
+      }
+    },
+    {
+      name: "attach_app",
+      description: "Connect to an application whose capture library already listens on a port: one started with GPU Inspector's implicit layer (VKINSP_ENABLE=1 and VKINSP_PORT), by hand, or by GPU Inspector itself. The capture library serves one client at a time, so attaching disconnects GPU Inspector from that application if it was connected.",
+      inputSchema: schema({
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "The port (default 47531)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to keep trying (default 10)." }
+      }),
+      handler: async (args) => {
+        const s = await sessions2.attach(intArg(args, "port", 47531, 1, 65535), (numberArg(args, "waitSeconds") ?? 10) * 1e3);
+        return jsonResult(sessionStatus(s));
+      }
+    },
+    {
+      name: "list_sessions",
+      description: "List the live sessions this server has launched or attached to, with their state.",
+      inputSchema: schema({}),
+      readOnly: true,
+      handler: () => jsonResult({
+        sessions: sessions2.list().map((s) => ({
+          session: s.id,
+          name: s.name,
+          state: s.state,
+          pid: s.pid ?? void 0,
+          port: s.port,
+          api: s.api ?? void 0,
+          frame: s.frameStats.at(-1)?.msg.frame
+        })),
+        capturesDirectory: capturesDir()
+      })
+    },
+    {
+      name: "get_session_status",
+      description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, and the recent log.",
+      inputSchema: schema({ session: SESSION_PARAM }),
+      readOnly: true,
+      handler: (args) => jsonResult(sessionStatus(sessions2.get(stringArg(args, "session"))))
+    },
+    {
+      name: "get_live_frame_stats",
+      description: "Watch a running application's frame reports for a few seconds, without capturing: average, shortest and longest frame time, frame rate, CPU time inside queue submission, the display refresh period and where it came from, dropped frames, and a verdict on whether the frame meets the refresh or is bound by submission. GPU time is not measured live: capture_frames with profilePasses measures each pass.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        seconds: { type: "number", minimum: 0.3, maximum: 30, description: "How long to watch (default 2)." }
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const seconds = Math.min(30, Math.max(0.3, numberArg(args, "seconds") ?? 2));
+        const since = Date.now();
+        await sleep2(seconds * 1e3);
+        const reports = s.frameStats.filter((f) => f.at >= since).map((f) => f.msg);
+        if (!reports.length) {
+          return jsonResult({ session: s.id, seconds, note: "No frame reports arrived: the application is not presenting frames (minimized, paused, loading, or not rendering)." });
+        }
+        let frames = 0;
+        let weightedMs = 0;
+        let weightedSubmit = 0;
+        let min = Infinity;
+        let max = 0;
+        let dropped = 0;
+        for (const m of reports) {
+          const n = Math.max(1, m.frames ?? 1);
+          frames += n;
+          weightedMs += m.frameTimeMs * n;
+          weightedSubmit += (m.submitMs ?? 0) * n;
+          min = Math.min(min, m.minMs ?? m.frameTimeMs);
+          max = Math.max(max, m.maxMs ?? m.frameTimeMs);
+          dropped += m.dropped ?? 0;
+        }
+        const last = reports[reports.length - 1];
+        const frameMs = weightedMs / frames;
+        const submitMs = weightedSubmit / frames;
+        const refresh = last.refreshMs ?? 0;
+        let verdict;
+        if (refresh > 0 && frameMs <= refresh * 1.1) verdict = "Meeting the display refresh: the frame waits for vsync, so there is headroom.";
+        else if (frameMs > 0 && submitMs / frameMs > 0.8) verdict = "Bound by submission: most of each frame is spent inside queue submit on the CPU.";
+        else verdict = `${refresh > 0 ? "Missing the display refresh" : "Vsync is off"}, and submission is not what takes the time: the GPU, presentation, or the application's own CPU work. capture_frames with profilePasses measures the GPU passes.`;
+        return jsonResult({
+          session: s.id,
+          seconds,
+          frames,
+          frame: last.frame,
+          frameMs: round(frameMs),
+          fps: round(1e3 / frameMs),
+          shortestMs: round(min),
+          longestMs: round(max),
+          submitMs: round(submitMs),
+          refreshMs: refresh > 0 ? round(refresh) : void 0,
+          refreshSource: last.refreshSource ? REFRESH_SOURCE_NOTE[last.refreshSource] ?? last.refreshSource : void 0,
+          presentMode: last.presentMode || void 0,
+          frameBoundary: last.frameBoundary || void 0,
+          droppedFrames: dropped || void 0,
+          droppedTotal: last.droppedTotal || void 0,
+          driverAllocatedBytes: last.allocatedBytes,
+          verdict
+        });
+      }
+    },
+    {
+      name: "capture_frames",
+      description: "Capture frames of a running application: every command of the frame with its bound state, the render targets read back at the end of each pass, bound buffers and images, and (profilePasses) GPU timestamps and counters per pass. The capture is saved as a .gpucap file and opened, and its summary returned: the capture tools (get_bottlenecks, get_frame_issues, get_command, read_texture...) work on it by the returned capture id. Capture while the application shows what is slow or wrong.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        frames: { type: "integer", minimum: 1, maximum: 16, description: "Frames to capture (default 1)." },
+        atFrame: { type: "integer", minimum: 0, description: "Capture that frame (the capture library's present counter) instead of the next one." },
+        delaySeconds: { type: "number", minimum: 0, maximum: 600, description: "Wait this long before requesting the capture." },
+        profilePasses: { type: "boolean", description: "GPU timestamps and counters around every pass (default true)." },
+        renderTargets: { type: "boolean", description: "Read back every pass's attachments (default true)." },
+        buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
+        images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
+        stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
+        maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
+        recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
+        timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
+        saveAs: { type: "string", description: `Where to save the .gpucap (default a new file in ${capturesDir()}).` }
+      }),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const delay = numberArg(args, "delaySeconds");
+        if (delay) await sleep2(delay * 1e3);
+        if (args.recordAlways !== void 0) await s.send({ action: "Settings", recordAlways: boolArg(args, "recordAlways", false) });
+        const result = await s.capture({
+          frames: intArg(args, "frames", 1, 1, 16),
+          atFrame: optionalInt(args, "atFrame"),
+          profilePasses: boolArg(args, "profilePasses", true),
+          renderTargets: boolArg(args, "renderTargets", true),
+          buffers: boolArg(args, "buffers", true),
+          images: boolArg(args, "images", true),
+          stacktraces: boolArg(args, "stacktraces", false),
+          maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024,
+          timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1e3
+        });
+        const file = await s.saveCapture(result.data, stringArg(args, "saveAs"));
+        const { capture } = store.open(file);
+        const notes = [];
+        if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
+        if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
+        return jsonResult({
+          session: s.id,
+          file,
+          megabytes: round(capture.fileBytes / 1048576),
+          secondsToCapture: round(result.elapsedMs / 1e3),
+          captureNotes: notes.length ? notes : void 0,
+          ...captureSummary(capture)
+        });
+      }
+    },
+    {
+      name: "replace_shader",
+      description: `Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again.`,
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures)." },
+        stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
+        source: { type: "string", description: "The complete new source of the stage." },
+        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
+        entryPoint: { type: "string", description: "The entry point in the source (default the stage's own)." }
+      }, ["pipeline", "stage", "source"]),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (s.api === "metal") throw new Error("Shader replacement is Vulkan only.");
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const pipelineId = requireInt(args, "pipeline");
+        const stageName = requireString(args, "stage").toLowerCase();
+        const { flag, entryPoint, source } = stageOf(s, pipelineId, stageName);
+        const original = await fetchBlob(s, source.object, source.blobIndex);
+        const version = original && reflectSpirv(original)?.version || "";
+        const language = enumArg(args, "language", LANGUAGES, "glsl");
+        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version);
+        if (!compiled.ok || !compiled.spirv) {
+          const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12e3) });
+          failed.isError = true;
+          return failed;
+        }
+        const reply = await s.replaceShader(pipelineId, flag, stageName, compiled.spirv);
+        const result = jsonResult({
+          ok: reply?.ok ?? false,
+          pipeline: refText(s.database, pipelineId),
+          stage: stageName,
+          spirvVersion: version || void 0,
+          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `VkPipeline#${reply.replacement}` : void 0,
+          error: reply ? reply.error : "The layer did not answer within 15 s.",
+          layerNote: reply?.note,
+          compilerLog: compilerLog(compiled.log) ? clip(compilerLog(compiled.log), 4e3) : void 0
+        });
+        if (!reply?.ok) result.isError = true;
+        return result;
+      }
+    },
+    {
+      name: "restore_shader",
+      description: "Undo replace_shader: the pipeline binds its original code again, for one stage or every replaced stage.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id." },
+        stage: { type: "string", description: "The stage to restore (default every replaced stage)." }
+      }, ["pipeline"]),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
+        const pipelineId = requireInt(args, "pipeline");
+        const stage = stringArg(args, "stage");
+        const flag = stage ? stageOf(s, pipelineId, stage).flag : void 0;
+        const reply = await s.restoreShader(pipelineId, flag);
+        return jsonResult({ ok: reply?.ok ?? false, pipeline: refText(s.database, pipelineId), stage, error: reply ? reply.error : "The layer did not answer within 15 s." });
+      }
+    },
+    {
+      name: "get_session_log",
+      description: "A live session's log: the application's standard output and error, the capture library's own log, connection changes, validation messages and shader edits, most recent last.",
+      inputSchema: schema({
+        session: SESSION_PARAM,
+        lines: { type: "integer", minimum: 1, maximum: 2e3, description: "How many of the most recent lines (default 100)." },
+        match: { type: "string", description: "Regular expression: only lines that match." }
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        const match = regexArg(args, "match");
+        const lines = (match ? s.log.filter((l) => match.test(l)) : s.log).slice(-intArg(args, "lines", 100, 1, 2e3));
+        return jsonResult({ session: s.id, state: s.state, lines });
+      }
+    },
+    {
+      name: "stop_app",
+      description: "End a live session: a launched application is terminated (with the processes it started), an attached one is disconnected.",
+      inputSchema: schema({ session: SESSION_PARAM }),
+      handler: async (args) => {
+        const s = sessions2.get(stringArg(args, "session"));
+        await s.stop();
+        return jsonResult({ session: s.id, state: s.state, detail: s.detail || void 0, exitCode: s.exitCode ?? void 0 });
+      }
+    }
+  ];
 }
 
 // src/renderer/vulkan/buffer_layout.ts
@@ -7939,11 +9758,11 @@ function decodeAstcBlock(s, block, bw, bh, px, srgb) {
     for (let x = 0; x < bw; x++) {
       const gs = ds * x * (gw - 1) + 32 >> 6;
       const js = gs >> 4;
-      const fs4 = gs & 15;
-      const w11 = fs4 * ft + 8 >> 4;
+      const fs7 = gs & 15;
+      const w11 = fs7 * ft + 8 >> 4;
       const w10 = ft - w11;
-      const w01 = fs4 - w11;
-      const w00 = 16 - fs4 - ft + w11;
+      const w01 = fs7 - w11;
+      const w00 = 16 - fs7 - ft + w11;
       const infill = (plane) => weightAt(plane, js, jt) * w00 + weightAt(plane, js + 1, jt) * w01 + weightAt(plane, js, jt + 1) * w10 + weightAt(plane, js + 1, jt + 1) * w11 + 8 >> 4;
       const w0 = infill(0);
       const w1 = dual ? infill(1) : w0;
@@ -12376,480 +14195,22 @@ var McpStdioServer = class {
   }
 };
 
-// src/mcp/tools.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
-var SEVERITIES = ["high", "medium", "low", "info"];
-function unique(values) {
-  return values.length ? [...new Set(values)] : void 0;
-}
-function frameTiming(c2) {
-  const db = c2.db;
-  const timings = [...c2.data.passTimings.values()];
-  let start = Infinity;
-  let end = -Infinity;
-  for (const t of timings) {
-    start = Math.min(start, t.startMs);
-    end = Math.max(end, t.startMs + t.durationMs);
-  }
-  const gpuSpanMs = timings.length ? end - start : 0;
-  const bound = timings.length ? frameBound({ frameMs: db.frameTimeMs, refreshMs: db.refreshMs, submitMs: db.submitMs, gpuSpanMs, frames: c2.data.frames }) : null;
-  return {
-    frameMs: round(db.frameTimeMs) || void 0,
-    submitMs: round(db.submitMs) || void 0,
-    refreshMs: round(db.refreshMs) || void 0,
-    refreshSource: db.refreshSource ? REFRESH_SOURCE_NOTE[db.refreshSource] ?? db.refreshSource : void 0,
-    frameBoundary: db.frameBoundary || void 0,
-    profiled: timings.length > 0,
-    gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
-    gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
-    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0
-  };
-}
-function captureNotes(c2) {
-  const d = c2.data;
-  const notes = [];
-  if (!d.passTimings.size) {
-    notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
-  } else if (!c2.metrics.withCounters) {
-    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
-  }
-  const failedImages = d.textures.filter((t) => t.info.error).length;
-  if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
-  if (!d.textures.length) notes.push("No render targets or images were read back.");
-  const buffers = [...d.buffers.values()];
-  const failedBuffers = buffers.filter((b) => b.info.error).length;
-  if (failedBuffers) notes.push(`${failedBuffers} buffer read-backs failed.`);
-  const truncated = buffers.filter((b) => b.info.originalSize).length;
-  if (truncated) notes.push(`${truncated} buffer ranges were cut to the capture's buffer size limit.`);
-  return notes;
-}
-function passBrief(c2, i) {
-  const p = c2.metrics.passes[i];
-  return { pass: i, label: c2.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? void 0 };
-}
-function passMeasurements(c2, p, i, gpuMs) {
-  const problems = passAdvice(p);
-  return {
-    pass: i,
-    label: c2.passName(i),
-    command: p.commandIndex,
-    kind: p.compute ? "compute" : "render",
-    ms: round(p.durationMs),
-    shareOfGpu: gpuMs > 0 && p.durationMs !== null ? round(p.durationMs / gpuMs) : void 0,
-    vertexMs: round(p.vertexMs),
-    fragmentMs: round(p.fragmentMs),
-    draws: p.draws,
-    vertices: p.vertices || void 0,
-    pixels: p.pixels || void 0,
-    overdraw: round(p.overdraw),
-    fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
-    depthRejectRate: round(p.depthRejectRate),
-    nsPerVertex: round(p.nsPerVertex),
-    nsPerFragment: round(p.nsPerFragment),
-    cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,
-    bound: p.bound ?? void 0,
-    boundReason: p.boundReason || void 0,
-    problems: problems.length ? problems : void 0
-  };
-}
-function captureSummary(c2) {
-  const d = c2.data;
-  const db = c2.db;
-  const sets = d.sets;
-  let draws = 0;
-  let dispatches = 0;
-  for (const cmd of d.commands) {
-    if (sets.DRAW.has(cmd.method)) draws++;
-    else if (sets.DISPATCH.has(cmd.method)) dispatches++;
-  }
-  const passes = c2.metrics.passes;
-  const findings = c2.analysis.findings;
-  const bySeverity = {};
-  for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
-  const [errors, warnings] = db.validationCounts;
-  const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
-  const g = c2.graph;
-  const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
-  return {
-    capture: c2.id,
-    file: c2.path,
-    application: c2.manifest.source?.name || void 0,
-    api: d.api,
-    savedAt: c2.manifest.savedAt,
-    frame: d.frame,
-    frames: d.frames,
-    counts: {
-      commands: d.commands.length,
-      draws,
-      dispatches,
-      renderPasses: passes.filter((p) => !p.compute).length,
-      computePasses: passes.filter((p) => p.compute).length,
-      objects: db.allObjects.size + db.destroyedObjects.size,
-      pipelinesUsed: pipelineUses(d).size,
-      renderTargets: d.textures.length - sampled,
-      sampledImages: sampled,
-      bufferRanges: d.buffers.size
-    },
-    timing: frameTiming(c2),
-    slowestPasses: slowest.length ? slowest.map((x) => passBrief(c2, x.i)) : void 0,
-    issues: { total: findings.length, bySeverity, top: findings.slice(0, 8).map((f) => findingBrief(c2, f)) },
-    validation: {
-      errors,
-      warnings,
-      total: db.validation.length,
-      first: db.validation.length ? db.validation.slice(0, 5).map((v) => validationBrief(c2, v, 400)) : void 0
-    },
-    renderGraph: {
-      passes: g.nodes.length,
-      resources: g.resources.length,
-      externalInputs: g.externalInputs.length,
-      unreadPasses: g.unreadNodes.length,
-      criticalPathMs: round(g.criticalPathMs) || void 0,
-      warnings: g.warnings.length ? g.warnings : void 0
-    },
-    statistics: Object.fromEntries(c2.statistics.sections().map((s) => [s.title, Object.fromEntries(s.rows.filter((r) => r.value).map((r) => [r.label, r.value]))])),
-    notes: captureNotes(c2)
-  };
-}
-function nodeDetail(c2, n) {
-  const db = c2.db;
-  const resource2 = (r) => ({ resource: r.label, detail: r.detail || void 0, object: refText(db, r.objectId), key: r.key });
-  return {
-    capture: c2.id,
-    node: n.ordinal,
-    label: n.label,
-    kind: n.kind,
-    command: n.commandIndex,
-    ms: round(n.durationMs),
-    draws: n.draws || void 0,
-    pathMs: round(n.pathMs) || void 0,
-    unread: n.unread || void 0,
-    unresolvedReads: n.unresolvedReads || void 0,
-    reads: n.reads.map((u) => ({
-      ...resource2(u.resource),
-      usage: u.usage,
-      version: u.version.index,
-      from: u.version.producer ? u.version.producer.ordinal : "before the capture"
-    })),
-    writes: n.writes.map((u) => ({
-      ...resource2(u.resource),
-      usage: u.usage,
-      version: u.version.index,
-      readBy: u.version.readers.map((r) => r.ordinal),
-      replacesContents: u.discards || void 0,
-      discardedByStoreOp: u.dropped || void 0,
-      presented: u.resource.presented || void 0
-    }))
-  };
-}
-function passKeys(c2) {
-  const seen = /* @__PURE__ */ new Map();
-  const out = /* @__PURE__ */ new Map();
-  c2.metrics.passes.forEach((p, i) => {
-    const base = `${p.compute ? "compute" : "render"}|${c2.labelsOf(p.commandIndex)}|${p.label.replace(/^[A-Za-z ]+ \d+:?\s*/, "")}`;
-    const n = seen.get(base) ?? 0;
-    seen.set(base, n + 1);
-    out.set(`${base}#${n}`, i);
-  });
-  return out;
-}
-function change(before, after) {
-  if ((before ?? null) === null && (after ?? null) === null) return void 0;
-  const out = { before: round(before), after: round(after) };
-  if (typeof before === "number" && typeof after === "number") {
-    out.change = round(after - before);
-    if (before) out.percent = round((after - before) / before * 100);
-  }
-  return out;
-}
-function captureTools(store) {
-  return [
-    {
-      name: "open_capture",
-      description: `Open a GPU Inspector capture file (.gpucap: a Vulkan or Metal frame saved from GPU Inspector's capture bar) and return its summary. The capture stays open under the returned id ("cap-1") for the other tools; opening an unchanged file again returns the capture already open.`,
-      inputSchema: schema({ path: { type: "string", description: "Path of the .gpucap file." } }, ["path"]),
-      readOnly: true,
-      handler: (args) => {
-        const { capture, reused } = store.open(requireString(args, "path"));
-        return jsonResult({ ...captureSummary(capture), reused: reused || void 0 });
-      }
-    },
-    {
-      name: "list_captures",
-      description: "List the captures open in this server, and the capture files GPU Inspector opened or saved most recently (from its settings), so a capture can be found without asking for its path.",
-      inputSchema: schema({}),
-      readOnly: true,
-      handler: () => {
-        const open = store.list();
-        const recent = [...new Set(recentCaptureFiles().map((p) => path3.normalize(p)))];
-        return jsonResult({
-          open: open.map((c2) => ({
-            capture: c2.id,
-            file: c2.path,
-            application: c2.manifest.source?.name || void 0,
-            api: c2.data.api,
-            frame: c2.data.frame,
-            frames: c2.data.frames > 1 ? c2.data.frames : void 0,
-            commands: c2.data.commands.length,
-            megabytes: round(c2.fileBytes / 1048576)
-          })),
-          recent: recent.map((file) => ({
-            file,
-            missing: fs3.existsSync(file) ? void 0 : true,
-            open: open.find((c2) => c2.path === path3.resolve(file))?.id
-          })),
-          note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
-        });
-      }
-    },
-    {
-      name: "close_capture",
-      description: "Close an open capture and free its memory (captures with many read-back images can be hundreds of megabytes).",
-      inputSchema: schema({ capture: { type: "string", description: "The capture's id or file path." } }, ["capture"]),
-      handler: (args) => jsonResult({ closed: store.close(requireString(args, "capture")) })
-    },
-    {
-      name: "get_capture_summary",
-      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
-      inputSchema: schema({ capture: CAPTURE_PARAM }),
-      readOnly: true,
-      handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture"))))
-    },
-    {
-      name: "get_frame_issues",
-      description: "The Frame Issues of a capture: the rules GPU Inspector runs over the frame (attachment load and store ops, clears outside passes, transient and memoryless candidates, MSAA stores, one pass per eye without multiview, redundant binds, barriers, tiny draws, overdraw and microtriangles from the GPU counters, unmipped textures, and the render graph's unread stores, overwritten results and mergeable passes). Each finding names the command it is about; a finding over many commands names the first and counts the rest. Worst first.",
-      inputSchema: schema({
-        capture: CAPTURE_PARAM,
-        severity: { type: "string", enum: SEVERITIES, description: "The lowest severity to list (default info: all)." },
-        rule: { type: "string", description: 'Only this rule, by name ("tiny-draws").' },
-        ...PAGE_PARAMS
-      }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const min = SEVERITY_RANK[enumArg(args, "severity", SEVERITIES, "info")];
-        const rule = stringArg(args, "rule");
-        const all = c2.analysis.findings;
-        const rules = {};
-        for (const f of all) {
-          const r = rules[f.rule] ??= { severity: f.severity, findings: 0, commands: 0 };
-          if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[r.severity]) r.severity = f.severity;
-          r.findings++;
-          r.commands += f.count;
-        }
-        const list = all.filter((f) => SEVERITY_RANK[f.severity] >= min && (!rule || f.rule === rule));
-        const p = page(list, args, 50, 200);
-        return jsonResult({ capture: c2.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, rules, findings: p.items.map((f) => findingBrief(c2, f)) });
-      }
-    },
-    {
-      name: "get_bottlenecks",
-      description: 'The GPU Bottlenecks report: every timed pass, slowest first, measured the way a bottleneck is described \u2014 GPU time and share of the frame, draws and vertices, overdraw (fragment shader runs per target pixel), fragments per primitive (microtriangles below 4), depth rejection and the vertex/fragment split (Metal), which stage the pass is bound by, and each measured problem with what usually causes it. Needs a capture taken with "Profile passes"; the counters also need a GPU that exposes them. docs/PROFILING.md in GPU Inspector is the method behind it.',
-      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const m = c2.metrics;
-        if (!m.passes.length) return jsonResult({ capture: c2.id, note: "The capture has no passes." });
-        if (!m.timed) {
-          return jsonResult({
-            capture: c2.id,
-            passes: m.passes.length,
-            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.'
-          });
-        }
-        const ranked = m.passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
-        const slowest = ranked[0];
-        const metal = c2.data.api === "metal";
-        const notes = [];
-        if (!m.withCounters) {
-          notes.push(metal ? "The GPU exposes only the timestamp counter set through public Metal, so overdraw, fragments per primitive and depth rejection are not measured." : "No pass carried pipeline statistics (the device may lack pipelineStatisticsQuery), so overdraw and fragments per primitive are not measured.");
-        } else {
-          notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
-        }
-        if (!metal) notes.push("The vertex/fragment split and depth rejection are Metal only: Vulkan has no portable stage-boundary timestamps, and pipeline statistics do not count the fragments that survived the depth test.");
-        const totals = m.totals;
-        const p = page(ranked, args, 30, 200);
-        return jsonResult({
-          capture: c2.id,
-          api: c2.data.api,
-          verdict: frameStageVerdict(m),
-          gpuMs: round(m.gpuMs),
-          vertexMs: round(m.vertexMs) || void 0,
-          fragmentMs: round(m.fragmentMs) || void 0,
-          timedPasses: m.timed,
-          untimedPasses: m.passes.length - m.timed || void 0,
-          totals: totals ? {
-            vertexInvocations: totals.vertexInvocations,
-            fragmentInvocations: totals.fragmentInvocations,
-            primitives: totals.primitives,
-            fragmentsPerPrimitive: totals.primitives ? round(totals.fragmentInvocations / totals.primitives) : void 0
-          } : void 0,
-          thresholds: { healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT, microtrianglesBelow: MICROTRIANGLE_LIMIT, lowDepthRejectionBelow: LOW_REJECTION_RATE },
-          slowest: slowest ? {
-            pass: slowest.i,
-            label: c2.passName(slowest.i),
-            ms: round(slowest.p.durationMs),
-            bound: slowest.p.bound ? BOUND_LABEL[slowest.p.bound] : void 0,
-            reason: slowest.p.boundReason || void 0,
-            firstThingToTry: slowest.p.bound ? BOUND_ADVICE[slowest.p.bound] : void 0
-          } : void 0,
-          total: p.total,
-          offset: p.offset,
-          nextOffset: p.nextOffset,
-          passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
-          notes
-        });
-      }
-    },
-    {
-      name: "get_render_graph",
-      description: "The capture's render graph: its passes (nodes, numbered in execution order) with the passes they read from and write for, the critical path by GPU time, resources read from before the capture, passes whose output nothing reads, and the graph rules' suggestions. With `node`, one pass in full: every resource it reads (and which pass produced that version) and writes (and which passes read it). Node numbers are the graph's own, not get_bottlenecks' pass numbers.",
-      inputSchema: schema({
-        capture: CAPTURE_PARAM,
-        node: { type: "integer", minimum: 0, description: "One node to show in full." },
-        ...PAGE_PARAMS
-      }),
-      readOnly: true,
-      handler: (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const g = c2.graph;
-        const nodeIndex = optionalInt(args, "node");
-        if (nodeIndex !== void 0) {
-          const n = g.nodes.find((x) => x.ordinal === nodeIndex);
-          if (!n) throw new Error(`No node ${nodeIndex}: the graph has ${g.nodes.length} nodes.`);
-          return jsonResult(nodeDetail(c2, n));
-        }
-        const critical = new Set(g.criticalPath.map((n) => n.ordinal));
-        const suggestions = analyzeRenderGraph(g).findings;
-        const p = page(g.nodes, args, 100, 500);
-        return jsonResult({
-          capture: c2.id,
-          nodes: g.nodes.length,
-          resources: g.resources.length,
-          edges: g.edges.length,
-          criticalPath: g.criticalPath.map((n) => n.ordinal),
-          criticalPathMs: round(g.criticalPathMs) || void 0,
-          warnings: g.warnings.length ? g.warnings : void 0,
-          externalInputs: g.externalInputs.length ? g.externalInputs.slice(0, 40).map((r) => r.detail ? `${r.label} (${r.detail})` : r.label) : void 0,
-          unreadNodes: unique(g.unreadNodes.map((n) => n.ordinal)),
-          suggestions: suggestions.length ? suggestions.map((f) => findingBrief(c2, f)) : void 0,
-          offset: p.offset,
-          nextOffset: p.nextOffset,
-          list: p.items.map((n) => ({
-            node: n.ordinal,
-            label: n.label,
-            kind: n.kind,
-            command: n.commandIndex,
-            frame: c2.data.frames > 1 ? n.frame : void 0,
-            ms: round(n.durationMs),
-            draws: n.draws || void 0,
-            reads: n.reads.length,
-            writes: n.writes.length,
-            inputsFrom: unique(n.inputs.map((e) => e.from.ordinal)),
-            outputsTo: unique(n.outputs.map((e) => e.to.ordinal)),
-            unread: n.unread || void 0,
-            critical: critical.has(n.ordinal) || void 0,
-            unresolvedReads: n.unresolvedReads || void 0
-          }))
-        });
-      }
-    },
-    {
-      name: "compare_captures",
-      description: "Compare two captures of the same application, before and after a change: frame, submit and GPU time, the statistics that differ, Frame Issues by rule, validation counts, and per pass (matched by debug groups and label) the GPU time, draws, overdraw and fragments per primitive, largest change first. Confirms whether a fix moved anything.",
-      inputSchema: schema({
-        before: { type: "string", description: "The capture before the change: an open capture's id or a .gpucap path." },
-        after: { type: "string", description: "The capture after the change: an open capture's id or a .gpucap path." }
-      }, ["before", "after"]),
-      readOnly: true,
-      handler: (args) => {
-        const a = store.resolve(requireString(args, "before"));
-        const b = store.resolve(requireString(args, "after"));
-        const sa = a.statistics;
-        const sb = b.statistics;
-        const counts = {};
-        const keys = [
-          "apiCalls",
-          "submits",
-          "draws",
-          "dispatches",
-          "renderPasses",
-          "computePasses",
-          "bindPipeline",
-          "uniquePipelines",
-          "descriptorSetsBound",
-          "uniqueDescriptorSets",
-          "totalVertices",
-          "totalTriangles",
-          "updateBufferBytes",
-          "bufferCopyBytes"
-        ];
-        for (const key of keys) if (sa[key] !== sb[key]) counts[key] = change(sa[key], sb[key]);
-        const ka = passKeys(a);
-        const kb = passKeys(b);
-        const rows = [];
-        for (const [key, ia] of ka) {
-          const ib = kb.get(key);
-          if (ib === void 0) continue;
-          const pa = a.metrics.passes[ia];
-          const pb = b.metrics.passes[ib];
-          rows.push({
-            label: b.passName(ib),
-            before: ia,
-            after: ib,
-            ms: change(pa.durationMs, pb.durationMs),
-            draws: pa.draws !== pb.draws ? change(pa.draws, pb.draws) : void 0,
-            overdraw: change(pa.overdraw, pb.overdraw),
-            fragmentsPerPrimitive: change(pa.fragmentsPerPrimitive, pb.fragmentsPerPrimitive)
-          });
-        }
-        const magnitude = (r) => Math.abs(typeof r.ms?.change === "number" ? r.ms.change : 0);
-        rows.sort((x, y) => magnitude(y) - magnitude(x));
-        const ruleCounts = (c2) => {
-          const out = /* @__PURE__ */ new Map();
-          for (const f of c2.analysis.findings) out.set(f.rule, (out.get(f.rule) ?? 0) + f.count);
-          return out;
-        };
-        const ra = ruleCounts(a);
-        const rb = ruleCounts(b);
-        const issues = [.../* @__PURE__ */ new Set([...ra.keys(), ...rb.keys()])].map((rule) => ({ rule, before: ra.get(rule) ?? 0, after: rb.get(rule) ?? 0 })).filter((r) => r.before !== r.after);
-        const profiled = a.data.passTimings.size > 0 && b.data.passTimings.size > 0;
-        const [ea, wa] = a.db.validationCounts;
-        const [eb, wb] = b.db.validationCounts;
-        return jsonResult({
-          before: { capture: a.id, file: a.path, frame: a.data.frame },
-          after: { capture: b.id, file: b.path, frame: b.data.frame },
-          timing: {
-            frameMs: change(a.db.frameTimeMs, b.db.frameTimeMs),
-            submitMs: change(a.db.submitMs, b.db.submitMs),
-            gpuPassMs: profiled ? change(a.metrics.gpuMs, b.metrics.gpuMs) : void 0
-          },
-          counts: Object.keys(counts).length ? counts : void 0,
-          issuesByRule: issues.length ? issues : void 0,
-          validation: ea !== eb || wa !== wb ? { errors: change(ea, eb), warnings: change(wa, wb) } : void 0,
-          passes: rows.slice(0, 60),
-          onlyBefore: [...ka].filter(([key]) => !kb.has(key)).map(([, i]) => a.passName(i)),
-          onlyAfter: [...kb].filter(([key]) => !ka.has(key)).map(([, i]) => b.passName(i)),
-          notes: profiled ? void 0 : ["At least one capture was taken without Profile passes, so GPU times cannot be compared."]
-        });
-      }
-    }
-  ];
-}
-
 // src/mcp/server.ts
 var INSTRUCTIONS = [
-  "These tools read GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications, with the analyses GPU Inspector runs.",
-  "Open one with open_capture (list_captures shows the files GPU Inspector saved recently), then start from get_capture_summary.",
-  "For performance: get_bottlenecks (needs a capture taken with Profile passes), get_frame_issues, get_render_graph, analyze_shaders, and compare_captures to check a fix.",
-  "To debug rendering: read_texture shows what a pass wrote; list_commands finds draws by pass, label or kind; get_command shows the state a draw read (pipeline, decoded uniforms, vertex and index buffers, render targets); read_vertices, read_buffer and get_shader go deeper; get_validation lists real errors.",
+  "These tools read GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications, with the analyses GPU Inspector runs, and drive running applications.",
+  "Open a saved capture with open_capture (list_captures shows the files GPU Inspector saved recently), or launch_app an application and capture_frames it; then start from get_capture_summary.",
+  "For performance: get_bottlenecks (needs profiled passes), get_frame_issues, get_render_graph, analyze_shaders, get_live_frame_stats, and compare_captures to check a fix.",
+  "To debug rendering: read_texture shows what a pass wrote; list_commands finds draws by pass, label or kind; get_command shows the state a draw read (pipeline, decoded uniforms, vertex and index buffers, render targets); read_vertices, read_buffer and get_shader go deeper; get_validation lists real errors. replace_shader tries a shader fix in the running application.",
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
-function createServer(store = new CaptureStore()) {
+function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
   const version = true ? "0.8.0" : "dev";
-  return new McpStdioServer({ name: "gpu-inspector", version }, [...captureTools(store), ...commandTools(store), ...resourceTools(store)], INSTRUCTIONS);
+  return new McpStdioServer({ name: "gpu-inspector", version }, [
+    ...captureTools(store),
+    ...commandTools(store),
+    ...resourceTools(store),
+    ...liveTools(sessions2, store)
+  ], INSTRUCTIONS);
 }
 
 // src/mcp/main.ts
@@ -12857,11 +14218,17 @@ console.log = console.info = console.debug = (...parts) => {
   process2.stderr.write(`${parts.map(String).join(" ")}
 `);
 };
-createServer().serve(process2.stdin, process2.stdout).then(
-  () => process2.exit(0),
+var sessions = new SessionManager();
+var exit = (code) => {
+  void sessions.stopAll().finally(() => process2.exit(code));
+};
+process2.on("SIGINT", () => exit(0));
+process2.on("SIGTERM", () => exit(0));
+createServer(void 0, sessions).serve(process2.stdin, process2.stdout).then(
+  () => exit(0),
   (e) => {
     process2.stderr.write(`gpu-inspector MCP server: ${e?.stack ?? String(e)}
 `);
-    process2.exit(1);
+    exit(1);
   }
 );

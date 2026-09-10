@@ -22,15 +22,21 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export const CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
 
-/** The capture library, from a development build or from a packaged app. */
-export function findCaptureLibrary(): string | null {
+/**
+ * The capture library, from a development build under one of `roots` or from one of `packaged`,
+ * the layer directories of installed apps. The defaults are the app's own: the checkout it was
+ * built in, and its resources.
+ */
+export function findCaptureLibrary(roots: string[] = [path.resolve(moduleDir, "..", "..", "..")],
+                                   packaged: string[] = [path.join(process.resourcesPath ?? "", "layer")]): string | null {
   const candidates: string[] = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
-  const root = path.resolve(moduleDir, "..", "..", "..");
-  for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-    candidates.push(path.join(root, dir, CAPTURE_LIBRARY));
+  for (const root of roots) {
+    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
+      candidates.push(path.join(root, dir, CAPTURE_LIBRARY));
+    }
   }
-  candidates.push(path.join(process.resourcesPath ?? "", "layer", CAPTURE_LIBRARY));
+  for (const dir of packaged) candidates.push(path.join(dir, CAPTURE_LIBRARY));
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 

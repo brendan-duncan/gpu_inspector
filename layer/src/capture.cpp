@@ -212,6 +212,17 @@ void CaptureManager::Finish(DeviceData* dev) {
     SendTextures(dev);
     SendBuffers(dev);
     SendPassTimings(dev);
+    // The end of the capture's stream, whichever sections it had: a client waiting for the capture
+    // (the MCP server) knows nothing more of it is coming.
+    {
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("CaptureComplete");
+        w.Key("frame"); w.Uint(_frameIndex);
+        w.Key("frames"); w.Uint(_frameCount);
+        w.EndObject();
+        Transport::Get().SendJson(std::move(w.str()));
+    }
     ReleaseStaging(dev);
     ReleaseQueryPool(dev);
 

@@ -1,44 +1,13 @@
 // Stack traces: where an object was created (the launch dialog's "Stack traces" option) and
 // where a captured command was recorded (the capture bar's). The layer keeps raw addresses and
-// symbolizes on request; the results are cached in the object database and saved with captures.
+// symbolizes on request (stack_requests.ts); here the frames it could only name by module are
+// resolved on the host, and stacks are rendered.
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import type { SessionContext } from "./session_panel.js";
 import type { StackFrame } from "../shared/protocol.js";
-
-const REQUEST_TIMEOUT_MS = 15000;
-
-/** Creation stacks of objects, from the cache or the layer; null when the session cannot answer. */
-export function requestStacks(session: SessionContext, ids: number[]): Promise<Map<number, StackFrame[]> | null> {
-  const db = session.database;
-  const out = new Map<number, StackFrame[]>();
-  const missing: number[] = [];
-  for (const id of ids) {
-    const cached = db.stacks.get(id);
-    if (cached) out.set(id, cached); else missing.push(id);
-  }
-  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (ok: boolean): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onStacktraces.disconnect(listener);
-      if (!ok) { resolve(out.size ? out : null); return; }
-      for (const id of missing) {
-        const s = db.stacks.get(id);
-        if (s) out.set(id, s);
-      }
-      resolve(out);
-    };
-    const listener = (): void => finish(true);
-    const timer = setTimeout(() => finish(false), REQUEST_TIMEOUT_MS);
-    db.onStacktraces.addListener(listener);
-    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => { if (!ok) finish(false); });
-  });
-}
+import { requestStacks, resolveSymbols as resolveFromLayer } from "./stack_requests.js";
 
 /**
  * Frames the layer named by module and offset only (dladdr on Android and Linux knows exported
@@ -63,39 +32,8 @@ async function symbolizeOnHost(session: SessionContext, frames: Map<string, Stac
 }
 
 /** Symbolized frames for addresses (as "0x..." strings), from the cache or the layer, then the host's symbolizer. */
-export async function resolveSymbols(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
-  const out = await resolveFromLayer(session, addresses);
-  await symbolizeOnHost(session, out);
-  return out;
-}
-
-function resolveFromLayer(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
-  const db = session.database;
-  const out = new Map<string, StackFrame>();
-  const missing: string[] = [];
-  for (const a of addresses) {
-    const cached = db.symbols.get(a);
-    if (cached) out.set(a, cached); else if (!missing.includes(a)) missing.push(a);
-  }
-  if (!missing.length) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onSymbols.disconnect(listener);
-      for (const a of missing) {
-        const f = db.symbols.get(a);
-        if (f) out.set(a, f);
-      }
-      resolve(out);
-    };
-    const listener = (): void => finish();
-    const timer = setTimeout(finish, REQUEST_TIMEOUT_MS);
-    db.onSymbols.addListener(listener);
-    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => { if (!ok) finish(); });
-  });
+export function resolveSymbols(session: SessionContext, addresses: string[]): Promise<Map<string, StackFrame>> {
+  return resolveFromLayer(session, addresses, (frames) => symbolizeOnHost(session, frames));
 }
 
 function frameText(f: StackFrame): string {

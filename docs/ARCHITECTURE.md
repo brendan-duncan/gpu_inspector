@@ -214,7 +214,9 @@ much slower than on the desktop.
    is frozen at submit so later re-recording does not disturb the capture.
 6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureTextureFrames` + `CaptureTextureData`, then `CaptureBuffers` +
-   `CaptureBufferData` messages.
+   `CaptureBufferData` messages, then `CapturePassTimings`. `CaptureComplete` comes last, whichever
+   sections the capture had, so a client waiting for the capture (the MCP server) knows the stream
+   has ended. The Metal library does the same.
 7. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
    inlines them into the primary's command stream (Unity records every draw in secondaries).
 8. Multi-frame captures: every command and render target carries a frame ordinal (a render target
@@ -321,8 +323,11 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
 
 * `src/shared/protocol.ts` — typed definitions of every message (layer <-> UI, main <-> renderer).
 * `src/main/` — sessions (process launch with the layer environment, stdout capture, TCP client),
-  windows, IPC bridge, SPIR-V text conversion through the SDK's `spirv-dis` / `spirv-cross`
-  (`shader_tools.ts`).
+  windows, IPC bridge. Some of it has no Electron in it and is shared with the MCP server:
+  - `launch_env.ts`: finding the layers, and the launch environment
+  - `layer_protocol.ts`: the socket framing
+  - `shader_tools.ts`: SPIR-V text through the SDK's `spirv-dis` and `spirv-cross`, and the shader
+    compilers
 * `src/mcp/` — the MCP server of the Claude Code plugin (see MCP server below).
 * `src/renderer/` — `inspector_window.ts` (launch toolbar, one tab per session),
   `session_panel.ts` (a session's object database and its Inspect / Capture / Log tabs),
@@ -509,7 +514,10 @@ From then on `vkCmdBindPipeline` (a pre-hook) binds the replacement instead of t
 `RestoreShader` drops it. The replacement is registered as an object of its own ("<name>
 (edited)", with the new code as its stage payload) so captures and reflection see it. Retired
 replacements are destroyed at a later present after `vkDeviceWaitIdle`, since command buffers
-may still reference them. Editing a module applies to every pipeline that uses it. Command
+may still reference them. The stages an edit leaves alone are not given the application's own
+modules, which it may have destroyed as soon as the pipeline existed. They get temporary modules
+made from the SPIR-V the tracker keeps with the pipeline, and those are destroyed once the
+replacement exists. Editing a module applies to every pipeline that uses it. Command
 buffers recorded before the edit keep binding the original until they are re-recorded, and
 graphics pipeline libraries are not supported. The editor (`renderer/code_editor.ts`) is a
 textarea over a highlighted copy of its text with a line-number gutter and a find bar; a failed
@@ -803,6 +811,24 @@ schema validator, an HTTP stack and a schema library with it.
 
 **Store.** Captures stay open in `capture_store.ts`, with their analyses computed on first use.
 `list_captures` adds the app's recent captures from its settings file.
+
+**Live sessions.** `live_session.ts` drives running applications without the app.
+- **Launch and connect.** The launch environment comes from `main/launch_env.ts` (the Vulkan layer)
+  or `main/metal.ts` (the Metal library). Messages are framed by `main/layer_protocol.ts`. Both
+  modules are shared with `main.ts`.
+- **Finding the capture library.** The server looks in the build tree of a checkout (the one the
+  bundle sits in, or `GPU_INSPECTOR_ROOT`), then in an installed GPU Inspector, then
+  `INSPECTOR_LAYER_DIR`.
+- **Session state.** Messages feed an `ObjectDatabase` as a session's do.
+- **Captures.** A capture streams into a `CaptureData` until the capture library's
+  `CaptureComplete`. A library built before that message existed gets a quiet stream after the
+  commands and buffers instead. The capture is saved with `serializeCapture`, which needs only a
+  connection now that the stack and symbol requests are UI-free (`stack_requests.ts`), and it opens
+  in the store like any file.
+- **Shaders.** `replace_shader` compiles with `main/shader_tools.ts` for the stage's SPIR-V
+  version, then sends `ReplaceShader`.
+- **One client.** The capture library serves one client at a time, so attaching to an application
+  the app is connected to takes it over.
 
 ## Building
 

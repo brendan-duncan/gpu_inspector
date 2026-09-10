@@ -19,7 +19,7 @@ const common = {
 // Renderer modules that build widgets or call the Electron preload API. The MCP server runs in
 // plain Node, so pulling one of them in is a mistake the build reports rather than a crash at
 // the first tool call.
-const UI_MODULE = /src[\\/]renderer[\\/](widget[\\/]|[^\\/]*_(view|panel)\.ts$|capture_command_info\.ts$|inspector_window\.ts$|code_editor\.ts$|launch_dialog\.ts$|args_view\.ts$|theme\.ts$|frame_flamegraph\.ts$|capture_file\.ts$)/;
+const UI_MODULE = /src[\\/]renderer[\\/](widget[\\/]|[^\\/]*_(view|panel)\.ts$|capture_command_info\.ts$|inspector_window\.ts$|code_editor\.ts$|launch_dialog\.ts$|args_view\.ts$|theme\.ts$|frame_flamegraph\.ts$|stacktrace_view\.ts$)/;
 const noUiModules = {
   name: "no-ui-modules",
   setup(b) {

@@ -223,6 +223,14 @@ Without a path, Claude picks from the captures GPU Inspector saved or opened rec
 needs Node.js 18 or newer, and neither the app nor the application being inspected has to be
 running.
 
+The plugin can also drive an application itself, with the capture library from this checkout's
+build or from an installed GPU Inspector:
+- launch it, and watch its frame rate
+- capture frames
+- replace a pipeline's shader while it runs, then capture again to measure the change
+
+`/gpu-inspector:live <exe>` walks through it.
+
 ## Shader sources
 
 Shaders compiled with source-level debug information (`-g` for glslc and glslangValidator,

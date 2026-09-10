@@ -62,22 +62,16 @@ interpreter and re-created pipelines.
     bounds, shader reflection, source, cross-compiled text and analysis, and before/after
     comparison.
   - A capture analysis skill, and analyze / profile / debug / compare commands.
+  - Live sessions without the app: launch or attach, frame statistics, captures saved as
+    `.gpucap`, and shader replacement for an edit, capture, compare loop, with a `live` command.
+    The capture libraries end a capture's stream with `CaptureComplete`.
 
 ## Next
 
 ### Claude Code
-- [ ] Live sessions, headless: an MCP client of the layer's and the Metal library's socket, with the
-      framing of `layer/src/transport.h` and `tools/inspector_client.py` as the reference. The
-      tools:
-      - `launch_app`, with the layer environment `main.ts` sets.
-      - `capture_frames`: a `Capture` request, streamed into `ObjectDatabase` / `CaptureData`, then
-        saved with `encodeCaptureFile` so every file tool works on it.
-      - `get_frame_stats`, from `FrameStats`.
-      - `replace_shader`, compiling like `compileShader` in `main.ts`, for an edit, capture and
-        compare loop.
-
-      The connection code has to come out of `main.ts` first. The listeners take one client, so a
-      target is driven either by the app or by Claude.
+- [ ] Android targets for live sessions (`main/android.ts` has no Electron in it).
+- [ ] Live read-backs without a capture: an image (`RequestImage`) and a descriptor set's current
+      contents (`RequestDescriptorSet`), and the live object list as tools.
 - [ ] Shader source roots in `get_shader` for modules with line information but no text
       (`main/shader_sources.ts`), and host symbolization of stacks (`main/symbolize.ts`).
 - [ ] The shader flame graph as a tool (`frame_cost_tree.ts` needs no DOM).
