@@ -189,12 +189,26 @@ std::string TextureDescriptorArgs(MTLTextureDescriptor *descriptor);
 std::string TextureObjectArgs(id<MTLTexture> texture);
 std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextureType type,
                             NSRange levels, NSRange slices);
-std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *descriptor);
-std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *descriptor);
-std::string MeshRenderPipelineArgs(id descriptor);
-std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state);
+// A pipeline's descriptor carries the reflection the hooks asked for with it (reflection.h),
+// which is what makes a captured buffer readable as fields rather than bytes.
+std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *descriptor,
+                               MTLRenderPipelineReflection *reflection);
+std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *descriptor,
+                                   MTLRenderPipelineReflection *reflection);
+std::string MeshRenderPipelineArgs(id descriptor, MTLRenderPipelineReflection *reflection);
+std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state,
+                                        MTLComputePipelineReflection *reflection);
 std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *descriptor,
-                                          id<MTLComputePipelineState> state);
+                                          id<MTLComputePipelineState> state,
+                                          MTLComputePipelineReflection *reflection);
+
+/**
+ * The pipeline options every creation asks for: argument info and buffer type info, so the
+ * pipeline comes back with reflection. Spelled numerically because the first was renamed
+ * (MTLPipelineOptionArgumentInfo became MTLPipelineOptionBindingInfo in macOS 14) without
+ * changing value.
+ */
+constexpr MTLPipelineOption kReflectionOptions = (MTLPipelineOption)((1 << 0) | (1 << 1));
 std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sourceLength);
 std::string FunctionArgs(id<MTLFunction> function);
 std::string SamplerArgs(MTLSamplerDescriptor *descriptor);

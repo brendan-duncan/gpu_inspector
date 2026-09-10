@@ -461,18 +461,29 @@ void D_newLibraryWithSourceAsync(id self, SEL _cmd, NSString *source, MTLCompile
 // Engines rarely use the one-argument forms a sample does: Unity asks for reflection with the
 // pipeline, and builds many asynchronously. Every spelling has to land in the tracker or
 // setRenderPipelineState: resolves to null in the capture.
+//
+// Every spelling also asks Metal for reflection (reflection.h), whether the application did or
+// not: the forms without an options argument are redirected to the form with one, through the
+// hook for that selector, which is nested and so only forwards; the forms with one get the
+// reflection options added and, when the application passed no reflection out-parameter, one of
+// the library's own. The application sees exactly what it asked for.
 
 id D_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescriptor *descriptor,
                             NSError **error) {
     Reentry reentry(self, _cmd);
-    id state = ORIG(id (*)(id, SEL, MTLRenderPipelineDescriptor *, NSError **))(
-        self, _cmd, descriptor, error);
-    if (reentry.outermost()) {
-        Log("device.newRenderPipelineStateWithDescriptor: label=\"%s\" -> %s",
-            descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
-        Track(state, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:",
-              self, RenderPipelineArgs(descriptor));
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, MTLRenderPipelineDescriptor *, NSError **))(
+            self, _cmd, descriptor, error);
     }
+    MTLRenderPipelineReflection *reflection = nil;
+    id state = [(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:descriptor
+                                                                 options:kReflectionOptions
+                                                              reflection:&reflection
+                                                                   error:error];
+    Log("device.newRenderPipelineStateWithDescriptor: label=\"%s\" -> %s",
+        descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
+    Track(state, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:", self,
+          RenderPipelineArgs(descriptor, reflection));
     return state;
 }
 
@@ -480,70 +491,87 @@ id D_newRenderPipelineStateReflection(id self, SEL _cmd, MTLRenderPipelineDescri
                                       MTLPipelineOption options,
                                       MTLRenderPipelineReflection **reflection, NSError **error) {
     Reentry reentry(self, _cmd);
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLPipelineOption,
+                           MTLRenderPipelineReflection **, NSError **))(
+            self, _cmd, descriptor, options, reflection, error);
+    }
+    MTLRenderPipelineReflection *local = nil;
+    MTLRenderPipelineReflection **out = reflection != nullptr ? reflection : &local;
     id state = ORIG(id (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLPipelineOption,
                            MTLRenderPipelineReflection **, NSError **))(
-        self, _cmd, descriptor, options, reflection, error);
-    if (reentry.outermost()) {
-        Track(state, "MTLRenderPipelineState",
-              "newRenderPipelineStateWithDescriptor:options:reflection:error:", self,
-              RenderPipelineArgs(descriptor));
-    }
+        self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    Track(state, "MTLRenderPipelineState",
+          "newRenderPipelineStateWithDescriptor:options:reflection:error:", self,
+          RenderPipelineArgs(descriptor, *out));
     return state;
 }
 
 void D_newRenderPipelineStateAsync(id self, SEL _cmd, MTLRenderPipelineDescriptor *descriptor,
                                    MTLNewRenderPipelineStateCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        std::string args = RenderPipelineArgs(descriptor);
-        MTLNewRenderPipelineStateCompletionHandler wrapped =
-            ^(id<MTLRenderPipelineState> state, NSError *error) {
-                Track(state, "MTLRenderPipelineState",
-                      "newRenderPipelineStateWithDescriptor:completionHandler:", self, args);
-                handler(state, error);
-            };
+    if (!reentry.outermost() || handler == nil) {
         ORIG(void (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLNewRenderPipelineStateCompletionHandler))(
-            self, _cmd, descriptor, wrapped);
+            self, _cmd, descriptor, handler);
         return;
     }
-    ORIG(void (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLNewRenderPipelineStateCompletionHandler))(
-        self, _cmd, descriptor, handler);
+    // The application's handler, wrapped: the pipeline exists only once it runs, and the
+    // descriptor is copied because the application may change its own the moment this returns.
+    MTLRenderPipelineDescriptor *kept = [descriptor copy];
+    [(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:descriptor
+                                                      options:kReflectionOptions
+                                            completionHandler:^(id<MTLRenderPipelineState> state,
+                                                                MTLRenderPipelineReflection *reflection,
+                                                                NSError *error) {
+        Track(state, "MTLRenderPipelineState",
+              "newRenderPipelineStateWithDescriptor:completionHandler:", self,
+              RenderPipelineArgs(kept, reflection));
+        [kept release];
+        handler(state, error);
+    }];
 }
 
 void D_newRenderPipelineStateOptionsAsync(id self, SEL _cmd, MTLRenderPipelineDescriptor *descriptor,
                                           MTLPipelineOption options,
                                           MTLNewRenderPipelineStateWithReflectionCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        std::string args = RenderPipelineArgs(descriptor);
-        MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
-            ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
-                Track(state, "MTLRenderPipelineState",
-                      "newRenderPipelineStateWithDescriptor:options:completionHandler:", self, args);
-                handler(state, reflection, error);
-            };
+    if (!reentry.outermost() || handler == nil) {
         ORIG(void (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLPipelineOption,
                       MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-            self, _cmd, descriptor, options, wrapped);
+            self, _cmd, descriptor, options, handler);
         return;
     }
+    MTLRenderPipelineDescriptor *kept = [descriptor copy];
+    MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
+        ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
+            Track(state, "MTLRenderPipelineState",
+                  "newRenderPipelineStateWithDescriptor:options:completionHandler:", self,
+                  RenderPipelineArgs(kept, reflection));
+            [kept release];
+            handler(state, reflection, error);
+        };
     ORIG(void (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLPipelineOption,
                   MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-        self, _cmd, descriptor, options, handler);
+        self, _cmd, descriptor, options | kReflectionOptions, wrapped);
 }
 
 id D_newTileRenderPipelineState(id self, SEL _cmd, MTLTileRenderPipelineDescriptor *descriptor,
                                 MTLPipelineOption options, MTLRenderPipelineReflection **reflection,
                                 NSError **error) {
     Reentry reentry(self, _cmd);
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, MTLTileRenderPipelineDescriptor *, MTLPipelineOption,
+                           MTLRenderPipelineReflection **, NSError **))(
+            self, _cmd, descriptor, options, reflection, error);
+    }
+    MTLRenderPipelineReflection *local = nil;
+    MTLRenderPipelineReflection **out = reflection != nullptr ? reflection : &local;
     id state = ORIG(id (*)(id, SEL, MTLTileRenderPipelineDescriptor *, MTLPipelineOption,
                            MTLRenderPipelineReflection **, NSError **))(
-        self, _cmd, descriptor, options, reflection, error);
-    if (reentry.outermost()) {
-        Track(state, "MTLRenderPipelineState",
-              "newRenderPipelineStateWithTileDescriptor:options:reflection:error:", self,
-              TileRenderPipelineArgs(descriptor));
-    }
+        self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    Track(state, "MTLRenderPipelineState",
+          "newRenderPipelineStateWithTileDescriptor:options:reflection:error:", self,
+          TileRenderPipelineArgs(descriptor, *out));
     return state;
 }
 
@@ -551,66 +579,78 @@ void D_newTileRenderPipelineStateAsync(id self, SEL _cmd, MTLTileRenderPipelineD
                                        MTLPipelineOption options,
                                        MTLNewRenderPipelineStateWithReflectionCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        std::string args = TileRenderPipelineArgs(descriptor);
-        MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
-            ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
-                Track(state, "MTLRenderPipelineState",
-                      "newRenderPipelineStateWithTileDescriptor:options:completionHandler:", self, args);
-                handler(state, reflection, error);
-            };
+    if (!reentry.outermost() || handler == nil) {
         ORIG(void (*)(id, SEL, MTLTileRenderPipelineDescriptor *, MTLPipelineOption,
                       MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-            self, _cmd, descriptor, options, wrapped);
+            self, _cmd, descriptor, options, handler);
         return;
     }
+    MTLTileRenderPipelineDescriptor *kept = [descriptor copy];
+    MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
+        ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
+            Track(state, "MTLRenderPipelineState",
+                  "newRenderPipelineStateWithTileDescriptor:options:completionHandler:", self,
+                  TileRenderPipelineArgs(kept, reflection));
+            [kept release];
+            handler(state, reflection, error);
+        };
     ORIG(void (*)(id, SEL, MTLTileRenderPipelineDescriptor *, MTLPipelineOption,
                   MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-        self, _cmd, descriptor, options, handler);
+        self, _cmd, descriptor, options | kReflectionOptions, wrapped);
 }
 
 id D_newMeshRenderPipelineState(id self, SEL _cmd, id descriptor, MTLPipelineOption options,
                                 MTLRenderPipelineReflection **reflection, NSError **error) {
     Reentry reentry(self, _cmd);
-    id state = ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLRenderPipelineReflection **, NSError **))(
-        self, _cmd, descriptor, options, reflection, error);
-    if (reentry.outermost()) {
-        Track(state, "MTLRenderPipelineState",
-              "newRenderPipelineStateWithMeshDescriptor:options:reflection:error:", self,
-              MeshRenderPipelineArgs(descriptor));
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLRenderPipelineReflection **, NSError **))(
+            self, _cmd, descriptor, options, reflection, error);
     }
+    MTLRenderPipelineReflection *local = nil;
+    MTLRenderPipelineReflection **out = reflection != nullptr ? reflection : &local;
+    id state = ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLRenderPipelineReflection **, NSError **))(
+        self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    Track(state, "MTLRenderPipelineState",
+          "newRenderPipelineStateWithMeshDescriptor:options:reflection:error:", self,
+          MeshRenderPipelineArgs(descriptor, *out));
     return state;
 }
 
 void D_newMeshRenderPipelineStateAsync(id self, SEL _cmd, id descriptor, MTLPipelineOption options,
                                        MTLNewRenderPipelineStateWithReflectionCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        std::string args = MeshRenderPipelineArgs(descriptor);
-        MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
-            ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
-                Track(state, "MTLRenderPipelineState",
-                      "newRenderPipelineStateWithMeshDescriptor:options:completionHandler:", self, args);
-                handler(state, reflection, error);
-            };
-        ORIG(void (*)(id, SEL, id, MTLPipelineOption,
-                      MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-            self, _cmd, descriptor, options, wrapped);
+    if (!reentry.outermost() || handler == nil) {
+        ORIG(void (*)(id, SEL, id, MTLPipelineOption, MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
+            self, _cmd, descriptor, options, handler);
         return;
     }
+    id kept = [descriptor copy];
+    MTLNewRenderPipelineStateWithReflectionCompletionHandler wrapped =
+        ^(id<MTLRenderPipelineState> state, MTLRenderPipelineReflection *reflection, NSError *error) {
+            Track(state, "MTLRenderPipelineState",
+                  "newRenderPipelineStateWithMeshDescriptor:options:completionHandler:", self,
+                  MeshRenderPipelineArgs(kept, reflection));
+            [kept release];
+            handler(state, reflection, error);
+        };
     ORIG(void (*)(id, SEL, id, MTLPipelineOption, MTLNewRenderPipelineStateWithReflectionCompletionHandler))(
-        self, _cmd, descriptor, options, handler);
+        self, _cmd, descriptor, options | kReflectionOptions, wrapped);
 }
 
 id D_newComputePipelineStateWithFunction(id self, SEL _cmd, id<MTLFunction> function, NSError **error) {
     Reentry reentry(self, _cmd);
-    id state = ORIG(id (*)(id, SEL, id, NSError **))(self, _cmd, function, error);
-    if (reentry.outermost()) {
-        Log("device.newComputePipelineStateWithFunction: %s -> %s",
-            function == nil ? "" : function.name.UTF8String, ClassName(state));
-        Track(state, "MTLComputePipelineState", "newComputePipelineStateWithFunction:error:", self,
-              ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state));
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, id, NSError **))(self, _cmd, function, error);
     }
+    MTLComputePipelineReflection *reflection = nil;
+    id state = [(id<MTLDevice>)self newComputePipelineStateWithFunction:function
+                                                                options:kReflectionOptions
+                                                             reflection:&reflection
+                                                                  error:error];
+    Log("device.newComputePipelineStateWithFunction: %s -> %s",
+        function == nil ? "" : function.name.UTF8String, ClassName(state));
+    Track(state, "MTLComputePipelineState", "newComputePipelineStateWithFunction:error:", self,
+          ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state, reflection));
     return state;
 }
 
@@ -619,68 +659,77 @@ id D_newComputePipelineStateWithFunctionReflection(id self, SEL _cmd, id<MTLFunc
                                                    MTLComputePipelineReflection **reflection,
                                                    NSError **error) {
     Reentry reentry(self, _cmd);
-    id state = ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLComputePipelineReflection **, NSError **))(
-        self, _cmd, function, options, reflection, error);
-    if (reentry.outermost()) {
-        Track(state, "MTLComputePipelineState",
-              "newComputePipelineStateWithFunction:options:reflection:error:", self,
-              ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state));
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLComputePipelineReflection **, NSError **))(
+            self, _cmd, function, options, reflection, error);
     }
+    MTLComputePipelineReflection *local = nil;
+    MTLComputePipelineReflection **out = reflection != nullptr ? reflection : &local;
+    id state = ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLComputePipelineReflection **, NSError **))(
+        self, _cmd, function, options | kReflectionOptions, out, error);
+    Track(state, "MTLComputePipelineState",
+          "newComputePipelineStateWithFunction:options:reflection:error:", self,
+          ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state, *out));
     return state;
 }
 
 void D_newComputePipelineStateWithFunctionAsync(id self, SEL _cmd, id<MTLFunction> function,
                                                 MTLNewComputePipelineStateCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        MTLNewComputePipelineStateCompletionHandler wrapped =
-            ^(id<MTLComputePipelineState> state, NSError *error) {
-                Track(state, "MTLComputePipelineState",
-                      "newComputePipelineStateWithFunction:completionHandler:", self,
-                      ComputePipelineFunctionArgs(function, state));
-                handler(state, error);
-            };
+    if (!reentry.outermost() || handler == nil) {
         ORIG(void (*)(id, SEL, id, MTLNewComputePipelineStateCompletionHandler))(
-            self, _cmd, function, wrapped);
+            self, _cmd, function, handler);
         return;
     }
-    ORIG(void (*)(id, SEL, id, MTLNewComputePipelineStateCompletionHandler))(
-        self, _cmd, function, handler);
+    [(id<MTLDevice>)self newComputePipelineStateWithFunction:function
+                                                     options:kReflectionOptions
+                                           completionHandler:^(id<MTLComputePipelineState> state,
+                                                               MTLComputePipelineReflection *reflection,
+                                                               NSError *error) {
+        Track(state, "MTLComputePipelineState",
+              "newComputePipelineStateWithFunction:completionHandler:", self,
+              ComputePipelineFunctionArgs(function, state, reflection));
+        handler(state, error);
+    }];
 }
 
 void D_newComputePipelineStateWithFunctionOptionsAsync(
     id self, SEL _cmd, id<MTLFunction> function, MTLPipelineOption options,
     MTLNewComputePipelineStateWithReflectionCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        MTLNewComputePipelineStateWithReflectionCompletionHandler wrapped =
-            ^(id<MTLComputePipelineState> state, MTLComputePipelineReflection *reflection, NSError *error) {
-                Track(state, "MTLComputePipelineState",
-                      "newComputePipelineStateWithFunction:options:completionHandler:", self,
-                      ComputePipelineFunctionArgs(function, state));
-                handler(state, reflection, error);
-            };
-        ORIG(void (*)(id, SEL, id, MTLPipelineOption,
-                      MTLNewComputePipelineStateWithReflectionCompletionHandler))(
-            self, _cmd, function, options, wrapped);
+    if (!reentry.outermost() || handler == nil) {
+        ORIG(void (*)(id, SEL, id, MTLPipelineOption, MTLNewComputePipelineStateWithReflectionCompletionHandler))(
+            self, _cmd, function, options, handler);
         return;
     }
+    MTLNewComputePipelineStateWithReflectionCompletionHandler wrapped =
+        ^(id<MTLComputePipelineState> state, MTLComputePipelineReflection *reflection, NSError *error) {
+            Track(state, "MTLComputePipelineState",
+                  "newComputePipelineStateWithFunction:options:completionHandler:", self,
+                  ComputePipelineFunctionArgs(function, state, reflection));
+            handler(state, reflection, error);
+        };
     ORIG(void (*)(id, SEL, id, MTLPipelineOption, MTLNewComputePipelineStateWithReflectionCompletionHandler))(
-        self, _cmd, function, options, handler);
+        self, _cmd, function, options | kReflectionOptions, wrapped);
 }
 
 id D_newComputePipelineStateWithDescriptor(id self, SEL _cmd, MTLComputePipelineDescriptor *descriptor,
                                            MTLPipelineOption options,
                                            MTLComputePipelineReflection **reflection, NSError **error) {
     Reentry reentry(self, _cmd);
+    if (!reentry.outermost()) {
+        return ORIG(id (*)(id, SEL, MTLComputePipelineDescriptor *, MTLPipelineOption,
+                           MTLComputePipelineReflection **, NSError **))(
+            self, _cmd, descriptor, options, reflection, error);
+    }
+    MTLComputePipelineReflection *local = nil;
+    MTLComputePipelineReflection **out = reflection != nullptr ? reflection : &local;
     id state = ORIG(id (*)(id, SEL, MTLComputePipelineDescriptor *, MTLPipelineOption,
                            MTLComputePipelineReflection **, NSError **))(
-        self, _cmd, descriptor, options, reflection, error);
-    if (reentry.outermost()) {
-        Track(state, "MTLComputePipelineState",
-              "newComputePipelineStateWithDescriptor:options:reflection:error:", self,
-              ComputePipelineDescriptorArgs(descriptor, (id<MTLComputePipelineState>)state));
-    }
+        self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    Track(state, "MTLComputePipelineState",
+          "newComputePipelineStateWithDescriptor:options:reflection:error:", self,
+          ComputePipelineDescriptorArgs(descriptor, (id<MTLComputePipelineState>)state, *out));
     return state;
 }
 
@@ -688,24 +737,24 @@ void D_newComputePipelineStateWithDescriptorAsync(
     id self, SEL _cmd, MTLComputePipelineDescriptor *descriptor, MTLPipelineOption options,
     MTLNewComputePipelineStateWithReflectionCompletionHandler handler) {
     Reentry reentry(self, _cmd);
-    if (reentry.outermost() && handler != nil) {
-        MTLComputePipelineDescriptor *kept = [descriptor copy];
-        MTLNewComputePipelineStateWithReflectionCompletionHandler wrapped =
-            ^(id<MTLComputePipelineState> state, MTLComputePipelineReflection *reflection, NSError *error) {
-                Track(state, "MTLComputePipelineState",
-                      "newComputePipelineStateWithDescriptor:options:completionHandler:", self,
-                      ComputePipelineDescriptorArgs(kept, state));
-                [kept release];
-                handler(state, reflection, error);
-            };
+    if (!reentry.outermost() || handler == nil) {
         ORIG(void (*)(id, SEL, MTLComputePipelineDescriptor *, MTLPipelineOption,
                       MTLNewComputePipelineStateWithReflectionCompletionHandler))(
-            self, _cmd, descriptor, options, wrapped);
+            self, _cmd, descriptor, options, handler);
         return;
     }
+    MTLComputePipelineDescriptor *kept = [descriptor copy];
+    MTLNewComputePipelineStateWithReflectionCompletionHandler wrapped =
+        ^(id<MTLComputePipelineState> state, MTLComputePipelineReflection *reflection, NSError *error) {
+            Track(state, "MTLComputePipelineState",
+                  "newComputePipelineStateWithDescriptor:options:completionHandler:", self,
+                  ComputePipelineDescriptorArgs(kept, state, reflection));
+            [kept release];
+            handler(state, reflection, error);
+        };
     ORIG(void (*)(id, SEL, MTLComputePipelineDescriptor *, MTLPipelineOption,
                   MTLNewComputePipelineStateWithReflectionCompletionHandler))(
-        self, _cmd, descriptor, options, handler);
+        self, _cmd, descriptor, options | kReflectionOptions, wrapped);
 }
 
 // --------------------------------------------------------------------------------------------

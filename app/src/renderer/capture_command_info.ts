@@ -16,7 +16,8 @@ import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
 import { decodeBase64 } from "./utils/base64.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
-import { isAction, type BoundIndexBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
+import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
+import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import {
   typeName, type ReflType, type ShaderReflection, type ShaderResource, type ShaderStage, type StructMember, type StructType,
@@ -62,6 +63,8 @@ export interface DrawState {
   pipeline: VulkanObject | null;
   sets: Map<number, BoundSet>;
   vertexBuffers: Map<number, BoundVertexBuffer>;
+  /** Metal: buffers bound to a stage by index, keyed "stage:index". */
+  stageBuffers: Map<string, BoundStageBuffer>;
   indexBuffer: BoundIndexBuffer | null;
   /** vkCmdSetVertexInputEXT arguments when the vertex layout is dynamic. */
   vertexInput: ArgObject | null;
@@ -208,6 +211,7 @@ export class CommandInfoView {
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
       }
+      this._renderStageBuffers(container, state, [...state.stageBuffers.values()].filter((sb) => graphics ? sb.stage !== "compute" : sb.stage === "compute"));
       if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
       this._renderPushConstants(container, state, state.pushConstants, token);
       if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);
@@ -221,6 +225,13 @@ export class CommandInfoView {
     } else if (cmdSets.BIND_DESCRIPTOR.has(method) && cmd.descriptors) {
       const state = this._stateFor(cmd, cmd.descriptors.bindPoint);
       this._renderDescriptorSets(container, state, cmd.descriptors.sets.map((set) => ({ cmd, set })), token);
+    } else if (cmdSets.BIND_STAGE_BUFFER?.has(method) && cmdSets.stageBuffersOf) {
+      // Metal: a stage buffer bind. Vertex-stage binds with a layout in the pipeline's vertex
+      // descriptor are vertex buffers; everything else is a constant or storage block.
+      const bound = cmdSets.stageBuffersOf(cmd);
+      const state = this._stateFor(cmd, bound.some((sb) => sb.stage === "compute") ? "compute" : cmdSets.graphicsBindPoint);
+      if (cmdSets.BIND_VERTEX.has(method)) this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
+      this._renderStageBuffers(container, state, bound);
     } else if (cmdSets.BIND_VERTEX.has(method)) {
       const state = this._stateFor(cmd, "VK_PIPELINE_BIND_POINT_GRAPHICS");
       this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
@@ -277,7 +288,7 @@ export class CommandInfoView {
 
   private _emptyState(bindPoint: string): DrawState {
     return {
-      bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), indexBuffer: null,
+      bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(), indexBuffer: null,
       vertexInput: null, viewports: null, scissors: null, pushConstants: [],
     };
   }
@@ -310,6 +321,12 @@ export class CommandInfoView {
           state.pipeline = this.db.getObject(refId(a.pipeline));
         }
         continue;
+      }
+      if (cmdSets.BIND_STAGE_BUFFER?.has(c.method) && cmdSets.stageBuffersOf) {
+        for (const sb of cmdSets.stageBuffersOf(c)) {
+          const key = `${sb.stage}:${sb.index}`;
+          if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
+        }
       }
       if (cmdSets.BIND_VERTEX.has(c.method)) {
         for (const vb of cmdSets.vertexBuffersOf(c)) {
@@ -1004,6 +1021,9 @@ export class CommandInfoView {
     const db = this.db;
     const buf = db.getObject(refId(vb.buffer));
     const layout = this._vertexLayout(state, vb.binding, vb);
+    // Metal binds constant blocks and vertex data through the same call; a slot the vertex
+    // descriptor does not lay out is a block, shown by _renderStageBuffers with its reflection.
+    if (!layout && this.panel.data.sets.BIND_STAGE_BUFFER) return;
     const grp = new collapsible(container, {
       label: `Vertex Buffer ${vb.binding}: ${buf ? buf.name : "(none)"}  offset ${vb.offset}${layout ? `  stride ${layout.stride}${layout.rate.includes("INSTANCE") ? "  per instance" : ""}` : ""}`,
       collapsed: true,
@@ -1064,6 +1084,40 @@ export class CommandInfoView {
       renderTypedData(new Widget("ul", dataUi, { class: "buffer-root" }), type, data, 0, this._radix);
     } });
     body.insertBefore(button, dataUi);
+  }
+
+  /**
+   * Metal's stage buffers: what `set<Stage>Buffer:offset:atIndex:` and `set<Stage>Bytes:` bound,
+   * typed by the pipeline's reflection at that stage and index (metal/reflection.ts). Vertex-stage
+   * slots the vertex descriptor lays out are vertex buffers and are rendered as such instead.
+   */
+  private _renderStageBuffers(container: Widget, state: DrawState, buffers: BoundStageBuffer[]): void {
+    const db = this.db;
+    const shown = buffers
+      .filter((sb) => !(sb.stage === "vertex" && !sb.inline && this._vertexLayout(state, sb.index, { cmd: sb.cmd, binding: sb.index, buffer: sb.buffer, offset: sb.offset, size: null, stride: null, dataId: sb.dataId })))
+      .sort((a, b) => a.stage === b.stage ? a.index - b.index : a.stage.localeCompare(b.stage));
+    if (!shown.length) return;
+    const reflected = hasMetalReflection(state.pipeline);
+    for (const sb of shown) {
+      const res = metalBufferResource(state.pipeline, sb.stage, sb.index);
+      const buf = sb.buffer ? db.getObject(refId(sb.buffer)) : null;
+      const stage = sb.stage.charAt(0).toUpperCase() + sb.stage.slice(1);
+      const what = sb.inline ? "inline bytes" : buf ? buf.name : "(none)";
+      const typed = res ? `  ${res.name || "(unnamed)"}: ${res.typeName || "block"}` : "";
+      const grp = new collapsible(container, { label: `${stage} Buffer ${sb.index}: ${what}${typed}${sb.inline ? "" : `  offset ${sb.offset}`}`, collapsed: true });
+      const body = grp.body;
+      if (!sb.inline) {
+        const row = new Div(body, { class: "font-md" });
+        new Span(row, { text: "Buffer: ", class: "text-muted" });
+        if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
+        if (buf?.descriptor) new Span(row, { text: `  ${formatBytes(num(buf.descriptor.length))}  ${fmt(buf.descriptor.storageMode)}`, class: "text-muted" });
+      }
+      if (sb.cmd !== state.pipelineCmd) new Div(body, { text: `bound by #${sb.cmd.index} ${sb.cmd.method}`, class: "text-muted font-sm" });
+      if (!res && reflected) new Div(body, { text: "The bound pipeline's shader does not read this slot.", class: "text-muted font-sm" });
+      else if (!res) new Div(body, { text: "No reflection for the bound pipeline: raw view.", class: "text-muted font-sm" });
+      const key = `metal:${state.pipeline?.id ?? 0}:${sb.stage}:${sb.index}`;
+      this._renderBufferContents(body, key, res?.kind === "storage" ? "storage" : "uniform", res, this.panel.data.buffer(sb.dataId));
+    }
   }
 
   private _renderIndexBuffer(container: Widget, ib: BoundIndexBuffer, draw: CaptureCommand | null): void {

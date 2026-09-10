@@ -27,6 +27,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/formats.mm
     src/image.h
     src/image.mm
+    src/reflection.h
+    src/reflection.mm
     src/tracker.h
     src/tracker.mm
     src/ui_messages.h

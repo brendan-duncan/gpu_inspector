@@ -29,6 +29,7 @@ import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
+import { metalReflection, metalStages } from "./metal/reflection.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
@@ -937,6 +938,7 @@ export class InspectPanel {
 
     if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
+    if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
     if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
@@ -1028,6 +1030,22 @@ export class InspectPanel {
    * SPIR-V: reflection, cross-compilation to GLSL and HLSL, and editing. Metal Shading Language
    * is already the source, and a metallib is AIR bitcode that needs Apple's tooling to read.
    */
+  /**
+   * A Metal pipeline's reflection, one section per stage: the buffers with their struct layouts,
+   * the textures and the samplers, by index. Asked for by the capture library at every pipeline
+   * creation (metal/src/reflection.mm), so it is there whether or not the application wanted it.
+   */
+  private _buildMetalReflectionSection(object: VulkanObject): void {
+    const stages = metalStages(object);
+    if (!stages.length) return;
+    for (const stage of stages) {
+      const reflection = metalReflection(stage);
+      const label = `${stage.stage.charAt(0).toUpperCase()}${stage.stage.slice(1)} reflection: ${stage.buffers.size} buffer${stage.buffers.size === 1 ? "" : "s"}, ${stage.textures.size} texture${stage.textures.size === 1 ? "" : "s"}, ${stage.samplers.size} sampler${stage.samplers.size === 1 ? "" : "s"}`;
+      const grp = new collapsible(this.inspectPanel, { label, collapsed: true, class: "shader-reflection" });
+      renderReflection(new Div(grp.body, { class: "shader-info" }), reflection);
+    }
+  }
+
   private _buildLibrarySection(object: VulkanObject): void {
     this._libraryViews = new Map();
     if (!object.blobs.length) {

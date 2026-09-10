@@ -376,6 +376,34 @@ with two CPU/GPU timestamp pairs taken around the capture, and sent as `CaptureP
 the same keys the Vulkan layer uses, so the Profile view and the frame statistics needed no
 change. RenderDoc's Metal driver has no timing code.
 
+## Reflection
+
+What turns a captured buffer's bytes into named fields. The Vulkan side gets that from the
+SPIR-V it parses in the UI; Metal has no SPIR-V, but a pipeline created with the argument-info
+and buffer-type-info options comes back with an `MTLRenderPipelineReflection` that says the same
+things: per stage, the buffers, textures and samplers by index, and for each buffer the struct
+it points at, member by member, with offsets.
+
+So every pipeline creation asks for it, whether or not the application did (`reflection.mm`,
+and the pipeline hooks in `hooks_device.mm`). The forms without an options argument are redirected
+to the form with one, through the hook for that selector, which is nested and so only forwards;
+the forms with one get the reflection options added and, when the application passed no
+reflection out-parameter, one of the library's own. The application sees exactly what it asked
+for. Two generations of the API describe the reflection — `MTLArgument`, deprecated in macOS 13,
+and the `MTLBinding` protocols that replaced it — with the same property names for everything
+used, so it is read through selectors and works on either.
+
+The layouts are written in the shape the UI's own reflection has (`ReflType` in
+`spirv_reflect.ts`: scalar, vector, matrix, array, struct, opaque, with sizes and offsets), and
+ride along in the pipeline's descriptor as `reflection`, keyed by stage. Metal matrices are
+column-major with three-row columns padded to four elements, and `device float *data` becomes a
+runtime-sized array of the pointee. On the UI side `metal/reflection.ts` reads that into the
+same `ShaderResource` objects the Vulkan side builds, so a draw's stage buffers — everything
+`setVertexBuffer:`, `setFragmentBuffer:`, the compute encoder's `setBuffer:` and the inline
+`set*Bytes:` forms bound, minus the vertex-stage slots the vertex descriptor lays out, which are
+vertex buffers — render as typed blocks with the Format editor, and a pipeline object in the
+Inspect panel gets a Reflection section per stage.
+
 ## Texture views
 
 Clicking an `MTLTexture` in the Inspect panel reads it back live: the UI's `RequestImage` is
@@ -458,7 +486,7 @@ apply to it.
 
 Stencil attachments are not read back (colour and depth are), nor are sampled images, and only
 the pixel formats in `PixelFormatDetails` are supported. Argument buffers are recorded as the
-buffer binds they are, not decoded. Resource state and acceleration structure encoders are
+buffer binds they are; the reflection names their pointer members but nothing decodes them yet. Resource state and acceleration structure encoders are
 recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary
 timing path those GPUs would take. Re-signing a hardened target is left to the user, on purpose.

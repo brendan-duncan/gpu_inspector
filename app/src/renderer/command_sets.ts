@@ -35,6 +35,26 @@ export interface BoundIndexBuffer {
   dataId: number;
 }
 
+/**
+ * A buffer bound to a shader stage by index rather than through a descriptor set, which is how
+ * Metal binds everything: `setVertexBuffer:offset:atIndex:`, `setFragmentBuffer:...`, the
+ * compute encoder's `setBuffer:...`, and the inline `set*Bytes:` forms, whose bytes are the
+ * capture's own buffer entry with no object behind it. The pipeline's reflection names the
+ * struct at each stage and index.
+ */
+export interface BoundStageBuffer {
+  cmd: CaptureCommand;
+  /** "vertex", "fragment", "compute", "object", "mesh" or "tile". */
+  stage: string;
+  index: number;
+  /** Null for inline bytes. */
+  buffer: ArgValue | null;
+  offset: number;
+  /** Id of the CaptureBuffers entry holding the bound range's contents, 0 when not captured. */
+  dataId: number;
+  inline: boolean;
+}
+
 export interface CommandSets {
   DRAW: ReadonlySet<string>;
   DISPATCH: ReadonlySet<string>;
@@ -85,6 +105,14 @@ export interface CommandSets {
    * command and rely on null.
    */
   indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null;
+
+  /**
+   * Commands that bind a buffer to a stage by index (Metal). An API that binds through
+   * descriptor sets leaves both of these out.
+   */
+  BIND_STAGE_BUFFER?: ReadonlySet<string>;
+  /** The stage buffers `cmd` binds, empty when it binds none. */
+  stageBuffersOf?(cmd: CaptureCommand): BoundStageBuffer[];
 }
 
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */
