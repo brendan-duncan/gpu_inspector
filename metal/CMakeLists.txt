@@ -20,6 +20,10 @@ add_library(${CAPTURE_LIB} SHARED
     src/hooks.mm
     src/capture.h
     src/capture.mm
+    src/formats.h
+    src/formats.mm
+    src/image.h
+    src/image.mm
     src/tracker.h
     src/tracker.mm
     src/ui_messages.h

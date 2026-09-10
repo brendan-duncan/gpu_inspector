@@ -281,10 +281,70 @@ staging holds nothing until the GPU has run the blits. `Internal` in `capture.h`
 library's own Metal calls out of the recording, which would otherwise contain the commands the
 capture made.
 
-Pixel formats are named the way the protocol names them, which is Vulkan's way — the UI's decoder
-is 570 lines built around those names and emitting the canonical name for the same layout reuses
-all of it. The visible cost is that a Metal texture's format reads as `VK_FORMAT_B8G8R8A8_UNORM`
-in the UI. A deliberate shortcut, and the obvious thing to revisit.
+See "Pixel formats" below for how a format is named and which ones can be read back.
+
+## Texture views
+
+Clicking an `MTLTexture` in the Inspect panel reads it back live: the UI's `RequestImage` is
+answered with `ImageData` and the pixels (`image.mm`). A blit into a staging buffer rather than
+`-getBytes:`, because anything worth looking at — a render target above all — is in private
+storage and has no contents the CPU can see. It runs on a command queue of the library's own, so
+a read-back does not queue behind whatever the application has already scheduled, and waits for
+completion on the transport's receiver thread.
+
+Objects are held **weakly**, which is what makes this safe to offer. Retaining every texture a
+game creates would keep hundreds of megabytes of VRAM alive for as long as the inspector is
+attached — the tool would change what it is measuring. A weak reference reads nil once the
+application lets go, and "the application has released this texture" is the honest answer.
+
+The Inspect panel needed two small things beside that: `MTLTexture` added to the types that get
+an Image section, and a Metal branch where the panel reads a texture's shape, since Metal spells
+those `mipmapLevelCount` and `arrayLength` where Vulkan has `mipLevels` and `arrayLayers`. The
+object list orders both APIs device-first from one shared list — the type names are disjoint, so
+no API detection is needed.
+
+## Pixel formats
+
+`formats.h` keeps two separate answers to "what format is this", because they are wanted for
+different reasons:
+
+* **Metal's own name** — `MTLPixelFormatBGRA8Unorm` — is what a descriptor shows in the Inspect
+  panel. It is what the application wrote and what the documentation calls it; a bare `80` is not
+  something anyone can act on. The same goes for `MTLTextureType2D` and `MTLStorageModePrivate`.
+  These are generated from the SDK's `MTLPixelFormat.h` and cover all 139 formats Metal has, so
+  a format the read-back cannot handle still says what it is.
+* **The protocol's name** — `VK_FORMAT_B8G8R8A8_UNORM` — travels with pixel data, because the
+  UI's decoder is 570 lines built around those names and an identical memory layout can reuse all
+  of it. 65 formats are mapped, including the BC family; the UI decodes BC1–BC5 and recognises
+  BC6H and BC7.
+
+Block-compressed formats are sized by block rather than by pixel, rounded up to whole blocks, so
+a BC1 read-back asks for the right number of bytes and a row pitch the GPU accepts.
+
+A format with no mapping is reported by name — `unsupported pixel format MTLPixelFormatASTC_4x4_LDR`
+— rather than silently producing nothing. ASTC, ETC, PVRTC, the XR formats and the YUV formats are
+in that group: Metal has them, Unity can produce them, and nothing here reads them yet.
+
+## Library contents
+
+Selecting an `MTLLibrary` shows what is in it. Two cases, and an engine uses both — Unity's
+`GpuProgramsMetal.mm` has `CreateMTLLibraryFromSource` and `CreateMTLLibraryFromBinary` side by
+side:
+
+* **Compiled here** (`newLibraryWithSource:options:error:`): the Metal Shading Language is
+  attached verbatim as a blob and shown as text.
+* **Loaded precompiled** (`newLibraryWithData:error:`, `newLibraryWithURL:error:`,
+  `newDefaultLibrary`): the metallib is AIR bitcode. Its bytes are attached so a capture or a bug
+  report carries them, but nothing here disassembles it — that needs Apple's Metal tooling — so
+  the panel says so rather than showing noise.
+
+Either way the descriptor carries `functionNames`, read off the library itself. That is the part
+that always works, and for a shipped metallib it is the only way to see what is inside without a
+disassembler.
+
+Deliberately not the Vulkan shader section, which is built around SPIR-V: reflection,
+cross-compilation to GLSL and HLSL, and shader editing. MSL is already source, and none of those
+apply to it.
 
 ## Not done
 

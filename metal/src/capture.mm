@@ -1,5 +1,6 @@
 #include "capture.h"
 
+#include "formats.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -29,6 +30,7 @@ struct PendingTexture {
     uint32_t height = 0;
     std::string format;
     size_t size = 0;
+    uint64_t bytesPerRow = 0;
     std::string error;
     id<MTLBuffer> staging = nil;
 };
@@ -97,76 +99,6 @@ uint64_t g_nextTextureId = 1;
 
 thread_local int g_internalDepth = 0;
 
-/**
- * MTLPixelFormat to the protocol's pixel format name.
- *
- * The protocol names formats the way Vulkan does, and the UI's decoder (renderer/vulkan/
- * vk_format.ts, texture_decode.ts) is 570 lines built around those names. Emitting the canonical
- * name for the same layout reuses all of it; the visible cost is that a Metal texture's format
- * reads as VK_FORMAT_B8G8R8A8_UNORM in the UI. Worth revisiting, not worth a second decoder now.
- */
-const char *FormatName(MTLPixelFormat format) {
-    switch (format) {
-        case MTLPixelFormatR8Unorm:          return "VK_FORMAT_R8_UNORM";
-        case MTLPixelFormatR8Unorm_sRGB:     return "VK_FORMAT_R8_SRGB";
-        case MTLPixelFormatR8Snorm:          return "VK_FORMAT_R8_SNORM";
-        case MTLPixelFormatR8Uint:           return "VK_FORMAT_R8_UINT";
-        case MTLPixelFormatRG8Unorm:         return "VK_FORMAT_R8G8_UNORM";
-        case MTLPixelFormatRG8Snorm:         return "VK_FORMAT_R8G8_SNORM";
-        case MTLPixelFormatRGBA8Unorm:       return "VK_FORMAT_R8G8B8A8_UNORM";
-        case MTLPixelFormatRGBA8Unorm_sRGB:  return "VK_FORMAT_R8G8B8A8_SRGB";
-        case MTLPixelFormatRGBA8Snorm:       return "VK_FORMAT_R8G8B8A8_SNORM";
-        case MTLPixelFormatRGBA8Uint:        return "VK_FORMAT_R8G8B8A8_UINT";
-        case MTLPixelFormatBGRA8Unorm:       return "VK_FORMAT_B8G8R8A8_UNORM";
-        case MTLPixelFormatBGRA8Unorm_sRGB:  return "VK_FORMAT_B8G8R8A8_SRGB";
-        case MTLPixelFormatRGB10A2Unorm:     return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
-        case MTLPixelFormatBGR10A2Unorm:     return "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
-        case MTLPixelFormatRG11B10Float:     return "VK_FORMAT_B10G11R11_UFLOAT_PACK32";
-        case MTLPixelFormatRGB9E5Float:      return "VK_FORMAT_E5B9G9R9_UFLOAT_PACK32";
-        case MTLPixelFormatR16Float:         return "VK_FORMAT_R16_SFLOAT";
-        case MTLPixelFormatR16Unorm:         return "VK_FORMAT_R16_UNORM";
-        case MTLPixelFormatR16Uint:          return "VK_FORMAT_R16_UINT";
-        case MTLPixelFormatRG16Float:        return "VK_FORMAT_R16G16_SFLOAT";
-        case MTLPixelFormatRG16Unorm:        return "VK_FORMAT_R16G16_UNORM";
-        case MTLPixelFormatRGBA16Float:      return "VK_FORMAT_R16G16B16A16_SFLOAT";
-        case MTLPixelFormatRGBA16Unorm:      return "VK_FORMAT_R16G16B16A16_UNORM";
-        case MTLPixelFormatR32Float:         return "VK_FORMAT_R32_SFLOAT";
-        case MTLPixelFormatR32Uint:          return "VK_FORMAT_R32_UINT";
-        case MTLPixelFormatRG32Float:        return "VK_FORMAT_R32G32_SFLOAT";
-        case MTLPixelFormatRGBA32Float:      return "VK_FORMAT_R32G32B32A32_SFLOAT";
-        case MTLPixelFormatDepth32Float:     return "VK_FORMAT_D32_SFLOAT";
-        case MTLPixelFormatDepth16Unorm:     return "VK_FORMAT_D16_UNORM";
-        default:                             return "";
-    }
-}
-
-uint32_t BytesPerPixel(MTLPixelFormat format) {
-    switch (format) {
-        case MTLPixelFormatR8Unorm: case MTLPixelFormatR8Unorm_sRGB:
-        case MTLPixelFormatR8Snorm: case MTLPixelFormatR8Uint:
-            return 1;
-        case MTLPixelFormatRG8Unorm: case MTLPixelFormatRG8Snorm:
-        case MTLPixelFormatR16Float: case MTLPixelFormatR16Unorm:
-        case MTLPixelFormatR16Uint:  case MTLPixelFormatDepth16Unorm:
-            return 2;
-        case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB:
-        case MTLPixelFormatRGBA8Snorm: case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
-        case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatBGR10A2Unorm:
-        case MTLPixelFormatRG11B10Float: case MTLPixelFormatRGB9E5Float:
-        case MTLPixelFormatRG16Float: case MTLPixelFormatRG16Unorm:
-        case MTLPixelFormatR32Float: case MTLPixelFormatR32Uint:
-        case MTLPixelFormatDepth32Float:
-            return 4;
-        case MTLPixelFormatRGBA16Float: case MTLPixelFormatRGBA16Unorm:
-        case MTLPixelFormatRG32Float:
-            return 8;
-        case MTLPixelFormatRGBA32Float:
-            return 16;
-        default:
-            return 0;
-    }
-}
 
 // A capture's commands go out in batches rather than one message, so a frame with tens of
 // thousands of commands does not become a single enormous JSON string.
@@ -491,20 +423,26 @@ void AddPassAttachment(id encoder, id textureObject, uint32_t attachment) {
     pending.attachment = attachment;
     pending.width = (uint32_t)texture.width;
     pending.height = (uint32_t)texture.height;
-    pending.format = FormatName(texture.pixelFormat);
-    const uint32_t bpp = BytesPerPixel(texture.pixelFormat);
-    if (pending.format.empty() || bpp == 0) {
+    const PixelFormatInfo info = PixelFormatDetails(texture.pixelFormat);
+    pending.format = info.name;
+    uint64_t bytesPerRow = 0;
+    const uint64_t imageSize = PixelFormatImageSize(info, pending.width, pending.height,
+                                                    &bytesPerRow);
+    if (pending.format.empty() || imageSize == 0) {
         // Reported, not dropped: an empty Render Targets section with no reason given is the
         // hardest kind of gap to notice.
-        Log("render target: unsupported pixel format %lu, not read back",
+        const char *enumName = PixelFormatEnumName(texture.pixelFormat);
+        Log("render target: unsupported pixel format %s (%lu), not read back", enumName,
             (unsigned long)texture.pixelFormat);
-        pending.error = "unsupported pixel format " + std::to_string((int)texture.pixelFormat);
+        pending.error = std::string("unsupported pixel format ")
+            + (enumName[0] != '\0' ? enumName : std::to_string((int)texture.pixelFormat));
         pending.size = 0;
         it->second.attachments.push_back(std::move(pending));
         it->second.textures.push_back(texture);
         return;
     }
-    pending.size = (size_t)pending.width * pending.height * bpp;
+    pending.size = (size_t)imageSize;
+    pending.bytesPerRow = bytesPerRow;
     it->second.attachments.push_back(std::move(pending));
     it->second.textures.push_back(texture);
 }
@@ -534,7 +472,6 @@ void EndRenderPass(id encoder) {
         id<MTLTexture> texture = pass.textures[i];
         t.staging = [device newBufferWithLength:t.size options:MTLResourceStorageModeShared];
         if (t.staging == nil) continue;
-        const NSUInteger bytesPerRow = t.size / t.height;
         [blit copyFromTexture:texture
                   sourceSlice:0
                   sourceLevel:0
@@ -542,7 +479,7 @@ void EndRenderPass(id encoder) {
                    sourceSize:MTLSizeMake(t.width, t.height, 1)
                      toBuffer:t.staging
             destinationOffset:0
-       destinationBytesPerRow:bytesPerRow
+       destinationBytesPerRow:(NSUInteger)t.bytesPerRow
      destinationBytesPerImage:t.size];
     }
     [blit endEncoding];

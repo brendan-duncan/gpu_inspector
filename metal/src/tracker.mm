@@ -6,6 +6,11 @@
 #include "ui_messages.h"
 
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+// The ARC weak-reference runtime, usable from manual reference counting but not declared by
+// <objc/runtime.h>.
+extern "C" id objc_loadWeakRetained(id *location);
 
 #include <mutex>
 #include <string>
@@ -17,12 +22,19 @@ namespace {
 
 struct TrackedObject {
     uint64_t id = 0;
+    // ::id because the `id` member below shadows the Objective-C type inside this scope.
+    // The address is registered with the runtime, so it must not move: g_byId is node-based
+    // (std::unordered_map), which keeps element addresses stable across rehashing.
+    /** Weak slot, so a live object can be used later without keeping it alive. */
+    __unsafe_unretained ::id weakSlot = nil;
     std::string type;   // the protocol the application sees: "MTLBuffer"
     std::string cmd;    // the selector that created it
     uint64_t parentId = 0;
     const void *pointer = nullptr;
     std::string label;
     std::string args;   // JSON descriptor, or empty
+    /** Named payloads the UI can ask for: shader source, a metallib. */
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> blobs;
 };
 
 std::mutex g_mutex;
@@ -52,11 +64,30 @@ std::string AddObjectMessage(const TrackedObject &o) {
     w.Key("handle"); w.Pointer(o.pointer);
     w.Key("label"); if (o.label.empty()) w.Null(); else w.String(o.label);
     w.Key("args"); if (o.args.empty()) w.Null(); else w.Raw(o.args);
+    if (!o.blobs.empty()) {
+        w.Key("blobs"); w.BeginArray();
+        for (const auto &[name, data] : o.blobs) {
+            w.BeginObject();
+            w.Key("name"); w.String(name);
+            w.Key("size"); w.Uint(data.size());
+            w.EndObject();
+        }
+        w.EndArray();
+    }
     w.EndObject();
     return std::move(w.str());
 }
 
 }  // namespace
+
+id LiveObject(uint64_t id) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_byId.find(id);
+    if (it == g_byId.end()) return nil;
+    // Retained and autoreleased, so the caller can use it even if the application releases it in
+    // the meantime.
+    return [objc_loadWeakRetained(&it->second.weakSlot) autorelease];
+}
 
 uint64_t IdOf(id object) {
     if (object == nil) return 0;
@@ -94,12 +125,64 @@ uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
         g_byPointer[pointer] = tracked.id;
         g_order.push_back(tracked.id);
         auto &stored = g_byId[tracked.id] = std::move(tracked);
+        objc_storeWeak(&stored.weakSlot, object);
         if (!g_live) return id;
         message = AddObjectMessage(stored);
     }
     // Outside the lock: the send queue has its own, and holding both is how deadlocks start.
     Transport::Get().SendJson(std::move(message));
     return id;
+}
+
+void AddBlob(id object, const char *name, const void *data, size_t size) {
+    if (object == nil || data == nullptr || size == 0) return;
+    const uint8_t *bytes = static_cast<const uint8_t *>(data);
+
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_byPointer.find((__bridge const void *)object);
+        if (it == g_byPointer.end()) return;
+        auto tracked = g_byId.find(it->second);
+        if (tracked == g_byId.end()) return;
+        tracked->second.blobs.emplace_back(name, std::vector<uint8_t>(bytes, bytes + size));
+        if (!g_live) return;
+        // The object was announced without this blob, so tell the UI its list has changed.
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectBlobs");
+        w.Key("id"); w.Uint(tracked->second.id);
+        w.Key("blobs"); w.BeginArray();
+        for (const auto &[blobName, blobData] : tracked->second.blobs) {
+            w.BeginObject();
+            w.Key("name"); w.String(blobName);
+            w.Key("size"); w.Uint(blobData.size());
+            w.EndObject();
+        }
+        w.EndArray();
+        w.EndObject();
+        message = std::move(w.str());
+    }
+    Transport::Get().SendJson(std::move(message));
+}
+
+void SendBlob(uint64_t objectId, uint32_t index) {
+    std::vector<uint8_t> data;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_byId.find(objectId);
+        if (it != g_byId.end() && index < it->second.blobs.size()) {
+            data = it->second.blobs[index].second;
+        }
+    }
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("ObjectBlob");
+    w.Key("id"); w.Uint(objectId);
+    w.Key("index"); w.Uint(index);
+    w.Key("size"); w.Uint(data.size());
+    w.EndObject();
+    Transport::Get().SendBinary(std::move(w.str()), data.data(), data.size());
 }
 
 void TrackLabel(id object) {

@@ -12,6 +12,7 @@
 #include "hooks.h"
 
 #include "capture.h"
+#include "formats.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -20,6 +21,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <atomic>
+#include <cstring>
 #include <string>
 
 namespace mtlinsp {
@@ -70,11 +72,17 @@ std::string BufferArgs(NSUInteger length, MTLResourceOptions options) {
     return std::move(w.str());
 }
 
+/** An enum as its Metal name, falling back to the raw value for one the tables do not know. */
+void WriteEnum(vkinsp::JsonWriter &w, const char *name, uint64_t value) {
+    if (name != nullptr && name[0] != '\0') w.String(name);
+    else w.Uint(value);
+}
+
 std::string TextureArgs(MTLTextureDescriptor *d) {
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("textureType"); w.Uint((uint64_t)d.textureType);
-    w.Key("pixelFormat"); w.Uint((uint64_t)d.pixelFormat);
+    w.Key("textureType"); WriteEnum(w, TextureTypeEnumName(d.textureType), (uint64_t)d.textureType);
+    w.Key("pixelFormat"); WriteEnum(w, PixelFormatEnumName(d.pixelFormat), (uint64_t)d.pixelFormat);
     w.Key("width"); w.Uint(d.width);
     w.Key("height"); w.Uint(d.height);
     w.Key("depth"); w.Uint(d.depth);
@@ -82,7 +90,7 @@ std::string TextureArgs(MTLTextureDescriptor *d) {
     w.Key("sampleCount"); w.Uint(d.sampleCount);
     w.Key("arrayLength"); w.Uint(d.arrayLength);
     w.Key("usage"); w.Uint((uint64_t)d.usage);
-    w.Key("storageMode"); w.Uint((uint64_t)d.storageMode);
+    w.Key("storageMode"); WriteEnum(w, StorageModeEnumName(d.storageMode), (uint64_t)d.storageMode);
     w.EndObject();
     return std::move(w.str());
 }
@@ -103,20 +111,35 @@ std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d) {
         if (a.pixelFormat == MTLPixelFormatInvalid) continue;
         w.BeginObject();
         w.Key("index"); w.Uint(i);
-        w.Key("pixelFormat"); w.Uint((uint64_t)a.pixelFormat);
+        w.Key("pixelFormat"); WriteEnum(w, PixelFormatEnumName(a.pixelFormat), (uint64_t)a.pixelFormat);
         w.Key("blendingEnabled"); w.Boolean(a.blendingEnabled);
         w.EndObject();
     }
     w.EndArray();
-    w.Key("depthAttachmentPixelFormat"); w.Uint((uint64_t)d.depthAttachmentPixelFormat);
+    w.Key("depthAttachmentPixelFormat");
+    WriteEnum(w, PixelFormatEnumName(d.depthAttachmentPixelFormat),
+              (uint64_t)d.depthAttachmentPixelFormat);
     w.EndObject();
     return std::move(w.str());
 }
 
-std::string LibraryArgs(NSString *source) {
+/**
+ * A library's descriptor: how it was made and what is in it.
+ *
+ * `functionNames` is the useful part and is always available, whether the library was compiled
+ * from source here or loaded precompiled — it is the only way to see what a shipped metallib
+ * contains without a disassembler.
+ */
+std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sourceLength) {
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("sourceLength"); w.Uint(source.length);
+    w.Key("origin"); w.String(origin);
+    if (sourceLength != 0) { w.Key("sourceLength"); w.Uint(sourceLength); }
+    w.Key("functionNames"); w.BeginArray();
+    if (library != nil) {
+        for (NSString *name in library.functionNames) w.String(name.UTF8String);
+    }
+    w.EndArray();
     w.EndObject();
     return std::move(w.str());
 }
@@ -173,7 +196,12 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
         if (texture != nil && IdOf(texture) == 0) {
             vkinsp::JsonWriter w;
             w.BeginObject();
-            w.Key("pixelFormat"); w.Uint((uint64_t)texture.pixelFormat);
+            w.Key("pixelFormat");
+            WriteEnum(w, PixelFormatEnumName(texture.pixelFormat), (uint64_t)texture.pixelFormat);
+            w.Key("textureType");
+            WriteEnum(w, TextureTypeEnumName(texture.textureType), (uint64_t)texture.textureType);
+            w.Key("mipmapLevelCount"); w.Uint(texture.mipmapLevelCount);
+            w.Key("arrayLength"); w.Uint(texture.arrayLength);
             w.Key("width"); w.Uint(texture.width);
             w.Key("height"); w.Uint(texture.height);
             w.Key("usage"); w.Uint((uint64_t)texture.usage);
@@ -305,6 +333,51 @@ id Replaced_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescripto
     return state;
 }
 
+id Replaced_newLibraryWithData(id self, SEL _cmd, dispatch_data_t data, NSError **error) {
+    Reentry reentry;
+    id library = ((id (*)(id, SEL, dispatch_data_t, NSError **))Original(self, _cmd))(self, _cmd,
+                                                                                      data, error);
+    if (reentry.outermost()) {
+        Log("device.newLibraryWithData: -> %s", ClassName(library));
+        Track(library, "MTLLibrary", "newLibraryWithData:error:", self,
+              LibraryArgs((id<MTLLibrary>)library, "metallib", 0));
+        // The AIR bitcode itself. Nothing here disassembles it — that needs Apple's tooling —
+        // but the bytes are what a report or a bug attachment needs, and functionNames above
+        // already says what is inside.
+        if (library != nil && data != nil) {
+            const void *bytes = nullptr;
+            size_t size = 0;
+            dispatch_data_t contiguous = dispatch_data_create_map(data, &bytes, &size);
+            if (bytes != nullptr && size != 0) AddBlob(library, "metallib", bytes, size);
+            if (contiguous != nil) dispatch_release(contiguous);
+        }
+    }
+    return library;
+}
+
+id Replaced_newLibraryWithURL(id self, SEL _cmd, NSURL *url, NSError **error) {
+    Reentry reentry;
+    id library = ((id (*)(id, SEL, NSURL *, NSError **))Original(self, _cmd))(self, _cmd, url,
+                                                                              error);
+    if (reentry.outermost()) {
+        Log("device.newLibraryWithURL: %s -> %s", url.path.UTF8String, ClassName(library));
+        Track(library, "MTLLibrary", "newLibraryWithURL:error:", self,
+              LibraryArgs((id<MTLLibrary>)library, url.path.UTF8String, 0));
+    }
+    return library;
+}
+
+id Replaced_newDefaultLibrary(id self, SEL _cmd) {
+    Reentry reentry;
+    id library = ((id (*)(id, SEL))Original(self, _cmd))(self, _cmd);
+    if (reentry.outermost()) {
+        Log("device.newDefaultLibrary -> %s", ClassName(library));
+        Track(library, "MTLLibrary", "newDefaultLibrary", self,
+              LibraryArgs((id<MTLLibrary>)library, "default.metallib", 0));
+    }
+    return library;
+}
+
 id Replaced_newComputePipelineStateWithFunction(id self, SEL _cmd, id<MTLFunction> function,
                                                 NSError **error) {
     Reentry reentry;
@@ -327,7 +400,10 @@ id Replaced_newLibraryWithSource(id self, SEL _cmd, NSString *source, MTLCompile
         Log("device.newLibraryWithSource: %lu chars -> %s", (unsigned long)source.length,
             ClassName(library));
         Track(library, "MTLLibrary", "newLibraryWithSource:options:error:", self,
-                    LibraryArgs(source));
+              LibraryArgs((id<MTLLibrary>)library, "source", source.length));
+        // The Metal Shading Language the application compiled, verbatim.
+        const char *utf8 = source.UTF8String;
+        if (utf8 != nullptr) AddBlob(library, "Metal Shading Language", utf8, strlen(utf8));
     }
     return library;
 }
@@ -865,6 +941,9 @@ void HookDeviceClass(id device) {
     Hook(cls, @selector(newComputePipelineStateWithFunction:error:),
          (IMP)Replaced_newComputePipelineStateWithFunction);
     Hook(cls, @selector(newLibraryWithSource:options:error:), (IMP)Replaced_newLibraryWithSource);
+    Hook(cls, @selector(newLibraryWithData:error:), (IMP)Replaced_newLibraryWithData);
+    Hook(cls, @selector(newLibraryWithURL:error:), (IMP)Replaced_newLibraryWithURL);
+    Hook(cls, @selector(newDefaultLibrary), (IMP)Replaced_newDefaultLibrary);
 }
 
 void HookCommandQueueClass(id queue) {

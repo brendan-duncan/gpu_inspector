@@ -6,6 +6,7 @@
 #include "ui_messages.h"
 
 #include "capture.h"
+#include "image.h"
 #include "json_parse.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -31,6 +32,11 @@ void HandleMessage(const std::string &text) {
         CaptureOptions options;
         options.frameCount = (uint32_t)message.GetNumber("frameCount", 1);
         RequestCapture(options);
+    } else if (action == "RequestBlob") {
+        SendBlob((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("index"));
+    } else if (action == "RequestImage") {
+        SendImageData((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("mip"),
+                      (uint32_t)message.GetNumber("layer"));
     } else if (action == "Settings") {
         // "Record all command buffers" has no Metal counterpart: a command buffer is encoded and
         // submitted once, so there is no earlier recording for a capture to have missed.

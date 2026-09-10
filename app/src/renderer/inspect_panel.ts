@@ -38,7 +38,10 @@ import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
 import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
-// Preferred display order; any other type is appended alphabetically as it appears.
+// Preferred display order; any other type is appended alphabetically as it appears. Both APIs
+// share the list rather than selecting one, because a session only ever holds objects of one of
+// them — the Vk entries never match in a Metal session, and the MTL entries never match in a
+// Vulkan one. Each runs device-first, since that is what everything else hangs off.
 const TYPE_ORDER = [
   "VkInstance", "VkPhysicalDevice", "VkDevice", "VkQueue", "VkSurfaceKHR", "VkSwapchainKHR",
   "VkPipeline", "VkShaderModule", "VkPipelineLayout", "VkRenderPass", "VkFramebuffer",
@@ -46,6 +49,10 @@ const TYPE_ORDER = [
   "VkDescriptorSet", "VkDescriptorSetLayout", "VkDescriptorPool",
   "VkCommandBuffer", "VkCommandPool", "VkFence", "VkSemaphore", "VkEvent", "VkQueryPool",
   "VkPipelineCache",
+
+  "MTLDevice", "MTLCommandQueue", "MTLLibrary", "MTLFunction",
+  "MTLRenderPipelineState", "MTLComputePipelineState", "MTLDepthStencilState",
+  "MTLTexture", "MTLBuffer", "MTLSamplerState", "MTLHeap",
 ];
 
 const PLURALS: Record<string, string> = { VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains" };
@@ -54,7 +61,11 @@ function typeLabel(type: string): string {
   if (PLURALS[type]) return PLURALS[type];
   const t = type.replace(/^Vk/, "").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
   const words = t.replace(/([a-z])([A-Z])/g, "$1 $2");
-  return words.endsWith("s") ? words + "es" : words + "s";
+  if (words.endsWith("s")) return words + "es";
+  // "MTLLibrary" would otherwise read "MTLLibrarys". No Vulkan type ends in y, so this only ever
+  // fires for Metal.
+  if (/[^aeiou]y$/.test(words)) return words.slice(0, -1) + "ies";
+  return words + "s";
 }
 
 interface ObjectGroup extends collapsible {
@@ -179,6 +190,8 @@ export class InspectPanel {
   private _forward: VulkanObject[] = [];
   private _filters: Filters = InspectPanel._emptyFilters();
   private _shaderViews = new Map<number, ShaderView>();
+  /** MTLLibrary payloads: the Metal Shading Language source, or the metallib bytes. */
+  private _libraryViews = new Map<number, { pre: Widget; name: string }>();
   /** Shader edits by "<object id>:<blob index>"; the layer holds the applied state. */
   private _shaderEdits = new Map<string, ShaderEdit>();
   /** The editor currently open, to route ShaderReplaced answers to its status line. */
@@ -923,12 +936,13 @@ export class InspectPanel {
     }
 
     if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
+    if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
     if (object.type === "VkDescriptorSet") this._buildDescriptorSetSection(object);
     this._imageView = null;
-    if (object.type === "VkImage" || object.type === "VkImageView") {
+    if (object.type === "VkImage" || object.type === "VkImageView" || object.type === "MTLTexture") {
       const grp = new collapsible(this.inspectPanel, { label: "Image", collapsed: false });
       this._imageView = new ImageView(grp.body, this.window, object);
     }
@@ -1009,6 +1023,26 @@ export class InspectPanel {
   }
 
   // Shader code: one sub-section per SPIR-V payload with disassembly / GLSL / HLSL views.
+  /**
+   * A Metal library's contents. Deliberately not the Vulkan shader section, which is built around
+   * SPIR-V: reflection, cross-compilation to GLSL and HLSL, and editing. Metal Shading Language
+   * is already the source, and a metallib is AIR bitcode that needs Apple's tooling to read.
+   */
+  private _buildLibrarySection(object: VulkanObject): void {
+    this._libraryViews = new Map();
+    if (!object.blobs.length) {
+      const grp = new collapsible(this.inspectPanel, { label: "Library", collapsed: false });
+      new Div(grp.body, { text: "No source or binary recorded for this library.", class: "text-muted" });
+      return;
+    }
+    object.blobs.forEach((blob, index) => {
+      const grp = new collapsible(this.inspectPanel, { label: `${blob.name} (${formatBytes(blob.size)})`, collapsed: index > 0 });
+      const pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
+      this._libraryViews.set(index, { pre, name: blob.name });
+      void this.window.send({ action: "RequestBlob", id: object.id, index });
+    });
+  }
+
   private _buildShaderSection(object: VulkanObject): void {
     this._shaderViews = new Map();
     if (!object.blobs.length) {
@@ -1129,6 +1163,20 @@ export class InspectPanel {
 
   private _objectBlob(id: number, index: number, data: Uint8Array | null): void {
     if (this.inspectedObject?.id !== id) return;
+    const library = this._libraryViews.get(index);
+    if (library) {
+      if (!data) {
+        library.pre.text = "Not available.";
+      } else if (library.name === "metallib") {
+        // AIR bitcode: showing it as text would be noise. Its function names are in Arguments.
+        library.pre.text = `${data.length} bytes of compiled Metal library (AIR). `
+          + "Disassembling it needs Apple's Metal tooling; the functions it defines are listed "
+          + "under Arguments.";
+      } else {
+        library.pre.text = new TextDecoder().decode(data);
+      }
+      return;
+    }
     const view = this._shaderViews.get(index);
     if (!view) return;
     if (!data) {

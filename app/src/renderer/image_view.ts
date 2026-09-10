@@ -13,9 +13,12 @@ import {
   decodeTexels, displayTexels, formatFloat, formatTexel, isFormatSupported, sliceBytes,
   type ChannelMode, type DisplaySettings, type TexelData,
 } from "./vulkan/texture_decode.js";
-import { isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
 import type { CaptureTextureInfo, ImageDataMessage } from "../shared/protocol.js";
+
+/** The one Metal texture type that makes the layer slider a depth slider. */
+const MTL_TEXTURE_TYPE_3D = "MTLTextureType3D";
 
 /** Pixels read back during a capture (a render target), shown instead of the live image. */
 export interface CapturedImageSource {
@@ -103,6 +106,16 @@ export class ImageView {
       if (image?.cmd === "vkGetSwapchainImagesKHR") {
         const sd = db.getObject(image.parentId)?.descriptor;
         this._layerCount = Math.max(1, num(sd?.imageArrayLayers) || 1);
+      } else if (image?.type === "MTLTexture" && d) {
+        // Metal's descriptor names the same things differently: mipmapLevelCount for mipLevels,
+        // arrayLength for arrayLayers, and a numeric MTLTextureType where Vulkan has a string.
+        // The types are disjoint, so branching on the object's own type is unambiguous.
+        this._is3D = str(d.textureType) === MTL_TEXTURE_TYPE_3D;
+        this._mipCount = Math.max(1, num(d.mipmapLevelCount) || 1);
+        this._layerCount = this._is3D ? Math.max(1, num(d.depth) || 1) : Math.max(1, num(d.arrayLength) || 1);
+        // The capture library only reads colour back so far; a depth texture answers with an
+        // error rather than being mislabelled here.
+        isDepth = false;
       } else if (d) {
         this._is3D = d.imageType === "VK_IMAGE_TYPE_3D";
         this._mipCount = Math.max(1, num(d.mipLevels) || 1);

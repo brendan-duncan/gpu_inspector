@@ -11,6 +11,7 @@
 // Ids are stable and never reused, so the UI can hold on to one after the object is gone.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -33,6 +34,28 @@ uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
 
 /** Id of an already-tracked object, or 0. */
 uint64_t IdOf(id object);
+
+/**
+ * The tracked object with this id, if it is still alive, else nil.
+ *
+ * Held weakly. Retaining would keep every texture a game ever made resident for as long as the
+ * inspector is attached, which for a real player is hundreds of megabytes of VRAM it cannot
+ * reclaim — the tool would change what it is measuring. A weak reference reads nil once the
+ * application lets go, which is also the honest answer to "show me this texture".
+ */
+id LiveObject(uint64_t id);
+
+/**
+ * Attaches named bytes to a tracked object, which the UI can ask for by index (`RequestBlob`).
+ *
+ * The counterpart of the Vulkan layer's shader blobs. A library's Metal Shading Language source
+ * goes here when it was compiled from source, and its metallib bytes when it was loaded
+ * precompiled — the two cases a real engine mixes.
+ */
+void AddBlob(id object, const char *name, const void *data, size_t size);
+
+/** Answers `RequestBlob` with an `ObjectBlob` message and the bytes. */
+void SendBlob(uint64_t objectId, uint32_t index);
 
 /** Streams ObjectSetLabel when an object's label has changed since it was last seen. */
 void TrackLabel(id object);
