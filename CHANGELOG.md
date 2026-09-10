@@ -43,6 +43,11 @@
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
   offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
   resource id every object now reports.
+- Compressed textures decode in the image viewer: BC6H and BC7, ETC2 and EAC, every ASTC
+  footprint, and PVRTC, alongside the BC1-BC5 that were already there. Metal captures also read
+  back the ASTC, ETC2, EAC, PVRTC, extended-range and packed 4:2:2 formats, which used to report
+  "unsupported pixel format". The decoders are checked against an independent decoder over
+  random blocks (`npm test` in `app`).
 - Metal draw details: only the stage buffer slots the bound pipeline's shaders read are listed,
   the rest folded into one line (an engine leaves dozens bound, most to nothing); bindings the
   compiler dropped count as unread; no Vulkan "no descriptor sets" note in a Metal capture; and

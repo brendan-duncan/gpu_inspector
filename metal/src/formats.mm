@@ -152,7 +152,7 @@ const char *PixelFormatEnumName(MTLPixelFormat format) {
 
 PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
     switch ((NSUInteger)format) {
-        case 1: return {"VK_FORMAT_R8_UNORM", 1, 1, 1};
+        case 1: return {"VK_FORMAT_A8_UNORM_KHR", 1, 1, 1};
         case 10: return {"VK_FORMAT_R8_UNORM", 1, 1, 1};
         case 11: return {"VK_FORMAT_R8_SRGB", 1, 1, 1};
         case 12: return {"VK_FORMAT_R8_SNORM", 1, 1, 1};
@@ -167,7 +167,11 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 32: return {"VK_FORMAT_R8G8_SNORM", 1, 1, 2};
         case 33: return {"VK_FORMAT_R8G8_UINT", 1, 1, 2};
         case 34: return {"VK_FORMAT_R8G8_SINT", 1, 1, 2};
+        // Metal names components from the low bits up, Vulkan's PACK names from the high bits down.
         case 40: return {"VK_FORMAT_R5G6B5_UNORM_PACK16", 1, 1, 2};
+        case 41: return {"VK_FORMAT_R5G5B5A1_UNORM_PACK16", 1, 1, 2};
+        case 42: return {"VK_FORMAT_R4G4B4A4_UNORM_PACK16", 1, 1, 2};
+        case 43: return {"VK_FORMAT_A1R5G5B5_UNORM_PACK16", 1, 1, 2};
         case 53: return {"VK_FORMAT_R32_UINT", 1, 1, 4};
         case 54: return {"VK_FORMAT_R32_SINT", 1, 1, 4};
         case 55: return {"VK_FORMAT_R32_SFLOAT", 1, 1, 4};
@@ -213,11 +217,81 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 151: return {"VK_FORMAT_BC6H_UFLOAT_BLOCK", 4, 4, 16};
         case 152: return {"VK_FORMAT_BC7_UNORM_BLOCK", 4, 4, 16};
         case 153: return {"VK_FORMAT_BC7_SRGB_BLOCK", 4, 4, 16};
+        // PVRTC blocks are 8 bytes, 8x4 texels at 2 bpp and 4x4 at 4 bpp, in Morton order:
+        // the blit copies them out packed (image.mm passes no row pitch).
+        case 160: return {"VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG", 8, 4, 8};
+        case 161: return {"VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG", 8, 4, 8};
+        case 162: return {"VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG", 4, 4, 8};
+        case 163: return {"VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG", 4, 4, 8};
+        case 164: return {"VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG", 8, 4, 8};
+        case 165: return {"VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG", 8, 4, 8};
+        case 166: return {"VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG", 4, 4, 8};
+        case 167: return {"VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG", 4, 4, 8};
+        case 170: return {"VK_FORMAT_EAC_R11_UNORM_BLOCK", 4, 4, 8};
+        case 172: return {"VK_FORMAT_EAC_R11_SNORM_BLOCK", 4, 4, 8};
+        case 174: return {"VK_FORMAT_EAC_R11G11_UNORM_BLOCK", 4, 4, 16};
+        case 176: return {"VK_FORMAT_EAC_R11G11_SNORM_BLOCK", 4, 4, 16};
+        case 178: return {"VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK", 4, 4, 16};
+        case 179: return {"VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK", 4, 4, 16};
+        case 180: return {"VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK", 4, 4, 8};
+        case 181: return {"VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK", 4, 4, 8};
+        case 182: return {"VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK", 4, 4, 8};
+        case 183: return {"VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK", 4, 4, 8};
+        case 186: return {"VK_FORMAT_ASTC_4x4_SRGB_BLOCK", 4, 4, 16};
+        case 187: return {"VK_FORMAT_ASTC_5x4_SRGB_BLOCK", 5, 4, 16};
+        case 188: return {"VK_FORMAT_ASTC_5x5_SRGB_BLOCK", 5, 5, 16};
+        case 189: return {"VK_FORMAT_ASTC_6x5_SRGB_BLOCK", 6, 5, 16};
+        case 190: return {"VK_FORMAT_ASTC_6x6_SRGB_BLOCK", 6, 6, 16};
+        case 192: return {"VK_FORMAT_ASTC_8x5_SRGB_BLOCK", 8, 5, 16};
+        case 193: return {"VK_FORMAT_ASTC_8x6_SRGB_BLOCK", 8, 6, 16};
+        case 194: return {"VK_FORMAT_ASTC_8x8_SRGB_BLOCK", 8, 8, 16};
+        case 195: return {"VK_FORMAT_ASTC_10x5_SRGB_BLOCK", 10, 5, 16};
+        case 196: return {"VK_FORMAT_ASTC_10x6_SRGB_BLOCK", 10, 6, 16};
+        case 197: return {"VK_FORMAT_ASTC_10x8_SRGB_BLOCK", 10, 8, 16};
+        case 198: return {"VK_FORMAT_ASTC_10x10_SRGB_BLOCK", 10, 10, 16};
+        case 199: return {"VK_FORMAT_ASTC_12x10_SRGB_BLOCK", 12, 10, 16};
+        case 200: return {"VK_FORMAT_ASTC_12x12_SRGB_BLOCK", 12, 12, 16};
+        case 204: return {"VK_FORMAT_ASTC_4x4_UNORM_BLOCK", 4, 4, 16};
+        case 205: return {"VK_FORMAT_ASTC_5x4_UNORM_BLOCK", 5, 4, 16};
+        case 206: return {"VK_FORMAT_ASTC_5x5_UNORM_BLOCK", 5, 5, 16};
+        case 207: return {"VK_FORMAT_ASTC_6x5_UNORM_BLOCK", 6, 5, 16};
+        case 208: return {"VK_FORMAT_ASTC_6x6_UNORM_BLOCK", 6, 6, 16};
+        case 210: return {"VK_FORMAT_ASTC_8x5_UNORM_BLOCK", 8, 5, 16};
+        case 211: return {"VK_FORMAT_ASTC_8x6_UNORM_BLOCK", 8, 6, 16};
+        case 212: return {"VK_FORMAT_ASTC_8x8_UNORM_BLOCK", 8, 8, 16};
+        case 213: return {"VK_FORMAT_ASTC_10x5_UNORM_BLOCK", 10, 5, 16};
+        case 214: return {"VK_FORMAT_ASTC_10x6_UNORM_BLOCK", 10, 6, 16};
+        case 215: return {"VK_FORMAT_ASTC_10x8_UNORM_BLOCK", 10, 8, 16};
+        case 216: return {"VK_FORMAT_ASTC_10x10_UNORM_BLOCK", 10, 10, 16};
+        case 217: return {"VK_FORMAT_ASTC_12x10_UNORM_BLOCK", 12, 10, 16};
+        case 218: return {"VK_FORMAT_ASTC_12x12_UNORM_BLOCK", 12, 12, 16};
+        case 222: return {"VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK", 4, 4, 16};
+        case 223: return {"VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK", 5, 4, 16};
+        case 224: return {"VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK", 5, 5, 16};
+        case 225: return {"VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK", 6, 5, 16};
+        case 226: return {"VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK", 6, 6, 16};
+        case 228: return {"VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK", 8, 5, 16};
+        case 229: return {"VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK", 8, 6, 16};
+        case 230: return {"VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK", 8, 8, 16};
+        case 231: return {"VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK", 10, 5, 16};
+        case 232: return {"VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK", 10, 6, 16};
+        case 233: return {"VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK", 10, 8, 16};
+        case 234: return {"VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK", 10, 10, 16};
+        case 235: return {"VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK", 12, 10, 16};
+        case 236: return {"VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK", 12, 12, 16};
+        // Packed 4:2:2: two texels per 4 bytes.
+        case 240: return {"VK_FORMAT_G8B8G8R8_422_UNORM", 2, 1, 4};
+        case 241: return {"VK_FORMAT_B8G8R8G8_422_UNORM", 2, 1, 4};
         case 250: return {"VK_FORMAT_D16_UNORM", 1, 1, 2};
         case 252: return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};
         case 253: return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         case 255: return {"VK_FORMAT_D24_UNORM_S8_UINT", 1, 1, 4};
         case 260: return {"VK_FORMAT_D32_SFLOAT_S8_UINT", 1, 1, 8};
+        // Extended range: no Vulkan spelling, so the UI decodes these under Metal's names.
+        case 552: return {"MTLPixelFormatBGRA10_XR", 1, 1, 8};
+        case 553: return {"MTLPixelFormatBGRA10_XR_sRGB", 1, 1, 8};
+        case 554: return {"MTLPixelFormatBGR10_XR", 1, 1, 4};
+        case 555: return {"MTLPixelFormatBGR10_XR_sRGB", 1, 1, 4};
         default: return {"", 0, 0, 0};
     }
 }

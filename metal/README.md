@@ -569,21 +569,31 @@ different reasons:
   These are generated from the SDK's `MTLPixelFormat.h` and cover all 139 formats Metal has, so
   a format the read-back cannot handle still says what it is.
 * **The protocol's name** — `VK_FORMAT_B8G8R8A8_UNORM` — travels with pixel data, because the
-  UI's decoder is 570 lines built around those names and an identical memory layout can reuse all
-  of it. 66 formats are mapped, including the BC family; the UI decodes BC1–BC5 and recognises
-  BC6H and BC7. Vertex formats get the same pair, for the same reason.
+  UI's decoder is built around those names and an identical memory layout can reuse all of it.
+  135 formats are mapped: the colour and depth formats, BC1 through BC7, ETC2 and EAC, every
+  ASTC footprint in its LDR, sRGB and HDR flavour, PVRTC, and the packed 4:2:2 pair. The two
+  extended-range families have no Vulkan spelling, so they travel under Metal's own names and
+  the UI decodes them under those. Vertex formats get the same pair, for the same reason.
 
 Block-compressed formats are sized by block rather than by pixel, rounded up to whole blocks, so
-a BC1 read-back asks for the right number of bytes and a row pitch the GPU accepts.
+a BC1 read-back asks for the right number of bytes and a row pitch the GPU accepts. PVRTC is the
+exception: its blocks are in Morton order rather than rows, so the blit is given no pitch at all.
 
 A combined depth-stencil texture cannot be copied to a buffer whole: the blit picks one aspect
 with `MTLBlitOptionDepthFromDepthStencil`, and what lands in the buffer is that aspect alone —
 four bytes of depth per pixel for `MTLPixelFormatDepth32Float_Stencil8`, not eight.
 `DepthReadbackDetails` answers for that.
 
-A format with no mapping is reported by name — `unsupported pixel format MTLPixelFormatASTC_4x4_LDR`
-— rather than silently producing nothing. ASTC, ETC, PVRTC, the XR formats and the YUV formats are
-in that group: Metal has them, Unity can produce them, and nothing here reads them yet.
+A format with no mapping is reported by name — `unsupported pixel format MTLPixelFormatX` — rather
+than silently producing nothing. What remains in that group is the multi-planar YUV formats and
+the stencil aspect of a combined depth-stencil texture.
+
+The decoders themselves live on the UI side, next to the ones the Vulkan layer feeds
+(`app/src/renderer/vulkan/`), and are checked against an independent decoder over random blocks
+(`tools/texture_vectors.py` writes the vectors, `app/test/texture_decode.test.js` compares).
+Signed BC6H has no trustworthy reference to compare against, so it is pinned by blocks whose
+result the specification fixes exactly. An ASTC block with HDR endpoints shows the error colour
+the specification prescribes, magenta, rather than a wrong colour.
 
 ## Library contents
 

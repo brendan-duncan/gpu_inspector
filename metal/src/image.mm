@@ -10,6 +10,7 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -130,7 +131,10 @@ void SendImageData(uint64_t objectId, uint32_t mip, uint32_t layer) {
     uint64_t rowBytes = 0;
     const uint64_t sliceSize = PixelFormatImageSize(info, width, height, &rowBytes);
     const uint64_t size = sliceSize * depth;
-    const NSUInteger bytesPerRow = (NSUInteger)rowBytes;
+    // PVRTC has no row pitch: its blocks are in Morton order, and Metal wants both pitches zero.
+    const bool pvrtc = strncmp(info.name, "VK_FORMAT_PVRTC", 15) == 0;
+    const NSUInteger bytesPerRow = pvrtc ? 0 : (NSUInteger)rowBytes;
+    const NSUInteger bytesPerImage = pvrtc ? 0 : (NSUInteger)sliceSize;
 
     id<MTLDevice> device = texture.device;
     id<MTLBuffer> staging = [device newBufferWithLength:size options:MTLResourceStorageModeShared];
@@ -153,7 +157,7 @@ void SendImageData(uint64_t objectId, uint32_t mip, uint32_t layer) {
                  toBuffer:staging
         destinationOffset:0
    destinationBytesPerRow:bytesPerRow
- destinationBytesPerImage:sliceSize
+ destinationBytesPerImage:bytesPerImage
                   options:options];
     [blit endEncoding];
     [commandBuffer commit];
