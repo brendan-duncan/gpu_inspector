@@ -176,6 +176,16 @@ void OnPresentDrawable(id commandBuffer, id drawable);
 bool OnDrawablePresent(id drawable);
 
 /**
+ * Installs the logger for a frame that ends at a commit rather than at a present call.
+ *
+ * The two present hooks report their own boundary. Once an application presents its drawables
+ * itself, though, the frame ends at the commit that rendered into one, and nothing there said so:
+ * the log fell silent after the first frame while the counting stayed correct. A log that goes
+ * quiet is how the Unity present path stayed undiagnosed, so this closes the same gap.
+ */
+void SetCommitBoundaryLogger(void (*logger)(id commandBuffer));
+
+/**
  * The frame boundary: closes a recording frame, arms a pending capture, sends a finished one.
  * Called from `commit`, before it is forwarded. Records the commit itself, so that the present
  * marker of a frame ending here comes before it.

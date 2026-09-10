@@ -96,6 +96,13 @@ void LogDrawableFrame(id drawable, const char *how) {
         g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(drawable), how);
 }
 
+/** Installed on the capture side, so a frame that ends at a commit still reports itself. */
+void LogCommitFrame(id commandBuffer) {
+    Log("--- frame %llu: %u encoders, %u draws, %u dispatches (%s commits, drawable presented "
+        "later) ---", (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
+        g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(commandBuffer));
+}
+
 void Replaced_drawablePresent(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
     ORIG(void (*)(id, SEL))(self, _cmd);
@@ -885,6 +892,10 @@ void TrackDeviceObject(id device, const char *origin) {
         Track(device, "MTLDevice", origin, nil, DeviceArgs((id<MTLDevice>)device, origin));
     }
     HookDeviceClass(device);
+}
+
+void InstallFrameLogging(void) {
+    SetCommitBoundaryLogger(LogCommitFrame);
 }
 
 void HookDrawableClass(id drawable) {

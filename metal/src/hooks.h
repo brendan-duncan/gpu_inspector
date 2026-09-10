@@ -23,6 +23,9 @@ void HookDrawableSource(void);
 /** Hooks a CAMetalDrawable's class: its own `present` is also a frame boundary. */
 void HookDrawableClass(id drawable);
 
+/** Registers the commit-boundary frame logger with the capture side. Called once, on load. */
+void InstallFrameLogging(void);
+
 void HookDeviceClass(id device);
 void HookHeapClass(id heap);
 void HookLibraryClass(id library);

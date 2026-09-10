@@ -47,7 +47,10 @@ struct PendingTexture {
 // A bound buffer range read back with the capture. `data` is filled at once for a buffer in
 // shared storage; a managed or private one is filled at Finish, from the buffer or its staging.
 struct CapturedBuffer {
-    uint64_t id = 0;
+    // Not `id`: an Objective-C++ member of that name hides the `id` type for the whole struct,
+    // so the id<MTLBuffer> fields below stop parsing. PendingTexture calls its own `textureId`
+    // for the same reason.
+    uint64_t captureId = 0;
     uint64_t bufferId = 0;     // the tracked MTLBuffer, 0 for inline bytes
     uint32_t frame = 0;
     uint64_t commandBufferId = 0;
@@ -138,7 +141,8 @@ std::vector<DrawableInfo> g_presentedByCommandBuffer;         // drawables prese
 std::unordered_map<const void *, DrawableInfo> g_drawableOfTexture;
 std::unordered_map<const void *, DrawableInfo> g_targetOfCommandBuffer;
 std::set<const void *> g_countedDrawables;                    // frame ended at commit already
-bool g_directPresent = false;                                 // the app presents drawables itself
+bool g_directPresent = false;
+void (*g_commitBoundaryLogger)(id) = nullptr;                                 // the app presents drawables itself
 
 // Matches the Vulkan layer's default: enough for a vertex or uniform buffer, not so much that a
 // large storage buffer floods the connection.
@@ -363,7 +367,7 @@ void SendBuffers(std::vector<CapturedBuffer> &buffers) {
     w.Key("buffers"); w.BeginArray();
     for (const CapturedBuffer &b : buffers) {
         w.BeginObject();
-        w.Key("id"); w.Uint(b.id);
+        w.Key("id"); w.Uint(b.captureId);
         w.Key("buffer"); w.Uint(b.bufferId);
         w.Key("frame"); w.Uint(b.frame);
         w.Key("commandBuffer"); w.Uint(b.commandBufferId);
@@ -382,7 +386,7 @@ void SendBuffers(std::vector<CapturedBuffer> &buffers) {
         vkinsp::JsonWriter h;
         h.BeginObject();
         h.Key("action"); h.String("CaptureBufferData");
-        h.Key("id"); h.Uint(b.id);
+        h.Key("id"); h.Uint(b.captureId);
         h.Key("size"); h.Uint(b.data.size());
         h.EndObject();
         Transport::Get().SendBinary(std::move(h.str()), std::move(b.data));
@@ -729,10 +733,10 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
         [captured.source release];
         return known->second;
     }
-    captured.id = g_nextBufferId++;
+    captured.captureId = g_nextBufferId++;
     captured.frame = g_frameIndex;
     const bool deferred = captured.source != nil;
-    const uint64_t id = captured.id;
+    const uint64_t id = captured.captureId;
     if (deferred) {
         auto pass = g_openPasses.find((__bridge const void *)encoder);
         if (pass == g_openPasses.end()) {
@@ -765,10 +769,10 @@ uint64_t QueueBytesCapture(const void *bytes, uint64_t size) {
     captured.data.assign(data, data + captured.size);
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_recording) return 0;
-    captured.id = g_nextBufferId++;
+    captured.captureId = g_nextBufferId++;
     captured.frame = g_frameIndex;
     g_buffers.push_back(std::move(captured));
-    return g_buffers.back().id;
+    return g_buffers.back().captureId;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -1064,7 +1068,7 @@ void AfterEndEncoding(id encoder) {
         std::lock_guard<std::mutex> lock(g_mutex);
         for (uint64_t id : pass.deferredBuffers) {
             for (CapturedBuffer &b : g_buffers) {
-                if (b.id != id || b.source == nil) continue;
+                if (b.captureId != id || b.source == nil) continue;
                 if (b.managed) {
                     [blit synchronizeResource:b.source];
                 } else {
@@ -1185,7 +1189,15 @@ void OnCommit(id commandBuffer) {
         // Before the hook forwards the commit, which is the only time this is allowed.
         TrackCompletion(commandBuffer);
     }
+    // Logged only for a boundary the present hooks did not report themselves.
+    if (boundary && !presents && g_commitBoundaryLogger != nullptr) {
+        g_commitBoundaryLogger(commandBuffer);
+    }
     if (boundary) AdvanceFrame();
+}
+
+void SetCommitBoundaryLogger(void (*logger)(id)) {
+    g_commitBoundaryLogger = logger;
 }
 
 }  // namespace mtlinsp

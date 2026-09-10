@@ -81,6 +81,7 @@ __attribute__((constructor)) void Loaded(void) {
     // the process starts or attach later and get a snapshot either way.
     mtlinsp::StartTracking();
     mtlinsp::HookDrawableSource();
+    mtlinsp::InstallFrameLogging();
 }
 
 }  // namespace
