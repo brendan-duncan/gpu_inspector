@@ -276,6 +276,24 @@ const char* StageName(VkShaderStageFlagBits stage) {
     }
 }
 
+// A module holding the SPIR-V the tracker keeps with a pipeline for one of its stages (the
+// "<stage>:<entry point>" payloads), or VK_NULL_HANDLE when it keeps none. A rebuild cannot give the
+// stages it leaves alone the application's own modules: an application may destroy a module as
+// soon as the pipeline exists, and most do.
+VkShaderModule StageModule(DeviceData* dev, VkDevice device, const TrackedObject& pipeline, VkShaderStageFlagBits stage) {
+    const std::string prefix = std::string(StageName(stage)) + ":";
+    for (auto& [name, data] : pipeline.blobs) {
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        if (!data || data->size() < 20 || data->size() % 4) return VK_NULL_HANDLE;
+        VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mci.codeSize = data->size();
+        mci.pCode = reinterpret_cast<const uint32_t*>(data->data());
+        VkShaderModule module = VK_NULL_HANDLE;
+        return dev->dispatch.CreateShaderModule(device, &mci, nullptr, &module) == VK_SUCCESS ? module : VK_NULL_HANDLE;
+    }
+    return VK_NULL_HANDLE;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -400,22 +418,40 @@ bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error)
     Arena scratch;
     VkPipeline created = VK_NULL_HANDLE;
     VkResult res = VK_ERROR_INITIALIZATION_FAILED;
+    // The stages left alone get modules of their own from the tracked code (see StageModule),
+    // destroyed again once the pipeline exists; without tracked code they keep the original module.
+    Tracker& t = Tracker::Get();
+    TrackedObject tracked;
+    const bool isTracked = t.Find(HT_VkPipeline, (uint64_t)(uintptr_t)original, tracked);
+    std::vector<VkShaderModule> temporary;
+    auto ownModule = [&](VkPipelineShaderStageCreateInfo& s, const VkShaderModuleCreateInfo* inlineCode) {
+        if (!isTracked || inlineCode || rec.edits.count(s.stage)) return;
+        if (VkShaderModule m = StageModule(dev, rec.device, tracked, s.stage)) {
+            s.module = m;
+            temporary.push_back(m);
+        }
+    };
     if (rec.graphics) {
         VkGraphicsPipelineCreateInfo ci = *rec.graphics;
         auto* stages = scratch.Copy(rec.graphics->pStages, rec.graphics->stageCount);
         for (uint32_t i = 0; stages && i < ci.stageCount; ++i) {
-            PrepareStage(scratch, stages[i], i < rec.inlineCode.size() ? rec.inlineCode[i] : nullptr, rec.edits);
+            const VkShaderModuleCreateInfo* inlineCode = i < rec.inlineCode.size() ? rec.inlineCode[i] : nullptr;
+            ownModule(stages[i], inlineCode);
+            PrepareStage(scratch, stages[i], inlineCode, rec.edits);
         }
         ci.pStages = stages;
         res = dev->dispatch.CreateGraphicsPipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
     } else if (rec.compute) {
         VkComputePipelineCreateInfo ci = *rec.compute;
-        PrepareStage(scratch, ci.stage, rec.inlineCode.empty() ? nullptr : rec.inlineCode[0], rec.edits);
+        const VkShaderModuleCreateInfo* inlineCode = rec.inlineCode.empty() ? nullptr : rec.inlineCode[0];
+        ownModule(ci.stage, inlineCode);
+        PrepareStage(scratch, ci.stage, inlineCode, rec.edits);
         res = dev->dispatch.CreateComputePipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
     } else {
         error = "no create info recorded";
         return false;
     }
+    for (VkShaderModule m : temporary) dev->dispatch.DestroyShaderModule(rec.device, m, nullptr);
     if (res != VK_SUCCESS || !created) {
         error = "pipeline creation failed (VkResult " + std::to_string((int)res) + ")";
         if (!rec.note.empty()) error += "; " + rec.note;
@@ -424,15 +460,13 @@ bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error)
 
     // Register the replacement as an object of its own: the original's creation arguments and
     // shader payloads, with the edited stages' new code, so captures and reflection work on it.
-    Tracker& t = Tracker::Get();
-    TrackedObject orig;
     uint64_t newId = 0;
-    if (t.Find(HT_VkPipeline, (uint64_t)(uintptr_t)original, orig)) {
+    if (isTracked) {
         newId = t.OnCreate(HT_VkPipeline, (uint64_t)(uintptr_t)created, HT_VkDevice, (uint64_t)(uintptr_t)rec.device,
-                           orig.cmd, orig.index, orig.args);
-        std::string label = (orig.label.empty() ? "Pipeline " + std::to_string(orig.id) : orig.label) + " (edited)";
+                           tracked.cmd, tracked.index, tracked.args);
+        std::string label = (tracked.label.empty() ? "Pipeline " + std::to_string(tracked.id) : tracked.label) + " (edited)";
         t.SetLabel(HT_VkPipeline, (uint64_t)(uintptr_t)created, label.c_str());
-        for (auto& [name, data] : orig.blobs) {
+        for (auto& [name, data] : tracked.blobs) {
             std::shared_ptr<std::vector<uint8_t>> payload = data;
             for (auto& [stage, code] : rec.editCode) {
                 std::string prefix = std::string(StageName(stage)) + ":";

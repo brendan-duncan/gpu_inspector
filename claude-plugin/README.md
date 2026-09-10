@@ -12,8 +12,14 @@ captures GPU Inspector saves (`.gpucap`), read with GPU Inspector's own analyses
 
 What Claude reports matches what the Capture tab shows.
 
+It can also drive a running application itself. The plugin launches a Vulkan application (on macOS a
+Metal one) with GPU Inspector's capture library in it, watches its frame rate, captures its frames,
+and swaps a pipeline's shader while it runs, so a fix can be tried and measured on the spot.
+
 ```
-GPU Inspector ── Save capture ──► frame.gpucap ◄── MCP (stdio) ── Claude Code
+GPU Inspector ── Save capture ──► frame.gpucap ◄──┐
+                                                  MCP (stdio) ── Claude Code
+Application + capture library ◄── socket ─────────┘
 ```
 
 ## Install
@@ -29,8 +35,18 @@ claude plugin install gpu-inspector@gpu-inspector-plugins
 Inside the terminal CLI the same commands are `/plugin marketplace add ...` and `/plugin install ...`.
 In the VS Code and JetBrains extensions, open `/plugins` and add the marketplace there.
 
-The server is one JavaScript file with no dependencies ([server/](server/)). The only requirement
-is Node.js 18 or newer on `PATH`. The GPU Inspector app does not have to be installed or running.
+The server is one JavaScript file with no dependencies ([server/](server/)). Reading saved captures
+needs only Node.js 18 or newer on `PATH`; the GPU Inspector app does not have to be installed or
+running.
+
+Launching applications also needs GPU Inspector's capture library. The server looks for it in three
+places:
+- **A checkout's build:** when the plugin runs from a checkout (`claude --plugin-dir`), or when
+  `GPU_INSPECTOR_ROOT` names one.
+- **An installed GPU Inspector.**
+- **`INSPECTOR_LAYER_DIR`** (on macOS, `INSPECTOR_METAL_LIB`).
+
+Replacing shaders also needs the Vulkan SDK's compilers.
 
 ## Use it
 
@@ -39,6 +55,9 @@ Save a capture from GPU Inspector's capture bar. Then either ask in plain langua
 > Why is the frame in `C:\captures\battle.gpucap` slow?
 >
 > The character is missing in my last capture. Find out why.
+>
+> Launch `build\bin\Release\my_game.exe`, capture a frame, and make the most expensive fragment
+> shader cheaper. Show me the before and after.
 
 or use one of the commands:
 
@@ -48,6 +67,7 @@ or use one of the commands:
 | `/gpu-inspector:profile [capture]` | What limits the frame, pass by pass, and what to change (GPU Inspector's docs/PROFILING.md method) |
 | `/gpu-inspector:debug [capture] <symptom>` | Traces a rendering problem to the draw and the state that causes it |
 | `/gpu-inspector:compare <before> <after>` | Did a change move the numbers it should have |
+| `/gpu-inspector:live <exe> [args] [what to look at]` | Launches an application, captures it, and tries shader changes while it runs |
 
 Without a path, Claude picks from the captures GPU Inspector saved or opened recently (its
 settings file keeps the list). The bundled `gpu-capture-analysis` skill tells Claude how to read a
@@ -75,6 +95,11 @@ capture.
 | `list_textures`, `read_texture` | Read-back images, as PNG plus statistics and texel values |
 | `read_buffer`, `read_vertices` | Buffer ranges as scalars or GLSL structs; a draw's vertices with bounds |
 | `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis |
+| `launch_app`, `attach_app`, `stop_app` | Start an application with the capture library (or connect to one listening), end it |
+| `list_sessions`, `get_session_status`, `get_session_log` | Live sessions: state, device, frame reports, objects, validation, output |
+| `get_live_frame_stats` | Frame time, rate, submit time, refresh and dropped frames over a few seconds, with a verdict |
+| `capture_frames` | Capture frames of a running application into a `.gpucap` and open it |
+| `replace_shader`, `restore_shader` | Compile a stage's new source and swap it into the running pipeline; undo it |
 
 Answers are compact JSON: object references read `VkImage#12 "name"`, lists page, and long values
 are cut with a note.
@@ -83,9 +108,15 @@ are cut with a note.
 
 Environment variables, which can be set in [.mcp.json](.mcp.json):
 
-- `VULKAN_SDK` or `INSPECTOR_TOOLS_DIR`: where `spirv-cross` and `spirv-dis` are. They are only
-  needed for `get_shader`'s `glsl`, `hlsl`, `msl` and `disassembly` views; the rest reads SPIR-V
-  directly.
+- `VULKAN_SDK` or `INSPECTOR_TOOLS_DIR`: where the SDK's shader tools are. `spirv-cross` and
+  `spirv-dis` are only needed for `get_shader`'s `glsl`, `hlsl`, `msl` and `disassembly` views; the
+  rest reads SPIR-V directly. `glslangValidator`, `dxc` and `spirv-as` are needed for
+  `replace_shader`.
+- `GPU_INSPECTOR_CAPTURES_DIR`: where `capture_frames` saves captures. The default is
+  `gpu-inspector-captures` in the system's temporary directory.
+- `GPU_INSPECTOR_ROOT`: a GPU Inspector checkout whose build holds the capture library.
+- `INSPECTOR_LAYER_DIR` (the directory holding `VK_LAYER_INSPECTOR_capture.json`) and
+  `INSPECTOR_METAL_LIB` (macOS): the capture library itself.
 - `GPU_INSPECTOR_SETTINGS`: GPU Inspector's settings file, for the recent captures list. Defaults
   to the app's user data directory: `%APPDATA%\gpu-inspector`, `~/Library/Application
   Support/gpu-inspector`, or `~/.config/gpu-inspector`.

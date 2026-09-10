@@ -321,6 +321,13 @@ export interface PassTiming {
 
 export interface CapturePassTimingsMessage { action: "CapturePassTimings"; timestampPeriodNs: number; count: number; passes: PassTiming[] }
 
+/**
+ * The last message of a capture, after its commands, render targets, buffers and timings, whichever
+ * of those it had: a client waiting for the capture (the MCP server) knows nothing more is coming.
+ * Capture libraries built before it existed do not send it.
+ */
+export interface CaptureCompleteMessage { action: "CaptureComplete"; frame: number; frames: number }
+
 /** Answer to ReplaceShader / RestoreShader: whether the pipeline was rebuilt with the edit. */
 export interface ShaderReplacedMessage {
   action: "ShaderReplaced";
@@ -417,7 +424,8 @@ export type LayerMessage =
   | CapturePassTimingsMessage
   | ShaderReplacedMessage
   | ImageDataMessage
-  | GpuTraceMessage;
+  | GpuTraceMessage
+  | CaptureCompleteMessage;
 
 /** Answer to SaveGpuTrace (Metal): the .gputrace document was written, or why not. */
 export interface GpuTraceMessage {

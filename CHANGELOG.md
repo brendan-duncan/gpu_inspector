@@ -19,8 +19,24 @@
     analysis
   - comparing captures before and after a change
 
-  A capture analysis skill and four commands come with it: `analyze`, `profile`, `debug` and
-  `compare`. The server is one dependency-free file that runs on Node.js 18+.
+  The plugin also drives running applications, with the capture library from a checkout's build or
+  an installed GPU Inspector:
+  - launching or attaching to an application
+  - live frame statistics with a verdict
+  - capturing frames into `.gpucap` files that the other tools read
+  - replacing a pipeline's shader with compiled source, and restoring it
+  - the session's status and log
+
+  A capture analysis skill and five commands come with it: `analyze`, `profile`, `debug`,
+  `compare` and `live`. The server is one dependency-free file that runs on Node.js 18+.
+- `CaptureComplete`: the Vulkan layer and the Metal library end a capture's stream with it, so a
+  client knows when a capture has fully arrived.
+
+### Fixed
+- Shader editing failed on applications that destroy their shader modules once their pipelines
+  exist, which is most of them: the rebuilt pipeline handed the driver the destroyed modules of the
+  stages it did not edit ("pipeline creation failed", with the driver unable to parse the SPIR-V).
+  Those stages are now rebuilt from the SPIR-V the layer keeps with the pipeline.
 
 ## 0.8.0
 

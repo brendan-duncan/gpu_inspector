@@ -1,18 +1,18 @@
 // Saving a live capture as a capture file (the format itself is capture_format.ts): the objects
 // the capture references are collected, their SPIR-V payloads, creation stacks and the commands'
 // symbols are fetched from the layer when the session does not hold them yet, and everything is
-// written into one buffer.
+// written into one buffer. The app saves its captures this way, and so do the MCP server's live
+// sessions.
 import type { CaptureData } from "./capture_data.js";
 import { CAPTURE_FORMAT, CAPTURE_VERSION, encodeCaptureFile, type CaptureFileBlob, type CaptureFileManifest, type CaptureFileObject, type Payload } from "./capture_format.js";
-import type { SessionContext } from "./session_panel.js";
+import { requestStacks, resolveSymbols, type LayerSession } from "./stack_requests.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
 import type { StackFrame } from "../shared/protocol.js";
-import { requestStacks, resolveSymbols } from "./stacktrace_view.js";
 
 const BLOB_TIMEOUT_MS = 15000;
 
 /** One SPIR-V payload of an object: from the database's cache, else fetched from the layer. */
-export function fetchBlob(session: SessionContext, object: VulkanObject, index: number): Promise<Uint8Array | null> {
+export function fetchBlob(session: LayerSession, object: VulkanObject, index: number): Promise<Uint8Array | null> {
   const db = session.database;
   const key = `${object.id}:${index}`;
   const cached = db.blobData.get(key);
@@ -42,7 +42,7 @@ export function fetchBlob(session: SessionContext, object: VulkanObject, index: 
  * The objects a capture needs: everything its commands, descriptor snapshots, render targets
  * and buffer ranges reference, closed over dependencies and owners so every link resolves.
  */
-function referencedObjects(session: SessionContext, data: CaptureData): VulkanObject[] {
+function referencedObjects(session: LayerSession, data: CaptureData): VulkanObject[] {
   const db = session.database;
   const ids = new Set<number>();
   for (const c of data.commands) {
@@ -77,8 +77,15 @@ function referencedObjects(session: SessionContext, data: CaptureData): VulkanOb
   return [...out.values()].sort((a, b) => a.id - b.id);
 }
 
+export interface SerializeOptions {
+  onProgress?: (text: string) => void;
+  /** Symbolizes the commands' addresses; by default with what the layer resolves. */
+  resolveSymbols?: (addresses: string[]) => Promise<Map<string, StackFrame>>;
+}
+
 /** Serializes a capture (with the objects it references) into the file format. */
-export async function serializeCapture(session: SessionContext, data: CaptureData, onProgress?: (text: string) => void): Promise<Uint8Array> {
+export async function serializeCapture(session: LayerSession & { readonly name: string }, data: CaptureData, options: SerializeOptions = {}): Promise<Uint8Array> {
+  const onProgress = options.onProgress;
   const payloads: Uint8Array[] = [];
   let payloadBytes = 0;
   const addPayload = (bytes: Uint8Array | null | undefined): Payload | undefined => {
@@ -113,7 +120,7 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
   let symbols: Record<string, StackFrame> | undefined;
   if (addresses.size) {
     if (onProgress) onProgress("saving: symbols...");
-    const resolved = await resolveSymbols(session, [...addresses]);
+    const resolved = await (options.resolveSymbols ?? ((a: string[]) => resolveSymbols(session, a)))([...addresses]);
     symbols = {};
     for (const [a, f] of resolved) symbols[a] = f;
   }

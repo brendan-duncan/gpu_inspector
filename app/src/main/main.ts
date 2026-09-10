@@ -6,7 +6,7 @@
 // window at a time: the main window by default, or a window of their own ("Open in New Window").
 import electron from "electron";
 import updater from "electron-updater";
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +14,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
-import { findTool, shaderText } from "./shader_tools.js";
+import { compileShader, shaderText } from "./shader_tools.js";
+import { FrameReader, encodeRequest } from "./layer_protocol.js";
+import {
+  DEFAULT_PORT, findFreePort as findFreePortFrom, findLayerDir as findLayerDirIn, findValidationLayerDir, parseEnvLines, splitArgs, terminate,
+  vulkanLayerEnvironment,
+} from "./launch_env.js";
 import { implicitLayerStatus, setImplicitLayer } from "./implicit_layer.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
@@ -32,9 +37,6 @@ type BrowserWindow = electron.BrowserWindow;
 type WebContents = electron.WebContents;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
-const VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
-const DEFAULT_PORT = 47531;
 const MAX_LOG_LINES = 2000;
 const LAUNCH_CONNECT_TIMEOUT_MS = 60000;
 const ATTACH_CONNECT_TIMEOUT_MS = 5000;
@@ -146,19 +148,6 @@ function addRecent(config: LaunchConfig): LaunchConfig[] {
   return recents;
 }
 
-// "KEY=VALUE" lines -> environment entries. Blank lines and lines starting with # are ignored.
-function parseEnvLines(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    out[line.substring(0, eq).trim()] = line.substring(eq + 1);
-  }
-  return out;
-}
-
 function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
@@ -207,20 +196,9 @@ const NO_LAYER_ERROR = process.platform === "darwin"
   ? `capture library not found (${CAPTURE_LIBRARY}): build it first (see metal/README.md)`
   : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
 
+/** The layer of the checkout the app was built in, or of the packaged app. */
 function findLayerDir(): string | null {
-  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
-  const root = path.resolve(__dirname, "..", "..", "..");
-  const candidates = [
-    path.join(root, "build", "bin", "Release"),
-    path.join(root, "build", "bin", "RelWithDebInfo"),
-    path.join(root, "build", "bin", "Debug"),
-    path.join(root, "build", "bin"),
-    path.join(process.resourcesPath ?? "", "layer"),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, `${LAYER_NAME}.json`))) return dir;
-  }
-  return null;
+  return findLayerDirIn([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
 }
 
 /** The Android layer libraries and APK (tools/build_android.py), from the build tree or a packaged app. */
@@ -360,11 +338,7 @@ function attachSession(s: Session, win: BrowserWindow): void {
 
 function sendJson(s: Session, obj: UiRequest): boolean {
   if (!s.socket || s.socket.destroyed) return false;
-  const payload = Buffer.from(JSON.stringify(obj), "utf8");
-  const header = Buffer.alloc(5);
-  header.writeUInt32LE(payload.length, 0);
-  header.writeUInt8(0, 4);
-  s.socket.write(Buffer.concat([header, payload]));
+  s.socket.write(encodeRequest(obj));
   return true;
 }
 
@@ -394,7 +368,7 @@ function connectSession(s: Session, deadlineMs: number): void {
 function attemptConnect(s: Session): void {
   const sock = net.createConnection({ host: "127.0.0.1", port: s.port });
   s.connecting = sock;
-  let buffered: Buffer = Buffer.alloc(0);
+  const reader = new FrameReader();
   sock.setNoDelay(true);
 
   // Retries while the deadline has not passed and, for launched applications, the process is
@@ -446,34 +420,12 @@ function attemptConnect(s: Session): void {
 
   sock.on("data", (chunk: Buffer) => {
     if (s.socket !== sock) return;
-    buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
-    while (buffered.length >= 5) {
-      const len = buffered.readUInt32LE(0);
-      const kind = buffered.readUInt8(4);
-      if (buffered.length < 5 + len) break;
-      const payload = buffered.subarray(5, 5 + len);
-      buffered = buffered.subarray(5 + len);
-      if (kind === 0) {
-        try {
-          s.queueMessage(JSON.parse(payload.toString("utf8")) as LayerMessage);
-        } catch (e) {
-          s.appendLog(`bad JSON from layer: ${e}`);
-          const logFile = cliOption("debug-log");
-          if (logFile) fs.appendFileSync(`${logFile}.badjson`, payload.toString("utf8") + "\n\n");
-        }
-      } else if (kind === 1) {
-        const hl = payload.readUInt32LE(0);
-        let header: Record<string, unknown> = {};
-        try {
-          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8")) as Record<string, unknown>;
-        } catch (e) {
-          s.appendLog(`bad binary header from layer: ${e}`);
-        }
-        // Copy so the renderer gets a standalone ArrayBuffer.
-        const data = new Uint8Array(payload.subarray(4 + hl));
-        s.queueMessage({ ...header, __binary: data } as unknown as LayerMessage);
-      }
-    }
+    const messages = reader.push(chunk, (e) => {
+      s.appendLog(e.kind === "json" ? `bad JSON from layer: ${e.error}` : `bad binary header from layer: ${e.error}`);
+      const logFile = cliOption("debug-log");
+      if (logFile && e.kind === "json") fs.appendFileSync(`${logFile}.badjson`, e.payload.toString("utf8") + "\n\n");
+    });
+    for (const msg of messages) s.queueMessage(msg);
   });
 
   sock.on("error", (e: NodeJS.ErrnoException) => {
@@ -493,102 +445,31 @@ function portInUseBySession(port: number, except: Session | null): boolean {
   return false;
 }
 
-function portFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
-  });
-}
-
-/**
- * The requested port, or the next free one after it when it is taken: by another session (so
- * several launches of the same configuration can run side by side) or by anything else on the
- * machine, such as a previous instance of the target that has not finished exiting.
- */
-async function findFreePort(start: number, except: Session | null): Promise<number> {
-  for (let port = start; port < start + 100 && port < 65536; port++) {
-    if (portInUseBySession(port, except)) continue;
-    if (await portFree(port)) return port;
-  }
-  return start;
-}
-
-function splitArgs(s: string): string[] {
-  const out: string[] = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-
-/**
- * The directory holding the Khronos validation layer's manifest: the Vulkan SDK (VULKAN_SDK, or
- * the default install locations) or a distribution's layer directory. Needed because the launch
- * sets VK_LAYER_PATH, which replaces the loader's own explicit-layer search.
- */
-function findValidationLayerDir(): string | null {
-  const manifest = "VkLayer_khronos_validation.json";
-  const candidates: string[] = [];
-  const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path.join(sdk, "Bin"), path.join(sdk, "share", "vulkan", "explicit_layer.d"), path.join(sdk, "etc", "vulkan", "explicit_layer.d"));
-  if (process.platform === "win32") {
-    // Installed SDKs without VULKAN_SDK in this process's environment: newest first.
-    for (const root of ["C:\\VulkanSDK", path.join(os.homedir(), "VulkanSDK")]) {
-      try {
-        const versions = fs.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path.join(root, v, "Bin"));
-      } catch {
-        // no SDK there
-      }
-    }
-  } else {
-    candidates.push("/usr/share/vulkan/explicit_layer.d", "/usr/local/share/vulkan/explicit_layer.d", "/etc/vulkan/explicit_layer.d",
-      path.join(os.homedir(), ".local", "share", "vulkan", "explicit_layer.d"));
-  }
-  for (const c of candidates) if (fs.existsSync(path.join(c, manifest))) return c;
-  return null;
+/** The requested port, or the next one free on the machine and not used by another session. */
+function findFreePort(start: number, except: Session | null): Promise<number> {
+  return findFreePortFrom(start, (port) => portInUseBySession(port, except));
 }
 
 /** Starts the session's configured executable with the layer enabled and connects to it. */
 function spawnTarget(s: Session, layerDir: string): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
-  // With "Validation layer" the Khronos validation layer is enabled too; its messages reach the
-  // inspector's debug-utils messenger (layer/src/validation.cpp).
-  const layers = [LAYER_NAME];
-  const layerPaths = [layerDir];
+  let validationDir: string | null = null;
   if (config.validation) {
-    const dir = findValidationLayerDir();
-    if (dir) {
-      layers.push(VALIDATION_LAYER_NAME);
-      layerPaths.push(dir);
-      s.appendLog(`validation layer: ${dir}`);
-    } else {
-      s.appendLog("validation layer not found: install the Vulkan SDK (or the distribution's validation layer package) or set VULKAN_SDK");
-    }
+    validationDir = findValidationLayerDir();
+    if (validationDir) s.appendLog(`validation layer: ${validationDir}`);
+    else s.appendLog("validation layer not found: install the Vulkan SDK (or the distribution's validation layer package) or set VULKAN_SDK");
   }
+  // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have no
+  // usable stderr).
+  const debugLog = cliOption("debug-log");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...parseEnvLines(config.env ?? ""),
-    VK_ADD_LAYER_PATH: layerPaths.join(path.delimiter),
-    VK_LOADER_LAYERS_ENABLE: layers.join(","),
-    // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...(process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : [])].join(path.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...(process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : [])].join(path.delimiter),
-    VKINSP_PORT: String(s.port),
-    VKINSP_LOG: config.log ? "1" : "0",
-    // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have
-    // no usable stderr).
-    ...(cliOption("debug-log") ? { VKINSP_LOG_FILE: `${cliOption("debug-log")}.layer.log` } : {}),
-    VKINSP_RECORD_ALWAYS: config.recordAlways ? "1" : "0",
-    VKINSP_STACKTRACES: config.stacktraces ? "1" : "0",
-    // The validation layer stops reporting a message after a few repeats (its
-    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
-    // attaches a message to the captured command it fired on, which needs every occurrence.
-    ...(config.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {}),
-    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
-    ...(config.validation && config.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}),
+    ...vulkanLayerEnvironment({
+      layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
+      validation: config.validation, syncValidation: !!config.syncValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
+    }),
   };
   return runTarget(s, config.exe, env, `layer: ${layerDir}`);
 }
@@ -660,18 +541,6 @@ function runTarget(s: Session, exe: string, env: NodeJS.ProcessEnv, note: string
   s.setStatus("launched", `pid ${proc.pid}`);
   connectSession(s, LAUNCH_CONNECT_TIMEOUT_MS);
   return { ok: true, sessionId: s.id, pid: proc.pid, port: s.port };
-}
-
-/** Terminates a process and, on Windows, everything it spawned (Unity's crash handler, launchers). */
-function terminate(proc: ChildProcess): void {
-  if (process.platform === "win32" && proc.pid) {
-    execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
-      // If taskkill is unavailable or the process is already gone, fall back to a plain kill.
-      try { proc.kill(); } catch { /* already gone */ }
-    });
-    return;
-  }
-  proc.kill();
 }
 
 /**
@@ -1092,73 +961,6 @@ function windowOf(sender: WebContents): BrowserWindow | null {
 // ------------------------------------------------------------------------------------------
 // Shader text (SPIR-V disassembly / cross compilation) using the Vulkan SDK's tools until the
 // project ships its own SPIRV-Tools/SPIRV-Cross build.
-
-// Shader editor: compiles a source language to SPIR-V with the SDK's compilers. `stage` uses the
-// layer's stage names ("vertex", "fragment", ...); `spirvVersion` ("1.5") picks the target
-// environment so the module matches what the application's driver accepts.
-const GLSL_STAGES: Record<string, string> = {
-  vertex: "vert", tess_control: "tesc", tess_eval: "tese", geometry: "geom", fragment: "frag", compute: "comp",
-  task: "task", mesh: "mesh", raygen: "rgen", intersection: "rint", any_hit: "rahit", closest_hit: "rchit", miss: "rmiss", callable: "rcall",
-};
-const HLSL_PROFILES: Record<string, string> = {
-  vertex: "vs_6_0", tess_control: "hs_6_0", tess_eval: "ds_6_0", geometry: "gs_6_0", fragment: "ps_6_0", compute: "cs_6_0",
-  task: "as_6_5", mesh: "ms_6_5", raygen: "lib_6_3", intersection: "lib_6_3", any_hit: "lib_6_3", closest_hit: "lib_6_3", miss: "lib_6_3", callable: "lib_6_3",
-};
-
-function targetEnv(spirvVersion: string, tool: "glslang" | "dxc" | "spirv-as"): string {
-  const v = spirvVersion || "1.5";
-  if (tool === "spirv-as") return `spv${v}`;
-  const glslang: Record<string, string> = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
-  const env = glslang[v] ?? "vulkan1.2";
-  return tool === "dxc" ? env : env.replace("spirv", "spv");
-}
-
-function compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult> {
-  return new Promise((resolve) => {
-    const base = path.join(os.tmpdir(), `vkinsp_${process.pid}_${Date.now()}`);
-    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
-    const out = base + ".spv";
-    fs.writeFileSync(src, source);
-    const entry = entryPoint || "main";
-    let tool: string;
-    let args: string[];
-    if (language === "spirv-asm") {
-      tool = findTool("spirv-as");
-      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
-    } else if (language === "hlsl") {
-      tool = findTool("dxc");
-      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
-    } else {
-      tool = findTool("glslangValidator");
-      // The decompiled source declares main(); the pipeline expects the original entry point name.
-      args = ["-V", "-S", GLSL_STAGES[stage] ?? "frag", "--target-env", targetEnv(spirvVersion, "glslang"),
-        "--source-entrypoint", "main", "-e", entry, "-o", out, src];
-    }
-    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-      let spirv: Uint8Array | undefined;
-      try {
-        if (fs.existsSync(out)) spirv = new Uint8Array(fs.readFileSync(out));
-      } catch {
-        spirv = undefined;
-      }
-      for (const f of [src, out]) {
-        try {
-          fs.unlinkSync(f);
-        } catch {
-          // ignore
-        }
-      }
-      const name = path.basename(tool);
-      if (err || !spirv || spirv.byteLength < 20) {
-        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
-        resolve({ ok: false, log: reason, tool: name });
-      } else {
-        resolve({ ok: true, spirv, log, tool: name });
-      }
-    });
-  });
-}
 
 // ------------------------------------------------------------------------------------------
 // IPC

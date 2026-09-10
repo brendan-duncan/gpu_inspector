@@ -17,6 +17,7 @@ import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { CaptureData, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
 import { fetchBlob, serializeCapture } from "./capture_file.js";
+import { resolveSymbols } from "./stacktrace_view.js";
 import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, type LoadedCapture } from "./capture_format.js";
 import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_view.js";
 import { renderFrameFlameGraph } from "./frame_flamegraph.js";
@@ -261,7 +262,10 @@ export class CapturePanel {
 
   private async _serialize(view: CaptureView): Promise<Uint8Array | null> {
     try {
-      return await serializeCapture(this.window, view.data, (text) => { this._statusLabel.text = text; });
+      return await serializeCapture(this.window, view.data, {
+        onProgress: (text) => { this._statusLabel.text = text; },
+        resolveSymbols: (addresses) => resolveSymbols(this.window, addresses),
+      });
     } catch (e) {
       this._statusLabel.text = `save failed: ${(e as Error).message}`;
       return null;
