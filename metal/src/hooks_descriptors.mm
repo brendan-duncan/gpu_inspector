@@ -196,12 +196,31 @@ void WriteGpuIds(Args &a, id object) {
 #endif
 }
 
+void WriteMemoryInfo(Args &a, id resource) {
+    if (resource == nil || ![resource respondsToSelector:@selector(allocatedSize)]) return;
+    id<MTLResource> r = (id<MTLResource>)resource;
+    a.u("allocatedSize", r.allocatedSize);
+    if (r.heap != nil) {
+        a.ref("heap", r.heap, "MTLHeap");
+        if (@available(macOS 10.15, *)) a.u("heapOffset", r.heapOffset);
+    }
+    if (r.isAliasable) a.b("aliasable", true);
+}
+
+std::string HeapUsageArgs(id heap) {
+    Args a;
+    id<MTLHeap> h = (id<MTLHeap>)heap;
+    a.u("usedSize", h.usedSize).u("currentAllocatedSize", h.currentAllocatedSize);
+    return a.str();
+}
+
 std::string BufferArgs(id buffer, NSUInteger length, MTLResourceOptions options) {
     Args a;
     a.u("length", length).u("options", (uint64_t)options);
     const MTLStorageMode storage = (MTLStorageMode)((options & MTLResourceStorageModeMask) >> MTLResourceStorageModeShift);
     a.e("storageMode", StorageModeEnumName(storage), (uint64_t)storage);
     WriteGpuIds(a, buffer);
+    WriteMemoryInfo(a, buffer);
     return a.str();
 }
 
@@ -218,6 +237,7 @@ std::string TextureDescriptorArgs(MTLTextureDescriptor *d, id texture) {
      .u("hazardTrackingMode", (uint64_t)d.hazardTrackingMode)
      .b("allowGPUOptimizedContents", d.allowGPUOptimizedContents);
     WriteGpuIds(a, texture);
+    WriteMemoryInfo(a, texture);
     return a.str();
 }
 
@@ -232,6 +252,7 @@ std::string TextureObjectArgs(id<MTLTexture> t) {
      .e("storageMode", StorageModeEnumName(t.storageMode), (uint64_t)t.storageMode)
      .b("framebufferOnly", t.framebufferOnly);
     WriteGpuIds(a, t);
+    WriteMemoryInfo(a, t);
     return a.str();
 }
 
@@ -420,13 +441,18 @@ std::string DepthStencilArgs(MTLDepthStencilDescriptor *d) {
     return a.str();
 }
 
-std::string HeapArgs(MTLHeapDescriptor *d) {
+std::string HeapArgs(MTLHeapDescriptor *d, id heap) {
     Args a;
     a.u("size", d.size)
      .e("storageMode", StorageModeEnumName(d.storageMode), (uint64_t)d.storageMode)
      .u("cpuCacheMode", (uint64_t)d.cpuCacheMode)
      .u("hazardTrackingMode", (uint64_t)d.hazardTrackingMode)
      .u("type", (uint64_t)d.type);
+    if (heap != nil) {
+        // The descriptor's size is a request; the heap's own is what was set aside.
+        id<MTLHeap> h = (id<MTLHeap>)heap;
+        a.u("allocatedSize", h.size).u("usedSize", h.usedSize).u("currentAllocatedSize", h.currentAllocatedSize);
+    }
     return a.str();
 }
 

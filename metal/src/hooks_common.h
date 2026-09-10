@@ -192,6 +192,13 @@ std::string TextureObjectArgs(id<MTLTexture> texture);
  * argument buffer holds for them, so the UI can match its bytes back to objects.
  */
 void WriteGpuIds(Args &a, id object);
+/**
+ * What a resource occupies: `allocatedSize` (what Metal set aside, alignment and padding
+ * included), the heap it was sub-allocated from with its `heapOffset`, and `aliasable`. The
+ * memory meter in Inspect sums the sizes; a texture view carries none, its storage is its
+ * parent's.
+ */
+void WriteMemoryInfo(Args &a, id resource);
 std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextureType type,
                             NSRange levels, NSRange slices);
 // A pipeline's descriptor carries the reflection the hooks asked for with it (reflection.h),
@@ -218,7 +225,9 @@ std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sou
 std::string FunctionArgs(id<MTLFunction> function);
 std::string SamplerArgs(MTLSamplerDescriptor *descriptor, id sampler);
 std::string DepthStencilArgs(MTLDepthStencilDescriptor *descriptor);
-std::string HeapArgs(MTLHeapDescriptor *descriptor);
+std::string HeapArgs(MTLHeapDescriptor *descriptor, id heap);
+/** A heap's `usedSize` and `currentAllocatedSize`, sent as an update after each sub-allocation. */
+std::string HeapUsageArgs(id heap);
 std::string RenderPassArgs(MTLRenderPassDescriptor *descriptor);
 std::string DeviceArgs(id<MTLDevice> device, const char *origin);
 

@@ -248,6 +248,16 @@ const char *StorageModeEnumName(MTLStorageMode mode) {
     }
 }
 
+const char *PurgeableStateEnumName(MTLPurgeableState state) {
+    switch (state) {
+        case MTLPurgeableStateKeepCurrent: return "MTLPurgeableStateKeepCurrent";
+        case MTLPurgeableStateNonVolatile: return "MTLPurgeableStateNonVolatile";
+        case MTLPurgeableStateVolatile:    return "MTLPurgeableStateVolatile";
+        case MTLPurgeableStateEmpty:       return "MTLPurgeableStateEmpty";
+        default:                           return "";
+    }
+}
+
 PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption *option) {
     if (option != nullptr) *option = MTLBlitOptionNone;
     switch ((NSUInteger)format) {

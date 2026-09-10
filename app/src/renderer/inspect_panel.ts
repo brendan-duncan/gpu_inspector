@@ -56,6 +56,9 @@ const TYPE_ORDER = [
   "MTLTexture", "MTLBuffer", "MTLSamplerState", "MTLHeap",
 ];
 
+/** The types whose creation or destruction moves the memory meter. */
+const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap", "MTLBuffer", "MTLTexture"]);
+
 const PLURALS: Record<string, string> = { VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains" };
 
 function typeLabel(type: string): string {
@@ -464,7 +467,18 @@ export class InspectPanel {
 
   private _updateMemoryLabel(): void {
     const m = this.database.memory;
-    this._memoryLabel.text = `Device Memory: ${formatBytes(m.device)} in ${m.allocations} allocation${m.allocations === 1 ? "" : "s"}   Images: ${formatBytes(m.images)}   Buffers: ${formatBytes(m.buffers)}   Objects: ${this.database.allObjects.size}`;
+    const objects = `   Objects: ${this.database.allObjects.size}`;
+    // A Metal session: the driver's own total comes with the frame stats, and heaps stand where
+    // VkDeviceMemory does. Textures and buffers are what Metal set aside for each.
+    if (m.reported > 0 || this.database.getObjectsOfType("MTLDevice")?.size) {
+      const total = m.reported > 0 ? `${formatBytes(m.reported)}${m.workingSet > 0 ? ` of ${formatBytes(m.workingSet)}` : ""}` : "--";
+      const heaps = m.allocations > 0 ? `   Heaps: ${formatBytes(m.device)} in ${m.allocations}` : "";
+      this._memoryLabel.text = `Device Memory: ${total}${heaps}   Textures: ${formatBytes(m.images)}   Buffers: ${formatBytes(m.buffers)}${objects}`;
+      this._memoryLabel.tooltip = "Device memory: what Metal has allocated for the process (the device's currentAllocatedSize), of the working set it recommends staying under. Heaps: the application's MTLHeaps. Textures and buffers: their allocatedSize, heap sub-allocations included; a texture view or a buffer-backed texture shares its parent's storage and is not counted.";
+      this._memoryLabel.classList.toggle("meter-dropped", m.workingSet > 0 && m.reported > m.workingSet);
+      return;
+    }
+    this._memoryLabel.text = `Device Memory: ${formatBytes(m.device)} in ${m.allocations} allocation${m.allocations === 1 ? "" : "s"}   Images: ${formatBytes(m.images)}   Buffers: ${formatBytes(m.buffers)}${objects}`;
   }
 
   private static _emptyFilters(): Filters {
@@ -779,7 +793,7 @@ export class InspectPanel {
     item.element.style.display = visible ? "" : "none";
     if (visible) g.visibleCount++;
     this._setGroupLabel(g);
-    if (object.type === "VkDeviceMemory" || object.type === "VkBuffer" || object.type === "VkImage") this._updateMemoryLabel();
+    if (MEMORY_TYPES.has(object.type)) this._updateMemoryLabel();
   }
 
   private _fillItem(object: VulkanObject, item: Widget): void {
@@ -822,6 +836,40 @@ export class InspectPanel {
   private _objectChanged(object: VulkanObject): void {
     if (object.widget) this._fillItem(object, object.widget as Widget);
     if (this.inspectedObject === object) this._inspectObject(object);
+  }
+
+  /**
+   * A Metal resource's memory: what the driver set aside, the heap it came from, and the state
+   * the application put it in since (setPurgeableState:, makeAliasable). A heap's is its size
+   * and what its sub-allocations use, kept current by the library's updates.
+   */
+  private _buildMetalMemoryRow(infoBox: Widget, object: VulkanObject, onLink: (o: VulkanObject) => void): void {
+    const a = object.args ?? {};
+    const u = object.updates;
+    const row = new Div(infoBox, { class: "font-md text-muted" });
+    new Span(row, { text: "Memory:", style: "margin-right: 4px;" });
+    const parts: string[] = [];
+    if (object.type === "MTLHeap") {
+      parts.push(`${formatBytes(num(a.allocatedSize) || num(a.size))} heap`);
+      const used = u.usedSize ?? a.usedSize;
+      if (used !== undefined) parts.push(`${formatBytes(num(used))} used`);
+      const current = u.currentAllocatedSize ?? a.currentAllocatedSize;
+      if (current !== undefined) parts.push(`${formatBytes(num(current))} resident`);
+    } else {
+      parts.push(`${formatBytes(num(a.allocatedSize))} allocated`);
+      if (object.cmd.startsWith("buffer ")) parts.push("in its buffer's storage");
+    }
+    const purgeable = u.purgeableState ?? a.purgeableState;
+    if (typeof purgeable === "string") parts.push(purgeable.replace(/^MTLPurgeableState/, "").toLowerCase());
+    if (u.aliasable === true || a.aliasable === true) parts.push("aliasable");
+    new Span(row, { text: parts.join(", ") });
+    const heap = a.heap;
+    if (isHandleRef(heap)) {
+      new Span(row, { text: " in heap ", style: "margin-left: 4px;" });
+      const h = this.database.getObject(heap.__id);
+      if (h) objectLink(row, h, onLink); else new Span(row, { text: "(destroyed)" });
+      if (a.heapOffset !== undefined) new Span(row, { text: `at offset ${String(a.heapOffset)}`, style: "margin-left: 4px;" });
+    }
   }
 
   private _objectUpdated(object: VulkanObject): void {
@@ -919,6 +967,9 @@ export class InspectPanel {
       const mem = db.getObject(memory.__id);
       if (mem) objectLink(row, mem, onLink); else new Span(row, { text: "(destroyed)" });
       new Span(row, { text: `at offset ${String(object.updates.memoryOffset ?? 0)}`, style: "margin-left: 4px;" });
+    }
+    if (object.type === "MTLHeap" || (object.args?.allocatedSize !== undefined && (object.type === "MTLBuffer" || object.type === "MTLTexture"))) {
+      this._buildMetalMemoryRow(infoBox, object, onLink);
     }
 
     if (object.dependencies.size) {

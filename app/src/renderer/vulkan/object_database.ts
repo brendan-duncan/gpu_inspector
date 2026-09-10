@@ -44,8 +44,12 @@ export class ObjectDatabase implements ObjectLookup {
   inspectedObject: VulkanObject | null = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = new Set<number>();
-  /** Memory totals of the live objects (see objectMemoryBytes): allocations, buffers, images. */
-  memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
+  /**
+   * Memory totals of the live objects (see objectMemoryBytes): allocations (Metal: heaps),
+   * buffers, images; and for Metal what the device reports allocated and recommends as the
+   * working set, from the last FrameStats.
+   */
+  memory = { device: 0, allocations: 0, buffers: 0, images: 0, reported: 0, workingSet: 0 };
   /** Binary payloads received (ObjectBlob) or loaded from a capture file, keyed "id:index". */
   blobData = new Map<string, Uint8Array>();
   /** Validation messages in arrival order, and by the objects they name. */
@@ -190,7 +194,7 @@ export class ObjectDatabase implements ObjectLookup {
     this.droppedFramesTotal = 0;
     this.inspectedObject = null;
     this.capturedObjects = new Set();
-    this.memory = { device: 0, allocations: 0, buffers: 0, images: 0 };
+    this.memory = { device: 0, allocations: 0, buffers: 0, images: 0, reported: 0, workingSet: 0 };
     this.blobData = new Map();
     this.validation = [];
     this.validationByKey = new Map();
@@ -256,12 +260,12 @@ export class ObjectDatabase implements ObjectLookup {
 
   private _accountMemory(o: VulkanObject, sign: 1 | -1): void {
     const bytes = objectMemoryBytes(o, this);
-    if (o.type === "VkDeviceMemory") {
+    if (o.type === "VkDeviceMemory" || o.type === "MTLHeap") {
       this.memory.device += sign * bytes;
       this.memory.allocations += sign;
-    } else if (o.type === "VkBuffer") {
+    } else if (o.type === "VkBuffer" || o.type === "MTLBuffer") {
       this.memory.buffers += sign * bytes;
-    } else if (o.type === "VkImage") {
+    } else if (o.type === "VkImage" || o.type === "MTLTexture") {
       this.memory.images += sign * bytes;
     }
   }
@@ -312,6 +316,8 @@ export class ObjectDatabase implements ObjectLookup {
         this.frameBoundary = msg.frameBoundary ?? "";
         this.droppedFrames = msg.dropped ?? 0;
         this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
+        if (msg.allocatedBytes !== undefined) this.memory.reported = msg.allocatedBytes;
+        if (msg.workingSetBytes !== undefined) this.memory.workingSet = msg.workingSetBytes;
         this.onFrameStats.emit(msg);
         break;
       case "ObjectBlob":

@@ -160,11 +160,19 @@ export class VulkanObject {
 /**
  * Bytes an object occupies on the GPU: a VkDeviceMemory's allocation, a VkBuffer's size, and an
  * estimate for a VkImage from its format, size, mips, layers and samples (swapchain images from
- * their swapchain). 0 for everything else.
+ * their swapchain). A Metal heap's size, and a Metal buffer's or texture's allocatedSize, what
+ * the driver set aside (a texture view and a buffer-backed texture share their parent's storage
+ * and count 0). 0 for everything else.
  */
 export function objectMemoryBytes(o: VulkanObject, db: ObjectLookup | null): number {
   const d = o.descriptor;
   switch (o.type) {
+    case "MTLHeap":
+      return num(o.args?.allocatedSize) || num(o.args?.size);
+    case "MTLBuffer":
+      return num(o.args?.allocatedSize) || num(o.args?.length);
+    case "MTLTexture":
+      return o.cmd.startsWith("buffer ") ? 0 : num(o.args?.allocatedSize);
     case "VkDeviceMemory":
       return num(d?.allocationSize);
     case "VkBuffer":

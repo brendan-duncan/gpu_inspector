@@ -59,6 +59,7 @@ const char *TextureTypeEnumName(MTLTextureType type);
 
 /** Metal's own name for a storage mode, e.g. "MTLStorageModePrivate". */
 const char *StorageModeEnumName(MTLStorageMode mode);
+const char *PurgeableStateEnumName(MTLPurgeableState state);
 
 /** Metal's own name for a vertex format, e.g. "MTLVertexFormatFloat3". "" if unknown. */
 const char *VertexFormatEnumName(MTLVertexFormat format);

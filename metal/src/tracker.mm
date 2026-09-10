@@ -41,7 +41,17 @@ struct TrackedObject {
     std::vector<std::pair<std::string, std::vector<uint8_t>>> blobs;
     /** Where the application created it: return addresses, when stack traces are on. */
     StackTrace stack;
+    /** The latest ObjectUpdate fields per key (UpdateObject), replayed by a snapshot. */
+    std::vector<std::pair<std::string, std::string>> updates;
 };
+
+/** `{"action":"ObjectUpdate","id":N,` + the fields of `argsJson` (an object). */
+std::string ObjectUpdateMessage(uint64_t id, const std::string &argsJson) {
+    std::string message = "{\"action\":\"ObjectUpdate\",\"id\":" + std::to_string(id);
+    // The fields' object, less its braces; an empty object contributes nothing.
+    if (argsJson.size() > 2) message += "," + argsJson.substr(1, argsJson.size() - 2);
+    return message + "}";
+}
 
 std::mutex g_mutex;
 uint64_t g_nextId = 1;
@@ -310,6 +320,27 @@ void TrackLabel(id object) {
     Transport::Get().SendJson(std::move(message));
 }
 
+void UpdateObject(id object, const char *key, const std::string &argsJson) {
+    if (object == nil || IsInternal()) return;
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_byPointer.find((__bridge const void *)object);
+        if (it == g_byPointer.end()) return;
+        auto tracked = g_byId.find(it->second);
+        if (tracked == g_byId.end()) return;
+        auto &updates = tracked->second.updates;
+        bool replaced = false;
+        for (auto &u : updates) {
+            if (u.first == key) { u.second = argsJson; replaced = true; break; }
+        }
+        if (!replaced) updates.emplace_back(key, argsJson);
+        if (!g_live) return;
+        message = ObjectUpdateMessage(tracked->second.id, argsJson);
+    }
+    Transport::Get().SendJson(std::move(message));
+}
+
 void SendSnapshot() {
     std::vector<std::string> messages;
     {
@@ -317,7 +348,9 @@ void SendSnapshot() {
         messages.reserve(g_byId.size());
         for (uint64_t id : g_order) {
             auto it = g_byId.find(id);
-            if (it != g_byId.end()) messages.push_back(AddObjectMessage(it->second));
+            if (it == g_byId.end()) continue;
+            messages.push_back(AddObjectMessage(it->second));
+            for (const auto &u : it->second.updates) messages.push_back(ObjectUpdateMessage(id, u.second));
         }
         g_live = true;
     }

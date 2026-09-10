@@ -9,6 +9,7 @@
 #include "gpu_trace.h"
 #include "image.h"
 #include "json_parse.h"
+#include "json_writer.h"
 #include "stacktrace.h"
 #include "swizzle.h"
 #include "tracker.h"

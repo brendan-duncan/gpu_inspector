@@ -9,6 +9,8 @@
 
 #include <cstdint>
 
+#import <objc/objc.h>
+
 namespace mtlinsp {
 
 /** A frame ended. Returns its number: the first frame to end is 1. */
@@ -25,5 +27,11 @@ void AddSubmitTime(uint64_t nanoseconds);
  * display sync off is Vulkan's immediate mode, and no refresh rate is reported for it.
  */
 void NoteDisplaySync(bool enabled);
+
+/**
+ * The device whose `currentAllocatedSize` the report carries: the first one tracked. A process
+ * with several devices reports the first; a Mac has one GPU that draws.
+ */
+void NoteDevice(id device);
 
 }  // namespace mtlinsp

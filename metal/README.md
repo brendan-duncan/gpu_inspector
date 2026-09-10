@@ -511,6 +511,24 @@ texture or sampler to the object with that id, each a link. That is Xcode's argu
 Only Apple GPUs encode handles this way (Tier 2 argument buffers); a Tier 1 encoding is
 driver-defined and shows as unresolved values.
 
+## Memory
+
+Xcode's memory viewer lists every resource with what Metal set aside for it. Here every buffer
+and texture is announced with its `allocatedSize` (alignment and padding included, which is
+why it can exceed a buffer's `length`), the heap it was sub-allocated from with its
+`heapOffset`, and `aliasable`; a heap with its `size`, `usedSize` and `currentAllocatedSize`,
+re-sent as an `ObjectUpdate` after each sub-allocation. `setPurgeableState:` and
+`makeAliasable` are hooked on the resource classes and send updates too, and the tracker
+replays the latest update per key after the object in a snapshot, so a UI that connects late
+sees the same state. The frame stats report carries the device's `currentAllocatedSize` and
+`recommendedMaxWorkingSetSize`, which is what the memory meter in Inspect shows for a Metal
+session: the driver's total of the working set, then heaps, textures and buffers summed from
+the objects (a texture view and a buffer-backed texture share their parent's storage and are
+not counted), and the object's own view has a Memory row with the heap link and the state.
+A volatile or empty resource still counts until Metal reclaims it, so the state is shown rather
+than subtracted. Not tracked: a heap's usage going down when a sub-allocation is released
+(the next sub-allocation refreshes it).
+
 ## Texture views
 
 Clicking an `MTLTexture` in the Inspect panel reads it back live: the UI's `RequestImage` is
