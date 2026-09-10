@@ -14,7 +14,6 @@ import { TextArea } from "./widget/text_area.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
-import { decodeBase64 } from "./utils/base64.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
@@ -34,6 +33,7 @@ import { renderEmbeddedSource } from "./shader_source_view.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { fetchBlob } from "./capture_file.js";
+import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type PushConstantUpdate } from "./draw_state.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -41,38 +41,6 @@ import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
   ArgObject, ArgValue, CaptureCommand, CaptureDescriptor, CaptureDescriptorBinding, CaptureDescriptorSet, ImageDataMessage,
 } from "../shared/protocol.js";
-
-// ---------------------------------------------------------------------------------------------
-// Bound state
-
-export interface BoundSet { cmd: CaptureCommand; set: CaptureDescriptorSet }
-
-export type { BoundIndexBuffer, BoundVertexBuffer } from "./command_sets.js";
-
-export interface PushConstantUpdate {
-  cmd: CaptureCommand;
-  stageFlags: string;
-  offset: number;
-  size: number;
-  data: Uint8Array | null;
-}
-
-/** State in effect at a command, reconstructed by walking back through its command buffer. */
-export interface DrawState {
-  bindPoint: string;
-  pipelineCmd: CaptureCommand | null;
-  pipeline: VulkanObject | null;
-  sets: Map<number, BoundSet>;
-  vertexBuffers: Map<number, BoundVertexBuffer>;
-  /** Metal: buffers bound to a stage by index, keyed "stage:index". */
-  stageBuffers: Map<string, BoundStageBuffer>;
-  indexBuffer: BoundIndexBuffer | null;
-  /** vkCmdSetVertexInputEXT arguments when the vertex layout is dynamic. */
-  vertexInput: ArgObject | null;
-  viewports: ArgValue | null;
-  scissors: ArgValue | null;
-  pushConstants: PushConstantUpdate[];   // in recording order
-}
 
 /** What the details view needs from the capture it belongs to (a CaptureView). */
 /** Testing aid (--debug-expand-stacks): open Stack trace sections as soon as a command is shown. */
@@ -123,22 +91,6 @@ function struct(name: string, fields: string[]): StructType {
     kind: "struct", name, size: fields.length * 4,
     members: fields.map((f, i): StructMember => ({ name: f, offset: i * 4, type: { kind: "scalar", base: f === "vertexOffset" ? "int" : "uint", width: 32, size: 4 } })),
   };
-}
-
-function pushConstantBytes(a: ArgObject | null): Uint8Array | null {
-  const v = a && isObject(a.pValues) ? a.pValues : null;
-  if (!v || typeof v.base64 !== "string") return null;
-  try {
-    return decodeBase64(v.base64);
-  } catch {
-    return null;
-  }
-}
-
-function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: CaptureCommand): boolean {
-  if (c.object?.__id !== cmd.object?.__id) return false;
-  if (cmdSets.SUBMIT.has(c.method)) return false;
-  return true;
 }
 
 /** "vertex 3, 5-9; fragment 1": the slots by stage, runs of consecutive indices folded. */
@@ -226,7 +178,7 @@ export class CommandInfoView {
     }
 
     if (isAction(cmdSets, method)) {
-      const state = this.drawState(cmd);
+      const state = drawState(this.panel.data, db, cmd);
       const graphics = state.bindPoint === cmdSets.graphicsBindPoint;
       this._renderPipelineState(container, state);
       this._renderShaders(container, state.pipeline, token);
@@ -241,30 +193,30 @@ export class CommandInfoView {
       if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);
     } else if (cmdSets.BIND_PIPELINE.has(method)) {
       const pipeline = db.getObject(refId(cmd.args?.pipeline));
-      const state = this._emptyState(cmdSets.pipelineBindPointOf(method, cmd.args));
+      const state = emptyDrawState(cmdSets.pipelineBindPointOf(method, cmd.args));
       state.pipelineCmd = cmd;
       state.pipeline = pipeline;
       this._renderPipelineState(container, state);
       this._renderShaders(container, pipeline, token);
     } else if (cmdSets.BIND_DESCRIPTOR.has(method) && cmd.descriptors) {
-      const state = this._stateFor(cmd, cmd.descriptors.bindPoint);
+      const state = bindingState(this.panel.data, db, cmd,cmd.descriptors.bindPoint);
       this._renderDescriptorSets(container, state, cmd.descriptors.sets.map((set) => ({ cmd, set })), token);
     } else if (cmdSets.BIND_STAGE_BUFFER?.has(method) && cmdSets.stageBuffersOf) {
       // Metal: a stage buffer bind. Vertex-stage binds with a layout in the pipeline's vertex
       // descriptor are vertex buffers; everything else is a constant or storage block.
       const bound = cmdSets.stageBuffersOf(cmd);
-      const state = this._stateFor(cmd, bound.some((sb) => sb.stage === "compute") ? "compute" : cmdSets.graphicsBindPoint);
+      const state = bindingState(this.panel.data, db, cmd,bound.some((sb) => sb.stage === "compute") ? "compute" : cmdSets.graphicsBindPoint);
       if (cmdSets.BIND_VERTEX.has(method)) this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
       this._renderStageBuffers(container, state, bound);
     } else if (cmdSets.BIND_VERTEX.has(method)) {
-      const state = this._stateFor(cmd, "VK_PIPELINE_BIND_POINT_GRAPHICS");
+      const state = bindingState(this.panel.data, db, cmd,"VK_PIPELINE_BIND_POINT_GRAPHICS");
       this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
     } else if (cmdSets.BIND_INDEX.has(method)) {
       const ib = this._indexBufferOf(cmd);
       if (ib) this._renderIndexBuffer(container, ib, null);
     } else if (cmdSets.PUSH_CONSTANT.has(method)) {
-      const pc = this._pushConstantOf(cmd);
-      const state = this._stateFor(cmd, pc && pc.stageFlags.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
+      const pc = pushConstantOf(cmd);
+      const state = bindingState(this.panel.data, db, cmd,pc && pc.stageFlags.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
       if (pc) this._renderPushConstants(container, state, [pc], token);
     } else if (cmdSets.PASS_BEGIN.has(method) || cmdSets.PASS_END.has(method)) {
       this._renderTargets(container, cmd);
@@ -308,115 +260,7 @@ export class CommandInfoView {
   }
 
   // ---------------------------------------------------------------------------------------
-  // State reconstruction
-
-  private _emptyState(bindPoint: string): DrawState {
-    return {
-      bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(), indexBuffer: null,
-      vertexInput: null, viewports: null, scissors: null, pushConstants: [],
-    };
-  }
-
-  /**
-   * Walks back from a command through its command buffer, collecting the state bound before it.
-   * Commands inlined from a secondary command buffer see only that buffer's own commands (a
-   * secondary starts with no state); commands of a primary skip the inlined ones.
-   */
-  drawState(cmd: CaptureCommand, bindPoint = this.panel.data.sets.bindPointOf(cmd.method)): DrawState {
-    const cmdSets = this.panel.data.sets;
-    const commands = this.panel.data.commands;
-    const state = this._emptyState(bindPoint);
-    // An API without an index-buffer binding command names it in the draw itself (Metal).
-    // indexBufferOf answers null for a command that declares none, so this is safe to ask always.
-    state.indexBuffer = cmdSets.indexBufferOf(cmd);
-    for (let i = cmd.index - 1; i >= 0; i--) {
-      const c = commands[i];
-      if (!c || !sameStream(cmdSets, cmd, c)) break;
-      if (cmd.secondary) {
-        if (c.secondary !== cmd.secondary) break;
-      } else if (c.secondary) {
-        continue;
-      }
-      const a = c.args;
-      if (!a) continue;
-      if (cmdSets.BIND_PIPELINE.has(c.method)) {
-        if (!state.pipelineCmd && cmdSets.pipelineBindPointOf(c.method, a) === bindPoint) {
-          state.pipelineCmd = c;
-          state.pipeline = this.db.getObject(refId(a.pipeline));
-        }
-        continue;
-      }
-      if (cmdSets.BIND_STAGE_BUFFER?.has(c.method) && cmdSets.stageBuffersOf) {
-        for (const sb of cmdSets.stageBuffersOf(c)) {
-          const key = `${sb.stage}:${sb.index}`;
-          if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
-        }
-      }
-      if (cmdSets.BIND_VERTEX.has(c.method)) {
-        for (const vb of cmdSets.vertexBuffersOf(c)) {
-          if (!state.vertexBuffers.has(vb.binding)) state.vertexBuffers.set(vb.binding, vb);
-        }
-        continue;
-      }
-      if (cmdSets.BIND_INDEX.has(c.method)) {
-        if (!state.indexBuffer) state.indexBuffer = cmdSets.indexBufferOf(c);
-        continue;
-      }
-      switch (c.method) {
-        case "vkCmdSetVertexInputEXT":
-          if (!state.vertexInput) state.vertexInput = a;
-          break;
-        case "vkCmdSetViewport":
-        case "vkCmdSetViewportWithCount":
-        case "vkCmdSetViewportWithCountEXT":
-          if (!state.viewports) state.viewports = a.pViewports ?? null;
-          break;
-        case "vkCmdSetScissor":
-        case "vkCmdSetScissorWithCount":
-        case "vkCmdSetScissorWithCountEXT":
-          if (!state.scissors) state.scissors = a.pScissors ?? null;
-          break;
-        case "vkCmdPushConstants":
-        case "vkCmdPushConstants2":
-        case "vkCmdPushConstants2KHR": {
-          const pc = this._pushConstantOf(c);
-          if (pc) state.pushConstants.unshift(pc);
-          break;
-        }
-        default:
-          break;
-      }
-      if (c.descriptors && c.descriptors.bindPoint === bindPoint) {
-        for (const set of c.descriptors.sets) {
-          if (!state.sets.has(set.set)) state.sets.set(set.set, { cmd: c, set });
-        }
-      }
-    }
-    return state;
-  }
-
-  /** State for a binding command: what is bound before it, plus the pipeline bound next if none was bound before. */
-  private _stateFor(cmd: CaptureCommand, bindPoint: string): DrawState {
-    const cmdSets = this.panel.data.sets;
-    const state = this.drawState(cmd, bindPoint);
-    if (state.pipeline) return state;
-    const commands = this.panel.data.commands;
-    for (let i = cmd.index + 1; i < commands.length; i++) {
-      const c = commands[i];
-      if (!c || !sameStream(cmdSets, cmd, c)) break;
-      if (cmd.secondary ? c.secondary !== cmd.secondary : c.secondary) {
-        if (cmd.secondary) break;
-        continue;
-      }
-      if (cmdSets.BIND_PIPELINE.has(c.method) &&
-          cmdSets.pipelineBindPointOf(c.method, c.args) === bindPoint) {
-        state.pipelineCmd = c;
-        state.pipeline = this.db.getObject(refId(c.args?.pipeline));
-        break;
-      }
-    }
-    return state;
-  }
+  // Bound state (reconstructed by draw_state.ts)
 
   private _vertexBuffersOf(c: CaptureCommand): BoundVertexBuffer[] {
     return this.panel.data.sets.vertexBuffersOf(c);
@@ -424,39 +268,6 @@ export class CommandInfoView {
 
   private _indexBufferOf(c: CaptureCommand): BoundIndexBuffer | null {
     return this.panel.data.sets.indexBufferOf(c);
-  }
-
-  private _pushConstantOf(c: CaptureCommand): PushConstantUpdate | null {
-    let a = c.args;
-    if (!a) return null;
-    if (isObject(a.pPushConstantsInfo)) a = a.pPushConstantsInfo;
-    return { cmd: c, stageFlags: str(a.stageFlags), offset: num(a.offset), size: num(a.size), data: pushConstantBytes(a) };
-  }
-
-  /** Pass containing (or begun / ended by) a command. */
-  findPass(cmd: CaptureCommand): { passBegin: CaptureCommand; passIndex: number } | null {
-    const cmdSets = this.panel.data.sets;
-    const commands = this.panel.data.commands;
-    let depth = 0;
-    for (let i = cmd.index; i >= 0; i--) {
-      const c = commands[i];
-      if (!c || !sameStream(cmdSets, cmd, c)) break;
-      if (c.secondary) continue;   // passes are begun and ended by the primary
-      if (i !== cmd.index && cmdSets.PASS_END.has(c.method)) depth++;
-      if (cmdSets.PASS_BEGIN.has(c.method)) {
-        if (depth === 0) {
-          let passIndex = 0;
-          for (let j = i - 1; j >= 0; j--) {
-            const p = commands[j];
-            if (!p || !sameStream(cmdSets, cmd, p)) break;
-            if (cmdSets.PASS_BEGIN.has(p.method)) passIndex++;
-          }
-          return { passBegin: c, passIndex };
-        }
-        depth--;
-      }
-    }
-    return null;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1014,38 +825,10 @@ export class CommandInfoView {
     }
   }
 
-  /** The vertex layout of one binding: stride, input rate and its attributes, from the pipeline or dynamic state. */
-  private _vertexLayout(state: DrawState, binding: number, vb: BoundVertexBuffer): { stride: number; rate: string; attributes: { location: number; format: string; offset: number }[] } | null {
-    // Metal: the pipeline's MTLVertexDescriptor, with a layout per buffer index and attributes
-    // that name their buffer. Each attribute carries the protocol's format name beside Metal's,
-    // which is what the decoder below understands.
-    const vd = state.pipeline?.descriptor?.vertexDescriptor;
-    if (isObject(vd)) {
-      const layouts = Array.isArray(vd.layouts) ? vd.layouts : [];
-      const attrs = Array.isArray(vd.attributes) ? vd.attributes : [];
-      const layout = layouts.find((l) => isObject(l) && num(l.index) === binding);
-      if (!isObject(layout)) return null;
-      const attributes = attrs.filter((a): a is ArgObject => isObject(a) && num(a.bufferIndex) === binding)
-        .map((a) => ({ location: num(a.index), format: str(a.vkFormat ?? a.format), offset: num(a.offset) }))
-        .sort((x, y) => x.offset - y.offset);
-      return { stride: vb.stride ?? num(layout.stride), rate: str(layout.stepFunction).includes("PerInstance") ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX", attributes };
-    }
-    const vi = state.vertexInput ?? (isObject(state.pipeline?.descriptor?.pVertexInputState) ? state.pipeline!.descriptor!.pVertexInputState : null);
-    if (!isObject(vi)) return null;
-    const bindings = Array.isArray(vi.pVertexBindingDescriptions) ? vi.pVertexBindingDescriptions : [];
-    const attrs = Array.isArray(vi.pVertexAttributeDescriptions) ? vi.pVertexAttributeDescriptions : [];
-    const b = bindings.find((x) => isObject(x) && num(x.binding) === binding);
-    if (!isObject(b)) return null;
-    const attributes = attrs.filter((a): a is ArgObject => isObject(a) && num(a.binding) === binding)
-      .map((a) => ({ location: num(a.location), format: str(a.format), offset: num(a.offset) }))
-      .sort((x, y) => x.offset - y.offset);
-    return { stride: vb.stride ?? num(b.stride), rate: str(b.inputRate), attributes };
-  }
-
   private _renderVertexBuffer(container: Widget, state: DrawState, vb: BoundVertexBuffer, vertexReflection: ShaderReflection | null): void {
     const db = this.db;
     const buf = db.getObject(refId(vb.buffer));
-    const layout = this._vertexLayout(state, vb.binding, vb);
+    const layout = vertexLayout(state, vb.binding, vb);
     // Metal binds constant blocks and vertex data through the same call; a slot the vertex
     // descriptor does not lay out is a block, shown by _renderStageBuffers with its reflection.
     if (!layout && this.panel.data.sets.BIND_STAGE_BUFFER) return;
@@ -1125,7 +908,7 @@ export class CommandInfoView {
   private _renderStageBuffers(container: Widget, state: DrawState, buffers: BoundStageBuffer[]): void {
     const db = this.db;
     const candidates = buffers
-      .filter((sb) => !(sb.stage === "vertex" && !sb.inline && this._vertexLayout(state, sb.index, { cmd: sb.cmd, binding: sb.index, buffer: sb.buffer, offset: sb.offset, size: null, stride: null, dataId: sb.dataId })))
+      .filter((sb) => !(sb.stage === "vertex" && !sb.inline && vertexLayout(state, sb.index, { cmd: sb.cmd, binding: sb.index, buffer: sb.buffer, offset: sb.offset, size: null, stride: null, dataId: sb.dataId })))
       .sort((a, b) => a.stage === b.stage ? a.index - b.index : a.stage.localeCompare(b.stage));
     const reflected = hasMetalReflection(state.pipeline);
     const shown: { sb: BoundStageBuffer; res: ShaderResource | null }[] = [];
@@ -1294,7 +1077,7 @@ export class CommandInfoView {
   // Render targets
 
   private _renderTargets(container: Widget, cmd: CaptureCommand): void {
-    const pass = this.findPass(cmd);
+    const pass = findPass(this.panel.data, cmd);
     if (pass) this.panel.renderPassTargets(container, cmd.frame, pass.passBegin, pass.passIndex, cmd.object?.__id ?? 0);
   }
 }

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "gpu-inspector-plugins",
+  "description": "Claude Code plugins for GPU Inspector, the native graphics inspector for Vulkan and Metal.",
+  "owner": {
+    "name": "Brendan Duncan"
+  },
+  "plugins": [
+    {
+      "name": "gpu-inspector",
+      "description": "Debug and profile Vulkan and Metal frames with Claude, from GPU Inspector captures (.gpucap).",
+      "source": "./claude-plugin",
+      "category": "development",
+      "homepage": "https://github.com/brendan-duncan/gpu_inspector"
+    }
+  ]
+}

@@ -55,8 +55,36 @@ interpreter and re-created pipelines.
   descriptor sets and transfers, versioned per write and keyed per subresource; a resource
   lifetime chart with a node-link view of the selected pass' neighbourhood, GPU times, the
   critical path, external inputs and passes whose output nothing reads.
+- Claude Code plugin (`claude-plugin/`): an MCP server (`app/src/mcp/`) over saved `.gpucap` files,
+  built on the renderer's own analysis modules (split out of the UI for it).
+  - Tools: summary, Frame Issues, GPU Bottlenecks, render graph, command list and bound state,
+    objects, validation, read-back images as PNG, buffers through GLSL layouts, vertices with
+    bounds, shader reflection, source, cross-compiled text and analysis, and before/after
+    comparison.
+  - A capture analysis skill, and analyze / profile / debug / compare commands.
 
 ## Next
+
+### Claude Code
+- [ ] Live sessions, headless: an MCP client of the layer's and the Metal library's socket, with the
+      framing of `layer/src/transport.h` and `tools/inspector_client.py` as the reference. The
+      tools:
+      - `launch_app`, with the layer environment `main.ts` sets.
+      - `capture_frames`: a `Capture` request, streamed into `ObjectDatabase` / `CaptureData`, then
+        saved with `encodeCaptureFile` so every file tool works on it.
+      - `get_frame_stats`, from `FrameStats`.
+      - `replace_shader`, compiling like `compileShader` in `main.ts`, for an edit, capture and
+        compare loop.
+
+      The connection code has to come out of `main.ts` first. The listeners take one client, so a
+      target is driven either by the app or by Claude.
+- [ ] Shader source roots in `get_shader` for modules with line information but no text
+      (`main/shader_sources.ts`), and host symbolization of stacks (`main/symbolize.ts`).
+- [ ] The shader flame graph as a tool (`frame_cost_tree.ts` needs no DOM).
+- [ ] Metal argument buffers in `get_command` (`argumentBufferEntries` is pure, but its module
+      imports widgets).
+- [ ] CI: run `npm test` in the release workflow, and fail when the committed MCP bundle is older
+      than its sources.
 
 ### Captures
 - [x] Pipeline statistics queries per pass on Vulkan (`layer/src/pipeline_stats.h`), carrying the
@@ -215,9 +243,6 @@ backend does. Ordered by value per effort.
 - [x] macOS build of the UI, signed with the project's Developer ID and notarized.
 
 ## Tooling
-- [ ] Claude Code plugin / MCP server over saved `.gpucap` files (the format is in
-      `app/src/renderer/capture_file.ts`; the parser has no DOM dependency and can move to a
-      shared module).
 - [ ] UI tests: cases for the Unity player and Android devices when attached (the saved-capture
       mode covers their captures), image comparison of the screenshots against references.
 - [ ] Help links to docs from the panels.

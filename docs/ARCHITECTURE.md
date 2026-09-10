@@ -321,7 +321,9 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
 
 * `src/shared/protocol.ts` — typed definitions of every message (layer <-> UI, main <-> renderer).
 * `src/main/` — sessions (process launch with the layer environment, stdout capture, TCP client),
-  windows, IPC bridge, SPIR-V text conversion through the SDK's `spirv-dis` / `spirv-cross`.
+  windows, IPC bridge, SPIR-V text conversion through the SDK's `spirv-dis` / `spirv-cross`
+  (`shader_tools.ts`).
+* `src/mcp/` — the MCP server of the Claude Code plugin (see MCP server below).
 * `src/renderer/` — `inspector_window.ts` (launch toolbar, one tab per session),
   `session_panel.ts` (a session's object database and its Inspect / Capture / Log tabs),
   `inspect_panel.ts` (live objects), `capture_panel.ts` (frame capture: command list, render
@@ -472,7 +474,7 @@ and the Log tab records the summary.
 
 A capture can be saved (the Save button of the capture bar, or the tab's context menu) and
 reopened without the application (Open Capture... in the launch bar, or by dropping the file on
-the window), the way WebGPU Inspector saves `.wgpuc` files. `renderer/capture_file.ts` defines
+the window), the way WebGPU Inspector saves `.wgpuc` files. `renderer/capture_format.ts` defines
 the `.gpucap` format: an ASCII `GPUCAP 1` header line, a u32 manifest length, a JSON manifest,
 then the raw payloads (render target pixels, buffer ranges, SPIR-V) the manifest references as
 `[offset, length]`; the header and manifest are readable in a text editor, and the payloads stay
@@ -481,8 +483,8 @@ capture references, closed over their dependencies and owners so every link reso
 creation arguments, labels, updates such as memory bindings and descriptor contents, and whether
 they had already been destroyed), the command list with the secondaries inlined, the render
 targets, the buffer ranges, the pass timings, and the frame and submit times behind the Frame
-Bound card. Saving fetches the SPIR-V of the referenced pipelines and modules from the layer
-first (`RequestBlob`, cached in `ObjectDatabase.blobData`).
+Bound card. Saving (`renderer/capture_file.ts`) fetches the SPIR-V of the referenced pipelines
+and modules from the layer first (`RequestBlob`, cached in `ObjectDatabase.blobData`).
 
 A loaded file becomes a session of its own (`FileSessionPanel`): its object database is built
 from the manifest with the same snapshot path as a live connection, and its Capture tab holds the
@@ -599,7 +601,7 @@ pass rendering to a different image or layer, which is one pass per eye. Finding
 over many commands are folded into one that names the first and counts the rest, but
 `byCommand()` maps every affected command to its findings: the capture panel computes the
 analysis once per capture, marks the affected rows with a flag after the call number, and the
-command details show a Performance section. `renderFrameStats` in `capture_statistics.ts`
+command details show a Performance section. `renderFrameStats` in `frame_stats_view.ts`
 shows the list as the Frame Issues card with links that select the command, behind severity
 checkboxes (the shader findings' hide classes) and one checkbox per rule that fired.
 
@@ -753,6 +755,55 @@ renderer holds the object database and capture data for each session it displays
   `ObjectSetLabel`, `CaptureFrameResults`, `CaptureFrameCommands`, `CaptureBuffers`,
   `CaptureBufferData`, `CaptureTextureFrames`, `CaptureTextureData`).
 
+#### MCP server
+
+`src/mcp/` gives Claude Code, or any Model Context Protocol client, the captures the app saves,
+read with the app's own analyses. `claude-plugin/` packages it as a plugin with a skill and
+commands, and `.claude-plugin/marketplace.json` makes the repository the plugin's marketplace.
+
+**Loading.** The server reads a `.gpucap` the way `FileSessionPanel` does: `parseCaptureFile`,
+then `ObjectDatabase.loadObjects`, then `CaptureData.load`.
+
+**Analyses.** On the loaded capture it runs the renderer's modules as they are:
+- `analyzeFrame` with the render graph, for Frame Issues
+- `collectPassMetrics` and its advice, for GPU Bottlenecks
+- `CaptureStatistics`
+- `frameRenderGraph`
+- `draw_state.ts`, for the state bound at a command
+- SPIR-V reflection, debug information and analysis
+- the texture decoders
+
+**What was split out of the UI for it:**
+- The format, from the save path (`capture_format.ts`).
+- The statistics and the Frame Bound verdict, from their card (`capture_statistics.ts` against
+  `frame_stats_view.ts`).
+- The bottleneck advice, from its report (`pass_metrics.ts`).
+- The state reconstruction, from the command details view (`draw_state.ts`).
+- The Vulkan command summaries, into `VULKAN_SETS.summarize`.
+- The debug group names (`labelNameOf`).
+- The pipelines a frame used (`pipelineUses`).
+- `shaderText`, out of `main.ts` (`main/shader_tools.ts`).
+
+**Bundle.** The build bundles the server into one dependency-free file,
+`claude-plugin/server/gpu-inspector-mcp.mjs`. It is committed, since a plugin installs from the
+repository as it is. The build fails if a UI module (widgets, views, panels, anything calling the
+preload API) would end up in that bundle.
+
+**Protocol.** `stdio_server.ts` implements only the four methods a tools-only stdio server needs:
+`initialize`, `ping`, `tools/list` and `tools/call`. It does not use the SDK, whose server brings a
+schema validator, an HTTP stack and a schema library with it.
+
+**Answers.** Tool answers are written for a model to read (`describe.ts`):
+- Object references as `VkImage#12 "name"`, and inline payloads as their size.
+- Measurements rounded, fields that were not measured left out.
+- Every list paged and every answer capped.
+- Buffer and push constant contents decoded through the shader's reflection.
+- Vertices decoded through the pipeline's layout, with per-attribute bounds.
+- Images as PNG with their statistics.
+
+**Store.** Captures stay open in `capture_store.ts`, with their analyses computed on first use.
+`list_captures` adds the app's recent captures from its settings file.
+
 ## Building
 
 Prerequisites and the one-command setup are in the [README](../README.md); `tools/setup.sh` does
@@ -771,6 +822,8 @@ python tools/build_android.py [--abi arm64-v8a,x86_64]
 
 # app
 cd app && npm install && npm start        # builds with esbuild, then launches Electron
+npm run build                              # the bundles only, including claude-plugin/server/gpu-inspector-mcp.mjs
+npm test                                   # unit tests: pass metrics, texture decoders, the MCP server
 npm run typecheck                          # tsc
 npm run watch                              # rebuild on change
 npm run dist                               # installer (electron-builder), see docs/RELEASING.md

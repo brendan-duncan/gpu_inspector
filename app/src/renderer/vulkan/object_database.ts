@@ -6,7 +6,7 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
-import type { CaptureFileObject } from "../capture_file.js";
+import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
 export type ValidationEntry = ValidationMessage;

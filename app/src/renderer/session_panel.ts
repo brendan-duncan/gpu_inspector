@@ -11,7 +11,7 @@ import { ObjectDatabase, type ValidationEntry } from "./vulkan/object_database.j
 import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
-import type { LoadedCapture } from "./capture_file.js";
+import type { LoadedCapture } from "./capture_format.js";
 import type { CapturedTexture } from "./capture_data.js";
 import type { LayerMessage, SessionInfo, StackFrame, StatusMessage, UiRequest } from "../shared/protocol.js";
 

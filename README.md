@@ -34,6 +34,14 @@ follow the same way. The feature list below describes the Vulkan layer.
   reads, drawn as a resource lifetime chart with the selected pass's producers and consumers
   beside it, its GPU time and the frame's critical path, what it reads from before the capture,
   and which passes write something nothing reads.
+* **Claude Code** — a plugin gives Claude the saved captures, read with the same analyses. Ask
+  why a frame is slow or why an object is missing, and it follows a methodical path:
+  - which pass is the bottleneck, and what bounds it
+  - the draw involved, and the state it read
+  - the render targets, returned as images
+  - the uniforms, vertices and shaders
+
+  See [Claude Code](#claude-code).
 
 See [docs/PROFILING.md](docs/PROFILING.md) for how to find a GPU bottleneck with it,
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
@@ -194,6 +202,27 @@ npm run pack         # unpacked packaged app in app/release (needs the Release l
 npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
 ```
 
+## Claude Code
+
+The `gpu-inspector` plugin ([claude-plugin/](claude-plugin/README.md)) is an MCP server over saved
+`.gpucap` files. It uses the same frame rules, bottleneck measurements, render graph, draw state
+reconstruction, SPIR-V reflection and texture decoding as the app. Install it with:
+
+```
+claude plugin marketplace add brendan-duncan/gpu_inspector
+claude plugin install gpu-inspector@gpu-inspector-plugins
+```
+
+Save a capture, then ask Claude about it, or use one of the plugin's commands:
+- `/gpu-inspector:analyze`: a correctness and performance review.
+- `/gpu-inspector:profile`: what limits the frame, following [docs/PROFILING.md](docs/PROFILING.md).
+- `/gpu-inspector:debug <symptom>`: traces a rendering problem to the draw that causes it.
+- `/gpu-inspector:compare <before> <after>`: whether a change moved the numbers.
+
+Without a path, Claude picks from the captures GPU Inspector saved or opened recently. The plugin
+needs Node.js 18 or newer, and neither the app nor the application being inspected has to be
+running.
+
 ## Shader sources
 
 Shaders compiled with source-level debug information (`-g` for glslc and glslangValidator,
@@ -352,7 +381,7 @@ linked to their commands, and stack traces with source lines. Each case starts t
 the inspector, captures a frame, and checks what the renderer reports (`--debug-dump`) and the
 layer's log. `--captures <dir>` also opens every `.gpucap` in a directory, checking a
 `<name>.expect.json` next to it (`{"findings": {"rule": count}}`) when there is one. The
-renderer's unit tests run with `npm test` in `app/`. The triangle cases drive the Vulkan layer,
+renderer's and the MCP server's unit tests run with `npm test` in `app/`. The triangle cases drive the Vulkan layer,
 so on macOS only `--captures <dir>` applies; the Metal library has no automated test yet, and
 `build/bin/mtlinsp_triangle` is run by hand (see `metal/README.md`).
 

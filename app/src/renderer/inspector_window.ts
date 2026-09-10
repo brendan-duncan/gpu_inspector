@@ -13,7 +13,7 @@ import { Dialog } from "./widget/dialog.js";
 import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
 import { FileSessionPanel, SessionPanel } from "./session_panel.js";
-import { CAPTURE_FILE_EXTENSION, CAPTURE_FILE_FILTERS, parseCaptureFile } from "./capture_file.js";
+import { CAPTURE_FILE_EXTENSION, CAPTURE_FILE_FILTERS, parseCaptureFile } from "./capture_format.js";
 import { LaunchDialog, emptyLaunchConfig, launchDisplayName, setHostPlatform } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";

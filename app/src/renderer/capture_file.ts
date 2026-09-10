@@ -1,102 +1,15 @@
-// Capture files: a frame capture saved to disk and reopened without the application, the
-// counterpart of WebGPU Inspector's .wgpuc. One file holds everything the capture tab and the
-// Inspect tab need: the objects the capture references (with their creation arguments, labels,
-// updates and SPIR-V payloads), the command list, the read-back render targets and buffer
-// ranges, and the pass timings.
-//
-// Layout: an ASCII "GPUCAP 1\n" line, a little-endian u32 with the length of the JSON manifest,
-// the manifest, then the raw binary payloads (pixel data, buffer contents, SPIR-V) which the
-// manifest references as [offset, length] into that area. Text editors can read the header and
-// manifest, and payloads are stored as bytes rather than base64 so large captures stay compact.
-import { passKey, type CaptureData, type CapturedBuffer, type CapturedTexture } from "./capture_data.js";
+// Saving a live capture as a capture file (the format itself is capture_format.ts): the objects
+// the capture references are collected, their SPIR-V payloads, creation stacks and the commands'
+// symbols are fetched from the layer when the session does not hold them yet, and everything is
+// written into one buffer.
+import type { CaptureData } from "./capture_data.js";
+import { CAPTURE_FORMAT, CAPTURE_VERSION, encodeCaptureFile, type CaptureFileBlob, type CaptureFileManifest, type CaptureFileObject, type Payload } from "./capture_format.js";
 import type { SessionContext } from "./session_panel.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, BlobInfo, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, StackFrame, ValidationMessage, CaptureApi } from "../shared/protocol.js";
+import type { StackFrame } from "../shared/protocol.js";
 import { requestStacks, resolveSymbols } from "./stacktrace_view.js";
 
-export const CAPTURE_FILE_EXTENSION = "gpucap";
-export const CAPTURE_FILE_FILTERS = [{ name: "GPU Inspector captures", extensions: [CAPTURE_FILE_EXTENSION] }, { name: "All files", extensions: ["*"] }];
-
-const MAGIC = "GPUCAP 1\n";
-const FORMAT = "gpu-inspector-capture";
-const VERSION = 1;
 const BLOB_TIMEOUT_MS = 15000;
-
-/** Where a payload sits in the file's binary area: [offset, length]. */
-export type Payload = [number, number];
-
-export interface CaptureFileBlob extends BlobInfo {
-  payload?: Payload;
-}
-
-/** One object of the capture's object graph, as the layer reported it plus its later updates. */
-export interface CaptureFileObject {
-  id: number;
-  parent: number;
-  type: string;
-  cmd: string;
-  index: number;
-  handle: string;
-  label: string | null;
-  args: ArgObject | null;
-  blobs: CaptureFileBlob[];
-  updates: Record<string, ArgValue>;
-  /** Destroyed before the capture was saved (a ghost kept for the objects that reference it). */
-  deleted: boolean;
-}
-
-export interface CaptureFileManifest {
-  format: typeof FORMAT;
-  version: number;
-  api: CaptureApi;
-  application: string;
-  savedAt: string;
-  source: { name: string };
-  frame: number;
-  frames: number;
-  /** The live frame interval and submit time when the capture was taken (Frame Bound card). */
-  frameTimeMs: number;
-  submitMs: number;
-  /** Display refresh period while vsync was on (0 without), the Frame Bound budget. */
-  refreshMs?: number;
-  refreshSource?: string;
-  /** The display's own refresh period when a source reported one (0 otherwise). */
-  displayRefreshMs?: number;
-  /** How the layer ended frames: "present", "wait" (vkWaitForFences) or "submit"; missing in older files. */
-  frameBoundary?: string;
-  objects: CaptureFileObject[];
-  commands: CaptureCommand[];
-  textures: { info: CaptureTextureInfo; payload?: Payload }[];
-  buffers: { info: CaptureBufferInfo; payload?: Payload }[];
-  passTimings: PassTiming[];
-  /** Validation messages the session had received when the capture was saved. */
-  validation?: ValidationMessage[];
-  /** Symbolized frames of the addresses the commands' stacks carry, by address. */
-  symbols?: Record<string, StackFrame>;
-  /** Creation stacks of the referenced objects, by object id (absent when the layer collected none). */
-  stacks?: Record<string, StackFrame[]>;
-}
-
-/** A parsed capture file, ready for CaptureData.load() and ObjectDatabase.loadObjects(). */
-export interface LoadedCapture {
-  manifest: CaptureFileManifest;
-  validation: ValidationMessage[];
-  objects: CaptureFileObject[];
-  /** SPIR-V payloads keyed "objectId:blobIndex". */
-  blobs: Map<string, Uint8Array>;
-  commands: CaptureCommand[];
-  textures: CapturedTexture[];
-  buffers: Map<number, CapturedBuffer>;
-  passTimings: Map<string, PassTiming>;
-  /** Files written before the field was real say "vulkan"; so does an absent one. */
-  api: CaptureApi;
-}
-
-/** A file name for a capture: "<application>_frame_<N>.gpucap". */
-export function captureFileName(source: string, frame: number, frames: number): string {
-  const base = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
-  return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
-}
 
 /** One SPIR-V payload of an object: from the database's cache, else fetched from the layer. */
 export function fetchBlob(session: SessionContext, object: VulkanObject, index: number): Promise<Uint8Array | null> {
@@ -216,7 +129,7 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
   if (onProgress) onProgress("saving: writing...");
 
   const manifest: CaptureFileManifest = {
-    format: FORMAT, version: VERSION, api: data.api, application: "GPU Inspector", savedAt: new Date().toISOString(),
+    format: CAPTURE_FORMAT, version: CAPTURE_VERSION, api: data.api, application: "GPU Inspector", savedAt: new Date().toISOString(),
     source: { name: session.name },
     frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource,
     displayRefreshMs: db.displayRefreshMs, frameBoundary: db.frameBoundary,
@@ -233,64 +146,5 @@ export async function serializeCapture(session: SessionContext, data: CaptureDat
     ...(symbols ? { symbols } : {}),
     ...(stacks ? { stacks } : {}),
   };
-
-  const json = new TextEncoder().encode(JSON.stringify(manifest));
-  const magic = new TextEncoder().encode(MAGIC);
-  const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + payloadBytes);
-  let pos = 0;
-  out.set(magic, pos);
-  pos += magic.byteLength;
-  new DataView(out.buffer).setUint32(pos, json.byteLength, true);
-  pos += 4;
-  out.set(json, pos);
-  pos += json.byteLength;
-  for (const p of payloads) {
-    out.set(p, pos);
-    pos += p.byteLength;
-  }
-  return out;
-}
-
-/** Parses a capture file; throws with a readable message when it is not one. */
-export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
-  const magic = new TextEncoder().encode(MAGIC);
-  if (bytes.byteLength < magic.byteLength + 4) throw new Error("The file is too short to be a capture.");
-  for (let i = 0; i < magic.byteLength; i++) {
-    if (bytes[i] !== magic[i]) throw new Error("Not a GPU Inspector capture file (bad header).");
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const jsonLength = view.getUint32(magic.byteLength, true);
-  const jsonStart = magic.byteLength + 4;
-  const base = jsonStart + jsonLength;
-  if (base > bytes.byteLength) throw new Error("The capture file is truncated.");
-  let manifest: CaptureFileManifest;
-  try {
-    manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(jsonStart, base))) as CaptureFileManifest;
-  } catch (e) {
-    throw new Error(`The capture's manifest is not valid JSON: ${(e as Error).message}`);
-  }
-  if (manifest.format !== FORMAT) throw new Error("Not a GPU Inspector capture file (unknown format).");
-  if (manifest.version > VERSION) throw new Error(`The capture was saved by a newer GPU Inspector (format version ${manifest.version}); this build reads version ${VERSION}.`);
-  const payload = (p: Payload | undefined): Uint8Array | null => {
-    if (!p) return null;
-    const [offset, length] = p;
-    if (offset < 0 || length < 0 || base + offset + length > bytes.byteLength) throw new Error("The capture file is truncated (payload out of range).");
-    return bytes.subarray(base + offset, base + offset + length);
-  };
-
-  const blobs = new Map<string, Uint8Array>();
-  for (const o of manifest.objects ?? []) {
-    (o.blobs ?? []).forEach((b, i) => {
-      const data = payload(b.payload);
-      if (data) blobs.set(`${o.id}:${i}`, data);
-    });
-  }
-  const textures: CapturedTexture[] = (manifest.textures ?? []).map((t) => ({ info: t.info, data: payload(t.payload), canvas: null }));
-  const buffers = new Map<number, CapturedBuffer>();
-  for (const b of manifest.buffers ?? []) buffers.set(b.info.id, { info: b.info, data: payload(b.payload) });
-  const passTimings = new Map<string, PassTiming>();
-  for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
-  const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
-  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
-         api: manifest.api ?? "vulkan" };
+  return encodeCaptureFile(manifest, payloads);
 }

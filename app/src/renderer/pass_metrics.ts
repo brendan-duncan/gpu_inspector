@@ -34,6 +34,8 @@ export type Bound = "vertex" | "fragment" | "target" | "balanced";
 export interface PassMetrics {
   /** The pass-begin command, for jumping to it. */
   commandIndex: number;
+  /** The pass's last command: its end, or the last dispatch of a Vulkan compute run. */
+  endIndex: number;
   label: string;
   frame: number;
   commandBuffer: number;
@@ -148,6 +150,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       passes.push(open);
       continue;
     }
+    if (open) open.endIndex = cmd.index;
     if (sets.PASS_END.has(m)) {
       inPass = false;
       open = null;
@@ -178,6 +181,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
           passes.push(computeRun);
         }
         computeRun.draws++;
+        computeRun.endIndex = cmd.index;
       }
     }
   }
@@ -278,7 +282,7 @@ function targetOf(cmd: CaptureCommand, db: ObjectLookup): { pixels: number; samp
 function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: number,
                target: { pixels: number; samples: number } | null): PassMetrics {
   return {
-    commandIndex: cmd.index, label: passLabel(cmd, passIndex), frame: cmd.frame ?? 0,
+    commandIndex: cmd.index, endIndex: cmd.index, label: passLabel(cmd, passIndex), frame: cmd.frame ?? 0,
     commandBuffer: cb, passIndex, compute, draws: 0, vertices: 0,
     pixels: target?.pixels ?? 0, samples: target?.samples ?? 1,
     timing: null, durationMs: null, vertexMs: null, fragmentMs: null,
@@ -338,6 +342,75 @@ function decideBound(p: PassMetrics): void {
       p.boundReason = `${(100 * share.vertex).toFixed(0)}% of the pass's GPU cycles were vertex work`;
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the numbers mean. The GPU Bottlenecks report and the MCP server (src/mcp/) both say it,
+// so it is written once, here.
+
+export const BOUND_LABEL: Record<Bound, string> = {
+  vertex: "Vertex bound",
+  fragment: "Fragment bound",
+  target: "Target write bound",
+  balanced: "Balanced",
+};
+
+/** What to try first for a pass limited by each stage. */
+export const BOUND_ADVICE: Record<Bound, string> = {
+  vertex: "Cut vertices or vertex-stage work: mesh level of detail at distance, fewer or cheaper vertex attributes, and per-fragment rather than per-vertex evaluation of anything the fragment stage could do itself.",
+  fragment: "Cut fragments or fragment-stage work: fewer overlapping surfaces, a smaller render target, cheaper texture sampling, and simpler shader maths.",
+  target: "The pass spends its time writing the attachment rather than shading it. A smaller target, fewer targets, or a store action of DontCare on anything nothing reads afterwards.",
+  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbour, or skip it when nothing reads its output.",
+};
+
+export interface PassAdvice {
+  severity: "high" | "medium" | "low";
+  title: string;
+  body: string;
+}
+
+/** The measured problems of one pass, worst first. */
+export function passAdvice(p: PassMetrics): PassAdvice[] {
+  const out: PassAdvice[] = [];
+  if (p.overdraw !== null && p.overdraw > OVERDRAW_LIMIT) {
+    out.push({
+      severity: "high",
+      title: `Each pixel is shaded ${formatRatio(p.overdraw)} times`,
+      body: `A frame doing well sits near ${HEALTHY_OVERDRAW}. Overdraw this high is usually transparent surfaces stacking up, a full-screen effect drawn more than once, or opaque geometry drawn back to front so the depth test cannot reject anything.`,
+    });
+  }
+  if (p.fragmentsPerPrimitive !== null && p.fragmentsPerPrimitive < MICROTRIANGLE_LIMIT) {
+    out.push({
+      severity: "high",
+      title: `Triangles cover ${formatRatio(p.fragmentsPerPrimitive)} fragments each`,
+      body: `The rasterizer shades in 2x2 quads, so a triangle covering fewer than ${MICROTRIANGLE_LIMIT} fragments wastes lanes it has already paid for. This is dense geometry drawn small: add mesh level of detail, or cull the meshes that are far enough away to be smaller than their own triangles.`,
+    });
+  }
+  if (p.depthRejectRate !== null && p.overdraw !== null && p.overdraw > 1.5 && p.depthRejectRate < LOW_REJECTION_RATE) {
+    out.push({
+      severity: "medium",
+      title: `The depth test rejects only ${formatPercent(p.depthRejectRate)} of shaded fragments`,
+      body: "Fragments are being shaded and then thrown away by something later, or not thrown away at all. Drawing opaque geometry front to back lets the depth test reject work before the fragment shader runs; a depth prepass does the same for a scene that cannot be sorted.",
+    });
+  }
+  if (p.bound === "target" && p.cycleShare) {
+    out.push({
+      severity: "medium",
+      title: "Most of the pass is spent writing the render target",
+      body: "Fewer or smaller attachments, or a store action of DontCare on the ones nothing reads afterwards. On a tile-based GPU a target that is only read by the pass that follows never has to reach memory at all.",
+    });
+  }
+  return out;
+}
+
+/** The frame's verdict in one sentence, from the stage times summed over every timed pass. */
+export function frameStageVerdict(m: FrameMetrics): string {
+  const staged = m.vertexMs + m.fragmentMs;
+  if (staged <= 0) return "The stage split is not available for this capture, so the frame's balance cannot be stated.";
+  const fragmentShare = m.fragmentMs / staged;
+  if (fragmentShare > 0.65) return `This frame is fragment bound: ${formatPercent(fragmentShare)} of stage time is fragment work.`;
+  if (fragmentShare < 0.35) return `This frame is vertex bound: ${formatPercent(1 - fragmentShare)} of stage time is vertex work.`;
+  return `Vertex and fragment work are close to balanced (${formatPercent(fragmentShare)} fragment).`;
 }
 
 /** "1.84x", "—". */
