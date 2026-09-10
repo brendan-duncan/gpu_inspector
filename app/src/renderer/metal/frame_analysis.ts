@@ -17,8 +17,20 @@
 //   single-threadgroup-dispatch  a dispatch of one threadgroup
 //   tiny-draws             many draws of a handful of vertices
 //
+// Four more read the GPU counters the library sampled around each pass, rather than the command
+// stream (metal/pass_metrics.ts does the arithmetic; the GPU Bottlenecks report shows the same
+// numbers in full). They are silent on a GPU that exposes only timestamps.
+//
+//   high-overdraw          a pass shading each pixel far more than once
+//   microtriangles         triangles too small for the rasterizer's 2x2 quad
+//   late-depth-rejection   a pass that overdraws while its depth test rejects almost nothing
+//   unmipped-texture       a large content texture sampled with no mip chain
+//
 // Every finding names the command it is about so the UI can jump to it.
 import { METAL_SETS } from "./command_sets.js";
+import {
+  LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT, collectPassMetrics, formatRatio,
+} from "./pass_metrics.js";
 import { isHandleRef, isObject, num, refId, str } from "../vulkan/vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "../vulkan/spirv_analysis.js";
 import type { FrameAnalysisDatabase, FrameFinding } from "../vulkan/frame_analysis.js";
@@ -27,8 +39,15 @@ import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.
 
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
+/**
+ * A texture this big, sampled with one mip level, thrashes the texture cache as soon as it is
+ * drawn smaller than itself. Below it the whole texture fits in cache and the mip chain saves
+ * little, so the rule stays quiet.
+ */
+const LARGE_TEXTURE_PIXELS = 1024 * 1024;
 
-const RULE_ORDER = ["undefined-load", "mergeable-passes", "msaa-store", "memoryless-candidate", "color-store", "depth-store", "color-load",
+const RULE_ORDER = ["high-overdraw", "microtriangles", "undefined-load", "mergeable-passes", "msaa-store", "memoryless-candidate",
+  "late-depth-rejection", "color-store", "depth-store", "color-load", "unmipped-texture",
   "tiny-draws", "redundant-pipeline-bind", "redundant-buffer-bind", "single-threadgroup-dispatch"];
 
 interface Attachment {
@@ -67,6 +86,13 @@ function argKey(v: ArgValue | undefined): string {
   return str(v);
 }
 
+/** Binding a texture to a shader stage: the texture will be sampled, not written. */
+const SAMPLER_BINDS = new Set([
+  "setFragmentTexture:atIndex:", "setFragmentTextures:withRange:",
+  "setVertexTexture:atIndex:", "setVertexTextures:withRange:",
+  "setTexture:atIndex:", "setTextures:withRange:",
+]);
+
 const BLIT_READS: Record<string, string[]> = {
   "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:": ["sourceTexture"],
   "copyFromTexture:toTexture:": ["sourceTexture"],
@@ -90,6 +116,8 @@ export class MetalFrameAnalysis {
   private _reads = new Map<number, number[]>();
   /** Texture id -> every pass that used it as an attachment, in order. */
   private _attachmentUses = new Map<number, { pass: PassInfo; att: Attachment }[]>();
+  /** Texture id -> the first command that bound it to a shader stage (the unmipped-texture rule). */
+  private _sampled = new Map<number, CaptureCommand>();
 
   byCommand(): Map<number, FrameFinding[]> {
     return this._byCommand;
@@ -105,9 +133,12 @@ export class MetalFrameAnalysis {
     this._byCommand = new Map();
     this._reads = new Map();
     this._attachmentUses = new Map();
+    this._sampled = new Map();
     this._walk(data.commands);
     this._attachmentRules();
     this._memorylessRule();
+    this._counterRules(data);
+    this._samplingRules();
     this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER.indexOf(a.rule) - RULE_ORDER.indexOf(b.rule));
     return this.findings;
   }
@@ -176,12 +207,21 @@ export class MetalFrameAnalysis {
       if (!a) continue;
 
       // Reads: bound textures, blit sources, presents.
+      const sampling = SAMPLER_BINDS.has(m);
       if (a.texture !== undefined && a.index !== undefined) {
         const id = refId(a.texture);
-        if (id !== null) this._read(id, cmd.index);
+        if (id !== null) {
+          this._read(id, cmd.index);
+          if (sampling && !this._sampled.has(id)) this._sampled.set(id, cmd);
+        }
       }
       if (Array.isArray(a.textures)) {
-        for (const t of a.textures) { const id = refId(t); if (id !== null) this._read(id, cmd.index); }
+        for (const t of a.textures) {
+          const id = refId(t);
+          if (id === null) continue;
+          this._read(id, cmd.index);
+          if (sampling && !this._sampled.has(id)) this._sampled.set(id, cmd);
+        }
       }
       const readKeys = BLIT_READS[m];
       if (readKeys) {
@@ -266,6 +306,73 @@ export class MetalFrameAnalysis {
   }
 
   // ---------------------------------------------------------------------------- the rules
+
+  /**
+   * The measured rules. Each pass's counters, divided out into overdraw, fragments per primitive
+   * and the depth rejection rate (metal/pass_metrics.ts), against the thresholds a profiling
+   * session uses. A pass whose GPU did not expose the statistic counter set yields nulls and
+   * raises nothing.
+   */
+  private _counterRules(data: CaptureData): void {
+    const metrics = collectPassMetrics(data, this._db);
+    const overdrawn = new Folded();
+    const micro = new Folded();
+    const shadedThenDropped = new Folded();
+    let worstOverdraw = 0;
+    let worstFragments = Infinity;
+    for (const p of metrics.passes) {
+      const cmd = data.commands[p.commandIndex];
+      if (!cmd) continue;
+      if (p.overdraw !== null && p.overdraw > OVERDRAW_LIMIT) {
+        overdrawn.add(cmd);
+        worstOverdraw = Math.max(worstOverdraw, p.overdraw);
+      }
+      if (p.fragmentsPerPrimitive !== null && p.fragmentsPerPrimitive < MICROTRIANGLE_LIMIT) {
+        micro.add(cmd);
+        worstFragments = Math.min(worstFragments, p.fragmentsPerPrimitive);
+      }
+      if (p.depthRejectRate !== null && p.overdraw !== null && p.overdraw > 1.5 && p.depthRejectRate < LOW_REJECTION_RATE) {
+        shadedThenDropped.add(cmd);
+      }
+    }
+    if (overdrawn.count) {
+      this._addFolded("high-overdraw", "high", "high",
+        `${overdrawn.count} pass${overdrawn.count === 1 ? "" : "es"} shade each pixel more than ${OVERDRAW_LIMIT} times over (worst ${formatRatio(worstOverdraw)}): stacked transparency, a full-screen effect drawn more than once, or opaque geometry drawn back to front.`,
+        overdrawn);
+    }
+    if (micro.count) {
+      this._addFolded("microtriangles", "high", "high",
+        `${micro.count} pass${micro.count === 1 ? "" : "es"} rasterize triangles covering fewer than ${MICROTRIANGLE_LIMIT} fragments each (worst ${formatRatio(worstFragments, 1)}): the 2x2 rasterization quad shades lanes that are then thrown away. Mesh level of detail at distance is the usual answer.`,
+        micro);
+    }
+    if (shadedThenDropped.count) {
+      this._addFolded("late-depth-rejection", "medium", "medium",
+        `${shadedThenDropped.count} pass${shadedThenDropped.count === 1 ? "" : "es"} overdraw while the depth test rejects little: fragments are shaded and then replaced. Drawing opaque geometry front to back, or a depth prepass, rejects that work before the fragment shader runs.`,
+        shadedThenDropped);
+    }
+  }
+
+  /**
+   * Sampling state, from the descriptors alone: a large content texture with no mip chain misses
+   * the texture cache as soon as it is drawn smaller than itself. Render targets are excluded —
+   * a target sampled by the next pass is normally read at its own size, where mips would not help.
+   */
+  private _samplingRules(): void {
+    const unmipped = new Folded();
+    for (const [id, cmd] of this._sampled) {
+      const d = this._texture(id);
+      if (!d) continue;
+      if (num(d.mipmapLevelCount) > 1) continue;
+      if (str(d.usage).includes("RenderTarget")) continue;
+      if (num(d.width) * num(d.height) < LARGE_TEXTURE_PIXELS) continue;
+      unmipped.add(cmd);
+    }
+    if (unmipped.count) {
+      this._addFolded("unmipped-texture", "medium", "medium",
+        `${unmipped.count} texture${unmipped.count === 1 ? " is" : "s are"} sampled with a single mip level at ${LARGE_TEXTURE_PIXELS / (1024 * 1024)} megapixel or more. Drawn smaller than itself, such a texture reads scattered texels and misses the cache on most of them; a mip chain costs a third more memory and reads one texel per sample.`,
+        unmipped);
+    }
+  }
 
   private _texture(id: number): ArgObject | null {
     return this._db.getObject(id)?.args ?? null;

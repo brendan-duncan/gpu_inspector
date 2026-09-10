@@ -76,6 +76,12 @@ export interface CommandSets {
    * PASS_BEGIN/PASS_END carry the encoder instead.
    */
   COMPUTE_PASS_END: ReadonlySet<string>;
+  /**
+   * Whether a PASS_BEGIN command opens a compute pass rather than a render one. The layer and the
+   * capture library key a compute pass's timings apart from a render pass's, so the UI has to
+   * agree with them about which a pass is. Absent for an API whose PASS_BEGIN is render-only.
+   */
+  passIsCompute?(method: string): boolean;
   /** The name of the pipeline bind point a command uses, in that API's vocabulary. */
   bindPointOf(method: string): string;
   /** Commands that bind a pipeline, whose `args.pipeline` is the pipeline they bind. */

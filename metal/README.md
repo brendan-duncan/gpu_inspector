@@ -417,6 +417,23 @@ never released — everything but the device, the queues and command buffers —
 is flushed synchronously, since the sender thread would not get another turn. Vulkan sends its
 at device destruction; a Metal application has nothing to destroy, so exit is the moment.
 
+## Bottlenecks
+
+The counter sets above are raw totals; what a profiling session asks is how many times each pixel
+was shaded, how big the triangles are and whether the depth test is doing its job. Each is one
+division away, against the render target's size or another counter, and `pass_metrics.ts` does
+them once so the report, the rules and the pass header tooltips all say the same numbers:
+fragment invocations over target pixels is overdraw, over clipper primitives is fragments per
+primitive, and fragments passed against fragments shaded is the depth rejection rate. The bound
+stage comes from the two stage spans, which overlap on a tile-based GPU, so the longer one is what
+the pass waits on; the stage-utilization cycles are a second opinion and can name a pass that
+spends its time writing the attachment rather than shading it.
+
+The "GPU Bottlenecks" report ranks the passes by GPU time and says, for each measured problem,
+what usually causes it. `docs/PROFILING.md` is the walkthrough. What has no public Metal API —
+occupancy, the ALU and texture limiters, per-line shader cost — is what the Xcode trace below is
+for, and the report says so rather than leaving a gap.
+
 ## Frame Issues
 
 Frame Stats' Frame Issues card runs a rule set over the captured commands; the Vulkan rules are
