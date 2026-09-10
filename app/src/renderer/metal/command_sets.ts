@@ -6,9 +6,9 @@
 // versions, Metal needs one per overload — `drawPrimitives:` has four, differing only in whether
 // instancing and base-instance arguments are present.
 import type { BoundIndexBuffer, BoundStageBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
-import type { CaptureCommand } from "../../shared/protocol.js";
+import type { ArgValue, CaptureCommand } from "../../shared/protocol.js";
 // Generic argument coercers that happen to live beside the Vulkan object model.
-import { isObject, num } from "../vulkan/vulkan_object.js";
+import { isObject, num, str } from "../vulkan/vulkan_object.js";
 
 const DRAW = new Set([
   "drawPrimitives:vertexStart:vertexCount:",
@@ -89,6 +89,100 @@ const STAGE_BUFFER_METHODS: Record<string, { stage: string; kind: "one" | "many"
 };
 const BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
 
+/** "MTLPrimitiveTypeTriangle" as "Triangle", given the key it came under. */
+function enumShort(key: string, v: ArgValue | undefined): string {
+  if (typeof v !== "string") return v === undefined || v === null ? "" : String(v);
+  const prefix = `MTL${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+  if (v.startsWith(prefix) && v.length > prefix.length) return v.slice(prefix.length);
+  return v.startsWith("MTL") ? v.slice(3) : v;
+}
+
+function size(v: ArgValue | undefined): string {
+  return isObject(v) ? `${num(v.width)}x${num(v.height)}x${num(v.depth)}` : "";
+}
+
+/**
+ * What to show beside a command in the tree. The common ones are spelled out; for the rest,
+ * the scalar arguments and object references, a few of them, so a `setCullMode:` reads
+ * "Back" and a `fillBuffer:range:value:` names its buffer.
+ */
+function summarize(cmd: CaptureCommand, nameOf: (v: ArgValue | undefined) => string): string {
+  const a = cmd.args;
+  const m = cmd.method;
+  if (!a) return "";
+  const quoted = (v: ArgValue | undefined): string => (typeof v === "string" && v ? `"${v}"` : "");
+  const slot = (what: string): string => `[${num(a.index)}] ${what}`;
+  switch (m) {
+    case "setLabel:":
+    case "pushDebugGroup:":
+    case "insertDebugSignpost:":
+      return quoted(a.label);
+    case "drawPrimitives:vertexStart:vertexCount:":
+    case "drawPrimitives:vertexStart:vertexCount:instanceCount:":
+    case "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:":
+      return `${enumShort("primitiveType", a.primitiveType)} ${num(a.vertexCount)} verts x${num(a.instanceCount)}`;
+    case "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:":
+    case "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:":
+    case "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:":
+      return `${enumShort("primitiveType", a.primitiveType)} ${num(a.indexCount)} idx x${num(a.instanceCount)}`;
+    case "drawPrimitives:indirectBuffer:indirectBufferOffset:":
+    case "drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:":
+      return `${enumShort("primitiveType", a.primitiveType)} indirect ${nameOf(a.indirectBuffer)}`;
+    case "dispatchThreads:threadsPerThreadgroup:":
+      return `${size(a.threadsPerGrid)} threads, ${size(a.threadsPerThreadgroup)} per group`;
+    case "dispatchThreadgroups:threadsPerThreadgroup:":
+      return `${size(a.threadgroupsPerGrid)} groups of ${size(a.threadsPerThreadgroup)}`;
+    case "dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:":
+      return `indirect ${nameOf(a.indirectBuffer)}, ${size(a.threadsPerThreadgroup)} per group`;
+    case "setRenderPipelineState:":
+    case "setComputePipelineState:":
+      return nameOf(a.pipeline);
+    case "setDepthStencilState:":
+      return nameOf(a.depthStencilState);
+    case "setViewport:":
+      return isObject(a.viewport) ? `${num(a.viewport.width)}x${num(a.viewport.height)}` : "";
+    case "setScissorRect:":
+      return isObject(a.rect) ? `${num(a.rect.width)}x${num(a.rect.height)} at ${num(a.rect.x)},${num(a.rect.y)}` : "";
+    case "renderCommandEncoderWithDescriptor:":
+    case "parallelRenderCommandEncoderWithDescriptor:": {
+      const colors = Array.isArray(a.colorAttachments) ? a.colorAttachments : [];
+      const first = colors.find((c) => isObject(c) && c.texture !== null);
+      const target = isObject(first) ? nameOf(first.texture) : "";
+      const more = colors.length > 1 ? ` +${colors.length - 1}` : "";
+      const depth = isObject(a.depthAttachment) ? " + depth" : "";
+      return `${target || `${colors.length} attachment${colors.length === 1 ? "" : "s"}`}${more}${depth}`;
+    }
+    case "presentDrawable:":
+    case "presentDrawable:atTime:":
+    case "presentDrawable:afterMinimumDuration:":
+      return nameOf(a.texture);
+    case "present":
+      return "";
+    default:
+      break;
+  }
+  if (a.buffer !== undefined && a.index !== undefined) {
+    // set<Stage>Buffer:offset:atIndex:
+    return slot(`${nameOf(a.buffer) || "(none)"}${num(a.offset) ? ` +${num(a.offset)}` : ""}`);
+  }
+  if (a.pValues !== undefined && a.index !== undefined) return slot(`${num(a.size)} bytes`);
+  if (a.texture !== undefined && a.index !== undefined) return slot(nameOf(a.texture) || "(none)");
+  if (a.sampler !== undefined && a.index !== undefined) return slot(nameOf(a.sampler) || "(none)");
+  if (Array.isArray(a.buffers) && isObject(a.range)) return `[${num(a.range.location)}] +${num(a.range.length)}`;
+  // Everything else: the scalars and references, a few of them.
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(a)) {
+    if (parts.length >= 4) break;
+    if (value === null || value === undefined) continue;
+    if (typeof value === "number") parts.push(`${key} ${value}`);
+    else if (typeof value === "boolean") parts.push(`${key} ${value}`);
+    else if (typeof value === "string") parts.push(value.startsWith("MTL") ? enumShort(key, value) : `${key} ${str(value)}`);
+    else if (isObject(value) && typeof value.__id === "number") { const n = nameOf(value); if (n) parts.push(n); }
+    else if (isObject(value) && value.width !== undefined && value.height !== undefined) parts.push(`${key} ${size(value)}`);
+  }
+  return parts.join(", ");
+}
+
 export const METAL_SETS: CommandSets = {
   DRAW,
   DISPATCH,
@@ -163,6 +257,8 @@ export const METAL_SETS: CommandSets = {
   },
 
   BIND_STAGE_BUFFER,
+
+  summarize,
 
   stageBuffersOf(cmd: CaptureCommand): BoundStageBuffer[] {
     const entry = STAGE_BUFFER_METHODS[cmd.method];

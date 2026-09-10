@@ -829,6 +829,9 @@ export class CaptureView implements CaptureHost {
       const o = db.getObject(refId(v));
       return o ? o.name : "";
     };
+    // An API with a summary table of its own (Metal); the Vulkan one is below.
+    const own = this.data.sets.summarize?.(cmd, name);
+    if (own !== undefined) return own;
     switch (cmd.method) {
       case "vkCmdDraw": return `${num(a.vertexCount)} verts x${num(a.instanceCount)}`;
       case "vkCmdDrawIndexed": return `${num(a.indexCount)} idx x${num(a.instanceCount)}`;

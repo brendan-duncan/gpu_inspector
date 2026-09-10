@@ -113,6 +113,13 @@ export interface CommandSets {
   BIND_STAGE_BUFFER?: ReadonlySet<string>;
   /** The stage buffers `cmd` binds, empty when it binds none. */
   stageBuffersOf?(cmd: CaptureCommand): BoundStageBuffer[];
+
+  /**
+   * The short text shown beside a command in the tree: the arguments worth reading at a glance,
+   * with `nameOf` resolving an object reference to its name. Undefined leaves the summary to
+   * the panel's own table (Vulkan's lives there).
+   */
+  summarize?(cmd: CaptureCommand, nameOf: (v: ArgValue | undefined) => string): string | undefined;
 }
 
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */

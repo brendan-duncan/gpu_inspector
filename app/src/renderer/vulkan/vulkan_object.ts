@@ -48,7 +48,12 @@ export class VulkanObject {
   }
 
   get name(): string {
-    return this.label || `${this.shortType} ${this.id}`;
+    if (this.label) return this.label;
+    // Metal objects with a name of their own: a function is its entry point's name, the device
+    // the GPU's. Better than a number in every list they appear in.
+    const own = this.args?.name;
+    if (typeof own === "string" && own && this.type.startsWith("MTL")) return own;
+    return `${this.shortType} ${this.id}`;
   }
 
   get isInvalid(): boolean {

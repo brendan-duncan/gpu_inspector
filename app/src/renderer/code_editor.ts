@@ -1,10 +1,10 @@
 // Syntax highlighting for the shader views and a small highlighting editor (a transparent
 // textarea over the highlighted text), with a color scheme in the spirit of WebGPU Inspector's
-// shader editor. Languages: GLSL, HLSL and SPIR-V assembly.
+// shader editor. Languages: GLSL, HLSL, Metal Shading Language and SPIR-V assembly.
 import { Div } from "./widget/div.js";
 import { Widget } from "./widget/widget.js";
 
-export type HighlightLanguage = "glsl" | "hlsl" | "spirv-asm";
+export type HighlightLanguage = "glsl" | "hlsl" | "msl" | "spirv-asm";
 
 interface Rule {
   re: RegExp;                                   // sticky
@@ -48,6 +48,35 @@ const HLSL_BUILTINS = new Set([
   "TraceRay", "main", "tex2D", "tex2Dlod", "texCUBE", "clip",
 ]);
 
+// Metal Shading Language: C++14 with address spaces, function qualifiers and [[attributes]].
+// The attribute names are matched the way HLSL semantics are, wherever they appear.
+const MSL_KEYWORDS = new Set([
+  "if", "else", "for", "while", "do", "return", "break", "continue", "switch", "case", "default", "struct", "class",
+  "enum", "union", "typedef", "using", "namespace", "template", "typename", "static", "const", "constexpr", "constant",
+  "device", "threadgroup", "thread", "ray_data", "object_data", "threadgroup_imageblock", "kernel", "vertex", "fragment",
+  "visible", "intersection", "true", "false", "void", "inline", "auto", "operator", "this", "sizeof", "static_cast",
+  "reinterpret_cast", "const_cast", "volatile", "explicit", "virtual", "public", "private", "protected", "nullptr",
+  "noexcept", "override", "friend", "decltype", "goto", "signed", "unsigned",
+]);
+const MSL_TYPE = /^(?:(?:packed_)?(?:float|half|int|uint|short|ushort|char|uchar|long|ulong|bool|bfloat)(?:[234](?:x[234])?)?|size_t|ptrdiff_t|uintptr_t|intptr_t|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t|vec|matrix|array|texture1d(?:_array)?|texture2d(?:_array|_ms(?:_array)?)?|texture3d|texturecube(?:_array)?|texture_buffer|depth2d(?:_array|_ms(?:_array)?)?|depthcube(?:_array)?|sampler|imageblock|mesh|mesh_grid_properties|atomic(?:_int|_uint|_bool|_float)?|ray|intersection_result|intersector|acceleration_structure|instance_acceleration_structure|primitive_acceleration_structure|command_buffer|render_command|compute_command|indirect_command_buffer|visible_function_table|intersection_function_table|function_constant|access|coord|filter|address|compare_func|mip_filter|memory_order|mem_flags|simdgroup_\w+|quadgroup_\w+)$/;
+const MSL_BUILTINS = new Set([
+  "dot", "cross", "normalize", "length", "distance", "reflect", "refract", "mix", "clamp", "saturate", "min", "max", "fmin",
+  "fmax", "abs", "fabs", "sign", "floor", "ceil", "round", "rint", "trunc", "fract", "fmod", "sqrt", "rsqrt", "pow", "exp",
+  "exp2", "log", "log2", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sincos", "step", "smoothstep", "fma", "mad",
+  "transpose", "determinant", "dfdx", "dfdy", "fwidth", "any", "all", "select", "as_type", "sample", "sample_compare",
+  "read", "write", "gather", "gather_compare", "fence", "get_width", "get_height", "get_depth", "get_num_mip_levels",
+  "get_array_size", "get_num_samples", "threadgroup_barrier", "simdgroup_barrier", "atomic_load_explicit",
+  "atomic_store_explicit", "atomic_fetch_add_explicit", "atomic_fetch_sub_explicit", "atomic_fetch_min_explicit",
+  "atomic_fetch_max_explicit", "atomic_fetch_and_explicit", "atomic_fetch_or_explicit", "atomic_fetch_xor_explicit",
+  "atomic_exchange_explicit", "atomic_compare_exchange_weak_explicit", "simd_sum", "simd_min", "simd_max", "simd_broadcast",
+  "simd_shuffle", "simd_ballot", "simd_prefix_exclusive_sum", "quad_sum", "quad_broadcast", "discard_fragment",
+  "set_primitive_count", "set_vertex", "set_index", "set_primitive", "half_to_float", "float_to_half", "popcount", "clz",
+  "ctz", "rotate", "extract_bits", "insert_bits", "median3", "isnan", "isinf", "isfinite", "isnormal", "signbit",
+  "pack_float_to_snorm4x8", "pack_float_to_unorm4x8", "unpack_snorm4x8_to_float", "unpack_unorm4x8_to_float",
+  "metal", "raytracing", "precise", "fast", "main",
+]);
+const MSL_ATTRIBUTE = /^(?:stage_in|position|point_size|vertex_id|instance_id|base_vertex|base_instance|buffer|texture|sampler|threadgroup|thread_position_in_grid|thread_position_in_threadgroup|threadgroup_position_in_grid|threads_per_grid|threads_per_threadgroup|threadgroups_per_grid|thread_index_in_threadgroup|thread_index_in_simdgroup|thread_index_in_quadgroup|simdgroup_index_in_threadgroup|quadgroup_index_in_threadgroup|thread_execution_width|threads_per_simdgroup|color|depth|sample_id|sample_mask|front_facing|point_coord|primitive_id|render_target_array_index|viewport_array_index|clip_distance|user|flat|center_perspective|center_no_perspective|centroid_perspective|centroid_no_perspective|sample_perspective|sample_no_perspective|invariant|dispatch_quadgroups_per_threadgroup|dispatch_simdgroups_per_threadgroup|grid_origin|grid_size|payload|max_total_threads_per_threadgroup|max_total_threadgroups_per_mesh_grid|early_fragment_tests|raster_order_group|function_constant|id|attribute|amplification_id|amplification_count|primitive_type|topology|patch|patch_id|patch_control_point|patch_control_point_id|stitchable|visible_function_table|intersection_function_table|instance_acceleration_structure|acceleration_structure|imageblock_data|threadgroup_imageblock)$/;
+
 function cLikeRules(keywords: Set<string>, typeRe: RegExp, builtins: Set<string>, semanticPrefix: RegExp | null): Rule[] {
   const word = (text: string): string => {
     if (keywords.has(text)) return "tok-keyword";
@@ -85,6 +114,7 @@ const SPIRV_RULES: Rule[] = [
 const RULES: Record<HighlightLanguage, Rule[]> = {
   glsl: cLikeRules(GLSL_KEYWORDS, GLSL_TYPE, GLSL_BUILTINS, null),
   hlsl: cLikeRules(HLSL_KEYWORDS, HLSL_TYPE, HLSL_BUILTINS, /^SV_\w+$/),
+  msl: cLikeRules(MSL_KEYWORDS, MSL_TYPE, MSL_BUILTINS, MSL_ATTRIBUTE),
   "spirv-asm": SPIRV_RULES,
 };
 
