@@ -71,6 +71,10 @@ export interface FrameStatsMessage {
   presentMode?: string;
   /** What ends a frame: "present", or for applications without a swapchain "wait" (their vkWaitForFences) or "submit"; "" while undecided. */
   frameBoundary?: string;
+  /** Metal: the device's currentAllocatedSize, what the driver has set aside for the process. */
+  allocatedBytes?: number;
+  /** Metal: the device's recommendedMaxWorkingSetSize, what it can keep resident without paging. */
+  workingSetBytes?: number;
   /** Refreshes in the interval that repeated the previous frame (dropped frames), and the
    *  layer's running total since the refresh estimate was made. */
   dropped?: number;

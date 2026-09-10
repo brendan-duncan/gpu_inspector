@@ -177,7 +177,7 @@ backend does. Ordered by value per effort.
 - [x] Insights as Frame Issues rules over Metal captures (`metal/frame_analysis.ts`): undefined
       loads, first-use loads, unread stores, multisample stores, memoryless candidates,
       mergeable back-to-back passes, redundant binds, tiny draws, single-threadgroup dispatches.
-- [ ] Memory viewer: `allocatedSize`, heap and purgeable state per resource, the device's
+- [x] Memory viewer: `allocatedSize`, heap and purgeable state per resource, the device's
       `currentAllocatedSize`, into the memory totals meter.
 - [ ] Pass dependency graph from the recorded attachments and bound textures, doubling as the
       "Affected by" section the Vulkan side shows on buffers.

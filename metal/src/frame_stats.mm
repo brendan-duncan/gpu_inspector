@@ -6,6 +6,7 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #import <objc/message.h>
 
 #include <algorithm>
@@ -110,9 +111,27 @@ void NoteDisplaySync(bool enabled) {
     g_displaySync = enabled;
 }
 
+// Retained: a device outlives everything, but the report reads it on every frame boundary.
+id g_device = nil;
+
+void NoteDevice(id device) {
+    if (device == nil) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_device == nil) g_device = [device retain];
+}
+
 uint64_t OnFrameEnded() {
     std::string message;
     uint64_t frame = 0;
+    // The device's memory figures, read outside the lock: two property reads, no hook of ours
+    // in their path, but Metal is not called with a lock of this library's held.
+    id<MTLDevice> device = nil;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        device = (id<MTLDevice>)g_device;
+    }
+    const uint64_t allocatedBytes = device != nil ? device.currentAllocatedSize : 0;
+    const uint64_t workingSetBytes = device != nil ? device.recommendedMaxWorkingSetSize : 0;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         frame = ++g_frame;
@@ -170,6 +189,10 @@ uint64_t OnFrameEnded() {
                 w.Key("refreshSource"); w.String(g_refreshMs > 0 ? g_refreshSource : "");
                 w.Key("displayRefreshMs"); w.Double(g_displayRefreshMs);
                 w.Key("frameBoundary"); w.String("present");
+                // What Metal has set aside for this process, and the size it recommends staying
+                // under: the memory meter's total.
+                w.Key("allocatedBytes"); w.Uint(allocatedBytes);
+                w.Key("workingSetBytes"); w.Uint(workingSetBytes);
                 w.EndObject();
                 message = std::move(w.str());
                 g_lastReport = now;

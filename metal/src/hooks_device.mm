@@ -81,6 +81,7 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
                  .b("framebufferOnly", wasFramebufferOnly)
                  .b("drawable", true);
                 WriteGpuIds(a, texture);
+                WriteMemoryInfo(a, texture);
                 // A layer cycles a small pool of drawables, so this registers each of them once.
                 Track(texture, "MTLTexture", "CAMetalLayer nextDrawable", layer.device, a.str());
                 Log("nextDrawable -> texture %s %lux%lu", ClassName(texture),
@@ -266,7 +267,7 @@ id D_newHeapWithDescriptor(id self, SEL _cmd, MTLHeapDescriptor *descriptor) {
     if (reentry.outermost()) {
         Log("device.newHeapWithDescriptor: %lu bytes -> %s", (unsigned long)descriptor.size,
             ClassName(heap));
-        Track(heap, "MTLHeap", "newHeapWithDescriptor:", self, HeapArgs(descriptor));
+        Track(heap, "MTLHeap", "newHeapWithDescriptor:", self, HeapArgs(descriptor, heap));
     }
     HookHeapClass(heap);
     return heap;
@@ -763,7 +764,8 @@ void D_newComputePipelineStateWithDescriptorAsync(
 }
 
 // --------------------------------------------------------------------------------------------
-// MTLHeap: resources sub-allocated from a heap never pass through the device.
+// MTLHeap: resources sub-allocated from a heap never pass through the device. Each one moves
+// the heap's usage, which goes out as an update so the Inspect view of the heap stays current.
 
 id H_newBufferWithLength(id self, SEL _cmd, NSUInteger length, MTLResourceOptions options) {
     Reentry reentry(self, _cmd);
@@ -771,6 +773,7 @@ id H_newBufferWithLength(id self, SEL _cmd, NSUInteger length, MTLResourceOption
     if (reentry.outermost()) {
         Track(buffer, "MTLBuffer", "heap newBufferWithLength:options:", self,
               BufferArgs(buffer, length, options));
+        UpdateObject(self, "usage", HeapUsageArgs(self));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -782,10 +785,10 @@ id H_newBufferWithLengthOffset(id self, SEL _cmd, NSUInteger length, MTLResource
     id buffer = ORIG(id (*)(id, SEL, NSUInteger, MTLResourceOptions, NSUInteger))(
         self, _cmd, length, options, offset);
     if (reentry.outermost()) {
-        Args a;
-        a.u("length", length).u("options", (uint64_t)options).u("heapOffset", offset);
-        WriteGpuIds(a, buffer);
-        Track(buffer, "MTLBuffer", "heap newBufferWithLength:options:offset:", self, a.str());
+        // BufferArgs carries the heap and the offset (WriteMemoryInfo) for a placement heap too.
+        Track(buffer, "MTLBuffer", "heap newBufferWithLength:options:offset:", self,
+              BufferArgs(buffer, length, options));
+        UpdateObject(self, "usage", HeapUsageArgs(self));
     }
     HookBufferClass(buffer);
     return buffer;
@@ -797,6 +800,7 @@ id H_newTextureWithDescriptor(id self, SEL _cmd, MTLTextureDescriptor *descripto
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "heap newTextureWithDescriptor:", self,
               TextureDescriptorArgs(descriptor, texture));
+        UpdateObject(self, "usage", HeapUsageArgs(self));
     }
     HookTextureClass(texture);
     return texture;
@@ -810,9 +814,33 @@ id H_newTextureWithDescriptorOffset(id self, SEL _cmd, MTLTextureDescriptor *des
     if (reentry.outermost()) {
         Track(texture, "MTLTexture", "heap newTextureWithDescriptor:offset:", self,
               TextureDescriptorArgs(descriptor, texture));
+        UpdateObject(self, "usage", HeapUsageArgs(self));
     }
     HookTextureClass(texture);
     return texture;
+}
+
+// --------------------------------------------------------------------------------------------
+// MTLResource and MTLHeap: memory state that changes after creation. A volatile or empty
+// resource still counts in the device's allocated size until Metal reclaims it, so the state is
+// shown on the object rather than subtracted from the meter.
+
+MTLPurgeableState R_setPurgeableState(id self, SEL _cmd, MTLPurgeableState state) {
+    Reentry reentry(self, _cmd);
+    const MTLPurgeableState previous =
+        ORIG(MTLPurgeableState (*)(id, SEL, MTLPurgeableState))(self, _cmd, state);
+    // KeepCurrent is the query form: nothing changed.
+    if (reentry.outermost() && state != MTLPurgeableStateKeepCurrent) {
+        UpdateObject(self, "purgeable",
+                     Args().e("purgeableState", PurgeableStateEnumName(state), (uint64_t)state).str());
+    }
+    return previous;
+}
+
+void R_makeAliasable(id self, SEL _cmd) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL))(self, _cmd);
+    if (reentry.outermost()) UpdateObject(self, "aliasable", Args().b("aliasable", true).str());
 }
 
 // --------------------------------------------------------------------------------------------
@@ -945,6 +973,7 @@ void TrackDeviceObject(id device, const char *origin) {
     if (IdOf(device) == 0) {
         Log("%s -> %s (%s)", origin, ClassName(device), ((id<MTLDevice>)device).name.UTF8String);
         Track(device, "MTLDevice", origin, nil, DeviceArgs((id<MTLDevice>)device, origin));
+        NoteDevice(device);
     }
     HookDeviceClass(device);
 }
@@ -1040,6 +1069,7 @@ void HookHeapClass(id heap) {
     Hook(cls, @selector(newBufferWithLength:options:offset:), (IMP)H_newBufferWithLengthOffset);
     Hook(cls, @selector(newTextureWithDescriptor:), (IMP)H_newTextureWithDescriptor);
     Hook(cls, @selector(newTextureWithDescriptor:offset:), (IMP)H_newTextureWithDescriptorOffset);
+    Hook(cls, @selector(setPurgeableState:), (IMP)R_setPurgeableState);
 }
 
 void HookLibraryClass(id library) {
@@ -1064,6 +1094,8 @@ void HookTextureClass(id texture) {
          (IMP)T_newTextureViewFull);
     Hook(cls, @selector(newTextureViewWithPixelFormat:textureType:levels:slices:swizzle:),
          (IMP)T_newTextureViewSwizzle);
+    Hook(cls, @selector(setPurgeableState:), (IMP)R_setPurgeableState);
+    Hook(cls, @selector(makeAliasable), (IMP)R_makeAliasable);
 }
 
 void HookBufferClass(id buffer) {
@@ -1072,6 +1104,8 @@ void HookBufferClass(id buffer) {
     if (!FirstSighting(cls)) return;
     Log("hooking buffer class %s", class_getName(cls));
     Hook(cls, @selector(newTextureWithDescriptor:offset:bytesPerRow:), (IMP)B_newTextureWithDescriptor);
+    Hook(cls, @selector(setPurgeableState:), (IMP)R_setPurgeableState);
+    Hook(cls, @selector(makeAliasable), (IMP)R_makeAliasable);
 }
 
 }  // namespace mtlinsp

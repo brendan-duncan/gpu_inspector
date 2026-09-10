@@ -71,6 +71,13 @@ id LiveObject(uint64_t id);
  */
 void AddBlob(id object, const char *name, const void *data, size_t size);
 
+/**
+ * A property that changed after creation (a heap's usage, a resource's purgeable state), as an
+ * `ObjectUpdate` carrying the fields of `argsJson`, an object. The latest update per `key` is
+ * kept and replayed after the object in a snapshot, so a UI connecting later sees it too.
+ */
+void UpdateObject(id object, const char *key, const std::string &argsJson);
+
 /** Answers `RequestBlob` with an `ObjectBlob` message and the bytes. */
 void SendBlob(uint64_t objectId, uint32_t index);
 

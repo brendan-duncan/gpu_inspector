@@ -43,6 +43,9 @@
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
   offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
   resource id every object now reports.
+- Metal memory: every buffer's and texture's allocatedSize, heap and offset, purgeable and
+  aliasable state (kept current as the application changes them), heaps with their usage, and
+  the device's allocated total against its recommended working set in the Inspect memory meter.
 - Metal pass counters: the vertex and fragment stages' own spans beside every render pass's
   duration, and the GPU's statistic and stage-utilization counter sets over each pass
   (invocations, clipper counts, cycles per stage) in the pass header's tooltip.
