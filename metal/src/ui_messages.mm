@@ -6,6 +6,7 @@
 #include "ui_messages.h"
 
 #include "capture.h"
+#include "gpu_trace.h"
 #include "image.h"
 #include "json_parse.h"
 #include "swizzle.h"
@@ -52,6 +53,8 @@ void HandleMessage(const std::string &text) {
             options.profilePasses = message.GetBool("profilePasses", true);
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
+        } else if (action == "SaveGpuTrace") {
+            RequestGpuTrace(message.GetString("path"));
         } else if (action == "RequestBlob") {
             SendBlob((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("index"));
         } else if (action == "RequestImage") {

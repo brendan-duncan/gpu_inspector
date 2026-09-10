@@ -405,7 +405,17 @@ export type LayerMessage =
   | CaptureBufferDataMessage
   | CapturePassTimingsMessage
   | ShaderReplacedMessage
-  | ImageDataMessage;
+  | ImageDataMessage
+  | GpuTraceMessage;
+
+/** Answer to SaveGpuTrace (Metal): the .gputrace document was written, or why not. */
+export interface GpuTraceMessage {
+  action: "GpuTrace";
+  ok: boolean;
+  path: string;
+  frame: number;
+  error?: string;
+}
 
 // ------------------------------------------------------------------------------------------
 // UI -> Layer
@@ -451,9 +461,12 @@ export interface ReplaceShaderRequest { action: "ReplaceShader"; pipeline: numbe
 /** Drops the edit of one stage (or of every stage when `stage` is omitted). */
 export interface RestoreShaderRequest { action: "RestoreShader"; pipeline: number; stage?: string }
 
+/** Metal: asks the library to write the next frame as an Xcode .gputrace document (answered by GpuTrace). */
+export interface SaveGpuTraceRequest { action: "SaveGpuTrace"; path?: string }
+
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
   | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
-  | RequestStacktracesRequest | RequestSymbolsRequest;
+  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer

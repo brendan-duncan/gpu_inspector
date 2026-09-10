@@ -2,6 +2,7 @@
 
 #include "formats.h"
 #include "frame_stats.h"
+#include "gpu_trace.h"
 #include "validation.h"
 #include "json_writer.h"
 #include "swizzle.h"
@@ -1226,7 +1227,11 @@ void OnCommit(id commandBuffer) {
     if (boundary && !presents && g_commitBoundaryLogger != nullptr) {
         g_commitBoundaryLogger(commandBuffer);
     }
-    if (boundary) AdvanceFrame();
+    if (boundary) {
+        AdvanceFrame();
+        // An Xcode trace starts and stops here too, so it holds whole frames.
+        GpuTraceAtFrameBoundary(((id<MTLCommandBuffer>)commandBuffer).device);
+    }
 }
 
 void SetCommitBoundaryLogger(void (*logger)(id)) {

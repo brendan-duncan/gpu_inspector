@@ -42,8 +42,10 @@ that. Re-signing is deliberately not done for the user: it rewrites their applic
 invalidates its signature and notarization.
 
 `test/metal_triangle` is the target, the Metal counterpart of `test/triangle`: a device, a queue,
-buffers, a library compiled at run time, a render pipeline, a compute pass, a render pass with an
-indexed instanced draw, and a present.
+buffers in shared and private storage, a library compiled at run time, two render pipelines and
+a sampler, a compute pass, a multisampled pass through a parallel encoder resolving into a
+texture, a pass to the drawable that samples it with inline constants bound, and a present. That
+is one of everything the read-back has a path for.
 
 ## Getting in
 
@@ -158,7 +160,8 @@ previous mutex was the most contended thing in the library. Only Apple Silicon's
 been checked for the super-chain shape; Intel and AMD trees are where it would show up.
 
 Verified after all of it: three frames, `2 encoders, 1 draw, 1 dispatch` each, clean exit, no
-`no original` warnings, in all three validation modes.
+`no original` warnings, in all three validation modes. (With the multisampled pass and the
+parallel encoder the test application now logs `3 encoders, 2 draws, 1 dispatch` a frame.)
 
 ## What this says about the real thing
 
@@ -401,6 +404,15 @@ At process exit the tracker sends the Vulkan layer's `LeakReport` for whatever t
 never released — everything but the device, the queues and command buffers — and the transport
 is flushed synchronously, since the sender thread would not get another turn. Vulkan sends its
 at device destruction; a Metal application has nothing to destroy, so exit is the moment.
+
+## An Xcode trace of the frame
+
+Xcode's shader debugger and per-line shader profiler cannot be reproduced outside Apple's
+tooling; what can be done is to hand them the frame the inspector is looking at. The capture
+bar's **Xcode Trace** button asks the library (`gpu_trace.mm`) to have `MTLCaptureManager` write
+the next frame as a `.gputrace` document, started and stopped at the frame boundary so it holds
+exactly one frame, beside the Desktop by default; the Log tab says where. Metal only allows that
+for a process started with `METAL_CAPTURE_ENABLED=1`, which the launch path sets.
 
 ## Pass timings
 

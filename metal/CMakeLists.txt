@@ -27,6 +27,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/formats.mm
     src/frame_stats.h
     src/frame_stats.mm
+    src/gpu_trace.h
+    src/gpu_trace.mm
     src/image.h
     src/image.mm
     src/reflection.h

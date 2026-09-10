@@ -36,6 +36,7 @@ import { ImageView } from "./image_view.js";
 import { isAction } from "./command_sets.js";
 import { fmt, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { SessionContext } from "./session_panel.js";
+import { getHostPlatform } from "./launch_dialog.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage } from "../shared/protocol.js";
 import type { ValidationEntry } from "./vulkan/object_database.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
@@ -123,6 +124,11 @@ export class CapturePanel {
     return null;
   }
 
+  /** A line for the bar's status, from outside the panel (the Xcode trace result). */
+  setStatus(text: string): void {
+    this._statusLabel.text = text;
+  }
+
   /** A session showing a capture file: nothing to capture, only save and inspect. */
   setFileMode(): void {
     for (const w of this._captureControls) w.style.display = "none";
@@ -144,6 +150,19 @@ export class CapturePanel {
     this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
     this._stacksCheck = new Checkbox(row, { label: "Stack traces", checked: false, tooltip: "Record the call stack of every command of the captured frame (a Stack trace section in the command's details). Costs CPU time in the target while capturing." });
     c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._imagesCheck, this._profileCheck, this._stacksCheck);
+    // macOS: the next frame as an Xcode GPU trace document, for the shader debugger and profiler
+    // this tool does not have (metal/src/gpu_trace.mm). Written beside the Desktop; the Log
+    // tab says where.
+    if (getHostPlatform() === "darwin") {
+      c.push(new Button(row, { label: "Xcode Trace", class: "btn", tooltip: "Write the next frame as a .gputrace document, to open in Xcode's Metal debugger (shader debugging and per-line profiling of the same frame). The path is in the Log tab.", callback: () => {
+        if (!this.window.connected) {
+          this._statusLabel.text = "not connected";
+          return;
+        }
+        this._statusLabel.text = "writing Xcode trace of the next frame...";
+        void this.window.send({ action: "SaveGpuTrace" });
+      } }));
+    }
     c.push(new Span(row, { text: "Max KB", class: "launch-label", tooltip: "Bytes captured per bound buffer range; longer ranges are truncated" }));
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
