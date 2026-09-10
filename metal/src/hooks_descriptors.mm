@@ -55,11 +55,25 @@ std::string UsageFlags(MTLTextureUsage usage) {
     return out;
 }
 
-/** The name of a function property of a descriptor, for descriptor types the SDK may lack. */
-NSString *FunctionNameOf(id descriptor, SEL selector) {
+/**
+ * A pipeline's function: a reference to the tracked MTLFunction when the application made it
+ * through a hooked library, so the Inspect panel links the pipeline to it, and its name beside
+ * either way, since the reference alone reads as a number.
+ */
+void WriteFunction(Args &a, const char *key, id<MTLFunction> function) {
+    std::string nameKey = std::string(key) + "Name";
+    if (function == nil) {
+        a.c(key, nullptr).c(nameKey.c_str(), nullptr);
+        return;
+    }
+    if (IdOf(function) != 0) a.ref(key, function, "MTLFunction");
+    else a.s(key, function.name);
+    a.s(nameKey.c_str(), function.name);
+}
+
+id<MTLFunction> FunctionOf(id descriptor, SEL selector) {
     if (descriptor == nil || ![descriptor respondsToSelector:selector]) return nil;
-    id<MTLFunction> function = [descriptor performSelector:selector];
-    return function == nil ? nil : function.name;
+    return [descriptor performSelector:selector];
 }
 
 void WriteColorAttachmentBlend(vkinsp::JsonWriter &w, MTLRenderPipelineColorAttachmentDescriptor *a,
@@ -217,9 +231,9 @@ std::string TextureViewArgs(id<MTLTexture> view, MTLPixelFormat format, MTLTextu
 
 std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d, MTLRenderPipelineReflection *reflection) {
     Args a;
-    a.s("label", d.label)
-     .s("vertexFunction", d.vertexFunction == nil ? nil : d.vertexFunction.name)
-     .s("fragmentFunction", d.fragmentFunction == nil ? nil : d.fragmentFunction.name);
+    a.s("label", d.label);
+    WriteFunction(a, "vertexFunction", d.vertexFunction);
+    WriteFunction(a, "fragmentFunction", d.fragmentFunction);
     a.writer().Key("vertexDescriptor");
     WriteVertexDescriptor(a.writer(), d.vertexDescriptor);
     a.u("rasterSampleCount", d.rasterSampleCount)
@@ -250,9 +264,9 @@ std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d, MTLRenderPipeline
 
 std::string TileRenderPipelineArgs(MTLTileRenderPipelineDescriptor *d, MTLRenderPipelineReflection *reflection) {
     Args a;
-    a.s("label", d.label)
-     .s("tileFunction", d.tileFunction == nil ? nil : d.tileFunction.name)
-     .u("rasterSampleCount", d.rasterSampleCount)
+    a.s("label", d.label);
+    WriteFunction(a, "tileFunction", d.tileFunction);
+    a.u("rasterSampleCount", d.rasterSampleCount)
      .b("threadgroupSizeMatchesTileSize", d.threadgroupSizeMatchesTileSize)
      .u("maxTotalThreadsPerThreadgroup", d.maxTotalThreadsPerThreadgroup);
     a.writer().Key("colorAttachments");
@@ -276,10 +290,10 @@ std::string MeshRenderPipelineArgs(id d, MTLRenderPipelineReflection *reflection
     // builds against an older one and still describes the object on a newer system.
     Args a;
     NSString *label = [d respondsToSelector:@selector(label)] ? [d performSelector:@selector(label)] : nil;
-    a.s("label", label)
-     .s("objectFunction", FunctionNameOf(d, sel_registerName("objectFunction")))
-     .s("meshFunction", FunctionNameOf(d, sel_registerName("meshFunction")))
-     .s("fragmentFunction", FunctionNameOf(d, sel_registerName("fragmentFunction")));
+    a.s("label", label);
+    WriteFunction(a, "objectFunction", FunctionOf(d, sel_registerName("objectFunction")));
+    WriteFunction(a, "meshFunction", FunctionOf(d, sel_registerName("meshFunction")));
+    WriteFunction(a, "fragmentFunction", FunctionOf(d, sel_registerName("fragmentFunction")));
     const SEL rasterSampleCount = sel_registerName("rasterSampleCount");
     if ([d respondsToSelector:rasterSampleCount]) {
         a.u("rasterSampleCount", ((NSUInteger (*)(id, SEL))objc_msgSend)(d, rasterSampleCount));
@@ -300,7 +314,7 @@ void WriteComputeState(Args &a, id<MTLComputePipelineState> state) {
 std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state,
                                         MTLComputePipelineReflection *reflection) {
     Args a;
-    a.s("function", function == nil ? nil : function.name);
+    WriteFunction(a, "function", function);
     WriteComputeState(a, state);
     a.raw("reflection", ComputeReflectionJson(reflection));
     return a.str();
@@ -310,9 +324,9 @@ std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *d,
                                           id<MTLComputePipelineState> state,
                                           MTLComputePipelineReflection *reflection) {
     Args a;
-    a.s("label", d.label)
-     .s("function", d.computeFunction == nil ? nil : d.computeFunction.name)
-     .b("threadGroupSizeIsMultipleOfThreadExecutionWidth", d.threadGroupSizeIsMultipleOfThreadExecutionWidth)
+    a.s("label", d.label);
+    WriteFunction(a, "function", d.computeFunction);
+    a.b("threadGroupSizeIsMultipleOfThreadExecutionWidth", d.threadGroupSizeIsMultipleOfThreadExecutionWidth)
      .u("maxTotalThreadsPerThreadgroupRequested", d.maxTotalThreadsPerThreadgroup)
      .b("supportIndirectCommandBuffers", d.supportIndirectCommandBuffers);
     WriteComputeState(a, state);

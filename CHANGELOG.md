@@ -32,6 +32,11 @@
 - Metal validation messages: command buffer errors with the faulting encoder, Metal's
   validation layer through the launch dialog's "Validation layer" switch, and shader logs, in
   the Inspect panel's message list with repeat counts; a leak report at process exit.
+- Metal in Inspect: functions and the device listed by their own names, a Functions section on
+  libraries linking to their function objects, pipelines linked to the functions they use, and
+  Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
+  Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
+  slots and objects, a pass's target.
 
 ### Changed
 - The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render

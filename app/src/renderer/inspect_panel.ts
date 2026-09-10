@@ -13,7 +13,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { VulkanObject, fmt, fmtFlags, formatBytes, isHandleRef, isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import { objectLink, renderArgs } from "./args_view.js";
-import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors } from "./code_editor.js";
+import { CodeEditor, escapeHtml, highlight, highlightLines, parseCompileErrors, type HighlightLanguage } from "./code_editor.js";
 import { compilableSource, describeDebugInfo, disassemblyInstructions, hasEmbeddedSource, parseSpirvDebugInfo, sourceLanguageOf, sourceLineMap, type DebugLocation, type SpirvDebugInfo } from "./vulkan/spirv_debug.js";
 import { MISSING_SOURCE_HINT, hasMissingSources, renderSourceLines, resolveSourcesFromHost } from "./shader_source_view.js";
 
@@ -1048,6 +1048,20 @@ export class InspectPanel {
 
   private _buildLibrarySection(object: VulkanObject): void {
     this._libraryViews = new Map();
+    // The functions the library defines, read off the library itself, each linked to the
+    // MTLFunction object when the application has made one from it (they are its dependents).
+    const names = Array.isArray(object.args?.functionNames) ? object.args.functionNames.map(str).filter((n) => n) : [];
+    if (names.length) {
+      const grp = new collapsible(this.inspectPanel, { label: `Functions (${names.length})`, collapsed: false });
+      const ul = new Widget("ul", grp.body, { class: "dependency-list" });
+      const onLink = (o: VulkanObject) => this.revealObject(o);
+      for (const name of names) {
+        const li = new Widget("li", ul);
+        const fn = [...object.dependents].find((d) => d.type === "MTLFunction" && str(d.args?.name) === name);
+        if (fn) objectLink(li, fn, onLink, true);
+        else new Span(li, { text: name });
+      }
+    }
     if (!object.blobs.length) {
       const grp = new collapsible(this.inspectPanel, { label: "Library", collapsed: false });
       new Div(grp.body, { text: "No source or binary recorded for this library.", class: "text-muted" });
@@ -1173,6 +1187,9 @@ export class InspectPanel {
       this._renderDisassembly(view, null);
     } else if (r.ok && language) {
       view.pre.html = highlight(r.text, language);
+    } else if (r.ok && mode === "msl") {
+      // Shown, not editable: the SDK cross-compiles to MSL but does not compile it back.
+      view.pre.html = highlight(r.text, "msl" as HighlightLanguage);
     } else {
       view.pre.text = r.text;
     }
@@ -1191,7 +1208,8 @@ export class InspectPanel {
           + "Disassembling it needs Apple's Metal tooling; the functions it defines are listed "
           + "under Arguments.";
       } else {
-        library.pre.text = new TextDecoder().decode(data);
+        // Metal Shading Language, as the application compiled it.
+        library.pre.html = highlight(new TextDecoder().decode(data), "msl");
       }
       return;
     }

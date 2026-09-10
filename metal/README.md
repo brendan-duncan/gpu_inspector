@@ -520,8 +520,21 @@ side:
 
 Either way the descriptor carries `functionNames`, read off the library itself. That is the part
 that always works, and for a shipped metallib it is the only way to see what is inside without a
-disassembler. The functions an application then makes from the library are tracked as
-`MTLFunction` objects under it.
+disassembler. The Inspect panel lists them in a Functions section, each linked to the
+`MTLFunction` object once the application has made one from it, and the source is shown with
+Metal Shading Language highlighting (`code_editor.ts` knows the language; the cross-compiled MSL
+view of a Vulkan shader uses it too).
+
+Names in the object list: a Metal object that has a name of its own — a function's entry point,
+the device's GPU — is listed by it when the application gave it no label, rather than as a
+number. A pipeline's descriptor names its functions as references to the tracked `MTLFunction`
+objects, with the plain name beside each, so the pipeline's Dependencies section links to them
+and a function's Dependents section lists the pipelines built from it.
+
+In the capture tree a command shows the arguments worth reading beside its name, in the muted
+style the Vulkan tree uses: a `setLabel:` or `pushDebugGroup:` its label, a draw its primitive
+type and counts, a bind its slot and the object's name, a pass its first attachment, and for the
+rest the scalars and references, a few of them (`summarize` in `metal/command_sets.ts`).
 
 Deliberately not the Vulkan shader section, which is built around SPIR-V: reflection,
 cross-compilation to GLSL and HLSL, and shader editing. MSL is already source, and none of those
