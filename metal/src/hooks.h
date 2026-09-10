@@ -15,6 +15,9 @@ void TrackDeviceObject(id device);
 /** Hooks CAMetalLayer, by name: it is public, and a drawable's texture comes from nowhere else. */
 void HookDrawableSource(void);
 
+/** Hooks a CAMetalDrawable's class: its own `present` is also a frame boundary. */
+void HookDrawableClass(id drawable);
+
 void HookDeviceClass(id device);
 void HookCommandQueueClass(id queue);
 void HookCommandBufferClass(id commandBuffer);

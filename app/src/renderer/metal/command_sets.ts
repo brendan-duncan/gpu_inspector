@@ -58,7 +58,8 @@ export const METAL_SETS: CommandSets = {
   LABEL_END: new Set(["popDebugGroup"]),
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:
   // between them they are what vkQueueSubmit and vkQueuePresentKHR are in a Vulkan capture.
-  SUBMIT: new Set(["commit", "presentDrawable:"]),
+  SUBMIT: new Set(["commit", "presentDrawable:", "presentDrawable:atTime:",
+                   "presentDrawable:afterMinimumDuration:"]),
   // Metal binds resources to an encoder directly rather than through a descriptor set object;
   // argument buffers are the closest thing and are not captured yet.
   BIND_DESCRIPTOR: new Set(),

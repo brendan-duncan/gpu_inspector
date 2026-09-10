@@ -166,6 +166,7 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
     if (metalLayer.framebufferOnly) metalLayer.framebufferOnly = NO;
     id drawable = ((id (*)(id, SEL))Original(self, _cmd))(self, _cmd);
     if (reentry.outermost() && drawable != nil) {
+        HookDrawableClass(drawable);
         CAMetalLayer *layer = (CAMetalLayer *)self;
         id<CAMetalDrawable> metalDrawable = (id<CAMetalDrawable>)drawable;
         id<MTLTexture> texture = metalDrawable.texture;
@@ -185,6 +186,39 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
         }
     }
     return drawable;
+}
+
+// The drawable's own present, which is a frame boundary in its own right: an engine may call it
+// directly instead of going through the command buffer (Unity's macOS player does).
+/** Shared by the drawable-present hooks: the log line the command-buffer path also writes. */
+void LogDrawableFrame(id drawable, const char *how) {
+    Log("--- frame %llu: %u encoders, %u draws, %u dispatches (%s presents itself, %s) ---",
+        (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
+        g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(drawable), how);
+}
+
+void Replaced_drawablePresent(id self, SEL _cmd) {
+    Reentry reentry;
+    ((void (*)(id, SEL))Original(self, _cmd))(self, _cmd);
+    // Logged only when it is a boundary: the convenience method calls through to here, and its
+    // own hook has already reported the frame.
+    if (reentry.outermost() && OnDrawablePresent(self)) LogDrawableFrame(self, "present");
+}
+
+void Replaced_drawablePresentAtTime(id self, SEL _cmd, CFTimeInterval time) {
+    Reentry reentry;
+    ((void (*)(id, SEL, CFTimeInterval))Original(self, _cmd))(self, _cmd, time);
+    // Logged only when it is a boundary: the convenience method calls through to here, and its
+    // own hook has already reported the frame.
+    if (reentry.outermost() && OnDrawablePresent(self)) LogDrawableFrame(self, "presentAtTime:");
+}
+
+void Replaced_drawablePresentAfterMinimumDuration(id self, SEL _cmd, CFTimeInterval duration) {
+    Reentry reentry;
+    ((void (*)(id, SEL, CFTimeInterval))Original(self, _cmd))(self, _cmd, duration);
+    // Logged only when it is a boundary: the convenience method calls through to here, and its
+    // own hook has already reported the frame.
+    if (reentry.outermost() && OnDrawablePresent(self)) LogDrawableFrame(self, "presentAfterMinimumDuration:");
 }
 
 // --------------------------------------------------------------------------------------------
@@ -309,6 +343,28 @@ id Replaced_commandBuffer(id self, SEL _cmd) {
     return commandBuffer;
 }
 
+id Replaced_commandBufferWithDescriptor(id self, SEL _cmd, id descriptor) {
+    Reentry reentry;
+    id commandBuffer = ((id (*)(id, SEL, id))Original(self, _cmd))(self, _cmd, descriptor);
+    if (reentry.outermost()) Log("queue.commandBufferWithDescriptor: -> %s", ClassName(commandBuffer));
+    HookCommandBufferClass(commandBuffer);
+    return commandBuffer;
+}
+
+id Replaced_computeCommandEncoderWithDispatchType(id self, SEL _cmd, NSUInteger dispatchType) {
+    Reentry reentry;
+    id encoder = ((id (*)(id, SEL, NSUInteger))Original(self, _cmd))(self, _cmd, dispatchType);
+    if (reentry.outermost()) {
+        Log("commandBuffer.computeCommandEncoderWithDispatchType:%lu -> %s",
+            (unsigned long)dispatchType, ClassName(encoder));
+        g_encodersThisFrame++;
+        BeginPass(encoder, self);
+        if (Recording()) RecordCommand("computeCommandEncoderWithDispatchType:", encoder, {});
+    }
+    HookComputeEncoderClass(encoder);
+    return encoder;
+}
+
 // --------------------------------------------------------------------------------------------
 // MTLCommandBuffer
 
@@ -398,7 +454,7 @@ void Replaced_presentDrawable(id self, SEL _cmd, id drawable) {
             ClassName(drawable));
         if (Recording()) RecordCommand("presentDrawable:", self, {});
         // Not the frame boundary itself: the commit that follows is. See OnCommit.
-        OnPresentDrawable(self);
+        OnPresentDrawable(self, drawable);
     }
     ((void (*)(id, SEL, id))Original(self, _cmd))(self, _cmd, drawable);
 }
@@ -521,6 +577,183 @@ void Replaced_endEncoding(id self, SEL _cmd) {
     if (outermost) EndRenderPass(self);
 }
 
+// Present has three spellings, and an engine that paces its frames uses one of the timed ones.
+// Missing the one an application uses means never seeing a frame boundary at all, so a capture
+// never arms and nothing is recorded — which looks like "capture is broken" rather than "one
+// selector is unhooked".
+
+void Replaced_presentDrawableAtTime(id self, SEL _cmd, id drawable, CFTimeInterval time) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("--- frame %llu: %u encoders, %u draws, %u dispatches (%s presents %s at %.3f) ---",
+            (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
+            g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(self),
+            ClassName(drawable), time);
+        if (Recording()) RecordCommand("presentDrawable:atTime:", self, {});
+        OnPresentDrawable(self, drawable);
+    }
+    ((void (*)(id, SEL, id, CFTimeInterval))Original(self, _cmd))(self, _cmd, drawable, time);
+}
+
+void Replaced_presentDrawableAfterMinimumDuration(id self, SEL _cmd, id drawable,
+                                                  CFTimeInterval duration) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("--- frame %llu: %u encoders, %u draws, %u dispatches (%s presents %s after %.3f) ---",
+            (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
+            g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(self),
+            ClassName(drawable), duration);
+        if (Recording()) RecordCommand("presentDrawable:afterMinimumDuration:", self, {});
+        OnPresentDrawable(self, drawable);
+    }
+    ((void (*)(id, SEL, id, CFTimeInterval))Original(self, _cmd))(self, _cmd, drawable, duration);
+}
+
+// The draw calls, in the spellings an engine actually emits. Metal has one selector per overload
+// rather than optional arguments, so each has to be hooked separately; a real renderer uses the
+// base-vertex/base-instance forms that a hand-written sample never does.
+
+void Replaced_drawPrimitivesSimple(id self, SEL _cmd, NSUInteger type, NSUInteger start,
+                                   NSUInteger count) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("  encoder.drawPrimitives: type=%lu start=%lu count=%lu", (unsigned long)type,
+            (unsigned long)start, (unsigned long)count);
+        g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("vertexStart"); w.Uint(start);
+            w.Key("vertexCount"); w.Uint(count);
+            w.Key("instanceCount"); w.Uint(1);
+            w.EndObject();
+            RecordCommand("drawPrimitives:vertexStart:vertexCount:", self, w.str());
+        }
+    }
+    ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger))Original(self, _cmd))(self, _cmd, type,
+                                                                                  start, count);
+}
+
+void Replaced_drawPrimitivesBaseInstance(id self, SEL _cmd, NSUInteger type, NSUInteger start,
+                                         NSUInteger count, NSUInteger instances,
+                                         NSUInteger baseInstance) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("  encoder.drawPrimitives: type=%lu count=%lu instances=%lu baseInstance=%lu",
+            (unsigned long)type, (unsigned long)count, (unsigned long)instances,
+            (unsigned long)baseInstance);
+        g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("vertexStart"); w.Uint(start);
+            w.Key("vertexCount"); w.Uint(count);
+            w.Key("instanceCount"); w.Uint(instances);
+            w.Key("baseInstance"); w.Uint(baseInstance);
+            w.EndObject();
+            RecordCommand("drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:",
+                          self, w.str());
+        }
+    }
+    ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, NSUInteger, NSUInteger))Original(
+        self, _cmd))(self, _cmd, type, start, count, instances, baseInstance);
+}
+
+void Replaced_drawIndexedSimple(id self, SEL _cmd, NSUInteger type, NSUInteger indexCount,
+                                NSUInteger indexType, id indexBuffer, NSUInteger offset) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("  encoder.drawIndexedPrimitives: type=%lu indexCount=%lu indexBuffer=\"%s\"",
+            (unsigned long)type, (unsigned long)indexCount, LabelOf(indexBuffer));
+        g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("indexCount"); w.Uint(indexCount);
+            w.Key("indexType"); w.Uint(indexType);
+            w.Key("indexBuffer"); WriteRef(w, indexBuffer, "MTLBuffer");
+            w.Key("indexBufferOffset"); w.Uint(offset);
+            w.Key("instanceCount"); w.Uint(1);
+            w.EndObject();
+            const uint64_t data = QueueBufferCapture(indexBuffer, offset,
+                                                     indexCount * (indexType == 0 ? 2 : 4));
+            RecordCommandWithBuffers("drawIndexedPrimitives:indexCount:indexType:indexBuffer:"
+                                     "indexBufferOffset:", self, w.str(), {data});
+        }
+    }
+    ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger))Original(self, _cmd))(
+        self, _cmd, type, indexCount, indexType, indexBuffer, offset);
+}
+
+void Replaced_drawIndexedBaseVertex(id self, SEL _cmd, NSUInteger type, NSUInteger indexCount,
+                                    NSUInteger indexType, id indexBuffer, NSUInteger offset,
+                                    NSUInteger instances, NSInteger baseVertex,
+                                    NSUInteger baseInstance) {
+    Reentry reentry;
+    if (reentry.outermost()) {
+        Log("  encoder.drawIndexedPrimitives: type=%lu indexCount=%lu indexBuffer=\"%s\" "
+            "instances=%lu baseVertex=%ld", (unsigned long)type, (unsigned long)indexCount,
+            LabelOf(indexBuffer), (unsigned long)instances, (long)baseVertex);
+        g_drawsThisFrame++;
+        if (Recording()) {
+            vkinsp::JsonWriter w;
+            w.BeginObject();
+            w.Key("primitiveType"); w.Uint(type);
+            w.Key("indexCount"); w.Uint(indexCount);
+            w.Key("indexType"); w.Uint(indexType);
+            w.Key("indexBuffer"); WriteRef(w, indexBuffer, "MTLBuffer");
+            w.Key("indexBufferOffset"); w.Uint(offset);
+            w.Key("instanceCount"); w.Uint(instances);
+            w.Key("baseVertex"); w.Int(baseVertex);
+            w.Key("baseInstance"); w.Uint(baseInstance);
+            w.EndObject();
+            const uint64_t data = QueueBufferCapture(indexBuffer, offset,
+                                                     indexCount * (indexType == 0 ? 2 : 4));
+            RecordCommandWithBuffers("drawIndexedPrimitives:indexCount:indexType:indexBuffer:"
+                                     "indexBufferOffset:instanceCount:baseVertex:baseInstance:",
+                                     self, w.str(), {data});
+        }
+    }
+    ((void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger, NSInteger,
+               NSUInteger))Original(self, _cmd))(self, _cmd, type, indexCount, indexType,
+                                                 indexBuffer, offset, instances, baseVertex,
+                                                 baseInstance);
+}
+
+// Bound textures, which is how a real renderer gets its images to a shader.
+
+void Replaced_setFragmentTexture(id self, SEL _cmd, id texture, NSUInteger index) {
+    Reentry reentry;
+    if (reentry.outermost() && Recording()) {
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("texture"); WriteRef(w, texture, "MTLTexture");
+        w.Key("index"); w.Uint(index);
+        w.EndObject();
+        RecordCommand("setFragmentTexture:atIndex:", self, w.str());
+    }
+    ((void (*)(id, SEL, id, NSUInteger))Original(self, _cmd))(self, _cmd, texture, index);
+}
+
+void Replaced_setFragmentBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, NSUInteger index) {
+    Reentry reentry;
+    if (reentry.outermost() && Recording()) {
+        vkinsp::JsonWriter w;
+        w.BeginObject();
+        w.Key("buffer"); WriteRef(w, buffer, "MTLBuffer");
+        w.Key("offset"); w.Uint(offset);
+        w.Key("index"); w.Uint(index);
+        w.EndObject();
+        const uint64_t data = QueueBufferCapture(buffer, offset, 0);
+        RecordCommandWithBuffers("setFragmentBuffer:offset:atIndex:", self, w.str(), {data});
+    }
+    ((void (*)(id, SEL, id, NSUInteger, NSUInteger))Original(self, _cmd))(self, _cmd, buffer,
+                                                                          offset, index);
+}
+
 // --------------------------------------------------------------------------------------------
 // MTLComputeCommandEncoder
 
@@ -607,6 +840,16 @@ void TrackDeviceObject(id device) {
     HookDeviceClass(device);
 }
 
+void HookDrawableClass(id drawable) {
+    Class cls = object_getClass(drawable);
+    if (!FirstSighting(cls)) return;
+    Log("hooking drawable class %s", class_getName(cls));
+    Hook(cls, @selector(present), (IMP)Replaced_drawablePresent);
+    Hook(cls, @selector(presentAtTime:), (IMP)Replaced_drawablePresentAtTime);
+    Hook(cls, @selector(presentAfterMinimumDuration:),
+         (IMP)Replaced_drawablePresentAfterMinimumDuration);
+}
+
 void HookDeviceClass(id device) {
     Class cls = object_getClass(device);
     if (!FirstSighting(cls)) return;
@@ -629,6 +872,11 @@ void HookCommandQueueClass(id queue) {
     if (!FirstSighting(cls)) return;
     Log("hooking command queue class %s", class_getName(cls));
     Hook(cls, @selector(commandBuffer), (IMP)Replaced_commandBuffer);
+    // Engines commonly take the unretained form for its lower overhead; without this nothing
+    // below the queue is ever hooked.
+    Hook(cls, @selector(commandBufferWithUnretainedReferences), (IMP)Replaced_commandBuffer);
+    Hook(cls, @selector(commandBufferWithDescriptor:),
+         (IMP)Replaced_commandBufferWithDescriptor);
 }
 
 void HookCommandBufferClass(id commandBuffer) {
@@ -637,8 +885,13 @@ void HookCommandBufferClass(id commandBuffer) {
     Log("hooking command buffer class %s", class_getName(cls));
     Hook(cls, @selector(renderCommandEncoderWithDescriptor:), (IMP)Replaced_renderCommandEncoder);
     Hook(cls, @selector(computeCommandEncoder), (IMP)Replaced_computeCommandEncoder);
+    Hook(cls, @selector(computeCommandEncoderWithDispatchType:),
+         (IMP)Replaced_computeCommandEncoderWithDispatchType);
     Hook(cls, @selector(blitCommandEncoder), (IMP)Replaced_blitCommandEncoder);
     Hook(cls, @selector(presentDrawable:), (IMP)Replaced_presentDrawable);
+    Hook(cls, @selector(presentDrawable:atTime:), (IMP)Replaced_presentDrawableAtTime);
+    Hook(cls, @selector(presentDrawable:afterMinimumDuration:),
+         (IMP)Replaced_presentDrawableAfterMinimumDuration);
     Hook(cls, @selector(commit), (IMP)Replaced_commit);
 }
 
@@ -648,6 +901,17 @@ void HookRenderEncoderClass(id encoder) {
     Log("hooking render encoder class %s", class_getName(cls));
     Hook(cls, @selector(setRenderPipelineState:), (IMP)Replaced_setRenderPipelineState);
     Hook(cls, @selector(setVertexBuffer:offset:atIndex:), (IMP)Replaced_setVertexBuffer);
+    Hook(cls, @selector(setFragmentTexture:atIndex:), (IMP)Replaced_setFragmentTexture);
+    Hook(cls, @selector(setFragmentBuffer:offset:atIndex:), (IMP)Replaced_setFragmentBuffer);
+    Hook(cls, @selector(drawPrimitives:vertexStart:vertexCount:), (IMP)Replaced_drawPrimitivesSimple);
+    Hook(cls, @selector(drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:),
+         (IMP)Replaced_drawPrimitivesBaseInstance);
+    Hook(cls, @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:),
+         (IMP)Replaced_drawIndexedSimple);
+    Hook(cls,
+         @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:
+                                        instanceCount:baseVertex:baseInstance:),
+         (IMP)Replaced_drawIndexedBaseVertex);
     Hook(cls, @selector(drawPrimitives:vertexStart:vertexCount:instanceCount:),
          (IMP)Replaced_drawPrimitives);
     Hook(cls,

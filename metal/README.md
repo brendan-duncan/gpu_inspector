@@ -12,15 +12,34 @@ cd build/bin
 MTLINSP_LOG=1 DYLD_INSERT_LIBRARIES=./libmtlinsp_capture.dylib ./mtlinsp_triangle --frames 3
 ```
 
-With the UI, which attaches to the port the library listens on rather than launching anything:
+From the UI, which launches the target itself: **Launch...** → **This computer**, and choose the
+`.app`. Or from the command line, which is what the tests use:
 
 ```
-(cd build/bin && DYLD_INSERT_LIBRARIES=./libmtlinsp_capture.dylib ./mtlinsp_triangle &)
-cd app && npm start -- --connect=47531
+cd app && npm start -- --launch=/path/to/Player.app --launch-args="-screen-width 800"
 ```
 
-`MTLINSP_LOG=1` logs the intercepted calls to stderr, `MTLINSP_PORT` moves the listener off
-47531.
+`--connect=<port>` still attaches to an application started by hand, for anything the launch path
+does not cover. `MTLINSP_LOG=1` logs the intercepted calls to the session's Log tab,
+`MTLINSP_PORT` moves the listener off 47531.
+
+## Launching
+
+`app/src/main/metal.ts` handles the two things that make this different from registering a Vulkan
+layer:
+
+* **A `.app` is a directory.** dyld needs the binary inside it, named by `CFBundleExecutable` in
+  the bundle's `Info.plist`, falling back to the bundle's own name — which is what Unity produces.
+  The session and the recent list keep showing the `.app` the user picked.
+* **The hardened runtime silently wins.** dyld drops `DYLD_*` for such a process unless it carries
+  `com.apple.security.cs.allow-dyld-environment-variables` and
+  `com.apple.security.cs.disable-library-validation`. That is checked with `codesign` *before*
+  spawning, because otherwise the target starts perfectly and simply never connects, which is a
+  far worse thing to debug than a message. The message says how to re-sign.
+
+Locally built players are normally ad-hoc signed without the hardened runtime and need none of
+that. Re-signing is deliberately not done for the user: it rewrites their application bundle and
+invalidates its signature and notarization.
 
 `test/metal_triangle` is the target, the Metal counterpart of `test/triangle`: a device, a queue,
 buffers, a library compiled at run time, a render pipeline, a compute pass, a render pass with an
@@ -157,11 +176,37 @@ next frame's commands are recorded as they are encoded, and `CaptureFrameResults
 arguments, and `{"__id", "__class"}` references to the tracked objects it names, so the UI
 resolves a bound buffer or pipeline to the object it already knows.
 
-The frame boundary is `commit`, not `presentDrawable:`. Metal presents by asking a command buffer
+### Frame boundaries
+
+There are two, and an engine may use either.
+
+`[MTLCommandBuffer presentDrawable:]` is the documented convenience, and its boundary is the
+`commit` that follows it, not the call itself. Metal presents by asking a command buffer
 to, partway through encoding it, with the commit after — so arming at `presentDrawable:` starts
 the recording mid-command-buffer and its first command is the *previous* frame's `commit`. Vulkan
 has no such problem, since vkQueuePresentKHR is a queue operation that follows the submission.
 `presentDrawable:` only marks the command buffer; its commit is the boundary.
+
+`[MTLDrawable present]` is the other, and Unity's macOS player uses it: it presents the drawable
+itself from a `addScheduledHandler:` block rather than through the command buffer, deliberately,
+to avoid the frame pacing the convenience method imposes
+(`PlatformDependent/OSX/MetalSurfaceHelper.mm`, case 1378985). Hooking only `presentDrawable:`
+means never seeing a frame boundary in a Unity player, so the capture never arms and nothing at
+all is recorded — which presents as "capture is broken" rather than "one selector is unhooked".
+Unity uses the convenience method on another path in the same file, so both have to work.
+
+The convenience method calls the drawable's own `present` internally, and does so *later and on
+another thread*, so the re-entry guard cannot pair them: without an explicit record of which
+drawables a command buffer was asked to present, both boundaries fire and every frame is counted
+twice.
+
+**`addCompletedHandler:` is only legal before a command buffer is committed.** The read-back
+needs a completion to know the staging holds pixels, and the obvious place to ask for one — the
+frame boundary — is too late on the drawable path, because that arrives from a scheduled handler
+after the commit. Metal asserts and aborts the application. So the handler is registered in the
+commit hook, before the commit is forwarded, and the capture is sent when the last command buffer
+of the frames completes. `test/metal_triangle --present-direct` renders the way Unity does, which
+is the only way this path gets tested.
 
 The UI classifies commands — which are draws, which open a pass, which bind a pipeline — by
 matching method names, and those were Vulkan's. It now picks a table per capture instead:

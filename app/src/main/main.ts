@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { implicitLayerStatus, setImplicitLayer } from "./implicit_layer.js";
+import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
@@ -202,7 +203,7 @@ function saveSettings(settings: Settings): void {
  * layer) are simply unavailable, and telling the user to go build one would send them nowhere.
  */
 const NO_LAYER_ERROR = process.platform === "darwin"
-  ? "local capture is not supported on macOS: inspect an Android device over adb, or open a saved .gpucap file"
+  ? `capture library not found (${CAPTURE_LIBRARY}): build it first (see metal/README.md)`
   : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
 
 function findLayerDir(): string | null {
@@ -588,14 +589,38 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
     // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
     ...(config.validation && config.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}),
   };
+  return runTarget(s, config.exe, env, `layer: ${layerDir}`);
+}
+
+/**
+ * macOS: the same, with the Metal capture library injected instead of a Vulkan layer registered.
+ *
+ * `exe` is the binary dyld runs, which for a bundle is inside it, while `config.exe` stays the
+ * .app the user picked so the session and the recent list name it the way they do.
+ */
+function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResult {
+  const config = s.config;
+  if (!config) return { ok: false, error: "session has no launch configuration" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...parseEnvLines(config.env ?? ""),
+    ...captureEnvironment(library, s.port, config.log ?? true),
+  };
+  return runTarget(s, exe, env, `capture library: ${library}`);
+}
+
+/** Spawns the target, pipes its output into the session's log and follows it to its exit. */
+function runTarget(s: Session, exe: string, env: NodeJS.ProcessEnv, note: string): LaunchResult {
+  const config = s.config;
+  if (!config) return { ok: false, error: "session has no launch configuration" };
   const args = splitArgs(config.args ?? "");
-  const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
-  s.appendLog(`launching ${config.exe} ${args.join(" ")}`);
-  s.appendLog(`layer: ${layerDir}`);
+  const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(exe);
+  s.appendLog(`launching ${exe} ${args.join(" ")}`);
+  s.appendLog(note);
   if (s.port !== config.port) s.appendLog(`port ${config.port} is in use; using ${s.port}`);
   let proc: ChildProcess;
   try {
-    proc = spawn(config.exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    proc = spawn(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     s.setStatus("error", `launch failed: ${message}`);
@@ -723,7 +748,12 @@ function killTarget(s: Session): Promise<void> {
   });
 }
 
-type ValidLaunch = { kind: "native"; layerDir: string } | { kind: "android"; adb: string; layer: AndroidLayerFiles } | { kind: "implicit" };
+type ValidLaunch =
+  | { kind: "native"; layerDir: string }
+  /** macOS: the capture library to inject, and the binary inside the bundle to run. */
+  | { kind: "metal"; library: string; exe: string }
+  | { kind: "android"; adb: string; layer: AndroidLayerFiles }
+  | { kind: "implicit" };
 
 function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
   if (config.target === "implicit") {
@@ -739,15 +769,31 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
     if (!config.exe) return { error: "no package name given" };
     return { kind: "android", adb, layer };
   }
+  if (!config.exe || !fs.existsSync(config.exe)) return { error: `executable not found: ${config.exe}` };
+  if (process.platform === "darwin") {
+    const library = findCaptureLibrary();
+    if (!library) return { error: NO_LAYER_ERROR };
+    // A .app is a directory; dyld needs the binary inside it.
+    const exe = resolveExecutable(config.exe);
+    if (!fs.existsSync(exe) || fs.statSync(exe).isDirectory()) {
+      return { error: `no executable found inside ${path.basename(config.exe)}` };
+    }
+    // Checked before spawning: a hardened target starts fine and simply never connects, which is
+    // a much worse thing to debug than a message.
+    const blocked = injectionBlockedReason(exe);
+    if (blocked) return { error: blocked };
+    return { kind: "metal", library, exe };
+  }
   const layerDir = findLayerDir();
   if (!layerDir) return { error: NO_LAYER_ERROR };
-  if (!config.exe || !fs.existsSync(config.exe)) return { error: `executable not found: ${config.exe}` };
   return { kind: "native", layerDir };
 }
 
 function startTarget(s: Session, v: ValidLaunch): LaunchResult {
   if (v.kind === "implicit") return waitForApplication(s);
-  return v.kind === "android" ? launchAndroid(s, v.adb, v.layer) : spawnTarget(s, v.layerDir);
+  if (v.kind === "android") return launchAndroid(s, v.adb, v.layer);
+  if (v.kind === "metal") return spawnMetalTarget(s, v.library, v.exe);
+  return spawnTarget(s, v.layerDir);
 }
 
 /**
@@ -1310,9 +1356,13 @@ ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   const win = windowOf(e.sender) ?? mainWin;
   if (!win) return null;
   const defaultFilters = process.platform === "win32" ? [{ name: "Executables", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }] : [];
+  // macOS: an application is a .app bundle, which is a directory. treatPackageAsDirectory would
+  // make the panel descend into it; without it the bundle is chosen as one item, which is what
+  // the launch path wants (metal.ts resolves the executable inside).
+  const properties: Array<"openFile" | "openDirectory"> = opts?.directory ? ["openDirectory"] : ["openFile"];
   const r = await dialog.showOpenDialog(win, {
     title: opts?.title ?? "Choose executable",
-    properties: opts?.directory ? ["openDirectory"] : ["openFile"],
+    properties,
     filters: opts?.directory ? [] : opts?.filters ?? defaultFilters,
   });
   return r.canceled ? null : r.filePaths[0];
@@ -1422,6 +1472,16 @@ void app.whenReady().then(() => {
         app.quit();
       });
       return;
+    }
+    // --launch=<path>: the command-line form of the launch dialog's local target, for scripting
+    // and for the UI tests. Everything else takes its default from normalizeLaunch.
+    const launchExe = cliOption("launch");
+    if (launchExe) {
+      void launch({ ...normalizeLaunch({} as LaunchConfig), target: "native", exe: launchExe,
+                    args: cliOption("launch-args") ?? "", port: Number(cliOption("port")) || DEFAULT_PORT,
+                    log: true })
+        .then((r) => { if (!r.ok) console.error(`--launch failed: ${r.error}`); })
+        .catch((e) => console.error(`--launch threw: ${e instanceof Error ? e.stack : String(e)}`));
     }
     // --connect=<port>: attach to an application that is already listening, the command-line form
     // of the Connect button. Unlike --wait-for-app it needs no layer of ours in the process, so it

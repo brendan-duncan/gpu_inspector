@@ -1,0 +1,111 @@
+// Launching a Metal application on macOS with the capture library injected.
+//
+// The Vulkan side asks the loader to insert a layer, which is a supported mechanism with its own
+// environment variables. Metal has nothing of the kind, so the library is loaded with
+// DYLD_INSERT_LIBRARIES and takes the API's entry points itself (see metal/README.md). That makes
+// launching a little more involved than setting variables:
+//
+//   * an application is usually a bundle, and dyld wants the executable inside it;
+//   * dyld drops DYLD_* for a process with the hardened runtime, unless it carries entitlements
+//     that say otherwise — silently, so the failure looks like "the application never connected".
+//
+// Both are handled here, before the process is spawned, so the launch dialog can say what is
+// wrong instead of leaving a session waiting for a connection that cannot happen.
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// The bundle is ESM, so there is no __dirname; main.ts derives its own the same way, and esbuild
+// scopes each module's separately.
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+export const CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
+
+/** The capture library, from a development build or from a packaged app. */
+export function findCaptureLibrary(): string | null {
+  const candidates: string[] = [];
+  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
+  const root = path.resolve(moduleDir, "..", "..", "..");
+  for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
+    candidates.push(path.join(root, dir, CAPTURE_LIBRARY));
+  }
+  candidates.push(path.join(process.resourcesPath ?? "", "layer", CAPTURE_LIBRARY));
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+/**
+ * The binary dyld will actually run for what the user picked.
+ *
+ * A `.app` is a directory, so spawning it directly fails; the executable is named by
+ * CFBundleExecutable in its Info.plist, and falls back to the bundle's own name, which is what
+ * Unity produces. Anything that is not a bundle is returned unchanged.
+ */
+export function resolveExecutable(exe: string): string {
+  if (!exe.endsWith(".app")) return exe;
+  const macOS = path.join(exe, "Contents", "MacOS");
+  const plist = path.join(exe, "Contents", "Info.plist");
+  if (fs.existsSync(plist)) {
+    try {
+      const name = execFileSync("/usr/libexec/PlistBuddy",
+                                ["-c", "Print :CFBundleExecutable", plist],
+                                { encoding: "utf8" }).trim();
+      const candidate = path.join(macOS, name);
+      if (name && fs.existsSync(candidate)) return candidate;
+    } catch {
+      // No such key, or an unreadable plist: fall through to the bundle name.
+    }
+  }
+  const byBundleName = path.join(macOS, path.basename(exe, ".app"));
+  if (fs.existsSync(byBundleName)) return byBundleName;
+  // One executable in there is unambiguous even when it is named neither way.
+  try {
+    const entries = fs.readdirSync(macOS);
+    if (entries.length === 1) return path.join(macOS, entries[0]);
+  } catch {
+    // Not a bundle after all.
+  }
+  return exe;
+}
+
+/**
+ * Why the library could not be injected into this target, or null when it can be.
+ *
+ * A hardened-runtime binary needs `com.apple.security.cs.allow-dyld-environment-variables` for
+ * dyld to keep the variable at all, and `com.apple.security.cs.disable-library-validation` to
+ * load a library signed by someone else. Locally built applications — Unity player builds among
+ * them — are normally ad-hoc signed without the hardened runtime and need none of this.
+ */
+export function injectionBlockedReason(exe: string): string | null {
+  // spawnSync rather than execFileSync: codesign writes its report to stderr and exits 0, and
+  // execFileSync hands back only stdout unless the command fails.
+  const r = spawnSync("codesign", ["-d", "-v", "--entitlements", "-", "--xml", exe],
+                      { encoding: "utf8" });
+  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+  if (!/flags=[^\s]*runtime/.test(output)) return null;  // no hardened runtime: nothing in the way
+  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
+  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
+  if (hasDyld && hasLibrary) return null;
+
+  return `${path.basename(exe)} is signed with the hardened runtime, so macOS drops `
+    + `DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:\n\n`
+    + `  /usr/bin/codesign --force --deep --sign - --options runtime \\\n`
+    + `    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?>`
+    + `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`
+    + `<plist version="1.0"><dict>`
+    + `<key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>`
+    + `<key>com.apple.security.cs.disable-library-validation</key><true/>`
+    + `</dict></plist>') \\\n    "<the .app>"\n\n`
+    + `This invalidates the application's signature and notarization, so do it to a development `
+    + `build rather than to a shipping copy.`;
+}
+
+/** The environment the capture library reads (metal/src/transport.mm, swizzle.mm). */
+export function captureEnvironment(library: string, port: number, log: boolean): NodeJS.ProcessEnv {
+  return {
+    // Appended rather than replacing: another inserted library is the caller's business.
+    DYLD_INSERT_LIBRARIES: [library, ...(process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : [])].join(":"),
+    MTLINSP_PORT: String(port),
+    MTLINSP_LOG: log ? "1" : "0",
+  };
+}

@@ -29,6 +29,7 @@ struct PendingTexture {
     uint32_t height = 0;
     std::string format;
     size_t size = 0;
+    std::string error;
     id<MTLBuffer> staging = nil;
 };
 
@@ -69,6 +70,19 @@ uint32_t g_frameIndex = 0;
 std::vector<RecordedCommand> g_commands;
 // Command buffers that have been asked to present: their commit ends a frame.
 std::set<const void *> g_presenting;
+// Command buffers committed during the capture that have not completed yet. The read-back blits
+// are in them, so the staging holds nothing until the count reaches zero.
+//
+// The handler is registered in the commit hook, before the commit is forwarded, because
+// addCompletedHandler: is only legal before a command buffer is committed. Adding one later —
+// from a frame boundary that arrives on Metal's scheduled-handler thread, which is where Unity's
+// [drawable present] runs — makes Metal assert and abort the application.
+int g_outstanding = 0;
+bool g_finishPending = false;
+// Drawables a command buffer was asked to present. [MTLCommandBuffer presentDrawable:] calls the
+// drawable's own present once the queue schedules the buffer — later, and on another thread, so
+// the re-entry guard cannot pair them. Without this both boundaries fire and frames count twice.
+std::set<const void *> g_presentedByCommandBuffer;
 std::vector<CapturedBuffer> g_buffers;
 uint64_t g_nextBufferId = 1;
 
@@ -93,29 +107,64 @@ thread_local int g_internalDepth = 0;
  */
 const char *FormatName(MTLPixelFormat format) {
     switch (format) {
-        case MTLPixelFormatBGRA8Unorm:      return "VK_FORMAT_B8G8R8A8_UNORM";
-        case MTLPixelFormatBGRA8Unorm_sRGB: return "VK_FORMAT_B8G8R8A8_SRGB";
-        case MTLPixelFormatRGBA8Unorm:      return "VK_FORMAT_R8G8B8A8_UNORM";
-        case MTLPixelFormatRGBA8Unorm_sRGB: return "VK_FORMAT_R8G8B8A8_SRGB";
-        case MTLPixelFormatRGBA16Float:     return "VK_FORMAT_R16G16B16A16_SFLOAT";
-        case MTLPixelFormatRGBA32Float:     return "VK_FORMAT_R32G32B32A32_SFLOAT";
-        case MTLPixelFormatR8Unorm:         return "VK_FORMAT_R8_UNORM";
-        case MTLPixelFormatRG8Unorm:        return "VK_FORMAT_R8G8_UNORM";
-        default:                            return "";
+        case MTLPixelFormatR8Unorm:          return "VK_FORMAT_R8_UNORM";
+        case MTLPixelFormatR8Unorm_sRGB:     return "VK_FORMAT_R8_SRGB";
+        case MTLPixelFormatR8Snorm:          return "VK_FORMAT_R8_SNORM";
+        case MTLPixelFormatR8Uint:           return "VK_FORMAT_R8_UINT";
+        case MTLPixelFormatRG8Unorm:         return "VK_FORMAT_R8G8_UNORM";
+        case MTLPixelFormatRG8Snorm:         return "VK_FORMAT_R8G8_SNORM";
+        case MTLPixelFormatRGBA8Unorm:       return "VK_FORMAT_R8G8B8A8_UNORM";
+        case MTLPixelFormatRGBA8Unorm_sRGB:  return "VK_FORMAT_R8G8B8A8_SRGB";
+        case MTLPixelFormatRGBA8Snorm:       return "VK_FORMAT_R8G8B8A8_SNORM";
+        case MTLPixelFormatRGBA8Uint:        return "VK_FORMAT_R8G8B8A8_UINT";
+        case MTLPixelFormatBGRA8Unorm:       return "VK_FORMAT_B8G8R8A8_UNORM";
+        case MTLPixelFormatBGRA8Unorm_sRGB:  return "VK_FORMAT_B8G8R8A8_SRGB";
+        case MTLPixelFormatRGB10A2Unorm:     return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+        case MTLPixelFormatBGR10A2Unorm:     return "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
+        case MTLPixelFormatRG11B10Float:     return "VK_FORMAT_B10G11R11_UFLOAT_PACK32";
+        case MTLPixelFormatRGB9E5Float:      return "VK_FORMAT_E5B9G9R9_UFLOAT_PACK32";
+        case MTLPixelFormatR16Float:         return "VK_FORMAT_R16_SFLOAT";
+        case MTLPixelFormatR16Unorm:         return "VK_FORMAT_R16_UNORM";
+        case MTLPixelFormatR16Uint:          return "VK_FORMAT_R16_UINT";
+        case MTLPixelFormatRG16Float:        return "VK_FORMAT_R16G16_SFLOAT";
+        case MTLPixelFormatRG16Unorm:        return "VK_FORMAT_R16G16_UNORM";
+        case MTLPixelFormatRGBA16Float:      return "VK_FORMAT_R16G16B16A16_SFLOAT";
+        case MTLPixelFormatRGBA16Unorm:      return "VK_FORMAT_R16G16B16A16_UNORM";
+        case MTLPixelFormatR32Float:         return "VK_FORMAT_R32_SFLOAT";
+        case MTLPixelFormatR32Uint:          return "VK_FORMAT_R32_UINT";
+        case MTLPixelFormatRG32Float:        return "VK_FORMAT_R32G32_SFLOAT";
+        case MTLPixelFormatRGBA32Float:      return "VK_FORMAT_R32G32B32A32_SFLOAT";
+        case MTLPixelFormatDepth32Float:     return "VK_FORMAT_D32_SFLOAT";
+        case MTLPixelFormatDepth16Unorm:     return "VK_FORMAT_D16_UNORM";
+        default:                             return "";
     }
 }
 
 uint32_t BytesPerPixel(MTLPixelFormat format) {
     switch (format) {
-        case MTLPixelFormatR8Unorm:         return 1;
-        case MTLPixelFormatRG8Unorm:        return 2;
-        case MTLPixelFormatBGRA8Unorm:
-        case MTLPixelFormatBGRA8Unorm_sRGB:
-        case MTLPixelFormatRGBA8Unorm:
-        case MTLPixelFormatRGBA8Unorm_sRGB: return 4;
-        case MTLPixelFormatRGBA16Float:     return 8;
-        case MTLPixelFormatRGBA32Float:     return 16;
-        default:                            return 0;
+        case MTLPixelFormatR8Unorm: case MTLPixelFormatR8Unorm_sRGB:
+        case MTLPixelFormatR8Snorm: case MTLPixelFormatR8Uint:
+            return 1;
+        case MTLPixelFormatRG8Unorm: case MTLPixelFormatRG8Snorm:
+        case MTLPixelFormatR16Float: case MTLPixelFormatR16Unorm:
+        case MTLPixelFormatR16Uint:  case MTLPixelFormatDepth16Unorm:
+            return 2;
+        case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB:
+        case MTLPixelFormatRGBA8Snorm: case MTLPixelFormatRGBA8Uint:
+        case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+        case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatBGR10A2Unorm:
+        case MTLPixelFormatRG11B10Float: case MTLPixelFormatRGB9E5Float:
+        case MTLPixelFormatRG16Float: case MTLPixelFormatRG16Unorm:
+        case MTLPixelFormatR32Float: case MTLPixelFormatR32Uint:
+        case MTLPixelFormatDepth32Float:
+            return 4;
+        case MTLPixelFormatRGBA16Float: case MTLPixelFormatRGBA16Unorm:
+        case MTLPixelFormatRG32Float:
+            return 8;
+        case MTLPixelFormatRGBA32Float:
+            return 16;
+        default:
+            return 0;
     }
 }
 
@@ -205,6 +254,7 @@ void SendTextures(std::vector<PendingTexture> &textures) {
         w.Key("layers"); w.Uint(1);
         w.Key("mip"); w.Uint(0);
         w.Key("size"); w.Uint(t.size);
+        if (!t.error.empty()) { w.Key("error"); w.String(t.error); }
         w.EndObject();
     }
     w.EndArray();
@@ -212,7 +262,7 @@ void SendTextures(std::vector<PendingTexture> &textures) {
     Transport::Get().SendJson(std::move(w.str()));
 
     for (const PendingTexture &t : textures) {
-        if (t.staging == nil || t.size == 0) continue;
+        if (t.staging == nil || t.size == 0 || !t.error.empty()) continue;
         vkinsp::JsonWriter h;
         h.BeginObject();
         h.Key("action"); h.String("CaptureTextureData");
@@ -224,6 +274,12 @@ void SendTextures(std::vector<PendingTexture> &textures) {
         h.Key("size"); h.Uint(t.size);
         h.EndObject();
         Transport::Get().SendBinary(std::move(h.str()), t.staging.contents, t.size);
+    }
+    // Owned since newBufferWithLength: (+1, and this file is built without ARC): a render target
+    // is megabytes, so leaking one per pass per capture adds up quickly.
+    for (PendingTexture &t : textures) {
+        [t.staging release];
+        t.staging = nil;
     }
 }
 
@@ -241,6 +297,7 @@ void Finish() {
         frames = g_frameIndex;
         g_frameIndex = 0;
         g_recording = false;
+        g_finishPending = false;
     }
 
     const size_t batches = (commands.size() + kCommandsPerBatch - 1) / kCommandsPerBatch;
@@ -278,6 +335,60 @@ void Finish() {
     SendTextures(textures);
     Log("capture finished: %zu commands over %u frame(s), %zu batch(es), %zu buffer(s), "
         "%zu render target(s)", commands.size(), frames, batches, buffers.size(), textures.size());
+}
+
+/**
+ * A frame ended. Arms a pending capture, counts a recorded frame, or finishes one.
+ *
+ * `completionSource` is a command buffer whose completion means the frame's GPU work — the
+ * read-back blits included — is done; nil falls back to the last one committed.
+ */
+void AdvanceFrame() {
+    bool finishNow = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_recording) {
+            if (++g_frameIndex < g_wantFrames) return;
+            // The frames are encoded; the capture goes out once their GPU work has completed.
+            g_finishPending = true;
+            finishNow = g_outstanding == 0;
+        } else if (g_pending) {
+            g_pending = false;
+            g_frameIndex = 0;
+            g_commands.clear();
+            g_buffers.clear();
+            g_textures.clear();
+            g_openPasses.clear();
+            g_passCounters.clear();
+            g_nextBufferId = 1;
+            g_nextTextureId = 1;
+            g_outstanding = 0;
+            g_finishPending = false;
+            g_recording = true;
+            Log("capture started");
+            return;
+        } else {
+            return;
+        }
+    }
+    if (finishNow) Finish();
+}
+
+/** Counts a command buffer in flight, and sends the capture when the last one completes. */
+void TrackCompletion(id commandBuffer) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        ++g_outstanding;
+    }
+    Internal internal;
+    [(id<MTLCommandBuffer>)commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> _) {
+        bool finish = false;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            finish = --g_outstanding == 0 && g_finishPending;
+        }
+        if (finish) Finish();
+    }];
 }
 
 }  // namespace
@@ -383,8 +494,14 @@ void AddPassAttachment(id encoder, id textureObject, uint32_t attachment) {
     pending.format = FormatName(texture.pixelFormat);
     const uint32_t bpp = BytesPerPixel(texture.pixelFormat);
     if (pending.format.empty() || bpp == 0) {
+        // Reported, not dropped: an empty Render Targets section with no reason given is the
+        // hardest kind of gap to notice.
         Log("render target: unsupported pixel format %lu, not read back",
             (unsigned long)texture.pixelFormat);
+        pending.error = "unsupported pixel format " + std::to_string((int)texture.pixelFormat);
+        pending.size = 0;
+        it->second.attachments.push_back(std::move(pending));
+        it->second.textures.push_back(texture);
         return;
     }
     pending.size = (size_t)pending.width * pending.height * bpp;
@@ -413,6 +530,7 @@ void EndRenderPass(id encoder) {
     blit.label = @"gpu-inspector readback";
     for (size_t i = 0; i < pass.attachments.size(); i++) {
         PendingTexture &t = pass.attachments[i];
+        if (!t.error.empty() || t.size == 0) continue;
         id<MTLTexture> texture = pass.textures[i];
         t.staging = [device newBufferWithLength:t.size options:MTLResourceStorageModeShared];
         if (t.staging == nil) continue;
@@ -431,47 +549,39 @@ void EndRenderPass(id encoder) {
 
     std::lock_guard<std::mutex> lock(g_mutex);
     for (PendingTexture &t : pass.attachments) {
-        if (t.staging != nil) g_textures.push_back(std::move(t));
+        if (t.staging != nil || !t.error.empty()) g_textures.push_back(std::move(t));
     }
 }
 
-void OnPresentDrawable(id commandBuffer) {
+void OnPresentDrawable(id commandBuffer, id drawable) {
     if (commandBuffer == nil) return;
     std::lock_guard<std::mutex> lock(g_mutex);
     g_presenting.insert((__bridge const void *)commandBuffer);
+    if (drawable != nil) g_presentedByCommandBuffer.insert((__bridge const void *)drawable);
+}
+
+bool OnDrawablePresent(id drawable) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        // Already accounted for: this is the convenience method calling through, not the
+        // application presenting the drawable itself.
+        if (g_presentedByCommandBuffer.erase((__bridge const void *)drawable) != 0) return false;
+    }
+    AdvanceFrame();
+    return true;
 }
 
 void OnCommit(id commandBuffer) {
-    bool finish = false;
+    bool presents = false;
+    bool recording = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_presenting.erase((__bridge const void *)commandBuffer) == 0) return;
-        if (g_recording) {
-            // The frame just encoded is complete.
-            if (++g_frameIndex >= g_wantFrames) finish = true;
-        } else if (g_pending) {
-            g_pending = false;
-            g_frameIndex = 0;
-            g_commands.clear();
-            g_buffers.clear();
-            g_textures.clear();
-            g_openPasses.clear();
-            g_passCounters.clear();
-            g_nextBufferId = 1;
-            g_nextTextureId = 1;
-            g_recording = true;
-            Log("capture started");
-            return;
-        }
+        recording = g_recording;
+        presents = g_presenting.erase((__bridge const void *)commandBuffer) != 0;
     }
-    if (!finish) return;
-    // The read-back blits are in this command buffer and their staging holds nothing until the GPU
-    // has run them, so the capture is sent from the completion handler rather than here. Added
-    // before the hook forwards to the real commit, so it cannot be missed.
-    Internal internal;
-    [(id<MTLCommandBuffer>)commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> _) {
-        Finish();
-    }];
+    // Before the hook forwards the commit, which is the only time this is allowed.
+    if (recording) TrackCompletion(commandBuffer);
+    if (presents) AdvanceFrame();
 }
 
 }  // namespace mtlinsp

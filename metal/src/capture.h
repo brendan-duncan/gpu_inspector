@@ -81,7 +81,21 @@ void AddPassAttachment(id encoder, id texture, uint32_t attachment);
 void EndRenderPass(id encoder);
 
 /** Notes that this command buffer will present, so its commit is the end of a frame. */
-void OnPresentDrawable(id commandBuffer);
+void OnPresentDrawable(id commandBuffer, id drawable);
+
+/**
+ * A frame boundary from the drawable's own `present`, rather than from a command buffer.
+ *
+ * `[MTLCommandBuffer presentDrawable:]` is documented as a convenience for exactly this, but an
+ * engine may call the drawable directly — Unity's macOS player does, from a scheduled handler, to
+ * avoid the frame pacing the convenience method imposes. Both spellings have to end a frame or a
+ * capture never arms.
+ *
+ * Returns false when this is the convenience method calling through rather than the application
+ * presenting the drawable itself, so the caller can leave that one out of the log as well as out
+ * of the frame count.
+ */
+bool OnDrawablePresent(id drawable);
 
 /**
  * The frame boundary: closes a recording frame, arms a pending capture, sends a finished one.

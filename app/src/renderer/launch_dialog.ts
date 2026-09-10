@@ -24,15 +24,16 @@ const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", 
 type Target = [string, LaunchConfig["target"]];
 const TARGETS: Target[] = [["This computer", "native"], ["Android device (adb)", "android"], ["An application started elsewhere (implicit layer)", "implicit"]];
 
-// Both local targets need the capture layer, which does not build on Apple, so a macOS build
-// offers only Android. The main process reports the host in AppConfig.platform and the window
+// macOS launches a local application with the Metal capture library injected (main/metal.ts), so
+// it offers the local target — but not the implicit one, which is a Vulkan loader mechanism with
+// no Metal counterpart. The main process reports the host in AppConfig.platform and the window
 // passes it here before any dialog is opened.
 let hostPlatform = "";
 export function setHostPlatform(platform: string): void {
   hostPlatform = platform;
 }
 function hostTargets(): Target[] {
-  return hostPlatform === "darwin" ? TARGETS.filter(([, t]) => t === "android") : TARGETS;
+  return hostPlatform === "darwin" ? TARGETS.filter(([, t]) => t !== "implicit") : TARGETS;
 }
 
 export function launchDisplayName(c: LaunchConfig): string {
@@ -122,14 +123,17 @@ export class LaunchDialog extends Dialog {
     }
     if (hostPlatform === "darwin") {
       new Div(body, { class: "launch-dialog-hint",
-        text: "The macOS build has no capture layer, so it cannot launch an application on this computer. "
-          + "Inspect an Android device over adb, or open a saved .gpucap file." });
+        text: "On this computer the target is a Metal application, launched with the capture "
+          + "library injected. Choose its .app bundle. A target signed with the hardened runtime "
+          + "has to be re-signed for injection first; the launch will say so." });
     }
 
     // Native target: the program to run.
     this._nativeRows = new Div(body);
     section(this._nativeRows, "Program");
-    this._exe = this._pathRow(this._nativeRows, "Executable Path", "path to a Vulkan application", "Choose Vulkan application", false);
+    this._exe = this._pathRow(this._nativeRows, "Executable Path",
+      hostPlatform === "darwin" ? "path to a Metal application (.app)" : "path to a Vulkan application",
+      hostPlatform === "darwin" ? "Choose Metal application" : "Choose Vulkan application", false);
     this._cwd = this._pathRow(this._nativeRows, "Working Directory", "(executable's folder)", "Choose working directory", true);
     this._args = this._inputRow(this._nativeRows, "Command-line Arguments", "");
     {
@@ -193,6 +197,14 @@ export class LaunchDialog extends Dialog {
         tooltip: "With the validation layer: synchronization validation, which reports hazards between commands (at record time) and between submissions (at vkQueueSubmit, linked to the command the message names). Slow." });
       this._stacktraces = new Checkbox(row, { label: "Stack traces", checked: true,
         tooltip: "Record the call stack of every object creation, shown in the object's details (symbols from the application's PDBs or exports). A few microseconds per created object." });
+      // Vulkan-only options. The Metal library has no "record always" — a Metal command buffer is
+      // encoded and submitted once, so there is no earlier recording a capture could have missed —
+      // no Khronos validation layer to enable, and no creation stacks yet.
+      if (hostPlatform === "darwin") {
+        for (const c of [this._recordAlways, this._validation, this._syncValidation, this._stacktraces]) {
+          c.element.style.display = "none";
+        }
+      }
       new Span(row, { text: "Port", class: "launch-dialog-label launch-dialog-label-inline" });
       this._port = new TextInput(row, { value: String(DEFAULT_PORT), class: "launch-dialog-input launch-dialog-port" });
     }

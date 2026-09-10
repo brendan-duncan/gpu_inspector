@@ -5,6 +5,10 @@
 //
 //   mtlinsp_triangle              a window, until it is closed
 //   mtlinsp_triangle --frames N   render N frames and exit (no interaction needed)
+//   mtlinsp_triangle --present-direct
+//                                 present through [drawable present] from a scheduled handler,
+//                                 the way Unity's macOS player does, instead of through
+//                                 [MTLCommandBuffer presentDrawable:]
 //
 // Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See metal/README.md.
 #import <Cocoa/Cocoa.h>
@@ -72,6 +76,8 @@ constexpr NSUInteger kWaveCount = 256;
 - (instancetype)initWithLayer:(CAMetalLayer *)layer;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
+/** --present-direct: present through the drawable, the way Unity's macOS player does. */
+@property(nonatomic) BOOL presentDirect;
 @end
 
 @implementation Renderer {
@@ -193,7 +199,14 @@ constexpr NSUInteger kWaveCount = 256;
     [encoder popDebugGroup];
     [encoder endEncoding];
 
-    [commandBuffer presentDrawable:drawable];
+    if (self.presentDirect) {
+        // What Unity's macOS player does: present the drawable itself from a scheduled handler
+        // rather than through [MTLCommandBuffer presentDrawable:]. The frame boundary then
+        // arrives on Metal's callback thread, after the command buffer is already committed.
+        [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> _) { [drawable present]; }];
+    } else {
+        [commandBuffer presentDrawable:drawable];
+    }
     [commandBuffer commit];
     _frameCount++;
 
@@ -212,6 +225,7 @@ constexpr NSUInteger kWaveCount = 256;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic) NSUInteger frameLimit;  // 0: run until the window is closed
+@property(nonatomic) BOOL presentDirect;
 @end
 
 @implementation AppDelegate {
@@ -250,6 +264,7 @@ constexpr NSUInteger kWaveCount = 256;
     [NSApp activateIgnoringOtherApps:YES];
 
     _renderer = [[Renderer alloc] initWithLayer:layer];
+    _renderer.presentDirect = self.presentDirect;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
                                                block:^(NSTimer *t) {
@@ -270,14 +285,17 @@ constexpr NSUInteger kWaveCount = 256;
 
 int main(int argc, const char *argv[]) {
     NSUInteger frameLimit = 0;
+    BOOL presentDirect = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
     }
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         AppDelegate *delegate = [[AppDelegate alloc] init];
         delegate.frameLimit = frameLimit;
+        delegate.presentDirect = presentDirect;
         app.delegate = delegate;
         [app run];
     }

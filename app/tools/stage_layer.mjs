@@ -17,11 +17,23 @@ fs.rmSync(dst, { recursive: true, force: true });
 // unconditional, and the Android layer below goes inside it.
 fs.mkdirSync(dst, { recursive: true });
 
-// macOS builds are the UI only: the layer does not build on Apple (layer/CMakeLists.txt covers
-// UNIX AND NOT APPLE), so a mac package captures Android targets and opens .gpucap files but
-// cannot launch a local application. Everything else here still applies.
+// macOS ships the Metal capture library instead of the Vulkan layer, which does not build for
+// Apple targets (layer/CMakeLists.txt covers UNIX AND NOT APPLE). It is a plain dylib injected
+// with DYLD_INSERT_LIBRARIES rather than a layer with a manifest, so there is nothing beside it
+// to copy. findCaptureLibrary in app/src/main/metal.ts looks for it in resources/layer.
 if (process.platform === "darwin") {
-  console.log("macOS: no desktop capture layer (Android targets and .gpucap files only)");
+  const metalLib = "libmtlinsp_capture.dylib";
+  const metalCandidates = process.env.INSPECTOR_METAL_LIB
+    ? [process.env.INSPECTOR_METAL_LIB]
+    : ["Release", "Debug", ""].map((c) => path.join(root, "build", "bin", c, metalLib));
+  const metalSrc = metalCandidates.find((f) => fs.existsSync(f));
+  if (!metalSrc) {
+    console.error(`Metal capture library not found (${metalLib}) in:\n  ${metalCandidates.join("\n  ")}\n`
+      + `Build it first (cmake -S . -B build && cmake --build build) or set INSPECTOR_METAL_LIB.`);
+    process.exit(1);
+  }
+  fs.copyFileSync(metalSrc, path.join(dst, metalLib));
+  console.log(`staged Metal capture library from ${metalSrc} -> ${dst}`);
 } else {
   const candidates = process.env.INSPECTOR_LAYER_DIR
     ? [process.env.INSPECTOR_LAYER_DIR]
