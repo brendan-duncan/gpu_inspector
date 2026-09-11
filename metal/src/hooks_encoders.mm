@@ -8,9 +8,32 @@
 // and is the checklist this was written against.
 #include "hooks.h"
 #include "hooks_common.h"
+#include "overdraw.h"
+
+#import <objc/message.h>
+
+#include <vector>
 
 namespace mtlinsp {
 namespace {
+
+// Overdraw (overdraw.h): while a capture that measures it is recording, every render encoder call
+// that shapes what a pass rasterizes is also recorded as a closure, which the measurement issues
+// again against its own encoder. Bindings of every stage are kept, since a counting pipeline keeps
+// the application's vertex stage; store actions, visibility results, fences and barriers are not,
+// since they have no bearing on the count.
+
+/** Whether this hook invocation is the application's call and a capture that measures overdraw is recording. */
+inline bool Measuring(const Reentry &reentry) { return reentry.outermost() && OverdrawActive(); }
+
+std::vector<uint8_t> CopyBytes(const void *bytes, NSUInteger length) {
+    const uint8_t *b = static_cast<const uint8_t *>(bytes);
+    return b != nullptr ? std::vector<uint8_t>(b, b + length) : std::vector<uint8_t>(length, 0);
+}
+
+std::vector<NSUInteger> CopyOffsets(const NSUInteger *offsets, NSUInteger count) {
+    return offsets != nullptr ? std::vector<NSUInteger>(offsets, offsets + count) : std::vector<NSUInteger>(count, 0);
+}
 
 /** Inline bytes bound as a constant block: recorded the way the UI reads push constants. */
 std::string BytesArgs(const char *stage, const void *bytes, NSUInteger length, NSUInteger index) {
@@ -51,6 +74,8 @@ void E_endEncoding(id self, SEL _cmd) {
     // application's is really closed the read-back's blit encoder cannot be created.
     if (outermost) {
         AfterEndEncoding(self);
+        // The pass drawn again to count its overdraw, after the read-back of what it drew.
+        if (!secondary) EndOverdrawPass(self);
         ForgetEncoder(self);
     }
 }
@@ -82,7 +107,109 @@ void R_setRenderPipelineState(id self, SEL _cmd, id state) {
         RecordCommand("setRenderPipelineState:", self,
                       Args().ref("pipeline", state, "MTLRenderPipelineState").str());
     }
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+            r.BindPipeline(e, s.get());
+        });
+    }
     ORIG(void (*)(id, SEL, id))(self, _cmd, state);
+}
+
+// The binding forms every stage shares, issued again by selector: the vertex, fragment, object
+// and mesh stages take the same arguments under different names.
+
+void LogBytes(id self, SEL sel, const void *bytes, NSUInteger length, NSUInteger index) {
+    LogOverdrawOp(self, [sel, data = CopyBytes(bytes, length), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const void *, NSUInteger, NSUInteger))objc_msgSend)(e, sel, data.data(), data.size(), index);
+    });
+}
+
+void LogBuffer(id self, SEL sel, id buffer, NSUInteger offset, NSUInteger index) {
+    LogOverdrawOp(self, [sel, b = Strong(buffer), offset, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id, NSUInteger, NSUInteger))objc_msgSend)(e, sel, b.get(), offset, index);
+    });
+}
+
+void LogIndexed(id self, SEL sel, NSUInteger first, NSUInteger second) {
+    LogOverdrawOp(self, [sel, first, second](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, NSUInteger, NSUInteger))objc_msgSend)(e, sel, first, second);
+    });
+}
+
+void LogBuffers(id self, SEL sel, const id *buffers, const NSUInteger *offsets, NSRange range) {
+    LogOverdrawOp(self, [sel, list = StrongList(buffers, range.length), offs = CopyOffsets(offsets, range.length),
+                         range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const id *, const NSUInteger *, NSRange))objc_msgSend)(e, sel, list.data(), offs.data(), range);
+    });
+}
+
+void LogObject(id self, SEL sel, id object, NSUInteger index) {
+    LogOverdrawOp(self, [sel, o = Strong(object), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id, NSUInteger))objc_msgSend)(e, sel, o.get(), index);
+    });
+}
+
+void LogObjects(id self, SEL sel, const id *objects, NSRange range) {
+    LogOverdrawOp(self, [sel, list = StrongList(objects, range.length), range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const id *, NSRange))objc_msgSend)(e, sel, list.data(), range);
+    });
+}
+
+void LogSamplerLod(id self, SEL sel, id sampler, float lodMin, float lodMax, NSUInteger index) {
+    LogOverdrawOp(self, [sel, s = Strong(sampler), lodMin, lodMax, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id, float, float, NSUInteger))objc_msgSend)(e, sel, s.get(), lodMin, lodMax, index);
+    });
+}
+
+void LogUint(id self, SEL sel, NSUInteger value) {
+    LogOverdrawOp(self, [sel, value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, NSUInteger))objc_msgSend)(e, sel, value);
+    });
+}
+
+// Residency: useResource:, useHeap: and their array and stage forms.
+
+void LogUse(id self, SEL sel, id object) {
+    LogOverdrawOp(self, [sel, o = Strong(object)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id))objc_msgSend)(e, sel, o.get());
+    });
+}
+
+void LogUse(id self, SEL sel, id object, NSUInteger a) {
+    LogOverdrawOp(self, [sel, o = Strong(object), a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id, NSUInteger))objc_msgSend)(e, sel, o.get(), a);
+    });
+}
+
+void LogUse(id self, SEL sel, id object, NSUInteger a, NSUInteger b) {
+    LogOverdrawOp(self, [sel, o = Strong(object), a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, id, NSUInteger, NSUInteger))objc_msgSend)(e, sel, o.get(), a, b);
+    });
+}
+
+void LogUseList(id self, SEL sel, const id *objects, NSUInteger count) {
+    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const id *, NSUInteger))objc_msgSend)(e, sel, list.data(), count);
+    });
+}
+
+void LogUseList(id self, SEL sel, const id *objects, NSUInteger count, NSUInteger a) {
+    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count, a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const id *, NSUInteger, NSUInteger))objc_msgSend)(e, sel, list.data(), count, a);
+    });
+}
+
+void LogUseList(id self, SEL sel, const id *objects, NSUInteger count, NSUInteger a, NSUInteger b) {
+    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count, a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        ((void (*)(id, SEL, const id *, NSUInteger, NSUInteger, NSUInteger))objc_msgSend)(e, sel, list.data(), count, a, b);
+    });
+}
+
+/** A draw: issued when a counting pipeline is bound. */
+void LogDraw(id self, std::function<void(id<MTLRenderCommandEncoder>)> draw) {
+    LogOverdrawOp(self, [draw = std::move(draw)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+        if (r.Draw()) draw(e);
+    });
 }
 
 void R_setVertexBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, NSUInteger index) {
@@ -92,6 +219,7 @@ void R_setVertexBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, N
                                  BytesArgs("vertex", bytes, length, index),
                                  {QueueBytesCapture(bytes, length)});
     }
+    if (Measuring(reentry)) LogBytes(self, _cmd, bytes, length, index);
     ORIG(void (*)(id, SEL, const void *, NSUInteger, NSUInteger))(self, _cmd, bytes, length, index);
 }
 
@@ -105,6 +233,7 @@ void R_setVertexBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, NSUInteg
                                        .u("index", index).str(),
                                  {QueueBufferCapture(self, buffer, offset, 0)});
     }
+    if (Measuring(reentry)) LogBuffer(self, _cmd, buffer, offset, index);
     ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, index);
 }
 
@@ -114,6 +243,7 @@ void R_setVertexBufferOffset(id self, SEL _cmd, NSUInteger offset, NSUInteger in
         RecordCommand("setVertexBufferOffset:atIndex:", self,
                       Args().u("offset", offset).u("index", index).str());
     }
+    if (Measuring(reentry)) LogIndexed(self, _cmd, offset, index);
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, offset, index);
 }
 
@@ -125,6 +255,7 @@ void R_setVertexBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger *
                                        .uints("offsets", offsets, range.length).range("range", range).str(),
                                  QueueBuffers(self, buffers, offsets, range));
     }
+    if (Measuring(reentry)) LogBuffers(self, _cmd, buffers, offsets, range);
     ORIG(void (*)(id, SEL, const id *, const NSUInteger *, NSRange))(self, _cmd, buffers, offsets, range);
 }
 
@@ -134,6 +265,7 @@ void R_setVertexTexture(id self, SEL _cmd, id texture, NSUInteger index) {
         RecordCommand("setVertexTexture:atIndex:", self,
                       Args().ref("texture", texture, "MTLTexture").u("index", index).str());
     }
+    if (Measuring(reentry)) LogObject(self, _cmd, texture, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);
 }
 
@@ -143,6 +275,7 @@ void R_setVertexTextures(id self, SEL _cmd, const id *textures, NSRange range) {
         RecordCommand("setVertexTextures:withRange:", self,
                       Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str());
     }
+    if (Measuring(reentry)) LogObjects(self, _cmd, textures, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, textures, range);
 }
 
@@ -152,6 +285,7 @@ void R_setVertexSamplerState(id self, SEL _cmd, id sampler, NSUInteger index) {
         RecordCommand("setVertexSamplerState:atIndex:", self,
                       Args().ref("sampler", sampler, "MTLSamplerState").u("index", index).str());
     }
+    if (Measuring(reentry)) LogObject(self, _cmd, sampler, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, sampler, index);
 }
 
@@ -162,6 +296,7 @@ void R_setVertexSamplerStateLod(id self, SEL _cmd, id sampler, float lodMin, flo
                       Args().ref("sampler", sampler, "MTLSamplerState").d("lodMinClamp", lodMin)
                             .d("lodMaxClamp", lodMax).u("index", index).str());
     }
+    if (Measuring(reentry)) LogSamplerLod(self, _cmd, sampler, lodMin, lodMax, index);
     ORIG(void (*)(id, SEL, id, float, float, NSUInteger))(self, _cmd, sampler, lodMin, lodMax, index);
 }
 
@@ -171,6 +306,7 @@ void R_setVertexSamplerStates(id self, SEL _cmd, const id *samplers, NSRange ran
         RecordCommand("setVertexSamplerStates:withRange:", self,
                       Args().refs("samplers", samplers, range.length, "MTLSamplerState").range("range", range).str());
     }
+    if (Measuring(reentry)) LogObjects(self, _cmd, samplers, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, samplers, range);
 }
 
@@ -180,6 +316,9 @@ void R_setVertexSamplerStates(id self, SEL _cmd, const id *samplers, NSRange ran
 void R_setViewport(id self, SEL _cmd, MTLViewport viewport) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setViewport:", self, Args().viewport("viewport", viewport).str());
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [viewport](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setViewport:viewport]; });
+    }
     ORIG(void (*)(id, SEL, MTLViewport))(self, _cmd, viewport);
 }
 
@@ -198,6 +337,11 @@ void R_setViewports(id self, SEL _cmd, const MTLViewport *viewports, NSUInteger 
         a.writer().EndArray();
         RecordCommand("setViewports:count:", self, a.str());
     }
+    if (Measuring(reentry) && viewports != nullptr) {
+        LogOverdrawOp(self, [list = std::vector<MTLViewport>(viewports, viewports + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+            [e setViewports:list.data() count:list.size()];
+        });
+    }
     ORIG(void (*)(id, SEL, const MTLViewport *, NSUInteger))(self, _cmd, viewports, count);
 }
 
@@ -208,6 +352,7 @@ void R_setFrontFacingWinding(id self, SEL _cmd, NSUInteger winding) {
                       Args().c("winding", winding == MTLWindingClockwise ? "MTLWindingClockwise"
                                                                           : "MTLWindingCounterClockwise").str());
     }
+    if (Measuring(reentry)) LogUint(self, _cmd, winding);
     ORIG(void (*)(id, SEL, NSUInteger))(self, _cmd, winding);
 }
 
@@ -227,12 +372,14 @@ void R_setCullMode(id self, SEL _cmd, NSUInteger mode) {
                          : mode == MTLCullModeBack ? "MTLCullModeBack" : "";
         RecordCommand("setCullMode:", self, Args().e("cullMode", name, mode).str());
     }
+    if (Measuring(reentry)) LogUint(self, _cmd, mode);
     ORIG(void (*)(id, SEL, NSUInteger))(self, _cmd, mode);
 }
 
 void R_setDepthClipMode(id self, SEL _cmd, NSUInteger mode) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setDepthClipMode:", self, Args().u("depthClipMode", mode).str());
+    if (Measuring(reentry)) LogUint(self, _cmd, mode);
     ORIG(void (*)(id, SEL, NSUInteger))(self, _cmd, mode);
 }
 
@@ -242,12 +389,20 @@ void R_setDepthBias(id self, SEL _cmd, float bias, float slopeScale, float clamp
         RecordCommand("setDepthBias:slopeScale:clamp:", self,
                       Args().d("depthBias", bias).d("slopeScale", slopeScale).d("clamp", clamp).str());
     }
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [bias, slopeScale, clamp](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+            [e setDepthBias:bias slopeScale:slopeScale clamp:clamp];
+        });
+    }
     ORIG(void (*)(id, SEL, float, float, float))(self, _cmd, bias, slopeScale, clamp);
 }
 
 void R_setScissorRect(id self, SEL _cmd, MTLScissorRect rect) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setScissorRect:", self, Args().scissor("rect", rect).str());
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [rect](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setScissorRect:rect]; });
+    }
     ORIG(void (*)(id, SEL, MTLScissorRect))(self, _cmd, rect);
 }
 
@@ -266,6 +421,11 @@ void R_setScissorRects(id self, SEL _cmd, const MTLScissorRect *rects, NSUIntege
         a.writer().EndArray();
         RecordCommand("setScissorRects:count:", self, a.str());
     }
+    if (Measuring(reentry) && rects != nullptr) {
+        LogOverdrawOp(self, [list = std::vector<MTLScissorRect>(rects, rects + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+            [e setScissorRects:list.data() count:list.size()];
+        });
+    }
     ORIG(void (*)(id, SEL, const MTLScissorRect *, NSUInteger))(self, _cmd, rects, count);
 }
 
@@ -276,6 +436,7 @@ void R_setTriangleFillMode(id self, SEL _cmd, NSUInteger mode) {
                       Args().c("fillMode", mode == MTLTriangleFillModeLines ? "MTLTriangleFillModeLines"
                                                                              : "MTLTriangleFillModeFill").str());
     }
+    if (Measuring(reentry)) LogUint(self, _cmd, mode);
     ORIG(void (*)(id, SEL, NSUInteger))(self, _cmd, mode);
 }
 
@@ -294,12 +455,22 @@ void R_setDepthStencilState(id self, SEL _cmd, id state) {
         RecordCommand("setDepthStencilState:", self,
                       Args().ref("depthStencilState", state, "MTLDepthStencilState").str());
     }
+    if (Measuring(reentry)) {
+        // Only where the measurement tests depth and stencil; the untested count keeps Metal's
+        // default state, which tests nothing.
+        LogOverdrawOp(self, [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+            if (r.TestsDepthStencil()) [e setDepthStencilState:(id<MTLDepthStencilState>)s.get()];
+        });
+    }
     ORIG(void (*)(id, SEL, id))(self, _cmd, state);
 }
 
 void R_setStencilReferenceValue(id self, SEL _cmd, uint32_t value) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setStencilReferenceValue:", self, Args().u("referenceValue", value).str());
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setStencilReferenceValue:value]; });
+    }
     ORIG(void (*)(id, SEL, uint32_t))(self, _cmd, value);
 }
 
@@ -308,6 +479,11 @@ void R_setStencilFrontBackReference(id self, SEL _cmd, uint32_t front, uint32_t 
     if (Rec(reentry)) {
         RecordCommand("setStencilFrontReferenceValue:backReferenceValue:", self,
                       Args().u("frontReferenceValue", front).u("backReferenceValue", back).str());
+    }
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [front, back](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+            [e setStencilFrontReferenceValue:front backReferenceValue:back];
+        });
     }
     ORIG(void (*)(id, SEL, uint32_t, uint32_t))(self, _cmd, front, back);
 }
@@ -382,6 +558,7 @@ void R_setFragmentBytes(id self, SEL _cmd, const void *bytes, NSUInteger length,
                                  BytesArgs("fragment", bytes, length, index),
                                  {QueueBytesCapture(bytes, length)});
     }
+    if (Measuring(reentry)) LogBytes(self, _cmd, bytes, length, index);
     ORIG(void (*)(id, SEL, const void *, NSUInteger, NSUInteger))(self, _cmd, bytes, length, index);
 }
 
@@ -393,6 +570,7 @@ void R_setFragmentBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, NSUInt
                                        .u("index", index).str(),
                                  {QueueBufferCapture(self, buffer, offset, 0)});
     }
+    if (Measuring(reentry)) LogBuffer(self, _cmd, buffer, offset, index);
     ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, index);
 }
 
@@ -402,6 +580,7 @@ void R_setFragmentBufferOffset(id self, SEL _cmd, NSUInteger offset, NSUInteger 
         RecordCommand("setFragmentBufferOffset:atIndex:", self,
                       Args().u("offset", offset).u("index", index).str());
     }
+    if (Measuring(reentry)) LogIndexed(self, _cmd, offset, index);
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, offset, index);
 }
 
@@ -413,6 +592,7 @@ void R_setFragmentBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger
                                        .uints("offsets", offsets, range.length).range("range", range).str(),
                                  QueueBuffers(self, buffers, offsets, range));
     }
+    if (Measuring(reentry)) LogBuffers(self, _cmd, buffers, offsets, range);
     ORIG(void (*)(id, SEL, const id *, const NSUInteger *, NSRange))(self, _cmd, buffers, offsets, range);
 }
 
@@ -422,6 +602,7 @@ void R_setFragmentTexture(id self, SEL _cmd, id texture, NSUInteger index) {
         RecordCommand("setFragmentTexture:atIndex:", self,
                       Args().ref("texture", texture, "MTLTexture").u("index", index).str());
     }
+    if (Measuring(reentry)) LogObject(self, _cmd, texture, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);
 }
 
@@ -431,6 +612,7 @@ void R_setFragmentTextures(id self, SEL _cmd, const id *textures, NSRange range)
         RecordCommand("setFragmentTextures:withRange:", self,
                       Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str());
     }
+    if (Measuring(reentry)) LogObjects(self, _cmd, textures, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, textures, range);
 }
 
@@ -440,6 +622,7 @@ void R_setFragmentSamplerState(id self, SEL _cmd, id sampler, NSUInteger index) 
         RecordCommand("setFragmentSamplerState:atIndex:", self,
                       Args().ref("sampler", sampler, "MTLSamplerState").u("index", index).str());
     }
+    if (Measuring(reentry)) LogObject(self, _cmd, sampler, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, sampler, index);
 }
 
@@ -450,6 +633,7 @@ void R_setFragmentSamplerStateLod(id self, SEL _cmd, id sampler, float lodMin, f
                       Args().ref("sampler", sampler, "MTLSamplerState").d("lodMinClamp", lodMin)
                             .d("lodMaxClamp", lodMax).u("index", index).str());
     }
+    if (Measuring(reentry)) LogSamplerLod(self, _cmd, sampler, lodMin, lodMax, index);
     ORIG(void (*)(id, SEL, id, float, float, NSUInteger))(self, _cmd, sampler, lodMin, lodMax, index);
 }
 
@@ -459,6 +643,7 @@ void R_setFragmentSamplerStates(id self, SEL _cmd, const id *samplers, NSRange r
         RecordCommand("setFragmentSamplerStates:withRange:", self,
                       Args().refs("samplers", samplers, range.length, "MTLSamplerState").range("range", range).str());
     }
+    if (Measuring(reentry)) LogObjects(self, _cmd, samplers, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, samplers, range);
 }
 
@@ -482,6 +667,11 @@ void R_drawPrimitives3(id self, SEL _cmd, NSUInteger type, NSUInteger start, NSU
             RecordCommand("drawPrimitives:vertexStart:vertexCount:", self, DrawArgs(type, start, count, 1, 0));
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, start, count](id<MTLRenderCommandEncoder> e) {
+            [e drawPrimitives:(MTLPrimitiveType)type vertexStart:start vertexCount:count];
+        });
+    }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger))(self, _cmd, type, start, count);
 }
 
@@ -494,6 +684,11 @@ void R_drawPrimitives4(id self, SEL _cmd, NSUInteger type, NSUInteger start, NSU
             RecordCommand("drawPrimitives:vertexStart:vertexCount:instanceCount:", self,
                           DrawArgs(type, start, count, instances, 0));
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, start, count, instances](id<MTLRenderCommandEncoder> e) {
+            [e drawPrimitives:(MTLPrimitiveType)type vertexStart:start vertexCount:count instanceCount:instances];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, NSUInteger))(
         self, _cmd, type, start, count, instances);
@@ -508,6 +703,12 @@ void R_drawPrimitives5(id self, SEL _cmd, NSUInteger type, NSUInteger start, NSU
             RecordCommand("drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:", self,
                           DrawArgs(type, start, count, instances, baseInstance));
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, start, count, instances, baseInstance](id<MTLRenderCommandEncoder> e) {
+            [e drawPrimitives:(MTLPrimitiveType)type vertexStart:start vertexCount:count instanceCount:instances
+                 baseInstance:baseInstance];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, NSUInteger, NSUInteger))(
         self, _cmd, type, start, count, instances, baseInstance);
@@ -541,6 +742,12 @@ void R_drawIndexed5(id self, SEL _cmd, NSUInteger type, NSUInteger indexCount, N
                 {QueueBufferCapture(self, indexBuffer, offset, IndexBytes(indexCount, indexType))});
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, indexCount, indexType, b = Strong(indexBuffer), offset](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:indexCount indexType:(MTLIndexType)indexType
+                         indexBuffer:(id<MTLBuffer>)b.get() indexBufferOffset:offset];
+        });
+    }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger))(
         self, _cmd, type, indexCount, indexType, indexBuffer, offset);
 }
@@ -556,6 +763,12 @@ void R_drawIndexed6(id self, SEL _cmd, NSUInteger type, NSUInteger indexCount, N
                 self, IndexedDrawArgs(type, indexCount, indexType, indexBuffer, offset, instances, 0, 0),
                 {QueueBufferCapture(self, indexBuffer, offset, IndexBytes(indexCount, indexType))});
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, indexCount, indexType, b = Strong(indexBuffer), offset, instances](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:indexCount indexType:(MTLIndexType)indexType
+                         indexBuffer:(id<MTLBuffer>)b.get() indexBufferOffset:offset instanceCount:instances];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger))(
         self, _cmd, type, indexCount, indexType, indexBuffer, offset, instances);
@@ -576,6 +789,14 @@ void R_drawIndexed8(id self, SEL _cmd, NSUInteger type, NSUInteger indexCount, N
                 {QueueBufferCapture(self, indexBuffer, offset, IndexBytes(indexCount, indexType))});
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, indexCount, indexType, b = Strong(indexBuffer), offset, instances, baseVertex,
+                       baseInstance](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:indexCount indexType:(MTLIndexType)indexType
+                         indexBuffer:(id<MTLBuffer>)b.get() indexBufferOffset:offset instanceCount:instances
+                          baseVertex:baseVertex baseInstance:baseInstance];
+        });
+    }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger, NSInteger,
                   NSUInteger))(self, _cmd, type, indexCount, indexType, indexBuffer, offset,
                                instances, baseVertex, baseInstance);
@@ -593,6 +814,11 @@ void R_drawPrimitivesIndirect(id self, SEL _cmd, NSUInteger type, id indirect, N
                                            .u("indirectBufferOffset", offset).str(),
                                      {QueueBufferCapture(self, indirect, offset, 16)});
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, b = Strong(indirect), offset](id<MTLRenderCommandEncoder> e) {
+            [e drawPrimitives:(MTLPrimitiveType)type indirectBuffer:(id<MTLBuffer>)b.get() indirectBufferOffset:offset];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, id, NSUInteger))(self, _cmd, type, indirect, offset);
 }
@@ -616,6 +842,14 @@ void R_drawIndexedIndirect(id self, SEL _cmd, NSUInteger type, NSUInteger indexT
                  QueueBufferCapture(self, indirect, indirectOffset, 20)});
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [type, indexType, ib = Strong(indexBuffer), indexOffset, b = Strong(indirect),
+                       indirectOffset](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPrimitives:(MTLPrimitiveType)type indexType:(MTLIndexType)indexType
+                         indexBuffer:(id<MTLBuffer>)ib.get() indexBufferOffset:indexOffset
+                      indirectBuffer:(id<MTLBuffer>)b.get() indirectBufferOffset:indirectOffset];
+        });
+    }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, id, NSUInteger, id, NSUInteger))(
         self, _cmd, type, indexType, indexBuffer, indexOffset, indirect, indirectOffset);
 }
@@ -634,6 +868,14 @@ void R_drawPatches(id self, SEL _cmd, NSUInteger controlPoints, NSUInteger patch
                                 .u("patchIndexBufferOffset", patchIndexOffset).u("instanceCount", instances)
                                 .u("baseInstance", baseInstance).str());
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [controlPoints, patchStart, patchCount, pb = Strong(patchIndexBuffer), patchIndexOffset, instances,
+                       baseInstance](id<MTLRenderCommandEncoder> e) {
+            [e drawPatches:controlPoints patchStart:patchStart patchCount:patchCount
+                patchIndexBuffer:(id<MTLBuffer>)pb.get() patchIndexBufferOffset:patchIndexOffset
+                   instanceCount:instances baseInstance:baseInstance];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, NSUInteger, NSUInteger))(
         self, _cmd, controlPoints, patchStart, patchCount, patchIndexBuffer, patchIndexOffset,
@@ -654,6 +896,13 @@ void R_drawPatchesIndirect(id self, SEL _cmd, NSUInteger controlPoints, id patch
                                 .ref("indirectBuffer", indirect, "MTLBuffer")
                                 .u("indirectBufferOffset", indirectOffset).str());
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [controlPoints, pb = Strong(patchIndexBuffer), patchIndexOffset, b = Strong(indirect),
+                       indirectOffset](id<MTLRenderCommandEncoder> e) {
+            [e drawPatches:controlPoints patchIndexBuffer:(id<MTLBuffer>)pb.get() patchIndexBufferOffset:patchIndexOffset
+                indirectBuffer:(id<MTLBuffer>)b.get() indirectBufferOffset:indirectOffset];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, id, NSUInteger, id, NSUInteger))(
         self, _cmd, controlPoints, patchIndexBuffer, patchIndexOffset, indirect, indirectOffset);
@@ -677,6 +926,16 @@ void R_drawIndexedPatches(id self, SEL _cmd, NSUInteger controlPoints, NSUIntege
                                 .u("controlPointIndexBufferOffset", controlPointIndexOffset)
                                 .u("instanceCount", instances).u("baseInstance", baseInstance).str());
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [controlPoints, patchStart, patchCount, pb = Strong(patchIndexBuffer), patchIndexOffset,
+                       cb = Strong(controlPointIndexBuffer), controlPointIndexOffset, instances,
+                       baseInstance](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPatches:controlPoints patchStart:patchStart patchCount:patchCount
+                 patchIndexBuffer:(id<MTLBuffer>)pb.get() patchIndexBufferOffset:patchIndexOffset
+          controlPointIndexBuffer:(id<MTLBuffer>)cb.get() controlPointIndexBufferOffset:controlPointIndexOffset
+                    instanceCount:instances baseInstance:baseInstance];
+        });
     }
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger, NSUInteger, id, NSUInteger, id, NSUInteger, NSUInteger,
                   NSUInteger))(self, _cmd, controlPoints, patchStart, patchCount, patchIndexBuffer,
@@ -702,6 +961,15 @@ void R_drawIndexedPatchesIndirect(id self, SEL _cmd, NSUInteger controlPoints, i
                                 .u("indirectBufferOffset", indirectOffset).str());
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [controlPoints, pb = Strong(patchIndexBuffer), patchIndexOffset, cb = Strong(controlPointIndexBuffer),
+                       controlPointIndexOffset, b = Strong(indirect), indirectOffset](id<MTLRenderCommandEncoder> e) {
+            [e drawIndexedPatches:controlPoints patchIndexBuffer:(id<MTLBuffer>)pb.get()
+               patchIndexBufferOffset:patchIndexOffset controlPointIndexBuffer:(id<MTLBuffer>)cb.get()
+        controlPointIndexBufferOffset:controlPointIndexOffset indirectBuffer:(id<MTLBuffer>)b.get()
+                 indirectBufferOffset:indirectOffset];
+        });
+    }
     ORIG(void (*)(id, SEL, NSUInteger, id, NSUInteger, id, NSUInteger, id, NSUInteger))(
         self, _cmd, controlPoints, patchIndexBuffer, patchIndexOffset, controlPointIndexBuffer,
         controlPointIndexOffset, indirect, indirectOffset);
@@ -717,6 +985,11 @@ void R_drawMeshThreadgroups(id self, SEL _cmd, MTLSize groups, MTLSize objectThr
                                 .size("threadsPerMeshThreadgroup", meshThreads).str());
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [sel = _cmd, groups, objectThreads, meshThreads](id<MTLRenderCommandEncoder> e) {
+            ((void (*)(id, SEL, MTLSize, MTLSize, MTLSize))objc_msgSend)(e, sel, groups, objectThreads, meshThreads);
+        });
+    }
     ORIG(void (*)(id, SEL, MTLSize, MTLSize, MTLSize))(self, _cmd, groups, objectThreads, meshThreads);
 }
 
@@ -729,6 +1002,11 @@ void R_drawMeshThreads(id self, SEL _cmd, MTLSize threads, MTLSize objectThreads
                           Args().size("threadsPerGrid", threads).size("threadsPerObjectThreadgroup", objectThreads)
                                 .size("threadsPerMeshThreadgroup", meshThreads).str());
         }
+    }
+    if (Measuring(reentry)) {
+        LogDraw(self, [sel = _cmd, threads, objectThreads, meshThreads](id<MTLRenderCommandEncoder> e) {
+            ((void (*)(id, SEL, MTLSize, MTLSize, MTLSize))objc_msgSend)(e, sel, threads, objectThreads, meshThreads);
+        });
     }
     ORIG(void (*)(id, SEL, MTLSize, MTLSize, MTLSize))(self, _cmd, threads, objectThreads, meshThreads);
 }
@@ -746,23 +1024,31 @@ void R_drawMeshThreadgroupsIndirect(id self, SEL _cmd, id indirect, NSUInteger o
                                 .size("threadsPerMeshThreadgroup", meshThreads).str());
         }
     }
+    if (Measuring(reentry)) {
+        LogDraw(self, [sel = _cmd, b = Strong(indirect), offset, objectThreads, meshThreads](id<MTLRenderCommandEncoder> e) {
+            ((void (*)(id, SEL, id, NSUInteger, MTLSize, MTLSize))objc_msgSend)(e, sel, b.get(), offset, objectThreads, meshThreads);
+        });
+    }
     ORIG(void (*)(id, SEL, id, NSUInteger, MTLSize, MTLSize))(self, _cmd, indirect, offset, objectThreads, meshThreads);
 }
 
 // --------------------------------------------------------------------------------------------
 // MTLRenderCommandEncoder: object, mesh and tile stages
 
-#define STAGE_BYTES(FN, METHOD, STAGE)                                                             \
+// MEASURE: whether the binding is kept for an overdraw measurement. The object and mesh stages
+// feed the rasterizer; a tile stage belongs to a tile pipeline, which a measurement has no copy of.
+#define STAGE_BYTES(FN, METHOD, STAGE, MEASURE)                                                    \
     void FN(id self, SEL _cmd, const void *bytes, NSUInteger length, NSUInteger index) {           \
         Reentry reentry(self, _cmd);                                                               \
         if (Rec(reentry)) {                                                                        \
             RecordCommandWithBuffers(METHOD, self, BytesArgs(STAGE, bytes, length, index),         \
                                      {QueueBytesCapture(bytes, length)});                          \
         }                                                                                          \
+        if (MEASURE && Measuring(reentry)) LogBytes(self, _cmd, bytes, length, index);             \
         ORIG(void (*)(id, SEL, const void *, NSUInteger, NSUInteger))(self, _cmd, bytes, length, index); \
     }
 
-#define STAGE_BUFFER(FN, METHOD)                                                                   \
+#define STAGE_BUFFER(FN, METHOD, MEASURE)                                                          \
     void FN(id self, SEL _cmd, id buffer, NSUInteger offset, NSUInteger index) {                   \
         Reentry reentry(self, _cmd);                                                               \
         if (Rec(reentry)) {                                                                        \
@@ -771,41 +1057,44 @@ void R_drawMeshThreadgroupsIndirect(id self, SEL _cmd, id indirect, NSUInteger o
                                            .u("index", index).str(),                               \
                                      {QueueBufferCapture(self, buffer, offset, 0)});               \
         }                                                                                          \
+        if (MEASURE && Measuring(reentry)) LogBuffer(self, _cmd, buffer, offset, index);           \
         ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, index);    \
     }
 
-#define STAGE_TEXTURE(FN, METHOD)                                                                  \
+#define STAGE_TEXTURE(FN, METHOD, MEASURE)                                                         \
     void FN(id self, SEL _cmd, id texture, NSUInteger index) {                                     \
         Reentry reentry(self, _cmd);                                                               \
         if (Rec(reentry)) {                                                                        \
             RecordCommand(METHOD, self,                                                            \
                           Args().ref("texture", texture, "MTLTexture").u("index", index).str());   \
         }                                                                                          \
+        if (MEASURE && Measuring(reentry)) LogObject(self, _cmd, texture, index);                  \
         ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);                       \
     }
 
-#define STAGE_SAMPLER(FN, METHOD)                                                                  \
+#define STAGE_SAMPLER(FN, METHOD, MEASURE)                                                         \
     void FN(id self, SEL _cmd, id sampler, NSUInteger index) {                                     \
         Reentry reentry(self, _cmd);                                                               \
         if (Rec(reentry)) {                                                                        \
             RecordCommand(METHOD, self,                                                            \
                           Args().ref("sampler", sampler, "MTLSamplerState").u("index", index).str()); \
         }                                                                                          \
+        if (MEASURE && Measuring(reentry)) LogObject(self, _cmd, sampler, index);                  \
         ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, sampler, index);                       \
     }
 
-STAGE_BYTES(R_setObjectBytes, "setObjectBytes:length:atIndex:", "object")
-STAGE_BUFFER(R_setObjectBuffer, "setObjectBuffer:offset:atIndex:")
-STAGE_TEXTURE(R_setObjectTexture, "setObjectTexture:atIndex:")
-STAGE_SAMPLER(R_setObjectSamplerState, "setObjectSamplerState:atIndex:")
-STAGE_BYTES(R_setMeshBytes, "setMeshBytes:length:atIndex:", "mesh")
-STAGE_BUFFER(R_setMeshBuffer, "setMeshBuffer:offset:atIndex:")
-STAGE_TEXTURE(R_setMeshTexture, "setMeshTexture:atIndex:")
-STAGE_SAMPLER(R_setMeshSamplerState, "setMeshSamplerState:atIndex:")
-STAGE_BYTES(R_setTileBytes, "setTileBytes:length:atIndex:", "tile")
-STAGE_BUFFER(R_setTileBuffer, "setTileBuffer:offset:atIndex:")
-STAGE_TEXTURE(R_setTileTexture, "setTileTexture:atIndex:")
-STAGE_SAMPLER(R_setTileSamplerState, "setTileSamplerState:atIndex:")
+STAGE_BYTES(R_setObjectBytes, "setObjectBytes:length:atIndex:", "object", true)
+STAGE_BUFFER(R_setObjectBuffer, "setObjectBuffer:offset:atIndex:", true)
+STAGE_TEXTURE(R_setObjectTexture, "setObjectTexture:atIndex:", true)
+STAGE_SAMPLER(R_setObjectSamplerState, "setObjectSamplerState:atIndex:", true)
+STAGE_BYTES(R_setMeshBytes, "setMeshBytes:length:atIndex:", "mesh", true)
+STAGE_BUFFER(R_setMeshBuffer, "setMeshBuffer:offset:atIndex:", true)
+STAGE_TEXTURE(R_setMeshTexture, "setMeshTexture:atIndex:", true)
+STAGE_SAMPLER(R_setMeshSamplerState, "setMeshSamplerState:atIndex:", true)
+STAGE_BYTES(R_setTileBytes, "setTileBytes:length:atIndex:", "tile", false)
+STAGE_BUFFER(R_setTileBuffer, "setTileBuffer:offset:atIndex:", false)
+STAGE_TEXTURE(R_setTileTexture, "setTileTexture:atIndex:", false)
+STAGE_SAMPLER(R_setTileSamplerState, "setTileSamplerState:atIndex:", false)
 
 void R_setObjectThreadgroupMemoryLength(id self, SEL _cmd, NSUInteger length, NSUInteger index) {
     Reentry reentry(self, _cmd);
@@ -813,6 +1102,7 @@ void R_setObjectThreadgroupMemoryLength(id self, SEL _cmd, NSUInteger length, NS
         RecordCommand("setObjectThreadgroupMemoryLength:atIndex:", self,
                       Args().u("length", length).u("index", index).str());
     }
+    if (Measuring(reentry)) LogIndexed(self, _cmd, length, index);
     ORIG(void (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, length, index);
 }
 
@@ -845,6 +1135,7 @@ void R_useResource(id self, SEL _cmd, id resource, NSUInteger usage) {
         RecordCommand("useResource:usage:", self,
                       Args().ref("resource", resource, "MTLResource").u("usage", usage).str());
     }
+    if (Measuring(reentry)) LogUse(self, _cmd, resource, usage);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, resource, usage);
 }
 
@@ -854,6 +1145,7 @@ void R_useResourceStages(id self, SEL _cmd, id resource, NSUInteger usage, NSUIn
         RecordCommand("useResource:usage:stages:", self,
                       Args().ref("resource", resource, "MTLResource").u("usage", usage).u("stages", stages).str());
     }
+    if (Measuring(reentry)) LogUse(self, _cmd, resource, usage, stages);
     ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, resource, usage, stages);
 }
 
@@ -863,6 +1155,7 @@ void R_useResources(id self, SEL _cmd, const id *resources, NSUInteger count, NS
         RecordCommand("useResources:count:usage:", self,
                       Args().refs("resources", resources, count, "MTLResource").u("count", count).u("usage", usage).str());
     }
+    if (Measuring(reentry)) LogUseList(self, _cmd, resources, count, usage);
     ORIG(void (*)(id, SEL, const id *, NSUInteger, NSUInteger))(self, _cmd, resources, count, usage);
 }
 
@@ -874,12 +1167,14 @@ void R_useResourcesStages(id self, SEL _cmd, const id *resources, NSUInteger cou
                       Args().refs("resources", resources, count, "MTLResource").u("count", count)
                             .u("usage", usage).u("stages", stages).str());
     }
+    if (Measuring(reentry)) LogUseList(self, _cmd, resources, count, usage, stages);
     ORIG(void (*)(id, SEL, const id *, NSUInteger, NSUInteger, NSUInteger))(self, _cmd, resources, count, usage, stages);
 }
 
 void R_useHeap(id self, SEL _cmd, id heap) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("useHeap:", self, Args().ref("heap", heap, "MTLHeap").str());
+    if (Measuring(reentry)) LogUse(self, _cmd, heap);
     ORIG(void (*)(id, SEL, id))(self, _cmd, heap);
 }
 
@@ -888,6 +1183,7 @@ void R_useHeapStages(id self, SEL _cmd, id heap, NSUInteger stages) {
     if (Rec(reentry)) {
         RecordCommand("useHeap:stages:", self, Args().ref("heap", heap, "MTLHeap").u("stages", stages).str());
     }
+    if (Measuring(reentry)) LogUse(self, _cmd, heap, stages);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, heap, stages);
 }
 
@@ -896,6 +1192,7 @@ void R_useHeaps(id self, SEL _cmd, const id *heaps, NSUInteger count) {
     if (Rec(reentry)) {
         RecordCommand("useHeaps:count:", self, Args().refs("heaps", heaps, count, "MTLHeap").u("count", count).str());
     }
+    if (Measuring(reentry)) LogUseList(self, _cmd, heaps, count);
     ORIG(void (*)(id, SEL, const id *, NSUInteger))(self, _cmd, heaps, count);
 }
 
@@ -905,7 +1202,16 @@ void R_useHeapsStages(id self, SEL _cmd, const id *heaps, NSUInteger count, NSUI
         RecordCommand("useHeaps:count:stages:", self,
                       Args().refs("heaps", heaps, count, "MTLHeap").u("count", count).u("stages", stages).str());
     }
+    if (Measuring(reentry)) LogUseList(self, _cmd, heaps, count, stages);
     ORIG(void (*)(id, SEL, const id *, NSUInteger, NSUInteger))(self, _cmd, heaps, count, stages);
+}
+
+/**
+ * An indirect command buffer's draws cannot be measured: the pipeline each command uses is in the
+ * buffer, where a counting copy cannot replace it. They are reported as not counted.
+ */
+void LogIndirectCommands(id self) {
+    LogOverdrawOp(self, [](id<MTLRenderCommandEncoder>, OverdrawReplay &r) { r.Skip(); });
 }
 
 void R_executeCommandsInBuffer(id self, SEL _cmd, id icb, NSRange range) {
@@ -917,6 +1223,7 @@ void R_executeCommandsInBuffer(id self, SEL _cmd, id icb, NSRange range) {
                           Args().ref("indirectCommandBuffer", icb, "MTLIndirectCommandBuffer").range("range", range).str());
         }
     }
+    if (Measuring(reentry)) LogIndirectCommands(self);
     ORIG(void (*)(id, SEL, id, NSRange))(self, _cmd, icb, range);
 }
 
@@ -930,6 +1237,7 @@ void R_executeCommandsIndirect(id self, SEL _cmd, id icb, id indirect, NSUIntege
                                 .ref("indirectBuffer", indirect, "MTLBuffer").u("indirectBufferOffset", offset).str());
         }
     }
+    if (Measuring(reentry)) LogIndirectCommands(self);
     ORIG(void (*)(id, SEL, id, id, NSUInteger))(self, _cmd, icb, indirect, offset);
 }
 
@@ -983,12 +1291,16 @@ void R_setTessellationFactorBuffer(id self, SEL _cmd, id buffer, NSUInteger offs
                                        .u("instanceStride", instanceStride).str(),
                                  {QueueBufferCapture(self, buffer, offset, 0)});
     }
+    if (Measuring(reentry)) LogBuffer(self, _cmd, buffer, offset, instanceStride);
     ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, instanceStride);
 }
 
 void R_setTessellationFactorScale(id self, SEL _cmd, float scale) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setTessellationFactorScale:", self, Args().d("scale", scale).str());
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, [scale](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setTessellationFactorScale:scale]; });
+    }
     ORIG(void (*)(id, SEL, float))(self, _cmd, scale);
 }
 

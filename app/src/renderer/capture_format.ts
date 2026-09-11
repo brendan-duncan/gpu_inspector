@@ -12,8 +12,8 @@
 // This is the format alone, with no session or DOM behind it, so the MCP server (src/mcp/) reads
 // the files the UI writes. Saving a live capture, which fetches what the session does not hold
 // yet from the layer, is capture_file.ts.
-import { passKey, type CapturedBuffer, type CapturedTexture } from "./capture_data.js";
-import type { ArgObject, ArgValue, BlobInfo, CaptureApi, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
+import { passKey, type CapturedBuffer, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
+import type { ArgObject, ArgValue, BlobInfo, CaptureApi, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, OverdrawMeasurement, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
 
 export const CAPTURE_FILE_EXTENSION = "gpucap";
 export const CAPTURE_FILE_FILTERS = [{ name: "GPU Inspector captures", extensions: [CAPTURE_FILE_EXTENSION] }, { name: "All files", extensions: ["*"] }];
@@ -69,6 +69,8 @@ export interface CaptureFileManifest {
   textures: { info: CaptureTextureInfo; payload?: Payload }[];
   buffers: { info: CaptureBufferInfo; payload?: Payload }[];
   passTimings: PassTiming[];
+  /** Overdraw measurements with their per-pixel counts (absent when the capture did not measure overdraw). */
+  overdraw?: { info: OverdrawMeasurement; payload?: Payload }[];
   /** Validation messages the session had received when the capture was saved. */
   validation?: ValidationMessage[];
   /** Symbolized frames of the addresses the commands' stacks carry, by address. */
@@ -88,6 +90,7 @@ export interface LoadedCapture {
   textures: CapturedTexture[];
   buffers: Map<number, CapturedBuffer>;
   passTimings: Map<string, PassTiming>;
+  overdraw: CapturedOverdraw[];
   /** Files written before the field was real say "vulkan"; so does an absent one. */
   api: CaptureApi;
 }
@@ -157,7 +160,8 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   for (const b of manifest.buffers ?? []) buffers.set(b.info.id, { info: b.info, data: payload(b.payload) });
   const passTimings = new Map<string, PassTiming>();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
+  const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
-         api: manifest.api ?? "vulkan" };
+         overdraw, api: manifest.api ?? "vulkan" };
 }

@@ -144,7 +144,8 @@ application with injected state. Route (a) is the general one and is the prerequ
       counting fragment shader. It gives two counts per pass (every rasterized fragment, and the
       fragments passing depth and stencil in draw order), with a heatmap and a histogram. The
       triangle's count matches its pipeline statistics exactly.
-- [ ] Overdraw in the app and the MCP server: the heatmap in the image viewer and in get_bottlenecks.
+- [ ] Vulkan overdraw in the app and the MCP server: vkinsp_replay's measurements into a capture, so
+      the heatmaps, get_bottlenecks and get_overdraw show them as they do a Metal capture's.
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
 - [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays
@@ -231,6 +232,15 @@ backend does. Ordered by value per effort.
 - [x] Bottleneck analysis over the pass counters: overdraw, fragments per primitive, depth
       rejection and the bound stage per pass, as a report and as Frame Issues rules
       (`metal/pass_metrics.ts`, `metal/bottleneck_report.ts`, `docs/PROFILING.md`).
+- [x] Overdraw measured while capturing (`metal/src/overdraw.mm`): every render pass drawn again
+      right after the application's encoder ends, with counting copies of its pipelines, with and
+      without its depth and stencil tests. Heatmaps in the pass's details, the measured figure in
+      the pass header and GPU Bottlenecks, kept in capture files, `get_overdraw` in the MCP server.
+- [ ] Run Metal overdraw on a Mac: the test triangle (render, MSAA through a parallel encoder),
+      then a Unity player. It was written on Windows and has not been compiled.
+- [ ] Pixel history for Metal, the same way: the pass's calls issued again one draw at a time with
+      a one-pixel scissor, visibility results in counting mode, and cull mode and depth-stencil
+      state varied on the encoder (no pipeline copies needed for those).
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
       `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
       rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.

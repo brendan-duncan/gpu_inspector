@@ -32,6 +32,7 @@ import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
+import { isMeasured, overdrawAverages, overdrawCount, overdrawHistogramText, overdrawRgba, overdrawSummary } from "./overdraw.js";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -85,6 +86,8 @@ export class CapturePanel {
   private _imagesCheck!: Checkbox;
   private _profileCheck!: Checkbox;
   private _stacksCheck!: Checkbox;
+  /** Metal only: every render pass drawn again to measure its overdraw. */
+  private _overdrawCheck: Checkbox | null = null;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
   /** The live-capture controls of the bar, hidden for capture files. */
@@ -161,6 +164,9 @@ export class CapturePanel {
     // this tool does not have (metal/src/gpu_trace.mm). Written beside the Desktop; the Log
     // tab says where.
     if (getHostPlatform() === "darwin") {
+      // metal/src/overdraw.h. A Vulkan capture's overdraw comes from vkinsp_replay --overdraw instead.
+      this._overdrawCheck = new Checkbox(row, { label: "Overdraw", checked: false, tooltip: "Metal: draw every render pass a second time with a counting fragment shader, and show how many fragments landed on each pixel (with the pass's depth and stencil tests, and without). Costs GPU and CPU time in the captured frame." });
+      c.push(this._overdrawCheck);
       c.push(new Button(row, { label: "Xcode Trace", class: "btn", tooltip: "Write the next frame as a .gputrace document, to open in Xcode's Metal debugger (shader debugging and per-line profiling of the same frame). The path is in the Log tab.", callback: () => {
         if (!this.window.connected) {
           this._statusLabel.text = "not connected";
@@ -216,6 +222,7 @@ export class CapturePanel {
       profilePasses: this._profileCheck.checked,
       stacktraces: this._stacksCheck.checked,
       maxBufferSize: maxKb * 1024,
+      ...(this._overdrawCheck?.checked ? { overdraw: true } : {}),
     });
   }
 
@@ -347,7 +354,11 @@ function passCountersText(t: PassTiming, m?: PassMetrics): string {
   // report shows the same ones (metal/pass_metrics.ts).
   if (m) {
     if (m.bound) lines.push(`${m.bound === "target" ? "Target write" : m.bound[0].toUpperCase() + m.bound.slice(1)} bound: ${m.boundReason}`);
-    if (m.overdraw !== null) lines.push(`overdraw: ${formatRatio(m.overdraw)} shader runs per pixel`);
+    if (m.overdraw !== null) lines.push(`overdraw: ${formatRatio(m.overdraw)} ${m.overdrawSource === "measured" ? "fragments passing depth" : "shader runs"} per pixel`);
+    const measured = m.measuredOverdraw;
+    if (measured?.depthTested && measured.rasterized) {
+      lines.push(`measured: ${formatRatio(overdrawAverages(measured.depthTested).perPixel)} passing depth, ${formatRatio(overdrawAverages(measured.rasterized).perPixel)} rasterized per pixel`);
+    }
     if (m.fragmentsPerPrimitive !== null) lines.push(`fragments per primitive: ${formatRatio(m.fragmentsPerPrimitive, 1)}`);
     if (m.depthRejectRate !== null) lines.push(`depth and stencil rejected: ${formatPercent(m.depthRejectRate)} of shaded fragments`);
     if (lines.length) lines.push("");
@@ -469,6 +480,11 @@ export class CaptureView implements CaptureHost {
       this._refreshSelection();
     });
     this.data.onPassTimings.addListener(() => this._applyPassTimings());
+    // The selected pass's heatmaps, and the measured figures in the pass header tooltips.
+    this.data.onOverdraw.addListener(() => {
+      this._scheduleRefresh();
+      if (this.data.passTimings.size) this._applyPassTimings();
+    });
   }
 
   /** Pass durations into the pass headers and the timeline (Profile passes). */
@@ -1152,10 +1168,51 @@ export class CaptureView implements CaptureHost {
     const grp = new collapsible(container, { label: `Render Targets (${textures.length})`, collapsed: false });
     if (!textures.length) {
       new Div(grp.body, { text: "No render target data for this pass (pre-recorded command buffer, or readback disabled).", class: "text-muted", style: "padding: 6px;" });
-      return;
+    } else {
+      const strip = new Div(grp.body, { class: "capture_frameImages" });
+      for (const tex of textures) this._renderTexture(strip, tex);
     }
+    this._renderPassOverdraw(container, frame, commandBufferId, passIndex);
+  }
+
+  /** The pass's overdraw heatmaps, when the capture measured them (metal/src/overdraw.h). */
+  private _renderPassOverdraw(container: Widget, frame: number, commandBufferId: number, passIndex: number): void {
+    const measurements = this.data.overdrawForPass(frame, commandBufferId, passIndex);
+    if (!measurements.length) return;
+    const grp = new collapsible(container, { label: "Overdraw", collapsed: false });
     const strip = new Div(grp.body, { class: "capture_frameImages" });
-    for (const tex of textures) this._renderTexture(strip, tex);
+    for (const o of measurements) {
+      const box = new Div(strip, { class: "capture_pass_texture" });
+      new Div(box, { class: "capture-texture-title", text: o.info.depthTested ? "Fragments passing depth and stencil" : "Every rasterized fragment" });
+      new Div(box, { text: overdrawSummary(o.info), class: "text-muted font-sm" });
+      if (!isMeasured(o.info)) continue;
+      const histogram = overdrawHistogramText(o.info);
+      if (histogram) new Div(box, { text: `Pixels by count: ${histogram}`, class: "text-muted font-sm" });
+      if (o.info.note) new Div(box, { text: o.info.note, class: "text-muted font-sm" });
+      const rgba = overdrawRgba(o);
+      if (!rgba) {
+        if (o.info.size) new Div(box, { text: "Waiting for the per-pixel counts...", class: "text-muted font-sm" });
+        continue;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.className = "capture-texture-canvas";
+      canvas.width = o.info.width;
+      canvas.height = o.info.height;
+      canvas.getContext("2d")!.putImageData(new ImageData(rgba, o.info.width, o.info.height), 0, 0);
+      canvas.style.maxWidth = "100%";
+      canvas.title = "The fragment count under the pointer";
+      canvas.onmousemove = (e: MouseEvent) => {
+        const r = canvas.getBoundingClientRect();
+        const x = Math.floor(((e.clientX - r.left) * o.info.width) / Math.max(1, r.width));
+        const y = Math.floor(((e.clientY - r.top) * o.info.height) / Math.max(1, r.height));
+        canvas.title = `(${x}, ${y}): ${overdrawCount(o, x, y)} fragment${overdrawCount(o, x, y) === 1 ? "" : "s"}`;
+      };
+      box.element.appendChild(canvas);
+    }
+    new Div(grp.body, {
+      text: "Fragments per pixel: black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more. Discarded fragments count, since the counting shader does not discard.",
+      class: "text-muted font-sm", style: "padding: 4px 6px;",
+    });
   }
 
   private _renderTexture(parent: Widget, tex: CapturedTexture): void {

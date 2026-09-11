@@ -339,13 +339,23 @@ test("a Metal draw's argument buffer resolves to the buffers and textures it hol
   const argumentBytes = new Uint8Array(16);
   new DataView(argumentBytes.buffer).setBigUint64(0, 0x77n, true);
   new DataView(argumentBytes.buffer).setBigUint64(8, 0x100010n, true);
+  // The pass's overdraw, 2x2: counts 0, 1, 2, 3 passing depth, 1, 2, 3, 4 rasterized (u16 little endian).
+  const counts = (values) => new Uint8Array(new Uint16Array(values).buffer);
+  const measurement = (depthTested, fragments, histogram) => ({
+    frame: 0, commandBuffer: MCB, passIndex: 0, depthTested, width: 2, height: 2, fragments, coveredPixels: depthTested ? 3 : 4,
+    maxCount: depthTested ? 3 : 4, draws: 1, skippedDraws: 0, histogram, size: 8,
+  });
   const file = join(dir, "metal.gpucap");
   writeFileSync(file, encodeCaptureFile({
     format: "gpu-inspector-capture", version: 1, api: "metal", application: "GPU Inspector", savedAt: "2026-09-10T00:00:00.000Z",
     source: { name: "metal.app" }, frame: 3, frames: 1, objects: metalObjects, commands: metalCommands, textures: [],
     buffers: [{ info: { id: 5, buffer: 32, frame: 0, commandBuffer: MCB, offset: 0, size: 16 }, payload: [0, 16] }],
     passTimings: [], validation: [],
-  }, [argumentBytes]));
+    overdraw: [
+      { info: measurement(true, 6, [1, 1, 1, 0, 0, 0, 0, 0]), payload: [16, 8] },
+      { info: measurement(false, 10, [1, 1, 1, 1, 0, 0, 0, 0]), payload: [24, 8] },
+    ],
+  }, [argumentBytes, counts([0, 1, 2, 3]), counts([1, 2, 3, 4])]));
 
   const { json, text } = await call("get_command", { capture: file, index: draw });
   assert.ok(json, text);
@@ -355,6 +365,19 @@ test("a Metal draw's argument buffer resolves to the buffers and textures it hol
     { member: "albedo", kind: "texture", type: "texture2d<float>", resource: 'MTLTexture#31 "Albedo"' },
     { member: "params", kind: "pointer", type: "constant Params *", resource: 'MTLBuffer#30 "Material params"', offset: 16 },
   ]);
+
+  // Measured overdraw: the list, one pass's heatmap with the counts asked for, and the pointer from get_bottlenecks.
+  const list = (await call("get_overdraw", { capture: file })).json;
+  assert.equal(list.passes.length, 1);
+  assert.equal(list.passes[0].depthTested.perPixel, 1.5);
+  assert.equal(list.passes[0].rasterized.perPixel, 2.5);
+  assert.deepEqual(list.passes[0].depthTested.pixelsByCount, { 1: 1, 2: 1, 3: 1 });
+  const heatmap = await call("get_overdraw", { capture: file, pass: 0, texels: [[1, 1], [0, 0]] });
+  assert.equal(heatmap.result.content[0].type, "image");
+  assert.deepEqual(heatmap.json.texels, [{ x: 1, y: 1, count: 3 }, { x: 0, y: 0, count: 0 }]);
+  const rasterized = (await call("get_overdraw", { capture: file, pass: 0, depthTested: false, image: false, texels: [[0, 0]] })).json;
+  assert.equal(rasterized.texels[0].count, 1);
+  assert.match((await call("get_bottlenecks", { capture: file })).json.note, /get_overdraw/);
 });
 
 test("failures are tool errors the model reads, unknown tools protocol errors", async () => {

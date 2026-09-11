@@ -93,6 +93,7 @@ capture.
 | `get_capture_summary` | Counts, frame timing and Frame Bound verdict, slowest passes, issues, validation, notes |
 | `get_frame_issues` | Frame Issues rules, each naming its command |
 | `get_bottlenecks` | Per-pass GPU time, overdraw, fragments per primitive, depth rejection, bound stage, problems |
+| `get_overdraw` | Overdraw measured per pixel (Metal captures taken with `overdraw`): every pass's figures, or one pass's heatmap as PNG |
 | `get_render_graph` | Passes and the resources between them, critical path, unread outputs; one node in full |
 | `compare_captures` | Timing, statistics, issues and per-pass changes between two captures |
 | `list_commands`, `get_command` | The command stream; one command with the state bound at it |

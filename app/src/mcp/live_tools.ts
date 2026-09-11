@@ -319,6 +319,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
+        overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
         maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
         recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
         timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
@@ -333,6 +334,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
           frames: intArg(args, "frames", 1, 1, 16), atFrame: optionalInt(args, "atFrame"),
           profilePasses: boolArg(args, "profilePasses", true), renderTargets: boolArg(args, "renderTargets", true),
           buffers: boolArg(args, "buffers", true), images: boolArg(args, "images", true), stacktraces: boolArg(args, "stacktraces", false),
+          overdraw: boolArg(args, "overdraw", false),
           maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024, timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1000,
         });
         const file = await s.saveCapture(result.data, stringArg(args, "saveAs"));

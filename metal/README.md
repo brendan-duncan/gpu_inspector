@@ -647,6 +647,57 @@ Deliberately not the Vulkan shader section, which is built around SPIR-V: reflec
 cross-compilation to GLSL and HLSL, and shader editing. MSL is already source, and none of those
 apply to it.
 
+## Overdraw
+
+With **Overdraw** in the capture bar (the `Capture` message's `overdraw`), every render pass of the
+capture is drawn a second time and each pixel ends up holding how many fragments landed on it
+(`overdraw.mm`). The Vulkan counterpart, `vkinsp_replay --overdraw` (`docs/REPLAY.md`), first has to
+rebuild the frame from a capture file. Here nothing is rebuilt: the library is in the process with
+the application's own objects.
+
+* **Recording the pass.** While such a capture records, every render encoder call that shapes what
+  the pass rasterizes is also kept as a closure that holds its arguments and retains the objects
+  they name: pipeline, vertex, fragment, object and mesh bindings, inline bytes, viewports and
+  scissors, cull mode and winding, depth-stencil state and references, residency and the draws.
+  Store actions, visibility results, fences and barriers are not kept: they do not change the
+  count.
+* **Where it starts.** A pass that loads its depth or stencil gets a copy of that attachment first,
+  in a blit encoder opened in the render-encoder hook before the application's encoder exists,
+  since the command buffer is free there. A pass that clears starts from its clear values.
+* **Drawing it again.** When the application ends the encoder, after the render-target read-back,
+  the closures are issued against an encoder of the library's own on the same command buffer, into
+  an `R16Float` target of the pass's size. It runs twice: with the depth and stencil copies and the
+  application's depth-stencil state (the fragments that passed, in draw order), and without depth
+  and stencil (every fragment rasterized). A parallel render encoder's sub-encoders each get an
+  encoder of their own, in creation order, loading what the one before left.
+* **The pipelines.** A pipeline state cannot be copied, only its descriptor, so every render and
+  mesh pipeline's descriptor is kept from its creation until the pipeline is released. The
+  counting copy replaces the fragment function with one that returns 1.0, compiled from source
+  once per device. It has one `R16Float` target blended `ONE + ONE`, the measurement's depth and
+  stencil formats, one sample and no alpha to coverage. Copies are cached per pipeline and
+  formats, and the first capture builds them, which takes a while in an engine with many
+  pipelines.
+* **Results.** The counts are read once the capture's command buffers have completed, and sent as
+  `CaptureOverdraw`, with per-pass totals, covered pixels, maximum, draws and a histogram, plus one
+  `CaptureOverdrawData` frame of little-endian 16-bit counts per measurement. Counts larger than
+  `maxTextureSize` go without their pixels. The pass's details show both heatmaps, with the count
+  under the pointer. The pass header and GPU Bottlenecks use the measured figure where the GPU
+  exposes no statistic counters, the file format keeps the counts, and the MCP server's
+  `get_overdraw` returns them.
+
+Everything the measurement makes (the count target, the depth copies, the counting pipelines) is
+kept until the command buffer completes, since a command buffer made with unretained references
+would not keep it alive.
+
+Limits:
+- Fragments a shader discards are counted: the counting function does not discard.
+- An indirect command buffer's draws are not counted: its commands carry their own pipelines. They
+  are reported as not counted.
+- A multisampled pass is counted without its depth and stencil tests, single-sampled.
+- A layered pass lands every layer's fragments in one count.
+- A tile pipeline's dispatches are not drawn.
+- Not yet run on a Mac: this was written on Windows, where the library does not build.
+
 ## Not done
 
 Stencil attachments are not read back (colour and depth are), nor are sampled images, and only

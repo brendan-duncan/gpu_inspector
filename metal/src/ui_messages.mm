@@ -54,6 +54,7 @@ void HandleMessage(const std::string &text) {
             options.captureBuffers = message.GetBool("captureBuffers", true);
             options.profilePasses = message.GetBool("profilePasses", true);
             options.stacktraces = message.GetBool("stacktraces", false);
+            options.overdraw = message.GetBool("overdraw", false);
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
         } else if (action == "SaveGpuTrace") {

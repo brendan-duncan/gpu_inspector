@@ -322,6 +322,47 @@ export interface PassTiming {
 export interface CapturePassTimingsMessage { action: "CapturePassTimings"; timestampPeriodNs: number; count: number; passes: PassTiming[] }
 
 /**
+ * The overdraw of one render pass: how many fragments landed on each pixel when the pass was drawn
+ * again with a counting fragment shader (a Metal capture with `overdraw`, metal/src/overdraw.h;
+ * vkinsp_replay --overdraw measures the same for a Vulkan capture). Two per pass: with the pass's
+ * depth and stencil tests, and without.
+ */
+export interface OverdrawMeasurement {
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+  /** true: the fragments that passed the pass's depth and stencil tests, in draw order, from what the pass started with; false: every rasterized fragment. */
+  depthTested: boolean;
+  /** false: the pass could not be measured, and `note` says why. Absent = measured. */
+  measured?: boolean;
+  width: number;
+  height: number;
+  fragments: number;
+  coveredPixels: number;
+  maxCount: number;
+  draws: number;
+  /** Draws that were not counted: a pipeline with no counting copy, an indirect command buffer's. */
+  skippedDraws: number;
+  /** Pixels by count: 1, 2, 3, 4, 5-8, 9-16, 17-32, 33 and more. */
+  histogram: number[];
+  /** Bytes of per-pixel counts in the CaptureOverdrawData that follows (u16 little endian, row by row); 0 without. */
+  size: number;
+  note?: string;
+}
+
+export interface CaptureOverdrawMessage { action: "CaptureOverdraw"; count: number; passes: OverdrawMeasurement[] }
+
+export interface CaptureOverdrawDataMessage {
+  action: "CaptureOverdrawData";
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+  depthTested: boolean;
+  size: number;
+  __binary?: Uint8Array;
+}
+
+/**
  * The last message of a capture, after its commands, render targets, buffers and timings, whichever
  * of those it had: a client waiting for the capture (the MCP server) knows nothing more is coming.
  * Capture libraries built before it existed do not send it.
@@ -422,6 +463,8 @@ export type LayerMessage =
   | CaptureBuffersMessage
   | CaptureBufferDataMessage
   | CapturePassTimingsMessage
+  | CaptureOverdrawMessage
+  | CaptureOverdrawDataMessage
   | ShaderReplacedMessage
   | ImageDataMessage
   | GpuTraceMessage
@@ -473,6 +516,11 @@ export interface CaptureRequest {
   profilePasses?: boolean;
   /** Every recorded command carries the stack it was recorded from. */
   stacktraces?: boolean;
+  /**
+   * Metal: draw every render pass a second time with a counting fragment shader, for its overdraw
+   * (CaptureOverdraw). The Vulkan layer ignores it; vkinsp_replay --overdraw measures a Vulkan capture file.
+   */
+  overdraw?: boolean;
 }
 
 /** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */

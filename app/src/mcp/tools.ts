@@ -8,14 +8,17 @@ import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
   frameStageVerdict, passAdvice, type PassMetrics,
 } from "../renderer/pass_metrics.js";
+import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba } from "../renderer/overdraw.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
+import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
 import { pipelineUses } from "../renderer/shader_cache.js";
 import { SEVERITY_RANK, type Severity } from "../renderer/vulkan/spirv_analysis.js";
 import { recentCaptureFiles, settingsFile, type Capture, type CaptureStore } from "./capture_store.js";
 import {
-  CAPTURE_PARAM, PAGE_PARAMS, enumArg, findingBrief, jsonResult, optionalInt, page, refText, requireString, round, schema, stringArg, validationBrief,
+  CAPTURE_PARAM, PAGE_PARAMS, boolArg, enumArg, findingBrief, intArg, jsonResult, optionalInt, page, refText, requireString, round, schema, stringArg, validationBrief,
 } from "./describe.js";
+import { encodePng, fitPixels } from "./png.js";
 import { describeSearchPaths, setSearchPaths, splitPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
@@ -77,6 +80,19 @@ function passBrief(c: Capture, i: number): Record<string, unknown> {
   return { pass: i, label: c.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? undefined };
 }
 
+/** One overdraw measurement in numbers (the per-pixel counts are get_overdraw's). */
+export function overdrawBrief(o: OverdrawMeasurement | null): Record<string, unknown> | undefined {
+  if (!o) return undefined;
+  const a = overdrawAverages(o);
+  const histogram: Record<string, number> = {};
+  (o.histogram ?? []).forEach((n, i) => { if (n) histogram[OVERDRAW_BUCKETS[i]] = n; });
+  return {
+    perPixel: round(a.perPixel), perCoveredPixel: round(a.perCovered), maxCount: o.maxCount,
+    fragments: o.fragments, coveredPixels: o.coveredPixels, draws: o.draws, skippedDraws: o.skippedDraws || undefined,
+    pixelsByCount: Object.keys(histogram).length ? histogram : undefined, note: o.note,
+  };
+}
+
 /** Everything get_bottlenecks says about one pass. */
 function passMeasurements(c: Capture, p: PassMetrics, i: number, gpuMs: number): Record<string, unknown> {
   const problems = passAdvice(p);
@@ -85,7 +101,11 @@ function passMeasurements(c: Capture, p: PassMetrics, i: number, gpuMs: number):
     ms: round(p.durationMs), shareOfGpu: gpuMs > 0 && p.durationMs !== null ? round(p.durationMs / gpuMs) : undefined,
     vertexMs: round(p.vertexMs), fragmentMs: round(p.fragmentMs),
     draws: p.draws, vertices: p.vertices || undefined, pixels: p.pixels || undefined,
-    overdraw: round(p.overdraw), fragmentsPerPrimitive: round(p.fragmentsPerPrimitive), depthRejectRate: round(p.depthRejectRate),
+    overdraw: round(p.overdraw), overdrawSource: p.overdrawSource ?? undefined,
+    measuredOverdraw: p.measuredOverdraw
+      ? { depthTested: overdrawBrief(p.measuredOverdraw.depthTested), rasterized: overdrawBrief(p.measuredOverdraw.rasterized) }
+      : undefined,
+    fragmentsPerPrimitive: round(p.fragmentsPerPrimitive), depthRejectRate: round(p.depthRejectRate),
     nsPerVertex: round(p.nsPerVertex), nsPerFragment: round(p.nsPerFragment),
     cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : undefined,
     bound: p.bound ?? undefined, boundReason: p.boundReason || undefined,
@@ -294,7 +314,8 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         if (!m.timed) {
           return jsonResult({
             capture: c.id, passes: m.passes.length,
-            note: "No pass was timed: the capture was taken without \"Profile passes\". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.",
+            note: "No pass was timed: the capture was taken without \"Profile passes\". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on."
+              + (c.data.overdraw.length ? " The capture did measure overdraw: get_overdraw has it." : ""),
           });
         }
         const ranked = m.passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null)
@@ -330,6 +351,82 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           passes: p.items.map((x) => passMeasurements(c, x.p, x.i, m.gpuMs)),
           notes,
         });
+      },
+    },
+    {
+      name: "get_overdraw",
+      description: "Overdraw measured per pixel, for a capture taken with overdraw (Metal: capture_frames overdraw: true), where every " +
+        "render pass was drawn a second time with a counting fragment shader. Without `pass`: every measured pass, worst first, " +
+        "with the fragments that passed its depth and stencil tests and every fragment it rasterized — per pixel, per covered " +
+        "pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG " +
+        "(black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and " +
+        "more) and the counts at `texels`. Discarded fragments are counted, since the counting shader does not discard.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
+        depthTested: { type: "boolean", description: "With pass: the fragments that passed depth and stencil (default true), or every rasterized fragment." },
+        image: { type: "boolean", description: "With pass: return the PNG (default true)." },
+        maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
+        texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "With pass: [x, y] pixels to read the count of (up to 64)." },
+        ...PAGE_PARAMS,
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        if (!c.data.overdraw.length) {
+          return jsonResult({
+            capture: c.id,
+            note: c.data.api === "metal"
+              ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true."
+              : "A Vulkan capture does not measure overdraw while capturing. GPU Inspector's replay tool measures it from the capture file: vkinsp_replay <file> --overdraw <dir> prints every pass's counts and writes a heatmap per pass.",
+          });
+        }
+        const passes = c.metrics.passes;
+        const passArg = optionalInt(args, "pass");
+        if (passArg === undefined) {
+          const perPixel = (x: { p: PassMetrics }): number => {
+            const o = x.p.measuredOverdraw?.depthTested ?? x.p.measuredOverdraw?.rasterized;
+            return o ? overdrawAverages(o).perPixel : 0;
+          };
+          const ranked = passes.map((p, i) => ({ p, i })).filter((x) => x.p.measuredOverdraw).sort((a, b) => perPixel(b) - perPixel(a));
+          const unmeasured = c.data.overdraw.filter((o) => o.info.measured === false);
+          const pg = page(ranked, args, 30, 200);
+          return jsonResult({
+            capture: c.id, healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT,
+            total: pg.total, offset: pg.offset, nextOffset: pg.nextOffset,
+            passes: pg.items.map((x) => ({
+              pass: x.i, label: c.passName(x.i), command: x.p.commandIndex,
+              depthTested: overdrawBrief(x.p.measuredOverdraw!.depthTested), rasterized: overdrawBrief(x.p.measuredOverdraw!.rasterized),
+            })),
+            notMeasured: unmeasured.length
+              ? unmeasured.slice(0, 20).map((o) => ({ commandBuffer: o.info.commandBuffer, passIndex: o.info.passIndex, depthTested: o.info.depthTested, note: o.info.note }))
+              : undefined,
+          });
+        }
+        const p = passes[passArg];
+        if (!p) throw new Error(`No pass ${passArg}: the capture has ${passes.length} (get_bottlenecks lists them).`);
+        const depthTested = boolArg(args, "depthTested", true);
+        const o = c.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
+        if (!o) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no overdraw measurement${p.compute ? ": it is a compute pass" : ""}.`);
+        const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
+        const texels = requested.map((pt) => {
+          const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
+          const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
+          if (!(x >= 0 && x < o.info.width && y >= 0 && y < o.info.height)) throw new Error(`pixel [${String(pt)}] is outside the ${o.info.width}x${o.info.height} pass.`);
+          return { x: Math.floor(x), y: Math.floor(y), count: overdrawCount(o, Math.floor(x), Math.floor(y)) };
+        });
+        const result = jsonResult({
+          capture: c.id, pass: passArg, label: c.passName(passArg), command: p.commandIndex, depthTested,
+          width: o.info.width, height: o.info.height, ...overdrawBrief(o.info),
+          texels: texels.length ? texels : undefined,
+          note: o.data ? o.info.note : [o.info.note, "The per-pixel counts were not kept, so there is no heatmap."].filter(Boolean).join(" "),
+        });
+        const rgba = overdrawRgba(o);
+        if (rgba && boolArg(args, "image", true)) {
+          const fit = fitPixels(rgba, o.info.width, o.info.height, intArg(args, "maxSize", 512, 16, 2048));
+          result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
+        }
+        return result;
       },
     },
     {

@@ -33,7 +33,8 @@ const SNAPSHOT_TIMEOUT_MS = 10000;
 const KILL_TIMEOUT_MS = 3000;
 
 /** The messages a capture streams, which CaptureData reassembles. */
-const CAPTURE_ACTIONS = new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings"]);
+const CAPTURE_ACTIONS = new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings",
+  "CaptureOverdraw", "CaptureOverdrawData"]);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -61,6 +62,8 @@ export interface CaptureOptions {
   buffers: boolean;
   images: boolean;
   stacktraces: boolean;
+  /** Metal: every render pass drawn again to count its overdraw. */
+  overdraw?: boolean;
   maxBufferBytes: number;
   timeoutMs: number;
 }
@@ -397,6 +400,7 @@ export class LiveSession {
         action: "Capture", frameCount: o.frames, ...(o.atFrame !== undefined ? { atFrame: o.atFrame } : {}),
         captureTextures: o.renderTargets, captureBuffers: o.buffers, captureImages: o.images,
         profilePasses: o.profilePasses, stacktraces: o.stacktraces, maxBufferSize: o.maxBufferBytes,
+        ...(o.overdraw ? { overdraw: true } : {}),
       };
       await this.send(request);
       for (;;) {
