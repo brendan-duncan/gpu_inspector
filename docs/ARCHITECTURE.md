@@ -319,6 +319,19 @@ channel selection, exposure, auto range and sRGB encoding of linear data. Hoveri
 shows the texel coordinates and values; clicking pins them in the info line; Ctrl + wheel zooms;
 Copy puts the displayed image on the clipboard as PNG. Display settings are remembered per image.
 
+### replay/ — capture replay
+
+`vkinsp_replay` re-executes a `.gpucap` on this machine's GPU without the application, and is
+the base for overdraw and pixel history. Its pieces:
+- decoders for the layer's JSON, generated from vk.xml (`tools/gen_replay.py`,
+  `tools/vkgen/deserialize.py`), the inverse of the layer's serializers
+- a Vulkan loader opened at run time
+- object re-creation with resource-level memory
+- command replay in submission order
+- per-pass read-backs compared with the capture's own
+
+See [REPLAY.md](REPLAY.md).
+
 ### app/ — Electron UI
 
 * `src/shared/protocol.ts` — typed definitions of every message (layer <-> UI, main <-> renderer).

@@ -13,6 +13,7 @@ endif()
 project(GpuInspector CXX)
 
 option(VKINSP_BUILD_TESTS "Build the test applications" ON)
+option(VKINSP_BUILD_REPLAY "Build vkinsp_replay, the capture replay tool" ON)
 
 # The Vulkan layer does not build for Apple targets; macOS builds the Metal capture library and
 # its test application instead. See metal/README.md and the macOS section of README.md.
@@ -23,6 +24,9 @@ if(APPLE)
     endif()
 else()
     add_subdirectory(layer)
+    if(VKINSP_BUILD_REPLAY AND NOT ANDROID)
+        add_subdirectory(replay)
+    endif()
     if(VKINSP_BUILD_TESTS AND NOT ANDROID)
         add_subdirectory(test/triangle)
     endif()

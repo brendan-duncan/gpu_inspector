@@ -119,11 +119,20 @@ resources and re-executes the frame on the inspector's own Vulkan device (what R
 `renderdoc/driver/vulkan/vk_replay.cpp`), or (b) lean on the existing layer and re-run the live
 application with injected state. Route (a) is the general one and is the prerequisite for the rest.
 
-- [ ] Capture enough to replay: full resource contents at frame start (all buffers and images,
-      not only bound ranges), initial layouts, descriptor contents — RenderDoc's "initial
-      contents" (`vk_initial_contents.cpp`).
-- [ ] Replay engine: re-create resources on the inspector's device and execute the captured
-      command stream (`vk_replay.cpp`, `vk_core.cpp`).
+- [x] Replay engine (`replay/`, docs/REPLAY.md): `vkinsp_replay` re-creates a capture's objects on
+      this machine's GPU through decoders generated from vk.xml, re-executes its command buffers,
+      and compares every read-back render target with its own copy. The triangle, hazard and
+      Unity captures replay pixel-identical.
+- [ ] Capture enough to replay any frame, RenderDoc's "initial contents" (`vk_initstate.cpp`):
+      - resource contents at frame start: images never read back, buffers never bound in the
+        frame, mapped-memory writes between submits
+      - initial layouts per subresource
+      - swapchain images of swapchains created before the layer tracked them
+
+      Also compare multisampled targets through a resolve.
+- [ ] Record live shader replacements in captures. A frame captured during `replace_shader` keeps
+      the original pipeline, so its replay draws what the application asked for, not what the
+      frame showed.
 - [ ] Pixel history (`vk_pixelhistory.cpp`): every draw that touched a pixel, with the test that
       rejected it (depth, stencil, scissor, culled, discarded, write mask) and the value written.
 - [ ] Overdraw heatmap (`vk_overlay.cpp`: quad overdraw / triangle size overlays).
