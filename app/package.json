@@ -1,6 +1,6 @@
 {
   "name": "gpu-inspector",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "GPU Inspector: native graphics inspector (Vulkan today) with live object inspection and frame capture, companion to WebGPU Inspector",
   "author": {
     "name": "Brendan Duncan",
