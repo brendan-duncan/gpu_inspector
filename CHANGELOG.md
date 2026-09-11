@@ -8,8 +8,16 @@
   - it compares every render target the capture read back with its own copy, byte for byte
 
   The test triangle and a Unity player frame replay pixel-identical. `--dump` writes the captured,
-  replayed and difference images. It is the base for the overdraw heatmap and pixel history to
-  come.
+  replayed and difference images.
+
+  `--overdraw` measures every render pass's overdraw by replaying the pass with a counting fragment
+  shader. For each pass it reports every rasterized fragment and the fragments passing depth and
+  stencil, per pixel, with a histogram and a heatmap. On the test triangle the count matches its
+  pipeline statistics exactly.
+
+  `--pixel <image> <x> <y>` gives a pixel's history: every pass start, draw and clear that touched
+  it, whether each draw was outside the scissor, culled, discarded, or failed depth or stencil, and
+  the pixel's value and depth after each event.
 - Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
   an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
   Its tools cover:

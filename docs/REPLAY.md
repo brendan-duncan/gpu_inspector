@@ -6,7 +6,8 @@ changed: the overdraw heatmap, pixel history, and later per-draw timing and shad
 (TODO.md, "Replay-based features").
 
 ```
-vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--trace]
+vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>]
+              [--pixel <image> <x> <y> [--mip <n>] [--layer <n>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 ```
 
@@ -21,6 +22,11 @@ vkinsp_replay <capture.gpucap> --check
   as PNG.
 - **`--trace`:** prints each object and command to stderr before it is replayed, so the call a
   driver crashes on is the last line printed.
+- **`--overdraw <dir>`:** measures every render pass's overdraw (see [Overdraw](#overdraw)), prints
+  the numbers and writes a heatmap for each pass.
+- **`--pixel <image> <x> <y>`:** follows one pixel of an image (tracker id; `--mip` and `--layer`
+  pick the subresource) through the frame, and lists every pass start, draw and clear that touched
+  it (see [Pixel history](#pixel-history)).
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
   be rebuilt.
 
@@ -83,6 +89,100 @@ end of each pass the replay copies the targets the capture read back for that pa
 counter per command buffer, as the layer counts). After the submission the copies are compared.
 Only the undefined top byte of a 24-bit depth copy is ignored.
 
+## Overdraw
+
+`--overdraw` measures each render pass right after the replay has executed it. It runs in the same
+command buffer, so the buffers and descriptor sets the draws read still hold what they held for the
+pass.
+
+- **Re-issuing the pass.**
+  - The pass's commands are issued again inside a pass of the replay's own. Secondary command
+    buffers are inlined.
+  - The state the pass inherited from earlier in its command buffer is issued first: viewports,
+    bound descriptor sets, vertex and index buffers, push constants.
+- **Counting.** Every graphics pipeline the pass binds is replaced by a copy whose fragment stage
+  writes 1.0 into an `R16_SFLOAT` target, blended with `ONE, ONE`. The target has the size of the
+  pass's framebuffer. Each pixel ends up holding the number of fragments that landed on it.
+- **The copies** keep the vertex stages, rasterization and dynamic state, and drop blending and
+  multisampling state.
+- **Two counts per pass:**
+  - **Fragments passing depth and stencil**, in draw order. The pipelines keep their tests, against
+    a copy of the depth the pass started from: its contents when the pass loads depth, its clear
+    value when it clears. This is the fragment shading the pass paid for, assuming early tests.
+  - **Every rasterized fragment**, without depth and stencil tests.
+- **Output.** Each pass reports its draws, fragments, covered pixels, the average per pixel and per
+  covered pixel, the maximum, and a histogram (1, 2, 3, 4, 5-8, 9-16, 17-32, 33 and more). When the
+  capture profiled the pass with pipeline statistics, it also reports the fragment shader
+  invocations the capture measured. The heatmap runs black, blue, cyan, green, yellow, orange, red,
+  magenta and white as the count grows.
+- **Checked against pipeline statistics.** The triangle's pass counts 51,204 fragments, exactly the
+  51,204 fragment shader invocations its capture measured with pipeline statistics.
+
+Limits:
+- Fragments a shader discards are counted, because the counting shader does not discard.
+  Alpha-tested geometry therefore counts as opaque.
+- A multiview pass is counted in its first view only.
+- A pass the replay leaves out has no measurement.
+
+The pipeline copies of overdraw and pixel history are made by `pipeline_copy.cpp`: the captured
+create info is decoded, its shader stages rebuilt from the capture's SPIR-V, and an edit changes
+the state before the copy is created.
+
+## Pixel history
+
+`--pixel` follows a pixel through every render pass that renders to its image
+(`history.cpp`, after RenderDoc's `vk_pixelhistory.cpp`, simplified). For each such pass:
+
+- **Before the replay executes the pass,** every attachment is copied into an image of the replay's
+  own: its contents when the attachment loads, its clear value when it clears. The pixel is read
+  from the copy: the pass's **start** event, with its load op.
+- **After the pass,** its commands are issued again into those copies, one event at a time, each
+  inside a pass that loads what the previous event left. The replay's passes are compatible with
+  the captured one: the same attachments and subpasses, loading instead of clearing. Bindings and
+  dynamic state are issued between them, where they stay in effect; the state the pass inherited
+  from its command buffer comes first.
+  - **A draw** first runs six times under occlusion queries, with a one-pixel scissor and copies of
+    its pipeline that write nothing:
+
+    | Query | Pipeline copy | A zero result means |
+    |---|---|---|
+    | covered | counting fragment shader, no culling, no tests | the draw does not reach the pixel |
+    | facing | counting fragment shader, the pipeline's culling | culled |
+    | shaded | the draw's fragment shader, no tests | discarded by the shader |
+    | depth | depth test only | failed the depth test |
+    | stencil | stencil test only | failed the stencil test |
+    | all tests | every test | nothing written |
+
+    Then it runs with its own pipeline, and writes.
+  - **`vkCmdClearAttachments`** runs as it is.
+  - After each event the pixel and the pass's depth at it are read.
+- **Output.** Each event lists the command index, what the draw's fragments met, and the pixel's
+  value and depth after it, decoded for common formats (8-bit RGBA and BGRA, half and full float,
+  `A2B10G10R10`, `B10G11R11`, and the depth formats). Draws that do not reach the pixel are only
+  counted.
+
+Checked on these captures, the value after a pass's last event equals the target the capture (or the
+replay) read back at that pixel:
+- the triangle: the cube and the background;
+- hazard, and msaa through its resolve attachment;
+- the Unity player, on an image two passes render to;
+- the XR frame, in both eye layers: where two overlapping draws both pass the depth test, and where
+  the later one fails it (the pixels the overdraw heatmaps count 2 untested and 1 tested).
+
+No capture yet exercises the culled, discarded and stencil outcomes.
+
+The query counts are samples: a multisampled pass counts up to its sample count per fragment.
+They are also tested against the depth and stencil from before the draw, since the copies do not
+write depth. So two triangles of one draw that both pass count twice.
+
+Limits:
+- Writes outside render passes are not followed yet: clears, copies and blits into the image, and
+  compute.
+- A multisampled image is not followed (its resolve attachment is). Only the first layer of a
+  layered framebuffer is followed.
+- Per-fragment detail is missing: a draw is one event, with no values of the primitives inside it.
+- A shader that writes depth, or discards after early tests, is classified as if tests ran late.
+
 ## Where it stands
 
 Every capture that was replayed is listed below, with its result:
@@ -111,14 +211,12 @@ These cases differ for known reasons:
      loaded.
    - Multisampled targets should be compared through a resolve.
    - Live shader replacements should be recorded.
-2. **Overdraw heatmap.** Replay a pass with every pipeline's fragment stage replaced by one that
-   counts (additive blending or stencil increments), into a count target, with the depth the pass
-   started from.
-3. **Pixel history.** Replay the frame with, around each draw that touches the target, a one-pixel
-   scissor and occlusion queries: whether the draw covers the pixel, and whether it passes the
-   depth and stencil tests. Also read the pixel before and after each draw
-   (`vk_pixelhistory.cpp` is the reference).
-4. **The app and the MCP server.**
+2. **Pixel history, the rest.**
+   - Writes outside passes.
+   - Multisampled images.
+   - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
+   - Early fragment tests.
+3. **The app and the MCP server.**
    - Run `vkinsp_replay` from GPU Inspector: show the heatmap in the image viewer, and pixel history
      from a pixel click.
    - Give Claude tools for both.

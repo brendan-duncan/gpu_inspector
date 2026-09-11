@@ -61,6 +61,9 @@ public:
 /** Looks a name up in a table sorted by name; false when absent. */
 bool LookupEnum(const EnumEntry* table, size_t count, std::string_view name, int64_t& value);
 
+/** The name of an enum value (the first in the table with that value), or its number. */
+std::string EnumName(const EnumEntry* table, size_t count, int64_t value);
+
 /** Decodes standard base64 into `out`; false on malformed input. */
 bool DecodeBase64(std::string_view text, std::vector<uint8_t>& out);
 

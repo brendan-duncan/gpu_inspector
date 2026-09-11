@@ -130,6 +130,12 @@ bool LookupEnum(const EnumEntry* table, size_t count, std::string_view name, int
     return false;
 }
 
+std::string EnumName(const EnumEntry* table, size_t count, int64_t value) {
+    for (size_t i = 0; i < count; ++i)
+        if (table[i].value == value) return table[i].name;
+    return std::to_string(value);
+}
+
 bool DecodeBase64(std::string_view text, std::vector<uint8_t>& out) {
     auto sextet = [](char c) -> int {
         if (c >= 'A' && c <= 'Z') return c - 'A';

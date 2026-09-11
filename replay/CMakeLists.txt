@@ -41,6 +41,10 @@ add_executable(vkinsp_replay
     src/gpucap.cpp
     src/replayer.h
     src/replayer.cpp
+    src/overdraw.cpp
+    src/history.cpp
+    src/pipeline_copy.cpp
+    src/util.h
     ${GEN_OUTPUTS})
 
 # format_info.h (bytes per texel) is shared with the capture layer.

@@ -6,6 +6,11 @@
 //       when every compared target matches exactly, 1 when some differ or could not be compared,
 //       2 when the replay could not run.
 //
+//   vkinsp_replay <capture.gpucap> --pixel <image id> <x> <y> [--mip <n>] [--layer <n>]
+//       Also follows one pixel of an image through the frame: every pass that renders to it, and
+//       every draw and clear in those passes, with what each draw's fragments at the pixel met
+//       and the pixel's value after it.
+//
 //   vkinsp_replay <capture.gpucap> --check
 //       Decodes every object's creation arguments and every command's arguments with the
 //       generated decoders, and reports what the capture lacks for a replay.
@@ -21,6 +26,7 @@
 #include "decode.h"
 #include "gpucap.h"
 #include "replayer.h"
+#include "util.h"
 #include "vk_decode.gen.h"
 
 using namespace vkreplay;
@@ -28,7 +34,117 @@ using namespace vkreplay;
 namespace {
 
 void PrintUsage() {
-    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] | --check\n");
+    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>]\n"
+                         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>]] [--trace] | --check\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --pixel: the pixel's history.
+
+/** A texel's bytes as values, for the formats render targets commonly have; hex otherwise. */
+std::string FormatTexel(const std::string& format, const std::vector<uint8_t>& b, bool depthAspect) {
+    if (b.empty()) return "?";
+    auto has = [&](const char* s) { return format.find(s) != std::string::npos; };
+    auto f32 = [&](size_t o) { float v = 0; if (o + 4 <= b.size()) std::memcpy(&v, &b[o], 4); return v; };
+    auto u16 = [&](size_t o) { return o + 2 <= b.size() ? (uint16_t)(b[o] | (b[o + 1] << 8)) : (uint16_t)0; };
+    auto u32 = [&](size_t o) { uint32_t v = 0; if (o + 4 <= b.size()) std::memcpy(&v, &b[o], 4); return v; };
+    char text[200];
+    if (depthAspect) {
+        if (has("D32_SFLOAT")) std::snprintf(text, sizeof(text), "%.6f", f32(0));
+        else if (has("D24_UNORM") || has("X8_D24")) std::snprintf(text, sizeof(text), "%.6f", (u32(0) & 0xFFFFFF) / 16777215.0);
+        else if (has("D16_UNORM")) std::snprintf(text, sizeof(text), "%.6f", u16(0) / 65535.0);
+        else goto hex;
+        return text;
+    }
+    if ((has("R8G8B8A8_") || has("B8G8R8A8_")) && b.size() >= 4) {
+        const bool bgr = has("B8G8R8A8_");
+        const uint8_t r = b[bgr ? 2 : 0], g = b[1], bl = b[bgr ? 0 : 2], a = b[3];
+        std::snprintf(text, sizeof(text), "rgba(%u, %u, %u, %u) = (%.3f, %.3f, %.3f, %.3f)", r, g, bl, a, r / 255.0, g / 255.0, bl / 255.0, a / 255.0);
+        return text;
+    }
+    if (has("R16G16B16A16_SFLOAT") && b.size() >= 8) {
+        std::snprintf(text, sizeof(text), "(%.4f, %.4f, %.4f, %.4f)", HalfToFloat(u16(0)), HalfToFloat(u16(2)), HalfToFloat(u16(4)), HalfToFloat(u16(6)));
+        return text;
+    }
+    if (has("R32G32B32A32_SFLOAT") && b.size() >= 16) {
+        std::snprintf(text, sizeof(text), "(%.4f, %.4f, %.4f, %.4f)", f32(0), f32(4), f32(8), f32(12));
+        return text;
+    }
+    if (format == "VK_FORMAT_R32_SFLOAT") { std::snprintf(text, sizeof(text), "%.6f", f32(0)); return text; }
+    if (format == "VK_FORMAT_R16_SFLOAT") { std::snprintf(text, sizeof(text), "%.4f", HalfToFloat(u16(0))); return text; }
+    if (has("B10G11R11_UFLOAT_PACK32")) {
+        // Unsigned small floats: 6-bit (red, green) or 5-bit (blue) mantissa over a 5-bit exponent, biased by 15.
+        auto small = [](uint32_t bits, int mantissaBits) {
+            const uint32_t mantissa = bits & ((1u << mantissaBits) - 1);
+            const int exponent = (int)(bits >> mantissaBits) & 0x1F;
+            if (exponent == 31) return mantissa ? (double)NAN : (double)INFINITY;
+            if (exponent == 0) return std::ldexp((double)mantissa / (1u << mantissaBits), -14);
+            return std::ldexp(1.0 + (double)mantissa / (1u << mantissaBits), exponent - 15);
+        };
+        const uint32_t v = u32(0);
+        std::snprintf(text, sizeof(text), "(%.4f, %.4f, %.4f)", small(v & 0x7FF, 6), small((v >> 11) & 0x7FF, 6), small(v >> 22, 5));
+        return text;
+    }
+    if (has("A2B10G10R10_UNORM") || has("A2R10G10B10_UNORM")) {
+        const uint32_t v = u32(0);
+        const bool bgr = has("A2R10G10B10");
+        const uint32_t lo = v & 0x3FF, mid = (v >> 10) & 0x3FF, hi = (v >> 20) & 0x3FF;
+        std::snprintf(text, sizeof(text), "(%.3f, %.3f, %.3f, %.3f)", (bgr ? hi : lo) / 1023.0, mid / 1023.0, (bgr ? lo : hi) / 1023.0, (v >> 30) / 3.0);
+        return text;
+    }
+hex:
+    std::string out = "bytes";
+    for (uint8_t byte : b) {
+        std::snprintf(text, sizeof(text), " %02x", byte);
+        out += text;
+    }
+    return out;
+}
+
+/** What a draw's fragments at the pixel met, from its occlusion queries. */
+std::string DrawOutcome(const PixelEvent& e) {
+    auto measured = [&](int bit) { return (e.testsMeasured >> bit) & 1; };
+    if (e.scissored) return "outside the scissor";
+    if (!e.testsMeasured) return "not measured (the draw's pipeline could not be copied)";
+    if (measured(0) && !e.covered) return "does not cover the pixel";
+    if (measured(1) && !e.facing) return "culled";
+    if (measured(2) && !e.shaded) return "discarded by the fragment shader";
+    const bool depthFailed = measured(3) && !e.depthPassed;
+    const bool stencilFailed = measured(4) && !e.stencilPassed;
+    if (depthFailed && stencilFailed) return "failed the depth and stencil tests";
+    if (depthFailed) return "failed the depth test";
+    if (stencilFailed) return "failed the stencil test";
+    if (measured(5) && !e.passed) return "failed the depth and stencil tests together";
+    // Samples of every fragment the draw put there, tested against the depth and stencil from before the draw.
+    if (measured(5)) return "wrote the pixel (" + std::to_string(e.passed) + (e.passed == 1 ? " sample passed)" : " samples passed)");
+    return "covers the pixel";
+}
+
+void PrintHistory(const PixelHistoryResult& h) {
+    std::printf("pixel history: image %llu, pixel (%u, %u), mip %u, layer %u%s%s\n", (unsigned long long)h.image, h.x, h.y, h.mip, h.layer,
+                h.format.empty() ? "" : (", " + h.format).c_str(), h.depthFormat.empty() ? "" : (", depth " + h.depthFormat).c_str());
+    size_t untouched = 0;
+    for (const PixelEvent& e : h.events) {
+        const bool touched = e.kind != "draw" || (!e.scissored && (e.covered || !e.testsMeasured));
+        if (!touched) {
+            ++untouched;
+            continue;
+        }
+        std::string line = "  [" + std::to_string(e.command) + "] ";
+        if (e.kind == "load") {
+            line += "command buffer " + std::to_string(e.commandBuffer) + ", pass " + std::to_string(e.passIndex) + " begins (" + e.detail + ")";
+        } else if (e.kind == "clear") {
+            line += e.method;
+        } else {
+            line += e.method + " (pipeline " + std::to_string(e.pipeline) + "): " + DrawOutcome(e);
+        }
+        std::printf("%s\n", line.c_str());
+        std::printf("      value %s", FormatTexel(h.format, e.value, h.format.find("VK_FORMAT_D") == 0).c_str());
+        if (!e.depth.empty()) std::printf(", depth %s", FormatTexel(h.depthFormat, e.depth, true).c_str());
+        std::printf("\n");
+    }
+    if (untouched) std::printf("  %zu other draws in these passes do not reach the pixel\n", untouched);
+    for (const std::string& n : h.notes) std::printf("  note: %s\n", n.c_str());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,6 +248,36 @@ bool ToRgba(const TargetComparison& t, const std::vector<uint8_t>& bytes, std::v
         return true;
     }
     return false;
+}
+
+/** The heat of a count: black for none, then blue, cyan, green, yellow, orange, red, magenta and white from 33. */
+void Heat(uint16_t n, uint8_t* rgb) {
+    static const struct { uint16_t upTo; uint8_t r, g, b; } kRamp[] = {
+        {0, 0, 0, 0}, {1, 20, 40, 150}, {2, 0, 120, 230}, {3, 0, 190, 170}, {4, 110, 210, 40},
+        {6, 240, 210, 0}, {10, 250, 120, 0}, {16, 220, 20, 20}, {32, 240, 0, 200}, {65535, 255, 255, 255},
+    };
+    for (const auto& step : kRamp) {
+        if (n <= step.upTo) {
+            rgb[0] = step.r;
+            rgb[1] = step.g;
+            rgb[2] = step.b;
+            return;
+        }
+    }
+}
+
+void WriteOverdraw(const ReplayReport& report, const std::string& dir) {
+    std::filesystem::create_directories(dir);
+    for (const OverdrawResult& o : report.overdraw) {
+        if (o.counts.empty()) continue;
+        const std::string path = dir + "/overdraw_cb" + std::to_string(o.commandBuffer) + "_pass" + std::to_string(o.passIndex) +
+                                 (report.overdraw.size() && o.frame ? "_frame" + std::to_string(o.frame) : "") +
+                                 (o.depthTested ? "_tested.png" : "_all.png");
+        std::vector<uint8_t> rgba((size_t)o.width * o.height * 4, 255);
+        for (size_t i = 0; i < o.counts.size(); ++i) Heat(o.counts[i], &rgba[i * 4]);
+        WritePng(path, o.width, o.height, rgba);
+        std::printf("  wrote %s\n", path.c_str());
+    }
 }
 
 void DumpTargets(const ReplayReport& report, const std::string& dir) {
@@ -240,7 +386,7 @@ int Check(const CaptureFile& capture) {
     return ctx.problems.empty() && undecodable.empty() ? 0 : 1;
 }
 
-int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir) {
+int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir) {
     ReplayReport report;
     bool ran = false;
     {
@@ -268,6 +414,30 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
                         (unsigned long long)t.texels, t.maxByteDelta, t.note.empty() ? "" : "; ", t.note.c_str());
         }
     }
+    if (options.overdraw) {
+        std::printf("overdraw: %zu measurements\n", report.overdraw.size());
+        for (const OverdrawResult& o : report.overdraw) {
+            const double pixels = (double)o.width * o.height;
+            std::printf("  command buffer %llu, pass %u, %s: ", (unsigned long long)o.commandBuffer, o.passIndex,
+                        o.depthTested ? "fragments passing depth" : "every rasterized fragment");
+            if (o.counts.empty()) {
+                std::printf("not measured: %s\n", o.note.c_str());
+                continue;
+            }
+            std::printf("%u draws%s, %llu fragments on %llu of %.0f pixels, %.3f per pixel, %.2f per covered pixel, max %u", o.draws,
+                        o.skippedDraws ? (" (" + std::to_string(o.skippedDraws) + " not counted)").c_str() : "",
+                        (unsigned long long)o.fragments, (unsigned long long)o.coveredPixels, pixels, pixels ? o.fragments / pixels : 0.0,
+                        o.coveredPixels ? (double)o.fragments / o.coveredPixels : 0.0, o.maxCount);
+            if (o.capturedFragments >= 0) std::printf("; the capture measured %lld fragment shader invocations", (long long)o.capturedFragments);
+            if (!o.note.empty()) std::printf(" (%s)", o.note.c_str());
+            std::printf("\n    pixels by count: 1: %llu, 2: %llu, 3: %llu, 4: %llu, 5-8: %llu, 9-16: %llu, 17-32: %llu, 33+: %llu\n",
+                        (unsigned long long)o.histogram[0], (unsigned long long)o.histogram[1], (unsigned long long)o.histogram[2],
+                        (unsigned long long)o.histogram[3], (unsigned long long)o.histogram[4], (unsigned long long)o.histogram[5],
+                        (unsigned long long)o.histogram[6], (unsigned long long)o.histogram[7]);
+        }
+        if (!overdrawDir.empty()) WriteOverdraw(report, overdrawDir);
+    }
+    if (report.history.requested) PrintHistory(report.history);
     std::printf("problems: %zu\n", report.problems.size());
     PrintGrouped(report.problems, 80);
     if (options.validation) {
@@ -284,16 +454,29 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
 int main(int argc, char** argv) {
     std::string path;
     std::string dumpDir;
+    std::string overdrawDir;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--check")) check = true;
         else if (!std::strcmp(argv[i], "--validate")) options.validation = true;
         else if (!std::strcmp(argv[i], "--trace")) options.trace = true;
+        else if (!std::strcmp(argv[i], "--overdraw") && i + 1 < argc) {
+            overdrawDir = argv[++i];
+            options.overdraw = true;
+        }
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
         }
+        else if (!std::strcmp(argv[i], "--pixel") && i + 3 < argc) {
+            options.history.enabled = true;
+            options.history.image = std::strtoull(argv[++i], nullptr, 10);
+            options.history.x = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+            options.history.y = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+        }
+        else if (!std::strcmp(argv[i], "--mip") && i + 1 < argc) options.history.mip = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+        else if (!std::strcmp(argv[i], "--layer") && i + 1 < argc) options.history.layer = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         else if (argv[i][0] != '-' && path.empty()) path = argv[i];
         else {
             PrintUsage();
@@ -310,5 +493,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: %s\n", error.c_str());
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir);
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir);
 }

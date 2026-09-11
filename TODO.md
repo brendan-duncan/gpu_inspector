@@ -133,9 +133,20 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Record live shader replacements in captures. A frame captured during `replace_shader` keeps
       the original pipeline, so its replay draws what the application asked for, not what the
       frame showed.
-- [ ] Pixel history (`vk_pixelhistory.cpp`): every draw that touched a pixel, with the test that
-      rejected it (depth, stencil, scissor, culled, discarded, write mask) and the value written.
-- [ ] Overdraw heatmap (`vk_overlay.cpp`: quad overdraw / triangle size overlays).
+- [x] Pixel history (`vkinsp_replay --pixel`, docs/REPLAY.md): every pass start, draw and clear
+      that touched a pixel, with what each draw's fragments met (outside the scissor, culled,
+      discarded, depth, stencil), measured with occlusion queries on pipeline copies, and the
+      pixel's value and depth after each event.
+- [ ] Pixel history, the rest: writes outside render passes (clears, copies, blits, compute),
+      multisampled images, per-fragment values (a primitive-id pass), early fragment tests.
+- [ ] Pixel history in the app (a pixel click in the image viewer) and the MCP server.
+- [x] Overdraw heatmap (`vkinsp_replay --overdraw`, docs/REPLAY.md): each pass is replayed with a
+      counting fragment shader. It gives two counts per pass (every rasterized fragment, and the
+      fragments passing depth and stencil in draw order), with a heatmap and a histogram. The
+      triangle's count matches its pipeline statistics exactly.
+- [ ] Overdraw in the app and the MCP server: the heatmap in the image viewer and in get_bottlenecks.
+- [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
+      view of a multiview pass.
 - [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays
       (`vk_overlay.cpp`).
 - [ ] Per-draw GPU timing and counters via replay with timestamp/pipeline-statistics queries
