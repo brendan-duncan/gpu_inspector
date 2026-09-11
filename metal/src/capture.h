@@ -22,6 +22,17 @@
 
 namespace mtlinsp {
 
+/** One pixel of a texture to follow through a capture (pixel_history.mm), from the `Capture` message's `pixelHistory`. */
+struct PixelHistoryRequest {
+    bool enabled = false;
+    /** The texture's tracked id; 0, or a texture the frame no longer has, for the drawable the frame renders into. */
+    uint64_t texture = 0;
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t level = 0;
+    uint32_t slice = 0;
+};
+
 /** The UI's `Capture` message, with the Vulkan layer's defaults for what it leaves out. */
 struct CaptureOptions {
     uint32_t frameCount = 1;
@@ -37,6 +48,8 @@ struct CaptureOptions {
     bool stacktraces = false;
     /** Draw every render pass a second time with a counting fragment function (overdraw.h). */
     bool overdraw = false;
+    /** Follow one pixel through the frame's passes (pixel_history.mm). */
+    PixelHistoryRequest pixelHistory;
 };
 
 /** Arms a capture, from the UI's `Capture` message. */
@@ -50,6 +63,15 @@ bool Recording();
 
 /** The frame of the capture being recorded, counting from 0: what a pass and its results are keyed by. */
 uint32_t CaptureFrameIndex();
+
+/** The index of the command this thread recorded last. */
+uint32_t LastRecordedCommand();
+
+/** The selector a recorded command was recorded under, or "". */
+std::string RecordedCommandMethod(uint32_t index);
+
+/** Whether a texture is a drawable's (a CAMetalLayer's), which a frame renders into in turn with its siblings. */
+bool IsDrawableTexture(id texture);
 
 // --------------------------------------------------------------------------------------------
 // What the recorded commands are attributed to.

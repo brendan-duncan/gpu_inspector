@@ -320,6 +320,21 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
         overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
+        pixelHistory: {
+          type: "object",
+          description: "Metal: follow one pixel of a render target through the captured frame, for get_pixel_history on the new capture. " +
+            "Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own command buffers. " +
+            "A drawable's texture id (from an earlier capture) follows whichever drawable the captured frame renders into. Vulkan " +
+            "applications ignore it; get_pixel_history replays a Vulkan capture instead.",
+          properties: {
+            texture: { type: "integer", description: "The texture's object id (list_textures of an earlier capture)." },
+            x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
+            y: { type: "integer", minimum: 0, description: "The pixel's row, at the mip level." },
+            mip: { type: "integer", minimum: 0, description: "The mip level the passes render to (default 0)." },
+            layer: { type: "integer", minimum: 0, description: "The array slice (default 0)." },
+          },
+          required: ["texture", "x", "y"],
+        },
         maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
         recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
         timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
@@ -330,11 +345,17 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const delay = numberArg(args, "delaySeconds");
         if (delay) await sleep(delay * 1000);
         if (args.recordAlways !== undefined) await s.send({ action: "Settings", recordAlways: boolArg(args, "recordAlways", false) });
+        const pixelArg = args.pixelHistory;
+        if (pixelArg !== undefined && (typeof pixelArg !== "object" || pixelArg === null)) throw new Error("pixelHistory must be an object: { texture, x, y }.");
+        const pixel = pixelArg as Record<string, unknown> | undefined;
+        const pixelHistory = pixel
+          ? { texture: requireInt(pixel, "texture"), x: requireInt(pixel, "x"), y: requireInt(pixel, "y"), mip: optionalInt(pixel, "mip") ?? 0, layer: optionalInt(pixel, "layer") ?? 0 }
+          : undefined;
         const result = await s.capture({
           frames: intArg(args, "frames", 1, 1, 16), atFrame: optionalInt(args, "atFrame"),
           profilePasses: boolArg(args, "profilePasses", true), renderTargets: boolArg(args, "renderTargets", true),
           buffers: boolArg(args, "buffers", true), images: boolArg(args, "images", true), stacktraces: boolArg(args, "stacktraces", false),
-          overdraw: boolArg(args, "overdraw", false),
+          overdraw: boolArg(args, "overdraw", false), pixelHistory,
           maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024, timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1000,
         });
         const file = await s.saveCapture(result.data, stringArg(args, "saveAs"));
@@ -342,6 +363,11 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const notes: string[] = [];
         if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
         if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
+        if (pixelHistory && !result.data.pixelHistory) {
+          notes.push(result.data.api === "metal"
+            ? "No pixel history arrived: the application's capture library was built before pixel history."
+            : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+        }
         return jsonResult({
           session: s.id, file, megabytes: round(capture.fileBytes / 1048576), secondsToCapture: round(result.elapsedMs / 1000),
           captureNotes: notes.length ? notes : undefined, ...captureSummary(capture),

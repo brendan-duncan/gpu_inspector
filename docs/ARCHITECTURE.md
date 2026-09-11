@@ -215,7 +215,8 @@ much slower than on the desktop.
 6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureTextureFrames` + `CaptureTextureData`, then `CaptureBuffers` +
    `CaptureBufferData` messages, then `CapturePassTimings`, then (a Metal capture with `overdraw`)
-   `CaptureOverdraw` + `CaptureOverdrawData`. `CaptureComplete` comes last, whichever
+   `CaptureOverdraw` + `CaptureOverdrawData`, then (a Metal capture with `pixelHistory`)
+   `CapturePixelHistory`. `CaptureComplete` comes last, whichever
    sections the capture had, so a client waiting for the capture (the MCP server) knows the stream
    has ended. The Metal library does the same.
 7. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
@@ -333,9 +334,10 @@ the base for overdraw and pixel history. Its pieces:
 - analyses that issue a pass again after the replay has executed it, with edited copies of its
   pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`) and pixel history (`history.cpp`)
 
-The app runs it for a Vulkan capture's overdraw (`app/src/main/replay.ts`: the capture serialized to
-a temporary file, `--overdraw-data`, the result parsed by `renderer/overdraw.ts`); the MCP server
-does the same from `get_overdraw`. `app/tools/stage_layer.mjs` ships the tool beside the layer.
+The app runs it for a Vulkan capture's overdraw and pixel history (`app/src/main/replay.ts`: the
+capture serialized to a temporary file, `--overdraw-data` or `--pixel-data`, the result parsed by
+`renderer/overdraw.ts` or `renderer/pixel_history.ts`); the MCP server does the same from
+`get_overdraw` and `get_pixel_history`. `app/tools/stage_layer.mjs` ships the tool beside the layer.
 
 See [REPLAY.md](REPLAY.md).
 

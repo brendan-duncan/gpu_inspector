@@ -139,7 +139,11 @@ application with injected state. Route (a) is the general one and is the prerequ
       pixel's value and depth after each event.
 - [ ] Pixel history, the rest: writes outside render passes (clears, copies, blits, compute),
       multisampled images, per-fragment values (a primitive-id pass), early fragment tests.
-- [ ] Pixel history in the app (a pixel click in the image viewer) and the MCP server.
+- [x] Pixel history in the app and the MCP server: a Pixel History tab beside the capture's, from a
+      pixel of the overdraw tab or of a render target's image viewer (click and Pixel History, or
+      double-click), and `get_pixel_history`. Both replay the capture with `vkinsp_replay --pixel-data`.
+- [ ] Pixel history without a fresh replay per pixel: one replay process kept alive with the frame
+      rebuilt, answering pixels as they are asked for.
 - [x] Overdraw heatmap (`vkinsp_replay --overdraw`, docs/REPLAY.md): each pass is replayed with a
       counting fragment shader. It gives two counts per pass (every rasterized fragment, and the
       fragments passing depth and stencil in draw order), with a heatmap and a histogram. The
@@ -241,9 +245,15 @@ backend does. Ordered by value per effort.
       the pass header and GPU Bottlenecks, kept in capture files, `get_overdraw` in the MCP server.
 - [x] Run Metal overdraw on a Mac: the heatmaps show in the pass details (2026-09-11).
 - [ ] Metal overdraw on a Unity player, and against the pass's `fragmentsPassed` counter.
-- [ ] Pixel history for Metal, the same way: the pass's calls issued again one draw at a time with
-      a one-pixel scissor, visibility results in counting mode, and cull mode and depth-stencil
-      state varied on the encoder (no pipeline copies needed for those).
+- [x] Pixel history for Metal, the same way (`metal/src/pixel_history.mm`): a pixel picked in a
+      capture captures the next frame with every pass that renders to the texture drawn again one
+      draw at a time at the pixel, into copies of its attachments, with a one-pixel scissor,
+      visibility results in counting mode, and cull mode and depth-stencil state varied on the
+      encoder. The same JSON as `vkinsp_replay --pixel-data`, the same tab, `get_pixel_history`.
+- [ ] Run Metal pixel history on a Mac: the test app's triangle, a pixel of the drawable, a pass
+      that loads, a discard, and a Unity player.
+- [ ] Metal pixel history, the rest: multisampled and layered passes, indirect command buffers'
+      draws, and writes outside render passes (blits, compute).
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
       `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
       rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.

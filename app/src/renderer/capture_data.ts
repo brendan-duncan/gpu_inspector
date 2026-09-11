@@ -75,6 +75,8 @@ export class CaptureData {
   passTimings = new Map<string, PassTiming>();
   /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
   overdraw: CapturedOverdraw[] = [];
+  /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
+  pixelHistory: Record<string, unknown> | null = null;
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -89,6 +91,8 @@ export class CaptureData {
   readonly onPassTimings = new Signal<() => void>();
   /** Overdraw measurements were announced, or one's per-pixel counts arrived. */
   readonly onOverdraw = new Signal<() => void>();
+  /** A Metal capture's pixel history arrived. */
+  readonly onPixelHistory = new Signal<() => void>();
 
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets(): CommandSets {
@@ -104,6 +108,7 @@ export class CaptureData {
     this.buffers = new Map();
     this.passTimings = new Map();
     this.overdraw = [];
+    this.pixelHistory = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -172,6 +177,7 @@ export class CaptureData {
     this.buffers = c.buffers;
     this.passTimings = c.passTimings;
     this.overdraw = c.overdraw;
+    this.pixelHistory = c.pixelHistory;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -180,6 +186,7 @@ export class CaptureData {
     this.onBuffersComplete.emit();
     if (this.passTimings.size) this.onPassTimings.emit();
     if (this.overdraw.length) this.onOverdraw.emit();
+    if (this.pixelHistory) this.onPixelHistory.emit();
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -233,6 +240,10 @@ export class CaptureData {
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
         this.onOverdraw.emit();
+        break;
+      case "CapturePixelHistory":
+        this.pixelHistory = msg.history ?? null;
+        this.onPixelHistory.emit();
         break;
       case "CaptureOverdrawData": {
         const o = this.overdraw.find((m) => m.info.frame === msg.frame && m.info.commandBuffer === msg.commandBuffer

@@ -31,6 +31,14 @@ jobs:
           - os: macos-14
             target: mac
     runs-on: ${{ matrix.os }}
+    # Electron's and electron-builder's downloads (the Electron zips with their checksums, the
+    # installer tooling) go to directories the cache step below keeps between runs. A GitHub
+    # download that answers 500 mid-packaging failed a macOS build once; with a warm cache the
+    # packaging step does not go to the network for them at all. npm ci's Electron install reads
+    # the same variable.
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +76,15 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: app/package-lock.json
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
 
       - uses: actions/setup-python@v5
         with:

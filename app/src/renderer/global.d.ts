@@ -39,6 +39,11 @@ export interface InspectorApi {
    * every pass's overdraw. `data` is the tool's --overdraw-data file (renderer/overdraw.ts parses it).
    */
   measureOverdraw(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
+  /**
+   * Vulkan: replays a capture (its file bytes) following one pixel of an image through the frame.
+   * `data` is the tool's --pixel-data JSON (renderer/pixel_history.ts parses it).
+   */
+  pixelHistory(opts: { data: Uint8Array; name?: string; pixel: { image: number; x: number; y: number; mip?: number; layer?: number } }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */
   symbolize(frames: StackFrame[], dirs: string[]): Promise<StackFrame[]>;
   /** The text of shader source files named by debug information, found under the roots (empty: the last ones used). */

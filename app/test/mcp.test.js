@@ -355,6 +355,19 @@ test("a Metal draw's argument buffer resolves to the buffers and textures it hol
       { info: measurement(true, 6, [1, 1, 1, 0, 0, 0, 0, 0]), payload: [16, 8] },
       { info: measurement(false, 10, [1, 1, 1, 1, 0, 0, 0, 0]), payload: [24, 8] },
     ],
+    // The pixel the library followed while capturing: asked for texture 40 (a drawable of an earlier
+    // frame), followed in the frame's own drawable, texture 31.
+    pixelHistory: {
+      format: "gpu-inspector-pixel-history", version: 1, device: "Test Metal GPU", image: 31, requestedImage: 40, x: 1, y: 1, mip: 0, layer: 0,
+      pixelFormat: "VK_FORMAT_B8G8R8A8_UNORM", depthFormat: "",
+      events: [
+        { kind: "load", command: 0, method: "renderCommandEncoderWithDescriptor:", detail: "MTLLoadActionClear", commandBuffer: MCB, frame: 0, passIndex: 0,
+          pipeline: 0, scissored: false, testsMeasured: 0, covered: 0, facing: 0, shaded: 0, depthPassed: 0, stencilPassed: 0, passed: 0, value: "000000ff", depth: "" },
+        { kind: "draw", command: draw, method: "drawPrimitives:vertexStart:vertexCount:", detail: "", commandBuffer: MCB, frame: 0, passIndex: 0,
+          pipeline: 33, scissored: false, testsMeasured: 63, covered: 1, facing: 1, shaded: 1, depthPassed: 1, stencilPassed: 1, passed: 1, value: "ff0000ff", depth: "" },
+      ],
+      notes: [], problems: [],
+    },
   }, [argumentBytes, counts([0, 1, 2, 3]), counts([1, 2, 3, 4])]));
 
   const { json, text } = await call("get_command", { capture: file, index: draw });
@@ -378,6 +391,17 @@ test("a Metal draw's argument buffer resolves to the buffers and textures it hol
   const rasterized = (await call("get_overdraw", { capture: file, pass: 0, depthTested: false, image: false, texels: [[0, 0]] })).json;
   assert.equal(rasterized.texels[0].count, 1);
   assert.match((await call("get_bottlenecks", { capture: file })).json.note, /get_overdraw/);
+
+  // The pixel history the capture carries, answered without a replay.
+  const history = (await call("get_pixel_history", { capture: file })).json;
+  assert.equal(history.image, 'MTLTexture#31 "Albedo"');
+  assert.deepEqual(history.events.map((e) => e.what), ["pass 0 begins (Clear)", "drawPrimitives:vertexStart:vertexCount:: wrote the pixel (1 sample passed)"]);
+  assert.equal(history.events[1].pipeline, 'MTLRenderPipelineState#33 "Lit"');
+  assert.deepEqual(history.events[1].valueAfter, [0, 0, 1, 1]);
+  assert.equal(history.measuredOn, "Test Metal GPU");
+  assert.match(history.requestedImage, /drawable/);
+  assert.equal(history.followed, undefined);
+  assert.match((await call("get_pixel_history", { capture: file, x: 0, y: 0 })).json.followed, /followed pixel \(1, 1\)/);
 });
 
 test("vkinsp_replay's overdraw file is read back with its counts", async () => {
@@ -405,6 +429,50 @@ test("vkinsp_replay's overdraw file is read back with its counts", async () => {
   assert.equal(overdrawCount(m, 1, 0), 2);
   assert.throws(() => parseOverdrawFile(bytes.subarray(0, bytes.length - 2)), /truncated/);
   assert.deepEqual(OVERDRAW_LEGEND.map((e) => e.label), ["0", "1", "2", "3", "4", "5-6", "7-10", "11-16", "17-32", "33+"]);
+});
+
+test("vkinsp_replay's pixel history is read back and says what each draw met", async () => {
+  const { parsePixelHistory, drawOutcome, eventSummary, texelValues, texelLines, touchesPixel } = await import(pathToFileURL(bundle("renderer/pixel_history.ts", "pixel_history")).href);
+  const draw = (fields) => ({
+    kind: "draw", command: 17, method: "vkCmdDrawIndexed", detail: "", commandBuffer: 7, frame: 0, passIndex: 0, pipeline: 48, scissored: false,
+    testsMeasured: 63, covered: 2, facing: 1, shaded: 1, depthPassed: 1, stencilPassed: 1, passed: 1, value: "c73cc7ff", depth: "7236743f", ...fields,
+  });
+  // What the replay wrote for the triangle's centre pixel, plus draws that met each obstacle.
+  const h = parsePixelHistory(JSON.stringify({
+    format: "gpu-inspector-pixel-history", version: 1, device: "Test GPU", image: 17, x: 320, y: 240, mip: 0, layer: 0,
+    pixelFormat: "VK_FORMAT_B8G8R8A8_UNORM", depthFormat: "VK_FORMAT_D32_SFLOAT",
+    events: [
+      { ...draw({}), kind: "load", command: 9, method: "vkCmdBeginRenderPass", detail: "VK_ATTACHMENT_LOAD_OP_CLEAR", pipeline: 0, testsMeasured: 0, value: "261919ff", depth: "0000803f" },
+      draw({}),
+      draw({ command: 18, facing: 0, shaded: 0, depthPassed: 0, stencilPassed: 0, passed: 0 }),
+      draw({ command: 19, shaded: 0, passed: 0 }),
+      draw({ command: 20, depthPassed: 0, passed: 0 }),
+      draw({ command: 21, covered: 0, facing: 0, shaded: 0, depthPassed: 0, stencilPassed: 0, passed: 0 }),
+      draw({ command: 22, scissored: true, testsMeasured: 0 }),
+    ],
+    notes: ["a note"], problems: [],
+  }));
+  assert.equal(h.image, 17);
+  assert.deepEqual(h.events.map((e) => (e.kind === "draw" ? drawOutcome(e) : e.kind)), ["load", "wrote", "culled", "discarded", "depth", "missed", "scissored"]);
+  assert.deepEqual(h.events.map(touchesPixel), [true, true, true, true, true, false, false]);
+  assert.equal(eventSummary(h.events[0]), "pass 0 begins (CLEAR)");
+  assert.equal(eventSummary(h.events[1]), "vkCmdDrawIndexed: wrote the pixel (1 sample passed)");
+  // The value after the draw: B8G8R8A8 bytes c7 3c c7 ff, and the depth a little-endian float.
+  const [r, g, b, a] = texelValues(h.pixelFormat, h.events[1].value);
+  assert.deepEqual([r, g, b, a].map((v) => Math.round(v * 255)), [199, 60, 199, 255]);
+  assert.ok(Math.abs(texelValues(h.depthFormat, h.events[1].depth, true)[0] - 0.953956) < 1e-6);
+  assert.deepEqual(texelLines(h.depthFormat, h.events[0].depth, true), ["depth 1"]);
+  assert.deepEqual(texelLines("VK_FORMAT_UNKNOWN_THING", new Uint8Array([1, 255])), ["bytes 01 ff"]);
+  assert.throws(() => parsePixelHistory("{}"), /Not a pixel history/);
+  assert.equal(h.requestedImage, 17);
+
+  // A Metal capture's history arrives parsed, with Metal's load action names.
+  const metal = parsePixelHistory({
+    format: "gpu-inspector-pixel-history", version: 1, image: 5, requestedImage: 4, x: 0, y: 0, mip: 0, layer: 0, pixelFormat: "", depthFormat: "",
+    events: [{ kind: "load", passIndex: 2, detail: "MTLLoadActionLoad" }], notes: [], problems: [],
+  });
+  assert.equal(metal.requestedImage, 4);
+  assert.equal(eventSummary(metal.events[0]), "pass 2 begins (Load)");
 });
 
 test("failures are tool errors the model reads, unknown tools protocol errors", async () => {

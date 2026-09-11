@@ -354,6 +354,13 @@ export interface OverdrawMeasurement {
 
 export interface CaptureOverdrawMessage { action: "CaptureOverdraw"; count: number; passes: OverdrawMeasurement[] }
 
+/**
+ * Metal: the pixel a capture with `pixelHistory` followed through its frame
+ * (metal/src/pixel_history.mm), in the JSON vkinsp_replay --pixel-data writes
+ * (renderer/pixel_history.ts parses it).
+ */
+export interface CapturePixelHistoryMessage { action: "CapturePixelHistory"; history: Record<string, unknown> }
+
 export interface CaptureOverdrawDataMessage {
   action: "CaptureOverdrawData";
   frame: number;
@@ -467,6 +474,7 @@ export type LayerMessage =
   | CapturePassTimingsMessage
   | CaptureOverdrawMessage
   | CaptureOverdrawDataMessage
+  | CapturePixelHistoryMessage
   | ShaderReplacedMessage
   | ImageDataMessage
   | GpuTraceMessage
@@ -523,6 +531,13 @@ export interface CaptureRequest {
    * (CaptureOverdraw). The Vulkan layer ignores it; vkinsp_replay --overdraw measures a Vulkan capture file.
    */
   overdraw?: boolean;
+  /**
+   * Metal: follow one pixel of a texture through the captured frame (CapturePixelHistory): every
+   * pass that renders to it drawn again one draw at a time at that pixel. `texture` is an object id
+   * from an earlier capture; a drawable's (or one no longer alive) follows the drawable the frame
+   * renders into. The Vulkan layer ignores it; vkinsp_replay --pixel follows a Vulkan capture file.
+   */
+  pixelHistory?: { texture: number; x: number; y: number; mip?: number; layer?: number };
 }
 
 /** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */

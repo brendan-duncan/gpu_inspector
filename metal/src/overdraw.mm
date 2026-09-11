@@ -2,6 +2,7 @@
 
 #include "capture.h"
 #include "json_writer.h"
+#include "pass_record.h"
 #include "swizzle.h"
 #include "transport.h"
 
@@ -18,48 +19,6 @@
 #include <unordered_set>
 
 namespace mtlinsp {
-
-/** A render pass being measured: where it is, what it starts from, and the calls it made. */
-struct OverdrawPass {
-    id commandBuffer = nil;   // retained
-    uint64_t commandBufferId = 0;
-    uint32_t frame = 0;
-    uint32_t passIndex = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    /** Why the pass is not measured at all. */
-    std::string note;
-    bool multisampled = false;
-    bool layered = false;
-    MTLPixelFormat depthFormat = MTLPixelFormatInvalid;
-    MTLPixelFormat stencilFormat = MTLPixelFormatInvalid;
-    /** One texture holds both depth and stencil. */
-    bool combined = false;
-    bool depthLoads = false;
-    bool stencilLoads = false;
-    /** Copies of the depth and stencil textures taken before the pass began, when it loads them. Retained. */
-    id<MTLTexture> depthStart = nil;
-    id<MTLTexture> stencilStart = nil;
-    double clearDepth = 1.0;
-    uint32_t clearStencil = 0;
-    /**
-     * The recorded calls, per encoder: one for a render encoder, one per sub-encoder, in creation
-     * order, for a parallel render encoder. Each is drawn in an encoder of its own, since each
-     * started from Metal's default state.
-     */
-    struct Segment {
-        const void *encoder = nullptr;
-        std::vector<OverdrawOp> ops;
-    };
-    std::vector<Segment> segments;
-
-    ~OverdrawPass() {
-        [commandBuffer release];
-        [depthStart release];
-        [stencilStart release];
-    }
-};
-
 namespace {
 
 /** One measurement drawn into a command buffer, waiting for it to complete. */
@@ -87,22 +46,22 @@ struct PendingMeasurement {
 };
 
 std::mutex g_mutex;
+/** Passes are recorded: the capture measures overdraw, or follows a pixel. */
 std::atomic<bool> g_active{false};
+bool g_overdraw = false;
 uint64_t g_maxDataSize = 256ull << 20;
 std::unordered_map<const void *, std::shared_ptr<OverdrawPass>> g_passes;   // pass encoder -> pass
 std::unordered_map<const void *, const void *> g_subEncoders;               // sub-encoder -> parallel encoder
 std::vector<PendingMeasurement> g_pending;
 
-// Pipelines. Their own lock: a pipeline's dealloc can happen inside any other call.
-struct CountingPipeline {
-    id pipeline = nil;        // retained
-    bool rasterless = false;  // rasterization is off: its draws have no fragments to count
-    std::string error;
-};
-std::mutex g_pipelineMutex;
-std::unordered_map<const void *, id> g_descriptors;   // pipeline state -> descriptor copy (retained)
-std::map<std::tuple<const void *, MTLPixelFormat, MTLPixelFormat>, CountingPipeline> g_counting;
-std::unordered_map<const void *, id> g_countFunctions;   // device -> counting fragment function (retained)
+// What is kept of the application's pipelines and depth-stencil states, and the copies made of
+// them. Their own lock: a dealloc can happen inside any other call.
+std::mutex g_stateMutex;
+std::unordered_map<const void *, id> g_descriptors;                  // pipeline state -> descriptor copy (retained)
+std::map<std::tuple<const void *, int, MTLPixelFormat, MTLPixelFormat>, DerivedPipeline> g_derived;
+std::unordered_map<const void *, id> g_depthStencilDescriptors;      // depth-stencil state -> descriptor copy (retained)
+std::map<std::pair<const void *, int>, id> g_derivedDepthStencil;    // (state, or device for None; variant) -> copy (retained)
+std::map<std::pair<const void *, std::string>, id> g_functions;      // (device, name) -> function (retained)
 
 constexpr uint32_t kHistogramBuckets = 8;
 
@@ -113,43 +72,6 @@ float HalfToFloat(uint16_t h) {
     if (exponent == 0) return sign * std::ldexp((float)mantissa, -24);
     if (exponent == 31) return mantissa ? NAN : sign * INFINITY;
     return sign * std::ldexp((float)(mantissa + 1024), exponent - 25);
-}
-
-id<MTLTexture> NewTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height) {
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
-                                                                                 width:width
-                                                                                height:height
-                                                                             mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget;
-    d.storageMode = MTLStorageModePrivate;
-    return [device newTextureWithDescriptor:d];
-}
-
-/** The fragment function that counts: 1.0 into the first colour target. Compiled once per device. */
-id<MTLFunction> CountFunction(id<MTLDevice> device) {
-    {
-        std::lock_guard<std::mutex> lock(g_pipelineMutex);
-        auto it = g_countFunctions.find((__bridge const void *)device);
-        if (it != g_countFunctions.end()) return it->second;
-    }
-    static NSString *const kSource = @"#include <metal_stdlib>\n"
-                                      "fragment float gpu_inspector_overdraw_count() { return 1.0; }\n";
-    NSError *error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:kSource options:nil error:&error];
-    id<MTLFunction> function = [library newFunctionWithName:@"gpu_inspector_overdraw_count"];
-    [library release];
-    if (function == nil) {
-        Log("overdraw: the counting fragment function did not compile: %s",
-            error.localizedDescription.UTF8String ?: "no error given");
-    }
-    std::lock_guard<std::mutex> lock(g_pipelineMutex);
-    auto it = g_countFunctions.find((__bridge const void *)device);
-    if (it != g_countFunctions.end()) {
-        [function release];
-        return it->second;
-    }
-    g_countFunctions[(__bridge const void *)device] = function;
-    return function;
 }
 
 /** Sets a property both descriptor classes (render and mesh) may have, when this one has it. */
@@ -163,93 +85,13 @@ void SendBool(id object, const char *selector, BOOL value) {
     if ([object respondsToSelector:sel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(object, sel, value);
 }
 
-/**
- * The counting copy of a pipeline for a pass with these depth and stencil formats: the
- * application's descriptor with the fragment function replaced by the counting one, a single
- * R16Float colour target blended ONE + ONE, one sample, and no alpha to coverage.
- */
-CountingPipeline CountingCopy(id<MTLDevice> device, id state, id<MTLFunction> count, MTLPixelFormat depthFormat,
-                              MTLPixelFormat stencilFormat) {
-    const auto key = std::make_tuple((__bridge const void *)state, depthFormat, stencilFormat);
-    id descriptor = nil;
-    {
-        std::lock_guard<std::mutex> lock(g_pipelineMutex);
-        auto cached = g_counting.find(key);
-        if (cached != g_counting.end()) return cached->second;
-        auto it = g_descriptors.find((__bridge const void *)state);
-        if (it != g_descriptors.end()) descriptor = [it->second copy];
-    }
-    CountingPipeline result;
-    if (descriptor == nil) {
-        result.error = "a pipeline created before the capture library was loaded, or through a form it does not hook";
-    } else {
-        SEL rasterization = sel_registerName("isRasterizationEnabled");
-        if ([descriptor respondsToSelector:rasterization]
-            && !((BOOL (*)(id, SEL))objc_msgSend)(descriptor, rasterization)) {
-            result.rasterless = true;
-        } else {
-            ((void (*)(id, SEL, id))objc_msgSend)(descriptor, sel_registerName("setFragmentFunction:"), count);
-            MTLRenderPipelineColorAttachmentDescriptorArray *colors =
-                ((id (*)(id, SEL))objc_msgSend)(descriptor, sel_registerName("colorAttachments"));
-            for (NSUInteger i = 0; i < 8; i++) {
-                MTLRenderPipelineColorAttachmentDescriptor *c = colors[i];
-                if (i == 0) {
-                    c.pixelFormat = MTLPixelFormatR16Float;
-                    c.writeMask = MTLColorWriteMaskRed;
-                    c.blendingEnabled = YES;
-                    c.rgbBlendOperation = MTLBlendOperationAdd;
-                    c.alphaBlendOperation = MTLBlendOperationAdd;
-                    c.sourceRGBBlendFactor = MTLBlendFactorOne;
-                    c.destinationRGBBlendFactor = MTLBlendFactorOne;
-                    c.sourceAlphaBlendFactor = MTLBlendFactorOne;
-                    c.destinationAlphaBlendFactor = MTLBlendFactorOne;
-                } else {
-                    c.pixelFormat = MTLPixelFormatInvalid;
-                    c.blendingEnabled = NO;
-                }
-            }
-            Send(descriptor, "setDepthAttachmentPixelFormat:", depthFormat);
-            Send(descriptor, "setStencilAttachmentPixelFormat:", stencilFormat);
-            // rasterSampleCount from macOS 13; sampleCount, its deprecated spelling, before that.
-            Send(descriptor, "setSampleCount:", 1);
-            Send(descriptor, "setRasterSampleCount:", 1);
-            SendBool(descriptor, "setAlphaToCoverageEnabled:", NO);
-            SendBool(descriptor, "setAlphaToOneEnabled:", NO);
-            // An archive holds the application's pipelines, not this one: a lookup would only miss.
-            SEL archives = sel_registerName("setBinaryArchives:");
-            if ([descriptor respondsToSelector:archives]) ((void (*)(id, SEL, id))objc_msgSend)(descriptor, archives, nil);
-
-            NSError *error = nil;
-            if ([descriptor isKindOfClass:[MTLRenderPipelineDescriptor class]]) {
-                result.pipeline = [device newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                                                                         error:&error];
-            } else {
-                SEL mesh = sel_registerName("newRenderPipelineStateWithMeshDescriptor:options:reflection:error:");
-                if ([device respondsToSelector:mesh]) {
-                    result.pipeline = ((id (*)(id, SEL, id, NSUInteger, id *, NSError **))objc_msgSend)(
-                        device, mesh, descriptor, 0, nullptr, &error);
-                }
-            }
-            if (result.pipeline == nil) {
-                result.error = error != nil && error.localizedDescription != nil
-                    ? std::string("its counting copy did not build: ") + error.localizedDescription.UTF8String
-                    : "its counting copy did not build";
-                Log("overdraw: %s", result.error.c_str());
-            }
-        }
-        [descriptor release];
-    }
-    std::lock_guard<std::mutex> lock(g_pipelineMutex);
-    auto cached = g_counting.find(key);
-    if (cached != g_counting.end()) {
-        [result.pipeline release];
-        return cached->second;
-    }
-    g_counting[key] = result;
-    return result;
+/** The counting fragment function: 1.0 into the first colour target. */
+id<MTLFunction> CountFunction(id<MTLDevice> device) {
+    return LibraryFunction(device, "gpu_inspector_overdraw_count",
+                           @"#include <metal_stdlib>\nfragment float gpu_inspector_overdraw_count() { return 1.0; }\n");
 }
 
-/** One of a pass's two measurements, as the recorded calls see it. */
+/** One of a pass's two overdraw measurements, as the recorded calls see it. */
 class Measurement final : public OverdrawReplay {
 public:
     Measurement(id<MTLDevice> device, id<MTLFunction> count, MTLPixelFormat depthFormat, MTLPixelFormat stencilFormat,
@@ -265,7 +107,7 @@ public:
         bound_ = false;
         rasterless_ = false;
         if (state == nil) return;
-        const CountingPipeline copy = CountingCopy(device_, state, count_, depthFormat_, stencilFormat_);
+        const DerivedPipeline copy = PipelineCopy(device_, state, PipelineVariant::OverdrawCount, count_, depthFormat_, stencilFormat_);
         if (copy.rasterless) {
             rasterless_ = true;
             return;
@@ -279,17 +121,20 @@ public:
         bound_ = true;
     }
 
-    bool TestsDepthStencil() const override {
-        return depthFormat_ != MTLPixelFormatInvalid || stencilFormat_ != MTLPixelFormatInvalid;
+    /** Only where the measurement tests depth and stencil; the untested count keeps Metal's default state. */
+    void SetDepthStencilState(id<MTLRenderCommandEncoder> encoder, id state) override {
+        if (depthFormat_ != MTLPixelFormatInvalid || stencilFormat_ != MTLPixelFormatInvalid) {
+            [encoder setDepthStencilState:(id<MTLDepthStencilState>)state];
+        }
     }
 
-    bool Draw() override {
+    void IssueDraw(id<MTLRenderCommandEncoder> encoder, const std::function<void(id<MTLRenderCommandEncoder>)> &draw) override {
         if (bound_) {
             out_.draws++;
-            return true;
+            draw(encoder);
+        } else if (!rasterless_) {
+            out_.skipped++;
         }
-        if (!rasterless_) out_.skipped++;
-        return false;
     }
 
     void Skip() override { out_.skipped++; }
@@ -305,7 +150,7 @@ private:
     std::unordered_set<const void *> kept_;
 };
 
-/** Draws a pass's two measurements into its command buffer. On the application's encoding thread, inside its endEncoding. */
+/** Draws a pass's two overdraw measurements into its command buffer. On the application's encoding thread, inside its endEncoding. */
 void MeasurePass(OverdrawPass &pass) {
   @autoreleasepool {
     Internal internal;
@@ -340,7 +185,7 @@ void MeasurePass(OverdrawPass &pass) {
             continue;
         }
 
-        id<MTLTexture> target = NewTexture(device, MTLPixelFormatR16Float, pass.width, pass.height);
+        id<MTLTexture> target = NewRenderTexture(device, MTLPixelFormatR16Float, pass.width, pass.height);
         if (target == nil) {
             m.note = "no memory for the count target";
             results.push_back(std::move(m));
@@ -353,14 +198,14 @@ void MeasurePass(OverdrawPass &pass) {
         if (tests) {
             // The copies taken before the pass began, or textures to clear the way the pass did.
             if (pass.depthFormat != MTLPixelFormatInvalid) {
-                depth = pass.depthStart != nil ? pass.depthStart : NewTexture(device, pass.depthFormat, pass.width, pass.height);
+                depth = pass.depthStart != nil ? pass.depthStart : NewRenderTexture(device, pass.depthFormat, pass.width, pass.height);
                 if (depth != nil) m.keep.emplace_back(depth);
                 if (depth != pass.depthStart) [depth release];
             }
             if (pass.combined) {
                 stencil = depth;
             } else if (pass.stencilFormat != MTLPixelFormatInvalid) {
-                stencil = pass.stencilStart != nil ? pass.stencilStart : NewTexture(device, pass.stencilFormat, pass.width, pass.height);
+                stencil = pass.stencilStart != nil ? pass.stencilStart : NewRenderTexture(device, pass.stencilFormat, pass.width, pass.height);
                 if (stencil != nil) m.keep.emplace_back(stencil);
                 if (stencil != pass.stencilStart) [stencil release];
             }
@@ -397,7 +242,7 @@ void MeasurePass(OverdrawPass &pass) {
             }
             encoder.label = m.depthTested ? @"gpu-inspector overdraw (depth tested)" : @"gpu-inspector overdraw";
             measurement.BeginEncoder();
-            for (OverdrawOp &op : segment.ops) op(encoder, measurement);
+            for (LoggedOp &op : segment.ops) op.op(encoder, measurement);
             [encoder endEncoding];
             first = false;
         }
@@ -435,35 +280,233 @@ void MeasurePass(OverdrawPass &pass) {
 }  // namespace
 
 // --------------------------------------------------------------------------------------------
+// Shared with pixel_history.mm (pass_record.h)
+
+id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height) {
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                                                                                 width:width
+                                                                                height:height
+                                                                             mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget;
+    d.storageMode = MTLStorageModePrivate;
+    return [device newTextureWithDescriptor:d];
+}
+
+id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char *name, NSString *source) {
+    const auto key = std::make_pair((__bridge const void *)device, std::string(name));
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_functions.find(key);
+        if (it != g_functions.end()) return it->second;
+    }
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:name]];
+    [library release];
+    if (function == nil) {
+        Log("measurement: %s did not compile: %s", name, error.localizedDescription.UTF8String ?: "no error given");
+    }
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_functions.find(key);
+    if (it != g_functions.end()) {
+        [function release];
+        return it->second;
+    }
+    g_functions[key] = function;
+    return function;
+}
+
+DerivedPipeline PipelineCopy(id<MTLDevice> device, id state, PipelineVariant variant, id<MTLFunction> fragment,
+                             MTLPixelFormat depthFormat, MTLPixelFormat stencilFormat) {
+    const auto key = std::make_tuple((__bridge const void *)state, (int)variant, depthFormat, stencilFormat);
+    id descriptor = nil;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto cached = g_derived.find(key);
+        if (cached != g_derived.end()) return cached->second;
+        auto it = g_descriptors.find((__bridge const void *)state);
+        if (it != g_descriptors.end()) descriptor = [it->second copy];
+    }
+    DerivedPipeline result;
+    if (descriptor == nil) {
+        result.error = "a pipeline created before the capture library was loaded, or through a form it does not hook";
+    } else {
+        SEL rasterization = sel_registerName("isRasterizationEnabled");
+        if ([descriptor respondsToSelector:rasterization]
+            && !((BOOL (*)(id, SEL))objc_msgSend)(descriptor, rasterization)) {
+            result.rasterless = true;
+        } else {
+            MTLRenderPipelineColorAttachmentDescriptorArray *colors =
+                ((id (*)(id, SEL))objc_msgSend)(descriptor, sel_registerName("colorAttachments"));
+            if (variant == PipelineVariant::OverdrawCount || variant == PipelineVariant::HistoryCover) {
+                ((void (*)(id, SEL, id))objc_msgSend)(descriptor, sel_registerName("setFragmentFunction:"), fragment);
+            }
+            if (variant == PipelineVariant::OverdrawCount) {
+                for (NSUInteger i = 0; i < 8; i++) {
+                    MTLRenderPipelineColorAttachmentDescriptor *c = colors[i];
+                    if (i == 0) {
+                        c.pixelFormat = MTLPixelFormatR16Float;
+                        c.writeMask = MTLColorWriteMaskRed;
+                        c.blendingEnabled = YES;
+                        c.rgbBlendOperation = MTLBlendOperationAdd;
+                        c.alphaBlendOperation = MTLBlendOperationAdd;
+                        c.sourceRGBBlendFactor = MTLBlendFactorOne;
+                        c.destinationRGBBlendFactor = MTLBlendFactorOne;
+                        c.sourceAlphaBlendFactor = MTLBlendFactorOne;
+                        c.destinationAlphaBlendFactor = MTLBlendFactorOne;
+                    } else {
+                        c.pixelFormat = MTLPixelFormatInvalid;
+                        c.blendingEnabled = NO;
+                    }
+                }
+                Send(descriptor, "setDepthAttachmentPixelFormat:", depthFormat);
+                Send(descriptor, "setStencilAttachmentPixelFormat:", stencilFormat);
+                // rasterSampleCount from macOS 13; sampleCount, its deprecated spelling, before that.
+                Send(descriptor, "setSampleCount:", 1);
+                Send(descriptor, "setRasterSampleCount:", 1);
+                SendBool(descriptor, "setAlphaToCoverageEnabled:", NO);
+                SendBool(descriptor, "setAlphaToOneEnabled:", NO);
+            } else {
+                // The pixel history's copies draw into attachments of the pass's own formats and
+                // write none of them: the queries count samples, the application's pipeline draws.
+                for (NSUInteger i = 0; i < 8; i++) {
+                    MTLRenderPipelineColorAttachmentDescriptor *c = colors[i];
+                    c.writeMask = MTLColorWriteMaskNone;
+                    c.blendingEnabled = NO;
+                }
+                if (variant == PipelineVariant::HistoryCover) {
+                    SendBool(descriptor, "setAlphaToCoverageEnabled:", NO);
+                    SendBool(descriptor, "setAlphaToOneEnabled:", NO);
+                }
+            }
+            // An archive holds the application's pipelines, not this one: a lookup would only miss.
+            SEL archives = sel_registerName("setBinaryArchives:");
+            if ([descriptor respondsToSelector:archives]) ((void (*)(id, SEL, id))objc_msgSend)(descriptor, archives, nil);
+
+            NSError *error = nil;
+            if ([descriptor isKindOfClass:[MTLRenderPipelineDescriptor class]]) {
+                result.pipeline = [device newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+                                                                         error:&error];
+            } else {
+                SEL mesh = sel_registerName("newRenderPipelineStateWithMeshDescriptor:options:reflection:error:");
+                if ([device respondsToSelector:mesh]) {
+                    result.pipeline = ((id (*)(id, SEL, id, NSUInteger, id *, NSError **))objc_msgSend)(
+                        device, mesh, descriptor, 0, nullptr, &error);
+                }
+            }
+            if (result.pipeline == nil) {
+                result.error = error != nil && error.localizedDescription != nil
+                    ? std::string("a copy of its pipeline did not build: ") + error.localizedDescription.UTF8String
+                    : "a copy of its pipeline did not build";
+                Log("measurement: %s", result.error.c_str());
+            }
+        }
+        [descriptor release];
+    }
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto cached = g_derived.find(key);
+    if (cached != g_derived.end()) {
+        [result.pipeline release];
+        return cached->second;
+    }
+    g_derived[key] = result;
+    return result;
+}
+
+id DepthStencilCopy(id<MTLDevice> device, id state, DepthStencilVariant variant) {
+    if (state == nil) variant = DepthStencilVariant::None;
+    const auto key = std::make_pair(variant == DepthStencilVariant::None ? (__bridge const void *)device : (__bridge const void *)state,
+                                    (int)variant);
+    MTLDepthStencilDescriptor *descriptor = nil;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto cached = g_derivedDepthStencil.find(key);
+        if (cached != g_derivedDepthStencil.end()) return cached->second;
+        if (variant != DepthStencilVariant::None) {
+            auto it = g_depthStencilDescriptors.find((__bridge const void *)state);
+            if (it == g_depthStencilDescriptors.end()) return nil;
+            descriptor = [it->second copy];
+        }
+    }
+    if (descriptor == nil) descriptor = [[MTLDepthStencilDescriptor alloc] init];   // Always, no writes, no stencil
+    descriptor.depthWriteEnabled = NO;
+    auto keep = [](MTLStencilDescriptor *s) -> MTLStencilDescriptor * {
+        if (s == nil) return nil;
+        MTLStencilDescriptor *k = [[s copy] autorelease];
+        k.stencilFailureOperation = MTLStencilOperationKeep;
+        k.depthFailureOperation = MTLStencilOperationKeep;
+        k.depthStencilPassOperation = MTLStencilOperationKeep;
+        return k;
+    };
+    switch (variant) {
+        case DepthStencilVariant::None:
+            break;
+        case DepthStencilVariant::DepthOnly:
+            descriptor.frontFaceStencil = nil;
+            descriptor.backFaceStencil = nil;
+            break;
+        case DepthStencilVariant::StencilOnly:
+            descriptor.depthCompareFunction = MTLCompareFunctionAlways;
+            descriptor.frontFaceStencil = keep(descriptor.frontFaceStencil);
+            descriptor.backFaceStencil = keep(descriptor.backFaceStencil);
+            break;
+        case DepthStencilVariant::Both:
+            descriptor.frontFaceStencil = keep(descriptor.frontFaceStencil);
+            descriptor.backFaceStencil = keep(descriptor.backFaceStencil);
+            break;
+    }
+    id copy = [device newDepthStencilStateWithDescriptor:descriptor];
+    [descriptor release];
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto cached = g_derivedDepthStencil.find(key);
+    if (cached != g_derivedDepthStencil.end()) {
+        [copy release];
+        return cached->second;
+    }
+    g_derivedDepthStencil[key] = copy;
+    return copy;
+}
+
+// --------------------------------------------------------------------------------------------
 
 bool OverdrawActive() {
     return g_active.load(std::memory_order_relaxed);
 }
 
-void LogOverdrawOp(id encoder, OverdrawOp op) {
+void LogOverdrawOp(id encoder, OpKey key, OverdrawOp op) {
     if (!OverdrawActive() || encoder == nil) return;
-    const void *key = (__bridge const void *)encoder;
+    const void *pointer = (__bridge const void *)encoder;
+    LoggedOp logged{std::move(op), std::move(key), LastRecordedCommand()};
     std::lock_guard<std::mutex> lock(g_mutex);
-    auto sub = g_subEncoders.find(key);
-    auto it = g_passes.find(sub != g_subEncoders.end() ? sub->second : key);
+    auto sub = g_subEncoders.find(pointer);
+    auto it = g_passes.find(sub != g_subEncoders.end() ? sub->second : pointer);
     if (it == g_passes.end()) return;
     std::vector<OverdrawPass::Segment> &segments = it->second->segments;
     for (auto s = segments.rbegin(); s != segments.rend(); ++s) {
-        if (s->encoder == key) {
-            s->ops.push_back(std::move(op));
+        if (s->encoder == pointer) {
+            s->ops.push_back(std::move(logged));
             return;
         }
     }
-    segments.push_back({key, {}});
-    segments.back().ops.push_back(std::move(op));
+    segments.push_back({pointer, {}});
+    segments.back().ops.push_back(std::move(logged));
 }
 
 std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPassDescriptor *descriptor) {
     if (!OverdrawActive() || commandBuffer == nil || descriptor == nil) return nullptr;
+    bool overdraw = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        overdraw = g_overdraw;
+    }
+    const int historyAttachment = MatchPixelHistoryAttachment(descriptor);
+    if (!overdraw && historyAttachment < 0) return nullptr;   // nothing the capture measures renders here
+
     auto pass = std::make_shared<OverdrawPass>();
     pass->commandBuffer = [commandBuffer retain];
     pass->commandBufferId = CommandBufferId(commandBuffer);
     pass->frame = CaptureFrameIndex();
+    pass->measureOverdraw = overdraw;
 
     // The count target takes the size of the first attachment, at the level the pass renders to.
     id<MTLTexture> sized = nil;
@@ -508,7 +551,8 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
         if (stencil.texture.sampleCount > 1) pass->multisampled = true;
     }
     pass->combined = depth.texture != nil && depth.texture == stencil.texture;
-    if (pass->multisampled) return pass;
+    if (historyAttachment >= 0) PreparePixelHistory(*pass, commandBuffer, descriptor, historyAttachment);
+    if (!overdraw || pass->multisampled) return pass;
 
     // What the pass loads, copied before it can change it. The command buffer is free: the
     // application is asking for its next encoder.
@@ -524,7 +568,7 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
         const uint32_t width = (uint32_t)std::max<NSUInteger>(1, a.texture.width >> a.level);
         const uint32_t height = (uint32_t)std::max<NSUInteger>(1, a.texture.height >> a.level);
         if (width != pass->width || height != pass->height) return nil;
-        id<MTLTexture> start = NewTexture(cb.device, a.texture.pixelFormat, width, height);
+        id<MTLTexture> start = NewRenderTexture(cb.device, a.texture.pixelFormat, width, height);
         if (start == nil) return nil;
         [blit copyFromTexture:a.texture
                   sourceSlice:a.slice
@@ -556,6 +600,13 @@ void BeginOverdrawPass(id encoder, std::shared_ptr<OverdrawPass> pass, uint32_t 
     g_passes[(__bridge const void *)encoder] = std::move(pass);
 }
 
+void NotePassBeginCommand(id encoder, uint32_t command) {
+    if (!OverdrawActive() || encoder == nil) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_passes.find((__bridge const void *)encoder);
+    if (it != g_passes.end()) it->second->beginCommand = command;
+}
+
 void NoteOverdrawSubEncoder(id parent, id encoder) {
     if (!OverdrawActive() || parent == nil || encoder == nil) return;
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -579,15 +630,25 @@ void EndOverdrawPass(id encoder) {
             else ++s;
         }
     }
-    MeasurePass(*pass);
+    if (pass->measureOverdraw) MeasurePass(*pass);
+    if (pass->history) FollowPixel(*pass);
     // The recorded calls let go of what they held here, outside the lock.
 }
 
 void RememberRenderPipeline(id state, id descriptor) {
     if (state == nil || descriptor == nil) return;
     id kept = [descriptor copy];
-    std::lock_guard<std::mutex> lock(g_pipelineMutex);
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     id &slot = g_descriptors[(__bridge const void *)state];
+    [slot release];
+    slot = kept;
+}
+
+void RememberDepthStencilState(id state, MTLDepthStencilDescriptor *descriptor) {
+    if (state == nil || descriptor == nil) return;
+    id kept = [descriptor copy];
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    id &slot = g_depthStencilDescriptors[(__bridge const void *)state];
     [slot release];
     slot = kept;
 }
@@ -595,26 +656,38 @@ void RememberRenderPipeline(id state, id descriptor) {
 void ForgetRenderPipeline(id object) {
     std::vector<id> released;
     {
-        std::lock_guard<std::mutex> lock(g_pipelineMutex);
-        if (g_descriptors.empty()) return;
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        if (g_descriptors.empty() && g_depthStencilDescriptors.empty()) return;
         const void *key = (__bridge const void *)object;
-        auto it = g_descriptors.find(key);
-        if (it == g_descriptors.end()) return;
-        released.push_back(it->second);
-        g_descriptors.erase(it);
-        for (auto c = g_counting.begin(); c != g_counting.end();) {
-            if (std::get<0>(c->first) == key) {
-                if (c->second.pipeline != nil) released.push_back(c->second.pipeline);
-                c = g_counting.erase(c);
-            } else {
-                ++c;
+        if (auto it = g_descriptors.find(key); it != g_descriptors.end()) {
+            released.push_back(it->second);
+            g_descriptors.erase(it);
+            for (auto c = g_derived.begin(); c != g_derived.end();) {
+                if (std::get<0>(c->first) == key) {
+                    if (c->second.pipeline != nil) released.push_back(c->second.pipeline);
+                    c = g_derived.erase(c);
+                } else {
+                    ++c;
+                }
+            }
+        }
+        if (auto it = g_depthStencilDescriptors.find(key); it != g_depthStencilDescriptors.end()) {
+            released.push_back(it->second);
+            g_depthStencilDescriptors.erase(it);
+            for (auto c = g_derivedDepthStencil.begin(); c != g_derivedDepthStencil.end();) {
+                if (c->first.first == key) {
+                    if (c->second != nil) released.push_back(c->second);
+                    c = g_derivedDepthStencil.erase(c);
+                } else {
+                    ++c;
+                }
             }
         }
     }
     for (id o : released) [o release];
 }
 
-void StartOverdrawCapture(bool enabled, uint64_t maxDataSize) {
+void StartOverdrawCapture(bool overdraw, bool recordPasses, uint64_t maxDataSize) {
     std::vector<PendingMeasurement> pending;
     std::unordered_map<const void *, std::shared_ptr<OverdrawPass>> passes;
     {
@@ -623,25 +696,29 @@ void StartOverdrawCapture(bool enabled, uint64_t maxDataSize) {
         passes.swap(g_passes);
         g_subEncoders.clear();
         g_maxDataSize = maxDataSize;
-        g_active = enabled;
+        g_overdraw = overdraw;
+        g_active = overdraw || recordPasses;
     }
     for (PendingMeasurement &m : pending) [m.staging release];
-    if (enabled) Log("overdraw: measuring every render pass of the capture");
+    if (overdraw) Log("overdraw: measuring every render pass of the capture");
 }
 
 void SendOverdraw() {
     std::vector<PendingMeasurement> pending;
     std::unordered_map<const void *, std::shared_ptr<OverdrawPass>> unfinished;
     uint64_t maxDataSize = 0;
+    bool overdraw = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        const bool wasActive = g_active.exchange(false);
+        overdraw = g_overdraw;
+        g_overdraw = false;
+        g_active = false;
         pending.swap(g_pending);
         unfinished.swap(g_passes);
         g_subEncoders.clear();
         maxDataSize = g_maxDataSize;
-        if (!wasActive && pending.empty()) return;
     }
+    if (!overdraw && pending.empty()) return;
 
     // The counts, and what they add up to.
     struct Result {

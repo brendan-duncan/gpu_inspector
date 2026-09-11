@@ -146,6 +146,8 @@ bool g_finishPending = false;
 std::set<const void *> g_presenting;                          // command buffers asked to present
 std::vector<DrawableInfo> g_presentedByCommandBuffer;         // drawables presentDrawable: took
 std::unordered_map<const void *, DrawableInfo> g_drawableOfTexture;
+/** The index of the command this thread recorded last (LastRecordedCommand). */
+thread_local uint32_t t_lastCommand = 0;
 std::unordered_map<const void *, DrawableInfo> g_targetOfCommandBuffer;
 std::set<const void *> g_countedDrawables;                    // frame ended at commit already
 bool g_directPresent = false;
@@ -641,6 +643,7 @@ void Finish() {
     SendTextures(textures);
     SendTimings(timings, timing);
     SendOverdraw();
+    SendPixelHistory();
     // The end of the capture's stream, whichever sections it had (the empty ones are not sent): a
     // client waiting for the capture (the MCP server) knows nothing more of it is coming.
     {
@@ -689,7 +692,8 @@ void AdvanceFrame() {
             g_finishPending = false;
             ReleaseTiming(g_timing);
             // Before recording starts, so the first pass of the capture is measured too.
-            StartOverdrawCapture(g_options.overdraw, g_options.maxTextureSize);
+            StartPixelHistoryCapture(g_options.pixelHistory);
+            StartOverdrawCapture(g_options.overdraw, g_options.pixelHistory.enabled, g_options.maxTextureSize);
             g_recording = true;
             Log("capture started");
             return;
@@ -838,7 +842,23 @@ void RecordCommandWithBuffers(const char *method, id object, const std::string &
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_recording) return;
     command.frame = g_frameIndex;
+    t_lastCommand = (uint32_t)g_commands.size();
     g_commands.push_back(std::move(command));
+}
+
+uint32_t LastRecordedCommand() {
+    return t_lastCommand;
+}
+
+std::string RecordedCommandMethod(uint32_t index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return index < g_commands.size() ? g_commands[index].method : std::string();
+}
+
+bool IsDrawableTexture(id texture) {
+    if (texture == nil) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_drawableOfTexture.count((__bridge const void *)texture) != 0;
 }
 
 uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size) {

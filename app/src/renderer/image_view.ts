@@ -69,6 +69,10 @@ export class ImageView {
   private _texels: TexelData | null = null;
   private _pinned = "";
 
+  /** Follows a pixel of a captured render target through the frame (pixel history); absent otherwise. */
+  private _pixelHistory: ((x: number, y: number, mip: number, layer: number) => void) | null;
+  private _pinnedTexel: { x: number; y: number } | null = null;
+  private _historyButton: Button | null = null;
   private _zoomInput!: NumberInput;
   private _autoRangeCheck!: Checkbox;
   private _smoothCheck!: Checkbox;
@@ -77,10 +81,12 @@ export class ImageView {
   private _scroll!: Div;
   private _canvas: HTMLCanvasElement;
 
-  constructor(parent: Widget, session: SessionContext, object: VulkanObject | null, captured: CapturedImageSource | null = null) {
+  constructor(parent: Widget, session: SessionContext, object: VulkanObject | null, captured: CapturedImageSource | null = null,
+              options: { pixelHistory?: (x: number, y: number, mip: number, layer: number) => void } = {}) {
     this.session = session;
     this.object = object;
     this.captured = captured;
+    this._pixelHistory = options.pixelHistory ?? null;
     const db = session.database;
 
     let image: VulkanObject | null = object;
@@ -272,6 +278,10 @@ export class ImageView {
     this._smoothCheck.input.onchange = () => this._canvas.classList.toggle("smooth", this._smoothCheck.checked);
     if (!this.captured) new Button(bar, { html: ICON_REFRESH, class: "btn btn-sm btn-icon", tooltip: "Refresh: read the image again from the application", callback: () => this.request() });
     new Button(bar, { html: ICON_COPY, class: "btn btn-sm btn-icon", tooltip: "Copy the displayed image as PNG", callback: () => void this._copy() });
+    if (this._pixelHistory) {
+      this._historyButton = new Button(bar, { label: "Pixel History", class: "btn btn-sm", disabled: true, callback: () => this._followPinned(),
+        tooltip: "Every clear and draw that touched the clicked pixel (Vulkan: the capture replayed; Metal: the next frame captured following it). Click a pixel first, or double-click one" });
+    }
 
     const info = new Div(parent, { class: "image-view-toolbar" });
     this._status = new Span(info, { text: "", class: "image-view-status" });
@@ -426,6 +436,12 @@ export class ImageView {
       const t = this._texelAt(e);
       if (t && e.button === 0) this._pin(t.x, t.y);
     });
+    c.addEventListener("dblclick", (e: MouseEvent) => {
+      const t = this._texelAt(e);
+      if (!t || !this._pixelHistory) return;
+      this._pin(t.x, t.y);
+      this._followPinned();
+    });
     c.addEventListener("wheel", (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
@@ -442,6 +458,13 @@ export class ImageView {
   private _pin(x: number, y: number): void {
     this._pinned = `Pixel ${this._texelText(x, y, "  ")}`;
     this._pixelInfo.text = this._pinned;
+    this._pinnedTexel = { x, y };
+    if (this._historyButton) this._historyButton.disabled = false;
+  }
+
+  private _followPinned(): void {
+    const t = this._pinnedTexel;
+    if (t && this._pixelHistory) this._pixelHistory(t.x, t.y, this._mip, this._layer);
   }
 
   private async _copy(): Promise<void> {

@@ -71,6 +71,8 @@ export interface CaptureFileManifest {
   passTimings: PassTiming[];
   /** Overdraw measurements with their per-pixel counts (absent when the capture did not measure overdraw). */
   overdraw?: { info: OverdrawMeasurement; payload?: Payload }[];
+  /** The pixel a Metal capture followed (CapturePixelHistory's `history`), when it followed one. */
+  pixelHistory?: Record<string, unknown>;
   /** Validation messages the session had received when the capture was saved. */
   validation?: ValidationMessage[];
   /** Symbolized frames of the addresses the commands' stacks carry, by address. */
@@ -91,6 +93,7 @@ export interface LoadedCapture {
   buffers: Map<number, CapturedBuffer>;
   passTimings: Map<string, PassTiming>;
   overdraw: CapturedOverdraw[];
+  pixelHistory: Record<string, unknown> | null;
   /** Files written before the field was real say "vulkan"; so does an absent one. */
   api: CaptureApi;
 }
@@ -163,5 +166,5 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
-         overdraw, api: manifest.api ?? "vulkan" };
+         overdraw, pixelHistory: manifest.pixelHistory ?? null, api: manifest.api ?? "vulkan" };
 }
