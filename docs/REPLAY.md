@@ -1,0 +1,128 @@
+# Capture replay
+
+`vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
+application. It is the base for the analyses that need to run a frame again with something
+changed: the overdraw heatmap, pixel history, and later per-draw timing and shader debugging
+(TODO.md, "Replay-based features").
+
+```
+vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--trace]
+vkinsp_replay <capture.gpucap> --check
+```
+
+- **Replay (the default).**
+  - Re-creates the capture's objects, replays its command buffers in submission order, and reads
+    back every render target the capture read back, at the same point in the frame.
+  - Compares each target byte for byte with the capture's copy.
+  - Exits with 0 when every target matches, 1 when some differ or could not be compared, and 2
+    when the replay could not run.
+- **`--validate`:** enables the Khronos validation layer and lists its messages.
+- **`--dump <dir>`:** writes the captured, replayed and difference image of each compared target
+  as PNG.
+- **`--trace`:** prints each object and command to stderr before it is replayed, so the call a
+  driver crashes on is the last line printed.
+- **`--check`:** only decodes every creation argument and command argument, and lists what cannot
+  be rebuilt.
+
+It builds with the layer (`VKINSP_BUILD_REPLAY`, on by default) on Windows and Linux.
+
+## How it works
+
+**Decoding.** The layer writes creation arguments and command arguments as JSON with a serializer
+generated from vk.xml (`tools/vkgen/serialize.py`). `tools/vkgen/deserialize.py` generates the
+inverse from the same registry model, as `replay/gen/vk_decode.gen.*`:
+- a decoder for every enum, flags type, struct and `pNext` chain;
+- an argument struct and decoder for every command;
+- a recorder for every `vkCmd*`, which decodes the JSON and records the call into a command buffer.
+
+The generator handles several quirks of the JSON:
+- **Handles.** `{"__id"}` handles resolve to the replay's own objects.
+- **`pNext` chains.** A chain is written as an array whose elements repeat the rest of the chain,
+  so the elements are decoded without their nested chains and then linked.
+- **Unions without a selector.** They are written with every member, and the largest member is
+  decoded (for `VkClearValue`, `color.uint32`: the exact bits).
+- **Truncated data.** Data the layer summarized comes back zeroed, and the decoder reports it.
+
+**Loading.** `replay/src/json.*` is a JSON parser into an arena that keeps numbers as text, so
+64-bit values stay exact. `gpucap.*` reads the file. The Vulkan loader is opened at run time
+(`LoadGlobalFunctions`), so the replay links against no loader and the headers may be newer
+than the installed runtime.
+
+**Objects** are re-created in id order, which is creation order (`replayer.cpp`):
+- **Device.** It is the captured device's create info on the GPU with the captured name (or the
+  first discrete GPU), minus extensions this GPU lacks. `VK_KHR_swapchain` is added so render
+  passes may end in `PRESENT_SRC_KHR` without a surface.
+- **Memory.** Device memory is not re-created as such: every image and buffer gets memory of its
+  own. That keeps a capture replayable on another GPU with other memory types. Transfer usage is
+  added to every image and buffer. External memory and DRM modifier structs are dropped.
+- **Swapchain images** become ordinary images of the swapchain's format and extent. Surfaces,
+  swapchains and pipeline caches are left out.
+- **Pipelines and shader modules** take their code from the SPIR-V payloads the capture keeps.
+  Modules are often destroyed before the capture, and the JSON cuts code over 4 KB.
+- **Render passes** store every attachment, as the layer does while capturing, so the result of
+  every pass can be read. Dynamic rendering attachments get the same treatment when the pass
+  begins.
+- **Dependencies.** An object whose arguments name objects the replay does not have is not created.
+  A command that names them is left out, and so is a pass whose begin is left out, with everything
+  up to its end. The driver is never handed a null handle.
+
+**What goes in.** The replay uses only what the capture read back:
+- **Sampled images** (every mip of the view the capture read) are uploaded before the frame. Each
+  image is then moved to the first layout the frame expects: the old layout of its first barrier,
+  the layout a descriptor binds it with, or the initial layout of a pass that renders to it.
+- **Buffer ranges** captured when bound are uploaded before the submission of the command buffer
+  that binds them.
+- **Descriptor sets** are written from the snapshot taken when they were bound. A set is only
+  rewritten when its contents changed, since rewriting a bound set would invalidate the command
+  buffers that bound it.
+
+**Commands.** A submission's command buffers are recorded from their recordings in the command
+list, including the secondary command buffers inlined after `vkCmdExecuteCommands`. They are
+submitted without the application's semaphores and fences, and the replay waits for them. At the
+end of each pass the replay copies the targets the capture read back for that pass (render pass
+counter per command buffer, as the layer counts). After the submission the copies are compared.
+Only the undefined top byte of a 24-bit depth copy is ignored.
+
+## Where it stands
+
+Every capture that was replayed is listed below, with its result:
+
+| Capture | Result |
+|---|---|
+| test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
+| test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
+| test/triangle `--msaa` | the resolve target identical; the multisampled target is not compared yet |
+| Unity player frame (secondary command buffers, two subpasses, `vkCmdSetVertexInputEXT`, MRT) | 8 of 9 targets identical; the last pass renders to a swapchain image the capture never tracked, and is left out |
+| XR triangle captured on an Adreno 740, replayed on an RTX 4080 | visually identical; 0.4% of texels differ slightly (shader precision and rasterization of two GPUs) |
+
+These cases differ for known reasons:
+- **A frame captured while `replace_shader` was active** reads back the edited shader's output.
+  The capture keeps the original pipeline, which is what the replay draws.
+- **Captures older than sampled-image read-back** have no texture contents to upload.
+
+## What is left
+
+1. **Replayable captures.** The capture has to hold the state a frame starts from, not only what
+   it read back on the way. That means resource contents at frame start: images never read back,
+   buffers never bound in the frame, and host writes to mapped memory between submissions.
+   - Diffing mapped ranges at each submit, as RenderDoc does, covers the host writes.
+   - It also needs initial layouts per subresource.
+   - It needs objects the layer did not track: swapchain images of swapchains created before it
+     loaded.
+   - Multisampled targets should be compared through a resolve.
+   - Live shader replacements should be recorded.
+2. **Overdraw heatmap.** Replay a pass with every pipeline's fragment stage replaced by one that
+   counts (additive blending or stencil increments), into a count target, with the depth the pass
+   started from.
+3. **Pixel history.** Replay the frame with, around each draw that touches the target, a one-pixel
+   scissor and occlusion queries: whether the draw covers the pixel, and whether it passes the
+   depth and stencil tests. Also read the pixel before and after each draw
+   (`vk_pixelhistory.cpp` is the reference).
+4. **The app and the MCP server.**
+   - Run `vkinsp_replay` from GPU Inspector: show the heatmap in the image viewer, and pixel history
+     from a pixel click.
+   - Give Claude tools for both.
+
+Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
+templates and push descriptors with templates, queries whose results the frame reads back, and
+Metal captures.

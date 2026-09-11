@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Added
+- `vkinsp_replay` (`replay/`, [docs/REPLAY.md](docs/REPLAY.md)) re-executes a Vulkan capture on
+  this machine's GPU without the application:
+  - it re-creates the capture's objects through decoders generated from vk.xml
+  - it replays the command buffers
+  - it compares every render target the capture read back with its own copy, byte for byte
+
+  The test triangle and a Unity player frame replay pixel-identical. `--dump` writes the captured,
+  replayed and difference images. It is the base for the overdraw heatmap and pixel history to
+  come.
 - Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
   an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
   Its tools cover:

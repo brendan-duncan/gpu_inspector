@@ -28,8 +28,9 @@ Thumbs.db
 # captures
 *.vkcap
 
-# generated from vk.xml by CMake (tools/gen_vulkan.py)
+# generated from vk.xml by CMake (tools/gen_vulkan.py, tools/gen_replay.py)
 layer/gen/
+replay/gen/
 __pycache__/
 
 # installers (electron-builder)
