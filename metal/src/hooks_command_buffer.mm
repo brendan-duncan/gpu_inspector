@@ -120,6 +120,7 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
                 AddPassAttachment(encoder, pass.depthAttachment, 0, true);
             }
             RecordCommand(method, encoder, RenderPassArgs(descriptor));
+            if (overdraw) NotePassBeginCommand(encoder, LastRecordedCommand());
         }
         if (LogEnabled() && descriptor != nil) {
             MTLRenderPassColorAttachmentDescriptor *color = descriptor.colorAttachments[0];

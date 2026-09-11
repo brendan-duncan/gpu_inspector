@@ -32,6 +32,23 @@
   GPU with `vkinsp_replay --overdraw-data` and shows the same heatmaps and overdraw tab. The MCP
   server's `get_overdraw` replays a Vulkan capture the first time it is asked. The packaged app ships
   `vkinsp_replay` beside the layer.
+- Pixel history of Vulkan captures in the app. Click a pixel in the overdraw tab or in a render
+  target's image viewer and press **Pixel History** (or double-click it). A tab beside the capture's
+  lists every pass start, clear and draw that touched the pixel:
+  - what each draw's fragments met: outside the scissor, culled, discarded, failed the depth or
+    stencil test, or wrote the pixel;
+  - the pixel's colour and depth after each, with a swatch;
+  - links to the command and the pipeline.
+
+  The pixel can be changed in the tab. The MCP server's `get_pixel_history` gives the same, by image
+  or by pass and attachment.
+- Pixel history of Metal applications ([metal/README.md](metal/README.md), "Pixel history"). A
+  Metal capture does not replay, so picking a pixel captures the application's next frame with the
+  capture library following it. Every pass that renders to the texture is drawn again one draw at a
+  time at the pixel, in the frame's own command buffers. A drawable's pixel follows whichever
+  drawable that frame renders into. The result is the same Pixel History tab, kept in the capture
+  file. `capture_frames` takes `pixelHistory: { texture, x, y }`, and `get_pixel_history` answers
+  for that capture.
 - Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
   an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
   Its tools cover:

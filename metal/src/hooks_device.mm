@@ -258,6 +258,7 @@ id D_newDepthStencilStateWithDescriptor(id self, SEL _cmd, MTLDepthStencilDescri
     if (reentry.outermost()) {
         Track(state, "MTLDepthStencilState", "newDepthStencilStateWithDescriptor:", self,
               DepthStencilArgs(descriptor));
+        RememberDepthStencilState(state, descriptor);
     }
     return state;
 }

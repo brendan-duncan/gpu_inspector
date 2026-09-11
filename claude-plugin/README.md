@@ -94,6 +94,7 @@ capture.
 | `get_frame_issues` | Frame Issues rules, each naming its command |
 | `get_bottlenecks` | Per-pass GPU time, overdraw, fragments per primitive, depth rejection, bound stage, problems |
 | `get_overdraw` | Overdraw measured per pixel (Metal captures taken with `overdraw`; Vulkan captures replayed with `vkinsp_replay`): every pass's figures, or one pass's heatmap as PNG |
+| `get_pixel_history` | Every clear and draw that touched one pixel, what each draw's fragments met (culled, discarded, depth, stencil, written) and the value after each (a Vulkan capture replayed; a Metal capture taken with `capture_frames` `pixelHistory`) |
 | `get_render_graph` | Passes and the resources between them, critical path, unread outputs; one node in full |
 | `compare_captures` | Timing, statistics, issues and per-pass changes between two captures |
 | `list_commands`, `get_command` | The command stream; one command with the state bound at it |

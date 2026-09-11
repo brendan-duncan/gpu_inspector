@@ -1108,6 +1108,8 @@ var CaptureData = class {
   passTimings = /* @__PURE__ */ new Map();
   /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
   overdraw = [];
+  /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
+  pixelHistory = null;
   _expectedCommands = 0;
   _pendingBuffers = 0;
   onCaptureStatus = new Signal();
@@ -1121,6 +1123,8 @@ var CaptureData = class {
   onPassTimings = new Signal();
   /** Overdraw measurements were announced, or one's per-pixel counts arrived. */
   onOverdraw = new Signal();
+  /** A Metal capture's pixel history arrived. */
+  onPixelHistory = new Signal();
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets() {
     return setsFor(this.api);
@@ -1134,6 +1138,7 @@ var CaptureData = class {
     this.buffers = /* @__PURE__ */ new Map();
     this.passTimings = /* @__PURE__ */ new Map();
     this.overdraw = [];
+    this.pixelHistory = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -1190,6 +1195,7 @@ var CaptureData = class {
     this.buffers = c2.buffers;
     this.passTimings = c2.passTimings;
     this.overdraw = c2.overdraw;
+    this.pixelHistory = c2.pixelHistory;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -1198,6 +1204,7 @@ var CaptureData = class {
     this.onBuffersComplete.emit();
     if (this.passTimings.size) this.onPassTimings.emit();
     if (this.overdraw.length) this.onOverdraw.emit();
+    if (this.pixelHistory) this.onPixelHistory.emit();
   }
   handleMessage(msg) {
     switch (msg.action) {
@@ -1248,6 +1255,10 @@ var CaptureData = class {
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
         this.onOverdraw.emit();
+        break;
+      case "CapturePixelHistory":
+        this.pixelHistory = msg.history ?? null;
+        this.onPixelHistory.emit();
         break;
       case "CaptureOverdrawData": {
         const o = this.overdraw.find((m) => m.info.frame === msg.frame && m.info.commandBuffer === msg.commandBuffer && m.info.passIndex === msg.passIndex && m.info.depthTested === msg.depthTested);
@@ -1349,6 +1360,7 @@ function parseCaptureFile(bytes) {
     buffers,
     passTimings,
     overdraw,
+    pixelHistory: manifest.pixelHistory ?? null,
     api: manifest.api ?? "vulkan"
   };
 }
@@ -8526,6 +8538,7 @@ async function serializeCapture(session, data, options = {}) {
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
     passTimings: [...data.passTimings.values()],
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
+    ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
     validation: db.validation,
     ...symbols ? { symbols } : {},
     ...stacks ? { stacks } : {}
@@ -8548,7 +8561,8 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
   "CaptureBufferData",
   "CapturePassTimings",
   "CaptureOverdraw",
-  "CaptureOverdrawData"
+  "CaptureOverdrawData",
+  "CapturePixelHistory"
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
@@ -8849,7 +8863,8 @@ var LiveSession = class {
         profilePasses: o.profilePasses,
         stacktraces: o.stacktraces,
         maxBufferSize: o.maxBufferBytes,
-        ...o.overdraw ? { overdraw: true } : {}
+        ...o.overdraw ? { overdraw: true } : {},
+        ...o.pixelHistory ? { pixelHistory: o.pixelHistory } : {}
       };
       await this.send(request);
       for (; ; ) {
@@ -14904,13 +14919,18 @@ var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --
 function tail(text, lines = 12) {
   return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
-function runOverdrawReplay(tool, capturePath, timeoutMs = 10 * 60 * 1e3) {
+function analysisArgs(analysis, out) {
+  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
+  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
+  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
+}
+function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
   return new Promise((resolve) => {
-    const out = path9.join(os7.tmpdir(), `vkinsp_overdraw_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    const out = path9.join(os7.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
     let output = "";
     let done = false;
     let timedOut = false;
-    const child = spawn3(tool, [capturePath, "--overdraw-data", out], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn3(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
@@ -14938,13 +14958,133 @@ function runOverdrawReplay(tool, capturePath, timeoutMs = 10 * 60 * 1e3) {
       resolve({
         data: null,
         output: tail(output),
-        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no overdraw data:
+        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
 ${tail(output)}`)
       });
     };
     child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
     child.on("close", () => finish2(null));
   });
+}
+function runOverdrawReplay(tool, capturePath, timeoutMs) {
+  return runReplay(tool, capturePath, { kind: "overdraw" }, timeoutMs);
+}
+
+// src/renderer/pixel_history.ts
+function hexBytes(text) {
+  const s = typeof text === "string" ? text : "";
+  const out = new Uint8Array(Math.floor(s.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+  return out;
+}
+function parsePixelHistory(input) {
+  let json;
+  if (input instanceof Uint8Array || typeof input === "string") {
+    const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`The pixel history is not valid JSON: ${e.message}`);
+    }
+  } else {
+    json = input;
+  }
+  if (json?.format !== "gpu-inspector-pixel-history") throw new Error("Not a pixel history.");
+  const num2 = (v) => typeof v === "number" ? v : 0;
+  const str3 = (v) => typeof v === "string" ? v : "";
+  const events = (Array.isArray(json.events) ? json.events : []).map((raw) => {
+    const e = raw;
+    const kind = str3(e.kind);
+    return {
+      kind: kind === "load" || kind === "clear" ? kind : "draw",
+      command: num2(e.command),
+      method: str3(e.method),
+      detail: str3(e.detail),
+      commandBuffer: num2(e.commandBuffer),
+      frame: num2(e.frame),
+      passIndex: num2(e.passIndex),
+      pipeline: num2(e.pipeline),
+      scissored: e.scissored === true,
+      testsMeasured: num2(e.testsMeasured),
+      covered: num2(e.covered),
+      facing: num2(e.facing),
+      shaded: num2(e.shaded),
+      depthPassed: num2(e.depthPassed),
+      stencilPassed: num2(e.stencilPassed),
+      passed: num2(e.passed),
+      value: hexBytes(e.value),
+      depth: hexBytes(e.depth)
+    };
+  });
+  const strings = (v) => Array.isArray(v) ? v.filter((s) => typeof s === "string") : [];
+  return {
+    device: str3(json.device),
+    image: num2(json.image),
+    requestedImage: typeof json.requestedImage === "number" ? json.requestedImage : num2(json.image),
+    x: num2(json.x),
+    y: num2(json.y),
+    mip: num2(json.mip),
+    layer: num2(json.layer),
+    pixelFormat: str3(json.pixelFormat),
+    depthFormat: str3(json.depthFormat),
+    events,
+    notes: strings(json.notes),
+    problems: strings(json.problems)
+  };
+}
+var MEASURED_COVERED = 1;
+var MEASURED_FACING = 2;
+var MEASURED_SHADED = 4;
+var MEASURED_DEPTH = 8;
+var MEASURED_STENCIL = 16;
+var MEASURED_ALL = 32;
+function drawOutcome(e) {
+  const measured = (bit) => (e.testsMeasured & bit) !== 0;
+  if (e.scissored) return "scissored";
+  if (!e.testsMeasured) return "unmeasured";
+  if (measured(MEASURED_COVERED) && !e.covered) return "missed";
+  if (measured(MEASURED_FACING) && !e.facing) return "culled";
+  if (measured(MEASURED_SHADED) && !e.shaded) return "discarded";
+  const depthFailed = measured(MEASURED_DEPTH) && !e.depthPassed;
+  const stencilFailed = measured(MEASURED_STENCIL) && !e.stencilPassed;
+  if (depthFailed && stencilFailed) return "depth-stencil";
+  if (depthFailed) return "depth";
+  if (stencilFailed) return "stencil";
+  if (measured(MEASURED_ALL)) return e.passed ? "wrote" : "tests";
+  return "covers";
+}
+var OUTCOME_TEXT = {
+  scissored: "outside the scissor",
+  unmeasured: "not measured (the draw's pipeline could not be copied)",
+  missed: "does not reach the pixel",
+  culled: "culled",
+  discarded: "discarded by the fragment shader",
+  depth: "failed the depth test",
+  stencil: "failed the stencil test",
+  "depth-stencil": "failed the depth and stencil tests",
+  tests: "failed the depth and stencil tests together",
+  wrote: "wrote the pixel",
+  covers: "covers the pixel"
+};
+function touchesPixel(e) {
+  if (e.kind !== "draw") return true;
+  const outcome = drawOutcome(e);
+  return outcome !== "scissored" && outcome !== "missed";
+}
+function eventSummary(e) {
+  if (e.kind === "load") return `pass ${e.passIndex} begins (${e.detail.replace(/^(VK_ATTACHMENT_LOAD_OP_|MTLLoadAction)/, "") || "load"})`;
+  if (e.kind === "clear") return `${e.method}: cleared`;
+  const outcome = drawOutcome(e);
+  const samples = outcome === "wrote" ? ` (${e.passed} sample${e.passed === 1 ? "" : "s"} passed)` : "";
+  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}`;
+}
+function texelInfo(format, depth) {
+  return { format, aspect: depth ? "depth" : "color", width: 1, height: 1 };
+}
+function texelValues(format, bytes, depth = false) {
+  if (!bytes.byteLength || !format) return null;
+  const tex = decodeTexels(texelInfo(format, depth), bytes);
+  return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
 // src/renderer/overdraw.ts
@@ -15112,6 +15252,41 @@ function passMeasurements(c2, p, i, gpuMs) {
     bound: p.bound ?? void 0,
     boundReason: p.boundReason || void 0,
     problems: problems.length ? problems : void 0
+  };
+}
+function pixelHistoryAnswer(c2, h, all, extra) {
+  const events = h.events.filter((e) => all || touchesPixel(e));
+  const value = (format, bytes, depth) => {
+    if (!bytes.byteLength) return void 0;
+    const v = texelValues(format, bytes, depth);
+    return v ? v.map(tidy) : [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  return {
+    capture: c2.id,
+    image: refText(c2.db, h.image),
+    x: h.x,
+    y: h.y,
+    mip: h.mip,
+    layer: h.layer,
+    pixelFormat: h.pixelFormat || void 0,
+    depthFormat: h.depthFormat || void 0,
+    events: events.map((e) => {
+      const pass = c2.passOf(e.command);
+      return {
+        command: e.command,
+        kind: e.kind,
+        what: eventSummary(e),
+        outcome: e.kind === "draw" ? drawOutcome(e) : void 0,
+        pass: pass >= 0 ? c2.passName(pass) : void 0,
+        pipeline: e.pipeline ? refText(c2.db, e.pipeline) : void 0,
+        samples: e.kind === "draw" && e.testsMeasured ? { covering: e.covered, facing: e.facing, shaded: e.shaded, passingDepth: e.depthPassed, passingStencil: e.stencilPassed, passingAll: e.passed } : void 0,
+        valueAfter: value(h.pixelFormat, e.value, false),
+        depthAfter: value(h.depthFormat, e.depth, true)
+      };
+    }),
+    drawsNotReachingThePixel: all ? void 0 : h.events.length - events.length || void 0,
+    notes: h.notes.length ? h.notes : void 0,
+    ...extra
   };
 }
 function captureSummary(c2) {
@@ -15467,6 +15642,69 @@ function captureTools(store) {
           result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
         }
         return result;
+      }
+    },
+    {
+      name: "get_pixel_history",
+      description: `A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (seconds); a Metal application follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for "why is this pixel this colour": the last draw that wrote it, and the draws that should have but were culled or failed a test.`,
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        image: { type: "integer", description: "The image's object id." },
+        pass: { type: "integer", minimum: 0, description: "Instead of image: a render pass (get_bottlenecks' numbers) whose attachment to follow." },
+        attachment: { type: "integer", minimum: 0, description: "With pass: the colour attachment index (default 0)." },
+        x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
+        y: { type: "integer", minimum: 0, description: "The pixel's row, at the mip level." },
+        mip: { type: "integer", minimum: 0, description: "The mip level the pass renders to (default: the read-back target's, else 0)." },
+        layer: { type: "integer", minimum: 0, description: "The array layer (default 0)." },
+        allDraws: { type: "boolean", description: "Also list the draws that do not reach the pixel (default false: they are only counted)." }
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api === "metal") {
+          if (!c2.data.pixelHistory) {
+            return jsonResult({
+              capture: c2.id,
+              note: "This Metal capture did not follow a pixel. A Metal application follows one while it captures: capture_frames with pixelHistory { texture, x, y } (a render target's texture id from list_textures; a drawable's follows the next frame's drawable), then get_pixel_history on that capture."
+            });
+          }
+          const h2 = parsePixelHistory(c2.data.pixelHistory);
+          const askedImage = optionalInt(args, "image");
+          const askedX = optionalInt(args, "x");
+          const askedY = optionalInt(args, "y");
+          const other = askedImage !== void 0 && askedImage !== h2.image && askedImage !== h2.requestedImage || askedX !== void 0 && askedX !== h2.x || askedY !== void 0 && askedY !== h2.y;
+          return jsonResult(pixelHistoryAnswer(c2, h2, boolArg(args, "allDraws", false), {
+            followed: other ? `This capture followed pixel (${h2.x}, ${h2.y}) of ${refText(c2.db, h2.image)}, not the one asked for: a Metal capture answers for the pixel it was taken with (capture_frames pixelHistory follows another).` : void 0,
+            requestedImage: h2.requestedImage !== h2.image ? `${refText(c2.db, h2.requestedImage)} (the frame rendered into its own drawable, which was followed instead)` : void 0,
+            measuredOn: h2.device || void 0,
+            method: "While capturing, the Metal library issued each draw again in the application's own command buffer after its pass, under visibility results in counting mode with a one-pixel scissor and pipeline and depth-stencil copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against copies of the pass's attachments, with depth and stencil writes off. Counts are samples."
+          }));
+        }
+        let image = optionalInt(args, "image");
+        let mip = optionalInt(args, "mip");
+        if (image === void 0) {
+          const passArg = optionalInt(args, "pass");
+          if (passArg === void 0) throw new Error("Name the pixel's image: image (an object id), or pass and attachment.");
+          const p = c2.metrics.passes[passArg];
+          if (!p || p.compute) throw new Error(`Pass ${passArg} is not a render pass (get_bottlenecks lists the passes).`);
+          const attachment = intArg(args, "attachment", 0, 0);
+          const tex = c2.data.texturesForPass(p.frame, p.commandBuffer, p.passIndex).find((t) => t.info.attachment === attachment && t.info.aspect === "color" && !t.info.resolve);
+          if (!tex) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no colour attachment ${attachment} read back (list_textures lists the render targets).`);
+          image = tex.info.id;
+          mip ??= tex.info.mip;
+        }
+        const x = requireInt(args, "x");
+        const y = requireInt(args, "y");
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c2.id, note: `Pixel history replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+        const run2 = await runReplay(tool, c2.path, { kind: "pixel", image, x, y, mip: mip ?? 0, layer: intArg(args, "layer", 0, 0) });
+        if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not follow the pixel: ${run2.error ?? "no data"}` });
+        const h = parsePixelHistory(run2.data);
+        return jsonResult(pixelHistoryAnswer(c2, h, boolArg(args, "allDraws", false), {
+          replayedOn: h.device || void 0,
+          replayProblems: h.problems.length ? { count: h.problems.length, first: h.problems.slice(0, 10) } : void 0,
+          method: "Each draw is issued again under occlusion queries with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against what the pass held before the draw, with depth and stencil writes off. Counts are samples: two overlapping triangles of one draw that both pass count twice."
+        }));
       }
     },
     {
@@ -15903,6 +16141,18 @@ function liveTools(sessions2, store) {
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
         overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
+        pixelHistory: {
+          type: "object",
+          description: "Metal: follow one pixel of a render target through the captured frame, for get_pixel_history on the new capture. Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own command buffers. A drawable's texture id (from an earlier capture) follows whichever drawable the captured frame renders into. Vulkan applications ignore it; get_pixel_history replays a Vulkan capture instead.",
+          properties: {
+            texture: { type: "integer", description: "The texture's object id (list_textures of an earlier capture)." },
+            x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
+            y: { type: "integer", minimum: 0, description: "The pixel's row, at the mip level." },
+            mip: { type: "integer", minimum: 0, description: "The mip level the passes render to (default 0)." },
+            layer: { type: "integer", minimum: 0, description: "The array slice (default 0)." }
+          },
+          required: ["texture", "x", "y"]
+        },
         maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
         recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
         timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
@@ -15913,6 +16163,10 @@ function liveTools(sessions2, store) {
         const delay = numberArg(args, "delaySeconds");
         if (delay) await sleep2(delay * 1e3);
         if (args.recordAlways !== void 0) await s.send({ action: "Settings", recordAlways: boolArg(args, "recordAlways", false) });
+        const pixelArg = args.pixelHistory;
+        if (pixelArg !== void 0 && (typeof pixelArg !== "object" || pixelArg === null)) throw new Error("pixelHistory must be an object: { texture, x, y }.");
+        const pixel = pixelArg;
+        const pixelHistory = pixel ? { texture: requireInt(pixel, "texture"), x: requireInt(pixel, "x"), y: requireInt(pixel, "y"), mip: optionalInt(pixel, "mip") ?? 0, layer: optionalInt(pixel, "layer") ?? 0 } : void 0;
         const result = await s.capture({
           frames: intArg(args, "frames", 1, 1, 16),
           atFrame: optionalInt(args, "atFrame"),
@@ -15922,6 +16176,7 @@ function liveTools(sessions2, store) {
           images: boolArg(args, "images", true),
           stacktraces: boolArg(args, "stacktraces", false),
           overdraw: boolArg(args, "overdraw", false),
+          pixelHistory,
           maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024,
           timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1e3
         });
@@ -15930,6 +16185,9 @@ function liveTools(sessions2, store) {
         const notes = [];
         if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
         if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
+        if (pixelHistory && !result.data.pixelHistory) {
+          notes.push(result.data.api === "metal" ? "No pixel history arrived: the application's capture library was built before pixel history." : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+        }
         return jsonResult({
           session: s.id,
           file,
@@ -16311,7 +16569,7 @@ var INSTRUCTIONS = [
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
 function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
-  const version = true ? "0.8.0" : "dev";
+  const version = true ? "0.9.0" : "dev";
   return new McpStdioServer({ name: "gpu-inspector", version }, [
     ...captureTools(store),
     ...commandTools(store),

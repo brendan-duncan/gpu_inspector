@@ -35,7 +35,7 @@ namespace {
 
 void PrintUsage() {
     std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
-                         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>]] [--trace] | --check\n");
+                         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]] [--trace] | --check\n");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -186,6 +186,50 @@ std::string DrawOutcome(const PixelEvent& e) {
     // Samples of every fragment the draw put there, tested against the depth and stencil from before the draw.
     if (measured(5)) return "wrote the pixel (" + std::to_string(e.passed) + (e.passed == 1 ? " sample passed)" : " samples passed)");
     return "covers the pixel";
+}
+
+/**
+ * --pixel-data: the history as JSON, for GPU Inspector to show (parsePixelHistory in
+ * app/src/renderer/pixel_history.ts). Every event is kept, the draws that do not reach the pixel
+ * too; texels are hex strings of the bytes the replay read, in the formats it names.
+ */
+bool WritePixelHistoryData(const ReplayReport& report, const std::string& path) {
+    const PixelHistoryResult& h = report.history;
+    auto hex = [](const std::vector<uint8_t>& bytes) {
+        static const char digits[] = "0123456789abcdef";
+        std::string out;
+        for (uint8_t b : bytes) {
+            out += digits[b >> 4];
+            out += digits[b & 15];
+        }
+        return "\"" + out + "\"";
+    };
+    auto strings = [](const std::vector<std::string>& list, size_t limit) {
+        std::string out = "[";
+        for (size_t i = 0; i < list.size() && i < limit; ++i) out += (i ? "," : "") + JsonString(list[i]);
+        return out + "]";
+    };
+    std::string json = "{\"format\":\"gpu-inspector-pixel-history\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"image\":" + std::to_string(h.image) + ",\"x\":" + std::to_string(h.x) + ",\"y\":" + std::to_string(h.y) +
+                       ",\"mip\":" + std::to_string(h.mip) + ",\"layer\":" + std::to_string(h.layer) +
+                       ",\"pixelFormat\":" + JsonString(h.format) + ",\"depthFormat\":" + JsonString(h.depthFormat) + ",\"events\":[";
+    for (size_t i = 0; i < h.events.size(); ++i) {
+        const PixelEvent& e = h.events[i];
+        json += std::string(i ? "," : "") + "{\"kind\":" + JsonString(e.kind) + ",\"command\":" + std::to_string(e.command) +
+                ",\"method\":" + JsonString(e.method) + ",\"detail\":" + JsonString(e.detail) +
+                ",\"commandBuffer\":" + std::to_string(e.commandBuffer) + ",\"frame\":" + std::to_string(e.frame) +
+                ",\"passIndex\":" + std::to_string(e.passIndex) + ",\"pipeline\":" + std::to_string(e.pipeline) +
+                ",\"scissored\":" + (e.scissored ? "true" : "false") + ",\"testsMeasured\":" + std::to_string(e.testsMeasured) +
+                ",\"covered\":" + std::to_string(e.covered) + ",\"facing\":" + std::to_string(e.facing) +
+                ",\"shaded\":" + std::to_string(e.shaded) + ",\"depthPassed\":" + std::to_string(e.depthPassed) +
+                ",\"stencilPassed\":" + std::to_string(e.stencilPassed) + ",\"passed\":" + std::to_string(e.passed) +
+                ",\"value\":" + hex(e.value) + ",\"depth\":" + hex(e.depth) + "}";
+    }
+    json += "],\"notes\":" + strings(h.notes, 100) + ",\"problems\":" + strings(report.problems, 100) + "}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
 }
 
 void PrintHistory(const PixelHistoryResult& h) {
@@ -455,7 +499,7 @@ int Check(const CaptureFile& capture) {
 }
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
-           const std::string& overdrawData) {
+           const std::string& overdrawData, const std::string& pixelData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -510,7 +554,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", overdrawData.c_str());
         }
     }
-    if (report.history.requested) PrintHistory(report.history);
+    if (report.history.requested) {
+        PrintHistory(report.history);
+        if (!pixelData.empty()) {
+            if (WritePixelHistoryData(report, pixelData)) std::printf("  wrote %s\n", pixelData.c_str());
+            else std::printf("  could not write %s\n", pixelData.c_str());
+        }
+    }
     std::printf("problems: %zu\n", report.problems.size());
     PrintGrouped(report.problems, 80);
     if (options.validation) {
@@ -529,6 +579,7 @@ int main(int argc, char** argv) {
     std::string dumpDir;
     std::string overdrawDir;
     std::string overdrawData;
+    std::string pixelData;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -543,6 +594,7 @@ int main(int argc, char** argv) {
             overdrawData = argv[++i];
             options.overdraw = true;
         }
+        else if (!std::strcmp(argv[i], "--pixel-data") && i + 1 < argc) pixelData = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -571,5 +623,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: %s\n", error.c_str());
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData);
+    if (!pixelData.empty() && !options.history.enabled) {
+        std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
+        return 2;
+    }
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData);
 }

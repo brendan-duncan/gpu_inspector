@@ -55,6 +55,15 @@ void HandleMessage(const std::string &text) {
             options.profilePasses = message.GetBool("profilePasses", true);
             options.stacktraces = message.GetBool("stacktraces", false);
             options.overdraw = message.GetBool("overdraw", false);
+            // {texture, x, y, mip, layer}: the pixel to follow through the captured frame.
+            if (const vkinsp::JsonValue *h = message.Get("pixelHistory"); h != nullptr && h->kind == vkinsp::JsonValue::Object) {
+                options.pixelHistory.enabled = true;
+                options.pixelHistory.texture = (uint64_t)h->GetNumber("texture");
+                options.pixelHistory.x = (uint32_t)h->GetNumber("x");
+                options.pixelHistory.y = (uint32_t)h->GetNumber("y");
+                options.pixelHistory.level = (uint32_t)h->GetNumber("mip");
+                options.pixelHistory.slice = (uint32_t)h->GetNumber("layer");
+            }
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
         } else if (action == "SaveGpuTrace") {

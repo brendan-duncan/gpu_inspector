@@ -11,6 +11,7 @@ import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import type { CaptureData, CapturedOverdraw, CapturedTexture } from "./capture_data.js";
 import { OVERDRAW_LEGEND, isMeasured, overdrawCount, overdrawHistogramText, overdrawRgba, overdrawSummary } from "./overdraw.js";
+import type { PixelRequest } from "./pixel_history.js";
 import { decodeImage, decodeTexels, formatTexel, type TexelData } from "./vulkan/texture_decode.js";
 import { fmt } from "./vulkan/vulkan_object.js";
 
@@ -27,6 +28,8 @@ export interface OverdrawHost {
   passLabelOf(key: OverdrawPassKey): string;
   /** Shows the capture's tab with the pass's begin command selected. */
   selectPass(key: OverdrawPassKey): void;
+  /** Follows a pixel of the pass's render target through the frame (the pixel history tab). */
+  pixelHistory?(request: PixelRequest): void;
 }
 
 const ICON_COPY = '<svg viewBox="0 0 16 16" aria-label="Copy"><rect x="5.5" y="5.5" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
@@ -45,6 +48,9 @@ export class OverdrawView {
   /** Percent of the heat colour over the render target. */
   private _opacity = 65;
   private _pinned = "";
+  /** The pixel last clicked, for the pixel history. */
+  private _pinnedPixel: { x: number; y: number } | null = null;
+  private _historyButton: Button | null = null;
 
   private _measurement: CapturedOverdraw | null = null;
   private _other: CapturedOverdraw | null = null;
@@ -91,6 +97,7 @@ export class OverdrawView {
     this._key = key;
     this._depthTested = depthTested;
     this._pinned = "";
+    this._pinnedPixel = null;
     this._rebuild();
   }
 
@@ -187,6 +194,12 @@ export class OverdrawView {
     } });
     this._zoomInput = zoom;
     new Button(bar, { label: "Go to Pass", class: "btn btn-sm", tooltip: "Select the pass's first command in the capture's tab", callback: () => this.host.selectPass(this._key) });
+    this._historyButton = null;
+    if (this.host.pixelHistory) {
+      this._historyButton = new Button(bar, { label: "Pixel History", class: "btn btn-sm", callback: () => this._followPinned(),
+        tooltip: "Every clear and draw that touched the clicked pixel of the pass's render target (Vulkan: the capture replayed; Metal: the next frame captured following it). Double-click a pixel for the same" });
+      this._updateHistoryButton();
+    }
     new Button(bar, { html: ICON_COPY, class: "btn btn-sm btn-icon", tooltip: "Copy the displayed image as PNG", callback: () => void this._copy() });
 
     const o = this._measurement;
@@ -326,6 +339,12 @@ export class OverdrawView {
       const p = this._pixelAt(e);
       if (p && e.button === 0) this._pin(p.x, p.y);
     });
+    c.addEventListener("dblclick", (e: MouseEvent) => {
+      const p = this._pixelAt(e);
+      if (!p || !this.host.pixelHistory) return;
+      this._pin(p.x, p.y);
+      this._followPinned();
+    });
     c.addEventListener("wheel", (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
@@ -340,7 +359,24 @@ export class OverdrawView {
 
   private _pin(x: number, y: number): void {
     this._pinned = `Pixel ${this._pixelLines(x, y).join("   ")}`;
+    this._pinnedPixel = { x, y };
     if (this._pixelInfo) this._pixelInfo.text = this._pinned;
+    this._updateHistoryButton();
+  }
+
+  /** The history needs a pixel and the image it belongs to: the pass's render target. */
+  private _updateHistoryButton(): void {
+    const button = this._historyButton;
+    if (!button) return;
+    button.disabled = !this._pinnedPixel || !this._target;
+    if (!this._target) button.tooltip = "The pass has no colour target of this size read back, so there is no image to follow a pixel of";
+  }
+
+  private _followPinned(): void {
+    const p = this._pinnedPixel;
+    const target = this._target;
+    if (!p || !target || !this.host.pixelHistory) return;
+    this.host.pixelHistory({ image: target.tex.info.id, x: p.x, y: p.y, mip: target.tex.info.mip, layer: 0 });
   }
 
   private async _copy(): Promise<void> {

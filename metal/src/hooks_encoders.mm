@@ -12,6 +12,9 @@
 
 #import <objc/message.h>
 
+#include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 namespace mtlinsp {
@@ -33,6 +36,48 @@ std::vector<uint8_t> CopyBytes(const void *bytes, NSUInteger length) {
 
 std::vector<NSUInteger> CopyOffsets(const NSUInteger *offsets, NSUInteger count) {
     return offsets != nullptr ? std::vector<NSUInteger>(offsets, offsets + count) : std::vector<NSUInteger>(count, 0);
+}
+
+/**
+ * The binding a stage's selector sets, for OpKey: "Vertex.Buffer" for setVertexBuffer:offset:atIndex:,
+ * setVertexBytes:length:atIndex:, setVertexBufferOffset:atIndex: and setVertexBuffers:offsets:withRange:
+ * alike, "Fragment.Texture" for setFragmentTexture:atIndex:. A selector of no stage is its own name.
+ */
+std::string BindingFamily(SEL sel) {
+    const std::string name = sel_getName(sel);
+    static const char *const kStages[] = {"Vertex", "Fragment", "Object", "Mesh"};
+    // Longest first, so "BufferOffset" is not read as "Buffer".
+    static const std::pair<const char *, const char *> kKinds[] = {
+        {"BufferOffset", "Buffer"}, {"Buffers", "Buffer"}, {"Buffer", "Buffer"}, {"Bytes", "Buffer"},
+        {"Textures", "Texture"}, {"Texture", "Texture"}, {"SamplerStates", "Sampler"}, {"SamplerState", "Sampler"},
+        {"ThreadgroupMemoryLength", "ThreadgroupMemory"},
+    };
+    for (const char *stage : kStages) {
+        const std::string prefix = std::string("set") + stage;
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::string rest = name.substr(prefix.size());
+        for (const auto &kind : kKinds) {
+            if (rest.compare(0, strlen(kind.first), kind.first) == 0) return std::string(stage) + "." + kind.second;
+        }
+    }
+    return name;
+}
+
+/** A single slot's bind: a selector of no stage family is a family of its own, by index. */
+OpKey SlotKey(SEL sel, NSUInteger index) {
+    return OpKey::Slot(BindingFamily(sel), index);
+}
+
+/** A residency call: undone only by the same call on the same resources. */
+OpKey UseKey(SEL sel, const id *objects, NSUInteger count, NSUInteger a = 0, NSUInteger b = 0) {
+    std::string key = sel_getName(sel);
+    char text[64];
+    for (NSUInteger i = 0; objects != nullptr && i < count; i++) {
+        snprintf(text, sizeof(text), ":%p", (__bridge void *)objects[i]);
+        key += text;
+    }
+    snprintf(text, sizeof(text), ":%lu:%lu", (unsigned long)a, (unsigned long)b);
+    return OpKey::Replace(key + text);
 }
 
 /** Inline bytes bound as a constant block: recorded the way the UI reads push constants. */
@@ -108,7 +153,7 @@ void R_setRenderPipelineState(id self, SEL _cmd, id state) {
                       Args().ref("pipeline", state, "MTLRenderPipelineState").str());
     }
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+        LogOverdrawOp(self, OpKey::Replace("pipeline"), [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
             r.BindPipeline(e, s.get());
         });
     }
@@ -119,50 +164,57 @@ void R_setRenderPipelineState(id self, SEL _cmd, id state) {
 // and mesh stages take the same arguments under different names.
 
 void LogBytes(id self, SEL sel, const void *bytes, NSUInteger length, NSUInteger index) {
-    LogOverdrawOp(self, [sel, data = CopyBytes(bytes, length), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, SlotKey(sel, index), [sel, data = CopyBytes(bytes, length), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const void *, NSUInteger, NSUInteger))objc_msgSend)(e, sel, data.data(), data.size(), index);
     });
 }
 
 void LogBuffer(id self, SEL sel, id buffer, NSUInteger offset, NSUInteger index) {
-    LogOverdrawOp(self, [sel, b = Strong(buffer), offset, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, SlotKey(sel, index), [sel, b = Strong(buffer), offset, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id, NSUInteger, NSUInteger))objc_msgSend)(e, sel, b.get(), offset, index);
     });
 }
 
+/** setXBufferOffset:atIndex: (an offset of slot `second`) and setObjectThreadgroupMemoryLength:atIndex:. */
 void LogIndexed(id self, SEL sel, NSUInteger first, NSUInteger second) {
-    LogOverdrawOp(self, [sel, first, second](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    const bool offset = strstr(sel_getName(sel), "BufferOffset") != nullptr;
+    OpKey key = offset ? OpKey::Offset(BindingFamily(sel), second) : SlotKey(sel, second);
+    LogOverdrawOp(self, std::move(key), [sel, first, second](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, NSUInteger, NSUInteger))objc_msgSend)(e, sel, first, second);
     });
 }
 
 void LogBuffers(id self, SEL sel, const id *buffers, const NSUInteger *offsets, NSRange range) {
-    LogOverdrawOp(self, [sel, list = StrongList(buffers, range.length), offs = CopyOffsets(offsets, range.length),
-                         range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, OpKey::Range(BindingFamily(sel), range),
+                  [sel, list = StrongList(buffers, range.length), offs = CopyOffsets(offsets, range.length),
+                   range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const id *, const NSUInteger *, NSRange))objc_msgSend)(e, sel, list.data(), offs.data(), range);
     });
 }
 
 void LogObject(id self, SEL sel, id object, NSUInteger index) {
-    LogOverdrawOp(self, [sel, o = Strong(object), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, SlotKey(sel, index), [sel, o = Strong(object), index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id, NSUInteger))objc_msgSend)(e, sel, o.get(), index);
     });
 }
 
 void LogObjects(id self, SEL sel, const id *objects, NSRange range) {
-    LogOverdrawOp(self, [sel, list = StrongList(objects, range.length), range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, OpKey::Range(BindingFamily(sel), range),
+                  [sel, list = StrongList(objects, range.length), range](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const id *, NSRange))objc_msgSend)(e, sel, list.data(), range);
     });
 }
 
 void LogSamplerLod(id self, SEL sel, id sampler, float lodMin, float lodMax, NSUInteger index) {
-    LogOverdrawOp(self, [sel, s = Strong(sampler), lodMin, lodMax, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, SlotKey(sel, index),
+                  [sel, s = Strong(sampler), lodMin, lodMax, index](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id, float, float, NSUInteger))objc_msgSend)(e, sel, s.get(), lodMin, lodMax, index);
     });
 }
 
+/** A state set by one value (winding, depth clip mode, fill mode). */
 void LogUint(id self, SEL sel, NSUInteger value) {
-    LogOverdrawOp(self, [sel, value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, OpKey::Replace(sel_getName(sel)), [sel, value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, NSUInteger))objc_msgSend)(e, sel, value);
     });
 }
@@ -170,45 +222,48 @@ void LogUint(id self, SEL sel, NSUInteger value) {
 // Residency: useResource:, useHeap: and their array and stage forms.
 
 void LogUse(id self, SEL sel, id object) {
-    LogOverdrawOp(self, [sel, o = Strong(object)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, &object, 1), [sel, o = Strong(object)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id))objc_msgSend)(e, sel, o.get());
     });
 }
 
 void LogUse(id self, SEL sel, id object, NSUInteger a) {
-    LogOverdrawOp(self, [sel, o = Strong(object), a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, &object, 1, a), [sel, o = Strong(object), a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id, NSUInteger))objc_msgSend)(e, sel, o.get(), a);
     });
 }
 
 void LogUse(id self, SEL sel, id object, NSUInteger a, NSUInteger b) {
-    LogOverdrawOp(self, [sel, o = Strong(object), a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, &object, 1, a, b), [sel, o = Strong(object), a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, id, NSUInteger, NSUInteger))objc_msgSend)(e, sel, o.get(), a, b);
     });
 }
 
 void LogUseList(id self, SEL sel, const id *objects, NSUInteger count) {
-    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, objects, count),
+                  [sel, list = StrongList(objects, count), count](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const id *, NSUInteger))objc_msgSend)(e, sel, list.data(), count);
     });
 }
 
 void LogUseList(id self, SEL sel, const id *objects, NSUInteger count, NSUInteger a) {
-    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count, a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, objects, count, a),
+                  [sel, list = StrongList(objects, count), count, a](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const id *, NSUInteger, NSUInteger))objc_msgSend)(e, sel, list.data(), count, a);
     });
 }
 
 void LogUseList(id self, SEL sel, const id *objects, NSUInteger count, NSUInteger a, NSUInteger b) {
-    LogOverdrawOp(self, [sel, list = StrongList(objects, count), count, a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+    LogOverdrawOp(self, UseKey(sel, objects, count, a, b),
+                  [sel, list = StrongList(objects, count), count, a, b](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
         ((void (*)(id, SEL, const id *, NSUInteger, NSUInteger, NSUInteger))objc_msgSend)(e, sel, list.data(), count, a, b);
     });
 }
 
-/** A draw: issued when a counting pipeline is bound. */
+/** A draw: the measurement issues it through the closure as it needs (overdraw once, pixel history seven times). */
 void LogDraw(id self, std::function<void(id<MTLRenderCommandEncoder>)> draw) {
-    LogOverdrawOp(self, [draw = std::move(draw)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
-        if (r.Draw()) draw(e);
+    LogOverdrawOp(self, OpKey::DrawCall(), [draw = std::move(draw)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+        r.IssueDraw(e, draw);
     });
 }
 
@@ -317,7 +372,7 @@ void R_setViewport(id self, SEL _cmd, MTLViewport viewport) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setViewport:", self, Args().viewport("viewport", viewport).str());
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [viewport](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setViewport:viewport]; });
+        LogOverdrawOp(self, OpKey::Replace("viewport"), [viewport](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setViewport:viewport]; });
     }
     ORIG(void (*)(id, SEL, MTLViewport))(self, _cmd, viewport);
 }
@@ -338,7 +393,7 @@ void R_setViewports(id self, SEL _cmd, const MTLViewport *viewports, NSUInteger 
         RecordCommand("setViewports:count:", self, a.str());
     }
     if (Measuring(reentry) && viewports != nullptr) {
-        LogOverdrawOp(self, [list = std::vector<MTLViewport>(viewports, viewports + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        LogOverdrawOp(self, OpKey::Replace("viewport"), [list = std::vector<MTLViewport>(viewports, viewports + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
             [e setViewports:list.data() count:list.size()];
         });
     }
@@ -372,7 +427,9 @@ void R_setCullMode(id self, SEL _cmd, NSUInteger mode) {
                          : mode == MTLCullModeBack ? "MTLCullModeBack" : "";
         RecordCommand("setCullMode:", self, Args().e("cullMode", name, mode).str());
     }
-    if (Measuring(reentry)) LogUint(self, _cmd, mode);
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, OpKey::Replace("cullMode"), [mode](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) { r.SetCullMode(e, mode); });
+    }
     ORIG(void (*)(id, SEL, NSUInteger))(self, _cmd, mode);
 }
 
@@ -390,7 +447,7 @@ void R_setDepthBias(id self, SEL _cmd, float bias, float slopeScale, float clamp
                       Args().d("depthBias", bias).d("slopeScale", slopeScale).d("clamp", clamp).str());
     }
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [bias, slopeScale, clamp](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        LogOverdrawOp(self, OpKey::Replace("depthBias"), [bias, slopeScale, clamp](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
             [e setDepthBias:bias slopeScale:slopeScale clamp:clamp];
         });
     }
@@ -401,7 +458,7 @@ void R_setScissorRect(id self, SEL _cmd, MTLScissorRect rect) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setScissorRect:", self, Args().scissor("rect", rect).str());
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [rect](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setScissorRect:rect]; });
+        LogOverdrawOp(self, OpKey::Replace("scissor"), [rect](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) { r.SetScissorRects(e, &rect, 1); });
     }
     ORIG(void (*)(id, SEL, MTLScissorRect))(self, _cmd, rect);
 }
@@ -422,8 +479,8 @@ void R_setScissorRects(id self, SEL _cmd, const MTLScissorRect *rects, NSUIntege
         RecordCommand("setScissorRects:count:", self, a.str());
     }
     if (Measuring(reentry) && rects != nullptr) {
-        LogOverdrawOp(self, [list = std::vector<MTLScissorRect>(rects, rects + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
-            [e setScissorRects:list.data() count:list.size()];
+        LogOverdrawOp(self, OpKey::Replace("scissor"), [list = std::vector<MTLScissorRect>(rects, rects + count)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+            r.SetScissorRects(e, list.data(), list.size());
         });
     }
     ORIG(void (*)(id, SEL, const MTLScissorRect *, NSUInteger))(self, _cmd, rects, count);
@@ -456,10 +513,10 @@ void R_setDepthStencilState(id self, SEL _cmd, id state) {
                       Args().ref("depthStencilState", state, "MTLDepthStencilState").str());
     }
     if (Measuring(reentry)) {
-        // Only where the measurement tests depth and stencil; the untested count keeps Metal's
-        // default state, which tests nothing.
-        LogOverdrawOp(self, [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
-            if (r.TestsDepthStencil()) [e setDepthStencilState:(id<MTLDepthStencilState>)s.get()];
+        // Through the measurement: the untested overdraw count keeps Metal's default state, and
+        // the pixel history varies the tests.
+        LogOverdrawOp(self, OpKey::Replace("depthStencil"), [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+            r.SetDepthStencilState(e, s.get());
         });
     }
     ORIG(void (*)(id, SEL, id))(self, _cmd, state);
@@ -469,7 +526,7 @@ void R_setStencilReferenceValue(id self, SEL _cmd, uint32_t value) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setStencilReferenceValue:", self, Args().u("referenceValue", value).str());
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setStencilReferenceValue:value]; });
+        LogOverdrawOp(self, OpKey::Replace("stencilReference"), [value](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setStencilReferenceValue:value]; });
     }
     ORIG(void (*)(id, SEL, uint32_t))(self, _cmd, value);
 }
@@ -481,7 +538,7 @@ void R_setStencilFrontBackReference(id self, SEL _cmd, uint32_t front, uint32_t 
                       Args().u("frontReferenceValue", front).u("backReferenceValue", back).str());
     }
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [front, back](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+        LogOverdrawOp(self, OpKey::Replace("stencilReference"), [front, back](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
             [e setStencilFrontReferenceValue:front backReferenceValue:back];
         });
     }
@@ -1211,7 +1268,7 @@ void R_useHeapsStages(id self, SEL _cmd, const id *heaps, NSUInteger count, NSUI
  * buffer, where a counting copy cannot replace it. They are reported as not counted.
  */
 void LogIndirectCommands(id self) {
-    LogOverdrawOp(self, [](id<MTLRenderCommandEncoder>, OverdrawReplay &r) { r.Skip(); });
+    LogOverdrawOp(self, OpKey::DrawCall(), [](id<MTLRenderCommandEncoder>, OverdrawReplay &r) { r.Skip(); });
 }
 
 void R_executeCommandsInBuffer(id self, SEL _cmd, id icb, NSRange range) {
@@ -1291,7 +1348,12 @@ void R_setTessellationFactorBuffer(id self, SEL _cmd, id buffer, NSUInteger offs
                                        .u("instanceStride", instanceStride).str(),
                                  {QueueBufferCapture(self, buffer, offset, 0)});
     }
-    if (Measuring(reentry)) LogBuffer(self, _cmd, buffer, offset, instanceStride);
+    if (Measuring(reentry)) {
+        LogOverdrawOp(self, OpKey::Replace("tessellationFactorBuffer"),
+                      [b = Strong(buffer), offset, instanceStride](id<MTLRenderCommandEncoder> e, OverdrawReplay &) {
+            [e setTessellationFactorBuffer:(id<MTLBuffer>)b.get() offset:offset instanceStride:instanceStride];
+        });
+    }
     ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, instanceStride);
 }
 
@@ -1299,7 +1361,7 @@ void R_setTessellationFactorScale(id self, SEL _cmd, float scale) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("setTessellationFactorScale:", self, Args().d("scale", scale).str());
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, [scale](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setTessellationFactorScale:scale]; });
+        LogOverdrawOp(self, OpKey::Replace("tessellationFactorScale"), [scale](id<MTLRenderCommandEncoder> e, OverdrawReplay &) { [e setTessellationFactorScale:scale]; });
     }
     ORIG(void (*)(id, SEL, float))(self, _cmd, scale);
 }

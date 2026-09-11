@@ -698,6 +698,52 @@ Limits:
 - A layered pass lands every layer's fragments in one count.
 - A tile pipeline's dispatches are not drawn.
 
+## Pixel history
+
+A pixel's history is every pass start and draw of the frame that touched one pixel of a render
+target, what each draw's fragments at the pixel met, and the value and depth after each
+(`pixel_history.mm`). The Vulkan counterpart replays a capture file (`vkinsp_replay --pixel`,
+`docs/REPLAY.md`). A Metal capture cannot be replayed, so the pixel is followed while the frame is
+captured, with the recorded calls overdraw uses (above).
+
+* **Asking.** The `Capture` message's `pixelHistory` (`{texture, x, y, mip, layer}`) names a
+  texture from an earlier capture. In the app, the pixel is picked in the overdraw tab or in a
+  render target's image viewer (click and **Pixel History**, or double-click), which captures the
+  next frame. `capture_frames` with `pixelHistory` does the same from the MCP server. The next
+  frame renders into a new drawable, so a drawable's texture id, or one no longer alive, follows
+  whichever drawable the captured frame renders into.
+* **Where it starts.** Every pass whose colour attachment is that texture at that level and slice
+  gets copies of all its attachments, the library's own textures of the same formats and size.
+  In the render-encoder hook, before the application's encoder exists, the pixel of each attachment
+  that loads is copied into them.
+* **One draw at a time.** When the application ends the encoder, the copies are loaded or cleared
+  the way the pass's attachments were, and the pixel is read: the pass start's event. Then each draw
+  gets an encoder of its own over the copies. That encoder is given:
+  * the calls still in effect at the draw: the last pipeline, the last bind of each slot, the last
+    viewport. Each recorded call carries a key saying which earlier calls it undoes;
+  * a one-pixel scissor;
+  * the draw six times, under visibility results in counting mode, each adding one step to the
+    last: its primitives with no culling and no tests, with its cull mode, with its fragment
+    function, with its depth test, with its stencil test, and with both.
+
+  Nothing is written by those six. Cull mode and depth-stencil state are encoder state in Metal, so
+  only two pipeline copies are needed: one with a fragment function that does nothing, and the
+  application's own with colour writes off. The depth-stencil copies come from the descriptors
+  kept since each state's creation, with writes off and stencil operations `Keep`. Then the draw
+  itself, with the application's pipeline and state, and the pixel is read again.
+* **Results.** Everything made is kept until the command buffer completes. At the end of the
+  capture the counts and texels go out as `CapturePixelHistory`, in the JSON
+  `vkinsp_replay --pixel-data` writes. That JSON names the texture followed and the one asked for,
+  and the app's Pixel History tab and `get_pixel_history` read it the same way. Capture files keep
+  it.
+
+Limits:
+- Multisampled and layered passes are noted and not followed.
+- An indirect command buffer's draws are not followed: their commands carry their own pipelines.
+- Only the first 1024 draws of a pass are followed. Each costs an encoder and seven draws in the
+  captured frame.
+- Writes outside render passes (blits, compute) are not events.
+
 ## Not done
 
 Stencil attachments are not read back (colour and depth are), nor are sampled images, and only

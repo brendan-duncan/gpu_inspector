@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
-import { NO_REPLAY_TOOL, findReplayTool, measureOverdrawOfBytes, type OverdrawRun } from "./replay.js";
+import { NO_REPLAY_TOOL, findReplayTool, measureOverdrawOfBytes, replayBytes, type OverdrawRun, type PixelRequest, type ReplayRun } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileShader, shaderText } from "./shader_tools.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
@@ -1102,6 +1102,12 @@ ipcMain.handle("inspector:measureOverdraw", async (_e, opts: { data: Uint8Array;
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
   if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
   return measureOverdrawOfBytes(tool, opts.data, opts.name);
+});
+// Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
+ipcMain.handle("inspector:pixelHistory", async (_e, opts: { data: Uint8Array; name?: string; pixel: PixelRequest }): Promise<ReplayRun> => {
+  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
+  return replayBytes(tool, opts.data, { kind: "pixel", ...opts.pixel }, opts.name);
 });
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {

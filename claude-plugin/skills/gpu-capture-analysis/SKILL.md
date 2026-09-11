@@ -133,7 +133,12 @@ each step.
    `read_texture` gives. `uniform: true` means every texel is the same, so nothing was drawn or the
    clear shows through. `nan` or `infinite` counts point at a shader dividing by zero or at bad
    input. Depth that is all 1.0 means nothing passed the depth test or nothing was written.
-3. **Find the draw.** `list_commands` with `pass` (or `label`, `kind: "draw"`).
+3. **Find the draw.** `list_commands` with `pass` (or `label`, `kind: "draw"`). For one wrong
+   pixel, `get_pixel_history` names it directly: the last draw that wrote the pixel, and the draws
+   that reached it but were culled, discarded or failed the depth or stencil test. A Vulkan capture
+   is replayed for it, which takes seconds. A Metal capture answers only for the pixel it was taken
+   with: capture again with `capture_frames` and `pixelHistory: { texture, x, y }` (a render
+   target's id from `list_textures`), then ask the new capture.
 4. **Check what the draw read** with `get_command`. The usual suspects:
    - **Fixed-function state**: `cullMode` and `frontFace` (winding flipped by a negative scale or
      viewport), depth test, write and compare op (reversed-Z against a LESS compare), blend factors

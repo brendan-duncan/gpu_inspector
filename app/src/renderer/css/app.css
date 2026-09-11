@@ -571,6 +571,25 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .overdraw-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font-size: 9pt; }
 .overdraw-legend-item { display: inline-flex; align-items: center; gap: 4px; }
 .overdraw-swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid var(--border-color); }
+/* Pixel history tab (pixel_history_view.ts). */
+.pixel-history-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.pixel-history-status { padding: 2px 8px 6px 8px; font-size: 9.5pt; white-space: pre-wrap; }
+.pixel-history-status.pixel-history-error { color: var(--error-fg); }
+.pixel-history-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px 8px 8px; }
+.pixel-event { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); }
+.pixel-swatch { position: relative; flex: 0 0 auto; width: 24px; height: 24px; margin-top: 2px; border: 1px solid var(--border-color); border-radius: 3px; overflow: hidden;
+  background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 8px 8px; }
+.pixel-swatch-fill { position: absolute; inset: 0; }
+.pixel-event-main { flex: 1 1 auto; min-width: 0; }
+.pixel-event-summary { font-weight: 600; margin-left: 6px; }
+.pixel-event-where > span + span { margin-left: 6px; }
+.pixel-event-values { font-family: var(--font-mono, monospace); margin-top: 2px; }
+.pixel-event.outcome-wrote .pixel-event-summary { color: var(--accent-success); }
+.pixel-event.outcome-depth .pixel-event-summary, .pixel-event.outcome-stencil .pixel-event-summary,
+.pixel-event.outcome-depth-stencil .pixel-event-summary, .pixel-event.outcome-tests .pixel-event-summary { color: var(--accent-warning); }
+.pixel-event.outcome-culled .pixel-event-summary, .pixel-event.outcome-discarded .pixel-event-summary, .pixel-event.outcome-missed .pixel-event-summary,
+.pixel-event.outcome-scissored .pixel-event-summary, .pixel-event.outcome-unmeasured .pixel-event-summary { color: var(--fg-muted); }
+.pixel-event.outcome-load .pixel-event-summary, .pixel-event.outcome-clear .pixel-event-summary { color: var(--accent-info); }
 .image-view-toolbar .dragger { flex: 0 0 auto; max-width: 90px; }
 .image-view-toolbar .inputfield { width: 70px; }
 .image-view-pixel { color: var(--fg-primary); font-family: var(--font-mono); font-size: 9pt; }

@@ -33,6 +33,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/image.mm
     src/overdraw.h
     src/overdraw.mm
+    src/pass_record.h
+    src/pixel_history.mm
     src/reflection.h
     src/reflection.mm
     src/stacktrace.h
