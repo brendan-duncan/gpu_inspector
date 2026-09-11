@@ -1,14 +1,17 @@
 #include "replayer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
 #include <memory>
+#include <unordered_set>
 
 #include "format_info.h"
+#include "util.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -19,61 +22,6 @@
 namespace vkreplay {
 
 namespace {
-
-std::string Str(const JValue* v) { return v && v->IsString() ? std::string(v->Str()) : std::string(); }
-
-uint64_t IdOf(const JValue* v) {
-    const JValue* id = v ? v->Get("__id") : nullptr;
-    return id ? id->Uint() : 0;
-}
-
-bool StartsWith(std::string_view s, std::string_view prefix) { return s.substr(0, prefix.size()) == prefix; }
-
-bool IsEndPass(std::string_view m) {
-    return m == "vkCmdEndRenderPass" || m == "vkCmdEndRenderPass2" || m == "vkCmdEndRenderPass2KHR" ||
-           m == "vkCmdEndRendering" || m == "vkCmdEndRenderingKHR";
-}
-
-bool IsBeginRenderPass(std::string_view m) {
-    return m == "vkCmdBeginRenderPass" || m == "vkCmdBeginRenderPass2" || m == "vkCmdBeginRenderPass2KHR";
-}
-
-bool IsBeginRendering(std::string_view m) { return m == "vkCmdBeginRendering" || m == "vkCmdBeginRenderingKHR"; }
-
-/** The layer's names for shader stages, which name a pipeline's SPIR-V payloads ("fragment:main"). */
-const char* StageName(VkShaderStageFlagBits stage) {
-    switch (stage) {
-        case VK_SHADER_STAGE_VERTEX_BIT: return "vertex";
-        case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: return "tess_control";
-        case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return "tess_eval";
-        case VK_SHADER_STAGE_GEOMETRY_BIT: return "geometry";
-        case VK_SHADER_STAGE_FRAGMENT_BIT: return "fragment";
-        case VK_SHADER_STAGE_COMPUTE_BIT: return "compute";
-        case VK_SHADER_STAGE_TASK_BIT_EXT: return "task";
-        case VK_SHADER_STAGE_MESH_BIT_EXT: return "mesh";
-        default: return "shader";
-    }
-}
-
-/**
- * Unlinks the structs of the given types from a decoded pNext chain (arena memory the replay
- * owns): parts of a create info that tie an object to the capturing machine, like external memory.
- */
-const void* StripPNext(const void* head, std::initializer_list<VkStructureType> drop) {
-    auto* first = static_cast<VkBaseOutStructure*>(const_cast<void*>(head));
-    VkBaseOutStructure* kept = nullptr;
-    VkBaseOutStructure* tail = nullptr;
-    for (VkBaseOutStructure* p = first; p;) {
-        VkBaseOutStructure* next = p->pNext;
-        if (std::find(drop.begin(), drop.end(), p->sType) == drop.end()) {
-            p->pNext = nullptr;
-            if (tail) tail->pNext = p; else kept = p;
-            tail = p;
-        }
-        p = next;
-    }
-    return kept;
-}
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
@@ -325,7 +273,7 @@ bool Replayer::CreateDevice() {
 // ---------------------------------------------------------------------------------------------
 // Memory and one-time submissions
 
-bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory) {
+bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track) {
     for (int pass = 0; pass < 2; ++pass) {
         for (uint32_t i = 0; i < _memoryProperties.memoryTypeCount; ++i) {
             if (!(requirements.memoryTypeBits & (1u << i))) continue;
@@ -335,7 +283,7 @@ bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryProperty
             info.allocationSize = requirements.size;
             info.memoryTypeIndex = i;
             if (_fns.AllocateMemory(_device, &info, nullptr, &memory) == VK_SUCCESS) {
-                _memories.push_back(memory);
+                if (track) _memories.push_back(memory);
                 return true;
             }
         }
@@ -722,10 +670,13 @@ void Replayer::CreateObject(const JValue& o) {
                 rec.initialLayouts.push_back(att.initialLayout);
                 rec.finalLayouts.push_back(att.finalLayout);
                 rec.loadOps.push_back(att.loadOp);
+                rec.formats.push_back(att.format);
                 // Store everything, as the capture layer does while capturing: the passes' results are read back.
                 att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
             }
+            if (info.subpassCount && info.pSubpasses[0].pDepthStencilAttachment && info.pSubpasses[0].pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
+                rec.depthAttachment = (int)info.pSubpasses[0].pDepthStencilAttachment->attachment;
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
             if (_fns.CreateRenderPass(d, &info, nullptr, &rp) == VK_SUCCESS) {
@@ -744,9 +695,12 @@ void Replayer::CreateObject(const JValue& o) {
                 rec.initialLayouts.push_back(att.initialLayout);
                 rec.finalLayouts.push_back(att.finalLayout);
                 rec.loadOps.push_back(att.loadOp);
+                rec.formats.push_back(att.format);
                 att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
             }
+            if (info.subpassCount && info.pSubpasses[0].pDepthStencilAttachment && info.pSubpasses[0].pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
+                rec.depthAttachment = (int)info.pSubpasses[0].pDepthStencilAttachment->attachment;
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
             if (_fns.CreateRenderPass2(d, &info, nullptr, &rp) == VK_SUCCESS) {
@@ -760,6 +714,7 @@ void Replayer::CreateObject(const JValue& o) {
         VkFramebuffer fb = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateFramebuffer(d, a.pCreateInfo, nullptr, &fb) == VK_SUCCESS) {
             handle = (uint64_t)fb;
+            _framebufferExtents[id] = {a.pCreateInfo->width, a.pCreateInfo->height};
             std::vector<uint64_t> views;
             if (const JValue* list = args->Get("pCreateInfo")->Get("pAttachments"); list && list->IsArray())
                 for (uint32_t i = 0; i < list->count; ++i) views.push_back(IdOf(&list->items[i]));
@@ -799,6 +754,9 @@ void Replayer::CreateObject(const JValue& o) {
 void Replayer::DestroyAll() {
     if (_device) {
         _fns.DeviceWaitIdle(_device);
+        ReleaseTransients();
+        if (_countModule) _fns.DestroyShaderModule(_device, _countModule, nullptr);
+        _countModule = VK_NULL_HANDLE;
         for (auto it = _created.rbegin(); it != _created.rend(); ++it) {
             const std::string& t = it->type;
             uint64_t h = it->handle;
@@ -1256,7 +1214,8 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute) {
     }
 }
 
-void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& readbacks) {
+void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& readbacks, std::vector<PendingOverdraw>& overdraws,
+                           std::vector<PendingHistory>& histories) {
     const JValue* commands = _capture->Commands();
     VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)Handle(group.commandBuffer);
     group.used = true;
@@ -1308,13 +1267,46 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             pass.index = passCount++;
             pass.frame = frame;
             pass.commandBuffer = group.commandBuffer;
+            pass.beginIndex = i;
             const JValue* beginInfo2 = args->Get("pRenderPassBegin");
             const uint64_t rp = beginInfo2 ? IdOf(beginInfo2->Get("renderPass")) : 0;
             const uint64_t fb = beginInfo2 ? IdOf(beginInfo2->Get("framebuffer")) : 0;
             auto fit = _framebufferViews.find(fb);
             if (fit != _framebufferViews.end()) pass.views = fit->second;
+            if (auto eit = _framebufferExtents.find(fb); eit != _framebufferExtents.end()) pass.extent = eit->second;
+            pass.renderPass = rp;
             auto rit = _renderPasses.find(rp);
-            if (rit != _renderPasses.end()) pass.layouts = rit->second.finalLayouts;
+            if (rit != _renderPasses.end()) {
+                pass.layouts = rit->second.finalLayouts;
+                pass.formats = rit->second.formats;
+                pass.loadOps = rit->second.loadOps;
+                pass.startLayouts = rit->second.initialLayouts;
+                const int d = rit->second.depthAttachment;
+                if (d >= 0 && (size_t)d < pass.views.size()) {
+                    auto vit = _views.find(pass.views[d]);
+                    if (vit != _views.end()) {
+                        pass.depthImage = vit->second.image;
+                        pass.depthRange = vit->second.range;
+                        pass.depthFormat = rit->second.formats[d];
+                        pass.depthLoadOp = rit->second.loadOps[d];
+                        pass.depthLayoutBefore = rit->second.initialLayouts[d];
+                        const JValue* clears = beginInfo2 ? beginInfo2->Get("pClearValues") : nullptr;
+                        if (clears && clears->IsArray() && (uint32_t)d < clears->count) {
+                            if (const JValue* ds = clears->items[d].Get("depthStencil")) {
+                                pass.depthClear.depth = (float)(ds->Get("depth") ? ds->Get("depth")->Double() : 1.0);
+                                pass.depthClear.stencil = ds->Get("stencil") ? (uint32_t)ds->Get("stencil")->Uint() : 0;
+                            }
+                        }
+                    }
+                }
+            }
+            if (const JValue* clears = beginInfo2 ? beginInfo2->Get("pClearValues") : nullptr; clears && clears->IsArray())
+                for (uint32_t k = 0; k < clears->count; ++k) pass.clearValues.push_back(ClearValueOf(clears->items[k]));
+            // What the pass starts from is copied before it begins; not for a pass the replay leaves out.
+            if ((_options.overdraw || _options.history.enabled) && ArgsResolve(m, *args)) {
+                if (_options.overdraw) PrepareOverdraw(cb, pass);
+                if (_options.history.enabled) PrepareHistory(cb, pass, histories);
+            }
         } else if (IsBeginRendering(m)) {
             // Dynamic rendering: store every attachment (the recorder cannot), and note the attachments.
             pass = PassState{};
@@ -1322,6 +1314,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             pass.index = passCount++;
             pass.frame = frame;
             pass.commandBuffer = group.commandBuffer;
+            pass.beginIndex = i;
             Args_vkCmdBeginRendering a{};
             DecodeArgs(_ctx, *args, a);
             if (_ctx.unresolved != unresolvedBefore) {
@@ -1332,30 +1325,59 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                 std::vector<VkRenderingAttachmentInfo> colors(info.pColorAttachments, info.pColorAttachments + info.colorAttachmentCount);
                 VkRenderingAttachmentInfo depth{}, stencil{};
                 const JValue* ri = args->Get("pRenderingInfo");
-                auto note = [&](const VkRenderingAttachmentInfo& att, const JValue* json) {
-                    if (!att.imageView) return;
-                    pass.views.push_back(IdOf(json ? json->Get("imageView") : nullptr));
+                // Notes an attachment: its view, layout, format, load and clear; its index, -1 without a view.
+                auto note = [&](const VkRenderingAttachmentInfo& att, const JValue* json) -> int {
+                    if (!att.imageView) return -1;
+                    const uint64_t viewId = IdOf(json ? json->Get("imageView") : nullptr);
+                    auto vit = _views.find(viewId);
+                    auto iit = vit != _views.end() ? _images.find(vit->second.image) : _images.end();
+                    pass.views.push_back(viewId);
                     pass.layouts.push_back(att.imageLayout);
                     pass.resolveViews.push_back(att.resolveMode != VK_RESOLVE_MODE_NONE ? IdOf(json ? json->Get("resolveImageView") : nullptr) : 0);
                     pass.resolveLayouts.push_back(att.resolveImageLayout);
+                    pass.formats.push_back(iit != _images.end() ? iit->second.format : VK_FORMAT_UNDEFINED);
+                    pass.loadOps.push_back(att.loadOp);
+                    pass.startLayouts.push_back(att.imageLayout);
+                    pass.clearValues.push_back(att.clearValue);
+                    return (int)pass.views.size() - 1;
                 };
                 const JValue* colorJson = ri ? ri->Get("pColorAttachments") : nullptr;
                 for (size_t k = 0; k < colors.size(); ++k) {
                     colors[k].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    note(colors[k], colorJson && k < colorJson->count ? &colorJson->items[k] : nullptr);
+                    pass.dynamicColorSlots.push_back(note(colors[k], colorJson && k < colorJson->count ? &colorJson->items[k] : nullptr));
                 }
                 info.pColorAttachments = colors.data();
                 if (info.pDepthAttachment) {
                     depth = *info.pDepthAttachment;
                     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     info.pDepthAttachment = &depth;
-                    note(depth, ri ? ri->Get("pDepthAttachment") : nullptr);
+                    pass.dynamicDepth = note(depth, ri ? ri->Get("pDepthAttachment") : nullptr);
                 }
                 if (info.pStencilAttachment) {
                     stencil = *info.pStencilAttachment;
                     stencil.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     info.pStencilAttachment = &stencil;
-                    if (!info.pDepthAttachment || stencil.imageView != depth.imageView) note(stencil, ri ? ri->Get("pStencilAttachment") : nullptr);
+                    if (!info.pDepthAttachment || stencil.imageView != depth.imageView) pass.dynamicStencil = note(stencil, ri ? ri->Get("pStencilAttachment") : nullptr);
+                    else pass.dynamicStencil = pass.dynamicDepth;
+                }
+                if (_options.overdraw || _options.history.enabled) {
+                    pass.extent = {(uint32_t)std::max(0, info.renderArea.offset.x) + info.renderArea.extent.width,
+                                   (uint32_t)std::max(0, info.renderArea.offset.y) + info.renderArea.extent.height};
+                    const JValue* depthJson = ri ? ri->Get("pDepthAttachment") : nullptr;
+                    if (info.pDepthAttachment && info.pDepthAttachment->imageView && depthJson) {
+                        auto vit = _views.find(IdOf(depthJson->Get("imageView")));
+                        auto iit = vit != _views.end() ? _images.find(vit->second.image) : _images.end();
+                        if (iit != _images.end()) {
+                            pass.depthImage = vit->second.image;
+                            pass.depthRange = vit->second.range;
+                            pass.depthFormat = iit->second.format;
+                            pass.depthLoadOp = info.pDepthAttachment->loadOp;
+                            pass.depthLayoutBefore = info.pDepthAttachment->imageLayout;
+                            pass.depthClear = info.pDepthAttachment->clearValue.depthStencil;
+                        }
+                    }
+                    if (_options.overdraw) PrepareOverdraw(cb, pass);
+                    if (_options.history.enabled) PrepareHistory(cb, pass, histories);
                 }
                 _fns.CmdBeginRendering(cb, &info);
                 _report->commandsRecorded++;
@@ -1386,6 +1408,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
 
         if (IsEndPass(m) && pass.active) {
             InjectReadbacks(cb, pass, readbacks);
+            if (_options.overdraw) RecordOverdraw(cb, group, pass, i, overdraws);
+            if (_options.history.enabled) RecordHistory(cb, group, pass, i, histories);
             pass.active = false;
         }
     }
@@ -1405,6 +1429,8 @@ void Replayer::ReplayCommands() {
         VkQueue queue = (VkQueue)(uintptr_t)Handle(IdOf(args->Get("queue")));
         if (!queue) queue = _queue;
         std::vector<PendingReadback> readbacks;
+        std::vector<PendingOverdraw> overdraws;
+        std::vector<PendingHistory> histories;
         std::vector<VkCommandBuffer> cbs;
         const JValue* submits = args->Get("pSubmits");
         for (uint32_t s = 0; submits && s < submits->count; ++s) {
@@ -1422,11 +1448,15 @@ void Replayer::ReplayCommands() {
                     Problem("submission " + std::to_string(i) + ": command buffer " + std::to_string(id) + " has no recording in the capture (recorded before it started?)");
                     continue;
                 }
-                RecordGroup(*group, readbacks);
+                RecordGroup(*group, readbacks, overdraws, histories);
                 if (VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)Handle(id)) cbs.push_back(cb);
             }
         }
-        if (cbs.empty()) continue;
+        if (cbs.empty()) {
+            CompleteHistory(histories);
+            ReleaseTransients();
+            continue;
+        }
         // One submission for the call's command buffers, without the application's semaphores and fence.
         VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         info.commandBufferCount = (uint32_t)cbs.size();
@@ -1439,6 +1469,8 @@ void Replayer::ReplayCommands() {
             _report->submissions++;
         }
         CompareReadbacks(readbacks);
+        CompleteHistory(histories);
+        CompleteOverdraw(overdraws);
     }
     for (const CommandGroup& g : _groups)
         if (!g.used) Problem("command buffer " + std::to_string(g.commandBuffer) + " was recorded but its submission is not in the capture");
@@ -1458,11 +1490,25 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
         for (uint32_t i = 0; i < buffers->count; ++i)
             if (const JValue* info = buffers->items[i].Get("info")) _bufferData[info->Get("id")->Uint()] = &buffers->items[i];
 
+    if (options.history.enabled) {
+        report.history.requested = true;
+        report.history.image = options.history.image;
+        report.history.x = options.history.x;
+        report.history.y = options.history.y;
+        report.history.mip = options.history.mip;
+        report.history.layer = options.history.layer;
+    }
+
     CreateObjects();
     ComputeInitialLayouts();
     UploadSampledTextures();
     TransitionToInitialLayouts();
     ReplayCommands();
+    if (options.history.enabled && !_historyPasses) {
+        report.history.notes.push_back("no replayed render pass renders to image " + std::to_string(options.history.image) + " at mip " +
+                                       std::to_string(options.history.mip) + ", layer " + std::to_string(options.history.layer) +
+                                       " (writes outside render passes are not followed yet)");
+    }
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();
     return true;

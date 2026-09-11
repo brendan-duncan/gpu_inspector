@@ -329,6 +329,8 @@ the base for overdraw and pixel history. Its pieces:
 - object re-creation with resource-level memory
 - command replay in submission order
 - per-pass read-backs compared with the capture's own
+- analyses that issue a pass again after the replay has executed it, with edited copies of its
+  pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`) and pixel history (`history.cpp`)
 
 See [REPLAY.md](REPLAY.md).
 
