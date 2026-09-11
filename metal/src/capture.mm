@@ -3,6 +3,7 @@
 #include "formats.h"
 #include "frame_stats.h"
 #include "gpu_trace.h"
+#include "overdraw.h"
 #include "stacktrace.h"
 #include "validation.h"
 #include "json_writer.h"
@@ -639,6 +640,7 @@ void Finish() {
     SendBuffers(buffers);
     SendTextures(textures);
     SendTimings(timings, timing);
+    SendOverdraw();
     // The end of the capture's stream, whichever sections it had (the empty ones are not sent): a
     // client waiting for the capture (the MCP server) knows nothing more of it is coming.
     {
@@ -686,6 +688,8 @@ void AdvanceFrame() {
             g_outstanding = 0;
             g_finishPending = false;
             ReleaseTiming(g_timing);
+            // Before recording starts, so the first pass of the capture is measured too.
+            StartOverdrawCapture(g_options.overdraw, g_options.maxTextureSize);
             g_recording = true;
             Log("capture started");
             return;
@@ -757,6 +761,11 @@ void RequestCapture(const CaptureOptions &options) {
 
 bool Recording() {
     return g_recording && !IsInternal();
+}
+
+uint32_t CaptureFrameIndex() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_frameIndex;
 }
 
 uint64_t CommandBufferId(id commandBuffer) {

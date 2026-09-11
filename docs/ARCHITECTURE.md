@@ -214,7 +214,8 @@ much slower than on the desktop.
    is frozen at submit so later re-recording does not disturb the capture.
 6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureTextureFrames` + `CaptureTextureData`, then `CaptureBuffers` +
-   `CaptureBufferData` messages, then `CapturePassTimings`. `CaptureComplete` comes last, whichever
+   `CaptureBufferData` messages, then `CapturePassTimings`, then (a Metal capture with `overdraw`)
+   `CaptureOverdraw` + `CaptureOverdrawData`. `CaptureComplete` comes last, whichever
    sections the capture had, so a client waiting for the capture (the MCP server) knows the stream
    has ended. The Metal library does the same.
 7. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI

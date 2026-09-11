@@ -3,6 +3,7 @@
 #include "hooks.h"
 #include "hooks_common.h"
 #include "frame_stats.h"
+#include "overdraw.h"
 #include "transport.h"
 #include "validation.h"
 
@@ -86,11 +87,14 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
     // is what carries the forced stores and the timestamp attachment.
     MTLRenderPassDescriptor *pass = descriptor;
     PassTimingSlot timing;
+    std::shared_ptr<OverdrawPass> overdraw;
     if (rec && descriptor != nil) {
         pass = [descriptor copy];
         for (NSUInteger i = 0; i < 8; i++) ForceStore(pass.colorAttachments[i]);
         ForceStore(pass.depthAttachment);
         timing = ReserveRenderPassTiming(self, pass);
+        // The depth and stencil the pass starts from, copied while the command buffer is free.
+        overdraw = PrepareOverdrawPass(self, pass);
     }
     id encoder = ORIG(id (*)(id, SEL, MTLRenderPassDescriptor *))(self, _cmd, pass);
     if (outermost) {
@@ -104,7 +108,8 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
             id texture = descriptor.colorAttachments[i].texture;
             if (texture != nil) OnRenderTarget(self, texture);
         }
-        BeginPass(encoder, self, PassKind::Render, timing);
+        const uint32_t passIndex = BeginPass(encoder, self, PassKind::Render, timing);
+        if (overdraw) BeginOverdrawPass(encoder, overdraw, passIndex);
         if (rec) {
             for (NSUInteger i = 0; i < 8; i++) {
                 if (pass.colorAttachments[i].texture != nil) {
@@ -443,7 +448,10 @@ id P_renderCommandEncoder(id self, SEL _cmd) {
         bool secondary = false;
         id commandBuffer = EncoderCommandBuffer(self, &secondary);
         RegisterEncoder(encoder, commandBuffer, "MTLRenderCommandEncoder", self);
-        if (Recording()) RecordCommand("renderCommandEncoder", encoder, {});
+        if (Recording()) {
+            RecordCommand("renderCommandEncoder", encoder, {});
+            NoteOverdrawSubEncoder(self, encoder);
+        }
     }
     HookRenderEncoderClass(encoder);
     return encoder;

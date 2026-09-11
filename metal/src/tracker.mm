@@ -1,6 +1,7 @@
 #include "tracker.h"
 
 #include "json_writer.h"
+#include "overdraw.h"
 #include "stacktrace.h"
 #include "swizzle.h"
 #include "transport.h"
@@ -105,6 +106,8 @@ std::string AddObjectMessage(const TrackedObject &o) {
 void Replaced_dealloc(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
     UntrackObject(self);
+    // A render pipeline's kept descriptor and counting copies go with it (overdraw.h).
+    ForgetRenderPipeline(self);
     ((void (*)(id, SEL))reentry.original())(self, _cmd);
 }
 

@@ -31,6 +31,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/gpu_trace.mm
     src/image.h
     src/image.mm
+    src/overdraw.h
+    src/overdraw.mm
     src/reflection.h
     src/reflection.mm
     src/stacktrace.h

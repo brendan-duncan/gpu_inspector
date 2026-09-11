@@ -5,7 +5,7 @@ import { setsFor, type CommandSets } from "./command_sets.js";
 import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
-import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
+import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
   info: CaptureTextureInfo;
@@ -16,6 +16,12 @@ export interface CapturedTexture {
 /** A buffer range read back when it was bound (referenced by id from the binding command). */
 export interface CapturedBuffer {
   info: CaptureBufferInfo;
+  data: Uint8Array | null;
+}
+
+/** An overdraw measurement of a render pass, with its per-pixel counts (u16 little endian) once they arrive. */
+export interface CapturedOverdraw {
+  info: OverdrawMeasurement;
   data: Uint8Array | null;
 }
 
@@ -67,6 +73,8 @@ export class CaptureData {
   buffers = new Map<number, CapturedBuffer>();
   /** GPU pass timings (Profile passes), keyed "frame:commandBuffer:passIndex". */
   passTimings = new Map<string, PassTiming>();
+  /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
+  overdraw: CapturedOverdraw[] = [];
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -79,6 +87,8 @@ export class CaptureData {
   /** Every announced buffer's data has arrived (or failed). */
   readonly onBuffersComplete = new Signal<() => void>();
   readonly onPassTimings = new Signal<() => void>();
+  /** Overdraw measurements were announced, or one's per-pixel counts arrived. */
+  readonly onOverdraw = new Signal<() => void>();
 
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets(): CommandSets {
@@ -93,8 +103,15 @@ export class CaptureData {
     this.textures = [];
     this.buffers = new Map();
     this.passTimings = new Map();
+    this.overdraw = [];
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
+  }
+
+  /** A render pass's overdraw measurements: the depth-tested one first. */
+  overdrawForPass(frame: number, commandBufferId: number, passIndex: number): CapturedOverdraw[] {
+    return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex)
+      .sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
   }
 
   passTiming(frame: number, commandBufferId: number, passIndex: number, compute = false): PassTiming | null {
@@ -154,6 +171,7 @@ export class CaptureData {
     this.textures = c.textures;
     this.buffers = c.buffers;
     this.passTimings = c.passTimings;
+    this.overdraw = c.overdraw;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -161,6 +179,7 @@ export class CaptureData {
     this.onBuffersAnnounced.emit();
     this.onBuffersComplete.emit();
     if (this.passTimings.size) this.onPassTimings.emit();
+    if (this.overdraw.length) this.onOverdraw.emit();
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -211,6 +230,19 @@ export class CaptureData {
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
         break;
+      case "CaptureOverdraw":
+        this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
+        this.onOverdraw.emit();
+        break;
+      case "CaptureOverdrawData": {
+        const o = this.overdraw.find((m) => m.info.frame === msg.frame && m.info.commandBuffer === msg.commandBuffer
+          && m.info.passIndex === msg.passIndex && m.info.depthTested === msg.depthTested);
+        if (o) {
+          o.data = msg.__binary ?? null;
+          this.onOverdraw.emit();
+        }
+        break;
+      }
       case "CaptureBufferData": {
         const buf = this.buffers.get(msg.id);
         if (buf) {

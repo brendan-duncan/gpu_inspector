@@ -18,6 +18,14 @@
   `--pixel <image> <x> <y>` gives a pixel's history: every pass start, draw and clear that touched
   it, whether each draw was outside the scissor, culled, discarded, or failed depth or stencil, and
   the pixel's value and depth after each event.
+- Overdraw measured while capturing a Metal application ([metal/README.md](metal/README.md),
+  "Overdraw"). With **Overdraw** in the capture bar, or `capture_frames` with `overdraw: true`, the
+  capture library draws every render pass a second time with a counting fragment shader, with the
+  pass's depth and stencil tests and without them.
+  - The pass's details show both heatmaps, with the count under the pointer.
+  - The pass header and GPU Bottlenecks use the measured overdraw where the GPU has no counters.
+  - Capture files keep the counts.
+  - The MCP server's `get_overdraw` returns the numbers and a pass's heatmap as PNG.
 - Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
   an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
   Its tools cover:

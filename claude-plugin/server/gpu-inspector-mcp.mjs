@@ -1106,6 +1106,8 @@ var CaptureData = class {
   buffers = /* @__PURE__ */ new Map();
   /** GPU pass timings (Profile passes), keyed "frame:commandBuffer:passIndex". */
   passTimings = /* @__PURE__ */ new Map();
+  /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
+  overdraw = [];
   _expectedCommands = 0;
   _pendingBuffers = 0;
   onCaptureStatus = new Signal();
@@ -1117,6 +1119,8 @@ var CaptureData = class {
   /** Every announced buffer's data has arrived (or failed). */
   onBuffersComplete = new Signal();
   onPassTimings = new Signal();
+  /** Overdraw measurements were announced, or one's per-pixel counts arrived. */
+  onOverdraw = new Signal();
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets() {
     return setsFor(this.api);
@@ -1129,8 +1133,13 @@ var CaptureData = class {
     this.textures = [];
     this.buffers = /* @__PURE__ */ new Map();
     this.passTimings = /* @__PURE__ */ new Map();
+    this.overdraw = [];
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
+  }
+  /** A render pass's overdraw measurements: the depth-tested one first. */
+  overdrawForPass(frame, commandBufferId, passIndex) {
+    return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex).sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
   }
   passTiming(frame, commandBufferId, passIndex, compute = false) {
     return this.passTimings.get(passKey(frame, commandBufferId, passIndex, compute)) ?? null;
@@ -1180,6 +1189,7 @@ var CaptureData = class {
     this.textures = c2.textures;
     this.buffers = c2.buffers;
     this.passTimings = c2.passTimings;
+    this.overdraw = c2.overdraw;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -1187,6 +1197,7 @@ var CaptureData = class {
     this.onBuffersAnnounced.emit();
     this.onBuffersComplete.emit();
     if (this.passTimings.size) this.onPassTimings.emit();
+    if (this.overdraw.length) this.onOverdraw.emit();
   }
   handleMessage(msg) {
     switch (msg.action) {
@@ -1234,6 +1245,18 @@ var CaptureData = class {
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
         break;
+      case "CaptureOverdraw":
+        this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
+        this.onOverdraw.emit();
+        break;
+      case "CaptureOverdrawData": {
+        const o = this.overdraw.find((m) => m.info.frame === msg.frame && m.info.commandBuffer === msg.commandBuffer && m.info.passIndex === msg.passIndex && m.info.depthTested === msg.depthTested);
+        if (o) {
+          o.data = msg.__binary ?? null;
+          this.onOverdraw.emit();
+        }
+        break;
+      }
       case "CaptureBufferData": {
         const buf = this.buffers.get(msg.id);
         if (buf) {
@@ -1314,6 +1337,7 @@ function parseCaptureFile(bytes) {
   for (const b of manifest.buffers ?? []) buffers.set(b.info.id, { info: b.info, data: payload(b.payload) });
   const passTimings = /* @__PURE__ */ new Map();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
+  const overdraw = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
   const commands = (manifest.commands ?? []).map((c2, i) => ({ ...c2, index: i }));
   return {
     manifest,
@@ -1324,6 +1348,7 @@ function parseCaptureFile(bytes) {
     textures,
     buffers,
     passTimings,
+    overdraw,
     api: manifest.api ?? "vulkan"
   };
 }
@@ -2889,6 +2914,7 @@ function collectPassMetrics(data, db) {
       totals.fragmentsPassed += passed ?? 0;
     }
     p.overdraw = p.pixels > 0 ? ratio(fragments, p.pixels) : null;
+    if (p.overdraw !== null) p.overdrawSource = "counters";
     p.fragmentsPerPrimitive = ratio(fragments, primitives);
     p.depthRejectRate = fragments !== null && passed !== null && fragments > 0 ? 1 - passed / fragments : null;
     p.nsPerVertex = p.vertexMs !== null ? ratio(p.vertexMs * 1e6, vertexInvocations) : null;
@@ -2903,6 +2929,21 @@ function collectPassMetrics(data, db) {
       };
     }
     decideBound(p);
+  }
+  if (data.overdraw?.length) {
+    for (const p of passes) {
+      if (p.compute) continue;
+      const measured = data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((o) => o.info.measured !== false);
+      if (!measured.length) continue;
+      const depthTested = measured.find((o) => o.info.depthTested)?.info ?? null;
+      const rasterized = measured.find((o) => !o.info.depthTested)?.info ?? null;
+      p.measuredOverdraw = { depthTested, rasterized };
+      const pixels = depthTested ? depthTested.width * depthTested.height : 0;
+      if (p.overdraw === null && depthTested && pixels > 0) {
+        p.overdraw = depthTested.fragments / pixels;
+        p.overdrawSource = "measured";
+      }
+    }
   }
   return {
     passes,
@@ -2961,6 +3002,8 @@ function blank(cmd, passIndex, compute, cb, target) {
     vertexMs: null,
     fragmentMs: null,
     overdraw: null,
+    overdrawSource: null,
+    measuredOverdraw: null,
     fragmentsPerPrimitive: null,
     depthRejectRate: null,
     nsPerVertex: null,
@@ -8476,6 +8519,7 @@ async function serializeCapture(session, data, options = {}) {
     textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
     passTimings: [...data.passTimings.values()],
+    ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     validation: db.validation,
     ...symbols ? { symbols } : {},
     ...stacks ? { stacks } : {}
@@ -8489,7 +8533,17 @@ var MAX_FRAME_STATS = 600;
 var DEFAULT_QUIET_MS = 2e3;
 var SNAPSHOT_TIMEOUT_MS = 1e4;
 var KILL_TIMEOUT_MS = 3e3;
-var CAPTURE_ACTIONS = /* @__PURE__ */ new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings"]);
+var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
+  "CaptureFrameResults",
+  "CaptureFrameCommands",
+  "CaptureTextureFrames",
+  "CaptureTextureData",
+  "CaptureBuffers",
+  "CaptureBufferData",
+  "CapturePassTimings",
+  "CaptureOverdraw",
+  "CaptureOverdrawData"
+]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
   return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path7.join(os5.tmpdir(), "gpu-inspector-captures");
@@ -8788,7 +8842,8 @@ var LiveSession = class {
         captureImages: o.images,
         profilePasses: o.profilePasses,
         stacktraces: o.stacktraces,
-        maxBufferSize: o.maxBufferBytes
+        maxBufferSize: o.maxBufferBytes,
+        ...o.overdraw ? { overdraw: true } : {}
       };
       await this.send(request);
       for (; ; ) {
@@ -14824,6 +14879,54 @@ function resourceTools(store) {
 // src/mcp/tools.ts
 import fs10 from "node:fs";
 import path9 from "node:path";
+
+// src/renderer/overdraw.ts
+var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
+function overdrawCount(o, x, y) {
+  const { width, height } = o.info;
+  if (!o.data || x < 0 || y < 0 || x >= width || y >= height) return 0;
+  const i = (y * width + x) * 2;
+  return i + 1 < o.data.byteLength ? o.data[i] | o.data[i + 1] << 8 : 0;
+}
+var RAMP = [
+  [0, 0, 0, 0],
+  [1, 20, 40, 150],
+  [2, 0, 120, 230],
+  [3, 0, 190, 170],
+  [4, 110, 210, 40],
+  [6, 240, 210, 0],
+  [10, 250, 120, 0],
+  [16, 220, 20, 20],
+  [32, 240, 0, 200],
+  [65535, 255, 255, 255]
+];
+function heatColor(n) {
+  for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
+  return [255, 255, 255];
+}
+function overdrawRgba(o) {
+  const { width, height } = o.info;
+  const pixels = width * height;
+  if (!o.data || o.data.byteLength < pixels * 2) return null;
+  const out = new Uint8ClampedArray(pixels * 4);
+  for (let p = 0; p < pixels; p++) {
+    const [r, g, b] = heatColor(o.data[p * 2] | o.data[p * 2 + 1] << 8);
+    out[p * 4] = r;
+    out[p * 4 + 1] = g;
+    out[p * 4 + 2] = b;
+    out[p * 4 + 3] = 255;
+  }
+  return out;
+}
+function overdrawAverages(info) {
+  const pixels = info.width * info.height;
+  return {
+    perPixel: pixels > 0 ? info.fragments / pixels : 0,
+    perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
+  };
+}
+
+// src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
   return values.length ? [...new Set(values)] : void 0;
@@ -14873,6 +14976,25 @@ function passBrief(c2, i) {
   const p = c2.metrics.passes[i];
   return { pass: i, label: c2.passName(i), command: p.commandIndex, ms: round(p.durationMs), draws: p.draws, bound: p.bound ?? void 0 };
 }
+function overdrawBrief(o) {
+  if (!o) return void 0;
+  const a = overdrawAverages(o);
+  const histogram = {};
+  (o.histogram ?? []).forEach((n, i) => {
+    if (n) histogram[OVERDRAW_BUCKETS[i]] = n;
+  });
+  return {
+    perPixel: round(a.perPixel),
+    perCoveredPixel: round(a.perCovered),
+    maxCount: o.maxCount,
+    fragments: o.fragments,
+    coveredPixels: o.coveredPixels,
+    draws: o.draws,
+    skippedDraws: o.skippedDraws || void 0,
+    pixelsByCount: Object.keys(histogram).length ? histogram : void 0,
+    note: o.note
+  };
+}
 function passMeasurements(c2, p, i, gpuMs) {
   const problems = passAdvice(p);
   return {
@@ -14888,6 +15010,8 @@ function passMeasurements(c2, p, i, gpuMs) {
     vertices: p.vertices || void 0,
     pixels: p.pixels || void 0,
     overdraw: round(p.overdraw),
+    overdrawSource: p.overdrawSource ?? void 0,
+    measuredOverdraw: p.measuredOverdraw ? { depthTested: overdrawBrief(p.measuredOverdraw.depthTested), rasterized: overdrawBrief(p.measuredOverdraw.rasterized) } : void 0,
     fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
     depthRejectRate: round(p.depthRejectRate),
     nsPerVertex: round(p.nsPerVertex),
@@ -15114,7 +15238,7 @@ function captureTools(store) {
           return jsonResult({
             capture: c2.id,
             passes: m.passes.length,
-            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.'
+            note: 'No pass was timed: the capture was taken without "Profile passes". The timings and counters this report reads are sampled during the capture and cannot be recovered afterwards; capture again with Profile passes on.' + (c2.data.overdraw.length ? " The capture did measure overdraw: get_overdraw has it." : "")
           });
         }
         const ranked = m.passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
@@ -15159,6 +15283,86 @@ function captureTools(store) {
           passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
           notes
         });
+      }
+    },
+    {
+      name: "get_overdraw",
+      description: "Overdraw measured per pixel, for a capture taken with overdraw (Metal: capture_frames overdraw: true), where every render pass was drawn a second time with a counting fragment shader. Without `pass`: every measured pass, worst first, with the fragments that passed its depth and stencil tests and every fragment it rasterized \u2014 per pixel, per covered pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG (black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more) and the counts at `texels`. Discarded fragments are counted, since the counting shader does not discard.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
+        depthTested: { type: "boolean", description: "With pass: the fragments that passed depth and stencil (default true), or every rasterized fragment." },
+        image: { type: "boolean", description: "With pass: return the PNG (default true)." },
+        maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
+        texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "With pass: [x, y] pixels to read the count of (up to 64)." },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (!c2.data.overdraw.length) {
+          return jsonResult({
+            capture: c2.id,
+            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : "A Vulkan capture does not measure overdraw while capturing. GPU Inspector's replay tool measures it from the capture file: vkinsp_replay <file> --overdraw <dir> prints every pass's counts and writes a heatmap per pass."
+          });
+        }
+        const passes = c2.metrics.passes;
+        const passArg = optionalInt(args, "pass");
+        if (passArg === void 0) {
+          const perPixel = (x) => {
+            const o2 = x.p.measuredOverdraw?.depthTested ?? x.p.measuredOverdraw?.rasterized;
+            return o2 ? overdrawAverages(o2).perPixel : 0;
+          };
+          const ranked = passes.map((p2, i) => ({ p: p2, i })).filter((x) => x.p.measuredOverdraw).sort((a, b) => perPixel(b) - perPixel(a));
+          const unmeasured = c2.data.overdraw.filter((o2) => o2.info.measured === false);
+          const pg = page(ranked, args, 30, 200);
+          return jsonResult({
+            capture: c2.id,
+            healthyOverdraw: HEALTHY_OVERDRAW,
+            overdrawFlaggedAbove: OVERDRAW_LIMIT,
+            total: pg.total,
+            offset: pg.offset,
+            nextOffset: pg.nextOffset,
+            passes: pg.items.map((x) => ({
+              pass: x.i,
+              label: c2.passName(x.i),
+              command: x.p.commandIndex,
+              depthTested: overdrawBrief(x.p.measuredOverdraw.depthTested),
+              rasterized: overdrawBrief(x.p.measuredOverdraw.rasterized)
+            })),
+            notMeasured: unmeasured.length ? unmeasured.slice(0, 20).map((o2) => ({ commandBuffer: o2.info.commandBuffer, passIndex: o2.info.passIndex, depthTested: o2.info.depthTested, note: o2.info.note })) : void 0
+          });
+        }
+        const p = passes[passArg];
+        if (!p) throw new Error(`No pass ${passArg}: the capture has ${passes.length} (get_bottlenecks lists them).`);
+        const depthTested = boolArg(args, "depthTested", true);
+        const o = c2.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
+        if (!o) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no overdraw measurement${p.compute ? ": it is a compute pass" : ""}.`);
+        const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
+        const texels = requested.map((pt) => {
+          const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
+          const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
+          if (!(x >= 0 && x < o.info.width && y >= 0 && y < o.info.height)) throw new Error(`pixel [${String(pt)}] is outside the ${o.info.width}x${o.info.height} pass.`);
+          return { x: Math.floor(x), y: Math.floor(y), count: overdrawCount(o, Math.floor(x), Math.floor(y)) };
+        });
+        const result = jsonResult({
+          capture: c2.id,
+          pass: passArg,
+          label: c2.passName(passArg),
+          command: p.commandIndex,
+          depthTested,
+          width: o.info.width,
+          height: o.info.height,
+          ...overdrawBrief(o.info),
+          texels: texels.length ? texels : void 0,
+          note: o.data ? o.info.note : [o.info.note, "The per-pixel counts were not kept, so there is no heatmap."].filter(Boolean).join(" ")
+        });
+        const rgba = overdrawRgba(o);
+        if (rgba && boolArg(args, "image", true)) {
+          const fit = fitPixels(rgba, o.info.width, o.info.height, intArg(args, "maxSize", 512, 16, 2048));
+          result.content.unshift({ type: "image", data: Buffer.from(encodePng(fit.rgba, fit.width, fit.height)).toString("base64"), mimeType: "image/png" });
+        }
+        return result;
       }
     },
     {
@@ -15594,6 +15798,7 @@ function liveTools(sessions2, store) {
         buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
+        overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
         maxBufferKB: { type: "integer", minimum: 1, description: "Bytes read back per bound buffer range, in KB (default 128)." },
         recordAlways: { type: "boolean", description: "Switch recording of every command buffer on (or off) first, for applications that reuse command buffers recorded before the capture." },
         timeoutSeconds: { type: "number", minimum: 5, maximum: 3600, description: "How long to wait for the capture (default 60)." },
@@ -15612,6 +15817,7 @@ function liveTools(sessions2, store) {
           buffers: boolArg(args, "buffers", true),
           images: boolArg(args, "images", true),
           stacktraces: boolArg(args, "stacktraces", false),
+          overdraw: boolArg(args, "overdraw", false),
           maxBufferBytes: intArg(args, "maxBufferKB", 128, 1) * 1024,
           timeoutMs: (numberArg(args, "timeoutSeconds") ?? 60) * 1e3
         });

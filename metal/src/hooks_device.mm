@@ -3,6 +3,7 @@
 #include "hooks.h"
 #include "hooks_common.h"
 #include "frame_stats.h"
+#include "overdraw.h"
 
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -490,6 +491,7 @@ id D_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescriptor *desc
         descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
     Track(state, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:", self,
           RenderPipelineArgs(descriptor, reflection));
+    RememberRenderPipeline(state, descriptor);
     return state;
 }
 
@@ -510,6 +512,7 @@ id D_newRenderPipelineStateReflection(id self, SEL _cmd, MTLRenderPipelineDescri
     Track(state, "MTLRenderPipelineState",
           "newRenderPipelineStateWithDescriptor:options:reflection:error:", self,
           RenderPipelineArgs(descriptor, *out));
+    RememberRenderPipeline(state, descriptor);
     return state;
 }
 
@@ -532,6 +535,7 @@ void D_newRenderPipelineStateAsync(id self, SEL _cmd, MTLRenderPipelineDescripto
         Track(state, "MTLRenderPipelineState",
               "newRenderPipelineStateWithDescriptor:completionHandler:", self,
               RenderPipelineArgs(kept, reflection));
+        RememberRenderPipeline(state, kept);
         [kept release];
         handler(state, error);
     }];
@@ -553,6 +557,7 @@ void D_newRenderPipelineStateOptionsAsync(id self, SEL _cmd, MTLRenderPipelineDe
             Track(state, "MTLRenderPipelineState",
                   "newRenderPipelineStateWithDescriptor:options:completionHandler:", self,
                   RenderPipelineArgs(kept, reflection));
+            RememberRenderPipeline(state, kept);
             [kept release];
             handler(state, reflection, error);
         };
@@ -619,6 +624,7 @@ id D_newMeshRenderPipelineState(id self, SEL _cmd, id descriptor, MTLPipelineOpt
     Track(state, "MTLRenderPipelineState",
           "newRenderPipelineStateWithMeshDescriptor:options:reflection:error:", self,
           MeshRenderPipelineArgs(descriptor, *out));
+    RememberRenderPipeline(state, descriptor);
     return state;
 }
 
@@ -636,6 +642,7 @@ void D_newMeshRenderPipelineStateAsync(id self, SEL _cmd, id descriptor, MTLPipe
             Track(state, "MTLRenderPipelineState",
                   "newRenderPipelineStateWithMeshDescriptor:options:completionHandler:", self,
                   MeshRenderPipelineArgs(kept, reflection));
+            RememberRenderPipeline(state, kept);
             [kept release];
             handler(state, reflection, error);
         };

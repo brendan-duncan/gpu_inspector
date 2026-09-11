@@ -124,6 +124,10 @@ Limits:
 - A multiview pass is counted in its first view only.
 - A pass the replay leaves out has no measurement.
 
+A Metal capture measures the same while capturing, with no replay: the capture library draws each
+pass again right after the application ends its encoder, with the application's own objects
+(`metal/README.md`, "Overdraw").
+
 The pipeline copies of overdraw and pixel history are made by `pipeline_copy.cpp`: the captured
 create info is decoded, its shader stages rebuilt from the capture's SPIR-V, and an edit changes
 the state before the copy is created.

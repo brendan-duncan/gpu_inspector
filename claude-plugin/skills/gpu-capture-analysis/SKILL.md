@@ -81,6 +81,12 @@ each step.
    | depth rejection (Metal) | high | below 25% with overdraw above 1.5 | fragments shaded then replaced | front-to-back sort, depth prepass |
    | many tiny draws | | 32+ draws of ≤12 vertices | per-draw overhead | instancing, merged geometry |
 
+   A Metal capture taken with `overdraw` measured it per pixel: `get_overdraw` ranks the passes,
+   and with `pass` returns the heatmap, which shows *where* on screen the fragments stack up.
+   Compare its two counts. Many more rasterized fragments than fragments passing depth means the
+   depth test is rejecting work, which is cheap only when it rejects before the fragment shader
+   runs. Discarded fragments count in both.
+
 5. **Rules without counters**: `get_frame_issues`. Most bear on tiled mobile and XR GPUs, where
    loading and storing attachments costs as much as shading:
    - `clear-outside-pass`: a clear command followed by a pass that loads the image.
@@ -162,6 +168,8 @@ The capture library serves one client, so attaching takes it over from GPU Inspe
     `delaySeconds` or `atFrame`.
   - No commands means the application reuses command buffers recorded earlier: capture again with
     `recordAlways: true`.
+  - On Metal, `overdraw: true` measures every pass's overdraw per pixel (`get_overdraw`). It slows
+    the captured frame, so take timings from a capture without it.
 - **Object ids are the same** in the live session and in its captures, so a pipeline id from
   `get_command` is what `replace_shader` takes.
 - **A shader experiment:**

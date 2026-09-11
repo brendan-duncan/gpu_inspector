@@ -35,6 +35,8 @@ struct CaptureOptions {
     bool profilePasses = true;
     /** The call stack of every recorded command, symbolized by the UI on demand. */
     bool stacktraces = false;
+    /** Draw every render pass a second time with a counting fragment function (overdraw.h). */
+    bool overdraw = false;
 };
 
 /** Arms a capture, from the UI's `Capture` message. */
@@ -45,6 +47,9 @@ void RequestCapture(const CaptureOptions &options);
  * False while the library issues Metal calls of its own (see Internal in swizzle.h).
  */
 bool Recording();
+
+/** The frame of the capture being recorded, counting from 0: what a pass and its results are keyed by. */
+uint32_t CaptureFrameIndex();
 
 // --------------------------------------------------------------------------------------------
 // What the recorded commands are attributed to.

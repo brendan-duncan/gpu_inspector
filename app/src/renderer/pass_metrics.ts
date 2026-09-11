@@ -14,7 +14,7 @@
 // A GPU that exposes no counters at all still gives durations. Every field a capture cannot
 // answer is null rather than zero, and the report says which case it is.
 import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
-import type { ArgObject, ArgValue, CaptureCommand, PassTiming } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, CaptureCommand, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 import type { CaptureData } from "./capture_data.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
@@ -58,6 +58,13 @@ export interface PassMetrics {
 
   /** Fragment shader invocations per target pixel: how many times the average pixel was shaded. */
   overdraw: number | null;
+  /** Where `overdraw` came from: the GPU's counters, or the pass drawn again with a counting shader. */
+  overdrawSource: "counters" | "measured" | null;
+  /**
+   * The overdraw measurements of the pass (a Metal capture taken with "Overdraw"): the fragments
+   * that passed its depth and stencil tests, and every fragment it rasterized, per pixel.
+   */
+  measuredOverdraw: { depthTested: OverdrawMeasurement | null; rasterized: OverdrawMeasurement | null } | null;
   /** Fragment invocations per primitive out of the clipper: small means microtriangles. */
   fragmentsPerPrimitive: number | null;
   /** Fraction of shaded fragments the depth and stencil tests threw away. */
@@ -219,6 +226,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       totals.fragmentsPassed += passed ?? 0;
     }
     p.overdraw = p.pixels > 0 ? ratio(fragments, p.pixels) : null;
+    if (p.overdraw !== null) p.overdrawSource = "counters";
     p.fragmentsPerPrimitive = ratio(fragments, primitives);
     // The counter counts fragments that survived the depth and stencil tests; the rest were
     // rejected, early or late.
@@ -236,6 +244,25 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       };
     }
     decideBound(p);
+  }
+
+  // Measured overdraw, timed or not. Where the GPU's counters said nothing, the fragments that
+  // passed the depth and stencil tests stand in for the shader invocations: what the pass shades
+  // when its tests run before the fragment shader.
+  if (data.overdraw?.length) {
+    for (const p of passes) {
+      if (p.compute) continue;
+      const measured = data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((o) => o.info.measured !== false);
+      if (!measured.length) continue;
+      const depthTested = measured.find((o) => o.info.depthTested)?.info ?? null;
+      const rasterized = measured.find((o) => !o.info.depthTested)?.info ?? null;
+      p.measuredOverdraw = { depthTested, rasterized };
+      const pixels = depthTested ? depthTested.width * depthTested.height : 0;
+      if (p.overdraw === null && depthTested && pixels > 0) {
+        p.overdraw = depthTested.fragments / pixels;
+        p.overdrawSource = "measured";
+      }
+    }
   }
 
   return {
@@ -286,7 +313,7 @@ function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: num
     commandBuffer: cb, passIndex, compute, draws: 0, vertices: 0,
     pixels: target?.pixels ?? 0, samples: target?.samples ?? 1,
     timing: null, durationMs: null, vertexMs: null, fragmentMs: null,
-    overdraw: null, fragmentsPerPrimitive: null, depthRejectRate: null,
+    overdraw: null, overdrawSource: null, measuredOverdraw: null, fragmentsPerPrimitive: null, depthRejectRate: null,
     nsPerVertex: null, nsPerFragment: null, cycleShare: null, bound: null, boundReason: "",
   };
 }
