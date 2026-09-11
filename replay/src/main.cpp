@@ -34,8 +34,76 @@ using namespace vkreplay;
 namespace {
 
 void PrintUsage() {
-    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>]\n"
+    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>]] [--trace] | --check\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --overdraw-data: every overdraw measurement with its per-pixel counts, for GPU Inspector to show
+// (parseOverdrawFile in app/src/renderer/overdraw.ts). The layout is the capture file's: a magic
+// line, a little-endian u32 with the length of a JSON manifest, the manifest, then the counts of
+// each measurement (u16 little endian, row by row), which the manifest names as [offset, length].
+
+std::string JsonString(const std::string& s) {
+    std::string out = "\"";
+    for (unsigned char ch : s) {
+        if (ch == '"' || ch == '\\') {
+            out += '\\';
+            out += (char)ch;
+        } else if (ch < 0x20) {
+            char escaped[8];
+            std::snprintf(escaped, sizeof(escaped), "\\u%04x", ch);
+            out += escaped;
+        } else {
+            out += (char)ch;
+        }
+    }
+    return out + "\"";
+}
+
+bool WriteOverdrawData(const ReplayReport& report, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-overdraw\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"passes\":[";
+    uint64_t offset = 0;
+    for (size_t i = 0; i < report.overdraw.size(); ++i) {
+        const OverdrawResult& o = report.overdraw[i];
+        const uint64_t size = (uint64_t)o.counts.size() * 2;
+        std::string histogram;
+        for (size_t b = 0; b < o.histogram.size(); ++b) histogram += (b ? "," : "") + std::to_string(o.histogram[b]);
+        json += std::string(i ? "," : "") + "{\"frame\":" + std::to_string(o.frame) + ",\"commandBuffer\":" + std::to_string(o.commandBuffer) +
+                ",\"passIndex\":" + std::to_string(o.passIndex) + ",\"depthTested\":" + (o.depthTested ? "true" : "false") +
+                ",\"measured\":" + (o.counts.empty() ? "false" : "true") + ",\"width\":" + std::to_string(o.width) +
+                ",\"height\":" + std::to_string(o.height) + ",\"fragments\":" + std::to_string(o.fragments) +
+                ",\"coveredPixels\":" + std::to_string(o.coveredPixels) + ",\"maxCount\":" + std::to_string(o.maxCount) +
+                ",\"draws\":" + std::to_string(o.draws) + ",\"skippedDraws\":" + std::to_string(o.skippedDraws) +
+                ",\"histogram\":[" + histogram + "],\"size\":" + std::to_string(size);
+        if (o.capturedFragments >= 0) json += ",\"capturedFragments\":" + std::to_string(o.capturedFragments);
+        if (!o.note.empty()) json += ",\"note\":" + JsonString(o.note);
+        if (size) json += ",\"payload\":[" + std::to_string(offset) + "," + std::to_string(size) + "]";
+        json += "}";
+        offset += size;
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const char magic[] = "OVERDRAW 1\n";
+    out.write(magic, sizeof(magic) - 1);
+    const uint32_t length = (uint32_t)json.size();
+    const uint8_t le[4] = {(uint8_t)length, (uint8_t)(length >> 8), (uint8_t)(length >> 16), (uint8_t)(length >> 24)};
+    out.write((const char*)le, 4);
+    out.write(json.data(), (std::streamsize)json.size());
+    std::vector<uint8_t> bytes;
+    for (const OverdrawResult& o : report.overdraw) {
+        bytes.resize(o.counts.size() * 2);
+        for (size_t p = 0; p < o.counts.size(); ++p) {
+            bytes[p * 2] = (uint8_t)(o.counts[p] & 0xFF);
+            bytes[p * 2 + 1] = (uint8_t)(o.counts[p] >> 8);
+        }
+        out.write((const char*)bytes.data(), (std::streamsize)bytes.size());
+    }
+    return (bool)out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -386,7 +454,8 @@ int Check(const CaptureFile& capture) {
     return ctx.problems.empty() && undecodable.empty() ? 0 : 1;
 }
 
-int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir) {
+int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
+           const std::string& overdrawData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -436,6 +505,10 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
                         (unsigned long long)o.histogram[6], (unsigned long long)o.histogram[7]);
         }
         if (!overdrawDir.empty()) WriteOverdraw(report, overdrawDir);
+        if (!overdrawData.empty()) {
+            if (WriteOverdrawData(report, overdrawData)) std::printf("  wrote %s\n", overdrawData.c_str());
+            else std::printf("  could not write %s\n", overdrawData.c_str());
+        }
     }
     if (report.history.requested) PrintHistory(report.history);
     std::printf("problems: %zu\n", report.problems.size());
@@ -455,6 +528,7 @@ int main(int argc, char** argv) {
     std::string path;
     std::string dumpDir;
     std::string overdrawDir;
+    std::string overdrawData;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -463,6 +537,10 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--trace")) options.trace = true;
         else if (!std::strcmp(argv[i], "--overdraw") && i + 1 < argc) {
             overdrawDir = argv[++i];
+            options.overdraw = true;
+        }
+        else if (!std::strcmp(argv[i], "--overdraw-data") && i + 1 < argc) {
+            overdrawData = argv[++i];
             options.overdraw = true;
         }
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
@@ -493,5 +571,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: %s\n", error.c_str());
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir);
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData);
 }

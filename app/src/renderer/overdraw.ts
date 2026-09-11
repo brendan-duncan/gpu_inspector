@@ -26,6 +26,13 @@ const RAMP: [number, number, number, number][] = [
   [6, 240, 210, 0], [10, 250, 120, 0], [16, 220, 20, 20], [32, 240, 0, 200], [65535, 255, 255, 255],
 ];
 
+/** The ramp's steps as a legend: the counts each colour stands for. */
+export const OVERDRAW_LEGEND: { label: string; color: [number, number, number] }[] = RAMP.map(([upTo, r, g, b], i) => {
+  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
+  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
+  return { label, color: [r, g, b] };
+});
+
 export function heatColor(n: number): [number, number, number] {
   for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
   return [255, 255, 255];
@@ -69,6 +76,45 @@ export function overdrawSummary(info: OverdrawMeasurement): string {
   const skipped = info.skippedDraws ? `, ${info.skippedDraws} not counted` : "";
   return `Fragments ${kind}: ${a.perPixel.toFixed(2)} per pixel, ${a.perCovered.toFixed(2)} per covered pixel, `
     + `max ${info.maxCount} (${info.fragments.toLocaleString()} over ${info.coveredPixels.toLocaleString()} pixels, ${info.draws} draws${skipped})`;
+}
+
+/** What vkinsp_replay --overdraw-data wrote: the measurements of a Vulkan capture, replayed. */
+export interface OverdrawFile {
+  device: string;
+  measurements: CapturedOverdraw[];
+  /** What the replay could not rebuild (the first hundred). */
+  problems: string[];
+}
+
+const OVERDRAW_MAGIC = "OVERDRAW 1\n";
+
+/**
+ * Parses vkinsp_replay's --overdraw-data file (replay/src/main.cpp): a magic line, a little-endian
+ * u32 manifest length, the JSON manifest, then the counts it names as [offset, length].
+ */
+export function parseOverdrawFile(bytes: Uint8Array): OverdrawFile {
+  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length;
+  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base))) as {
+    device?: string;
+    passes?: (OverdrawMeasurement & { payload?: [number, number] })[];
+    problems?: string[];
+  };
+  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
+    let data: Uint8Array | null = null;
+    if (payload) {
+      const [offset, size] = payload;
+      if (base + offset + size > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
+      // Copied: the counts outlive the file's buffer, and are read two bytes at a time.
+      data = bytes.slice(base + offset, base + offset + size);
+    }
+    return { info, data };
+  });
+  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
 }
 
 /** The histogram as "1: 1200, 2: 340, ..." with the empty buckets left out. */

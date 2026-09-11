@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CaptureData } from "../renderer/capture_data.js";
+import { CaptureData, type CapturedOverdraw } from "../renderer/capture_data.js";
 import { parseCaptureFile, type CaptureFileManifest } from "../renderer/capture_format.js";
 import { CaptureStatistics } from "../renderer/capture_statistics.js";
 import { labelNameOf } from "../renderer/command_sets.js";
@@ -59,6 +59,13 @@ export class Capture {
 
   get metrics(): FrameMetrics {
     return (this._metrics ??= collectPassMetrics(this.data, this.db));
+  }
+
+  /** Overdraw measured after the capture was saved (vkinsp_replay, for a Vulkan capture): what reads it is recomputed. */
+  setOverdraw(measurements: CapturedOverdraw[]): void {
+    this.data.overdraw = measurements;
+    this._metrics = null;
+    this._analysis = null;
   }
 
   get statistics(): CaptureStatistics {

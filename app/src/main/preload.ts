@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("inspector", {
   openSessionWindow: (sessionId: number) => ipcRenderer.invoke("inspector:openSessionWindow", sessionId),
   moveSessionToMain: (sessionId: number) => ipcRenderer.invoke("inspector:moveSessionToMain", sessionId),
   openCaptureWindow: (opts: unknown) => ipcRenderer.invoke("inspector:openCaptureWindow", opts),
+  measureOverdraw: (opts: unknown) => ipcRenderer.invoke("inspector:measureOverdraw", opts),
   symbolize: (frames: unknown, dirs: unknown) => ipcRenderer.invoke("inspector:symbolize", frames, dirs),
   shaderSource: (names: unknown, roots: unknown) => ipcRenderer.invoke("inspector:shaderSource", names, roots),
   openCaptureInMain: (path: string) => ipcRenderer.invoke("inspector:openCaptureInMain", path),

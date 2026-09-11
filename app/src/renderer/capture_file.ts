@@ -79,6 +79,8 @@ function referencedObjects(session: LayerSession, data: CaptureData): VulkanObje
 
 export interface SerializeOptions {
   onProgress?: (text: string) => void;
+  /** For a replay (vkinsp_replay): the objects, commands and contents only, without symbols and creation stacks. */
+  forReplay?: boolean;
   /** Symbolizes the commands' addresses; by default with what the layer resolves. */
   resolveSymbols?: (addresses: string[]) => Promise<Map<string, StackFrame>>;
 }
@@ -118,14 +120,14 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
   const addresses = new Set<string>();
   for (const c of data.commands) for (const a of c.stack ?? []) addresses.add(a);
   let symbols: Record<string, StackFrame> | undefined;
-  if (addresses.size) {
+  if (addresses.size && !options.forReplay) {
     if (onProgress) onProgress("saving: symbols...");
     const resolved = await (options.resolveSymbols ?? ((a: string[]) => resolveSymbols(session, a)))([...addresses]);
     symbols = {};
     for (const [a, f] of resolved) symbols[a] = f;
   }
   let stacks: Record<string, StackFrame[]> | undefined;
-  if (db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
     if (onProgress) onProgress("saving: stack traces...");
     const got = await requestStacks(session, objects.map((o) => o.id));
     if (got && (db.stacksAvailable as boolean | null) !== false) {  // the answer may have said "none collected"

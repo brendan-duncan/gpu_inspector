@@ -81,7 +81,7 @@ export function capturesDir(): string {
 }
 
 /** Checkouts whose build tree may hold the capture libraries: GPU_INSPECTOR_ROOT, and the checkout this server was built in. */
-function checkoutRoots(): string[] {
+export function checkoutRoots(): string[] {
   const roots: string[] = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
   // In a checkout the bundle is claude-plugin/server/gpu-inspector-mcp.mjs.
@@ -90,7 +90,7 @@ function checkoutRoots(): string[] {
 }
 
 /** Where installed builds of GPU Inspector keep their capture libraries (electron-builder's defaults). */
-function installedLayerDirs(): string[] {
+export function installedLayerDirs(): string[] {
   const home = os.homedir();
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");

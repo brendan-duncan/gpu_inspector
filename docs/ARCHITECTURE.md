@@ -333,6 +333,10 @@ the base for overdraw and pixel history. Its pieces:
 - analyses that issue a pass again after the replay has executed it, with edited copies of its
   pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`) and pixel history (`history.cpp`)
 
+The app runs it for a Vulkan capture's overdraw (`app/src/main/replay.ts`: the capture serialized to
+a temporary file, `--overdraw-data`, the result parsed by `renderer/overdraw.ts`); the MCP server
+does the same from `get_overdraw`. `app/tools/stage_layer.mjs` ships the tool beside the layer.
+
 See [REPLAY.md](REPLAY.md).
 
 ### app/ — Electron UI

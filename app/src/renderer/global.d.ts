@@ -34,6 +34,11 @@ export interface InspectorApi {
   openSessionWindow(sessionId: number): Promise<boolean>;
   /** Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file). */
   openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
+  /**
+   * Vulkan: replays a capture (its file bytes) on this machine's GPU with vkinsp_replay to measure
+   * every pass's overdraw. `data` is the tool's --overdraw-data file (renderer/overdraw.ts parses it).
+   */
+  measureOverdraw(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */
   symbolize(frames: StackFrame[], dirs: string[]): Promise<StackFrame[]>;
   /** The text of shader source files named by debug information, found under the roots (empty: the last ones used). */

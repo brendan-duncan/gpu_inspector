@@ -6,7 +6,7 @@ changed: the overdraw heatmap, pixel history, and later per-draw timing and shad
 (TODO.md, "Replay-based features").
 
 ```
-vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>]
+vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
               [--pixel <image> <x> <y> [--mip <n>] [--layer <n>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 ```
@@ -24,6 +24,11 @@ vkinsp_replay <capture.gpucap> --check
   driver crashes on is the last line printed.
 - **`--overdraw <dir>`:** measures every render pass's overdraw (see [Overdraw](#overdraw)), prints
   the numbers and writes a heatmap for each pass.
+- **`--overdraw-data <file>`:** measures overdraw the same way and writes every measurement with its
+  per-pixel counts into one file: a magic line (`OVERDRAW 1`), a little-endian u32 manifest length,
+  a JSON manifest, then 16-bit counts the manifest names as `[offset, length]`. GPU Inspector's
+  **Measure Overdraw** runs the tool this way (`app/src/main/replay.ts`), and so does the MCP
+  server's `get_overdraw` for a Vulkan capture.
 - **`--pixel <image> <x> <y>`:** follows one pixel of an image (tracker id; `--mip` and `--layer`
   pick the subresource) through the frame, and lists every pass start, draw and clear that touched
   it (see [Pixel history](#pixel-history)).
@@ -220,10 +225,9 @@ These cases differ for known reasons:
    - Multisampled images.
    - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
    - Early fragment tests.
-3. **The app and the MCP server.**
-   - Run `vkinsp_replay` from GPU Inspector: show the heatmap in the image viewer, and pixel history
-     from a pixel click.
-   - Give Claude tools for both.
+3. **The app and the MCP server.** Overdraw is done: the app's **Measure Overdraw** and the
+   overdraw tab, and `get_overdraw`. Pixel history is left: from a pixel click in the image viewer
+   or the overdraw tab, and a tool for Claude.
 
 Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
 templates and push descriptors with templates, queries whose results the frame reads back, and

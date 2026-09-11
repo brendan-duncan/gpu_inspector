@@ -81,8 +81,10 @@ each step.
    | depth rejection (Metal) | high | below 25% with overdraw above 1.5 | fragments shaded then replaced | front-to-back sort, depth prepass |
    | many tiny draws | | 32+ draws of ≤12 vertices | per-draw overhead | instancing, merged geometry |
 
-   A Metal capture taken with `overdraw` measured it per pixel: `get_overdraw` ranks the passes,
-   and with `pass` returns the heatmap, which shows *where* on screen the fragments stack up.
+   `get_overdraw` measures it per pixel: a Metal capture taken with `overdraw` carries it, and a
+   Vulkan capture is replayed on this machine's GPU the first time (slow for a large frame, and it
+   needs `vkinsp_replay` built). It ranks the passes, and with `pass` returns the heatmap, which
+   shows *where* on screen the fragments stack up.
    Compare its two counts. Many more rasterized fragments than fragments passing depth means the
    depth test is rejecting work, which is cheap only when it rejects before the fragment shader
    runs. Discarded fragments count in both.

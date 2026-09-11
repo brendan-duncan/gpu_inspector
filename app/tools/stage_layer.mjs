@@ -45,6 +45,15 @@ if (process.platform === "darwin") {
   }
   for (const f of [library, manifest]) fs.copyFileSync(path.join(src, f), path.join(dst, f));
   console.log(`staged layer from ${src} -> ${dst}`);
+  // The replay tool, beside the layer: the app measures a Vulkan capture's overdraw with it
+  // (findReplayTool in src/main/replay.ts). Optional: without it that one feature says so.
+  const replay = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
+  if (fs.existsSync(path.join(src, replay))) {
+    fs.copyFileSync(path.join(src, replay), path.join(dst, replay));
+    console.log(`staged ${replay} from ${src}`);
+  } else {
+    console.log(`no ${replay} in ${src}: the package will not measure Vulkan overdraw`);
+  }
 }
 
 // Android: the layer libraries and the layer APK from tools/build_android.py, when built. The
