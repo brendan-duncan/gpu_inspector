@@ -32,7 +32,8 @@ import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
-import { isMeasured, overdrawAverages, overdrawCount, overdrawHistogramText, overdrawRgba, overdrawSummary } from "./overdraw.js";
+import { isMeasured, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary, parseOverdrawFile } from "./overdraw.js";
+import { OverdrawView, type OverdrawPassKey } from "./overdraw_view.js";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -74,6 +75,9 @@ const ICON_BOTTLENECK = '<svg viewBox="0 0 16 16"><path d="M2.2 12a6.4 6.4 0 0 1
 /** Nodes joined by edges: the pass dependency graph. */
 const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="3.8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="12.2" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.4 7.2 10.6 4.6M5.4 8.8l5.2 2.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 
+/** Stacked squares: fragments landing on the same pixels. */
+const ICON_OVERDRAW = '<svg viewBox="0 0 16 16"><rect x="2" y="6.5" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="4.25" y="4.25" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="6.5" y="2" width="7.5" height="7.5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3"/></svg>';
+
 export class CapturePanel {
   readonly window: SessionContext;
   readonly parent: Widget;
@@ -99,6 +103,8 @@ export class CapturePanel {
   /** The capture the layer is streaming to (the most recently requested one). */
   private _live: CaptureView | null = null;
   private _captureCount = 0;
+  /** Each capture's overdraw tab, once one of its passes was opened in it. */
+  private _overdrawTabs = new Map<CaptureView, { view: OverdrawView; handle: TabHandle }>();
 
   constructor(win: SessionContext, parent: Widget) {
     this.window = win;
@@ -110,12 +116,17 @@ export class CapturePanel {
   /** The capture shown in the active tab. */
   /** The UI tests' view of every capture tab (tools/ui_tests.py). */
   debugState(): Record<string, unknown>[] {
-    return this._views.map((v) => v.debugState());
+    return this._views.map((v) => ({ ...v.debugState(), overdrawTab: this._overdrawTabs.get(v)?.view.debugState() ?? null }));
   }
 
+  /** The capture shown in the active tab: its own tab, or the overdraw tab it opened. */
   get activeView(): CaptureView | null {
     const index = this._tabs.activeTab;
-    return index >= 0 ? this._views[index] ?? null : null;
+    const handle = index >= 0 ? this._tabs.tabListElement.children[index] : null;
+    if (!handle) return null;
+    for (const [view, h] of this._handles) if (h === handle) return view;
+    for (const [view, t] of this._overdrawTabs) if (t.handle === handle) return view;
+    return null;
   }
 
   /** The most recent capture's data. */
@@ -242,6 +253,7 @@ export class CapturePanel {
     this._handles.set(view, handle);
     view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
+    view.onOpenOverdraw.addListener((key, depthTested) => this._openOverdraw(view, key, depthTested));
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
@@ -303,6 +315,28 @@ export class CapturePanel {
     this._live?.handleMessage(msg);
   }
 
+  /** Points the capture's overdraw tab at a pass, opening the tab the first time. */
+  private _openOverdraw(view: CaptureView, key: OverdrawPassKey, depthTested: boolean): void {
+    const existing = this._overdrawTabs.get(view);
+    if (existing) {
+      existing.view.show(key, depthTested);
+      this._tabs.setHandleActive(existing.handle);
+      return;
+    }
+    const overdraw = new OverdrawView({
+      data: view.data,
+      passLabelOf: (k) => view.passLabelOf(k),
+      selectPass: (k) => {
+        const own = this._handles.get(view);
+        if (own) this._tabs.setHandleActive(own);
+        view.selectPass(k);
+      },
+    }, key, depthTested);
+    const handle = this._tabs.addTab(`Overdraw: ${view.label}`, overdraw.root);
+    this._overdrawTabs.set(view, { view: overdraw, handle });
+    this._tabs.setHandleActive(handle);
+  }
+
   private _tabMenu(view: CaptureView): ContextMenuItem[] {
     const empty = !view.data.commands.length;
     return [
@@ -322,11 +356,21 @@ export class CapturePanel {
   }
 
   private _tabClosed(panel: Widget): void {
+    for (const [owner, t] of this._overdrawTabs) {
+      if (t.view.root !== panel) continue;
+      t.view.dispose();
+      this._overdrawTabs.delete(owner);
+      this._updateStatus();
+      return;
+    }
     const view = this._views.find((v) => v.root === panel);
     if (!view) return;
     this._views = this._views.filter((v) => v !== view);
     this._handles.delete(view);
     if (this._live === view) this._live = null;
+    // The capture's overdraw tab goes with it.
+    const overdraw = this._overdrawTabs.get(view);
+    if (overdraw) this._tabs.closeTabHandle(overdraw.handle);
     this._updatePlaceholder();
     this._updateStatus();
   }
@@ -394,6 +438,10 @@ export class CaptureView implements CaptureHost {
 
   readonly onStatus = new Signal<() => void>();
   readonly onLabelChanged = new Signal<() => void>();
+  /** A pass's overdraw asked to open in a tab of its own (the panel opens it). */
+  readonly onOpenOverdraw = new Signal<(key: OverdrawPassKey, depthTested: boolean) => void>();
+  /** Vulkan: the replay measuring overdraw, while it runs or after it failed. */
+  private _overdrawRun: { running: boolean; error?: string } | null = null;
 
   private _listPanel: Div;
   private _infoPanel: Div;
@@ -842,6 +890,7 @@ export class CaptureView implements CaptureHost {
       textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       buffers: d.buffers.size, passTimings: d.passTimings.size,
+      overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
       // Passes whose GPU counters arrived: what the GPU Bottlenecks report is built from.
       passCounters: [...d.passTimings.values()].filter((t) => t.counters && Object.keys(t.counters).length).length,
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
@@ -1067,6 +1116,9 @@ export class CaptureView implements CaptureHost {
       { id: "graph", icon: ICON_GRAPH, label: "Render Graph", open: () => this._showRenderGraph(),
         detail: "Passes and the resources connecting them",
         tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
+      { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw", open: () => void this.openOverdraw(),
+        detail: "Fragments per pixel of every pass, as heatmaps",
+        tooltip: "Every pass's overdraw in a tab of its own: how many fragments landed on each pixel, with and without the depth test, and the counts under the pointer. A Vulkan capture is replayed on this machine's GPU to measure it" },
     ];
     for (const report of reports) {
       const item = new Div(menu, { class: "menu-item reports-menu-item" });
@@ -1138,6 +1190,66 @@ export class CaptureView implements CaptureHost {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
     else if (name === "bottlenecks") this._showBottlenecks();
     else if (name === "stats") this._showStats();
+    else if (name === "overdraw") void this.openOverdraw();
+  }
+
+  /** A pass's label as the command tree shows it, with its frame when the capture has several. */
+  passLabelOf(key: OverdrawPassKey): string {
+    const label = this._passBlocks.get(passKey(key.frame, key.commandBuffer, key.passIndex))?.label
+      ?? `Pass ${key.passIndex} (command buffer ${key.commandBuffer})`;
+    return this.data.frames > 1 ? `Frame ${this.data.frame + key.frame}: ${label}` : label;
+  }
+
+  /** Selects a pass's begin command. */
+  selectPass(key: OverdrawPassKey): void {
+    const row = this._passBlocks.get(passKey(key.frame, key.commandBuffer, key.passIndex))?.row;
+    if (!row) return;
+    row.element.scrollIntoView({ block: "center" });
+    if ("command" in row) this._selectRow(row as CommandRow);
+  }
+
+  /** Opens the overdraw tab on the first measured pass; a Vulkan capture is measured first. */
+  async openOverdraw(): Promise<void> {
+    if (!this.data.overdraw.length) {
+      if (this.data.api === "metal") {
+        this._setStatus("this capture did not measure overdraw: capture again with Overdraw ticked");
+        return;
+      }
+      if (!(await this.measureOverdraw())) return;
+    }
+    const first = (this.data.overdraw.find((o) => o.info.measured !== false) ?? this.data.overdraw[0])?.info;
+    if (first) this.onOpenOverdraw.emit({ frame: first.frame, commandBuffer: first.commandBuffer, passIndex: first.passIndex }, true);
+    else this._setStatus("the replay measured no pass");
+  }
+
+  /**
+   * Vulkan: replays the capture on this machine's GPU with vkinsp_replay, which draws every pass
+   * again with a counting fragment shader (docs/REPLAY.md), and takes its measurements. `open`
+   * opens that pass's overdraw tab afterwards.
+   */
+  async measureOverdraw(open?: OverdrawPassKey): Promise<boolean> {
+    if (this._overdrawRun?.running) return false;
+    this._overdrawRun = { running: true };
+    this._refreshSelection();
+    this._setStatus("measuring overdraw: replaying the capture on this machine's GPU...");
+    try {
+      const bytes = await serializeCapture(this.window, this.data, { forReplay: true });
+      const result = await window.inspector.measureOverdraw({ data: bytes, name: this.label });
+      if (!result.data) throw new Error(result.error ?? "the replay wrote no overdraw data");
+      const file = parseOverdrawFile(result.data);
+      this._overdrawRun = null;
+      this.data.overdraw = file.measurements;
+      this.data.onOverdraw.emit();
+      this._updateStatus();
+      if (open) this.onOpenOverdraw.emit(open, true);
+      return true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this._overdrawRun = { running: false, error: message };
+      this._refreshSelection();
+      this._setStatus(`overdraw not measured: ${message.split("\n")[0]}`);
+      return false;
+    }
   }
 
   /** Re-renders the selected command (new texture or buffer data arrived), keeping the scroll position. */
@@ -1175,11 +1287,21 @@ export class CaptureView implements CaptureHost {
     this._renderPassOverdraw(container, frame, commandBufferId, passIndex);
   }
 
-  /** The pass's overdraw heatmaps, when the capture measured them (metal/src/overdraw.h). */
+  /**
+   * The pass's overdraw heatmaps, when the capture has them: a Metal capture measured while it was
+   * taken (metal/src/overdraw.h), a Vulkan one replayed (measureOverdraw). A heatmap opens in the
+   * capture's overdraw tab.
+   */
   private _renderPassOverdraw(container: Widget, frame: number, commandBufferId: number, passIndex: number): void {
+    const key: OverdrawPassKey = { frame, commandBuffer: commandBufferId, passIndex };
     const measurements = this.data.overdrawForPass(frame, commandBufferId, passIndex);
-    if (!measurements.length) return;
+    if (!measurements.length) {
+      if (this.data.api !== "metal") this._renderOverdrawReplay(container, key);
+      return;
+    }
     const grp = new collapsible(container, { label: "Overdraw", collapsed: false });
+    new Button(grp.body, { label: "Open in Tab", class: "btn btn-sm", tooltip: "The pass's overdraw in a tab of its own: zoom, the render target underneath, and the counts under the pointer",
+      callback: () => this.onOpenOverdraw.emit(key, true) });
     const strip = new Div(grp.body, { class: "capture_frameImages" });
     for (const o of measurements) {
       const box = new Div(strip, { class: "capture_pass_texture" });
@@ -1200,19 +1322,32 @@ export class CaptureView implements CaptureHost {
       canvas.height = o.info.height;
       canvas.getContext("2d")!.putImageData(new ImageData(rgba, o.info.width, o.info.height), 0, 0);
       canvas.style.maxWidth = "100%";
-      canvas.title = "The fragment count under the pointer";
-      canvas.onmousemove = (e: MouseEvent) => {
-        const r = canvas.getBoundingClientRect();
-        const x = Math.floor(((e.clientX - r.left) * o.info.width) / Math.max(1, r.width));
-        const y = Math.floor(((e.clientY - r.top) * o.info.height) / Math.max(1, r.height));
-        canvas.title = `(${x}, ${y}): ${overdrawCount(o, x, y)} fragment${overdrawCount(o, x, y) === 1 ? "" : "s"}`;
-      };
+      canvas.title = "Click to open in the overdraw tab: zoom, the render target underneath, and the counts under the pointer";
+      canvas.onclick = () => this.onOpenOverdraw.emit(key, o.info.depthTested);
       box.element.appendChild(canvas);
     }
     new Div(grp.body, {
       text: "Fragments per pixel: black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more. Discarded fragments count, since the counting shader does not discard.",
       class: "text-muted font-sm", style: "padding: 4px 6px;",
     });
+  }
+
+  /** A Vulkan pass without measurements: the replay that measures them, or where it stands. */
+  private _renderOverdrawReplay(container: Widget, key: OverdrawPassKey): void {
+    const grp = new collapsible(container, { label: "Overdraw", collapsed: false });
+    const note = (text: string): void => { new Div(grp.body, { text, class: "text-muted font-sm", style: "padding: 2px 0; white-space: pre-wrap;" }); };
+    if (this.data.overdraw.length) {
+      note("The replay did not measure this pass: it could not rebuild it (the capture's other passes have their overdraw).");
+      return;
+    }
+    if (this._overdrawRun?.running) {
+      note("Replaying the capture on this machine's GPU...");
+      return;
+    }
+    note("A Vulkan capture's overdraw is measured by replaying it on this machine's GPU (vkinsp_replay): every pass is drawn again with a counting fragment shader, with and without its depth test.");
+    if (this._overdrawRun?.error) note(this._overdrawRun.error);
+    new Button(grp.body, { label: "Measure Overdraw", class: "btn btn-sm", tooltip: "Replay the capture and open this pass's overdraw in a tab",
+      callback: () => void this.measureOverdraw(key) });
   }
 
   private _renderTexture(parent: Widget, tex: CapturedTexture): void {

@@ -680,8 +680,9 @@ the application's own objects.
 * **Results.** The counts are read once the capture's command buffers have completed, and sent as
   `CaptureOverdraw`, with per-pass totals, covered pixels, maximum, draws and a histogram, plus one
   `CaptureOverdrawData` frame of little-endian 16-bit counts per measurement. Counts larger than
-  `maxTextureSize` go without their pixels. The pass's details show both heatmaps, with the count
-  under the pointer. The pass header and GPU Bottlenecks use the measured figure where the GPU
+  `maxTextureSize` go without their pixels. The pass's details show both heatmaps, and one opens
+  in the capture's overdraw tab with the counts under the pointer. The pass header and GPU
+  Bottlenecks use the measured figure where the GPU
   exposes no statistic counters, the file format keeps the counts, and the MCP server's
   `get_overdraw` returns them.
 
@@ -696,7 +697,6 @@ Limits:
 - A multisampled pass is counted without its depth and stencil tests, single-sampled.
 - A layered pass lands every layer's fragments in one count.
 - A tile pipeline's dispatches are not drawn.
-- Not yet run on a Mac: this was written on Windows, where the library does not build.
 
 ## Not done
 

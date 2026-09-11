@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
+import { NO_REPLAY_TOOL, findReplayTool, measureOverdrawOfBytes, type OverdrawRun } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileShader, shaderText } from "./shader_tools.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
@@ -1096,6 +1097,12 @@ ipcMain.handle("inspector:shaderSource", (_e, names: string[], roots: string[]) 
 });
 
 ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
+// Vulkan overdraw: the capture replayed on this machine's GPU (src/main/replay.ts, docs/REPLAY.md).
+ipcMain.handle("inspector:measureOverdraw", async (_e, opts: { data: Uint8Array; name?: string }): Promise<OverdrawRun> => {
+  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
+  return measureOverdrawOfBytes(tool, opts.data, opts.name);
+});
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
   if (!mainWin || mainWin.isDestroyed()) return false;

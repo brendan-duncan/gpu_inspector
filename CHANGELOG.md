@@ -22,10 +22,16 @@
   "Overdraw"). With **Overdraw** in the capture bar, or `capture_frames` with `overdraw: true`, the
   capture library draws every render pass a second time with a counting fragment shader, with the
   pass's depth and stencil tests and without them.
-  - The pass's details show both heatmaps, with the count under the pointer.
+  - The pass's details show both heatmaps. A heatmap opens in an overdraw tab beside the capture's:
+    any zoom, over the pass's render target, and a tooltip with both counts and the target's texel
+    under the pointer. The Reports menu opens it too.
   - The pass header and GPU Bottlenecks use the measured overdraw where the GPU has no counters.
   - Capture files keep the counts.
   - The MCP server's `get_overdraw` returns the numbers and a pass's heatmap as PNG.
+- Overdraw of Vulkan captures in the app: **Measure Overdraw** replays the capture on this machine's
+  GPU with `vkinsp_replay --overdraw-data` and shows the same heatmaps and overdraw tab. The MCP
+  server's `get_overdraw` replays a Vulkan capture the first time it is asked. The packaged app ships
+  `vkinsp_replay` beside the layer.
 - Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
   an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
   Its tools cover:

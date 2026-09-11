@@ -8,7 +8,8 @@ import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
   frameStageVerdict, passAdvice, type PassMetrics,
 } from "../renderer/pass_metrics.js";
-import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba } from "../renderer/overdraw.js";
+import { NO_REPLAY_TOOL, findReplayTool, runOverdrawReplay } from "../main/replay.js";
+import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile } from "../renderer/overdraw.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -18,6 +19,7 @@ import { recentCaptureFiles, settingsFile, type Capture, type CaptureStore } fro
 import {
   CAPTURE_PARAM, PAGE_PARAMS, boolArg, enumArg, findingBrief, intArg, jsonResult, optionalInt, page, refText, requireString, round, schema, stringArg, validationBrief,
 } from "./describe.js";
+import { checkoutRoots, installedLayerDirs } from "./live_session.js";
 import { encodePng, fitPixels } from "./png.js";
 import { describeSearchPaths, setSearchPaths, splitPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
@@ -355,8 +357,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
     },
     {
       name: "get_overdraw",
-      description: "Overdraw measured per pixel, for a capture taken with overdraw (Metal: capture_frames overdraw: true), where every " +
-        "render pass was drawn a second time with a counting fragment shader. Without `pass`: every measured pass, worst first, " +
+      description: "Overdraw measured per pixel: every render pass drawn a second time with a counting fragment shader. A Metal " +
+        "capture measures it while it is taken (capture_frames overdraw: true); a Vulkan capture is replayed on this machine's GPU " +
+        "with vkinsp_replay the first time this is called (seconds to minutes, and it needs the tool built). Without `pass`: every measured pass, worst first, " +
         "with the fragments that passed its depth and stencil tests and every fragment it rasterized — per pixel, per covered " +
         "pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG " +
         "(black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and " +
@@ -371,14 +374,26 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         ...PAGE_PARAMS,
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
+        let replayNote: string | undefined;
+        if (!c.data.overdraw.length && c.data.api !== "metal") {
+          // A Vulkan capture: replayed once, and the measurements kept with the open capture.
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) return jsonResult({ capture: c.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+          const run = await runOverdrawReplay(tool, c.path);
+          if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not measure overdraw: ${run.error ?? "no data"}` });
+          const file = parseOverdrawFile(run.data);
+          c.setOverdraw(file.measurements);
+          replayNote = `Measured by replaying the capture on ${file.device || "this machine's GPU"} (vkinsp_replay).`
+            + (file.problems.length ? ` ${file.problems.length} parts of the capture could not be replayed; passes that depend on them are missing or may differ from the frame.` : "");
+        }
         if (!c.data.overdraw.length) {
           return jsonResult({
             capture: c.id,
             note: c.data.api === "metal"
               ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true."
-              : "A Vulkan capture does not measure overdraw while capturing. GPU Inspector's replay tool measures it from the capture file: vkinsp_replay <file> --overdraw <dir> prints every pass's counts and writes a heatmap per pass.",
+              : `The replay measured no pass. ${replayNote ?? ""}`,
           });
         }
         const passes = c.metrics.passes;
@@ -392,7 +407,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           const unmeasured = c.data.overdraw.filter((o) => o.info.measured === false);
           const pg = page(ranked, args, 30, 200);
           return jsonResult({
-            capture: c.id, healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT,
+            capture: c.id, measuredBy: replayNote, healthyOverdraw: HEALTHY_OVERDRAW, overdrawFlaggedAbove: OVERDRAW_LIMIT,
             total: pg.total, offset: pg.offset, nextOffset: pg.nextOffset,
             passes: pg.items.map((x) => ({
               pass: x.i, label: c.passName(x.i), command: x.p.commandIndex,
@@ -405,9 +420,12 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         }
         const p = passes[passArg];
         if (!p) throw new Error(`No pass ${passArg}: the capture has ${passes.length} (get_bottlenecks lists them).`);
+        // A compute pass is numbered apart from the render passes of its command buffer, so its
+        // index can equal a render pass's: it has no overdraw of its own.
+        if (p.compute) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) is a compute pass, which has no overdraw. get_overdraw without pass lists the render passes.`);
         const depthTested = boolArg(args, "depthTested", true);
         const o = c.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
-        if (!o) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no overdraw measurement${p.compute ? ": it is a compute pass" : ""}.`);
+        if (!o) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no overdraw measurement.`);
         const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
         const texels = requested.map((pt) => {
           const x = Array.isArray(pt) ? Number(pt[0]) : NaN;

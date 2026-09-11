@@ -144,8 +144,11 @@ application with injected state. Route (a) is the general one and is the prerequ
       counting fragment shader. It gives two counts per pass (every rasterized fragment, and the
       fragments passing depth and stencil in draw order), with a heatmap and a histogram. The
       triangle's count matches its pipeline statistics exactly.
-- [ ] Vulkan overdraw in the app and the MCP server: vkinsp_replay's measurements into a capture, so
-      the heatmaps, get_bottlenecks and get_overdraw show them as they do a Metal capture's.
+- [x] Vulkan overdraw in the app and the MCP server: "Measure Overdraw" (a pass's details, or the
+      Reports menu) replays the capture with `vkinsp_replay --overdraw-data` and shows the result the
+      way a Metal capture's is shown; `get_overdraw` replays a Vulkan capture on first use.
+- [x] Overdraw tab: a pass's heatmap at any zoom, over its render target, with both counts and the
+      target's texel under the pointer (`renderer/overdraw_view.ts`).
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
 - [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays
@@ -236,8 +239,8 @@ backend does. Ordered by value per effort.
       right after the application's encoder ends, with counting copies of its pipelines, with and
       without its depth and stencil tests. Heatmaps in the pass's details, the measured figure in
       the pass header and GPU Bottlenecks, kept in capture files, `get_overdraw` in the MCP server.
-- [ ] Run Metal overdraw on a Mac: the test triangle (render, MSAA through a parallel encoder),
-      then a Unity player. It was written on Windows and has not been compiled.
+- [x] Run Metal overdraw on a Mac: the heatmaps show in the pass details (2026-09-11).
+- [ ] Metal overdraw on a Unity player, and against the pass's `fragmentsPassed` counter.
 - [ ] Pixel history for Metal, the same way: the pass's calls issued again one draw at a time with
       a one-pixel scissor, visibility results in counting mode, and cull mode and depth-stencil
       state varied on the encoder (no pipeline copies needed for those).

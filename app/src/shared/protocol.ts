@@ -347,6 +347,8 @@ export interface OverdrawMeasurement {
   histogram: number[];
   /** Bytes of per-pixel counts in the CaptureOverdrawData that follows (u16 little endian, row by row); 0 without. */
   size: number;
+  /** Vulkan (vkinsp_replay): the fragment shader invocations the capture's pipeline statistics measured for the pass. */
+  capturedFragments?: number;
   note?: string;
 }
 

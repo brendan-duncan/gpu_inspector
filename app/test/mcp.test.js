@@ -380,6 +380,33 @@ test("a Metal draw's argument buffer resolves to the buffers and textures it hol
   assert.match((await call("get_bottlenecks", { capture: file })).json.note, /get_overdraw/);
 });
 
+test("vkinsp_replay's overdraw file is read back with its counts", async () => {
+  const { parseOverdrawFile, overdrawCount, OVERDRAW_LEGEND } = await import(pathToFileURL(bundle("renderer/overdraw.ts", "overdraw")).href);
+  const info = {
+    frame: 0, commandBuffer: 7, passIndex: 0, depthTested: true, measured: true, width: 2, height: 1, fragments: 3, coveredPixels: 2,
+    maxCount: 2, draws: 1, skippedDraws: 0, histogram: [1, 1, 0, 0, 0, 0, 0, 0], size: 4, capturedFragments: 3, payload: [0, 4],
+  };
+  const json = new TextEncoder().encode(JSON.stringify({ format: "gpu-inspector-overdraw", version: 1, device: "Test GPU", passes: [info], problems: ["a problem"] }));
+  const magic = new TextEncoder().encode("OVERDRAW 1\n");
+  const bytes = new Uint8Array(magic.length + 4 + json.length + 4);
+  bytes.set(magic, 0);
+  new DataView(bytes.buffer).setUint32(magic.length, json.length, true);
+  bytes.set(json, magic.length + 4);
+  bytes.set([1, 0, 2, 0], magic.length + 4 + json.length);
+
+  const file = parseOverdrawFile(bytes);
+  assert.equal(file.device, "Test GPU");
+  assert.deepEqual(file.problems, ["a problem"]);
+  assert.equal(file.measurements.length, 1);
+  const [m] = file.measurements;
+  assert.equal(m.info.payload, undefined);
+  assert.equal(m.info.capturedFragments, 3);
+  assert.equal(overdrawCount(m, 0, 0), 1);
+  assert.equal(overdrawCount(m, 1, 0), 2);
+  assert.throws(() => parseOverdrawFile(bytes.subarray(0, bytes.length - 2)), /truncated/);
+  assert.deepEqual(OVERDRAW_LEGEND.map((e) => e.label), ["0", "1", "2", "3", "4", "5-6", "7-10", "11-16", "17-32", "33+"]);
+});
+
 test("failures are tool errors the model reads, unknown tools protocol errors", async () => {
   const missing = await call("get_command", { index: 9999 });
   assert.equal(missing.result.isError, true);

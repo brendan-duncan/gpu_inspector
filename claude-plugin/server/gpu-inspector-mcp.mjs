@@ -1915,9 +1915,9 @@ function computeCriticalPath(graph) {
     }
   }
   if (!head || best <= 0) return;
-  const path10 = [];
-  for (let n = head; n; n = next.get(n) ?? null) path10.push(n);
-  graph.criticalPath = path10;
+  const path11 = [];
+  for (let n = head; n; n = next.get(n) ?? null) path11.push(n);
+  graph.criticalPath = path11;
   graph.criticalPathMs = best;
 }
 function usageClass(usage) {
@@ -5971,9 +5971,9 @@ function reflectSpirv(data) {
 
 // src/mcp/capture_store.ts
 var Capture = class {
-  constructor(id, path10, mtimeMs, bytes) {
+  constructor(id, path11, mtimeMs, bytes) {
     this.id = id;
-    this.path = path10;
+    this.path = path11;
     this.mtimeMs = mtimeMs;
     const capture = parseCaptureFile(bytes);
     const m = capture.manifest;
@@ -6015,6 +6015,12 @@ var Capture = class {
   }
   get metrics() {
     return this._metrics ??= collectPassMetrics(this.data, this.db);
+  }
+  /** Overdraw measured after the capture was saved (vkinsp_replay, for a Vulkan capture): what reads it is recomputed. */
+  setOverdraw(measurements) {
+    this.data.overdraw = measurements;
+    this._metrics = null;
+    this._analysis = null;
   }
   get statistics() {
     return this._statistics ??= new CaptureStatistics().compute(this.data, this.db);
@@ -6400,7 +6406,7 @@ function argumentBufferEntries(type, data, db) {
   const index = new HandleIndex(db);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const out = [];
-  const walk = (t, offset, path10, depth) => {
+  const walk = (t, offset, path11, depth) => {
     if (out.length >= MAX_ENTRIES || depth > 8) return;
     const handle = handleOf(t);
     if (handle) {
@@ -6419,16 +6425,16 @@ function argumentBufferEntries(type, data, db) {
           object = index.resource(value);
         }
       }
-      out.push({ path: path10, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
+      out.push({ path: path11, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
       return;
     }
     if (t.kind === "struct") {
-      for (const m of t.members) walk(m.type, offset + m.offset, path10 ? `${path10}.${m.name}` : m.name, depth + 1);
+      for (const m of t.members) walk(m.type, offset + m.offset, path11 ? `${path11}.${m.name}` : m.name, depth + 1);
     } else if (t.kind === "array") {
       const stride = t.stride || (t.element.kind === "opaque" ? 8 : t.element.size);
       if (stride <= 0) return;
       const count2 = t.count > 0 ? t.count : Math.floor((data.byteLength - offset) / stride);
-      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path10}[${i}]`, depth + 1);
+      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path11}[${i}]`, depth + 1);
     }
   };
   walk(type, 0, "", 0);
@@ -8479,14 +8485,14 @@ async function serializeCapture(session, data, options = {}) {
   const addresses = /* @__PURE__ */ new Set();
   for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
   let symbols;
-  if (addresses.size) {
+  if (addresses.size && !options.forReplay) {
     if (onProgress) onProgress("saving: symbols...");
     const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
     symbols = {};
     for (const [a, f] of resolved) symbols[a] = f;
   }
   let stacks;
-  if (db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
     if (onProgress) onProgress("saving: stack traces...");
     const got = await requestStacks(session, objects.map((o) => o.id));
     if (got && db.stacksAvailable !== false) {
@@ -9803,11 +9809,11 @@ function decodeAstcBlock(s, block, bw, bh, px, srgb) {
     for (let x = 0; x < bw; x++) {
       const gs = ds * x * (gw - 1) + 32 >> 6;
       const js = gs >> 4;
-      const fs11 = gs & 15;
-      const w11 = fs11 * ft + 8 >> 4;
+      const fs12 = gs & 15;
+      const w11 = fs12 * ft + 8 >> 4;
       const w10 = ft - w11;
-      const w01 = fs11 - w11;
-      const w00 = 16 - fs11 - ft + w11;
+      const w01 = fs12 - w11;
+      const w00 = 16 - fs12 - ft + w11;
       const infill = (plane) => weightAt(plane, js, jt) * w00 + weightAt(plane, js + 1, jt) * w01 + weightAt(plane, js, jt + 1) * w10 + weightAt(plane, js + 1, jt + 1) * w11 + 8 >> 4;
       const w0 = infill(0);
       const w1 = dual ? infill(1) : w0;
@@ -13687,19 +13693,19 @@ function entryOf(model) {
   if (!a) return null;
   return a.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? a.entryPoints.find((e) => e.name === model.entryPoint) ?? a.entryPoints.find((e) => e.stage === model.stage) ?? null;
 }
-function functionTree(fn, byId, factor, path10, depth) {
+function functionTree(fn, byId, factor, path11, depth) {
   const n = node("function", fn.name || `function ${fn.id}`);
   n.totalCost = weighCost(fn.inclusive) * factor;
   n.selfCost = weighCost(fn.cost) * factor;
   n.dimension = dominantDimension(fn.inclusive);
   if (depth < 24) {
-    path10.add(fn.id);
+    path11.add(fn.id);
     for (const calleeId of fn.calls) {
       const callee = byId.get(calleeId);
-      if (!callee || path10.has(calleeId)) continue;
-      n.children.push(functionTree(callee, byId, factor, path10, depth + 1));
+      if (!callee || path11.has(calleeId)) continue;
+      n.children.push(functionTree(callee, byId, factor, path11, depth + 1));
     }
-    path10.delete(fn.id);
+    path11.delete(fn.id);
   }
   if (fn.lines.length) {
     const shown = fn.lines.slice(0, MAX_LINE_FRAMES);
@@ -13780,9 +13786,9 @@ function buildFrameCostTree(o) {
     if (resolved.length > maxFramesPerPass) {
       const sorted = resolved.slice().sort((x, y) => y.cost - x.cost);
       kept = sorted.slice(0, maxFramesPerPass);
-      const tail = sorted.slice(maxFramesPerPass);
-      collapsed = { count: tail.length, draws: tail.reduce((s, r) => s + r.bucket.items.length, 0), cost: tail.reduce((s, r) => s + r.cost, 0) };
-      stats.collapsed += tail.length;
+      const tail2 = sorted.slice(maxFramesPerPass);
+      collapsed = { count: tail2.length, draws: tail2.reduce((s, r) => s + r.bucket.items.length, 0), cost: tail2.reduce((s, r) => s + r.cost, 0) };
+      stats.collapsed += tail2.length;
     }
     const itemNodes = [];
     for (const { bucket, stages } of kept) {
@@ -14877,8 +14883,69 @@ function resourceTools(store) {
 }
 
 // src/mcp/tools.ts
+import fs11 from "node:fs";
+import path10 from "node:path";
+
+// src/main/replay.ts
+import { spawn as spawn3 } from "node:child_process";
 import fs10 from "node:fs";
+import os7 from "node:os";
 import path9 from "node:path";
+var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
+function findReplayTool(roots, layerDirs) {
+  const candidates = [
+    process.env.INSPECTOR_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path9.join(root, "build", "bin", config, REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path9.join(dir, REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs10.existsSync(f)) ?? null;
+}
+var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
+function tail(text, lines = 12) {
+  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
+}
+function runOverdrawReplay(tool, capturePath, timeoutMs = 10 * 60 * 1e3) {
+  return new Promise((resolve) => {
+    const out = path9.join(os7.tmpdir(), `vkinsp_overdraw_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    let output = "";
+    let done = false;
+    let timedOut = false;
+    const child = spawn3(tool, [capturePath, "--overdraw-data", out], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    const collect = (chunk2) => {
+      output += chunk2.toString();
+      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    const finish2 = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      let data = null;
+      try {
+        data = new Uint8Array(fs10.readFileSync(out));
+        fs10.unlinkSync(out);
+      } catch {
+      }
+      if (data) {
+        resolve({ data, output: tail(output) });
+        return;
+      }
+      resolve({
+        data: null,
+        output: tail(output),
+        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no overdraw data:
+${tail(output)}`)
+      });
+    };
+    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
+    child.on("close", () => finish2(null));
+  });
+}
 
 // src/renderer/overdraw.ts
 var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
@@ -14900,6 +14967,11 @@ var RAMP = [
   [32, 240, 0, 200],
   [65535, 255, 255, 255]
 ];
+var OVERDRAW_LEGEND = RAMP.map(([upTo, r, g, b], i) => {
+  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
+  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
+  return { label, color: [r, g, b] };
+});
 function heatColor(n) {
   for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
   return [255, 255, 255];
@@ -14924,6 +14996,26 @@ function overdrawAverages(info) {
     perPixel: pixels > 0 ? info.fragments / pixels : 0,
     perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
   };
+}
+var OVERDRAW_MAGIC = "OVERDRAW 1\n";
+function parseOverdrawFile(bytes) {
+  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length;
+  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
+    let data = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
+      data = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { info, data };
+  });
+  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
 }
 
 // src/mcp/tools.ts
@@ -15151,7 +15243,7 @@ function captureTools(store) {
       readOnly: true,
       handler: () => {
         const open = store.list();
-        const recent = [...new Set(recentCaptureFiles().map((p) => path9.normalize(p)))];
+        const recent = [...new Set(recentCaptureFiles().map((p) => path10.normalize(p)))];
         return jsonResult({
           open: open.map((c2) => ({
             capture: c2.id,
@@ -15165,8 +15257,8 @@ function captureTools(store) {
           })),
           recent: recent.map((file) => ({
             file,
-            missing: fs10.existsSync(file) ? void 0 : true,
-            open: open.find((c2) => c2.path === path9.resolve(file))?.id
+            missing: fs11.existsSync(file) ? void 0 : true,
+            open: open.find((c2) => c2.path === path10.resolve(file))?.id
           })),
           note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
         });
@@ -15287,7 +15379,7 @@ function captureTools(store) {
     },
     {
       name: "get_overdraw",
-      description: "Overdraw measured per pixel, for a capture taken with overdraw (Metal: capture_frames overdraw: true), where every render pass was drawn a second time with a counting fragment shader. Without `pass`: every measured pass, worst first, with the fragments that passed its depth and stencil tests and every fragment it rasterized \u2014 per pixel, per covered pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG (black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more) and the counts at `texels`. Discarded fragments are counted, since the counting shader does not discard.",
+      description: "Overdraw measured per pixel: every render pass drawn a second time with a counting fragment shader. A Metal capture measures it while it is taken (capture_frames overdraw: true); a Vulkan capture is replayed on this machine's GPU with vkinsp_replay the first time this is called (seconds to minutes, and it needs the tool built). Without `pass`: every measured pass, worst first, with the fragments that passed its depth and stencil tests and every fragment it rasterized \u2014 per pixel, per covered pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG (black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more) and the counts at `texels`. Discarded fragments are counted, since the counting shader does not discard.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
@@ -15298,12 +15390,22 @@ function captureTools(store) {
         ...PAGE_PARAMS
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
+        let replayNote;
+        if (!c2.data.overdraw.length && c2.data.api !== "metal") {
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) return jsonResult({ capture: c2.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+          const run2 = await runOverdrawReplay(tool, c2.path);
+          if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not measure overdraw: ${run2.error ?? "no data"}` });
+          const file = parseOverdrawFile(run2.data);
+          c2.setOverdraw(file.measurements);
+          replayNote = `Measured by replaying the capture on ${file.device || "this machine's GPU"} (vkinsp_replay).` + (file.problems.length ? ` ${file.problems.length} parts of the capture could not be replayed; passes that depend on them are missing or may differ from the frame.` : "");
+        }
         if (!c2.data.overdraw.length) {
           return jsonResult({
             capture: c2.id,
-            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : "A Vulkan capture does not measure overdraw while capturing. GPU Inspector's replay tool measures it from the capture file: vkinsp_replay <file> --overdraw <dir> prints every pass's counts and writes a heatmap per pass."
+            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : `The replay measured no pass. ${replayNote ?? ""}`
           });
         }
         const passes = c2.metrics.passes;
@@ -15318,6 +15420,7 @@ function captureTools(store) {
           const pg = page(ranked, args, 30, 200);
           return jsonResult({
             capture: c2.id,
+            measuredBy: replayNote,
             healthyOverdraw: HEALTHY_OVERDRAW,
             overdrawFlaggedAbove: OVERDRAW_LIMIT,
             total: pg.total,
@@ -15335,9 +15438,10 @@ function captureTools(store) {
         }
         const p = passes[passArg];
         if (!p) throw new Error(`No pass ${passArg}: the capture has ${passes.length} (get_bottlenecks lists them).`);
+        if (p.compute) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) is a compute pass, which has no overdraw. get_overdraw without pass lists the render passes.`);
         const depthTested = boolArg(args, "depthTested", true);
         const o = c2.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
-        if (!o) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no overdraw measurement${p.compute ? ": it is a compute pass" : ""}.`);
+        if (!o) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no overdraw measurement.`);
         const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
         const texels = requested.map((pt) => {
           const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
