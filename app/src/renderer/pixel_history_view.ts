@@ -1,8 +1,11 @@
-// A pixel's history in a tab of its own: every pass start, clear and draw of the frame that touched
-// the pixel, what each draw's fragments met, and the value and depth after each. A Vulkan capture
-// is replayed for it (CaptureView.pixelHistory, vkinsp_replay --pixel); a Metal application follows
-// the pixel while capturing the next frame (metal/src/pixel_history.mm). The pixel is picked in the
-// overdraw tab or a render target's image viewer, and can be changed here.
+// A pixel's history: every pass start, clear and draw of the frame that touched the pixel, what each
+// draw's fragments met, and the value and depth after each. A Vulkan capture is replayed for it
+// (CaptureView.pixelHistory, vkinsp_replay --pixel); a Metal application follows the pixel while
+// capturing the next frame (metal/src/pixel_history.mm).
+//
+// It sits beside the image whose pixel it follows, in the capture's render target tab
+// (capture_texture_view.ts), where clicking a pixel fills it: `compact` leaves the pixel's
+// coordinates to that image. On its own it carries the fields to pick a pixel itself.
 import { Button } from "./widget/button.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { Div } from "./widget/div.js";
@@ -25,6 +28,11 @@ export interface PixelHistoryHost {
   run(request: PixelRequest): void;
   /** Metal: a pixel is followed by capturing the next frame with it, not by replaying this one. */
   captures?: boolean;
+  /**
+   * Beside an image that picks the pixel (capture_texture_view.ts): the image, pixel and subresource
+   * are the image view's, so the pane keeps only its own controls.
+   */
+  compact?: boolean;
 }
 
 export class PixelHistoryView {
@@ -35,6 +43,8 @@ export class PixelHistoryView {
   private _error = "";
   private _running = false;
   private _showAll = false;
+  /** Shown instead of a history: what to do to get one (click a pixel; capture a frame). */
+  private _prompt: { text: string; action?: { label: string; callback: () => void } } | null = null;
 
   constructor(host: PixelHistoryHost, request: PixelRequest) {
     this.host = host;
@@ -51,6 +61,19 @@ export class PixelHistoryView {
     this._request = { mip: 0, layer: 0, ...request };
     this._running = true;
     this._error = "";
+    this._prompt = null;
+    this._render();
+  }
+
+  /**
+   * What to do to get a history, instead of one: "click a pixel", or (Metal) that this capture
+   * followed another pixel, with a button that captures the next frame following this one.
+   */
+  setPrompt(text: string, action?: { label: string; callback: () => void }): void {
+    this._running = false;
+    this._history = null;
+    this._error = "";
+    this._prompt = { text, ...(action ? { action } : {}) };
     this._render();
   }
 
@@ -58,6 +81,7 @@ export class PixelHistoryView {
     this._running = false;
     this._history = history;
     this._error = "";
+    this._prompt = null;
     this._render();
   }
 
@@ -65,6 +89,7 @@ export class PixelHistoryView {
     this._running = false;
     this._history = null;
     this._error = message;
+    this._prompt = null;
     this._render();
   }
 
@@ -76,7 +101,7 @@ export class PixelHistoryView {
   debugState(): Record<string, unknown> {
     const h = this._history;
     return {
-      request: this._request, running: this._running, error: this._error || null,
+      request: this._request, running: this._running, error: this._error || null, prompt: this._prompt?.text ?? null,
       events: h?.events.length ?? 0,
       touched: h ? h.events.filter(touchesPixel).map(eventSummary) : [],
       notes: h?.notes ?? [],
@@ -88,32 +113,38 @@ export class PixelHistoryView {
   private _render(): void {
     const r = this._request;
     this.root.html = "";
+    const compact = this.host.compact === true;
+    const captures = this.host.captures === true;
     const bar = new Div(this.root, { class: "image-view-toolbar" });
     const label = (text: string, tooltip?: string): Span => new Span(bar, { text, class: "launch-label", tooltip });
-    label("Image");
-    const image = new Span(bar, { text: this.host.objectName(r.image), class: "dependency_link", tooltip: "Show the image in the Inspect panel" });
-    image.element.onclick = () => this.host.showObject(r.image);
-    // The pixel to follow next, edited here and run with the button (or Enter in a field).
-    const next = { x: r.x, y: r.y, mip: r.mip ?? 0, layer: r.layer ?? 0 };
-    const field = (name: string, key: keyof typeof next, tooltip: string): void => {
-      label(name, tooltip);
-      const input = new NumberInput(bar, { value: next[key], step: 1, min: 0, precision: 0, onChange: (v: string) => {
-        const n = parseInt(v, 10);
-        if (Number.isFinite(n)) next[key] = Math.max(0, n);
-      } });
-      input.element.addEventListener("keydown", (e: KeyboardEvent) => {
-        if (e.key === "Enter") this.host.run({ image: r.image, ...next });
-      });
-    };
-    field("X", "x", "The pixel's column, at the mip level");
-    field("Y", "y", "The pixel's row, at the mip level");
-    field("Mip", "mip", "The image's mip level the pass renders to");
-    field("Layer", "layer", "The image's array layer");
-    const captures = this.host.captures === true;
-    const run = new Button(bar, { label: this._running ? (captures ? "Capturing..." : "Replaying...") : "Follow Pixel", class: "btn btn-sm", disabled: this._running,
-      tooltip: captures ? "Capture the application's next frame following this pixel" : "Replay the capture following this pixel",
-      callback: () => this.host.run({ image: r.image, ...next }) });
-    run.disabled = this._running;
+    if (compact) {
+      // The image picks the pixel: the pane only says whose history this is.
+      label("Pixel History");
+    } else {
+      label("Image");
+      const image = new Span(bar, { text: this.host.objectName(r.image), class: "dependency_link", tooltip: "Show the image in the Inspect panel" });
+      image.element.onclick = () => this.host.showObject(r.image);
+      // The pixel to follow next, edited here and run with the button (or Enter in a field).
+      const next = { x: r.x, y: r.y, mip: r.mip ?? 0, layer: r.layer ?? 0 };
+      const field = (name: string, key: keyof typeof next, tooltip: string): void => {
+        label(name, tooltip);
+        const input = new NumberInput(bar, { value: next[key], step: 1, min: 0, precision: 0, onChange: (v: string) => {
+          const n = parseInt(v, 10);
+          if (Number.isFinite(n)) next[key] = Math.max(0, n);
+        } });
+        input.element.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Enter") this.host.run({ image: r.image, ...next });
+        });
+      };
+      field("X", "x", "The pixel's column, at the mip level");
+      field("Y", "y", "The pixel's row, at the mip level");
+      field("Mip", "mip", "The image's mip level the pass renders to");
+      field("Layer", "layer", "The image's array layer");
+      const run = new Button(bar, { label: this._running ? (captures ? "Capturing..." : "Replaying...") : "Follow Pixel", class: "btn btn-sm", disabled: this._running,
+        tooltip: captures ? "Capture the application's next frame following this pixel" : "Replay the capture following this pixel",
+        callback: () => this.host.run({ image: r.image, ...next }) });
+      run.disabled = this._running;
+    }
     const all = new Checkbox(bar, { label: "Draws that miss the pixel", checked: this._showAll,
       tooltip: "Also list the draws of these passes whose primitives do not reach the pixel, or whose scissor leaves it out" });
     all.input.onchange = () => {
@@ -122,6 +153,12 @@ export class PixelHistoryView {
     };
 
     const status = new Div(this.root, { class: "pixel-history-status" });
+    if (this._prompt) {
+      new Div(status, { text: this._prompt.text, class: "text-muted" });
+      const action = this._prompt.action;
+      if (action) new Button(status, { label: action.label, class: "btn btn-sm", callback: () => action.callback() });
+      return;
+    }
     if (this._running) {
       status.text = captures
         ? `Capturing the application's next frame, following pixel (${r.x}, ${r.y}) of mip ${r.mip ?? 0}, layer ${r.layer ?? 0}...`

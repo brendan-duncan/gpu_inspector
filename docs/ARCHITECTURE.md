@@ -320,6 +320,20 @@ split into raw texel values (`decodeTexels`) and a display pass (`displayTexels`
 channel selection, exposure, auto range and sRGB encoding of linear data. Hovering the canvas
 shows the texel coordinates and values; clicking pins them in the info line; Ctrl + wheel zooms;
 Copy puts the displayed image on the clipboard as PNG. Display settings are remembered per image.
+An owner can also hand it an overlay to blend over the image and a callback for the pixel clicked,
+which is what the render target tab below is built from.
+
+### The capture's render target tab
+
+`renderer/capture_texture_view.ts` is WebGPU Inspector's capture texture viewer
+(`devtools/capture_texture_viewer.js`): one render target of one pass, the image on the left and
+the pixel history on the right. **Overdraw** in the toolbar blends the pass's heatmap over the
+image (`renderer/overdraw.ts` for the ramp and the counts, transparent where nothing landed) and
+puts both counts in the tooltip; a Vulkan capture is replayed to measure them the first time it is
+ticked. Clicking a pixel follows it through the frame in the pane beside it
+(`renderer/pixel_history_view.ts` in its compact mode) — replayed for a Vulkan capture, and for a
+Metal capture the one the capture was taken with, with a button to capture the next frame
+following another. One such tab per capture, retargeted as other render targets are opened.
 
 ### replay/ — capture replay
 

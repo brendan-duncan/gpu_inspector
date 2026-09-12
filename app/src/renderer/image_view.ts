@@ -26,6 +26,29 @@ export interface CapturedImageSource {
   data: Uint8Array;
 }
 
+/**
+ * A colour layer drawn over the image: the overdraw heatmap of the pass, in the capture's texture
+ * view (capture_texture_view.ts). Pixels the overlay leaves transparent keep the image's own colour.
+ */
+export interface ImageOverlay {
+  /** The overlay for the subresource shown, the image's size; null for none. */
+  rgba(width: number, height: number, mip: number, layer: number): Uint8ClampedArray | null;
+  /** How much of the overlay's colour covers the image, 0 to 1. */
+  opacity(): number;
+  /** What the overlay adds to the tooltip under the pointer. */
+  lines?(x: number, y: number): string[];
+}
+
+export interface ImageViewOptions {
+  /** Follows a pixel of a captured render target through the frame, from the toolbar's button. */
+  pixelHistory?: (x: number, y: number, mip: number, layer: number) => void;
+  /** A pixel was clicked: the capture's texture view follows it straight away. */
+  onPick?: (x: number, y: number, mip: number, layer: number) => void;
+  overlay?: ImageOverlay;
+  /** Widgets of the owner's own: in the toolbar, and in a row under it (the overdraw controls). */
+  extras?: { toolbar?: (bar: Div) => void; row?: (parent: Widget) => void };
+}
+
 const CHANNEL_MODES: [string, ChannelMode][] = [["RGB", "rgb"], ["Red", "r"], ["Green", "g"], ["Blue", "b"], ["Alpha", "a"], ["Luminance", "luminance"]];
 
 // Toolbar icons (inline SVG, drawn in the button's text color).
@@ -71,6 +94,9 @@ export class ImageView {
 
   /** Follows a pixel of a captured render target through the frame (pixel history); absent otherwise. */
   private _pixelHistory: ((x: number, y: number, mip: number, layer: number) => void) | null;
+  private _onPick: ((x: number, y: number, mip: number, layer: number) => void) | null;
+  private _overlay: ImageOverlay | null;
+  private _extras: ImageViewOptions["extras"];
   private _pinnedTexel: { x: number; y: number } | null = null;
   private _historyButton: Button | null = null;
   private _zoomInput!: NumberInput;
@@ -80,13 +106,19 @@ export class ImageView {
   private _pixelInfo!: Span;
   private _scroll!: Div;
   private _canvas: HTMLCanvasElement;
+  /** Positions the picked-pixel marker over the canvas. */
+  private _holder: HTMLDivElement;
+  private _marker: HTMLDivElement;
 
   constructor(parent: Widget, session: SessionContext, object: VulkanObject | null, captured: CapturedImageSource | null = null,
-              options: { pixelHistory?: (x: number, y: number, mip: number, layer: number) => void } = {}) {
+              options: ImageViewOptions = {}) {
     this.session = session;
     this.object = object;
     this.captured = captured;
     this._pixelHistory = options.pixelHistory ?? null;
+    this._onPick = options.onPick ?? null;
+    this._overlay = options.overlay ?? null;
+    this._extras = options.extras;
     const db = session.database;
 
     let image: VulkanObject | null = object;
@@ -164,6 +196,8 @@ export class ImageView {
     this._display = display;
 
     this._canvas = document.createElement("canvas");
+    this._holder = document.createElement("div");
+    this._marker = document.createElement("div");
     this._build(parent, image);
     if (captured) {
       this._showCapturedMip();
@@ -282,6 +316,8 @@ export class ImageView {
       this._historyButton = new Button(bar, { label: "Pixel History", class: "btn btn-sm", disabled: true, callback: () => this._followPinned(),
         tooltip: "Every clear and draw that touched the clicked pixel (Vulkan: the capture replayed; Metal: the next frame captured following it). Click a pixel first, or double-click one" });
     }
+    this._extras?.toolbar?.(bar);
+    this._extras?.row?.(parent);
 
     const info = new Div(parent, { class: "image-view-toolbar" });
     this._status = new Span(info, { text: "", class: "image-view-status" });
@@ -291,8 +327,38 @@ export class ImageView {
     this._canvas.className = "image-view-canvas";
     this._canvas.width = 0;
     this._canvas.height = 0;
-    this._scroll.element.appendChild(this._canvas);
+    this._holder.className = "image-view-holder";
+    this._holder.appendChild(this._canvas);
+    this._marker.className = "image-view-marker";
+    this._marker.style.display = "none";
+    this._holder.appendChild(this._marker);
+    this._scroll.element.appendChild(this._holder);
     this._setupCanvasEvents();
+  }
+
+  /** The subresource the view is showing, for an owner following one of its pixels. */
+  get mip(): number {
+    return this._mip;
+  }
+
+  get layer(): number {
+    return this._layer;
+  }
+
+  /** Draws the image again, for an owner whose overlay changed. */
+  refreshOverlay(): void {
+    this._draw();
+  }
+
+  /** Shows the marker on a pixel, as a click does (null clears it). */
+  setPicked(pixel: { x: number; y: number } | null): void {
+    this._pinnedTexel = pixel;
+    if (pixel) this._pin(pixel.x, pixel.y);
+    else {
+      this._pinned = "";
+      this._pixelInfo.text = "";
+      this._updateMarker();
+    }
   }
 
   private _mipLabel(image: VulkanObject | null, mip: number): string {
@@ -359,11 +425,23 @@ export class ImageView {
     const msg = this._data;
     if (!tex || !msg) return;
     const rgba = displayTexels(tex, this._display);
+    const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
+    // The overlay's colour over the image, where the overlay is not transparent.
+    const overlay = this._overlay?.rgba(tex.width, tex.height, this._mip, slice) ?? null;
+    if (overlay && overlay.length >= rgba.length) {
+      const strength = Math.min(1, Math.max(0, this._overlay!.opacity()));
+      for (let i = 0; i < rgba.length; i += 4) {
+        const a = (overlay[i + 3] / 255) * strength;
+        if (a <= 0) continue;
+        rgba[i] = rgba[i] * (1 - a) + overlay[i] * a;
+        rgba[i + 1] = rgba[i + 1] * (1 - a) + overlay[i + 1] * a;
+        rgba[i + 2] = rgba[i + 2] * (1 - a) + overlay[i + 2] * a;
+      }
+    }
     this._canvas.width = tex.width;
     this._canvas.height = tex.height;
     this._canvas.getContext("2d")!.putImageData(new ImageData(rgba, tex.width, tex.height), 0, 0);
 
-    const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
     const where = `${tex.width}x${tex.height} mip ${msg.mip}${this._is3D ? ` slice ${slice}` : this._layerCount > 1 ? ` layer ${this.captured ? slice : msg.layer}` : ""}`;
     const fmt = (v: number): string => tex.integer ? String(v) : formatFloat(v);
     const range = tex.channels === 1
@@ -387,6 +465,24 @@ export class ImageView {
     }
     c.style.width = `${Math.max(1, Math.round(c.width * zoom))}px`;
     c.style.height = `${Math.max(1, Math.round(c.height * zoom))}px`;
+    this._updateMarker();
+  }
+
+  /** The box around the picked pixel, which stays on it through zooming. */
+  private _updateMarker(): void {
+    const t = this._pinnedTexel;
+    const c = this._canvas;
+    if (!t || !c.width || !c.clientWidth) {
+      this._marker.style.display = "none";
+      return;
+    }
+    const scale = c.clientWidth / c.width;
+    const size = Math.max(scale, 5);
+    this._marker.style.display = "block";
+    this._marker.style.left = `${t.x * scale - (size - scale) / 2}px`;
+    this._marker.style.top = `${t.y * scale - (size - scale) / 2}px`;
+    this._marker.style.width = `${size}px`;
+    this._marker.style.height = `${size}px`;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -418,7 +514,8 @@ export class ImageView {
       const t = this._texelAt(e);
       if (!t || !this._texels) return;
       const tip = getTooltip();
-      tip.textContent = this._texelText(t.x, t.y, "\n");
+      const extra = this._overlay?.lines?.(t.x, t.y) ?? [];
+      tip.textContent = [this._texelText(t.x, t.y, "\n"), ...extra].join("\n");
       tip.style.display = "block";
       // Keep the tooltip inside the window: flip to the left / above the cursor near the edges.
       const margin = 12;
@@ -435,6 +532,15 @@ export class ImageView {
     c.addEventListener("mousedown", (e: MouseEvent) => {
       const t = this._texelAt(e);
       if (t && e.button === 0) this._pin(t.x, t.y);
+    });
+    // A click follows the pixel (the capture's texture view); clicking it again does not re-run it.
+    c.addEventListener("click", (e: MouseEvent) => {
+      const t = this._texelAt(e);
+      if (!t || !this._onPick) return;
+      const same = this._picked?.x === t.x && this._picked?.y === t.y;
+      this._pin(t.x, t.y);
+      this._picked = { x: t.x, y: t.y };
+      if (!same) this._onPick(t.x, t.y, this._mip, this._layer);
     });
     c.addEventListener("dblclick", (e: MouseEvent) => {
       const t = this._texelAt(e);
@@ -454,11 +560,15 @@ export class ImageView {
     }, { passive: false });
   }
 
+  /** The pixel the last click followed, so clicking it again does not run it twice. */
+  private _picked: { x: number; y: number } | null = null;
+
   /** Shows the texel under a click in the info line, where it stays until the next click. */
   private _pin(x: number, y: number): void {
     this._pinned = `Pixel ${this._texelText(x, y, "  ")}`;
     this._pixelInfo.text = this._pinned;
     this._pinnedTexel = { x, y };
+    this._updateMarker();
     if (this._historyButton) this._historyButton.disabled = false;
   }
 

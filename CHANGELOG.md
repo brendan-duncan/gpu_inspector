@@ -1,231 +1,114 @@
-## Unreleased
+## v0.10.0
+
+## v0.9.0
 
 ### Added
-- `vkinsp_replay` (`replay/`, [docs/REPLAY.md](docs/REPLAY.md)) re-executes a Vulkan capture on
-  this machine's GPU without the application:
-  - it re-creates the capture's objects through decoders generated from vk.xml
-  - it replays the command buffers
-  - it compares every render target the capture read back with its own copy, byte for byte
-
-  The test triangle and a Unity player frame replay pixel-identical. `--dump` writes the captured,
-  replayed and difference images.
-
-  `--overdraw` measures every render pass's overdraw by replaying the pass with a counting fragment
-  shader. For each pass it reports every rasterized fragment and the fragments passing depth and
-  stencil, per pixel, with a histogram and a heatmap. On the test triangle the count matches its
-  pipeline statistics exactly.
-
-  `--pixel <image> <x> <y>` gives a pixel's history: every pass start, draw and clear that touched
-  it, whether each draw was outside the scissor, culled, discarded, or failed depth or stencil, and
-  the pixel's value and depth after each event.
-- Overdraw measured while capturing a Metal application ([metal/README.md](metal/README.md),
-  "Overdraw"). With **Overdraw** in the capture bar, or `capture_frames` with `overdraw: true`, the
-  capture library draws every render pass a second time with a counting fragment shader, with the
-  pass's depth and stencil tests and without them.
-  - The pass's details show both heatmaps. A heatmap opens in an overdraw tab beside the capture's:
-    any zoom, over the pass's render target, and a tooltip with both counts and the target's texel
-    under the pointer. The Reports menu opens it too.
-  - The pass header and GPU Bottlenecks use the measured overdraw where the GPU has no counters.
-  - Capture files keep the counts.
-  - The MCP server's `get_overdraw` returns the numbers and a pass's heatmap as PNG.
-- Overdraw of Vulkan captures in the app: **Measure Overdraw** replays the capture on this machine's
-  GPU with `vkinsp_replay --overdraw-data` and shows the same heatmaps and overdraw tab. The MCP
-  server's `get_overdraw` replays a Vulkan capture the first time it is asked. The packaged app ships
-  `vkinsp_replay` beside the layer.
-- Pixel history of Vulkan captures in the app. Click a pixel in the overdraw tab or in a render
-  target's image viewer and press **Pixel History** (or double-click it). A tab beside the capture's
-  lists every pass start, clear and draw that touched the pixel:
-  - what each draw's fragments met: outside the scissor, culled, discarded, failed the depth or
-    stencil test, or wrote the pixel;
-  - the pixel's colour and depth after each, with a swatch;
-  - links to the command and the pipeline.
-
-  The pixel can be changed in the tab. The MCP server's `get_pixel_history` gives the same, by image
-  or by pass and attachment.
-- Pixel history of Metal applications ([metal/README.md](metal/README.md), "Pixel history"). A
-  Metal capture does not replay, so picking a pixel captures the application's next frame with the
-  capture library following it. Every pass that renders to the texture is drawn again one draw at a
-  time at the pixel, in the frame's own command buffers. A drawable's pixel follows whichever
-  drawable that frame renders into. The result is the same Pixel History tab, kept in the capture
-  file. `capture_frames` takes `pixelHistory: { texture, x, y }`, and `get_pixel_history` answers
-  for that capture.
-- Claude Code plugin (`claude-plugin/`, installed from this repository as a plugin marketplace):
-  an MCP server that gives Claude saved `.gpucap` captures, read with GPU Inspector's own analyses.
-  Its tools cover:
-  - the capture summary with the Frame Bound verdict
-  - Frame Issues
-  - GPU Bottlenecks per pass
-  - the render graph
-  - the command list, and the state bound at a draw (pipeline and fixed-function state, descriptor
-    sets with uniform values decoded by reflection, vertex and index buffers, push constants,
-    render targets)
-  - objects and validation messages
-  - read-back images, returned as PNG with statistics
-  - buffers read through GLSL struct layouts
-  - vertices with per-attribute bounds
-  - shader reflection, embedded source, cross-compiled GLSL, HLSL and MSL, disassembly and static
-    analysis
-  - comparing captures before and after a change
-
-  `get_shader_flame_graph` gives Claude the Shader Flame Graph: the frame's shading work by pass,
-  pipeline, stage, function and source line, with the hottest functions and lines.
-
-  Some shaders carry line information but no source text, and some stack frames carry only a module
-  and offset. The plugin reads their sources and symbols from this machine, using `set_search_paths`
-  or GPU Inspector's own Source roots and Symbol directories. The shader analyses quote the code of
-  their costliest lines. `get_command` resolves a Metal argument buffer's members to the buffers,
-  textures and samplers they hold.
-
-  The plugin also drives running applications, with the capture library from a checkout's build or
-  an installed GPU Inspector:
-  - launching or attaching to an application, including debuggable Android packages over adb
-  - live frame statistics with a verdict
-  - capturing frames into `.gpucap` files that the other tools read
-  - replacing a pipeline's shader with compiled source, and restoring it
-  - reading images, descriptor sets and objects (with creation stacks) without a capture
-  - the session's status and log
-
-  A capture analysis skill and five commands come with it: `analyze`, `profile`, `debug`,
-  `compare` and `live`. The server is one dependency-free file that runs on Node.js 18+.
-- `CaptureComplete`: the Vulkan layer and the Metal library end a capture's stream with it, so a
-  client knows when a capture has fully arrived.
+- `vkinsp_replay` (`replay/`, [docs/REPLAY.md](docs/REPLAY.md)) re-executes a Vulkan capture on this
+  machine's GPU and compares every read-back render target byte for byte (the test triangle and a
+  Unity frame replay identical). `--overdraw` measures a pass's fragments per pixel, `--pixel` gives
+  one pixel's history, `--dump` writes the captured, replayed and difference images.
+- Overdraw: how many fragments landed on each pixel of a pass, with and without its depth and
+  stencil tests. A Metal application measures it while capturing (**Overdraw** in the capture bar,
+  [metal/README.md](metal/README.md)); a Vulkan capture is replayed for it. Heatmaps in the pass's
+  details, the figure in pass headers and GPU Bottlenecks, kept in capture files, `get_overdraw`.
+- Pixel history: every pass start, clear and draw that touched one pixel, what each draw's fragments
+  met (outside the scissor, culled, discarded, failed depth or stencil, or wrote it), and the
+  pixel's colour and depth after each. A Vulkan capture is replayed; a Metal application follows the
+  pixel while capturing the next frame. `get_pixel_history` in the MCP server.
+- A capture's render target in a tab of its own, after WebGPU Inspector's capture texture viewer:
+  the image with the pass's overdraw over it and the counts under the pointer, and the history of
+  the pixel clicked beside it. Opened from a pass's render targets, a heatmap, or the Reports menu.
+- Claude Code plugin (`claude-plugin/`): an MCP server over saved `.gpucap` files and running
+  applications — the capture summary, Frame Issues, GPU Bottlenecks, the render graph, commands and
+  the state bound at a draw, objects, validation, images, buffers, vertices, shaders (reflection,
+  source, cross-compiled text, disassembly, analysis, the Shader Flame Graph), capture comparison,
+  and live sessions (launch or attach, Android over adb, frame statistics, captures, shader
+  replacement). Shader sources and stack symbols come from this machine (`set_search_paths`). A
+  capture analysis skill and five commands; one dependency-free file on Node.js 18+.
+- `CaptureComplete` ends a capture's stream, so a client knows when a capture has fully arrived.
 
 ### Fixed
 - Shader editing failed on applications that destroy their shader modules once their pipelines
-  exist, which is most of them: the rebuilt pipeline handed the driver the destroyed modules of the
-  stages it did not edit ("pipeline creation failed", with the driver unable to parse the SPIR-V).
-  Those stages are now rebuilt from the SPIR-V the layer keeps with the pipeline.
+  exist: the stages that were not edited are now rebuilt from the SPIR-V the layer keeps.
 
 ## 0.8.0
 
 ### Added
-- Render Graph: a capture's passes and the resources that connect them, from the "Render Graph"
-  button in the capture bar. Attachments, the descriptor sets bound at each draw and dispatch and
-  the transfer commands are rolled up per pass into a dependency graph, keyed on the mip level and
-  array layer each pass touched and versioned per write, so a mip chain is a chain and an
-  attachment a pass loads and stores again is not a cycle. Shown as a resource lifetime chart —
-  passes along the top in execution order, one row per resource, marked where each pass reads or
-  writes it — with the selected pass' immediate producers and consumers drawn as a node-link
-  diagram beside it, its GPU time, the frame's critical path, resources read from before the
-  capture, and passes whose output nothing in the capture reads. Vulkan and Metal.
-- Metal capture library (`metal/`, macOS, Apple Silicon verified): injected with
-  `DYLD_INSERT_LIBRARIES`, hooks the driver's classes rather than wrapping objects, and speaks
-  the Vulkan layer's protocol so the Inspect and Capture panels work unchanged. Tracks the
-  device, queues, buffers, textures and views, heaps, libraries and functions, samplers,
-  depth-stencil states, pipelines in every creation spelling, fences, events, argument encoders
-  and indirect command buffers, with `DeleteObjects` from a `dealloc` hook. Records about two
-  hundred selectors across the command buffer and the render, compute and blit encoders; reads
-  back colour and depth attachments (multisample through the resolve), bound buffers in shared,
-  managed and private storage, and inline constant blocks; times every pass with a counter
-  sample buffer. Frames end at the commit of the presenting command buffer on both
-  `presentDrawable:` and `[drawable present]` paths, the latter being what Unity's player uses.
+- Render Graph (capture bar, Vulkan and Metal): the frame's passes and the resources connecting
+  them, from attachments, descriptor sets and transfers, keyed per subresource and versioned per
+  write. A resource lifetime chart, the selected pass' producers and consumers as a node-link
+  diagram, GPU times, the critical path, resources read from before the capture, and passes whose
+  output nothing reads.
+- Render graph suggestions, in that view and in Frame Issues, shared by both APIs: attachments
+  stored but never read, results replaced before anything reads them, targets only the next pass
+  reads, back-to-back passes that are one pass, and barriers that synchronize nothing.
+- Metal capture library (`metal/`, macOS, Apple Silicon verified,
+  [metal/README.md](metal/README.md)): injected with `DYLD_INSERT_LIBRARIES`, hooks the driver's
+  classes rather than wrapping objects, and speaks the Vulkan layer's protocol, so Inspect and
+  Capture work unchanged. Object tracking and lifetime, about two hundred recorded selectors,
+  colour and depth read-back (multisample resolved), buffers in every storage mode, inline
+  constants, and per-pass timings. Frames end at the presenting command buffer's commit, including
+  the `[drawable present]` path Unity's player uses.
 - Launch dialog on macOS launches a `.app` with the Metal library, and says how to re-sign a
   hardened-runtime target that dyld would otherwise silently refuse.
-- Metal pipeline reflection: every pipeline creation asks Metal for argument and buffer-type
-  reflection, so a draw's stage buffers and inline constant bytes show as named, typed fields
-  with the Format editor, and pipeline objects get a Reflection section per stage in Inspect.
-- Metal frame stats (frame time, submit time, refresh rate) for the session bar and Frame
-  Stats, and the capture bar's options (frame to capture at, buffer and texture limits, the
-  read-back and profiling switches) honoured by the Metal library.
-- Metal validation messages: command buffer errors with the faulting encoder, Metal's
-  validation layer through the launch dialog's "Validation layer" switch, and shader logs, in
-  the Inspect panel's message list with repeat counts; a leak report at process exit.
-- Metal in Inspect: functions and the device listed by their own names, a Functions section on
-  libraries linking to their function objects, pipelines linked to the functions they use, and
-  Metal Shading Language highlighting (also for the cross-compiled MSL view of Vulkan shaders).
-  Captured Metal commands show their key arguments beside the name: labels, draw counts, bound
-  slots and objects, a pass's target.
-- Metal stack traces: where each object was created and, with the capture bar's switch, where
-  each captured command was issued, symbolized on demand through the dynamic linker with the
-  library's, Metal's and the driver's frames folded away.
+- Metal pipeline reflection: a draw's stage buffers and inline constants show as named, typed
+  fields with the Format editor, and pipelines get a Reflection section per stage. Only the slots
+  the bound shaders read are listed, the rest folded into one line.
+- Metal frame stats (frame time, submit time, refresh rate), and the capture bar's options honoured
+  by the library.
+- Metal validation: command buffer errors with the faulting encoder, Metal's validation layer
+  through the launch dialog, shader logs, and a leak report at process exit.
+- Metal in Inspect: functions and the device under their own names, a Functions section on
+  libraries, pipelines linked to the functions they use, functions showing their library's source,
+  Metal Shading Language highlighting, and each captured command's key arguments beside its name.
+- Metal stack traces of object creations and, with the capture bar's switch, of captured commands,
+  symbolized through the dynamic linker with the library's, Metal's and the driver's frames folded
+  away.
 - Metal argument buffers decoded in a draw's details: each member resolved to the buffer (with
-  offset), texture or sampler it holds, from the pipeline's reflection and the GPU address or
-  resource id every object now reports.
-- "GPU Bottlenecks" in the capture's Reports menu, for Vulkan and Metal: every pass measured in
-  the terms a bottleneck is described in. How many times each pixel was shaded, how many fragments
-  its average triangle covered, which stage it waits on and how much the depth test rejected —
-  each divided out of the GPU counters the capture sampled, each with what usually causes it and
-  what to try. Passes are listed slowest first and link to their commands. Two of those are Metal
-  only: the vertex and fragment spans need timestamps at a pass's stage boundaries, and depth
-  rejection needs the count of fragments that survived the test. Where a measurement is missing
-  the report says so rather than showing zeroes. [docs/PROFILING.md](docs/PROFILING.md) walks
-  through using it.
-- Vulkan pass counters: the layer runs a pipeline statistics query alongside its timestamps
-  (`layer/src/pipeline_stats.h`), carrying the same invocation and primitive counts Metal's
-  statistic set does, so the report and its rules work for Vulkan captures. The query needs the
-  `pipelineStatisticsQuery` device feature, which the layer adds at device creation the way it
-  already adds a refresh-period extension, falling back to the application's own create info if
-  the driver refuses. `VKINSP_NO_PIPELINE_STATISTICS=1` turns it off.
-- Four Frame Issues rules from those measurements: `high-overdraw` (a pass shading each pixel more
-  than twice over), `microtriangles` (triangles covering fewer than four fragments, which wastes
-  the rasterizer's 2x2 quad), `late-depth-rejection` (a pass that overdraws while its depth test
-  rejects almost nothing, Metal only) and `unmipped-texture` (a megapixel content texture sampled
-  with no mip chain, from the descriptors alone rather than a counter). Pass headers gained the
-  same figures in their tooltips.
-- Compressed textures decode in the image viewer: BC6H and BC7, ETC2 and EAC, every ASTC
-  footprint, and PVRTC, alongside the BC1-BC5 that were already there. Metal captures also read
-  back the ASTC, ETC2, EAC, PVRTC, extended-range and packed 4:2:2 formats, which used to report
-  "unsupported pixel format". The decoders are checked against an independent decoder over
-  random blocks (`npm test` in `app`).
-- Metal draw details: only the stage buffer slots the bound pipeline's shaders read are listed,
-  the rest folded into one line (an engine leaves dozens bound, most to nothing); bindings the
-  compiler dropped count as unread; no Vulkan "no descriptor sets" note in a Metal capture; and
-  the pipeline's reflection now reaches the buffer views, which had read it from the wrong
-  place.
-- Metal functions in Inspect show their library's source, scrolled to the definition.
-- Metal memory: every buffer's and texture's allocatedSize, heap and offset, purgeable and
-  aliasable state (kept current as the application changes them), heaps with their usage, and
-  the device's allocated total against its recommended working set in the Inspect memory meter.
-- Metal pass counters: the vertex and fragment stages' own spans beside every render pass's
-  duration, and the GPU's statistic and stage-utilization counter sets over each pass
-  (invocations, clipper counts, cycles per stage) in the pass header's tooltip.
-- Frame Issues for Metal captures: undefined and first-use loads, unread stores, multisample
-  stores, memoryless candidates, mergeable back-to-back passes, redundant binds, tiny draws and
-  single-threadgroup dispatches, read off the pass descriptors' load and store actions.
+  offset), texture or sampler it holds.
+- Metal memory: every buffer's and texture's allocated size, heap and offset, purgeable and
+  aliasable state, heaps with their usage, and the device's total against its working set.
+- Metal pass counters: the vertex and fragment stages' spans beside each pass's duration, and the
+  GPU's statistic and stage-utilization counters in the pass header's tooltip.
+- Frame Issues for Metal captures, off the pass descriptors' load and store actions: undefined and
+  first-use loads, unread stores, multisample stores, memoryless candidates, mergeable passes,
+  redundant binds, tiny draws and single-threadgroup dispatches.
+- "GPU Bottlenecks" in the Reports menu (Vulkan and Metal,
+  [docs/PROFILING.md](docs/PROFILING.md)): every pass measured in the terms a bottleneck is
+  described in — pixels shaded per pixel, fragments per triangle, the stage it waits on, and depth
+  rejection (the last two Metal only) — each with what causes it and what to try. Slowest first,
+  linked to their commands; a missing measurement says so rather than showing zeroes.
+- Vulkan pass counters: a pipeline statistics query alongside the layer's timestamps
+  (`layer/src/pipeline_stats.h`), so the bottleneck report and its rules work for Vulkan captures.
+  `VKINSP_NO_PIPELINE_STATISTICS=1` turns it off.
+- Four Frame Issues rules from those measurements: `high-overdraw`, `microtriangles`,
+  `late-depth-rejection` (Metal only) and `unmipped-texture`. Pass headers gained the same figures
+  in their tooltips.
+- Compressed textures decode in the image viewer: BC6H and BC7, ETC2 and EAC, every ASTC footprint,
+  and PVRTC, beside the BC1-BC5 already there; Metal captures read those formats back too. The
+  decoders are checked against an independent decoder (`npm test` in `app`).
 - "Xcode Trace" in the capture bar on macOS writes the next frame as a .gputrace document for
-  Xcode's Metal debugger. The Metal test application now draws through a private-storage vertex
-  buffer, a multisampled pass with a resolve through a parallel encoder, and a sampled textured
-  pass with inline constants, so every read-back path has a test.
-
-- Suggestions from the render graph: rules over the frame's dependencies rather than over one
-  command, so they answer exactly what the per-command rules could only approximate. A pass that
-  stores an attachment no later pass reads (per subresource and per write, where the Vulkan rule
-  read the image's usage flags and the Metal one a per-texture read set); a result replaced before
-  anything reads it; a target read only by the pass that follows, which never has to reach memory;
-  two passes that are one pass; and a barrier synchronizing resources the frame does not use on
-  both sides of it. They appear as a Suggestions card in the Render Graph view and in Frame
-  Issues, and are shared by Vulkan and Metal because the graph is.
+  Xcode's Metal debugger.
 
 ### Changed
-- The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render
-  Graph) moved from four buttons into one "Reports" menu at the right of the filter row, which
-  the filter field now fills. Four buttons wrapped the row, and the menu holds however many
-  reports there come to be; the entry whose report is showing is marked.
+- The capture's whole-frame reports (Frame Stats, Analyze Shaders, Shader Flame Graph, Render Graph)
+  moved from four buttons into one "Reports" menu, which marks the report being shown.
 
 ### Fixed
-- Metal compute passes showed no GPU time: the capture library times a compute encoder under its
-  own key and the command list filed the pass block under the render one, so the lookup never
-  matched.
-- `--launch` started the application twice: it was acted on by two separate handlers, so every
-  run left a stray process behind, and the second launch ignored `--args`, `--validation` and
-  the rest, which left the UI tests checking the wrong session.
-- `--screenshot` could hang the run instead of writing a shot: `capturePage()` rejects with
-  `UnknownVizError` when the GPU process will not produce a frame (which is what happens with
-  the process's output redirected, as the UI tests run it), and the unhandled rejection skipped
+- Metal compute passes showed no GPU time: the pass block was filed under the render pass' key.
+- `--launch` started the application twice, leaving a stray process behind and ignoring `--args`,
+  `--validation` and the rest on the second launch.
+- `--screenshot` could hang the run instead of writing a shot: a rejected `capturePage()` skipped
   the `--quit-after-screenshot` quit. A failed or slow capture is now reported and skipped.
 
 ## 0.7.0
 
 ### Added
-- macOS build of the user interface (`npm run dist:mac`, `GPU-Inspector-<version>-arm64.dmg`
-  and `-x64.dmg`, published by the release workflow): inspects Android devices over adb and
-  opens `.gpucap` files. There is no Apple build of the capture layer, so the launch dialog
-  offers only the Android target there and says why. The download is signed with the project's
-  Apple Developer ID and notarized, so it opens without a Gatekeeper warning.
-- Source roots (launch dialog, `--source-roots`): a shader with line information but no
-  embedded text gets its Source view, line costs and findings from the file its debug
-  information names, looked up under the roots. The triangle test app's compute shader ships
-  that way (`tools/strip_shader_source.py`).
+- macOS build of the user interface (`npm run dist:mac`, published by the release workflow):
+  inspects Android devices over adb and opens `.gpucap` files, signed and notarized. There is no
+  Apple build of the capture layer, so the launch dialog offers only the Android target there.
+- Source roots (launch dialog, `--source-roots`): a shader with line information but no embedded
+  text gets its Source view, line costs and findings from the file its debug information names.
 
 ## 0.6.0
 

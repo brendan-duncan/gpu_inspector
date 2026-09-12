@@ -558,17 +558,27 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .image-view-toolbar .launch-label { margin-left: 0; }
 .image-view-status { color: var(--fg-secondary); font-size: 9pt; }
 .image-view-scroll { overflow: auto; max-height: 70vh; padding: 6px; }
+.image-view-holder { position: relative; display: inline-block; line-height: 0; }
+/* The pixel a click picked, which the pixel history follows. */
+.image-view-marker { position: absolute; display: none; border: 1px solid #ff4040; outline: 1px solid #fff; pointer-events: none; }
 .image-view-canvas {
   display: block;
   background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px;
   image-rendering: pixelated;
 }
 .image-view-canvas.smooth { image-rendering: auto; }
-/* Overdraw tab (overdraw_view.ts): the image takes the rest of the tab's height. */
-.overdraw-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.overdraw-view .image-view-scroll { flex: 1 1 auto; max-height: none; min-height: 0; }
-.overdraw-view-info { padding: 2px 8px; font-size: 9.5pt; }
-.overdraw-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font-size: 9pt; }
+/* A capture's render target in a tab of its own (capture_texture_view.ts): the image on the left
+   with the overdraw over it, the clicked pixel's history on the right. */
+.capture-texture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.capture-texture-head { padding: 6px 8px 0 8px; font-size: 9.5pt; }
+.capture-texture-split { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; }
+.capture-texture-image { display: flex; flex-direction: column; flex: 1 1 60%; min-width: 0; min-height: 0; }
+.capture-texture-image .image-view-scroll { flex: 1 1 auto; max-height: none; min-height: 0; }
+.capture-texture-history { flex: 1 1 40%; min-width: 0; min-height: 0; display: flex; border-left: 1px solid var(--border-color); }
+.capture-texture-history .pixel-history-view { flex: 1 1 auto; min-width: 0; }
+/* The overdraw row under the image's toolbar: where the counts stand, the controls, the legend. */
+.overdraw-bar { display: none; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 8px 4px 8px; font-size: 9pt; }
+.overdraw-legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font-size: 9pt; }
 .overdraw-legend-item { display: inline-flex; align-items: center; gap: 4px; }
 .overdraw-swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid var(--border-color); }
 /* Pixel history tab (pixel_history_view.ts). */
