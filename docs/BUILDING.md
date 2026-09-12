@@ -11,7 +11,8 @@ Only needed if you want to build GPU Inspector yourself, or to build the
 Linux and Windows need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm, the windowing-system
 headers Vulkan's surface extensions include, and the shader tools `glslc`, `spirv-dis` and
-`spirv-cross`. macOS builds the Metal capture library instead of the Vulkan layer, and needs less.
+`spirv-cross`. A macOS build makes the Metal capture library instead of the Vulkan layer, and
+needs less.
 
 ### Linux
 
@@ -140,7 +141,7 @@ npm test             # renderer and MCP server unit tests
 `python tools/ui_tests.py` runs the UI end to end against the built test application.
 
 `python tools/doc_screenshots.py` regenerates the screenshots in `docs/images` from the built UI:
-each one is a run of the app with its testing aids, quitting itself once the shot is written.
+each is a run of the app with its testing aids, quitting once the shot is written.
 Shots taken from capture files need those files — `--captures <dir>`, or
 `GPU_INSPECTOR_DOC_CAPTURES` — and are skipped when they are not there; the rest come from the
 built test application. `--list` names them, `--only <name>` takes one.
@@ -151,4 +152,4 @@ machine that built it, but is not something to hand to anyone else. See
 
 ---
 
-Previous: [Troubleshooting](TROUBLESHOOTING.md) · [Docs index](README.md)
+Previous: [Troubleshooting](TROUBLESHOOTING.md) · [Docs index](README.md) · Next: [Capture replay](REPLAY.md)

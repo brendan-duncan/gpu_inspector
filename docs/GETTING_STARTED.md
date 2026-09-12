@@ -7,8 +7,8 @@ in the pages it links to.
 
 ## 1. Start GPU Inspector
 
-An installed build starts from the Start menu, the application list or Applications. A source
-build starts with `npm start` in `app/`.
+An installed build starts from the Start menu on Windows, the application list on Linux, or
+Applications on macOS. A source build starts with `npm start` in `app/`.
 
 The bar along the top is where sessions begin:
 
@@ -33,7 +33,7 @@ What you pick depends on the platform:
 - **An Android phone or headset:** choose **Android device (adb)** under *Run On*. See
   [Android and Quest](ANDROID.md).
 
-Each session opens as its own tab, with three tabs inside it:
+Each session opens as its own tab, and holds three tabs of its own:
 
 | Tab | What it is for |
 |---|---|
@@ -63,10 +63,10 @@ vertex and index data, and the render targets the pass produced.
 
 See [Capture](CAPTURE.md).
 
-## 5. Ask what the frame is doing
+## 5. Look at the whole frame
 
-The **Reports** menu in a capture answers the whole-frame questions: where the time went, what
-limits each pass, which passes feed which, how many times each pixel was shaded.
+The **Reports** menu in a capture answers questions about the whole frame: where the time went,
+what limits each pass, which passes feed which, how many times each pixel was shaded.
 
 See [Reports](REPORTS.md), and [Finding GPU bottlenecks](PROFILING.md) for a method that uses
 them in order.
@@ -76,7 +76,7 @@ them in order.
 The save button in the capture bar writes the capture to a `.gpucap` file. The file contains
 everything the capture tab shows, so it reopens later on any machine, without the application —
 for a bug report, for comparing against a later capture, or for
-[Claude to read](MCP.md).
+[Claude](MCP.md) to read.
 
 ---
 

@@ -1,10 +1,13 @@
 # GPU Inspector — Architecture
 
-A cross-platform (Windows, Linux) graphics inspector for native applications, the native
-counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector). Vulkan is
+[Docs index](README.md) › Architecture
+
+A cross-platform (Windows, Linux, macOS) graphics inspector for native applications, the native
+counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector). Vulkan was
 the first API: it works with any uninstrumented Vulkan application by interposing a Vulkan layer,
 and it targets Unity Vulkan players first. The UI and protocol are API-neutral (see Multi-API
-below); Metal and Direct3D would be further capture libraries speaking the same protocol.
+below), so another API is another capture library speaking the same protocol. Metal is the second
+one, described in `metal/README.md`; what follows is the Vulkan side.
 
 ## Design decisions
 
@@ -14,12 +17,12 @@ below); Metal and Direct3D would be further capture libraries speaking the same 
 | Attach model | Launch from the inspector first: the layer is enabled per-process through environment variables, nothing is registered. For applications started elsewhere (an editor, a game behind its launcher) the layer can be registered as an implicit layer for the user (`main/implicit_layer.ts`: the registry under HKCU on Windows, a manifest in `implicit_layer.d` on Linux) and loads into any process started with `VKINSP_ENABLE=1`, which a session then waits for. A Vulkan layer cannot join a process after its instance exists, so "attach" means "start the application with the variables set". |
 | Targets | Local processes, and Android devices through adb (see Android below). The layer and UI talk over TCP, so other remote targets can be added without changing the protocol. |
 | Device features the layer adds | Three, each optional and each with a fallback to the application's own create info if the driver refuses: a refresh-period extension (`refresh_rate.h`), dynamic rendering for multisampled depth read-back (`depth_resolve.h`), and `pipelineStatisticsQuery` for the per-pass GPU counters (`pipeline_stats.h`). |
-| Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux. |
+| Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux, Clang on macOS. |
 | UI | Electron, written in TypeScript throughout (esbuild bundles, `tsc` type-checks), including the widget library ported from WebGPU Inspector. |
-| Distribution | electron-builder installers (Windows NSIS, Linux .deb) bundling the layer under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
+| Distribution | electron-builder installers (Windows NSIS, Linux .deb, macOS .dmg) bundling the capture library under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
 | Handles | Pass-through. The layer never wraps Vulkan handles; it keeps side tables keyed by handle and uses the loader's dispatch pointer (first word of each dispatchable handle) to find its per-instance/per-device state. This is what RenderDoc's `vk_dispatchtables.cpp` does for tables, and it avoids RenderDoc's 20k+ lines of handle unwrapping. |
 | Code generation | Everything mechanical is generated from `vk.xml` (Vulkan-Headers submodule): dispatch tables, forwarding entry points, object create/destroy hooks, and JSON serializers for every struct, enum, bitmask and command signature. |
-| Multi-API | Vulkan first. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources). Another API is another capture library speaking the same protocol. |
+| Multi-API | Vulkan first, Metal second. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. |
 | Reference code | WebGPU Inspector (MIT), RenderDoc (MIT), GFXReconstruct (Apache-2.0). Adapted files name their origin; see `THIRD_PARTY_LICENSES.md`. |
 
 ## Components
@@ -137,11 +140,9 @@ device-side server:
   each `VKINSP_*` variable to a `debug.vkinsp.*` system property (`VKINSP_PORT` ->
   `debug.vkinsp.port`), which `adb shell setprop` can set without root; RenderDoc's `debug.rdoc.*`
   properties are the same idea.
-* **Transport and log.** The layer listens on the device's loopback as usual; `adb forward
-  tcp:<port> tcp:<port>` maps the session's host port to it and the session connects to
-  `127.0.0.1` like for a local process. The layer logs to logcat (tag `vkinsp`), which the session
-  streams into its Log tab together with native crash dumps; the process is watched with `pidof`.
-  Closing the last session on a device deletes the debug layer settings again.
+* **Log.** The layer logs to logcat (tag `vkinsp`), which the session streams into its Log tab
+  together with native crash dumps; the process is watched with `pidof`. Closing the last session
+  on a device deletes the debug layer settings again.
 * **Not needed.** RenderDoc runs a remote server on the device to start packages, copy the capture
   file back and replay it there. Captures here stream straight over the socket and there is no
   replay, so the layer is the only device-side component. Replay-based features (see TODO.md)
@@ -947,3 +948,7 @@ Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator
 ```
 python tools/gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out layer/gen
 ```
+
+---
+
+Previous: [Capture replay](REPLAY.md) · [Docs index](README.md) · Next: [Releasing](RELEASING.md)

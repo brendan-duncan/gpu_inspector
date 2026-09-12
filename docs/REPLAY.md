@@ -3,7 +3,7 @@
 [Docs index](README.md) › Capture replay
 
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
-application. It is the base for the analyses that need to run a frame again with something
+application. It is the basis for the analyses that have to run a frame again with something
 changed: the overdraw heatmap, pixel history, and later per-draw timing and shader debugging
 (TODO.md, "Replay-based features").
 
@@ -66,8 +66,8 @@ The generator handles several quirks of the JSON:
 than the installed runtime.
 
 **Objects** are re-created in id order, which is creation order (`replayer.cpp`):
-- **Device.** It is the captured device's create info on the GPU with the captured name (or the
-  first discrete GPU), minus extensions this GPU lacks. `VK_KHR_swapchain` is added so render
+- **Device.** Created from the capture's own create info, on the GPU with the captured name (or
+  the first discrete GPU), minus the extensions this GPU lacks. `VK_KHR_swapchain` is added so render
   passes may end in `PRESENT_SRC_KHR` without a surface.
 - **Memory.** Device memory is not re-created as such: every image and buffer gets memory of its
   own. That keeps a capture replayable on another GPU with other memory types. Transfer usage is
@@ -171,12 +171,12 @@ the state before the copy is created.
     Then it runs with its own pipeline, and writes.
   - **`vkCmdClearAttachments`** runs as it is.
   - After each event the pixel and the pass's depth at it are read.
-- **Output.** Each event lists the command index, what the draw's fragments met, and the pixel's
-  value and depth after it, decoded for common formats (8-bit RGBA and BGRA, half and full float,
+- **Output.** Each event lists the command index, what became of the draw's fragments, and the
+  pixel's value and depth after it, decoded for common formats (8-bit RGBA and BGRA, half and full float,
   `A2B10G10R10`, `B10G11R11`, and the depth formats). Draws that do not reach the pixel are only
   counted.
 
-Checked on these captures, the value after a pass's last event equals the target the capture (or the
+On these captures, the value after a pass's last event matches the target the capture (or the
 replay) read back at that pixel:
 - the triangle: the cube and the background;
 - hazard, and msaa through its resolve attachment;
@@ -200,7 +200,7 @@ Limits:
 
 ## Where it stands
 
-Every capture that was replayed is listed below, with its result:
+Every capture replayed so far, with its result:
 
 | Capture | Result |
 |---|---|
@@ -231,10 +231,10 @@ These cases differ for known reasons:
    - Multisampled images.
    - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
    - Early fragment tests.
-3. **The app and the MCP server.** Done for both analyses: the capture's render target tab draws
-   the overdraw over the image and follows the pixel you click beside it, with `get_overdraw` and
-   `get_pixel_history` for Claude. Each pixel replays the whole frame again; keeping one replay
-   process alive between requests would make it quicker.
+3. **Speed.** Both analyses are already wired into the app and the MCP server: the capture's
+   render target tab draws the overdraw over the image and follows the pixel you click beside it,
+   with `get_overdraw` and `get_pixel_history` for Claude. But each pixel replays the whole frame
+   again; keeping one replay process alive between requests would make it quicker.
 
 Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
 templates and push descriptors with templates, queries whose results the frame reads back, and
@@ -242,4 +242,4 @@ Metal captures.
 
 ---
 
-[Docs index](README.md) · [Reports](REPORTS.md)
+Previous: [Building from source](BUILDING.md) · [Docs index](README.md) · Next: [Architecture](ARCHITECTURE.md)

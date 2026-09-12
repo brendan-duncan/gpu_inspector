@@ -25,14 +25,14 @@ falls back to creating the device exactly as the application asked if the driver
 
 Turn on **Profile passes** in the capture bar. The timings and counters this whole document rests
 on are sampled *during* the capture; they cannot be recovered afterwards, and a capture taken
-without them shows durations of nothing at all.
+without them has no durations at all.
 
 Capture while the application is doing the thing that is slow. A menu screen tells you nothing
-about a battle. If the slow moment is hard to reach by hand, set **Capture at frame** and let it
-arm itself.
+about a battle. If the slow moment is hard to reach by hand, set **At frame** in the capture bar,
+or arm **Queued Capture** in the launch dialog.
 
-Capture more than one frame if the frame time is uneven. Reports total over the captured frames,
-and one frame of a stutter is easier to read next to two that are fine.
+Capture more than one frame if the frame time is uneven. Reports total across the captured frames,
+and one stuttering frame is easier to read next to two that are fine.
 
 ## Step 1: is the GPU even the problem
 
@@ -160,7 +160,7 @@ different name:
 
 | Rule | What it means |
 |---|---|
-| `high-overdraw` | A pass shades each pixel more than twice over. |
+| `high-overdraw` | A pass shades each pixel more than twice on average. |
 | `microtriangles` | Triangles too small for the rasterization quad. |
 | `mergeable-passes` | A pass loads what the pass before it stored, with nothing between: one encoder would keep the target in tile memory instead of round-tripping it through DRAM. |
 | `undefined-load` | An attachment loaded when nothing wrote it: the load is pure cost. |

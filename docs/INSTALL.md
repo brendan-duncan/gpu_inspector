@@ -16,9 +16,9 @@ The installer contains the capture library — the Vulkan layer on Windows and L
 capture library on macOS — so nothing else has to be built or registered. macOS builds are signed
 and notarized, so they open without a Gatekeeper warning.
 
-## What you may still want
+## Optional tools
 
-These are optional, and only affect what the inspector can show you.
+None of these are required; they only affect what the inspector can show you.
 
 | Tool | Needed for |
 |---|---|

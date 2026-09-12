@@ -34,8 +34,8 @@ It finds the SDK and NDK in `ANDROID_HOME`, `ANDROID_NDK_HOME` or the default in
 and produces:
 
 - `build/android/lib/<abi>/libVkLayer_inspector_capture.so`
-- `build/android/gpu_inspector_layer.apk` — a package with no code of its own that only carries
-  the library
+- `build/android/gpu_inspector_layer.apk` — a package with no code of its own, carrying only the
+  library
 
 An installed GPU Inspector can use them too: set `INSPECTOR_ANDROID_LAYER_DIR` to the directory
 holding `lib/<abi>/` and the APK.
@@ -106,8 +106,8 @@ python tools/build_android_triangle.py   # build/android/android_triangle.apk, f
 python tools/build_xr_triangle.py        # build/android/xr_triangle.apk + xr_triangle_slow.apk
 ```
 
-`xr_triangle.apk` renders a ring of triangles in one multiview pass. "XR Triangle (Slow)" renders
-the same scene with deliberate inefficiencies — a pass per eye, a stored depth buffer, a draw and
+`xr_triangle.apk` renders a ring of triangles in one multiview pass. `xr_triangle_slow.apk`
+renders the same scene with deliberate inefficiencies — a pass per eye, a stored depth buffer, a draw and
 a bind per triangle, a wasteful fragment shader — so **Frame Stats** and **Analyze Shaders** have
 something to flag. The build needs the Vulkan SDK's `glslc`, and downloads the Khronos OpenXR
 loader the first time.

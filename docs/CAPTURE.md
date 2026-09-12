@@ -9,12 +9,12 @@ and stays there until you close it, so several captures can be compared side by 
 
 Press **Capture**. The application's next frame is recorded and opens in a new tab.
 
-The bar above it decides what is recorded:
+The bar above it controls what is recorded:
 
 | Control | What it does |
 |---|---|
 | **Frames** | How many consecutive frames to capture. Each gets its own list inside the tab |
-| **At frame** | Capture that frame number instead of the next one (0 is the first frame the inspector saw). Leave it empty for the next frame |
+| **At frame** | Capture that frame number instead of the next one (0 is the first frame the inspector sees). Leave it empty for the next frame |
 | **Render targets** | Read back each render pass's attachments at the end of the pass |
 | **Buffers** | Read back the buffers bound by descriptor sets, vertex and index bindings, and indirect draws |
 | **Images** | Read back the images bound by descriptor sets, so the capture shows what the shaders sampled |
@@ -27,8 +27,8 @@ On macOS there are also **Overdraw** and **Xcode Trace**; see [Metal](METAL.md#m
 Turning off what you do not need makes a capture smaller and faster, which matters most on mobile
 GPUs. Leaving everything on is the right default on a desktop.
 
-To capture a frame that has passed before you can press anything, use **Queued Capture** in the
-launch dialog — it captures automatically as soon as the application connects.
+To catch a frame that goes by before you can press anything, use **Queued Capture** in the launch
+dialog — it captures automatically as soon as the application connects.
 
 ## Reading the frame
 
@@ -37,7 +37,7 @@ application's own debug labels. **Filter** narrows the list to matching commands
 
 ![A captured frame: the command list grouped by submit, command buffer and render pass, with the selected draw's state beside it](images/capture-draw.png)
 
-Selecting a command fills the right side with everything that was true at it:
+Selecting a command fills the right side with everything that was true at that point in the frame:
 
 - **Arguments** — the call and its parameters.
 - **Pipeline State** — the whole graphics or compute state bound at that draw: shaders, blend,
@@ -79,7 +79,7 @@ reopens on any machine, on any platform, without the application and without the
   application behind it.
 - Tab right-click has **Save Capture...**, **Open in New Tab**, **Open in New Window** and the
   close commands. Opening two captures in two windows is how a before-and-after comparison is
-  done by eye; [Claude](MCP.md) can compare them numerically.
+  made by eye; [Claude](MCP.md) can compare them numerically.
 
 Captures are what to attach to a bug report, and what Claude reads.
 

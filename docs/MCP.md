@@ -2,7 +2,7 @@
 
 [Docs index](README.md) › Claude Code plugin
 
-The `gpu-inspector` plugin gives Claude Code your frame captures, read with GPU Inspector's own
+The `gpu-inspector` plugin lets Claude Code read your frame captures with GPU Inspector's own
 analyses — the same frame rules, bottleneck measurements, render graph, draw state and shader
 reflection the app shows. It can also launch an application and drive it: capture frames, watch
 the frame rate, and replace a shader while it runs.
@@ -43,25 +43,25 @@ Or use a command:
 
 | Command | What it does |
 |---|---|
-| `/gpu-inspector:analyze [capture]` | Correctness and performance review: validation, frame issues, bottlenecks, shaders |
-| `/gpu-inspector:profile [capture]` | What limits the frame, pass by pass, following [PROFILING.md](PROFILING.md) |
+| `/gpu-inspector:analyze [capture]` | Reviews correctness and performance: validation, frame issues, bottlenecks, shaders |
+| `/gpu-inspector:profile [capture]` | Works out what limits the frame, pass by pass, following [PROFILING.md](PROFILING.md) |
 | `/gpu-inspector:debug [capture] <symptom>` | Traces a rendering problem to the draw and the state that causes it |
-| `/gpu-inspector:compare <before> <after>` | Whether a change moved the numbers it should have |
+| `/gpu-inspector:compare <before> <after>` | Says whether a change moved the numbers it should have |
 | `/gpu-inspector:live <exe> [args]` | Launches an application, captures it, and tries shader changes while it runs |
 
-## What makes a capture worth asking about
+## What to turn on before capturing
 
-Set before capturing, in GPU Inspector:
+Claude can only read what the capture recorded, so in GPU Inspector, before you capture:
 
-- **Profile passes** — GPU times and counters. Without it there is nothing to profile.
-- **Validation layer**, in the launch dialog — validation messages.
+- **Profile passes** — GPU times and counters. Without them there is nothing to profile.
+- **Validation layer**, in the launch dialog — so the capture carries the validation messages.
 - **Stack traces** — where each command was recorded.
-- Larger **Max KB**, when whole buffers matter.
+- A larger **Max KB**, when whole buffers matter.
 
 ## Driving an application
 
 With GPU Inspector's capture library available, the plugin can start an application itself and
-work on it without the app open:
+work on it without GPU Inspector running:
 
 - launch it, and watch its frame rate
 - capture frames into `.gpucap` files
