@@ -76,6 +76,9 @@ struct DrawResult {
     bool timed = false;
     double durationMs = 0;
     bool counted = false;
+    /** The samples of this draw that passed the depth and stencil tests (an occlusion query). */
+    bool sampled = false;
+    uint64_t samplesPassed = 0;
     uint64_t vertexInvocations = 0;
     uint64_t primitives = 0;
     uint64_t fragmentInvocations = 0;
@@ -464,11 +467,13 @@ private:
     // start of each submission's recording and read once the submission has completed.
     VkQueryPool _drawTimestamps = VK_NULL_HANDLE;
     VkQueryPool _drawStatistics = VK_NULL_HANDLE;
+    VkQueryPool _drawOcclusion = VK_NULL_HANDLE;
     uint32_t _drawQueryCapacity = 0;
     uint32_t _drawSlot = 0;
     /** Nanoseconds per timestamp tick; 0 where the queue cannot write timestamps. */
     double _timestampPeriod = 0;
     bool _drawCountersAvailable = false;
+    bool _drawSamplesAvailable = false;
     /** The submission's draws, in slot order, waiting for its results. */
     std::vector<DrawResult> _pendingDraws;
     /** Queries the capture's own commands have open: a statistics query cannot nest inside one. */

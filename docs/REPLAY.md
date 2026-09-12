@@ -207,6 +207,10 @@ action issued between a pair of timestamps and inside a pipeline statistics quer
 - **The counters are exact**: vertex and fragment shader invocations, primitives, compute
   invocations — per draw, indirect arguments included, which nothing in a capture itself reports.
   They need the `pipelineStatisticsQuery` feature, which the replay adds to the device it creates.
+- **Samples passed** comes from a precise occlusion query around each draw, which is how a pass that
+  executes secondary command buffers gets a depth rejection rate at all: the layer's own query
+  cannot span `vkCmdExecuteCommands`, the replay's sits inside the secondary. `pass_metrics.ts` sums
+  a pass's draws and uses that where the capture's own counter is missing.
 - **The times are not what a draw costs alone.** The GPU pipelines consecutive draws, so their
   spans overlap and add up to more than the pass takes. What they are good for is the share of a
   pass a draw accounts for.
@@ -221,11 +225,13 @@ of the scissor-area estimate.
 vkinsp_replay frame.gpucap --draws
 draws measured: 3, 0.021 ms of draw time, 51204 fragment shader invocations
   [5] outside a render pass: 0.0078 ms, 0 vertex, 0 primitives, 0 fragment, 1024 compute invocations
-  [17] pass 0: 0.0061 ms, 24 vertex, 12 primitives, 51204 fragment, 0 compute invocations
+  [17] pass 0: 0.0061 ms, 24 vertex, 12 primitives, 51204 fragment, 0 compute invocations, 48000 samples passed
 ```
 
 On the test triangle the fragment count matches the pipeline statistics the capture itself
-measured, exactly.
+measured, exactly. On a Unity frame, whose 11 draws all sit in secondaries, the per-draw sums match
+the layer's per-pass counters exactly and one draw shows real rejection (3,480 fragments shaded,
+2,089 samples passed).
 
 ## Where it stands
 

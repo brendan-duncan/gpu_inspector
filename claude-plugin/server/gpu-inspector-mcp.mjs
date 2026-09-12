@@ -2821,6 +2821,74 @@ function frameRenderGraph(data, db) {
   return buildFrameGraph(data, data.sets, source);
 }
 
+// src/renderer/draw_stats.ts
+var NO_PASS = 4294967295;
+function parseDrawStats(input) {
+  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`The draw measurements are not valid JSON: ${e.message}`);
+  }
+  if (json.format !== "gpu-inspector-draw-stats") throw new Error("Not draw measurements from vkinsp_replay.");
+  const num2 = (v) => typeof v === "number" ? v : 0;
+  const draws = (Array.isArray(json.draws) ? json.draws : []).map((raw) => {
+    const d = raw;
+    const pass = num2(d.passIndex);
+    return {
+      command: num2(d.command),
+      frame: num2(d.frame),
+      commandBuffer: num2(d.commandBuffer),
+      ...pass === NO_PASS ? {} : { passIndex: pass },
+      timed: d.timed === true,
+      ms: num2(d.ms),
+      counted: d.counted === true,
+      vertexInvocations: num2(d.vertexInvocations),
+      primitives: num2(d.primitives),
+      fragmentInvocations: num2(d.fragmentInvocations),
+      computeInvocations: num2(d.computeInvocations),
+      sampled: d.sampled === true,
+      samplesPassed: num2(d.samplesPassed)
+    };
+  });
+  return {
+    device: typeof json.device === "string" ? json.device : "",
+    note: typeof json.note === "string" ? json.note : "",
+    draws,
+    problems: Array.isArray(json.problems) ? json.problems.filter((p) => typeof p === "string") : []
+  };
+}
+function drawStatsByCommand(draws) {
+  const out = /* @__PURE__ */ new Map();
+  for (const d of draws) out.set(d.command, d);
+  return out;
+}
+function passSumKey(frame, commandBuffer, passIndex) {
+  return `${frame}:${commandBuffer}:${passIndex}`;
+}
+function drawSumsByPass(draws) {
+  const out = /* @__PURE__ */ new Map();
+  for (const d of draws) {
+    if (d.passIndex === void 0) continue;
+    const key = passSumKey(d.frame, d.commandBuffer, d.passIndex);
+    let s = out.get(key);
+    if (!s) out.set(key, s = { draws: 0, counted: true, fragmentInvocations: 0, sampled: true, samplesPassed: 0 });
+    s.draws++;
+    s.counted = s.counted && d.counted;
+    s.fragmentInvocations += d.fragmentInvocations;
+    s.sampled = s.sampled && d.sampled;
+    s.samplesPassed += d.samplesPassed;
+  }
+  return out;
+}
+function drawStatsSummary(file) {
+  const timed = file.draws.filter((d) => d.timed).length;
+  const counted = file.draws.filter((d) => d.counted).length;
+  const fragments = file.draws.reduce((sum, d) => sum + d.fragmentInvocations, 0);
+  return `${file.draws.length} draws and dispatches measured (${timed} timed, ${counted} counted), ${fragments.toLocaleString()} fragment shader invocations${file.device ? `, replayed on ${file.device}` : ""}`;
+}
+
 // src/renderer/pass_metrics.ts
 var HEALTHY_OVERDRAW = 1.2;
 var OVERDRAW_LIMIT = 2;
@@ -2937,6 +3005,7 @@ function collectPassMetrics(data, db) {
     if (p.overdraw !== null) p.overdrawSource = "counters";
     p.fragmentsPerPrimitive = ratio(fragments, primitives);
     p.depthRejectRate = fragments !== null && passed !== null && fragments > 0 ? 1 - passed / fragments : null;
+    if (p.depthRejectRate !== null) p.depthRejectSource = "counters";
     p.nsPerVertex = p.vertexMs !== null ? ratio(p.vertexMs * 1e6, vertexInvocations) : null;
     p.nsPerFragment = p.fragmentMs !== null ? ratio(p.fragmentMs * 1e6, fragments) : null;
     const u = t.utilization;
@@ -2949,6 +3018,18 @@ function collectPassMetrics(data, db) {
       };
     }
     decideBound(p);
+  }
+  if (data.drawStats?.length) {
+    const sums = drawSumsByPass(data.drawStats);
+    for (const p of passes) {
+      if (p.compute || p.depthRejectRate !== null) continue;
+      const s = sums.get(passSumKey(p.frame, p.commandBuffer, p.passIndex));
+      if (!s?.sampled) continue;
+      const fragments = counter(p.timing, "fragmentInvocations") ?? (s.counted ? s.fragmentInvocations : null);
+      if (fragments === null || fragments <= 0 || s.samplesPassed > fragments) continue;
+      p.depthRejectRate = 1 - s.samplesPassed / fragments;
+      p.depthRejectSource = "replay";
+    }
   }
   if (data.overdraw?.length) {
     for (const p of passes) {
@@ -3026,6 +3107,7 @@ function blank(cmd, passIndex, compute, cb, target) {
     measuredOverdraw: null,
     fragmentsPerPrimitive: null,
     depthRejectRate: null,
+    depthRejectSource: null,
     nsPerVertex: null,
     nsPerFragment: null,
     cycleShare: null,
@@ -6109,6 +6191,8 @@ var Capture = class {
   /** Per-draw timings and counters measured by replaying the capture (renderer/draw_stats.ts). */
   setDrawStats(draws) {
     this.data.drawStats = draws;
+    this._metrics = null;
+    this._analysis = null;
   }
   get statistics() {
     return this._statistics ??= new CaptureStatistics().compute(this.data, this.db);
@@ -13657,54 +13741,6 @@ function runOverdrawReplay(tool, capturePath, timeoutMs) {
   return runReplay(tool, capturePath, { kind: "overdraw" }, timeoutMs);
 }
 
-// src/renderer/draw_stats.ts
-var NO_PASS = 4294967295;
-function parseDrawStats(input) {
-  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (e) {
-    throw new Error(`The draw measurements are not valid JSON: ${e.message}`);
-  }
-  if (json.format !== "gpu-inspector-draw-stats") throw new Error("Not draw measurements from vkinsp_replay.");
-  const num2 = (v) => typeof v === "number" ? v : 0;
-  const draws = (Array.isArray(json.draws) ? json.draws : []).map((raw) => {
-    const d = raw;
-    const pass = num2(d.passIndex);
-    return {
-      command: num2(d.command),
-      frame: num2(d.frame),
-      commandBuffer: num2(d.commandBuffer),
-      ...pass === NO_PASS ? {} : { passIndex: pass },
-      timed: d.timed === true,
-      ms: num2(d.ms),
-      counted: d.counted === true,
-      vertexInvocations: num2(d.vertexInvocations),
-      primitives: num2(d.primitives),
-      fragmentInvocations: num2(d.fragmentInvocations),
-      computeInvocations: num2(d.computeInvocations)
-    };
-  });
-  return {
-    device: typeof json.device === "string" ? json.device : "",
-    note: typeof json.note === "string" ? json.note : "",
-    draws,
-    problems: Array.isArray(json.problems) ? json.problems.filter((p) => typeof p === "string") : []
-  };
-}
-function drawStatsByCommand(draws) {
-  const out = /* @__PURE__ */ new Map();
-  for (const d of draws) out.set(d.command, d);
-  return out;
-}
-function drawStatsSummary(file) {
-  const timed = file.draws.filter((d) => d.timed).length;
-  const counted = file.draws.filter((d) => d.counted).length;
-  const fragments = file.draws.reduce((sum, d) => sum + d.fragmentInvocations, 0);
-  return `${file.draws.length} draws and dispatches measured (${timed} timed, ${counted} counted), ${fragments.toLocaleString()} fragment shader invocations${file.device ? `, replayed on ${file.device}` : ""}`;
-}
-
 // src/renderer/frame_cost_tree.ts
 var MAX_LINE_FRAMES = 16;
 function node(kind, name, totalCost = 0, children = []) {
@@ -15468,6 +15504,7 @@ function passMeasurements(c2, p, i, gpuMs) {
     measuredOverdraw: p.measuredOverdraw ? { depthTested: overdrawBrief(p.measuredOverdraw.depthTested), rasterized: overdrawBrief(p.measuredOverdraw.rasterized) } : void 0,
     fragmentsPerPrimitive: round(p.fragmentsPerPrimitive),
     depthRejectRate: round(p.depthRejectRate),
+    depthRejectSource: p.depthRejectSource ?? void 0,
     nsPerVertex: round(p.nsPerVertex),
     nsPerFragment: round(p.nsPerFragment),
     cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,

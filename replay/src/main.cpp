@@ -251,7 +251,9 @@ bool WriteDrawData(const ReplayReport& report, const std::string& path) {
                 ",\"vertexInvocations\":" + std::to_string(d.vertexInvocations) +
                 ",\"primitives\":" + std::to_string(d.primitives) +
                 ",\"fragmentInvocations\":" + std::to_string(d.fragmentInvocations) +
-                ",\"computeInvocations\":" + std::to_string(d.computeInvocations) + "}";
+                ",\"computeInvocations\":" + std::to_string(d.computeInvocations) +
+                ",\"sampled\":" + (d.sampled ? "true" : "false") +
+                ",\"samplesPassed\":" + std::to_string(d.samplesPassed) + "}";
     }
     json += "],\"problems\":[";
     for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
@@ -274,9 +276,10 @@ void PrintDraws(const ReplayReport& report) {
     for (size_t i = 0; i < report.draws.size() && i < 20; ++i) {
         const DrawResult& d = report.draws[i];
         const std::string where = d.passIndex == UINT32_MAX ? "outside a render pass" : "pass " + std::to_string(d.passIndex);
-        std::printf("  [%u] %s: %.4f ms%s, %llu vertex, %llu primitives, %llu fragment, %llu compute invocations\n", d.command, where.c_str(),
+        const std::string samples = d.sampled ? ", " + std::to_string(d.samplesPassed) + " samples passed" : std::string();
+        std::printf("  [%u] %s: %.4f ms%s, %llu vertex, %llu primitives, %llu fragment, %llu compute invocations%s\n", d.command, where.c_str(),
                     d.durationMs, d.timed ? "" : " (not timed)", (unsigned long long)d.vertexInvocations, (unsigned long long)d.primitives,
-                    (unsigned long long)d.fragmentInvocations, (unsigned long long)d.computeInvocations);
+                    (unsigned long long)d.fragmentInvocations, (unsigned long long)d.computeInvocations, samples.c_str());
     }
     if (report.draws.size() > 20) std::printf("  ... %zu more\n", report.draws.size() - 20);
 }
