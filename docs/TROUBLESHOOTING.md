@@ -8,7 +8,7 @@
 Run the target with `VK_LOADER_DEBUG=layer` to see the loader's search, and tick **Layer log** in
 the launch dialog to see the layer's own output in the session's **Log** tab.
 
-**"layer not found" when launching.** The app looks for `VK_LAYER_INSPECTOR_capture.json` in
+**"layer not found" when launching.** The inspector looks for `VK_LAYER_INSPECTOR_capture.json` in
 `build/bin`, `build/bin/{Release,RelWithDebInfo,Debug}` and next to a packaged app. If your build
 directory is somewhere else, point `INSPECTOR_LAYER_DIR` at the directory holding the manifest and
 the layer library.
@@ -21,7 +21,8 @@ normal graphics driver on Windows). Nothing in the inspector works until a drive
 
 **The target starts but never connects.** Almost always the hardened runtime: dyld dropped
 `DYLD_INSERT_LIBRARIES`, so the capture library was never loaded. The launch dialog checks for
-this and refuses, so a target that got past it and still went quiet is worth confirming with:
+this and refuses to launch, so a target that got past the check and still went quiet is worth
+confirming by hand:
 
 ```sh
 codesign -d -v --entitlements - <the .app>
@@ -30,7 +31,7 @@ codesign -d -v --entitlements - <the .app>
 See [Metal](METAL.md#code-signing-decides-whether-this-works). Launch with **Layer log** on to see
 the library's output in the session's **Log** tab.
 
-**"capture library not found".** `INSPECTOR_METAL_LIB` points at `libmtlinsp_capture.dylib`
+**"capture library not found".** Point `INSPECTOR_METAL_LIB` at `libmtlinsp_capture.dylib`
 directly, when it is not in the build tree or the packaged app.
 
 ## Android

@@ -3,7 +3,7 @@
 [Docs index](README.md) › Inspect
 
 The **Inspect** tab is the live view of the application: every object it has created, as it
-creates them, with the arguments it created them with. Nothing has to be captured first.
+creates them, each with the arguments it was created with. Nothing has to be captured first.
 
 ## Finding an object
 
@@ -12,7 +12,7 @@ memory and the rest — with a count beside each type. On Metal the types are `M
 `MTLBuffer`, `MTLLibrary` and so on instead.
 
 - **Search** matches a name, label, type, format or id.
-- **Filters** narrows further: images by format, size, layers and usage; buffers by size and
+- **Filters** narrow further: images by format, size, layers and usage; buffers by size and
   usage; shaders and pipelines by stage; descriptor sets by what they bind.
 - **Only objects used in the last capture** hides everything the captured frame did not touch,
   which is usually the fastest way to a short list.
@@ -37,9 +37,9 @@ what it pointed at.
 ## Textures
 
 Selecting an image opens an **Image** view that reads the current pixels back from the running
-application. The toolbar has the mip level and array layer, zoom, **Smooth** (filter instead of
-showing texels), a refresh button to read the image again, and a button that copies what is shown
-as a PNG. The value of the texel under the pointer is shown as you move it.
+application. The toolbar has the mip level and array layer, zoom, **Smooth** (filter the image
+instead of showing its texels), a refresh button to read it again, and a button that copies what
+is shown as a PNG. The value of the texel under the pointer is shown as you move it.
 
 ## Descriptor sets
 
@@ -87,8 +87,8 @@ aborting.
 
 ## Leaks
 
-**Leaked Objects** lists objects that were created and never destroyed, with the creation
-arguments last known for each and their stack traces when those were recorded.
+**Leaked Objects** lists objects that were created and never destroyed, each with the creation
+arguments last known for it and, when they were recorded, its stack trace.
 
 ## Frame time
 

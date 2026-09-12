@@ -11,7 +11,7 @@ For the order to use them in when a frame is slow, see
 
 ## Frame Stats
 
-Two things:
+Two parts:
 
 - **Frame Bound** — the frame's GPU time next to the CPU submit time and the frame interval, with
   a verdict on which of them the frame is waiting for. This is the first thing to read: it says
@@ -49,7 +49,7 @@ Use it to find which shader function is eating a pass, rather than which pass is
 
 ## GPU Bottlenecks
 
-Every pass measured in the terms a bottleneck is usually described in:
+Every pass, measured in the terms a bottleneck is usually described in:
 
 - GPU time
 - how many times each pixel was shaded (overdraw)
@@ -57,10 +57,11 @@ Every pass measured in the terms a bottleneck is usually described in:
 - whether the depth test was rejecting work
 - which stage the pass waits on
 
-![The GPU Bottlenecks report: per-pass GPU time, overdraw and fragments per primitive, with what to look at](images/bottlenecks.png)
+Each number is shown with what normally causes it. The counters come from a pipeline statistics
+query on Vulkan and from Metal's counter sets on macOS; which of them are available depends on the
+API and the GPU.
 
-with what normally causes each. The counters come from a pipeline statistics query on Vulkan and
-from Metal's counter sets on macOS; which of them are available depends on the API and the GPU.
+![The GPU Bottlenecks report: per-pass GPU time, overdraw and fragments per primitive, with what to look at](images/bottlenecks.png)
 
 [Finding GPU bottlenecks](PROFILING.md) is the walkthrough, including the thresholds each number
 is judged against.
@@ -96,14 +97,16 @@ How it is measured depends on the API:
 - **Metal** — tick **Overdraw** in the capture bar before capturing. The measurement happens
   inside the captured frame.
 
-Fragments a shader discards are counted, since the counting shader does not discard, so
-alpha-tested geometry counts as opaque. A multiview pass is counted in its first view only.
+The counting shader does not discard, so fragments the real shader would have thrown away are
+still counted and alpha-tested geometry counts as opaque. A multiview pass is counted in its first
+view only.
 
 ## Pixel history
 
-Click a pixel in a render target and press **Pixel History**: every clear and draw that touched
-that pixel, in order, with what the draw's fragments met — not reached, culled, discarded, failed
-the depth test, failed the stencil test, written — and the pixel's value and depth after each one.
+Open a render target in a tab of its own and click a pixel. The **Pixel History** pane beside it
+lists every clear and draw that touched that pixel, in order, with what became of the draw's
+fragments — not reached, culled, discarded, failed the depth test, failed the stencil test,
+written — and the pixel's value and depth after each one.
 
 ![Pixel history: the clear and the draw that touched the clicked pixel, with the value after each](images/pixel-history.png)
 
@@ -111,8 +114,8 @@ This is the report for "why is this pixel the wrong colour".
 
 - **Vulkan** — the capture is replayed on this machine's GPU, so the application need not be
   running.
-- **Metal** — the next frame is captured again while following the pixel, so the application must
-  still be running.
+- **Metal** — another frame is captured while following the pixel, so the application must still
+  be running.
 
 Current limits: writes outside render passes (copies, blits, compute) are not followed,
 multisampled images are followed through their resolve attachment, and a draw is one event with no

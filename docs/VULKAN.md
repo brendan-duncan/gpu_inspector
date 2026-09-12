@@ -2,9 +2,9 @@
 
 [Docs index](README.md) › Vulkan
 
-Every Vulkan call is intercepted by a layer, so any Vulkan application can be inspected as it is:
-nothing has to be recompiled, linked against the inspector or modified. Unity Vulkan players are
-the primary target.
+A layer intercepts every Vulkan call, so any Vulkan application can be inspected unmodified:
+nothing has to be recompiled or linked against the inspector. Unity Vulkan players are the
+primary target.
 
 For Vulkan on a phone or headset, see [Android and Quest](ANDROID.md). For macOS, see
 [Metal](METAL.md).
@@ -72,8 +72,8 @@ From the command line: `npm start -- --wait-for-app --port=<port>`, and
 
 ## Connecting to a running application
 
-An application already running with the layer enabled is picked up by entering its port in the
-launch bar and pressing **Connect**.
+To pick up an application already running with the layer enabled, enter its port in the launch
+bar and press **Connect**.
 
 ## Shader sources
 
@@ -84,8 +84,8 @@ the per-line costs and the findings' line links use it:
 - `dxc -fspv-debug=vulkan-with-source`
 
 A shader compiled with line information only (`dxc -Zi`, or a build that strips the text) names
-its source file instead. **Source roots** in the launch dialog tells the inspector which
-directories to read those files from on this machine.
+its source file instead. **Source roots** in the launch dialog names the directories to read
+those files from on this machine.
 
 Without either, shaders are still shown as SPIR-V disassembly, GLSL or HLSL, decompiled with
 `spirv-dis` and `spirv-cross`. See [Editing a shader](INSPECT.md#editing-a-shader) for changing a
@@ -93,8 +93,8 @@ shader in the running application.
 
 ## Where the layer comes from
 
-The app looks for `VK_LAYER_INSPECTOR_capture.json` next to a packaged app, and in `build/bin` and
-`build/bin/{Release,RelWithDebInfo,Debug}` of a source checkout. If your build directory is
+The inspector looks for `VK_LAYER_INSPECTOR_capture.json` next to a packaged app, and in
+`build/bin` and `build/bin/{Release,RelWithDebInfo,Debug}` of a source checkout. If your build directory is
 elsewhere, point `INSPECTOR_LAYER_DIR` at the directory holding the manifest and the layer library.
 
 ## If it does not work

@@ -1,5 +1,7 @@
 # Releasing
 
+[Docs index](README.md) › Releasing
+
 GPU Inspector ships as a Windows installer (NSIS), a Debian package, and a macOS disk image,
 built by `.github/workflows/release.yml` whenever a version tag is pushed. Installed builds
 update themselves from the GitHub releases of this repository.
@@ -16,7 +18,7 @@ git tag v0.2.0
 git push origin main v0.2.0
 ```
 
-The workflow then, on a Windows, an Ubuntu 22.04 and a macOS 14 runner:
+The workflow then runs on a Windows, an Ubuntu 22.04 and a macOS 14 runner, and:
 
 1. checks out the repository with the `Vulkan-Headers` submodule,
 2. builds the capture library with CMake (`-DVKINSP_BUILD_TESTS=OFF`, so no Vulkan SDK is
@@ -31,8 +33,8 @@ The workflow then, on a Windows, an Ubuntu 22.04 and a macOS 14 runner:
 5. once every platform has built, creates the GitHub release for the tag with all of those
    files attached and download links in the notes, and marks it as the latest release.
 
-A build failure on any platform therefore leaves no release behind; fix, delete the tag
-(`git push --delete origin vX.Y.Z; git tag -d vX.Y.Z`) and tag again. Running the workflow by
+A build failure on any platform therefore leaves no release behind; fix the problem, delete the
+tag (`git push --delete origin vX.Y.Z; git tag -d vX.Y.Z`) and tag again. Running the workflow by
 hand (workflow_dispatch) only builds; the installers are attached to the workflow run.
 
 Release assets:
@@ -141,3 +143,7 @@ npm run dist:mac
 
 `npm run dist` only builds; `gh release create vX.Y.Z app/release/*` (or `-- --publish always`
 with `GH_TOKEN` set) publishes from a machine instead of the workflow.
+
+---
+
+Previous: [Architecture](ARCHITECTURE.md) · [Docs index](README.md)
