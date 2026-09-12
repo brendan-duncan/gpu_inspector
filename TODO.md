@@ -73,8 +73,8 @@ interpreter and re-created pipelines.
 ## Next
 
 ### Claude Code
-- [ ] CI: run `npm test` in the release workflow, and fail when the committed MCP bundle is older
-      than its sources.
+- [x] CI: the release workflow runs `npm test` on every platform, and fails when the committed MCP
+      bundle differs from a fresh build of its sources.
 
 ### Captures
 - [x] Pipeline statistics queries per pass on Vulkan (`layer/src/pipeline_stats.h`), carrying the
@@ -252,8 +252,8 @@ backend does. Ordered by value per effort.
       draw at a time at the pixel, into copies of its attachments, with a one-pixel scissor,
       visibility results in counting mode, and cull mode and depth-stencil state varied on the
       encoder. The same JSON as `vkinsp_replay --pixel-data`, the same tab, `get_pixel_history`.
-- [ ] Run Metal pixel history on a Mac: the test app's triangle, a pixel of the drawable, a pass
-      that loads, a discard, and a Unity player.
+- [x] Run Metal pixel history on a Mac (2026-09-12).
+- [ ] Metal pixel history on a Unity player, and a pass that loads rather than clears.
 - [ ] Metal pixel history, the rest: multisampled and layered passes, indirect command buffers'
       draws, and writes outside render passes (blits, compute).
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in

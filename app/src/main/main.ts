@@ -51,6 +51,7 @@ let mainWin: BrowserWindow | null = null;
 //               --launch-android=<package> --device=<serial> [--activity=<name>]
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
+//               [--debug-settle=<ms>]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -1321,6 +1322,10 @@ void app.whenReady().then(() => {
           // bytes from the layer) after it opens, and the dump below has to see the result.
           await new Promise((r) => setTimeout(r, 1500));
         }
+        // Testing aid: --debug-settle=<ms> waits before the dump, for work a click set going that
+        // finishes on its own: the pixel history's replay, the overdraw measurement.
+        const settle = Math.min(Number(cliOption("debug-settle")) || 0, 60000);
+        if (settle > 0) await new Promise((r) => setTimeout(r, settle));
         // Testing aid: --debug-dump=<json> writes what the renderer knows (sessions, captures,
         // findings, validation) for tools/ui_tests.py to check.
         const dump = cliOption("debug-dump");

@@ -47,6 +47,8 @@ export interface ImageViewOptions {
   overlay?: ImageOverlay;
   /** Widgets of the owner's own: in the toolbar, and in a row under it (the overdraw controls). */
   extras?: { toolbar?: (bar: Div) => void; row?: (parent: Widget) => void };
+  /** Start at a zoom that fits the pane rather than at 100%, for a view that owns its space. */
+  fit?: boolean;
 }
 
 const CHANNEL_MODES: [string, ChannelMode][] = [["RGB", "rgb"], ["Red", "r"], ["Green", "g"], ["Blue", "b"], ["Alpha", "a"], ["Luminance", "luminance"]];
@@ -96,6 +98,8 @@ export class ImageView {
   private _pixelHistory: ((x: number, y: number, mip: number, layer: number) => void) | null;
   private _onPick: ((x: number, y: number, mip: number, layer: number) => void) | null;
   private _overlay: ImageOverlay | null;
+  /** The owner gives the view its own pane, so a fit zoom fits that rather than the window. */
+  private _fit = false;
   private _extras: ImageViewOptions["extras"];
   private _pinnedTexel: { x: number; y: number } | null = null;
   private _historyButton: Button | null = null;
@@ -117,6 +121,7 @@ export class ImageView {
     this.captured = captured;
     this._pixelHistory = options.pixelHistory ?? null;
     this._onPick = options.onPick ?? null;
+    this._fit = options.fit === true;
     this._overlay = options.overlay ?? null;
     this._extras = options.extras;
     const db = session.database;
@@ -190,7 +195,8 @@ export class ImageView {
 
     let display = displayByImage.get(this.imageId);
     if (!display) {
-      display = { channels: "rgb", exposure: 1, autoRange: isDepth, zoom: 100 };
+      // Zoom 0 fits the pane; a viewer sharing the details pane starts at 100% instead.
+      display = { channels: "rgb", exposure: 1, autoRange: isDepth, zoom: options.fit ? 0 : 100 };
       displayByImage.set(this.imageId, display);
     }
     this._display = display;
@@ -350,6 +356,11 @@ export class ImageView {
     this._draw();
   }
 
+  /** Applies the zoom again, for an owner whose pane changed size (zoom 0 fits it). */
+  refit(): void {
+    this._applyZoom();
+  }
+
   /** Shows the marker on a pixel, as a click does (null clears it). */
   setPicked(pixel: { x: number; y: number } | null): void {
     this._pinnedTexel = pixel;
@@ -457,10 +468,13 @@ export class ImageView {
     if (!c.width) return;
     let zoom = this._display.zoom / 100;
     if (zoom <= 0) {
-      // Fit: scale (up or down) so the image fills the available width or ~60% of the window
-      // height, whichever is reached first. Small textures become visible instead of a dot.
-      const availW = Math.max(64, this._scroll.element.clientWidth - 16);
-      const availH = Math.max(64, window.innerHeight * 0.6);
+      // Fit: scale (up or down) so the image fills the available width or height, whichever is
+      // reached first. Small textures become visible instead of a dot. The height is the pane's
+      // where the view owns one; in the details pane, whose box grows with the image, it is a
+      // share of the window instead, since measuring the box there would feed back on itself.
+      const box = this._scroll.element;
+      const availW = Math.max(64, box.clientWidth - 16);
+      const availH = Math.max(64, this._fit && box.clientHeight > 80 ? box.clientHeight - 16 : window.innerHeight * 0.6);
       zoom = Math.min(availW / c.width, availH / c.height);
     }
     c.style.width = `${Math.max(1, Math.round(c.width * zoom))}px`;
