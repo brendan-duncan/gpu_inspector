@@ -171,7 +171,7 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
   new Div(limits, { text: counterNote, class: "text-muted" });
   if (!metal) {
     new Div(limits, {
-      text: "Two columns are Metal only. The vertex and fragment spans come from timestamps at a pass's stage boundaries, which Vulkan has no portable equivalent for, and depth rejection needs the count of fragments that survived the depth test, which pipeline statistics do not carry.",
+      text: "The vertex and fragment spans are Metal only: they come from timestamps at a pass's stage boundaries, which Vulkan has no portable equivalent for. Depth rejection needs the samples that survived the depth and stencil tests, which the Vulkan layer counts with an occlusion query around each pass (skipped for a pass where the application has a query of its own open).",
       class: "text-muted",
     });
   } else {

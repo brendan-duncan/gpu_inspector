@@ -56,6 +56,7 @@ struct ActivePass {
     uint32_t passIndex = 0;                  // index of this pass within the command buffer
     uint32_t query = UINT32_MAX;             // timestamp query pair (begin, begin + 1) when profiling
     uint32_t statsQuery = UINT32_MAX;        // pipeline statistics query over the pass, when available
+    uint32_t occlusionQuery = UINT32_MAX;    // occlusion query over the pass (samples that passed its tests)
 };
 
 // A run of dispatches outside a render pass, timed as one "compute pass": from the first dispatch
@@ -149,6 +150,10 @@ public:
     // Query pair written by the pass-begin pre-hook, claimed by the pass when it starts.
     uint32_t pendingQuery = UINT32_MAX;
     uint32_t pendingStatsQuery = UINT32_MAX;
+    /** The pass's occlusion query while it is active (capture.h), UINT32_MAX once ended. */
+    uint32_t pendingOcclusionQuery = UINT32_MAX;
+    /** Queries the application has open in this buffer: ours must not nest inside one. */
+    uint32_t appQueryDepth = 0;
 
     VkDevice device() const { return _device; }
     VkCommandBuffer commandBuffer() const { return _commandBuffer; }

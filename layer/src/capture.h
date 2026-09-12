@@ -49,6 +49,8 @@ struct PassTiming {
     bool compute = false;          // a run of dispatches (its own index sequence) rather than a render pass
     uint32_t query = 0;            // begin query; end is query + 1
     uint32_t statsQuery = UINT32_MAX;  // pipeline statistics query over the pass, or none
+    /** Occlusion query over the pass (samples that passed its depth and stencil tests), or none. */
+    uint32_t occlusionQuery = UINT32_MAX;
 };
 
 // One command buffer executed by a submit, with its frozen command list.
@@ -152,6 +154,12 @@ public:
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
     // pass's begin timestamp, which must happen outside the render pass.
     void OnBeforePass(DeviceData* dev, CommandRecorder* rec);
+    /**
+     * Ends the pass's occlusion query early and throws its result away: the application is about to
+     * begin a query of its own, or to execute secondary command buffers, neither of which is valid
+     * while ours is active. The pass keeps its timing and its other counters.
+     */
+    void DropOcclusion(DeviceData* dev, CommandRecorder* rec);
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
@@ -196,6 +204,12 @@ private:
     // device has no such pool. Render passes only: the statistics include graphics stages, which
     // a compute-only queue may not support.
     uint32_t BeginPipelineStatistics(DeviceData* dev, CommandRecorder* rec);
+    /**
+     * An occlusion query over the pass: the samples that survived its depth and stencil tests,
+     * which is what the `late-depth-rejection` rule weighs against the fragments shaded. Skipped
+     * where the application has a query of its own open, since two cannot be active at once.
+     */
+    uint32_t BeginOcclusion(DeviceData* dev, CommandRecorder* rec);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
     struct StagingChunk {
@@ -260,6 +274,9 @@ private:
     VkQueryPool _statsPool = VK_NULL_HANDLE;
     uint32_t _statsCount = 0;
     std::atomic<uint32_t> _statsUsed{0};
+    VkQueryPool _occlusionPool = VK_NULL_HANDLE;
+    uint32_t _occlusionCount = 0;
+    std::atomic<uint32_t> _occlusionUsed{0};
     std::vector<PassTiming> _passTimings;
     std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;

@@ -217,7 +217,9 @@ def triangle_bottlenecks(state, log):
     c = capture(state)
     # The counters the report divides out have to survive the whole path: the layer's query, the
     # protocol, and the UI's pass keying (a pass whose key does not resolve carries no counters).
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect("with counters" in log, "the layer never reported pass counters") +         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters")
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect("with counters" in log, "the layer never reported pass counters") +         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters") +         expect((c.get("passDepthRejection") or 0) >= 1,
+               "no pass carried fragmentsPassed: the layer's occlusion query around each pass "
+               "(layer/src/capture.cpp) is what the late-depth-rejection rule needs")
 
 
 def triangle_overdraw(state, log):

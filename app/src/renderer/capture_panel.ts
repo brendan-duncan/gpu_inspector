@@ -1014,6 +1014,7 @@ export class CaptureView implements CaptureHost {
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
       // Passes whose GPU counters arrived: what the GPU Bottlenecks report is built from.
       passCounters: [...d.passTimings.values()].filter((t) => t.counters && Object.keys(t.counters).length).length,
+      passDepthRejection: [...d.passTimings.values()].filter((t) => typeof t.counters?.fragmentsPassed === "number").length,
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
       renderGraph: d.commands.length ? (() => {
         const g = this.renderGraph();

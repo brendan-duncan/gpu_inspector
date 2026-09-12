@@ -80,12 +80,20 @@ interpreter and re-created pipelines.
 - [x] Pipeline statistics queries per pass on Vulkan (`layer/src/pipeline_stats.h`), carrying the
       same counters Metal's statistic set does, so the GPU Bottlenecks report and its rules work
       for Vulkan captures too.
-- [ ] Depth rejection on Vulkan: an occlusion query around each pass counts the samples that
-      passed the depth and stencil tests, which is what `late-depth-rejection` needs. It nests
-      badly with an application's own occlusion queries, so the layer would have to track whether
-      one is active and skip those passes.
-- [ ] Multisampled stencil read-back (the depth resolve covers the depth aspect; stencil would
-      need a stencil resolve attachment), and multisampled read-back on Vulkan 1.0 devices.
+- [x] Depth rejection on Vulkan: the layer runs a precise occlusion query around each render pass
+      (`layer/src/capture.cpp`), counting the samples that passed its depth and stencil tests
+      (`fragmentsPassed`, Metal's name for the same figure), so `late-depth-rejection` and the
+      report's depth rejection column work for Vulkan captures. A pass whose command buffer has an
+      application query open is skipped, and the query ends early (dropping that pass's count) when
+      one begins or a secondary command buffer runs inside the pass.
+- [x] Multisampled stencil read-back: the resolve carries both aspects of a depth-stencil image,
+      with the same resolve mode so a device without `independentResolve` can still do it. Untested:
+      no test application has a multisampled stencil attachment.
+- [ ] Read back the stencil aspect of a depth-stencil image (only depth is read back today), which
+      is what would put the stencil resolve above to use.
+- [ ] Multisampled read-back on Vulkan 1.0 devices: the depth/stencil resolve needs dynamic
+      rendering (core 1.3, `VK_KHR_dynamic_rendering` on 1.2), so a 1.0 device would need a
+      shader-based resolve of sample zero instead.
 - [ ] Sampled images bound through descriptor buffers / shader objects.
 
 ### Inspect

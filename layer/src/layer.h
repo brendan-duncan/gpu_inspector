@@ -64,6 +64,8 @@ struct DeviceData {
     bool dynamicRendering = false;
     /** pipelineStatisticsQuery is enabled, so passes can carry counters (pipeline_stats.h). */
     bool pipelineStatistics = false;
+    /** occlusionQueryPrecise is enabled, so a pass can count the samples that passed its tests. */
+    bool occlusionPrecise = false;
 
     // Frame boundaries (EndFrame in layer.cpp): a swapchain present ends a frame. An application
     // that never presents (OpenXR: the runtime composites) gets its frames from its own

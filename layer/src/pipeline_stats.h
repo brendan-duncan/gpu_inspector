@@ -43,13 +43,18 @@ struct PipelineStatisticsSetup {
     VkPhysicalDeviceFeatures features{};
     /** Our copy of its VkPhysicalDeviceFeatures2, when it chained one instead. */
     VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    bool enabled = false;   // the device will have the feature (the layer's doing, or the application's)
+    bool enabled = false;   // the device will have pipelineStatisticsQuery (ours or the application's)
+    /**
+     * The device will have occlusionQueryPrecise, so a pass's occlusion query counts the samples
+     * that passed its depth and stencil tests rather than answering "any" (`fragmentsPassed`).
+     */
+    bool occlusion = false;
     bool added = false;     // the layer changed the create info
 };
 
 /**
- * Enables `pipelineStatisticsQuery` on a device being created, or notes that the application
- * enables it itself. `info` is the layer's copy of the application's create info.
+ * Enables `pipelineStatisticsQuery` and `occlusionQueryPrecise` on a device being created, or notes
+ * that the application enables them itself. `info` is the layer's copy of its create info.
  */
 void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
                             VkDeviceCreateInfo& info, PipelineStatisticsSetup& setup);

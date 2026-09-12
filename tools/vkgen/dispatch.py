@@ -157,6 +157,13 @@ PRE_HOOKS = {
     "vkCmdWaitEvents2",
     "vkCmdWaitEvents2KHR",
     "vkCmdExecuteCommands",
+    # depth rejection: the layer's occlusion query over a pass must not nest inside the
+    # application's own queries, and a secondary executed while it is active would need
+    # occlusionQueryEnable (see CaptureManager::DropOcclusion)
+    "vkCmdBeginQuery",
+    "vkCmdBeginQueryIndexedEXT",
+    "vkCmdEndQuery",
+    "vkCmdEndQueryIndexedEXT",
     "vkEndCommandBuffer",
     "vkCmdBeginDebugUtilsLabelEXT",
     "vkCmdEndDebugUtilsLabelEXT",

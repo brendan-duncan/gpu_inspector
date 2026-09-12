@@ -37,8 +37,8 @@ void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
 
     VkPhysicalDeviceFeatures supported{};
     inst->dispatch.GetPhysicalDeviceFeatures(physicalDevice, &supported);
-    if (!supported.pipelineStatisticsQuery) {
-        Log("pass counters: the device does not support pipelineStatisticsQuery");
+    if (!supported.pipelineStatisticsQuery && !supported.occlusionQueryPrecise) {
+        Log("pass counters: the device supports neither pipelineStatisticsQuery nor occlusionQueryPrecise");
         return;
     }
     // A query active across a multiview render pass writes one result per view and so needs that
@@ -50,37 +50,43 @@ void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
         return;
     }
 
+    // Two features, each wanted and each maybe already on: `pipelineStatisticsQuery` for the pass
+    // counters, `occlusionQueryPrecise` for the samples that passed the depth and stencil tests.
+    const VkPhysicalDeviceFeatures* appFeatures = nullptr;
+    const VkBaseInStructure* found = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+    if (found) appFeatures = &((const VkPhysicalDeviceFeatures2*)found)->features;
+    else if (info.pEnabledFeatures) appFeatures = info.pEnabledFeatures;
+    const bool hasStats = appFeatures && appFeatures->pipelineStatisticsQuery;
+    const bool hasOcclusion = appFeatures && appFeatures->occlusionQueryPrecise;
+    const bool wantStats = supported.pipelineStatisticsQuery && !hasStats;
+    const bool wantOcclusion = supported.occlusionQueryPrecise && !hasOcclusion;
+    setup.enabled = hasStats || wantStats;
+    setup.occlusion = hasOcclusion || wantOcclusion;
+    if (!wantStats && !wantOcclusion) return;   // the application already enables what is wanted
+
     // An application that chains VkPhysicalDeviceFeatures2 must not also pass pEnabledFeatures,
     // so the two cases below are exclusive.
-    if (const VkBaseInStructure* found = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)) {
-        const auto* app = (const VkPhysicalDeviceFeatures2*)found;
-        if (app->features.pipelineStatisticsQuery) {
-            setup.enabled = true;
-            return;
-        }
+    if (found) {
         // Only replaceable at the head of the chain. Deeper, the node pointing at it belongs to
         // the application, and writing our copy's address into it would change what it sees.
         if ((const void*)found != info.pNext) {
             Log("pass counters: VkPhysicalDeviceFeatures2 is not at the head of the chain; skipped");
+            setup.enabled = hasStats;
+            setup.occlusion = hasOcclusion;
             return;
         }
-        setup.features2 = *app;
-        setup.features2.features.pipelineStatisticsQuery = VK_TRUE;
+        setup.features2 = *(const VkPhysicalDeviceFeatures2*)found;
+        if (wantStats) setup.features2.features.pipelineStatisticsQuery = VK_TRUE;
+        if (wantOcclusion) setup.features2.features.occlusionQueryPrecise = VK_TRUE;
         info.pNext = &setup.features2;
     } else {
-        if (info.pEnabledFeatures) {
-            if (info.pEnabledFeatures->pipelineStatisticsQuery) {
-                setup.enabled = true;
-                return;
-            }
-            setup.features = *info.pEnabledFeatures;
-        }
-        setup.features.pipelineStatisticsQuery = VK_TRUE;
+        if (info.pEnabledFeatures) setup.features = *info.pEnabledFeatures;
+        if (wantStats) setup.features.pipelineStatisticsQuery = VK_TRUE;
+        if (wantOcclusion) setup.features.occlusionQueryPrecise = VK_TRUE;
         info.pEnabledFeatures = &setup.features;
     }
-    setup.enabled = true;
     setup.added = true;
-    Log("pass counters: enabling pipelineStatisticsQuery");
+    Log("pass counters: enabling%s%s", wantStats ? " pipelineStatisticsQuery" : "", wantOcclusion ? " occlusionQueryPrecise" : "");
 }
 
 } // namespace vkinsp

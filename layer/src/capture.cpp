@@ -372,6 +372,22 @@ void CaptureManager::EnsureQueryPool(DeviceData* dev) {
         return;
     }
     _statsCount = sci.queryCount;
+
+    // The samples that passed each pass's depth and stencil tests, for the depth-rejection rule.
+    // Precise counts need occlusionQueryPrecise; without it the query would only answer "any".
+    if (!dev->occlusionPrecise) {
+        Log("depth rejection: occlusionQueryPrecise is not enabled on this device");
+        return;
+    }
+    VkQueryPoolCreateInfo oci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    oci.queryType = VK_QUERY_TYPE_OCCLUSION;
+    oci.queryCount = 8192;                        // one per pass, matching the statistics queries
+    if (dev->dispatch.CreateQueryPool(dev->device, &oci, nullptr, &_occlusionPool) != VK_SUCCESS) {
+        _occlusionPool = VK_NULL_HANDLE;
+        Log("depth rejection: vkCreateQueryPool failed");
+        return;
+    }
+    _occlusionCount = oci.queryCount;
 }
 
 void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
@@ -380,12 +396,15 @@ void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
     if (d) {
         d->dispatch.DestroyQueryPool(_queryDevice, _queryPool, nullptr);
         if (_statsPool) d->dispatch.DestroyQueryPool(_queryDevice, _statsPool, nullptr);
+        if (_occlusionPool) d->dispatch.DestroyQueryPool(_queryDevice, _occlusionPool, nullptr);
     }
     _queryPool = VK_NULL_HANDLE;
     _queryDevice = VK_NULL_HANDLE;
     _queryCount = 0;
     _statsPool = VK_NULL_HANDLE;
     _statsCount = 0;
+    _occlusionPool = VK_NULL_HANDLE;
+    _occlusionCount = 0;
 }
 
 uint32_t CaptureManager::BeginTimestamp(DeviceData* dev, CommandRecorder* rec) {
@@ -413,12 +432,34 @@ uint32_t CaptureManager::BeginPipelineStatistics(DeviceData* dev, CommandRecorde
     return q;
 }
 
+uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
+    if (!_occlusionPool || _queryDevice != dev->device) return UINT32_MAX;
+    if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
+    // Two occlusion queries cannot be active at once, and the application's come first.
+    if (rec->appQueryDepth) return UINT32_MAX;
+    uint32_t q = _occlusionUsed.fetch_add(1, std::memory_order_relaxed);
+    if (q >= _occlusionCount) return UINT32_MAX;        // pool exhausted: later passes go uncounted
+    VkCommandBuffer cb = rec->commandBuffer();
+    dev->dispatch.CmdResetQueryPool(cb, _occlusionPool, q, 1);
+    dev->dispatch.CmdBeginQuery(cb, _occlusionPool, q, VK_QUERY_CONTROL_PRECISE_BIT);
+    rec->pendingOcclusionQuery = q;
+    return q;
+}
+
+void CaptureManager::DropOcclusion(DeviceData* dev, CommandRecorder* rec) {
+    if (rec->pendingOcclusionQuery == UINT32_MAX || !_occlusionPool || _queryDevice != dev->device) return;
+    dev->dispatch.CmdEndQuery(rec->commandBuffer(), _occlusionPool, rec->pendingOcclusionQuery);
+    rec->pendingOcclusionQuery = UINT32_MAX;
+    rec->pass().occlusionQuery = UINT32_MAX;   // the pass reports no count rather than a partial one
+}
+
 void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
     OnEndComputePass(dev, rec);
     rec->pendingQuery = BeginTimestamp(dev, rec);
     // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
     // report shows the counters against the pass's duration.
     rec->pendingStatsQuery = rec->pendingQuery == UINT32_MAX ? UINT32_MAX : BeginPipelineStatistics(dev, rec);
+    if (rec->pendingQuery != UINT32_MAX) BeginOcclusion(dev, rec);
 }
 
 void CaptureManager::OnBeforeDispatch(DeviceData* dev, CommandRecorder* rec) {
@@ -454,6 +495,7 @@ void CaptureManager::OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, co
     p.passIndex = rec->NextPassIndex();
     p.query = rec->pendingQuery;
     p.statsQuery = rec->pendingStatsQuery;
+    p.occlusionQuery = rec->pendingOcclusionQuery;
     rec->pendingQuery = UINT32_MAX;
     rec->pendingStatsQuery = UINT32_MAX;
 
@@ -492,6 +534,7 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
     p.passIndex = rec->NextPassIndex();
     p.query = rec->pendingQuery;
     p.statsQuery = rec->pendingStatsQuery;
+    p.occlusionQuery = rec->pendingOcclusionQuery;
     rec->pendingQuery = UINT32_MAX;
     rec->pendingStatsQuery = UINT32_MAX;
     auto add = [&](const VkRenderingAttachmentInfo* a) {
@@ -525,6 +568,12 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     rec->passes().push_back({p.attachments, p.layouts, p.resolveViews, p.resolveLayouts, p.passIndex, p.layerCount, readBack});
     p.active = false;
     // The pass's end timestamp: after every command of the pass has completed.
+    // The occlusion query, unless it was dropped when the application opened one of its own.
+    const uint32_t occlusion = rec->pendingOcclusionQuery;
+    if (occlusion != UINT32_MAX && _occlusionPool && _queryDevice == dev->device) {
+        dev->dispatch.CmdEndQuery(rec->commandBuffer(), _occlusionPool, occlusion);
+        rec->pendingOcclusionQuery = UINT32_MAX;
+    }
     if (p.query != UINT32_MAX && _queryPool && _queryDevice == dev->device) {
         dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, p.query + 1);
         if (p.statsQuery != UINT32_MAX && _statsPool) dev->dispatch.CmdEndQuery(rec->commandBuffer(), _statsPool, p.statsQuery);
@@ -533,6 +582,7 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
         pt.passIndex = p.passIndex;
         pt.query = p.query;
         pt.statsQuery = p.statsQuery;
+        pt.occlusionQuery = occlusion;
         std::lock_guard lock(_mutex);
         _passTimings.push_back(pt);
     } else if (p.statsQuery != UINT32_MAX && _statsPool && _queryDevice == dev->device) {
@@ -1373,6 +1423,24 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         }
     }
 
+    // The samples that passed each pass's depth and stencil tests: one value and its availability.
+    std::vector<uint64_t> occlusion;
+    uint32_t occlusionUsed = 0;
+    if (_occlusionPool) {
+        occlusionUsed = std::min(_occlusionUsed.load(std::memory_order_relaxed), _occlusionCount);
+        if (occlusionUsed) {
+            occlusion.assign((size_t)occlusionUsed * 2, 0);
+            VkResult ores = dev->dispatch.GetQueryPoolResults(
+                dev->device, _occlusionPool, 0, occlusionUsed, occlusion.size() * sizeof(uint64_t), occlusion.data(),
+                2 * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (ores != VK_SUCCESS && ores != VK_NOT_READY) {
+                Log("depth rejection: vkGetQueryPoolResults failed (%d)", (int)ores);
+                occlusion.clear();
+                occlusionUsed = 0;
+            }
+        }
+    }
+
     const double period = dev->properties.limits.timestampPeriod;   // nanoseconds per tick
     uint64_t earliest = UINT64_MAX;
     for (auto& pt : timings) {
@@ -1400,17 +1468,26 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         w.Key("kind"); w.String(pt.compute ? "compute" : "render");
         w.Key("startMs"); w.Double((double)(begin - earliest) * period / 1e6);
         w.Key("durationMs"); w.Double((double)(end - begin) * period / 1e6);
-        if (pt.statsQuery != UINT32_MAX && pt.statsQuery < statsUsed && !stats.empty()) {
-            const uint64_t* v = &stats[(size_t)pt.statsQuery * kStatsStride];
-            if (v[kPipelineStatisticCount]) {   // the pass ran and its counters are readable
-                w.Key("counters"); w.BeginObject();
+        const uint64_t* v = pt.statsQuery != UINT32_MAX && pt.statsQuery < statsUsed && !stats.empty()
+                          ? &stats[(size_t)pt.statsQuery * kStatsStride] : nullptr;
+        const bool hasStats = v && v[kPipelineStatisticCount];   // the pass ran and its counters are readable
+        const bool hasOcclusion = pt.occlusionQuery != UINT32_MAX && pt.occlusionQuery < occlusionUsed
+                               && !occlusion.empty() && occlusion[(size_t)pt.occlusionQuery * 2 + 1];
+        if (hasStats || hasOcclusion) {
+            w.Key("counters"); w.BeginObject();
+            if (hasStats) {
                 for (uint32_t i = 0; i < kPipelineStatisticCount; ++i) {
                     w.Key(kPipelineStatisticNames[i]);
                     w.Uint(v[i]);
                 }
-                w.EndObject();
-                counted++;
             }
+            // The Metal library's name for the same quantity: samples that survived the tests.
+            if (hasOcclusion) {
+                w.Key("fragmentsPassed");
+                w.Uint(occlusion[(size_t)pt.occlusionQuery * 2]);
+            }
+            w.EndObject();
+            counted++;
         }
         w.EndObject();
         sent++;

@@ -10,11 +10,12 @@ compare.
 
 **Vulkan and Metal.** Almost all of this works for both. The Metal library samples Metal's counter
 sets around every pass and the Vulkan layer a pipeline statistics query beside its timestamps, so
-overdraw, fragments per primitive and the geometry counts come out of either. Two measurements are
-Metal only and are marked where they appear: the vertex and fragment spans of a pass, which need
-timestamps at its stage boundaries and have no portable Vulkan equivalent, and depth rejection,
-which needs the count of fragments that survived the depth test — Metal's statistic set has it and
-Vulkan's pipeline statistics do not.
+overdraw, fragments per primitive and the geometry counts come out of either. Depth rejection needs
+the fragments that survived the depth and stencil tests: Metal's statistic set has that, and the
+Vulkan layer counts it with an occlusion query around each pass (skipped for a pass where the
+application has a query of its own open, since two cannot be active at once). One measurement is
+Metal only and is marked where it appears: the vertex and fragment spans of a pass, which need
+timestamps at its stage boundaries and have no portable Vulkan equivalent.
 
 On Vulkan the counters need the `pipelineStatisticsQuery` device feature, which an application
 that does not profile itself has no reason to enable. The layer adds it at device creation, and
@@ -101,9 +102,8 @@ which one can afford it.
 
 ## Step 4b: a fragment-bound pass
 
-This is the more common case, and there are three measurements that name the cause. The first two
-come from the GPU counters either backend samples; the third, depth rejection, is Metal only (see
-*What cannot be measured here* below).
+This is the more common case, and there are three measurements that name the cause, all from the
+counters either backend samples.
 
 ### Overdraw
 
@@ -134,7 +134,7 @@ or a mesh authored for a close-up used everywhere. The fix is mesh level of deta
 objects that have become smaller than their own triangles. It is not a shader problem, and making
 the shader cheaper will not help much.
 
-### Depth rejection (Metal only)
+### Depth rejection
 
 **Depth reject** is the share of shaded fragments that the depth and stencil tests threw away. A
 high number is *healthy*: it means the depth test is doing its job and rejecting work early.
@@ -155,8 +155,7 @@ go back to the overdraw section.
 
 **Reports → Frame Stats** ends with **Frame Issues**: rules over the whole capture, each linked to
 the command that raised it. The ones that bear on GPU cost, in the order they usually matter.
-`late-depth-rejection` is Metal only; the rest apply to both APIs, sometimes under a slightly
-different name:
+They apply to both APIs, sometimes under a slightly different name:
 
 | Rule | What it means |
 |---|---|
@@ -216,7 +215,7 @@ when a capture is taken.
 | Vertex versus fragment span | GPU Bottlenecks | — | whichever is 1.3x the other |
 | Overdraw | GPU Bottlenecks | about 1.2 | above 2 |
 | Fragments per primitive | GPU Bottlenecks | above 4 | below 4 |
-| Depth rejection (Metal) | GPU Bottlenecks | high | below 25% with overdraw above 1.5 |
+| Depth rejection | GPU Bottlenecks | high | below 25% with overdraw above 1.5 |
 | Sampled texture without mips | Frame Issues | — | 1 megapixel and up |
 | Draws of very few vertices | Frame Issues | — | 32 draws of 12 vertices or fewer |
 
