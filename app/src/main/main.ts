@@ -1118,6 +1118,12 @@ ipcMain.handle("inspector:measureDraws", async (_e, opts: { data: Uint8Array; na
   if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
   return replayBytes(tool, opts.data, { kind: "draws" }, opts.name);
 });
+// Vulkan draw-call overlays: where some draws landed, drawn again on their own (replay/src/overlay.cpp).
+ipcMain.handle("inspector:drawOverlay", async (_e, opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<ReplayRun> => {
+  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
+  return replayBytes(tool, opts.data, { kind: "overlay", commands: opts.commands }, opts.name);
+});
 // Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", async (_e, opts: { data: Uint8Array; name?: string; pixel: PixelRequest }): Promise<ReplayRun> => {
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);

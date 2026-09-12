@@ -101,6 +101,21 @@ The counting shader does not discard, so fragments the real shader would have th
 still counted and alpha-tested geometry counts as opaque. A multiview pass is counted in its first
 view only.
 
+## Draw-call overlays
+
+Where one draw landed, over its pass's render target: pick **Highlight Draw**, **Depth Test** or
+**Wireframe** from the render target tab's overlay list, or press **Highlight Draw** under a draw's
+render targets. The draw list beside it steps through the pass's draws.
+
+- **Highlight Draw** — the draw's pixels in a flat colour, the rest of the image darkened.
+- **Depth Test** — green where the draw's fragments passed the depth and stencil tests, red where
+  they were rejected.
+- **Wireframe** — the draw's triangles as lines.
+
+Vulkan only: the capture is replayed on this machine's GPU with the draw drawn on its own (see
+[Capture replay](REPLAY.md#draw-call-overlays)). As with overdraw, a fragment the draw's own shader
+discards still shows as covered.
+
 ## Pixel history
 
 Open a render target in a tab of its own and click a pixel. The **Pixel History** pane beside it

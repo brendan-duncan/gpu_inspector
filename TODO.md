@@ -182,8 +182,11 @@ application with injected state. Route (a) is the general one and is the prerequ
       history of the pixel clicked beside the image.
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
-- [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays
-      (`vk_overlay.cpp`).
+- [x] Draw-call overlays (`vkinsp_replay --overlay`, `replay/src/overlay.cpp`): highlight draw,
+      depth test and wireframe in the render target tab, for any draw of the pass.
+- [ ] Draw overlays, the rest: stencil apart from depth, backface cull, viewport/scissor,
+      NaN/INF, clipping, triangle size and quad overdraw (RenderDoc's other overlays); discarded
+      fragments; `get_draw_overlay` in the MCP server.
 - [x] Per-draw GPU timing and counters via replay with timestamp and pipeline-statistics queries
       (`replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
       dispatch timed and counted, kept in capture files, read by the Shader Flame Graph.

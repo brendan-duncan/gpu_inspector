@@ -129,6 +129,10 @@ struct App {
     // draw reads it, so synchronization validation reports the hazard at vkQueueSubmit (a
     // hazard against the previous frame would not do: a capture waits for the GPU first).
     bool hazard = false;
+    // --occluded: the cube is drawn a second time where it already is, so every fragment of the
+    // second draw fails the depth test (LESS against its own depth): the inspector's depth test
+    // overlay has a draw that is all rejected.
+    bool occluded = false;
     // --prerecord: record one command buffer per swapchain image up front and resubmit them
     // every frame (the tint and the wave then stand still), like engines with static command
     // buffers; a capture needs the inspector's "Record all command buffers".
@@ -1044,6 +1048,7 @@ struct App {
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
+        if (occluded) vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
         vkCmdEndRenderPass(cb);
         if (endLabel) endLabel(cb);
         CHECK(vkEndCommandBuffer(cb));
@@ -1233,6 +1238,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
+        else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen")) {

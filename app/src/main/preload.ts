@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("inspector", {
   measureOverdraw: (opts: unknown) => ipcRenderer.invoke("inspector:measureOverdraw", opts),
   pixelHistory: (opts: unknown) => ipcRenderer.invoke("inspector:pixelHistory", opts),
   measureDraws: (opts: unknown) => ipcRenderer.invoke("inspector:measureDraws", opts),
+  drawOverlay: (opts: unknown) => ipcRenderer.invoke("inspector:drawOverlay", opts),
   symbolize: (frames: unknown, dirs: unknown) => ipcRenderer.invoke("inspector:symbolize", frames, dirs),
   shaderSource: (names: unknown, roots: unknown) => ipcRenderer.invoke("inspector:shaderSource", names, roots),
   openCaptureInMain: (path: string) => ipcRenderer.invoke("inspector:openCaptureInMain", path),

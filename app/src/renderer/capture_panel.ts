@@ -37,6 +37,8 @@ import {
   type OverdrawPassKey,
 } from "./overdraw.js";
 import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
+import { parseDrawOverlayFile, type DrawOverlay } from "./draw_overlay.js";
+import { findPass } from "./draw_state.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
@@ -88,6 +90,8 @@ const ICON_BOTTLENECK = '<svg viewBox="0 0 16 16"><path d="M2.2 12a6.4 6.4 0 0 1
 /** Nodes joined by edges: the pass dependency graph. */
 const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="3.8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="12.2" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.4 7.2 10.6 4.6M5.4 8.8l5.2 2.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 
+/** Draw overlays: a pass with this many draws or fewer has all of them drawn in the replay the first one needs. */
+const OVERLAY_BATCH = 48;
 /** Stacked squares: fragments landing on the same pixels. */
 const ICON_OVERDRAW = '<svg viewBox="0 0 16 16"><rect x="2" y="6.5" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="4.25" y="4.25" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="6.5" y="2" width="7.5" height="7.5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3"/></svg>';
 
@@ -373,6 +377,8 @@ export class CapturePanel {
       storedHistory: (request) => view.hasPixelHistory(request),
       captureHistory: (request) => this._captureWithPixelHistory(request),
       measureOverdraw: () => view.measureOverdraw(),
+      drawsOfPass: (k) => view.drawsOfPass(k),
+      drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
     }, target, options);
     this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
   }
@@ -564,6 +570,8 @@ export class CaptureView implements CaptureHost {
   private _overdrawRun: { running: boolean; error?: string } | null = null;
   /** Vulkan: the replay measuring the frame's draws, while it runs or after it failed. */
   private _drawRun: { running: boolean; error?: string } | null = null;
+  /** Replays under way for draw overlays, by each draw they will answer for. */
+  private _overlayRuns = new Map<number, Promise<void>>();
 
   private _listPanel: Div;
   private _infoPanel: Div;
@@ -1322,6 +1330,16 @@ export class CaptureView implements CaptureHost {
     else if (name === "stats") this._showStats();
     else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
     else if (name === "overdraw") void this.openOverdraw();
+    else if (name.startsWith("overlay")) {
+      // Testing aid (--debug-view=overlay[:<kind>[:<command>|last]]): a draw overlay, on the first draw of a
+      // pass with a render target unless a command (or the last such draw) is named.
+      const [, kind = "highlight", at] = name.split(":");
+      const overlay = kind === "depth" || kind === "wireframe" ? kind : "highlight";
+      const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this._targetOfDraw(c));
+      const draw = at === "last" ? drawn[drawn.length - 1] : at !== undefined ? this.data.commands[Number(at)] : drawn[0];
+      if (draw) this.openDrawOverlay(draw, overlay);
+      else this._setStatus("no draw of this capture is in a pass with a render target");
+    }
     else if (name === "pixel-history") {
       // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
       // centre of the first colour render target.
@@ -1352,6 +1370,68 @@ export class CaptureView implements CaptureHost {
     const textures = this.data.texturesForPass(key.frame, key.commandBuffer, key.passIndex);
     const tex = textures.find((t) => t.info.aspect === "color" && !t.info.resolve && !t.info.error) ?? textures[0];
     return tex ? { key, texture: tex } : null;
+  }
+
+  /** The render target a draw's overlay is drawn over: its pass's first colour target. */
+  private _targetOfDraw(cmd: CaptureCommand): CaptureTarget | null {
+    const pass = findPass(this.data, cmd);
+    if (!pass) return null;
+    return this._targetOfPass({ frame: cmd.frame ?? 0, commandBuffer: pass.passBegin.object?.__id ?? 0, passIndex: pass.passIndex });
+  }
+
+  /** Opens the render target tab with a draw overlay on a draw (Highlight Draw in a draw's render targets). */
+  openDrawOverlay(cmd: CaptureCommand, overlay: "highlight" | "depth" | "wireframe", target?: CaptureTarget): void {
+    const t = target ?? this._targetOfDraw(cmd);
+    if (!t) {
+      this._setStatus("the draw's pass has no render target read back, so there is nothing to draw the overlay over");
+      return;
+    }
+    this.onOpenTexture.emit(t, { overlay, draw: cmd.index });
+  }
+
+  /** A pass's draws, in command order: those of its secondary command buffers included. */
+  drawsOfPass(key: OverdrawPassKey): CaptureCommand[] {
+    const pass = collectPassMetrics(this.data, this.window.database).passes
+      .find((p) => !p.compute && p.frame === key.frame && p.commandBuffer === key.commandBuffer && p.passIndex === key.passIndex);
+    if (!pass) return [];
+    const sets = this.data.sets;
+    return this.data.commands.slice(pass.commandIndex, pass.endIndex + 1).filter((c) => sets.DRAW.has(c.method));
+  }
+
+  /**
+   * Vulkan: replays the capture drawing one draw on its own (replay/src/overlay.cpp) for the render
+   * target tab's draw overlays. A pass with few draws has them all drawn in the same replay, so
+   * stepping through them afterwards needs no more.
+   */
+  async drawOverlay(command: number, passDraws: CaptureCommand[] = []): Promise<DrawOverlay> {
+    const have = (): DrawOverlay | undefined => this.data.drawOverlays.get(command);
+    if (!have()) {
+      let run = this._overlayRuns.get(command);
+      if (!run) {
+        const batch = passDraws.length <= OVERLAY_BATCH ? passDraws.map((c) => c.index) : [];
+        const commands = [...new Set([command, ...batch])].filter((c) => !this.data.drawOverlays.has(c) && !this._overlayRuns.has(c));
+        run = this._runDrawOverlays(commands);
+        for (const c of commands) this._overlayRuns.set(c, run);
+      }
+      await run;
+    }
+    const o = have();
+    if (!o) throw new Error(`the replay did not answer for draw #${command}`);
+    return o;
+  }
+
+  private async _runDrawOverlays(commands: number[]): Promise<void> {
+    this._setStatus(`draw overlay: replaying the capture for ${commands.length === 1 ? `draw #${commands[0]}` : `${commands.length} draws`}...`);
+    try {
+      const bytes = await this._replayBytes();
+      const result = await window.inspector.drawOverlay({ data: bytes, name: this.label, commands });
+      if (!result.data) throw new Error(result.error ?? "the replay wrote no overlay");
+      for (const d of parseDrawOverlayFile(result.data).draws) this.data.drawOverlays.set(d.command, d);
+      this.data.onDrawOverlays.emit();
+    } finally {
+      for (const c of commands) this._overlayRuns.delete(c);
+      this._updateStatus();
+    }
   }
 
   /** Opens the render target tab following one pixel (a click in an image viewer, or Metal's own history). */
@@ -1525,14 +1605,16 @@ export class CaptureView implements CaptureHost {
   // ---------------------------------------------------------------------------------------
   // Render targets
 
-  renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void {
+  renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number, command?: CaptureCommand): void {
     const textures = this.data.texturesForPass(frame, commandBufferId, passIndex);
     const grp = new collapsible(container, { label: `Render Targets (${textures.length})`, collapsed: false });
     if (!textures.length) {
       new Div(grp.body, { text: "No render target data for this pass (pre-recorded command buffer, or readback disabled).", class: "text-muted", style: "padding: 6px;" });
     } else {
       const strip = new Div(grp.body, { class: "capture_frameImages" });
-      for (const tex of textures) this._renderTexture(strip, tex);
+      // A Vulkan draw's targets can show where it landed (replayed); a Metal capture has no replay to draw it with.
+      const draw = command && this.data.api !== "metal" && this.data.sets.DRAW.has(command.method) ? command : undefined;
+      for (const tex of textures) this._renderTexture(strip, tex, draw);
     }
     this._renderPassOverdraw(container, frame, commandBufferId, passIndex);
   }
@@ -1600,7 +1682,7 @@ export class CaptureView implements CaptureHost {
       callback: () => void this.measureOverdraw(key) });
   }
 
-  private _renderTexture(parent: Widget, tex: CapturedTexture): void {
+  private _renderTexture(parent: Widget, tex: CapturedTexture, draw?: CaptureCommand): void {
     const db = this.window.database;
     const image = db.getObject(tex.info.id);
     const box = new Div(parent, { class: "capture_pass_texture" });
@@ -1616,6 +1698,12 @@ export class CaptureView implements CaptureHost {
       new Button(box, { label: "Open in Tab", class: "btn btn-sm",
         tooltip: "The render target in a tab of its own: zoom, the pass's overdraw over it, and the history of any pixel you click",
         callback: () => this.onOpenTexture.emit({ key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex }, {}) });
+      if (draw) {
+        new Button(box, { label: "Highlight Draw", class: "btn btn-sm",
+          tooltip: "The render target in its tab with this draw's pixels highlighted (replays the capture); Depth Test and Wireframe are in the tab's Overlay list",
+          callback: () => this.openDrawOverlay(draw, "highlight",
+            { key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex }) });
+      }
     }
     const canvas = this._textureCanvas(tex, "capture-texture-canvas");
     canvas.title = "Click to open in the image viewer (zoom, channels, exposure, texel values)";

@@ -42,6 +42,7 @@ add_executable(vkinsp_replay
     src/replayer.h
     src/replayer.cpp
     src/overdraw.cpp
+    src/overlay.cpp
     src/history.cpp
     src/draw_stats.cpp
     src/pipeline_copy.cpp

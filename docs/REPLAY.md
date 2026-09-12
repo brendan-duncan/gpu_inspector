@@ -4,12 +4,13 @@
 
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the basis for the analyses that have to run a frame again with something
-changed: the overdraw heatmap, pixel history, and later per-draw timing and shader debugging
-(TODO.md, "Replay-based features").
+changed: the overdraw heatmap, pixel history, draw-call overlays, per-draw timing, and later shader
+debugging (TODO.md, "Replay-based features").
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
-              [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]] [--trace]
+              [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]
+              [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 ```
 
@@ -38,6 +39,10 @@ vkinsp_replay <capture.gpucap> --check
   draws that do not reach the pixel, with its sample counts and the texels after it as hex in the
   formats the file names. GPU Inspector's pixel history pane runs the tool this way, and so does the
   MCP server's `get_pixel_history`.
+- **`--overlay <command>`:** draws one draw of the frame on its own (repeat it for several), for
+  the highlight, depth test and wireframe overlays (see [Draw-call overlays](#draw-call-overlays)).
+- **`--overlay-data <file>`:** with `--overlay`, writes each draw's mask in `--overdraw-data`'s
+  layout (`OVERLAY 1`, one byte per pixel). GPU Inspector's render target tab runs the tool this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
   be rebuilt.
 
@@ -142,6 +147,37 @@ pass again right after the application ends its encoder, with the application's 
 The pipeline copies of overdraw and pixel history are made by `pipeline_copy.cpp`: the captured
 create info is decoded, its shader stages rebuilt from the capture's SPIR-V, and an edit changes
 the state before the copy is created.
+
+## Draw-call overlays
+
+`--overlay <command>` shows where one draw landed, the way RenderDoc's texture viewer overlays do
+(`vk_overlay.cpp`). It is recorded right after the replay has executed the draw's pass, like
+overdraw, and `overlay.cpp` issues the pass again into an `R16_SFLOAT` target up to and including
+the draw, three times:
+
+- **Rasterized:** the draw alone, with the counting fragment shader and no depth or stencil tests.
+- **Passed:** from a copy of the depth the pass started with, the pass's earlier draws move the
+  depth and stencil without writing colour, then the draw runs with its own tests.
+- **Wireframe:** the draw alone with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid`
+  feature the replay adds to its device.
+
+The three fold into one byte per pixel: bit 0 rasterized, bit 1 passed depth and stencil, bit 2 an
+edge. Each draw also reports its fragments and its covered, passed and rejected pixels:
+
+```
+vkinsp_replay frame.gpucap --overlay 18
+draw overlays: 1
+  [18] vkCmdDrawIndexed (command buffer 7, pass 0): 51076 fragments on 51076 of 307200 pixels (16.63%); 0 passed depth and stencil, 51076 rejected, wireframe drawn
+```
+
+That is the triangle's `--occluded` mode, which draws the cube a second time where it already is,
+so every fragment of the second draw fails its `LESS` depth test.
+
+Limits:
+- A fragment the draw's own shader discards shows as covered and, when nothing else rejects it,
+  passed. On a Unity frame the text quads show 3,480 fragments passing, while the draw's occlusion
+  query (`--draws`) counts 2,089 samples: the rest were alpha-discarded.
+- A pass the replay leaves out, and a draw whose pipeline cannot be copied, have no overlay.
 
 ## Pixel history
 
@@ -266,10 +302,11 @@ These cases differ for known reasons:
    - Multisampled images.
    - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
    - Early fragment tests.
-3. **Speed.** Both analyses are already wired into the app and the MCP server: the capture's
-   render target tab draws the overdraw over the image and follows the pixel you click beside it,
-   with `get_overdraw` and `get_pixel_history` for Claude. But each pixel replays the whole frame
-   again; keeping one replay process alive between requests would make it quicker.
+3. **Speed.** The analyses are already wired into the app and the MCP server: the capture's
+   render target tab draws the overdraw or a draw's overlay over the image and follows the pixel
+   you click beside it, with `get_overdraw` and `get_pixel_history` for Claude. But each pixel,
+   and each draw of a pass with many, replays the whole frame again; keeping one replay process
+   alive between requests would make it quicker.
 
 Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
 templates and push descriptors with templates, queries whose results the frame reads back, and

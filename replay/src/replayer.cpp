@@ -240,11 +240,11 @@ bool Replayer::CreateDevice() {
         info.pEnabledFeatures = captured.pCreateInfo->pEnabledFeatures;
         info.pNext = captured.pCreateInfo->pNext;
     }
-    // Per-draw counters are pipeline statistics queries, which need a feature the application may
-    // not have enabled. It goes into whichever form the capture used: a chained
-    // VkPhysicalDeviceFeatures2 (which must stay the only one), else our own copy of pEnabledFeatures.
+    // Per-draw counters are pipeline statistics queries and overlay wireframes need line polygons:
+    // features the application may not have enabled. They go into whichever form the capture used: a
+    // chained VkPhysicalDeviceFeatures2 (which must stay the only one), else our own copy of pEnabledFeatures.
     VkPhysicalDeviceFeatures features{};
-    if (_options.drawStats) {
+    if (_options.drawStats || _options.overlay.enabled) {
         VkPhysicalDeviceFeatures supported{};
         _fns.GetPhysicalDeviceFeatures(_physical, &supported);
         VkPhysicalDeviceFeatures2* features2 = nullptr;
@@ -258,16 +258,20 @@ bool Replayer::CreateDevice() {
             ours = &features;
             info.pEnabledFeatures = &features;
         }
-        if (supported.pipelineStatisticsQuery) {
+        if (_options.drawStats && supported.pipelineStatisticsQuery) {
             ours->pipelineStatisticsQuery = VK_TRUE;
             _drawCountersAvailable = true;
-        } else {
+        } else if (_options.drawStats) {
             _report->drawStatsNote = "this GPU has no pipeline statistics queries, so the draws carry timings only";
+        }
+        if (_options.overlay.enabled && _options.overlay.wireframe && supported.fillModeNonSolid) {
+            ours->fillModeNonSolid = VK_TRUE;
+            _wireframeAvailable = true;
         }
         // Samples passing each draw's depth and stencil tests: the layer cannot count them for a
         // pass that executes secondary command buffers, but here the query sits inside the
         // secondary, around one draw.
-        if (supported.occlusionQueryPrecise) {
+        if (_options.drawStats && supported.occlusionQueryPrecise) {
             ours->occlusionQueryPrecise = VK_TRUE;
             _drawSamplesAvailable = true;
         }
@@ -1344,8 +1348,9 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             if (const JValue* clears = beginInfo2 ? beginInfo2->Get("pClearValues") : nullptr; clears && clears->IsArray())
                 for (uint32_t k = 0; k < clears->count; ++k) pass.clearValues.push_back(ClearValueOf(clears->items[k]));
             // What the pass starts from is copied before it begins; not for a pass the replay leaves out.
-            if ((_options.overdraw || _options.history.enabled) && ArgsResolve(m, *args)) {
-                if (_options.overdraw) PrepareOverdraw(cb, pass);
+            const bool overlay = OverlayWantsPass(i);
+            if ((_options.overdraw || overlay || _options.history.enabled) && ArgsResolve(m, *args)) {
+                if (_options.overdraw || overlay) PrepareOverdraw(cb, pass);
                 if (_options.history.enabled) PrepareHistory(cb, pass, histories);
             }
         } else if (IsBeginRendering(m)) {
@@ -1401,7 +1406,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                     if (!info.pDepthAttachment || stencil.imageView != depth.imageView) pass.dynamicStencil = note(stencil, ri ? ri->Get("pStencilAttachment") : nullptr);
                     else pass.dynamicStencil = pass.dynamicDepth;
                 }
-                if (_options.overdraw || _options.history.enabled) {
+                const bool overlay = OverlayWantsPass(i);
+                if (_options.overdraw || overlay || _options.history.enabled) {
                     pass.extent = {(uint32_t)std::max(0, info.renderArea.offset.x) + info.renderArea.extent.width,
                                    (uint32_t)std::max(0, info.renderArea.offset.y) + info.renderArea.extent.height};
                     const JValue* depthJson = ri ? ri->Get("pDepthAttachment") : nullptr;
@@ -1417,7 +1423,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                             pass.depthClear = info.pDepthAttachment->clearValue.depthStencil;
                         }
                     }
-                    if (_options.overdraw) PrepareOverdraw(cb, pass);
+                    if (_options.overdraw || overlay) PrepareOverdraw(cb, pass);
                     if (_options.history.enabled) PrepareHistory(cb, pass, histories);
                 }
                 _fns.CmdBeginRendering(cb, &info);
@@ -1456,6 +1462,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
 
         if (IsEndPass(m) && pass.active) {
             InjectReadbacks(cb, pass, readbacks);
+            // Before the overdraw, which draws into the copy of the pass's starting depth the overlays copy from.
+            if (_options.overlay.enabled && pass.extent.width) RecordOverlay(cb, group, pass, i);
             if (_options.overdraw) RecordOverdraw(cb, group, pass, i, overdraws);
             if (_options.history.enabled) RecordHistory(cb, group, pass, i, histories);
             pass.active = false;
@@ -1505,6 +1513,7 @@ void Replayer::ReplayCommands() {
         if (cbs.empty()) {
             CompleteHistory(histories);
             CompleteDrawStats(false);
+            CompleteOverlay(false);
             ReleaseTransients();
             continue;
         }
@@ -1522,6 +1531,7 @@ void Replayer::ReplayCommands() {
         CompleteDrawStats(r == VK_SUCCESS);
         CompareReadbacks(readbacks);
         CompleteHistory(histories);
+        CompleteOverlay(r == VK_SUCCESS);
         CompleteOverdraw(overdraws);
     }
     for (const CommandGroup& g : _groups)
@@ -1562,6 +1572,17 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
         report.history.notes.push_back("no replayed render pass renders to image " + std::to_string(options.history.image) + " at mip " +
                                        std::to_string(options.history.mip) + ", layer " + std::to_string(options.history.layer) +
                                        " (writes outside render passes are not followed yet)");
+    }
+    // A draw asked for that no replayed pass holds still gets an answer.
+    for (uint32_t command : options.overlay.commands) {
+        if (std::any_of(report.overlays.begin(), report.overlays.end(), [&](const OverlayResult& o) { return o.command == command; })) continue;
+        OverlayResult missing;
+        missing.command = command;
+        const JValue* commands = capture.Commands();
+        if (commands && command < commands->count) missing.method = Str(commands->items[command].Get("method"));
+        missing.note = !commands || command >= commands->count ? "the capture has no command " + std::to_string(command)
+                     : "command " + std::to_string(command) + " is not in a render pass the replay drew";
+        report.overlays.push_back(std::move(missing));
     }
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();

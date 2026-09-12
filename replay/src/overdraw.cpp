@@ -131,21 +131,29 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat) {
     return rp;
 }
 
-VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat) {
-    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat);
+VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode) {
+    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode);
     auto it = _overdrawPipelines.find(key);
     if (it != _overdrawPipelines.end()) return it->second;
     _overdrawPipelines[key] = VK_NULL_HANDLE;  // a copy that cannot be made is not tried again
     const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, "overdraw", [&](PipelineCopy& p) {
+    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : "overlay", [&](PipelineCopy& p) {
         if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) return false;  // no fragments to count
+        if (mode == ReissueMode::Wireframe) {
+            // The draw's edges, one pixel wide, whatever the application set.
+            if (!p.hasRasterization) return false;
+            p.rasterization.polygonMode = VK_POLYGON_MODE_LINE;
+            p.rasterization.lineWidth = 1.0f;
+            p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
+        }
         p.ReplaceFragment(CountModule());
         VkPipelineColorBlendAttachmentState add{};
         add.blendEnable = VK_TRUE;
         add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
         add.srcAlphaBlendFactor = add.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         add.colorBlendOp = add.alphaBlendOp = VK_BLEND_OP_ADD;
-        add.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+        // An overlay's other draws only move the depth and stencil the draw it is for is tested against.
+        add.colorWriteMask = mode == ReissueMode::DepthOnly ? 0 : VK_COLOR_COMPONENT_R_BIT;
         p.blendAttachments = {add};
         p.blend = VkPipelineColorBlendStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         p.hasBlend = true;
@@ -211,8 +219,19 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const JValue* args = c.Get("args");
     if (!args || (!insidePass && !IsStateCommand(m)) || kOverdrawSkipped.count(m)) return;
     if ((!depthTested || depthFormat == VK_FORMAT_UNDEFINED) && kDepthState.count(m)) return;
+    const bool overlay = _overlayTarget != UINT32_MAX;
+    if (overlay && _overlayIssued) return;
     if (m == "vkCmdBindPipeline") {
         if (Str(args->Get("pipelineBindPoint")) != "VK_PIPELINE_BIND_POINT_GRAPHICS") return;
+        if (overlay) {
+            // The draw the overlay is for gets its own copy when it comes; the rest draw depth only, or not at all.
+            _overlayPipeline = IdOf(args->Get("pipeline"));
+            if (_overlayOnlyTarget) return;
+            VkPipeline pipeline = OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, ReissueMode::DepthOnly);
+            _overdrawDrawable = pipeline != VK_NULL_HANDLE;
+            if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            return;
+        }
         VkPipeline pipeline = OverdrawPipeline(IdOf(args->Get("pipeline")), depthTested, depthFormat);
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -223,6 +242,15 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         return;
     }
     const bool draw = StartsWith(m, "vkCmdDraw");
+    const bool target = overlay && draw && index == _overlayTarget;
+    if (target) {
+        VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
+        _overdrawDrawable = pipeline != VK_NULL_HANDLE;
+        if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        _overlayIssued = true;  // drawn or not, nothing after it matters
+    } else if (overlay && draw && _overlayOnlyTarget) {
+        return;
+    }
     if (draw && !_overdrawDrawable) {
         ++_overdrawSkippedDraws;
         return;
@@ -243,9 +271,46 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     _arena.Reset();
 }
 
+void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
+                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer) {
+    const JValue* commands = _capture->Commands();
+    // The state the pass inherited from the command buffer, then the pass's own commands.
+    _overdrawDrawable = false;
+    _overdrawDraws = 0;
+    _overdrawSkippedDraws = 0;
+    _overlayPipeline = 0;
+    for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
+        if (!commands->items[i].Get("secondary")) ReissueCommand(cb, i, depthTested, depthFormat, false);
+    VkClearValue clear{};
+    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    begin.renderPass = renderPass;
+    begin.framebuffer = framebuffer;
+    begin.renderArea = {{0, 0}, pass.extent};
+    begin.clearValueCount = 1;
+    begin.pClearValues = &clear;
+    _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    for (uint32_t i = pass.beginIndex + 1; i < endIndex; ++i) {
+        const JValue& c = commands->items[i];
+        if (c.Get("secondary")) continue;
+        if (Str(c.Get("method")) == "vkCmdExecuteCommands") {
+            // Secondary command buffers' commands are issued inline, in the order they executed.
+            const JValue* list = c.Get("args") ? c.Get("args")->Get("pCommandBuffers") : nullptr;
+            for (uint32_t s = 0; list && s < list->count; ++s) {
+                const uint64_t id = IdOf(&list->items[s]);
+                _overdrawDrawable = false;  // a secondary starts without a pipeline
+                _overlayPipeline = 0;
+                for (uint32_t j = i + 1; j < commands->count && commands->items[j].Get("secondary"); ++j)
+                    if (commands->items[j].Get("secondary")->Uint() == id) ReissueCommand(cb, j, depthTested, depthFormat, true);
+            }
+            continue;
+        }
+        ReissueCommand(cb, i, depthTested, depthFormat, true);
+    }
+    _fns.CmdEndRenderPass(cb);
+}
+
 void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending) {
     if (!pass.overdraw) return;
-    const JValue* commands = _capture->Commands();
     int64_t measured = -1;
     if (const JValue* timings = _capture->Manifest().Get("passTimings"); timings && timings->IsArray()) {
         for (uint32_t t = 0; t < timings->count; ++t) {
@@ -293,37 +358,7 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         }
         _transientFramebuffers.push_back(fb);
 
-        // The state the pass inherited from the command buffer, then the pass's own commands.
-        _overdrawDrawable = false;
-        _overdrawDraws = 0;
-        _overdrawSkippedDraws = 0;
-        for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
-            if (!commands->items[i].Get("secondary")) ReissueCommand(cb, i, tested, depthFormat, false);
-        VkClearValue clear{};
-        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        begin.renderPass = rp;
-        begin.framebuffer = fb;
-        begin.renderArea = {{0, 0}, pass.extent};
-        begin.clearValueCount = 1;
-        begin.pClearValues = &clear;
-        _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
-        for (uint32_t i = pass.beginIndex + 1; i < endIndex; ++i) {
-            const JValue& c = commands->items[i];
-            if (c.Get("secondary")) continue;
-            if (Str(c.Get("method")) == "vkCmdExecuteCommands") {
-                // Secondary command buffers' commands are issued inline, in the order they executed.
-                const JValue* list = c.Get("args") ? c.Get("args")->Get("pCommandBuffers") : nullptr;
-                for (uint32_t s = 0; list && s < list->count; ++s) {
-                    const uint64_t id = IdOf(&list->items[s]);
-                    _overdrawDrawable = false;  // a secondary starts without a pipeline
-                    for (uint32_t j = i + 1; j < commands->count && commands->items[j].Get("secondary"); ++j)
-                        if (commands->items[j].Get("secondary")->Uint() == id) ReissueCommand(cb, j, tested, depthFormat, true);
-                }
-                continue;
-            }
-            ReissueCommand(cb, i, tested, depthFormat, true);
-        }
-        _fns.CmdEndRenderPass(cb);
+        ReissuePass(cb, group, pass, endIndex, tested, depthFormat, rp, fb);
         result.draws = _overdrawDraws;
         result.skippedDraws = _overdrawSkippedDraws;
 

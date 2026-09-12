@@ -16,6 +16,8 @@
   depth rejection column and the `late-depth-rejection` rule work for Vulkan as well as Metal.
 - Multisampled stencil read-back: the depth resolve now carries both aspects of a depth-stencil
   image.
+- Draw-call overlays for Vulkan captures: **Highlight Draw**, **Depth Test** and **Wireframe** in
+  the render target tab, for any draw of the pass (`vkinsp_replay --overlay`).
 - Per-draw timing and counters for Vulkan captures (`vkinsp_replay --draws`): **Measure draws** in
   the Shader Flame Graph replays the frame with a timestamp pair and a pipeline statistics query
   around every draw and dispatch. A pass's measured time is then split between its draws by what

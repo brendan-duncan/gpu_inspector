@@ -5,6 +5,7 @@ import { setsFor, type CommandSets } from "./command_sets.js";
 import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
+import type { DrawOverlay } from "./draw_overlay.js";
 import type { DrawStat } from "./draw_stats.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
@@ -80,6 +81,8 @@ export class CaptureData {
   pixelHistory: Record<string, unknown> | null = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats: DrawStat[] | null = null;
+  /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
+  drawOverlays = new Map<number, DrawOverlay>();
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -98,6 +101,8 @@ export class CaptureData {
   readonly onPixelHistory = new Signal<() => void>();
   /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
   readonly onDrawStats = new Signal<() => void>();
+  /** Draw-call overlays arrived from a replay. */
+  readonly onDrawOverlays = new Signal<() => void>();
 
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets(): CommandSets {
@@ -115,6 +120,7 @@ export class CaptureData {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.drawOverlays = new Map();
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
