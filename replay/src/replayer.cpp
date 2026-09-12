@@ -250,16 +250,26 @@ bool Replayer::CreateDevice() {
         VkPhysicalDeviceFeatures2* features2 = nullptr;
         for (auto* s = (VkBaseOutStructure*)const_cast<void*>(info.pNext); s; s = s->pNext)
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) features2 = (VkPhysicalDeviceFeatures2*)s;
-        if (!supported.pipelineStatisticsQuery) {
-            _report->drawStatsNote = "this GPU has no pipeline statistics queries, so the draws carry timings only";
-        } else if (features2) {
-            features2->features.pipelineStatisticsQuery = VK_TRUE;
-            _drawCountersAvailable = true;
+        VkPhysicalDeviceFeatures* ours = nullptr;
+        if (features2) {
+            ours = &features2->features;
         } else {
             if (info.pEnabledFeatures) features = *info.pEnabledFeatures;
-            features.pipelineStatisticsQuery = VK_TRUE;
+            ours = &features;
             info.pEnabledFeatures = &features;
+        }
+        if (supported.pipelineStatisticsQuery) {
+            ours->pipelineStatisticsQuery = VK_TRUE;
             _drawCountersAvailable = true;
+        } else {
+            _report->drawStatsNote = "this GPU has no pipeline statistics queries, so the draws carry timings only";
+        }
+        // Samples passing each draw's depth and stencil tests: the layer cannot count them for a
+        // pass that executes secondary command buffers, but here the query sits inside the
+        // secondary, around one draw.
+        if (supported.occlusionQueryPrecise) {
+            ours->occlusionQueryPrecise = VK_TRUE;
+            _drawSamplesAvailable = true;
         }
     }
 

@@ -514,7 +514,10 @@ function passCountersText(t: PassTiming, m?: PassMetrics): string {
       lines.push(`measured: ${formatRatio(overdrawAverages(measured.depthTested).perPixel)} passing depth, ${formatRatio(overdrawAverages(measured.rasterized).perPixel)} rasterized per pixel`);
     }
     if (m.fragmentsPerPrimitive !== null) lines.push(`fragments per primitive: ${formatRatio(m.fragmentsPerPrimitive, 1)}`);
-    if (m.depthRejectRate !== null) lines.push(`depth and stencil rejected: ${formatPercent(m.depthRejectRate)} of shaded fragments`);
+    if (m.depthRejectRate !== null) {
+      lines.push(`depth and stencil rejected: ${formatPercent(m.depthRejectRate)} of shaded fragments`
+               + `${m.depthRejectSource === "replay" ? " (measured per draw by the replay)" : ""}`);
+    }
     if (lines.length) lines.push("");
   }
   const c = t.counters ?? {};
@@ -650,6 +653,10 @@ export class CaptureView implements CaptureHost {
     // The selected pass's heatmaps, and the measured figures in the pass header tooltips.
     this.data.onOverdraw.addListener(() => {
       this._scheduleRefresh();
+      if (this.data.passTimings.size) this._applyPassTimings();
+    });
+    // Depth rejection for a pass the layer could not measure comes from the per-draw measurements.
+    this.data.onDrawStats.addListener(() => {
       if (this.data.passTimings.size) this._applyPassTimings();
     });
   }

@@ -25,6 +25,10 @@ export interface DrawStat {
   primitives: number;
   fragmentInvocations: number;
   computeInvocations: number;
+  /** The replay ran an occlusion query over it (a device with precise occlusion queries). */
+  sampled: boolean;
+  /** Samples that passed the draw's depth and stencil tests. */
+  samplesPassed: number;
 }
 
 export interface DrawStatsFile {
@@ -59,6 +63,7 @@ export function parseDrawStats(input: Uint8Array | string): DrawStatsFile {
       timed: d.timed === true, ms: num(d.ms), counted: d.counted === true,
       vertexInvocations: num(d.vertexInvocations), primitives: num(d.primitives),
       fragmentInvocations: num(d.fragmentInvocations), computeInvocations: num(d.computeInvocations),
+      sampled: d.sampled === true, samplesPassed: num(d.samplesPassed),
     };
   });
   return {
@@ -79,6 +84,43 @@ export function drawStatsByCommand(draws: DrawStat[]): Map<number, DrawStat> {
 /** The measured draws of one render pass. */
 export function drawStatsForPass(draws: DrawStat[], key: OverdrawPassKey): DrawStat[] {
   return draws.filter((d) => d.frame === key.frame && d.commandBuffer === key.commandBuffer && d.passIndex === key.passIndex);
+}
+
+/** What the draws of one render pass add up to. */
+export interface PassDrawSums {
+  draws: number;
+  /** Every draw of the pass was counted, so the invocation sums are the whole pass. */
+  counted: boolean;
+  fragmentInvocations: number;
+  /** Every draw of the pass ran inside an occlusion query. */
+  sampled: boolean;
+  samplesPassed: number;
+}
+
+/** The key `drawSumsByPass` uses: a pass is a (frame, command buffer, pass index) triple. */
+export function passSumKey(frame: number, commandBuffer: number, passIndex: number): string {
+  return `${frame}:${commandBuffer}:${passIndex}`;
+}
+
+/**
+ * The measurements summed per render pass, for the metrics a pass-wide counter may be missing.
+ * The layer cannot run its own occlusion query over a pass that executes secondary command
+ * buffers, but the replay's queries sit inside the secondary, around one draw (draw_stats.cpp).
+ */
+export function drawSumsByPass(draws: DrawStat[]): Map<string, PassDrawSums> {
+  const out = new Map<string, PassDrawSums>();
+  for (const d of draws) {
+    if (d.passIndex === undefined) continue;
+    const key = passSumKey(d.frame, d.commandBuffer, d.passIndex);
+    let s = out.get(key);
+    if (!s) out.set(key, (s = { draws: 0, counted: true, fragmentInvocations: 0, sampled: true, samplesPassed: 0 }));
+    s.draws++;
+    s.counted = s.counted && d.counted;
+    s.fragmentInvocations += d.fragmentInvocations;
+    s.sampled = s.sampled && d.sampled;
+    s.samplesPassed += d.samplesPassed;
+  }
+  return out;
 }
 
 /** One line: what the replay measured, for a status line or a note. */

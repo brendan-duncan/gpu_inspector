@@ -72,6 +72,9 @@ export class Capture {
   /** Per-draw timings and counters measured by replaying the capture (renderer/draw_stats.ts). */
   setDrawStats(draws: DrawStat[]): void {
     this.data.drawStats = draws;
+    // The pass metrics take depth rejection from these where the capture's own counter is missing.
+    this._metrics = null;
+    this._analysis = null;
   }
 
   get statistics(): CaptureStatistics {

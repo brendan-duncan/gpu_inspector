@@ -110,6 +110,7 @@ function passMeasurements(c: Capture, p: PassMetrics, i: number, gpuMs: number):
       ? { depthTested: overdrawBrief(p.measuredOverdraw.depthTested), rasterized: overdrawBrief(p.measuredOverdraw.rasterized) }
       : undefined,
     fragmentsPerPrimitive: round(p.fragmentsPerPrimitive), depthRejectRate: round(p.depthRejectRate),
+    depthRejectSource: p.depthRejectSource ?? undefined,
     nsPerVertex: round(p.nsPerVertex), nsPerFragment: round(p.nsPerFragment),
     cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : undefined,
     bound: p.bound ?? undefined, boundReason: p.boundReason || undefined,

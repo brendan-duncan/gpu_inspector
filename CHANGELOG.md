@@ -20,7 +20,9 @@
   the Shader Flame Graph replays the frame with a timestamp pair and a pipeline statistics query
   around every draw and dispatch. A pass's measured time is then split between its draws by what
   each was timed at, and each stage takes its measured invocation count. `get_shader_flame_graph`
-  measures on first use, and capture files keep the measurements.
+  measures on first use, and capture files keep the measurements. The replay also counts the samples
+  each draw passed, which gives a depth rejection rate to passes that record their draws into
+  secondary command buffers, where the layer's own occlusion query cannot reach.
 
 ### Fixed
 - Applications that enable multiview (every Unity player does) lost their GPU pass counters

@@ -15,7 +15,7 @@ const load = async (entry, name) => {
   buildSync({ entryPoints: [join(here, "..", "src", entry)], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
   return import(pathToFileURL(out).href);
 };
-const { parseDrawStats, drawStatsByCommand, drawStatsSummary } = await load("renderer/draw_stats.ts", "draw_stats");
+const { parseDrawStats, drawStatsByCommand, drawStatsSummary, drawSumsByPass, passSumKey } = await load("renderer/draw_stats.ts", "draw_stats");
 
 const file = {
   format: "gpu-inspector-draw-stats", version: 1, device: "Test GPU", note: "",
@@ -24,7 +24,8 @@ const file = {
     { command: 5, frame: 0, commandBuffer: 7, passIndex: 0xffffffff, timed: true, ms: 0.008, counted: true,
       vertexInvocations: 0, primitives: 0, fragmentInvocations: 0, computeInvocations: 1024 },
     { command: 17, frame: 0, commandBuffer: 7, passIndex: 0, timed: true, ms: 0.005, counted: true,
-      vertexInvocations: 24, primitives: 12, fragmentInvocations: 51204, computeInvocations: 0 },
+      vertexInvocations: 24, primitives: 12, fragmentInvocations: 51204, computeInvocations: 0,
+      sampled: true, samplesPassed: 48000 },
   ],
   problems: [],
 };
@@ -42,4 +43,10 @@ test("the replay's draw measurements are read back, with the no-pass sentinel dr
   assert.equal(byCommand.get(17).primitives, 12);
   assert.match(drawStatsSummary(parsed), /2 draws and dispatches measured \(2 timed, 2 counted\), 51,204 fragment/);
   assert.throws(() => parseDrawStats("{}"), /Not draw measurements/);
+
+  // The per-pass sums the depth rejection rate comes from; the dispatch is in no pass, so it is out.
+  const sums = drawSumsByPass(parsed.draws);
+  assert.equal(sums.size, 1);
+  const pass = sums.get(passSumKey(0, 7, 0));
+  assert.deepEqual(pass, { draws: 1, counted: true, fragmentInvocations: 51204, sampled: true, samplesPassed: 48000 });
 });

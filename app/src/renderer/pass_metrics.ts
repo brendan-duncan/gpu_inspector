@@ -16,6 +16,7 @@
 import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, CaptureCommand, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 import type { CaptureData } from "./capture_data.js";
+import { drawSumsByPass, passSumKey } from "./draw_stats.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
 export const HEALTHY_OVERDRAW = 1.2;
@@ -69,6 +70,8 @@ export interface PassMetrics {
   fragmentsPerPrimitive: number | null;
   /** Fraction of shaded fragments the depth and stencil tests threw away. */
   depthRejectRate: number | null;
+  /** Where `depthRejectRate` came from: the pass's own occlusion query, or the replay's per draw. */
+  depthRejectSource: "counters" | "replay" | null;
   /** Nanoseconds of vertex-stage time per vertex invocation. */
   nsPerVertex: number | null;
   /** Nanoseconds of fragment-stage time per fragment invocation. */
@@ -231,6 +234,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
     // The counter counts fragments that survived the depth and stencil tests; the rest were
     // rejected, early or late.
     p.depthRejectRate = fragments !== null && passed !== null && fragments > 0 ? 1 - passed / fragments : null;
+    if (p.depthRejectRate !== null) p.depthRejectSource = "counters";
     p.nsPerVertex = p.vertexMs !== null ? ratio(p.vertexMs * 1e6, vertexInvocations) : null;
     p.nsPerFragment = p.fragmentMs !== null ? ratio(p.fragmentMs * 1e6, fragments) : null;
 
@@ -244,6 +248,24 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       };
     }
     decideBound(p);
+  }
+
+  // Depth rejection from the replay's per-draw occlusion queries, for a pass whose own query the
+  // layer could not run: a query cannot span vkCmdExecuteCommands, so a pass that records its draws
+  // into secondary command buffers goes unmeasured, while the replay's queries sit inside the
+  // secondary around one draw each (replay/src/draw_stats.cpp).
+  if (data.drawStats?.length) {
+    const sums = drawSumsByPass(data.drawStats);
+    for (const p of passes) {
+      if (p.compute || p.depthRejectRate !== null) continue;
+      const s = sums.get(passSumKey(p.frame, p.commandBuffer, p.passIndex));
+      if (!s?.sampled) continue;
+      const fragments = counter(p.timing, "fragmentInvocations") ?? (s.counted ? s.fragmentInvocations : null);
+      // More samples than shader runs means a multisampled target, where the two do not divide.
+      if (fragments === null || fragments <= 0 || s.samplesPassed > fragments) continue;
+      p.depthRejectRate = 1 - s.samplesPassed / fragments;
+      p.depthRejectSource = "replay";
+    }
   }
 
   // Measured overdraw, timed or not. Where the GPU's counters said nothing, the fragments that
@@ -314,6 +336,7 @@ function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: num
     pixels: target?.pixels ?? 0, samples: target?.samples ?? 1,
     timing: null, durationMs: null, vertexMs: null, fragmentMs: null,
     overdraw: null, overdrawSource: null, measuredOverdraw: null, fragmentsPerPrimitive: null, depthRejectRate: null,
+    depthRejectSource: null,
     nsPerVertex: null, nsPerFragment: null, cycleShare: null, bound: null, boundReason: "",
   };
 }

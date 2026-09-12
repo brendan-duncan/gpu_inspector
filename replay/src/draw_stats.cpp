@@ -78,8 +78,14 @@ bool Replayer::PrepareDrawStats() {
         info.pipelineStatistics = kStatistics;
         if (_fns.CreateQueryPool(_device, &info, nullptr, &_drawStatistics) != VK_SUCCESS) _drawStatistics = VK_NULL_HANDLE;
     }
+    if (_drawSamplesAvailable) {
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_OCCLUSION;
+        info.queryCount = actions;
+        if (_fns.CreateQueryPool(_device, &info, nullptr, &_drawOcclusion) != VK_SUCCESS) _drawOcclusion = VK_NULL_HANDLE;
+    }
     _drawQueryCapacity = actions;
-    if (!_drawTimestamps && !_drawStatistics) {
+    if (!_drawTimestamps && !_drawStatistics && !_drawOcclusion) {
         _report->drawStatsNote = "this device has neither timestamps on the replay's queue nor pipeline statistics queries";
         return false;
     }
@@ -92,6 +98,7 @@ bool Replayer::PrepareDrawStats() {
 void Replayer::ResetDrawQueries(VkCommandBuffer cb) {
     if (_drawTimestamps) _fns.CmdResetQueryPool(cb, _drawTimestamps, 0, _drawQueryCapacity * 2);
     if (_drawStatistics) _fns.CmdResetQueryPool(cb, _drawStatistics, 0, _drawQueryCapacity);
+    if (_drawOcclusion) _fns.CmdResetQueryPool(cb, _drawOcclusion, 0, _drawQueryCapacity);
 }
 
 int Replayer::BeginDrawQuery(VkCommandBuffer cb, uint32_t command, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex) {
@@ -103,17 +110,20 @@ int Replayer::BeginDrawQuery(VkCommandBuffer cb, uint32_t command, uint32_t fram
     d.commandBuffer = commandBuffer;
     d.passIndex = passIndex;
     d.timed = _drawTimestamps != VK_NULL_HANDLE;
-    // A statistics query cannot begin while the capture's own query of that type is open.
+    // Neither query can begin while the capture's own query of that type is open.
     d.counted = _drawStatistics != VK_NULL_HANDLE && _appQueryDepth == 0;
+    d.sampled = _drawOcclusion != VK_NULL_HANDLE && _appQueryDepth == 0;
     _pendingDraws.push_back(d);
     if (d.timed) _fns.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _drawTimestamps, slot * 2);
     if (d.counted) _fns.CmdBeginQuery(cb, _drawStatistics, slot, 0);
+    if (d.sampled) _fns.CmdBeginQuery(cb, _drawOcclusion, slot, VK_QUERY_CONTROL_PRECISE_BIT);
     return (int)slot;
 }
 
 void Replayer::EndDrawQuery(VkCommandBuffer cb, int slot) {
     if (slot < 0 || (size_t)slot >= _pendingDraws.size()) return;
     const DrawResult& d = _pendingDraws[(size_t)slot];
+    if (d.sampled) _fns.CmdEndQuery(cb, _drawOcclusion, (uint32_t)slot);
     if (d.counted) _fns.CmdEndQuery(cb, _drawStatistics, (uint32_t)slot);
     if (d.timed) _fns.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _drawTimestamps, (uint32_t)slot * 2 + 1);
 }
@@ -137,6 +147,15 @@ void Replayer::CompleteDrawStats(bool submitted) {
             times.clear();
         }
     }
+    std::vector<uint64_t> samples;
+    if (_drawOcclusion) {
+        samples.resize((size_t)_drawSlot * 2, 0);
+        if (_fns.GetQueryPoolResults(_device, _drawOcclusion, 0, _drawSlot, samples.size() * sizeof(uint64_t), samples.data(),
+                                     2 * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+                                     | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS) {
+            samples.clear();
+        }
+    }
     std::vector<uint64_t> stats;
     if (_drawStatistics) {
         stats.resize((size_t)_drawSlot * kStatisticCount, 0);
@@ -153,6 +172,11 @@ void Replayer::CompleteDrawStats(bool submitted) {
             d.durationMs = end > begin ? (double)(end - begin) * _timestampPeriod / 1e6 : 0;
         } else {
             d.timed = false;
+        }
+        if (d.sampled && samples.size() >= (slot + 1) * 2 && samples[slot * 2 + 1]) {
+            d.samplesPassed = samples[slot * 2];
+        } else {
+            d.sampled = false;
         }
         if (d.counted && stats.size() >= (slot + 1) * kStatisticCount) {
             const uint64_t* v = &stats[slot * kStatisticCount];
@@ -172,8 +196,10 @@ void Replayer::CompleteDrawStats(bool submitted) {
 void Replayer::DestroyDrawStats() {
     if (_drawTimestamps) _fns.DestroyQueryPool(_device, _drawTimestamps, nullptr);
     if (_drawStatistics) _fns.DestroyQueryPool(_device, _drawStatistics, nullptr);
+    if (_drawOcclusion) _fns.DestroyQueryPool(_device, _drawOcclusion, nullptr);
     _drawTimestamps = VK_NULL_HANDLE;
     _drawStatistics = VK_NULL_HANDLE;
+    _drawOcclusion = VK_NULL_HANDLE;
     _drawQueryCapacity = 0;
 }
 

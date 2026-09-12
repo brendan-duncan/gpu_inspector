@@ -181,6 +181,48 @@ test("a Vulkan pass with the layer's occlusion query has a depth rejection rate"
   assert.equal(p.depthRejectRate, 0.8, "4000 of 20000 fragments survived the depth test");
 });
 
+test("the replay's per-draw occlusion queries give a pass the layer could not measure a rejection rate", () => {
+  // A pass that records its draws into secondary command buffers gets no occlusion query from the
+  // layer (a query cannot span vkCmdExecuteCommands), so the replay measures one per draw
+  // (`vkinsp_replay --draws`, replay/src/draw_stats.cpp).
+  const data = capture([
+    ["vkCmdBeginRenderPass", vulkanPass],
+    ["vkCmdExecuteCommands", {}],
+    ["vkCmdEndRenderPass", {}],
+  ], [{
+    frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 2, startMs: 0,
+    counters: { vertexInvocations: 6, fragmentInvocations: 20000, clipperPrimitivesOut: 2000 },
+  }], "vulkan");
+  const draw = { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, timed: true, ms: 1, counted: true,
+                 vertexInvocations: 3, primitives: 1000, fragmentInvocations: 10000, computeInvocations: 0,
+                 sampled: true, samplesPassed: 2000 };
+  data.drawStats = [{ ...draw, command: 10 }, { ...draw, command: 11 }];
+  const p = collectPassMetrics(data, db).passes[0];
+  assert.equal(p.depthRejectRate, 0.8, "4000 of the pass's 20000 fragments survived, summed over its two draws");
+  assert.equal(p.depthRejectSource, "replay");
+
+  // A draw the replay could not sample leaves the pass unmeasured rather than half measured.
+  data.drawStats = [{ ...draw, command: 10 }, { ...draw, command: 11, sampled: false, samplesPassed: 0 }];
+  assert.equal(collectPassMetrics(data, db).passes[0].depthRejectRate, null);
+});
+
+test("a pass with its own occlusion query keeps that count over the replay's", () => {
+  const data = capture([
+    ["vkCmdBeginRenderPass", vulkanPass],
+    ["vkCmdDraw", { vertexCount: 6, instanceCount: 1 }],
+    ["vkCmdEndRenderPass", {}],
+  ], [{
+    frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 2, startMs: 0,
+    counters: { fragmentInvocations: 20000, fragmentsPassed: 4000 },
+  }], "vulkan");
+  data.drawStats = [{ command: 1, frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, timed: true, ms: 1, counted: true,
+                      vertexInvocations: 6, primitives: 2000, fragmentInvocations: 20000, computeInvocations: 0,
+                      sampled: true, samplesPassed: 10000 }];
+  const p = collectPassMetrics(data, db).passes[0];
+  assert.equal(p.depthRejectRate, 0.8);
+  assert.equal(p.depthRejectSource, "counters");
+});
+
 test("a Vulkan run of dispatches is its own pass, numbered apart from render passes", () => {
   const data = capture([
     ["vkCmdBeginRenderPass", vulkanPass],
