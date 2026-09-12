@@ -22,6 +22,14 @@
   each was timed at, and each stage takes its measured invocation count. `get_shader_flame_graph`
   measures on first use, and capture files keep the measurements.
 
+### Fixed
+- Captures of applications that recreate their swapchain (every Unity player does, on its first
+  resize) lost the frame's final image. The driver hands the new swapchain its predecessor's image
+  handles, and destroying the old swapchain took those images, and the views over them, out of the
+  object graph; the passes drawing into the backbuffer were then captured without their colour
+  attachment, and `vkinsp_replay` left them out. A Unity frame now replays with no problems and
+  every render target identical.
+
 ## v0.9.0
 
 ### Added

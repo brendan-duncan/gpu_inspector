@@ -61,8 +61,37 @@ uint64_t Tracker::OnCreate(HandleType type, uint64_t handle, HandleType parentTy
                            VkCmdId cmd, uint32_t index, const std::string& args) {
     std::unique_lock lock(_mutex);
     auto& m = _byHandle[type];
+    uint64_t parentId = 0;
+    if (parentType < HT_Count) {
+        auto pit = _byHandle[parentType].find(parentHandle);
+        if (pit != _byHandle[parentType].end()) parentId = pit->second;
+    }
     auto existing = m.find(handle);
-    if (existing != m.end()) return existing->second;
+    if (existing != m.end()) {
+        auto it = _byId.find(existing->second);
+        // The same object handed out again (swapchain images retrieved twice) keeps its record.
+        // A handle under a *new* owner is a recycled one: a swapchain recreated with oldSwapchain
+        // hands back its predecessor's images, and leaving those records under the old swapchain
+        // would destroy them with it — taking the image views over them, which is how the live
+        // swapchain's images and views went missing from a capture.
+        if (it == _byId.end() || !parentId || it->second.parentId == parentId) return existing->second;
+        TrackedObject& o = it->second;
+        if (o.parentId) {
+            auto old = _byId.find(o.parentId);
+            if (old != _byId.end()) {
+                auto& siblings = old->second.children;
+                for (size_t i = 0; i < siblings.size(); ++i)
+                    if (siblings[i] == o.id) { siblings[i] = siblings.back(); siblings.pop_back(); break; }
+            }
+        }
+        o.parentId = parentId;
+        o.cmd = cmd;
+        o.index = index;
+        o.args = args;
+        _byId[parentId].children.push_back(o.id);
+        if (_live) Transport::Get().SendJson(AddObjectMessage(o));
+        return o.id;
+    }
 
     TrackedObject o;
     o.id = _nextId++;
@@ -72,12 +101,9 @@ uint64_t Tracker::OnCreate(HandleType type, uint64_t handle, HandleType parentTy
     o.index = index;
     o.args = args;
     if (StackTracesEnabled()) o.stack = CaptureStack(1);
-    if (parentType < HT_Count) {
-        auto pit = _byHandle[parentType].find(parentHandle);
-        if (pit != _byHandle[parentType].end()) {
-            o.parentId = pit->second;
-            _byId[o.parentId].children.push_back(o.id);
-        }
+    if (parentId) {
+        o.parentId = parentId;
+        _byId[parentId].children.push_back(o.id);
     }
     m[handle] = o.id;
     uint64_t id = o.id;

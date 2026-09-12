@@ -49,8 +49,9 @@ public:
     JsonWriter& BeginArgs();
     void EndArgs();
 
-    // Registers a new object. Returns its id (or the existing id if the handle is already
-    // tracked, e.g. swapchain images retrieved twice).
+    // Registers a new object. Returns its id; a handle that is already tracked keeps its id, and
+    // moves to the new owner when one is given (a driver hands the same handle out again under a
+    // new parent: the images of a swapchain recreated with oldSwapchain).
     uint64_t OnCreate(HandleType type, uint64_t handle, HandleType parentType, uint64_t parentHandle,
                       VkCmdId cmd, uint32_t index, const std::string& args);
     void OnDestroy(HandleType type, uint64_t handle);
