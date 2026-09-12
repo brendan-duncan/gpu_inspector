@@ -78,9 +78,23 @@ void PreHook_vkCmdBindPipeline(VkCommandBuffer& commandBuffer, VkPipelineBindPoi
 }
 
 // Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
-static void BeforePass(VkCommandBuffer commandBuffer) {
+static void BeforePass(VkCommandBuffer commandBuffer, bool multiview) {
     DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec, multiview);
+}
+
+/**
+ * Whether the pass about to begin renders several views at once. A query active across such a pass
+ * writes one result per view and so needs that many consecutive query indices; those passes go
+ * without counters, while the rest of an application that merely enables multiview keeps them.
+ */
+static bool MultiviewPass(const VkRenderPassBeginInfo* begin) {
+    RenderPassInfo rp;
+    return begin && ResourceRegistry::Get().GetRenderPass(begin->renderPass, rp) && rp.viewLayers > 1;
+}
+
+static bool MultiviewRendering(const VkRenderingInfo* info) {
+    return info && info->viewMask != 0;
 }
 
 // Store ops while capturing: an attachment with storeOp DONT_CARE has undefined contents after
@@ -155,19 +169,19 @@ static const VkRenderingInfo* OriginalRendering(const VkRenderingInfo* info) {
 }
 
 void PreHook_vkCmdBeginRenderPass(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, VkSubpassContents& contents) {
-    BeforePass(commandBuffer);
+    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
-    BeforePass(commandBuffer);
+    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
-    BeforePass(commandBuffer);
+    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
-    BeforePass(commandBuffer);
+    BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
     pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
 // Compute pass timing: a dispatch outside a render pass opens a compute pass; barriers, event
@@ -233,7 +247,7 @@ void PreHook_vkCmdDebugMarkerBeginEXT(VkCommandBuffer& commandBuffer, const VkDe
 void PreHook_vkCmdDebugMarkerEndEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
 
 void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
-    BeforePass(commandBuffer);
+    BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
     pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
 

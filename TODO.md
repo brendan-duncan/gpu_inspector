@@ -147,9 +147,14 @@ application with injected state. Route (a) is the general one and is the prerequ
       - initial layouts per subresource
 
       Also compare multisampled targets through a resolve.
-- [ ] Per-draw timing and counters inside secondary command buffers: `vkinsp_replay --draws`
-      instruments the primary's recording only, so a frame whose draws are all in secondaries (a
-      Unity player's are) measures nothing.
+- [x] Per-draw timing and counters inside secondary command buffers: the replay instruments them
+      there too, so a Unity frame (every draw in a secondary) measures all of them. Its per-draw
+      fragment counts add up to the layer's own per-pass counters exactly.
+- [ ] Depth rejection for a pass that executes secondary command buffers: an occlusion query cannot
+      stay active across `vkCmdExecuteCommands` unless the secondaries were recorded with
+      `occlusionQueryEnable`, which an engine that records its draws into secondaries does not do.
+      Those passes keep every other counter, and the layer logs how many went unmeasured; counting
+      them would take a replay-side pass, the way overdraw is measured.
 - [ ] Record live shader replacements in captures. A frame captured during `replace_shader` keeps
       the original pipeline, so its replay draws what the application asked for, not what the
       frame showed.

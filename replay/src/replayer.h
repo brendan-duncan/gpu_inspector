@@ -394,7 +394,8 @@ private:
     /** Reads the submission's results; `submitted` false drops them (a submission that never ran). */
     void CompleteDrawStats(bool submitted);
     void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to);
-    void RecordSecondaries(size_t executeIndex, const JValue& execute);
+    /** `frame`, `commandBuffer` and `passIndex` are the primary's, for the draws measured inside. */
+    void RecordSecondaries(size_t executeIndex, const JValue& execute, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
     void ApplyBufferData(const CommandGroup& group);
     void ApplyDescriptorSnapshot(const JValue* descriptors);
     void BeginPass(const JValue& command, uint32_t index, uint64_t commandBuffer);

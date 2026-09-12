@@ -448,18 +448,21 @@ uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
 
 void CaptureManager::DropOcclusion(DeviceData* dev, CommandRecorder* rec) {
     if (rec->pendingOcclusionQuery == UINT32_MAX || !_occlusionPool || _queryDevice != dev->device) return;
+    _occlusionDropped.fetch_add(1, std::memory_order_relaxed);
     dev->dispatch.CmdEndQuery(rec->commandBuffer(), _occlusionPool, rec->pendingOcclusionQuery);
     rec->pendingOcclusionQuery = UINT32_MAX;
     rec->pass().occlusionQuery = UINT32_MAX;   // the pass reports no count rather than a partial one
 }
 
-void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec) {
+void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview) {
     OnEndComputePass(dev, rec);
     rec->pendingQuery = BeginTimestamp(dev, rec);
     // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
-    // report shows the counters against the pass's duration.
-    rec->pendingStatsQuery = rec->pendingQuery == UINT32_MAX ? UINT32_MAX : BeginPipelineStatistics(dev, rec);
-    if (rec->pendingQuery != UINT32_MAX) BeginOcclusion(dev, rec);
+    // report shows the counters against the pass's duration. A multiview pass writes one result
+    // per view, which would need that many consecutive indices, so it is timed but not counted.
+    const bool counted = rec->pendingQuery != UINT32_MAX && !multiview;
+    rec->pendingStatsQuery = counted ? BeginPipelineStatistics(dev, rec) : UINT32_MAX;
+    if (counted) BeginOcclusion(dev, rec);
 }
 
 void CaptureManager::OnBeforeDispatch(DeviceData* dev, CommandRecorder* rec) {
@@ -1497,6 +1500,12 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
     Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
+    if (const uint32_t dropped = _occlusionDropped.exchange(0, std::memory_order_relaxed)) {
+        // An occlusion query cannot stay active across vkCmdExecuteCommands unless the secondaries
+        // were recorded with occlusionQueryEnable, which an engine that records its draws into
+        // secondaries (Unity, Unreal) does not do. Those passes keep everything but depth rejection.
+        Log("depth rejection: %u pass(es) went unmeasured (secondary command buffers, or a query of the application's)", dropped);
+    }
 }
 
 void CaptureManager::ReleaseStaging(DeviceData* dev) {

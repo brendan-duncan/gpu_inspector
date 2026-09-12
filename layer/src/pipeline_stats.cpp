@@ -42,13 +42,10 @@ void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
         return;
     }
     // A query active across a multiview render pass writes one result per view and so needs that
-    // many consecutive query indices, which is not known before the pass begins. Rather than
-    // reserve for the worst case, an application that enables multiview goes without the counters
-    // (its passes are still timed). Stereo XR is what this gives up.
-    if (EnablesMultiview(info)) {
-        Log("pass counters: the application enables multiview, whose passes need a query per view; skipped");
-        return;
-    }
+    // many consecutive query indices. Those passes go uncounted one by one (CaptureManager::
+    // OnBeforePass), rather than the whole application losing its counters for enabling the
+    // feature: a Unity player enables multiview and renders almost every pass with one view.
+    if (EnablesMultiview(info)) Log("pass counters: multiview is enabled; passes that render several views go uncounted");
 
     // Two features, each wanted and each maybe already on: `pipelineStatisticsQuery` for the pass
     // counters, `occlusionQueryPrecise` for the samples that passed the depth and stencil tests.
