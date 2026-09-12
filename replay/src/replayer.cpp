@@ -1195,7 +1195,7 @@ void Replayer::CompareReadbacks(std::vector<PendingReadback>& readbacks) {
     _arena.Reset();
 }
 
-void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute) {
+void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex) {
     // The capture inlines each secondary command buffer's recording after the vkCmdExecuteCommands
     // that ran it (commands with "secondary": its id): record them into the replay's secondaries.
     const JValue* commands = _capture->Commands();
@@ -1227,7 +1227,14 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute) {
                 begun = false;
             } else if (ReplayFn fn = FindReplayCommand(m); fn && args && begun) {
                 ApplyDescriptorSnapshot(c.Get("descriptors"));
+                // Per-draw timing and counters: an engine that records its draws into secondaries
+                // (a Unity player records every one) has them measured here rather than above.
+                const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
+                const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, commandBuffer, passIndex) : -1;
                 fn(_ctx, *args, cb);
+                if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
+                if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
+                else if (StartsWith(m, "vkCmdEndQuery") && _appQueryDepth) --_appQueryDepth;
                 _report->commandsRecorded++;
             }
             _arena.Reset();
@@ -1412,7 +1419,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
 
         if (m == "vkCmdBindDescriptorSets" || m == "vkCmdBindDescriptorSets2" || m == "vkCmdBindDescriptorSets2KHR")
             ApplyDescriptorSnapshot(c.Get("descriptors"));
-        if (m == "vkCmdExecuteCommands") RecordSecondaries(i, c);
+        if (m == "vkCmdExecuteCommands") RecordSecondaries(i, c, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX);
 
         ReplayFn fn = FindReplayCommand(m);
         if (!fn) {

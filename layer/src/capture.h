@@ -153,7 +153,7 @@ public:
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
     // pass's begin timestamp, which must happen outside the render pass.
-    void OnBeforePass(DeviceData* dev, CommandRecorder* rec);
+    void OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview = false);
     /**
      * Ends the pass's occlusion query early and throws its result away: the application is about to
      * begin a query of its own, or to execute secondary command buffers, neither of which is valid
@@ -277,6 +277,8 @@ private:
     VkQueryPool _occlusionPool = VK_NULL_HANDLE;
     uint32_t _occlusionCount = 0;
     std::atomic<uint32_t> _occlusionUsed{0};
+    /** Passes whose occlusion query had to end early (an application query, or secondaries). */
+    std::atomic<uint32_t> _occlusionDropped{0};
     std::vector<PassTiming> _passTimings;
     std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;

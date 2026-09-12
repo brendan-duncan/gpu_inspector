@@ -12,8 +12,10 @@ compare.
 sets around every pass and the Vulkan layer a pipeline statistics query beside its timestamps, so
 overdraw, fragments per primitive and the geometry counts come out of either. Depth rejection needs
 the fragments that survived the depth and stencil tests: Metal's statistic set has that, and the
-Vulkan layer counts it with an occlusion query around each pass (skipped for a pass where the
-application has a query of its own open, since two cannot be active at once). One measurement is
+Vulkan layer counts it with an occlusion query around each pass. That query cannot stay open across
+a pass that executes secondary command buffers or one where the application has a query of its own,
+so those passes keep every other counter but show no depth rejection (the layer's log says how many).
+An engine that records its draws into secondaries, as Unity does, is the usual case. One measurement is
 Metal only and is marked where it appears: the vertex and fragment spans of a pass, which need
 timestamps at its stage boundaries and have no portable Vulkan equivalent.
 

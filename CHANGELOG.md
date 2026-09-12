@@ -23,6 +23,12 @@
   measures on first use, and capture files keep the measurements.
 
 ### Fixed
+- Applications that enable multiview (every Unity player does) lost their GPU pass counters
+  entirely: the layer skipped pipeline statistics for the whole device rather than for the passes
+  that actually render several views. Only those passes go uncounted now, so a Unity capture has
+  overdraw, fragments per primitive and the rest of the GPU Bottlenecks report.
+- `vkinsp_replay --draws` measured nothing for a frame whose draws are recorded into secondary
+  command buffers, which is how a Unity player records every draw: they are measured there too.
 - Captures of applications that recreate their swapchain (every Unity player does, on its first
   resize) lost the frame's final image. The driver hands the new swapchain its predecessor's image
   handles, and destroying the old swapchain took those images, and the views over them, out of the
