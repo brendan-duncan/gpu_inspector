@@ -1110,6 +1110,8 @@ var CaptureData = class {
   overdraw = [];
   /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
   pixelHistory = null;
+  /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
+  drawStats = null;
   _expectedCommands = 0;
   _pendingBuffers = 0;
   onCaptureStatus = new Signal();
@@ -1125,6 +1127,8 @@ var CaptureData = class {
   onOverdraw = new Signal();
   /** A Metal capture's pixel history arrived. */
   onPixelHistory = new Signal();
+  /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
+  onDrawStats = new Signal();
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets() {
     return setsFor(this.api);
@@ -1139,6 +1143,7 @@ var CaptureData = class {
     this.passTimings = /* @__PURE__ */ new Map();
     this.overdraw = [];
     this.pixelHistory = null;
+    this.drawStats = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -1196,6 +1201,7 @@ var CaptureData = class {
     this.passTimings = c2.passTimings;
     this.overdraw = c2.overdraw;
     this.pixelHistory = c2.pixelHistory;
+    this.drawStats = c2.drawStats;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -1205,6 +1211,7 @@ var CaptureData = class {
     if (this.passTimings.size) this.onPassTimings.emit();
     if (this.overdraw.length) this.onOverdraw.emit();
     if (this.pixelHistory) this.onPixelHistory.emit();
+    if (this.drawStats) this.onDrawStats.emit();
   }
   handleMessage(msg) {
     switch (msg.action) {
@@ -1361,6 +1368,7 @@ function parseCaptureFile(bytes) {
     passTimings,
     overdraw,
     pixelHistory: manifest.pixelHistory ?? null,
+    drawStats: manifest.drawStats ?? null,
     api: manifest.api ?? "vulkan"
   };
 }
@@ -6098,6 +6106,10 @@ var Capture = class {
     this._metrics = null;
     this._analysis = null;
   }
+  /** Per-draw timings and counters measured by replaying the capture (renderer/draw_stats.ts). */
+  setDrawStats(draws) {
+    this.data.drawStats = draws;
+  }
   get statistics() {
     return this._statistics ??= new CaptureStatistics().compute(this.data, this.db);
   }
@@ -8603,6 +8615,7 @@ async function serializeCapture(session, data, options = {}) {
     passTimings: [...data.passTimings.values()],
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
+    ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
     validation: db.validation,
     ...symbols ? { symbols } : {},
     ...stacks ? { stacks } : {}
@@ -13574,6 +13587,124 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
   return out;
 }
 
+// src/main/replay.ts
+import { spawn as spawn3 } from "node:child_process";
+import fs10 from "node:fs";
+import os7 from "node:os";
+import path9 from "node:path";
+var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
+function findReplayTool(roots, layerDirs) {
+  const candidates = [
+    process.env.INSPECTOR_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path9.join(root, "build", "bin", config, REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path9.join(dir, REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs10.existsSync(f)) ?? null;
+}
+var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
+function tail(text, lines = 12) {
+  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
+}
+function analysisArgs(analysis, out) {
+  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
+  if (analysis.kind === "draws") return ["--draw-data", out];
+  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
+  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
+}
+function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
+  return new Promise((resolve) => {
+    const out = path9.join(os7.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    let output = "";
+    let done = false;
+    let timedOut = false;
+    const child = spawn3(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    const collect = (chunk2) => {
+      output += chunk2.toString();
+      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    const finish2 = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      let data = null;
+      try {
+        data = new Uint8Array(fs10.readFileSync(out));
+        fs10.unlinkSync(out);
+      } catch {
+      }
+      if (data) {
+        resolve({ data, output: tail(output) });
+        return;
+      }
+      resolve({
+        data: null,
+        output: tail(output),
+        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
+${tail(output)}`)
+      });
+    };
+    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
+    child.on("close", () => finish2(null));
+  });
+}
+function runOverdrawReplay(tool, capturePath, timeoutMs) {
+  return runReplay(tool, capturePath, { kind: "overdraw" }, timeoutMs);
+}
+
+// src/renderer/draw_stats.ts
+var NO_PASS = 4294967295;
+function parseDrawStats(input) {
+  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`The draw measurements are not valid JSON: ${e.message}`);
+  }
+  if (json.format !== "gpu-inspector-draw-stats") throw new Error("Not draw measurements from vkinsp_replay.");
+  const num2 = (v) => typeof v === "number" ? v : 0;
+  const draws = (Array.isArray(json.draws) ? json.draws : []).map((raw) => {
+    const d = raw;
+    const pass = num2(d.passIndex);
+    return {
+      command: num2(d.command),
+      frame: num2(d.frame),
+      commandBuffer: num2(d.commandBuffer),
+      ...pass === NO_PASS ? {} : { passIndex: pass },
+      timed: d.timed === true,
+      ms: num2(d.ms),
+      counted: d.counted === true,
+      vertexInvocations: num2(d.vertexInvocations),
+      primitives: num2(d.primitives),
+      fragmentInvocations: num2(d.fragmentInvocations),
+      computeInvocations: num2(d.computeInvocations)
+    };
+  });
+  return {
+    device: typeof json.device === "string" ? json.device : "",
+    note: typeof json.note === "string" ? json.note : "",
+    draws,
+    problems: Array.isArray(json.problems) ? json.problems.filter((p) => typeof p === "string") : []
+  };
+}
+function drawStatsByCommand(draws) {
+  const out = /* @__PURE__ */ new Map();
+  for (const d of draws) out.set(d.command, d);
+  return out;
+}
+function drawStatsSummary(file) {
+  const timed = file.draws.filter((d) => d.timed).length;
+  const counted = file.draws.filter((d) => d.counted).length;
+  const fragments = file.draws.reduce((sum, d) => sum + d.fragmentInvocations, 0);
+  return `${file.draws.length} draws and dispatches measured (${timed} timed, ${counted} counted), ${fragments.toLocaleString()} fragment shader invocations${file.device ? `, replayed on ${file.device}` : ""}`;
+}
+
 // src/renderer/frame_cost_tree.ts
 var MAX_LINE_FRAMES = 16;
 function node(kind, name, totalCost = 0, children = []) {
@@ -13650,6 +13781,7 @@ function rectArea(v) {
 }
 function collectPasses2(o) {
   const { data, models } = o;
+  const drawStats = drawStatsByCommand(data.drawStats ?? []);
   const sets = data.sets;
   const passes = [];
   const notes = [];
@@ -13767,11 +13899,14 @@ function collectPasses2(o) {
       }
       const stages = [];
       let drawArea = null;
+      const measured = drawStats.get(cmd.index);
+      const counted = measured?.counted === true;
       if (isDispatch) {
         const groups = dispatchGroups(cmd, data);
         for (const m of stageModels2) {
           const wg = m.workgroupSize ? m.workgroupSize[0] * m.workgroupSize[1] * m.workgroupSize[2] : null;
-          const inv = groups !== null && wg !== null ? groups * wg : null;
+          const fromArgs = groups !== null && wg !== null ? groups * wg : null;
+          const inv = counted && measured.computeInvocations > 0 ? measured.computeInvocations : fromArgs;
           stages.push({ model: m, invocations: inv, confidence: inv === null ? "unknown" : "exact" });
         }
       } else {
@@ -13781,15 +13916,24 @@ function collectPasses2(o) {
         const fragmentArea = o.estimateFragments ? drawArea : null;
         for (const m of stageModels2) {
           if (m.stage === "fragment") {
-            stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
+            if (counted) stages.push({ model: m, invocations: measured.fragmentInvocations, confidence: "exact" });
+            else stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
           } else if (m.stage === "vertex") {
-            stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "exact" });
+            const inv = counted && measured.vertexInvocations > 0 ? measured.vertexInvocations : vertices;
+            stages.push({ model: m, invocations: inv, confidence: inv === null ? "unknown" : "exact" });
           } else {
             stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "estimated" });
           }
         }
       }
-      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages, area: drawArea });
+      pass.items.push({
+        command: cmd,
+        pipelineId,
+        kind: isDispatch ? "dispatch" : "draw",
+        stages,
+        area: drawArea,
+        ms: measured?.timed ? measured.ms : null
+      });
     }
   }
   if (missingModels) notes.push(`${missingModels} draw(s) or dispatch(es) use a pipeline whose shaders could not be fetched and are left out.`);
@@ -13802,6 +13946,7 @@ function collectPasses2(o) {
       for (const stage of item.stages) if (stage.model.stage === "fragment") fragments.push({ stage, area: item.area });
     }
     if (!fragments.length) continue;
+    if (fragments.some((f) => f.stage.confidence === "exact")) continue;
     const totalArea = fragments.reduce((sum, f) => sum + (f.area ?? 0), 0);
     for (const f of fragments) {
       const share = totalArea > 0 ? (f.area ?? 0) / totalArea : 1 / fragments.length;
@@ -13852,7 +13997,7 @@ function buildFrameCostTree(o) {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
   const { passes, notes, measuredFragmentPasses } = collectPasses2(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses };
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0 };
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
   const units = allMeasured ? "ms" : "ops";
@@ -13905,13 +14050,20 @@ function buildFrameCostTree(o) {
       }
       resolved.push({ bucket, stages, cost });
     }
+    const bucketMs = (items) => items.reduce((sum, i) => sum + (i.ms ?? 0), 0);
+    const timedItems = resolved.length > 0 && resolved.every((r) => r.bucket.items.every((i) => i.ms !== null));
+    if (timedItems) stats.measuredDrawPasses++;
     let kept = resolved;
     let collapsed = null;
     if (resolved.length > maxFramesPerPass) {
       const sorted = resolved.slice().sort((x, y) => y.cost - x.cost);
       kept = sorted.slice(0, maxFramesPerPass);
       const tail2 = sorted.slice(maxFramesPerPass);
-      collapsed = { count: tail2.length, draws: tail2.reduce((s, r) => s + r.bucket.items.length, 0), cost: tail2.reduce((s, r) => s + r.cost, 0) };
+      collapsed = {
+        count: tail2.length,
+        draws: tail2.reduce((s, r) => s + r.bucket.items.length, 0),
+        cost: timedItems ? tail2.reduce((s, r) => s + bucketMs(r.bucket.items), 0) : tail2.reduce((s, r) => s + r.cost, 0)
+      };
       stats.collapsed += tail2.length;
     }
     const itemNodes = [];
@@ -13966,6 +14118,13 @@ function buildFrameCostTree(o) {
       const itemNode = rollup(node("item", name, 0, stageNodes));
       itemNode.command = first.command;
       itemNode.objectId = bucket.pipelineId;
+      if (timedItems) {
+        const ms = bucketMs(bucket.items);
+        const modeled = itemNode.totalCost;
+        if (modeled > 0) scaleSubtree(itemNode, ms / modeled);
+        else itemNode.totalCost = ms;
+        itemNode.durationMs = ms;
+      }
       itemNodes.push(itemNode);
     }
     if (collapsed) {
@@ -13989,6 +14148,9 @@ function buildFrameCostTree(o) {
   const root = rollup(node("frame", "Frame", 0, passNodes));
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
+  if (stats.measuredDrawPasses > 0) {
+    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+  }
   if (stats.measuredFragmentPasses > 0) {
     notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);
   }
@@ -14241,6 +14403,7 @@ function fitPixels(rgba, width, height, max) {
 // src/mcp/resource_tools.ts
 var COST_MODEL = "Modeled cost of one invocation, not a measurement: instructions weighted ALU 1, special functions 4, texture 20, memory 8, with loops counted as 8 iterations per nesting level. It ranks shaders and functions against each other.";
 var FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
+var FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
 var CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"];
@@ -14956,13 +15119,28 @@ function resourceTools(store) {
         estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area where the pass has no measured fragment counters, an upper bound without overdraw (default true); false leaves those stages unweighted." },
         depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
         minShare: { type: "number", minimum: 0, maximum: 1, description: 'Fold frames below this share of the total into one "other" frame, left out when it is under 0.001 (default 0.01).' },
-        top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." }
+        top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." },
+        measureDraws: { type: "boolean", description: "Replay the capture to time and count every draw the first time this is asked (default true; seconds to minutes, and it needs vkinsp_replay built). False leaves the draws weighted by the model." }
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         if (c2.data.api === "metal") {
           return jsonResult({ capture: c2.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        let drawNote;
+        if (boolArg(args, "measureDraws", true) && !c2.data.drawStats) {
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) drawNote = `The draws are weighted by the model: measuring them replays the capture, and ${NO_REPLAY_TOOL}`;
+          else {
+            const run2 = await runReplay(tool, c2.path, { kind: "draws" });
+            if (!run2.data) drawNote = `The draws are weighted by the model: the replay could not measure them (${run2.error ?? "no data"}).`;
+            else {
+              const file = parseDrawStats(run2.data);
+              c2.setDrawStats(file.draws);
+              drawNote = drawStatsSummary(file) + (file.note ? ` (${file.note})` : "");
+            }
+          }
         }
         const { models, spirv } = stageModels(c2);
         const result = buildFrameCostTree({
@@ -14995,14 +15173,14 @@ function resourceTools(store) {
         return jsonResult({
           capture: c2.id,
           units: result.units,
-          meaning: result.units === "ms" ? FLAME_MS : FLAME_OPS,
+          meaning: result.units !== "ms" ? FLAME_OPS : result.stats.measuredDrawPasses > 0 ? FLAME_MS_DRAWS : FLAME_MS,
           model: COST_MODEL,
           total: round(total),
           passes: pass === void 0 ? result.stats.passes : void 0,
           drawsAndDispatches: pass === void 0 ? result.stats.items : void 0,
           graph: flameFrame(view, root, 0),
           ...flameHotspots(c2, root, total, intArg(args, "top", 15, 0, 100), codeOf),
-          notes: result.notes.length ? result.notes : void 0
+          notes: [...drawNote ? [drawNote] : [], ...result.notes].length ? [...drawNote ? [drawNote] : [], ...result.notes] : void 0
         });
       }
     }
@@ -15012,75 +15190,6 @@ function resourceTools(store) {
 // src/mcp/tools.ts
 import fs11 from "node:fs";
 import path10 from "node:path";
-
-// src/main/replay.ts
-import { spawn as spawn3 } from "node:child_process";
-import fs10 from "node:fs";
-import os7 from "node:os";
-import path9 from "node:path";
-var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
-function findReplayTool(roots, layerDirs) {
-  const candidates = [
-    process.env.INSPECTOR_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path9.join(root, "build", "bin", config, REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path9.join(dir, REPLAY_TOOL))
-  ].filter((f) => !!f);
-  return candidates.find((f) => fs10.existsSync(f)) ?? null;
-}
-var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
-function tail(text, lines = 12) {
-  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
-}
-function analysisArgs(analysis, out) {
-  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
-  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
-  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
-}
-function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
-  return new Promise((resolve) => {
-    const out = path9.join(os7.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
-    let output = "";
-    let done = false;
-    let timedOut = false;
-    const child = spawn3(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
-    const collect = (chunk2) => {
-      output += chunk2.toString();
-      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
-    };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    const finish2 = (error) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      let data = null;
-      try {
-        data = new Uint8Array(fs10.readFileSync(out));
-        fs10.unlinkSync(out);
-      } catch {
-      }
-      if (data) {
-        resolve({ data, output: tail(output) });
-        return;
-      }
-      resolve({
-        data: null,
-        output: tail(output),
-        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
-${tail(output)}`)
-      });
-    };
-    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
-    child.on("close", () => finish2(null));
-  });
-}
-function runOverdrawReplay(tool, capturePath, timeoutMs) {
-  return runReplay(tool, capturePath, { kind: "overdraw" }, timeoutMs);
-}
 
 // src/renderer/pixel_history.ts
 function hexBytes(text) {

@@ -43,6 +43,7 @@ add_executable(vkinsp_replay
     src/replayer.cpp
     src/overdraw.cpp
     src/history.cpp
+    src/draw_stats.cpp
     src/pipeline_copy.cpp
     src/util.h
     ${GEN_OUTPUTS})

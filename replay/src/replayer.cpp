@@ -240,6 +240,28 @@ bool Replayer::CreateDevice() {
         info.pEnabledFeatures = captured.pCreateInfo->pEnabledFeatures;
         info.pNext = captured.pCreateInfo->pNext;
     }
+    // Per-draw counters are pipeline statistics queries, which need a feature the application may
+    // not have enabled. It goes into whichever form the capture used: a chained
+    // VkPhysicalDeviceFeatures2 (which must stay the only one), else our own copy of pEnabledFeatures.
+    VkPhysicalDeviceFeatures features{};
+    if (_options.drawStats) {
+        VkPhysicalDeviceFeatures supported{};
+        _fns.GetPhysicalDeviceFeatures(_physical, &supported);
+        VkPhysicalDeviceFeatures2* features2 = nullptr;
+        for (auto* s = (VkBaseOutStructure*)const_cast<void*>(info.pNext); s; s = s->pNext)
+            if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) features2 = (VkPhysicalDeviceFeatures2*)s;
+        if (!supported.pipelineStatisticsQuery) {
+            _report->drawStatsNote = "this GPU has no pipeline statistics queries, so the draws carry timings only";
+        } else if (features2) {
+            features2->features.pipelineStatisticsQuery = VK_TRUE;
+            _drawCountersAvailable = true;
+        } else {
+            if (info.pEnabledFeatures) features = *info.pEnabledFeatures;
+            features.pipelineStatisticsQuery = VK_TRUE;
+            info.pEnabledFeatures = &features;
+            _drawCountersAvailable = true;
+        }
+    }
 
     VkResult r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     if (r != VK_SUCCESS && (info.pNext || info.pEnabledFeatures)) {
@@ -1232,6 +1254,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
     if (begin.pBeginInfo) beginInfo = *begin.pBeginInfo;
     _fns.ResetCommandBuffer(cb, 0);
     _fns.BeginCommandBuffer(cb, &beginInfo);
+    // The submission's first command buffer resets the pools its actions write into.
+    if (_options.drawStats && _drawQueryCapacity && _drawSlot == 0) ResetDrawQueries(cb);
     _arena.Reset();
 
     PassState pass;
@@ -1395,7 +1419,14 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             Problem("command " + std::to_string(i) + ": " + m + " is not replayed");
             continue;
         }
+        // Per-draw timing and counters: the action is issued between the queries (draw_stats.cpp).
+        const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
+        const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
         fn(_ctx, *args, cb);
+        if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
+        // The capture's own queries: a statistics query of ours must not begin inside one.
+        if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
+        else if (StartsWith(m, "vkCmdEndQuery") && _appQueryDepth) --_appQueryDepth;
         _arena.Reset();
         if (_ctx.unresolved != unresolvedBefore) {
             if (IsBeginRenderPass(m)) {
@@ -1432,6 +1463,8 @@ void Replayer::ReplayCommands() {
         std::vector<PendingOverdraw> overdraws;
         std::vector<PendingHistory> histories;
         std::vector<VkCommandBuffer> cbs;
+        _drawSlot = 0;
+        _pendingDraws.clear();
         const JValue* submits = args->Get("pSubmits");
         for (uint32_t s = 0; submits && s < submits->count; ++s) {
             const JValue& submit = submits->items[s];
@@ -1454,6 +1487,7 @@ void Replayer::ReplayCommands() {
         }
         if (cbs.empty()) {
             CompleteHistory(histories);
+            CompleteDrawStats(false);
             ReleaseTransients();
             continue;
         }
@@ -1468,6 +1502,7 @@ void Replayer::ReplayCommands() {
             _fns.QueueWaitIdle(queue);
             _report->submissions++;
         }
+        CompleteDrawStats(r == VK_SUCCESS);
         CompareReadbacks(readbacks);
         CompleteHistory(histories);
         CompleteOverdraw(overdraws);
@@ -1503,7 +1538,9 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
     ComputeInitialLayouts();
     UploadSampledTextures();
     TransitionToInitialLayouts();
+    if (options.drawStats) PrepareDrawStats();
     ReplayCommands();
+    DestroyDrawStats();
     if (options.history.enabled && !_historyPasses) {
         report.history.notes.push_back("no replayed render pass renders to image " + std::to_string(options.history.image) + " at mip " +
                                        std::to_string(options.history.mip) + ", layer " + std::to_string(options.history.layer) +

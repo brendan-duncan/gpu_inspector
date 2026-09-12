@@ -349,6 +349,10 @@ the base for overdraw and pixel history. Its pieces:
 - analyses that issue a pass again after the replay has executed it, with edited copies of its
   pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`) and pixel history (`history.cpp`)
 
+It also measures a frame's draws one at a time (`draw_stats.cpp`, `--draws`): each is issued
+between two timestamps and inside a pipeline statistics query, which is where the Shader Flame
+Graph's per-draw weights and exact fragment counts come from (`renderer/draw_stats.ts`).
+
 The app runs it for a Vulkan capture's overdraw and pixel history (`app/src/main/replay.ts`: the
 capture serialized to a temporary file, `--overdraw-data` or `--pixel-data`, the result parsed by
 `renderer/overdraw.ts` or `renderer/pixel_history.ts`); the MCP server does the same from

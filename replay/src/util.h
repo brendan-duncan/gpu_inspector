@@ -36,6 +36,9 @@ inline bool IsBeginRenderPass(std::string_view m) {
 
 inline bool IsBeginRendering(std::string_view m) { return m == "vkCmdBeginRendering" || m == "vkCmdBeginRenderingKHR"; }
 
+/** A command that does GPU work of its own: what per-draw timing and counters measure. */
+inline bool IsAction(std::string_view m) { return StartsWith(m, "vkCmdDraw") || StartsWith(m, "vkCmdDispatch"); }
+
 /** The layer's names for shader stages, which name a pipeline's SPIR-V payloads ("fragment:main"). */
 inline const char* StageName(VkShaderStageFlagBits stage) {
     switch (stage) {

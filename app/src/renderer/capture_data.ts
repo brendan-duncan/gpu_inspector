@@ -5,6 +5,7 @@ import { setsFor, type CommandSets } from "./command_sets.js";
 import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
+import type { DrawStat } from "./draw_stats.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
@@ -77,6 +78,8 @@ export class CaptureData {
   overdraw: CapturedOverdraw[] = [];
   /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
   pixelHistory: Record<string, unknown> | null = null;
+  /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
+  drawStats: DrawStat[] | null = null;
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -93,6 +96,8 @@ export class CaptureData {
   readonly onOverdraw = new Signal<() => void>();
   /** A Metal capture's pixel history arrived. */
   readonly onPixelHistory = new Signal<() => void>();
+  /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
+  readonly onDrawStats = new Signal<() => void>();
 
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets(): CommandSets {
@@ -109,6 +114,7 @@ export class CaptureData {
     this.passTimings = new Map();
     this.overdraw = [];
     this.pixelHistory = null;
+    this.drawStats = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -178,6 +184,7 @@ export class CaptureData {
     this.passTimings = c.passTimings;
     this.overdraw = c.overdraw;
     this.pixelHistory = c.pixelHistory;
+    this.drawStats = c.drawStats;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -187,6 +194,7 @@ export class CaptureData {
     if (this.passTimings.size) this.onPassTimings.emit();
     if (this.overdraw.length) this.onOverdraw.emit();
     if (this.pixelHistory) this.onPixelHistory.emit();
+    if (this.drawStats) this.onDrawStats.emit();
   }
 
   handleMessage(msg: LayerMessage): void {

@@ -11,6 +11,11 @@
   `OpName` / `OpMemberName`, instead of `member0`, `member1`.
 - Shader Flame Graph: fragment stages are weighted by the fragment invocations a pass's GPU
   counters measured, not by the scissor area, where the capture has them.
+- Per-draw timing and counters for Vulkan captures (`vkinsp_replay --draws`): **Measure draws** in
+  the Shader Flame Graph replays the frame with a timestamp pair and a pipeline statistics query
+  around every draw and dispatch. A pass's measured time is then split between its draws by what
+  each was timed at, and each stage takes its measured invocation count. `get_shader_flame_graph`
+  measures on first use, and capture files keep the measurements.
 
 ## v0.9.0
 

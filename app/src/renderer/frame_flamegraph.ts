@@ -14,6 +14,11 @@ const LEGEND: [string, string][] = [["alu", "ALU"], ["sfu", "SFU"], ["texture", 
 export interface FlameGraphPanelOptions extends Omit<CostTreeOptions, "perDraw" | "estimateFragments"> {
   onSelectCommand?: (index: number) => void;
   onInspect?: (objectId: number) => void;
+  /**
+   * Vulkan: replays the capture to time and count every draw (draw_stats.ts), which weighs the
+   * draws of a pass by what they measured instead of by the model. Absent where it cannot run.
+   */
+  measureDraws?: () => Promise<boolean>;
 }
 
 function colorOf(n: FlameNode): string {
@@ -35,6 +40,22 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
     onChange: (v) => { estimateFragments = v; update(); } });
   const reset = new Button(controls, { label: "Reset zoom", class: "btn btn-sm", tooltip: "Zoom back out to the whole frame", callback: () => graph.resetZoom() });
   void reset;
+  // Per-draw timings and counters: measured by replaying the capture, once per capture.
+  if (o.measureDraws && !o.data.drawStats) {
+    const measure = new Button(controls, { label: "Measure draws", class: "btn btn-sm",
+      tooltip: "Replay the capture on this machine's GPU with a timestamp pair and a pipeline statistics query around every draw, so each draw's share of its pass and its fragment count are measured rather than modeled",
+      callback: () => {
+        measure.disabled = true;
+        measure.text = "Replaying...";
+        void o.measureDraws!().then((ok) => {
+          measure.disabled = false;
+          measure.text = "Measure draws";
+          // Measured once per capture: the button has nothing left to do.
+          if (ok) measure.element.style.display = "none";
+          if (ok) update();
+        });
+      } });
+  }
 
   const summary = new Div(root, { class: "flame-summary text-muted" });
   const legend = new Div(root, { class: "flame-legend" });
@@ -70,7 +91,9 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
     const result = buildFrameCostTree({ ...o, perDraw, estimateFragments });
     units = result.units;
     graph.setData(result.root);
-    const unitNote = units === "ms" ? "measured GPU time, modeled split" : "modeled op units";
+    const unitNote = units !== "ms" ? "modeled op units"
+      : result.stats.measuredDrawPasses > 0 ? "measured GPU time, split by measured draws"
+      : "measured GPU time, modeled split";
     summary.text = `${result.stats.passes} pass${result.stats.passes === 1 ? "" : "es"}, ${result.stats.items} draws and dispatches: ${formatCostValue(result.root.totalCost, units)} (${unitNote})`;
     notes.html = "";
     for (const note of result.notes) new Div(notes, { text: note, class: "flame-note text-muted font-sm" });

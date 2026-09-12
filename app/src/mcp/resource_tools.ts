@@ -1,6 +1,8 @@
 // The MCP server's resource tools: the images and buffer ranges a capture read back, the vertices
 // a draw read, and shaders (reflection, embedded source, cross-compiled text, static analysis).
+import { NO_REPLAY_TOOL, findReplayTool, runReplay } from "../main/replay.js";
 import { shaderText } from "../main/shader_tools.js";
+import { drawStatsSummary, parseDrawStats } from "../renderer/draw_stats.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
 import { buildFrameCostTree, type FlameNode, type StageModel } from "../renderer/frame_cost_tree.js";
 import { metalStages } from "../renderer/metal/reflection.js";
@@ -18,12 +20,14 @@ import {
   CAPTURE_PARAM, PAGE_PARAMS, boolArg, clip, enumArg, intArg, jsonResult, numberArg, optionalInt, page, readTyped, refText, requireInt, round,
   schema, stringArg, textureBrief, tidy,
 } from "./describe.js";
+import { checkoutRoots, installedLayerDirs } from "./live_session.js";
 import { encodePng, fitPixels } from "./png.js";
 import { codeAt, debugInfoWithSources, searchPaths, sourceLineTexts, type LineTexts } from "./search_paths.js";
 import type { ToolArgs, ToolDefinition, ToolResult } from "./stdio_server.js";
 
 const COST_MODEL = "Modeled cost of one invocation, not a measurement: instructions weighted ALU 1, special functions 4, texture 20, memory 8, with loops counted as 8 iterations per nesting level. It ranks shaders and functions against each other.";
 const FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
+const FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 const FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
 const SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"] as const;
 const CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"] as const;
@@ -715,12 +719,28 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
         minShare: { type: "number", minimum: 0, maximum: 1, description: "Fold frames below this share of the total into one \"other\" frame, left out when it is under 0.001 (default 0.01)." },
         top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." },
+        measureDraws: { type: "boolean", description: "Replay the capture to time and count every draw the first time this is asked (default true; seconds to minutes, and it needs vkinsp_replay built). False leaves the draws weighted by the model." },
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         if (c.data.api === "metal") {
           return jsonResult({ capture: c.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        // Per-draw timings and counters: replayed once, and kept with the open capture.
+        let drawNote: string | undefined;
+        if (boolArg(args, "measureDraws", true) && !c.data.drawStats) {
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) drawNote = `The draws are weighted by the model: measuring them replays the capture, and ${NO_REPLAY_TOOL}`;
+          else {
+            const run = await runReplay(tool, c.path, { kind: "draws" });
+            if (!run.data) drawNote = `The draws are weighted by the model: the replay could not measure them (${run.error ?? "no data"}).`;
+            else {
+              const file = parseDrawStats(run.data);
+              c.setDrawStats(file.draws);
+              drawNote = drawStatsSummary(file) + (file.note ? ` (${file.note})` : "");
+            }
+          }
         }
         const { models, spirv } = stageModels(c);
         const result = buildFrameCostTree({
@@ -747,11 +767,13 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const total = root.totalCost;
         const view: FlameView = { c, total, depth: intArg(args, "depth", 6, 1, 32), minShare: Math.min(1, Math.max(0, numberArg(args, "minShare") ?? 0.01)) };
         return jsonResult({
-          capture: c.id, units: result.units, meaning: result.units === "ms" ? FLAME_MS : FLAME_OPS, model: COST_MODEL,
+          capture: c.id, units: result.units,
+          meaning: result.units !== "ms" ? FLAME_OPS : result.stats.measuredDrawPasses > 0 ? FLAME_MS_DRAWS : FLAME_MS,
+          model: COST_MODEL,
           total: round(total), passes: pass === undefined ? result.stats.passes : undefined, drawsAndDispatches: pass === undefined ? result.stats.items : undefined,
           graph: flameFrame(view, root, 0),
           ...flameHotspots(c, root, total, intArg(args, "top", 15, 0, 100), codeOf),
-          notes: result.notes.length ? result.notes : undefined,
+          notes: [...(drawNote ? [drawNote] : []), ...result.notes].length ? [...(drawNote ? [drawNote] : []), ...result.notes] : undefined,
         });
       },
     },

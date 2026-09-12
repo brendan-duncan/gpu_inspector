@@ -35,7 +35,8 @@ namespace {
 
 void PrintUsage() {
     std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
-                         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]] [--trace] | --check\n");
+                         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
+                         "                     [--draws [--draw-data <file>]] [--trace] | --check\n");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -230,6 +231,54 @@ bool WritePixelHistoryData(const ReplayReport& report, const std::string& path) 
     if (!out) return false;
     out.write(json.data(), (std::streamsize)json.size());
     return (bool)out;
+}
+
+/**
+ * --draw-data: every draw and dispatch of the frame with the time it took and the counters it ran
+ * up, for GPU Inspector's Shader Flame Graph (parseDrawStats in app/src/renderer/draw_stats.ts).
+ */
+bool WriteDrawData(const ReplayReport& report, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-draw-stats\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"note\":" + JsonString(report.drawStatsNote) + ",\"draws\":[";
+    for (size_t i = 0; i < report.draws.size(); ++i) {
+        const DrawResult& d = report.draws[i];
+        char ms[32];
+        std::snprintf(ms, sizeof(ms), "%.6f", d.durationMs);
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(d.command) + ",\"frame\":" + std::to_string(d.frame) +
+                ",\"commandBuffer\":" + std::to_string(d.commandBuffer) + ",\"passIndex\":" + std::to_string(d.passIndex) +
+                ",\"timed\":" + (d.timed ? "true" : "false") + ",\"ms\":" + ms +
+                ",\"counted\":" + (d.counted ? "true" : "false") +
+                ",\"vertexInvocations\":" + std::to_string(d.vertexInvocations) +
+                ",\"primitives\":" + std::to_string(d.primitives) +
+                ",\"fragmentInvocations\":" + std::to_string(d.fragmentInvocations) +
+                ",\"computeInvocations\":" + std::to_string(d.computeInvocations) + "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
+void PrintDraws(const ReplayReport& report) {
+    double total = 0;
+    uint64_t fragments = 0;
+    for (const DrawResult& d : report.draws) {
+        total += d.durationMs;
+        fragments += d.fragmentInvocations;
+    }
+    std::printf("draws measured: %zu, %.3f ms of draw time, %llu fragment shader invocations%s\n", report.draws.size(), total,
+                (unsigned long long)fragments, report.drawStatsNote.empty() ? "" : (" (" + report.drawStatsNote + ")").c_str());
+    for (size_t i = 0; i < report.draws.size() && i < 20; ++i) {
+        const DrawResult& d = report.draws[i];
+        const std::string where = d.passIndex == UINT32_MAX ? "outside a render pass" : "pass " + std::to_string(d.passIndex);
+        std::printf("  [%u] %s: %.4f ms%s, %llu vertex, %llu primitives, %llu fragment, %llu compute invocations\n", d.command, where.c_str(),
+                    d.durationMs, d.timed ? "" : " (not timed)", (unsigned long long)d.vertexInvocations, (unsigned long long)d.primitives,
+                    (unsigned long long)d.fragmentInvocations, (unsigned long long)d.computeInvocations);
+    }
+    if (report.draws.size() > 20) std::printf("  ... %zu more\n", report.draws.size() - 20);
 }
 
 void PrintHistory(const PixelHistoryResult& h) {
@@ -499,7 +548,7 @@ int Check(const CaptureFile& capture) {
 }
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
-           const std::string& overdrawData, const std::string& pixelData) {
+           const std::string& overdrawData, const std::string& pixelData, const std::string& drawData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -554,6 +603,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", overdrawData.c_str());
         }
     }
+    if (options.drawStats) {
+        PrintDraws(report);
+        if (!drawData.empty()) {
+            if (WriteDrawData(report, drawData)) std::printf("  wrote %s\n", drawData.c_str());
+            else std::printf("  could not write %s\n", drawData.c_str());
+        }
+    }
     if (report.history.requested) {
         PrintHistory(report.history);
         if (!pixelData.empty()) {
@@ -580,6 +636,7 @@ int main(int argc, char** argv) {
     std::string overdrawDir;
     std::string overdrawData;
     std::string pixelData;
+    std::string drawData;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -595,6 +652,11 @@ int main(int argc, char** argv) {
             options.overdraw = true;
         }
         else if (!std::strcmp(argv[i], "--pixel-data") && i + 1 < argc) pixelData = argv[++i];
+        else if (!std::strcmp(argv[i], "--draws")) options.drawStats = true;
+        else if (!std::strcmp(argv[i], "--draw-data") && i + 1 < argc) {
+            drawData = argv[++i];
+            options.drawStats = true;
+        }
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -627,5 +689,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData);
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData);
 }

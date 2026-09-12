@@ -1111,6 +1111,13 @@ ipcMain.handle("inspector:measureOverdraw", async (_e, opts: { data: Uint8Array;
   if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
   return measureOverdrawOfBytes(tool, opts.data, opts.name);
 });
+// Vulkan per-draw timing and counters: the frame replayed with queries around each draw
+// (replay/src/draw_stats.cpp), for the Shader Flame Graph.
+ipcMain.handle("inspector:measureDraws", async (_e, opts: { data: Uint8Array; name?: string }): Promise<ReplayRun> => {
+  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
+  return replayBytes(tool, opts.data, { kind: "draws" }, opts.name);
+});
 // Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", async (_e, opts: { data: Uint8Array; name?: string; pixel: PixelRequest }): Promise<ReplayRun> => {
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);

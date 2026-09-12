@@ -198,6 +198,35 @@ Limits:
 - Per-fragment detail is missing: a draw is one event, with no values of the primitives inside it.
 - A shader that writes depth, or discards after early tests, is classified as if tests ran late.
 
+## Per-draw timing and counters
+
+`--draws` measures every draw and dispatch of the frame (`draw_stats.cpp`, RenderDoc's
+`vk_counters.cpp` does the same). The frame replays exactly as the capture recorded it, with each
+action issued between a pair of timestamps and inside a pipeline statistics query:
+
+- **The counters are exact**: vertex and fragment shader invocations, primitives, compute
+  invocations — per draw, indirect arguments included, which nothing in a capture itself reports.
+  They need the `pipelineStatisticsQuery` feature, which the replay adds to the device it creates.
+- **The times are not what a draw costs alone.** The GPU pipelines consecutive draws, so their
+  spans overlap and add up to more than the pass takes. What they are good for is the share of a
+  pass a draw accounts for.
+
+`--draw-data <file>` writes them as JSON (`app/src/renderer/draw_stats.ts` reads it). GPU
+Inspector's Shader Flame Graph runs the tool this way from **Measure draws**, and the MCP server's
+`get_shader_flame_graph` does on first use: a pass's measured GPU time is then split between its
+draws by what the replay timed, and each fragment stage takes its measured invocation count instead
+of the scissor-area estimate.
+
+```
+vkinsp_replay frame.gpucap --draws
+draws measured: 3, 0.021 ms of draw time, 51204 fragment shader invocations
+  [5] outside a render pass: 0.0078 ms, 0 vertex, 0 primitives, 0 fragment, 1024 compute invocations
+  [17] pass 0: 0.0061 ms, 24 vertex, 12 primitives, 51204 fragment, 0 compute invocations
+```
+
+On the test triangle the fragment count matches the pipeline statistics the capture itself
+measured, exactly.
+
 ## Where it stands
 
 Every capture replayed so far, with its result:
