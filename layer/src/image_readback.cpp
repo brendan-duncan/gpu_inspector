@@ -180,10 +180,9 @@ void ImageReadback::Serve(DeviceData* dev, VkQueue queue, const PendingRequest& 
                               : VK_IMAGE_ASPECT_COLOR_BIT;
     FormatBlock block = FormatBlockInfo(img.format, aspect);
     if (block.bytes == 0) return Fail(r, "unsupported format for readback");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect == VK_IMAGE_ASPECT_STENCIL_BIT)
-        return Fail(r, "multisampled stencil image (no stencil resolve)");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
-        return Fail(r, "multisampled depth image (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && (aspect == VK_IMAGE_ASPECT_DEPTH_BIT || aspect == VK_IMAGE_ASPECT_STENCIL_BIT)
+        && !CanResolveDepth(dev))
+        return Fail(r, "multisampled depth or stencil image (the resolve needs dynamic rendering, Vulkan 1.2+)");
     const VkDeviceSize size = (VkDeviceSize)((width + block.width - 1) / block.width) *
                               ((height + block.height - 1) / block.height) * depth * block.bytes;
     if (size > (256ull << 20)) return Fail(r, "image is larger than 256 MB");

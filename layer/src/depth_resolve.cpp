@@ -95,10 +95,12 @@ bool CreateDepthResolveViews(DeviceData* dev, const PendingImageCopy& p, VkImage
     ci.viewType = type;
     ci.format = p.format;
     ci.image = p.image;
-    ci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, p.range.baseMipLevel, 1, p.range.baseArrayLayer, p.range.layerCount};
+    // Both aspects of a depth-stencil format: one view serves as depth and stencil attachment.
+    const VkImageAspectFlags viewAspects = FormatAspects(p.format);
+    ci.subresourceRange = {viewAspects, p.range.baseMipLevel, 1, p.range.baseArrayLayer, p.range.layerCount};
     if (d.CreateImageView(dev->device, &ci, nullptr, srcView) != VK_SUCCESS) return false;
     ci.image = p.resolve;
-    ci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, p.range.layerCount};
+    ci.subresourceRange = {viewAspects, 0, 1, 0, p.range.layerCount};
     if (d.CreateImageView(dev->device, &ci, nullptr, dstView) != VK_SUCCESS) {
         d.DestroyImageView(dev->device, *srcView, nullptr);
         *srcView = VK_NULL_HANDLE;
@@ -130,18 +132,21 @@ void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageC
                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0,
                          0, nullptr, 0, nullptr, 2, both);
 
-    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = p.srcView;
-    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
-    depth.resolveImageView = p.dstView;
-    depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    // Both aspects resolve with the same mode, so a device without independentResolve is fine.
+    VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = p.srcView;
+    attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;   // required to be supported for both aspects
+    attachment.resolveImageView = p.dstView;
+    attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    const VkImageAspectFlags formatAspects = FormatAspects(p.format);
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
     ri.renderArea = {{0, 0}, {p.extent.width, p.extent.height}};
     ri.layerCount = p.range.layerCount;
-    ri.pDepthAttachment = &depth;
+    if (formatAspects & VK_IMAGE_ASPECT_DEPTH_BIT) ri.pDepthAttachment = &attachment;
+    if (formatAspects & VK_IMAGE_ASPECT_STENCIL_BIT) ri.pStencilAttachment = &attachment;
     if (d.CmdBeginRendering) d.CmdBeginRendering(cb, &ri); else d.CmdBeginRenderingKHR(cb, &ri);
     if (d.CmdEndRendering) d.CmdEndRendering(cb); else d.CmdEndRenderingKHR(cb);
 

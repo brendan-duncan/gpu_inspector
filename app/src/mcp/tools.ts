@@ -363,7 +363,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         } else {
           notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
         }
-        if (!metal) notes.push("The vertex/fragment split and depth rejection are Metal only: Vulkan has no portable stage-boundary timestamps, and pipeline statistics do not count the fragments that survived the depth test.");
+        if (!metal) notes.push("The vertex/fragment split is Metal only: Vulkan has no portable stage-boundary timestamps. Depth rejection comes from an occlusion query the layer runs around each pass, which it skips where the application has a query of its own open.");
         const totals = m.totals;
         const p = page(ranked, args, 30, 200);
         return jsonResult({

@@ -159,11 +159,26 @@ test("a Vulkan capture measures overdraw from the render area", () => {
   assert.equal(p.pixels, 10000, "200 x 50 of render area");
   assert.equal(p.overdraw, 2, "20000 fragment invocations over 10000 pixels");
   assert.equal(p.fragmentsPerPrimitive, 10);
-  assert.equal(p.depthRejectRate, null, "pipeline statistics do not count fragments passed");
+  assert.equal(p.depthRejectRate, null, "no fragmentsPassed: the pass had no occlusion query");
   assert.equal(p.vertexMs, null, "Vulkan has no per-stage split");
   assert.equal(p.bound, null);
   assert.equal(m.withCounters, 1);
   assert.match(p.label, /^Render Pass 0/);
+});
+
+test("a Vulkan pass with the layer's occlusion query has a depth rejection rate", () => {
+  // The layer runs an occlusion query around each pass (layer/src/capture.cpp), which counts the
+  // samples that passed its depth and stencil tests: `fragmentsPassed`, the same name Metal uses.
+  const data = capture([
+    ["vkCmdBeginRenderPass", { pRenderPassBegin: { renderArea: { offset: { x: 0, y: 0 }, extent: { width: 200, height: 50 } } } }],
+    ["vkCmdDraw", { vertexCount: 6, instanceCount: 1 }],
+    ["vkCmdEndRenderPass", {}],
+  ], [{
+    frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, durationMs: 2, startMs: 0,
+    counters: { vertexInvocations: 6, fragmentInvocations: 20000, clipperPrimitivesOut: 2000, fragmentsPassed: 4000 },
+  }], "vulkan");
+  const p = collectPassMetrics(data, db).passes[0];
+  assert.equal(p.depthRejectRate, 0.8, "4000 of 20000 fragments survived the depth test");
 });
 
 test("a Vulkan run of dispatches is its own pass, numbered apart from render passes", () => {

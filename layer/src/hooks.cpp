@@ -197,7 +197,35 @@ void PreHook_vkCmdWaitEvents(VkCommandBuffer& commandBuffer, uint32_t&, const Vk
 }
 void PreHook_vkCmdWaitEvents2(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdWaitEvents2KHR(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
-void PreHook_vkCmdExecuteCommands(VkCommandBuffer& commandBuffer, uint32_t&, const VkCommandBuffer*&) { EndComputePass(commandBuffer); }
+// Depth rejection: the layer's occlusion query over a pass (capture.h) cannot stay active while
+// the application opens a query of its own, and a secondary command buffer executed while it is
+// active would have to have been recorded with occlusionQueryEnable. Either way ours ends early
+// and that pass reports no count; the application's commands are left exactly as they were.
+static void DropOcclusion(VkCommandBuffer commandBuffer) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().DropOcclusion(dev, rec);
+}
+
+static void AppQueryBegan(VkCommandBuffer commandBuffer) {
+    DropOcclusion(commandBuffer);
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) rec->appQueryDepth++;
+}
+
+static void AppQueryEnded(VkCommandBuffer commandBuffer) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer); rec && rec->appQueryDepth) rec->appQueryDepth--;
+}
+
+void PreHook_vkCmdBeginQuery(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, VkQueryControlFlags&) { AppQueryBegan(commandBuffer); }
+void PreHook_vkCmdBeginQueryIndexedEXT(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, VkQueryControlFlags&, uint32_t&) { AppQueryBegan(commandBuffer); }
+void PreHook_vkCmdEndQuery(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&) { AppQueryEnded(commandBuffer); }
+void PreHook_vkCmdEndQueryIndexedEXT(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, uint32_t&) { AppQueryEnded(commandBuffer); }
+
+void PreHook_vkCmdExecuteCommands(VkCommandBuffer& commandBuffer, uint32_t&, const VkCommandBuffer*&) {
+    EndComputePass(commandBuffer);
+    DropOcclusion(commandBuffer);
+}
 void PreHook_vkEndCommandBuffer(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdBeginDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer, const VkDebugUtilsLabelEXT*&) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdEndDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }

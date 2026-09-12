@@ -11,6 +11,11 @@
   `OpName` / `OpMemberName`, instead of `member0`, `member1`.
 - Shader Flame Graph: fragment stages are weighted by the fragment invocations a pass's GPU
   counters measured, not by the scissor area, where the capture has them.
+- Depth rejection for Vulkan captures: the layer runs an occlusion query around each render pass,
+  counting the samples that passed its depth and stencil tests, so the GPU Bottlenecks report's
+  depth rejection column and the `late-depth-rejection` rule work for Vulkan as well as Metal.
+- Multisampled stencil read-back: the depth resolve now carries both aspects of a depth-stencil
+  image.
 - Per-draw timing and counters for Vulkan captures (`vkinsp_replay --draws`): **Measure draws** in
   the Shader Flame Graph replays the frame with a timestamp pair and a pipeline statistics query
   around every draw and dispatch. A pass's measured time is then split between its draws by what

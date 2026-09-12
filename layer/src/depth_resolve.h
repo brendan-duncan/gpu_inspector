@@ -1,5 +1,7 @@
-// Multisampled depth read-back. vkCmdResolveImage resolves color only; a depth attachment is
-// resolved by a render pass with a depth resolve attachment. The layer uses dynamic rendering
+// Multisampled depth and stencil read-back. vkCmdResolveImage resolves color only; a depth or
+// stencil attachment is resolved by a render pass with a resolve attachment (both aspects of a
+// depth-stencil image resolve together, with the same mode, so a device that lacks
+// independentResolve can still do it). The layer uses dynamic rendering
 // for it (no render pass or framebuffer objects: an empty vkCmdBeginRendering/vkCmdEndRendering
 // pair with the multisampled image as depth attachment, loadOp LOAD, and the single-sampled
 // temporary image as its resolve target, VK_RESOLVE_MODE_SAMPLE_ZERO_BIT, which every
