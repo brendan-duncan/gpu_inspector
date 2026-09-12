@@ -136,13 +136,20 @@ application with injected state. Route (a) is the general one and is the prerequ
       this machine's GPU through decoders generated from vk.xml, re-executes its command buffers,
       and compares every read-back render target with its own copy. The triangle, hazard and
       Unity captures replay pixel-identical.
+- [x] Swapchain images of a recreated swapchain: a driver hands the new swapchain its
+      predecessor's image handles, and the tracker kept them under the old swapchain, so destroying
+      it took them and the views over them away. A recycled handle now moves to its new owner
+      (`layer/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
+      two passes in the replay; it now replays with 0 problems and every target identical.
 - [ ] Capture enough to replay any frame, RenderDoc's "initial contents" (`vk_initstate.cpp`):
       - resource contents at frame start: images never read back, buffers never bound in the
         frame, mapped-memory writes between submits
       - initial layouts per subresource
-      - swapchain images of swapchains created before the layer tracked them
 
       Also compare multisampled targets through a resolve.
+- [ ] Per-draw timing and counters inside secondary command buffers: `vkinsp_replay --draws`
+      instruments the primary's recording only, so a frame whose draws are all in secondaries (a
+      Unity player's are) measures nothing.
 - [ ] Record live shader replacements in captures. A frame captured during `replace_shader` keeps
       the original pipeline, so its replay draws what the application asked for, not what the
       frame showed.

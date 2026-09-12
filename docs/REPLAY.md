@@ -236,7 +236,7 @@ Every capture replayed so far, with its result:
 | test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
 | test/triangle `--msaa` | the resolve target identical; the multisampled target is not compared yet |
-| Unity player frame (secondary command buffers, two subpasses, `vkCmdSetVertexInputEXT`, MRT) | 8 of 9 targets identical; the last pass renders to a swapchain image the capture never tracked, and is left out |
+| Unity player frame (secondary command buffers, two subpasses, `vkCmdSetVertexInputEXT`, MRT) | all 12 targets identical, 0 problems |
 | XR triangle captured on an Adreno 740, replayed on an RTX 4080 | visually identical; 0.4% of texels differ slightly (shader precision and rasterization of two GPUs) |
 
 These cases differ for known reasons:

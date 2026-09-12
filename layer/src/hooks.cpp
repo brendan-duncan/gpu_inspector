@@ -424,7 +424,11 @@ void Hook_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uin
                                   VkImage* pSwapchainImages) {
     if (!pSwapchainImages || !pSwapchainImageCount) return;
     SwapchainInfo sc;
-    if (!ResourceRegistry::Get().GetSwapchain(swapchain, sc)) return;
+    if (!ResourceRegistry::Get().GetSwapchain(swapchain, sc)) {
+        Log("swapchain images: %u handed out for a swapchain the layer does not know", *pSwapchainImageCount);
+        return;
+    }
+    Log("swapchain images: %u tracked", *pSwapchainImageCount);
     ImageInfo info;
     info.device = device;
     info.swapchainImage = true;
