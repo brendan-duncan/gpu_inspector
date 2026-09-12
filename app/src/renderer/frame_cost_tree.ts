@@ -7,8 +7,11 @@
 //               dispatch arguments (indirect ones from the captured argument buffers).
 //   modeled   - the per-invocation instruction mix from the static SPIR-V cost model
 //               (spirv_analysis.ts), which distributes a pass's time across the shaders in it.
-//   estimated - fragment invocations, which only rasterization knows: optionally the scissor
-//               area (an upper bound without overdraw), else the stage is shown unweighted.
+//   estimated - fragment invocations, which only rasterization knows. A pass whose GPU counters
+//               carry `fragmentInvocations` (pipeline statistics on Vulkan, the statistic set on
+//               Metal) gives its own exact total, split across its draws by scissor area; without
+//               counters the scissor area is the estimate, an upper bound, or the stage is shown
+//               unweighted.
 //
 // When every pass of the frame has a measured duration the tree reads in milliseconds: the root
 // and each pass width are real, only the split within a pass is modeled. Otherwise it falls
@@ -85,7 +88,9 @@ export interface CostTreeResult {
   root: FlameNode;
   units: CostUnits;
   notes: string[];
-  stats: { passes: number; items: number; unknownStages: number; estimatedStages: number; collapsed: number };
+  stats: { passes: number; items: number; unknownStages: number; estimatedStages: number; collapsed: number;
+           /** Render passes whose fragment stages are weighted by measured invocations, not by area. */
+           measuredFragmentPasses: number };
 }
 
 export function formatCostValue(value: number, units: CostUnits): string {
@@ -130,6 +135,8 @@ interface Item {
   pipelineId: number;
   kind: "draw" | "dispatch";
   stages: StageInvocations[];
+  /** The draw's scissor (clipped to the render area): how a pass's measured fragments are split. */
+  area: number | null;
 }
 
 interface Pass {
@@ -141,6 +148,8 @@ interface Pass {
   durationMs: number | null;
   /** Render area in pixels (fragment estimate bound). */
   area: number | null;
+  /** Fragment shader invocations the pass's GPU counters measured, null without them. */
+  measuredFragments: number | null;
 }
 
 function readU32(data: Uint8Array, offset: number): number | null {
@@ -202,7 +211,7 @@ function rectArea(v: ArgValue | undefined): number | null {
 // The walk: passes and their draws / dispatches, mirroring the capture panel's pass numbering
 // (render passes and compute runs counted per command buffer within each frame).
 
-function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } {
+function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; measuredFragmentPasses: number } {
   const { data, models } = o;
   const sets = data.sets;
   const passes: Pass[] = [];
@@ -249,7 +258,9 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
         let area: number | null = null;
         if (a && isObject(a.pRenderPassBegin)) area = rectArea(a.pRenderPassBegin.renderArea);
         else if (a && isObject(a.pRenderingInfo)) area = rectArea(a.pRenderingInfo.renderArea);
-        renderPass = { key, kind: "render", label: `Render Pass ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area };
+        const fragments = timing?.counters?.fragmentInvocations;
+        renderPass = { key, kind: "render", label: `Render Pass ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area,
+                       measuredFragments: typeof fragments === "number" && fragments > 0 ? fragments : null };
         passes.push(renderPass);
         continue;
       }
@@ -278,7 +289,8 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
           computeCounters.set(objId, index + 1);
           const key = passKey(frame, objId, index, true);
           const timing = data.passTimings.get(key);
-          compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null };
+          compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null,
+                      measuredFragments: null };
           passes.push(compute);
         }
         pass = compute;
@@ -290,6 +302,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
       const stageModels = models.get(pipelineId);
       if (!stageModels) { missingModels++; continue; }
       const stages: StageInvocations[] = [];
+      let drawArea: number | null = null;
       if (isDispatch) {
         const groups = dispatchGroups(cmd, data);
         for (const m of stageModels) {
@@ -300,9 +313,8 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
       } else {
         const vertices = drawInvocations(cmd, data);
         const scissorArea = scissor.get(stream);
-        const fragmentArea = o.estimateFragments
-          ? (scissorArea != null && pass.area != null ? Math.min(scissorArea, pass.area) : scissorArea ?? pass.area ?? null)
-          : null;
+        drawArea = scissorArea != null && pass.area != null ? Math.min(scissorArea, pass.area) : scissorArea ?? pass.area ?? null;
+        const fragmentArea = o.estimateFragments ? drawArea : null;
         for (const m of stageModels) {
           if (m.stage === "fragment") {
             stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
@@ -314,11 +326,33 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[] } 
           }
         }
       }
-      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages });
+      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages, area: drawArea });
     }
   }
   if (missingModels) notes.push(`${missingModels} draw(s) or dispatch(es) use a pipeline whose shaders could not be fetched and are left out.`);
-  return { passes, notes };
+
+  // Where the pass's counters measured its fragment invocations, that total replaces the area
+  // estimate: it is what rasterization actually ran, overdraw and the depth test included. Nothing
+  // measures one draw on its own yet, so a pass with several splits its total between them by
+  // area, which is exact for the common pass that draws once.
+  let measuredFragmentPasses = 0;
+  for (const pass of passes) {
+    const measured = pass.measuredFragments;
+    if (measured === null) continue;
+    const fragments: { stage: StageInvocations; area: number | null }[] = [];
+    for (const item of pass.items) {
+      for (const stage of item.stages) if (stage.model.stage === "fragment") fragments.push({ stage, area: item.area });
+    }
+    if (!fragments.length) continue;
+    const totalArea = fragments.reduce((sum, f) => sum + (f.area ?? 0), 0);
+    for (const f of fragments) {
+      const share = totalArea > 0 ? (f.area ?? 0) / totalArea : 1 / fragments.length;
+      f.stage.invocations = measured * share;
+      f.stage.confidence = fragments.length === 1 ? "exact" : "estimated";
+    }
+    measuredFragmentPasses++;
+  }
+  return { passes, notes, measuredFragmentPasses };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -375,8 +409,8 @@ function functionTree(fn: FunctionAnalysis, byId: Map<number, FunctionAnalysis>,
 export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
-  const { passes, notes } = collectPasses(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0 };
+  const { passes, notes, measuredFragmentPasses } = collectPasses(o);
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses };
 
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
@@ -514,8 +548,11 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   const root = rollup(node("frame", "Frame", 0, passNodes));
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
-  if (stats.estimatedStages > 0) notes.push(`Fragment stages are weighted by the scissor (or render) area: an upper bound without overdraw and before the depth test, so the split between vertex and fragment work is an estimate.`);
-  else if (o.estimateFragments === false) notes.push("Fragment stages are unweighted: only rasterization knows their invocation counts. Enable the scissor-area estimate to weight them.");
+  if (stats.measuredFragmentPasses > 0) {
+    notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);
+  }
+  if (stats.estimatedStages > 0) notes.push(`Fragment stages without measured counters are weighted by the scissor (or render) area: an upper bound without overdraw and before the depth test, so the split between vertex and fragment work is an estimate.`);
+  else if (o.estimateFragments === false && stats.measuredFragmentPasses === 0) notes.push("Fragment stages are unweighted: only rasterization knows their invocation counts. Enable the scissor-area estimate to weight them.");
   if (stats.collapsed > 0) notes.push(`${stats.collapsed} lower-cost ${o.perDraw ? "draw" : "pipeline"} group(s) are collapsed into "+ more" frames (the ${maxFramesPerPass} costliest per pass are shown). Their cost still counts in the pass totals.`);
   return { root, units, notes, stats };
 }

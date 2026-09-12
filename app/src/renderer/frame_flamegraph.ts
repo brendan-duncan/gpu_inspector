@@ -31,7 +31,7 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
   const controls = new Div(root, { class: "flame-controls" });
   new Checkbox(controls, { label: "Per draw", checked: false, tooltip: "One frame per draw or dispatch instead of one per pipeline", onChange: (v) => { perDraw = v; update(); } });
   new Checkbox(controls, { label: "Estimate fragments from the scissor area", checked: true,
-    tooltip: "Weight fragment stages by the scissor (or render area) in pixels: an upper bound without overdraw and before the depth test. Off: fragment stages have no width.",
+    tooltip: "Weight fragment stages by the scissor (or render area) in pixels, where the pass has no measured fragment counters: an upper bound without overdraw and before the depth test. Off: those stages have no width. A pass whose counters measured its fragment invocations uses them either way.",
     onChange: (v) => { estimateFragments = v; update(); } });
   const reset = new Button(controls, { label: "Reset zoom", class: "btn btn-sm", tooltip: "Zoom back out to the whole frame", callback: () => graph.resetZoom() });
   void reset;

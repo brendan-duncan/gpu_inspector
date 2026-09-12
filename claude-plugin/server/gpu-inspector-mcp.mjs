@@ -5629,6 +5629,14 @@ function readString3(words2, start, end) {
 var Parser = class {
   names = /* @__PURE__ */ new Map();
   memberNames = /* @__PURE__ */ new Map();
+  /** OpString text by id: what the debug instructions name things with. */
+  strings = /* @__PURE__ */ new Map();
+  debugSet = 0;
+  /** DebugTypeComposite: its name, and the DebugTypeMember ids of its fields in declaration order. */
+  debugComposites = /* @__PURE__ */ new Map();
+  /** DebugTypeMember id -> the OpString id of its name. */
+  debugMembers = /* @__PURE__ */ new Map();
+  debugGlobals = [];
   decorations = /* @__PURE__ */ new Map();
   memberDecorations = /* @__PURE__ */ new Map();
   types = /* @__PURE__ */ new Map();
@@ -5664,6 +5672,32 @@ var Parser = class {
           this.memberNames.set(words2[a], m);
         }
         m.set(words2[a + 1], readString3(words2, a + 2, end).text);
+        break;
+      }
+      case 7 /* String */:
+        this.strings.set(words2[a], readString3(words2, a + 1, end).text);
+        break;
+      case 11 /* ExtInstImport */:
+        if (readString3(words2, a + 1, end).text === "NonSemantic.Shader.DebugInfo.100") this.debugSet = words2[a];
+        break;
+      case 12 /* ExtInst */: {
+        if (!this.debugSet || words2[a + 2] !== this.debugSet) break;
+        const o = a + 4;
+        switch (words2[a + 3]) {
+          // Name, Tag, Source, Line, Column, Parent, LinkageName, Size, Flags, then the members.
+          case 10 /* TypeComposite */:
+            if (o + 9 <= end) this.debugComposites.set(words2[a + 1], { name: words2[o], members: Array.from(words2.subarray(o + 9, end)) });
+            break;
+          case 11 /* TypeMember */:
+            this.debugMembers.set(words2[a + 1], words2[o]);
+            break;
+          // Name, Type, Source, Line, Column, Parent, LinkageName, Variable, Flags.
+          case 18 /* GlobalVariable */:
+            if (o + 8 <= end) this.debugGlobals.push({ name: words2[o], type: words2[o + 1], variable: words2[o + 7] });
+            break;
+          default:
+            break;
+        }
         break;
       }
       case 15 /* EntryPoint */: {
@@ -5753,6 +5787,35 @@ var Parser = class {
     return true;
   }
   /** Follows pointers. */
+  /**
+   * Names from the Vulkan debug information, for what OpName and OpMemberName do not name: a
+   * module stripped of them (spirv-opt --strip-debug, which keeps this set) otherwise shows a
+   * buffer's fields as member0, member1. Only missing names are filled in.
+   */
+  applyDebugNames() {
+    for (const g of this.debugGlobals) {
+      const variableName = this.strings.get(g.name);
+      if (variableName && !this.names.has(g.variable)) this.names.set(g.variable, variableName);
+      const composite = this.debugComposites.get(g.type);
+      const variable = this.variables.find((v) => v.id === g.variable);
+      if (!composite || !variable) continue;
+      const structId = this.unwrapArrays(this.pointee(variable.typeId)).id;
+      if (this.types.get(structId)?.op !== 30 /* TypeStruct */) continue;
+      const structName = this.strings.get(composite.name);
+      if (structName && !this.names.has(structId)) this.names.set(structId, structName);
+      const fields = composite.members.map((id) => this.debugMembers.get(id)).filter((id) => id !== void 0);
+      if (!fields.length) continue;
+      let members = this.memberNames.get(structId);
+      if (!members) {
+        members = /* @__PURE__ */ new Map();
+        this.memberNames.set(structId, members);
+      }
+      fields.forEach((nameId, index) => {
+        const name = this.strings.get(nameId);
+        if (name && !members.has(index)) members.set(index, name);
+      });
+    }
+  }
   pointee(typeId) {
     const t = this.types.get(typeId);
     return t && t.op === 32 /* TypePointer */ ? this.pointee(t.operands[2]) : typeId;
@@ -5886,6 +5949,7 @@ function reflectSpirv(data) {
   if (words2[0] !== 119734787) return null;
   const p = new Parser();
   p.parse(words2);
+  p.applyDebugNames();
   const r = new ShaderReflection();
   r.version = `${words2[1] >>> 16 & 255}.${words2[1] >>> 8 & 255}`;
   const location = (id) => p.decoration(id, 30 /* Location */)?.[0];
@@ -9204,9 +9268,13 @@ function targetEnv(spirvVersion, tool) {
   const env = glslang[v] ?? "vulkan1.2";
   return tool === "dxc" ? env : env.replace("spirv", "spv");
 }
-function compileShader(source, language, stage, entryPoint, spirvVersion) {
+function needsIncludeExtension(source) {
+  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
+}
+function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
   return new Promise((resolve) => {
     const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs9.existsSync(d));
     const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
     fs9.writeFileSync(src, source);
@@ -9219,6 +9287,7 @@ function compileShader(source, language, stage, entryPoint, spirvVersion) {
     } else if (language === "hlsl") {
       tool = findTool("dxc");
       args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      for (const dir of includeDirs) args.push("-I", dir);
     } else {
       tool = findTool("glslangValidator");
       args = [
@@ -9235,6 +9304,8 @@ function compileShader(source, language, stage, entryPoint, spirvVersion) {
         out,
         src
       ];
+      for (const dir of includeDirs) args.push(`-I${dir}`);
+      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
     }
     execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
@@ -13632,7 +13703,17 @@ function collectPasses2(o) {
         let area = null;
         if (a && isObject(a.pRenderPassBegin)) area = rectArea(a.pRenderPassBegin.renderArea);
         else if (a && isObject(a.pRenderingInfo)) area = rectArea(a.pRenderingInfo.renderArea);
-        renderPass = { key, kind: "render", label: `Render Pass ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area };
+        const fragments = timing?.counters?.fragmentInvocations;
+        renderPass = {
+          key,
+          kind: "render",
+          label: `Render Pass ${index}`,
+          command: cmd,
+          items: [],
+          durationMs: timing ? timing.durationMs : null,
+          area,
+          measuredFragments: typeof fragments === "number" && fragments > 0 ? fragments : null
+        };
         passes.push(renderPass);
         continue;
       }
@@ -13662,7 +13743,16 @@ function collectPasses2(o) {
           computeCounters.set(objId, index + 1);
           const key = passKey(frame, objId, index, true);
           const timing = data.passTimings.get(key);
-          compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null };
+          compute = {
+            key,
+            kind: "compute",
+            label: `Compute ${index}`,
+            command: cmd,
+            items: [],
+            durationMs: timing ? timing.durationMs : null,
+            area: null,
+            measuredFragments: null
+          };
           passes.push(compute);
         }
         pass = compute;
@@ -13676,6 +13766,7 @@ function collectPasses2(o) {
         continue;
       }
       const stages = [];
+      let drawArea = null;
       if (isDispatch) {
         const groups = dispatchGroups(cmd, data);
         for (const m of stageModels2) {
@@ -13686,7 +13777,8 @@ function collectPasses2(o) {
       } else {
         const vertices = drawInvocations(cmd, data);
         const scissorArea = scissor.get(stream);
-        const fragmentArea = o.estimateFragments ? scissorArea != null && pass.area != null ? Math.min(scissorArea, pass.area) : scissorArea ?? pass.area ?? null : null;
+        drawArea = scissorArea != null && pass.area != null ? Math.min(scissorArea, pass.area) : scissorArea ?? pass.area ?? null;
+        const fragmentArea = o.estimateFragments ? drawArea : null;
         for (const m of stageModels2) {
           if (m.stage === "fragment") {
             stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
@@ -13697,11 +13789,28 @@ function collectPasses2(o) {
           }
         }
       }
-      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages });
+      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages, area: drawArea });
     }
   }
   if (missingModels) notes.push(`${missingModels} draw(s) or dispatch(es) use a pipeline whose shaders could not be fetched and are left out.`);
-  return { passes, notes };
+  let measuredFragmentPasses = 0;
+  for (const pass of passes) {
+    const measured = pass.measuredFragments;
+    if (measured === null) continue;
+    const fragments = [];
+    for (const item of pass.items) {
+      for (const stage of item.stages) if (stage.model.stage === "fragment") fragments.push({ stage, area: item.area });
+    }
+    if (!fragments.length) continue;
+    const totalArea = fragments.reduce((sum, f) => sum + (f.area ?? 0), 0);
+    for (const f of fragments) {
+      const share = totalArea > 0 ? (f.area ?? 0) / totalArea : 1 / fragments.length;
+      f.stage.invocations = measured * share;
+      f.stage.confidence = fragments.length === 1 ? "exact" : "estimated";
+    }
+    measuredFragmentPasses++;
+  }
+  return { passes, notes, measuredFragmentPasses };
 }
 function entryOf(model) {
   const a = model.analysis;
@@ -13742,8 +13851,8 @@ function functionTree(fn, byId, factor, path11, depth) {
 function buildFrameCostTree(o) {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
-  const { passes, notes } = collectPasses2(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0 };
+  const { passes, notes, measuredFragmentPasses } = collectPasses2(o);
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses };
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
   const units = allMeasured ? "ms" : "ops";
@@ -13880,8 +13989,11 @@ function buildFrameCostTree(o) {
   const root = rollup(node("frame", "Frame", 0, passNodes));
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
-  if (stats.estimatedStages > 0) notes.push(`Fragment stages are weighted by the scissor (or render) area: an upper bound without overdraw and before the depth test, so the split between vertex and fragment work is an estimate.`);
-  else if (o.estimateFragments === false) notes.push("Fragment stages are unweighted: only rasterization knows their invocation counts. Enable the scissor-area estimate to weight them.");
+  if (stats.measuredFragmentPasses > 0) {
+    notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);
+  }
+  if (stats.estimatedStages > 0) notes.push(`Fragment stages without measured counters are weighted by the scissor (or render) area: an upper bound without overdraw and before the depth test, so the split between vertex and fragment work is an estimate.`);
+  else if (o.estimateFragments === false && stats.measuredFragmentPasses === 0) notes.push("Fragment stages are unweighted: only rasterization knows their invocation counts. Enable the scissor-area estimate to weight them.");
   if (stats.collapsed > 0) notes.push(`${stats.collapsed} lower-cost ${o.perDraw ? "draw" : "pipeline"} group(s) are collapsed into "+ more" frames (the ${maxFramesPerPass} costliest per pass are shown). Their cost still counts in the pass totals.`);
   return { root, units, notes, stats };
 }
@@ -14836,12 +14948,12 @@ function resourceTools(store) {
     },
     {
       name: "get_shader_flame_graph",
-      description: "The Shader Flame Graph of a Vulkan capture: the frame's GPU work by pass, pipeline (or draw), shader stage, function and source line, with the frame's hottest functions and lines. Each stage weighs its modeled per-invocation cost times its invocations: vertex and compute counts are exact (from the draw and dispatch arguments, indirect ones from the captured buffers), fragment counts estimated from the scissor area. When every pass was timed (Profile passes) the costs are milliseconds, each pass its measured GPU time with only the split inside it modeled; otherwise modeled op units. Where analyze_shaders ranks shaders, this shows where the frame's shading work goes.",
+      description: "The Shader Flame Graph of a Vulkan capture: the frame's GPU work by pass, pipeline (or draw), shader stage, function and source line, with the frame's hottest functions and lines. Each stage weighs its modeled per-invocation cost times its invocations: vertex and compute counts are exact (from the draw and dispatch arguments, indirect ones from the captured buffers), fragment counts come from the pass's measured GPU counters where it has them (split between its draws by scissor area) and from the scissor area otherwise. When every pass was timed (Profile passes) the costs are milliseconds, each pass its measured GPU time with only the split inside it modeled; otherwise modeled op units. Where analyze_shaders ranks shaders, this shows where the frame's shading work goes.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "Only this pass (the pass number get_bottlenecks and list_commands give); shares are then of the pass." },
         perDraw: { type: "boolean", description: "One frame per draw or dispatch instead of one per pipeline (default false)." },
-        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area, an upper bound without overdraw (default true); false leaves them unweighted." },
+        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area where the pass has no measured fragment counters, an upper bound without overdraw (default true); false leaves those stages unweighted." },
         depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
         minShare: { type: "number", minimum: 0, maximum: 1, description: 'Fold frames below this share of the total into one "other" frame, left out when it is under 0.001 (default 0.01).' },
         top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." }
@@ -16402,7 +16514,14 @@ function liveTools(sessions2, store) {
         const original = await fetchBlob(s, source.object, source.blobIndex);
         const version = original && reflectSpirv(original)?.version || "";
         const language = enumArg(args, "language", LANGUAGES, "glsl");
-        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version);
+        const compiled = await compileShader(
+          requireString(args, "source"),
+          language,
+          stageName,
+          stringArg(args, "entryPoint") ?? entryPoint,
+          version,
+          { includeDirs: searchPaths("sourceRoots").dirs }
+        );
         if (!compiled.ok || !compiled.spirv) {
           const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12e3) });
           failed.isError = true;

@@ -968,7 +968,9 @@ function windowOf(sender: WebContents): BrowserWindow | null {
 // IPC
 
 ipcMain.handle("inspector:compileShader", (_e, source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string) =>
-  compileShader(source, language, stage, entryPoint, spirvVersion));
+  // #include is resolved against the session's source roots, the same ones the Source view reads
+  // the files a module's debug information names from.
+  compileShader(source, language, stage, entryPoint, spirvVersion, { includeDirs: sourceRootDirs() }));
 
 ipcMain.handle("inspector:getConfig", (e): AppConfig => {
   const win = windowOf(e.sender);
@@ -1084,6 +1086,11 @@ ipcMain.handle("inspector:symbolize", (_e, frames: StackFrame[], dirs: string[])
 
 // Shader source files named by a module's debug information, found under the session's source
 // roots (or the last ones used, for capture files).
+/** The source roots last set, for the Source view's lookups and the shader editor's includes. */
+function sourceRootDirs(): string[] {
+  return (loadSettings().sourceRoots ?? "").split(";").map((d) => d.trim()).filter(Boolean);
+}
+
 ipcMain.handle("inspector:shaderSource", (_e, names: string[], roots: string[]) => {
   const list = (roots.length ? roots : (loadSettings().sourceRoots ?? "").split(";")).map((d) => d.trim()).filter(Boolean);
   if (roots.length) {
