@@ -103,12 +103,16 @@ interpreter and re-created pipelines.
       `VK_GOOGLE_display_timing` fall back to the frame-interval estimate).
 
 ### Shaders
-- [ ] Shader flame graph: per-draw GPU timing (replay) and measured fragment counts instead of
-      the scissor-area estimate.
-- [ ] Shader editor `#include` resolution from the source roots (the Source view already reads
-      files the debug information names from them).
-- [ ] Debug-info variable names (DebugLocalVariable / DebugGlobalVariable) in buffer layouts,
-      for modules without OpName / OpMemberName.
+- [x] Shader flame graph: fragment stages are weighted by the fragment invocations a pass's GPU
+      counters measured, split between its draws by scissor area, instead of the scissor-area
+      upper bound. A pass without counters still uses the estimate.
+- [ ] Shader flame graph: per-draw GPU timing and per-draw fragment counts, which need the replay's
+      timestamp and statistics queries ("Per-draw GPU timing and counters via replay" below).
+- [x] Shader editor `#include` resolution from the source roots: `-I` per root for glslang and dxc,
+      with the Google include-directive preamble where a GLSL source needs it (glslang counts the
+      preamble separately, so error lines stay the source's).
+- [x] Debug-info variable names (DebugGlobalVariable, DebugTypeComposite, DebugTypeMember) in
+      buffer layouts, for modules without OpName / OpMemberName.
 
 ## Replay-based features **(RenderDoc)**
 

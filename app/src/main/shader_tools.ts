@@ -72,10 +72,27 @@ function targetEnv(spirvVersion: string, tool: "glslang" | "dxc" | "spirv-as"): 
   return tool === "dxc" ? env : env.replace("spirv", "spv");
 }
 
+export interface CompileOptions {
+  /**
+   * Directories `#include` is resolved against: the session's source roots. The edited source is
+   * compiled from a temporary file, so an include is found by its path under a root, the way an
+   * engine writes them ("common/lighting.glsl"), not relative to the shader's own file.
+   */
+  includeDirs?: string[];
+}
+
+/** Whether the source has an `#include` glslang would need the Google include extension for. */
+function needsIncludeExtension(source: string): boolean {
+  return /^[ \t]*#[ \t]*include/m.test(source)
+    && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
+}
+
 /** GLSL (glslangValidator), HLSL (dxc) or SPIR-V assembly (spirv-as) compiled to SPIR-V for one stage. */
-export function compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult> {
+export function compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string,
+                              options: CompileOptions = {}): Promise<CompileShaderResult> {
   return new Promise((resolve) => {
     const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs.existsSync(d));
     const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
     fs.writeFileSync(src, source);
@@ -88,11 +105,16 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
     } else if (language === "hlsl") {
       tool = findTool("dxc");
       args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      for (const dir of includeDirs) args.push("-I", dir);
     } else {
       tool = findTool("glslangValidator");
       // The decompiled source declares main(); the pipeline expects the original entry point name.
       args = ["-V", "-S", GLSL_STAGES[stage] ?? "frag", "--target-env", targetEnv(spirvVersion, "glslang"),
         "--source-entrypoint", "main", "-e", entry, "-o", out, src];
+      for (const dir of includeDirs) args.push(`-I${dir}`);
+      // glslang rejects #include unless the source asks for the extension. The preamble goes in
+      // after the #version line and is counted separately, so the error lines stay the user's.
+      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
     }
     execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();

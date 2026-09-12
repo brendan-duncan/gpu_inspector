@@ -703,14 +703,15 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
       description: "The Shader Flame Graph of a Vulkan capture: the frame's GPU work by pass, pipeline (or draw), shader stage, " +
         "function and source line, with the frame's hottest functions and lines. Each stage weighs its modeled per-invocation " +
         "cost times its invocations: vertex and compute counts are exact (from the draw and dispatch arguments, indirect ones " +
-        "from the captured buffers), fragment counts estimated from the scissor area. When every pass was timed (Profile " +
+        "from the captured buffers), fragment counts come from the pass's measured GPU counters where it has them (split " +
+        "between its draws by scissor area) and from the scissor area otherwise. When every pass was timed (Profile " +
         "passes) the costs are milliseconds, each pass its measured GPU time with only the split inside it modeled; otherwise " +
         "modeled op units. Where analyze_shaders ranks shaders, this shows where the frame's shading work goes.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "Only this pass (the pass number get_bottlenecks and list_commands give); shares are then of the pass." },
         perDraw: { type: "boolean", description: "One frame per draw or dispatch instead of one per pipeline (default false)." },
-        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area, an upper bound without overdraw (default true); false leaves them unweighted." },
+        estimateFragments: { type: "boolean", description: "Weight fragment stages by the scissor or render area where the pass has no measured fragment counters, an upper bound without overdraw (default true); false leaves those stages unweighted." },
         depth: { type: "integer", minimum: 1, maximum: 32, description: "Levels to show: 1 passes, 2 pipelines or draws, 3 stages, then functions, their callees and source lines (default 6)." },
         minShare: { type: "number", minimum: 0, maximum: 1, description: "Fold frames below this share of the total into one \"other\" frame, left out when it is under 0.001 (default 0.01)." },
         top: { type: "integer", minimum: 0, maximum: 100, description: "How many of the hottest functions and lines to list (default 15)." },

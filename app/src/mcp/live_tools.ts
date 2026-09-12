@@ -22,7 +22,7 @@ import {
 } from "./describe.js";
 import { capturesDir, type LiveSession, type SessionManager } from "./live_session.js";
 import { IMAGE_PARAMS, texelAnswer } from "./resource_tools.js";
-import { symbolizeOnHost } from "./search_paths.js";
+import { searchPaths, symbolizeOnHost } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 import { captureSummary } from "./tools.js";
 
@@ -573,7 +573,8 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const original = await fetchBlob(s, source.object, source.blobIndex);
         const version = (original && reflectSpirv(original)?.version) || "";
         const language = enumArg(args, "language", LANGUAGES, "glsl") as ShaderLanguage;
-        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version);
+        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version,
+                                             { includeDirs: searchPaths("sourceRoots").dirs });
         if (!compiled.ok || !compiled.spirv) {
           const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12000) });
           failed.isError = true;

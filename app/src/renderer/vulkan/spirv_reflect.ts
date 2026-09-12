@@ -128,7 +128,7 @@ export function typeName(t: ReflType | null | undefined): string {
 // Parser
 
 const enum Op {
-  Name = 5, MemberName = 6, EntryPoint = 15, ExecutionMode = 16,
+  Name = 5, MemberName = 6, String = 7, ExtInstImport = 11, ExtInst = 12, EntryPoint = 15, ExecutionMode = 16,
   TypeVoid = 19, TypeBool = 20, TypeInt = 21, TypeFloat = 22, TypeVector = 23, TypeMatrix = 24, TypeImage = 25,
   TypeSampler = 26, TypeSampledImage = 27, TypeArray = 28, TypeRuntimeArray = 29, TypeStruct = 30, TypePointer = 32,
   ConstantTrue = 41, ConstantFalse = 42, Constant = 43, SpecConstantTrue = 48, SpecConstantFalse = 49, SpecConstant = 50,
@@ -142,6 +142,13 @@ const enum Dec {
 }
 
 const enum StorageClass { UniformConstant = 0, Input = 1, Uniform = 2, Output = 3, PushConstant = 9, StorageBuffer = 12 }
+
+/**
+ * The NonSemantic.Shader.DebugInfo.100 instructions this reads. A module built with Vulkan debug
+ * information keeps them even when OpName and OpMemberName have been stripped (they are not
+ * "debug instructions" in SPIR-V's sense), so they are where a buffer's field names survive.
+ */
+const enum DebugInst { TypeComposite = 10, TypeMember = 11, GlobalVariable = 18 }
 
 const STAGES: Record<number, ShaderStage> = {
   0: "vertex", 1: "tess_control", 2: "tess_eval", 3: "geometry", 4: "fragment", 5: "compute",
@@ -169,6 +176,14 @@ function readString(words: Uint32Array, start: number, end: number): { text: str
 class Parser {
   names = new Map<number, string>();
   memberNames = new Map<number, Map<number, string>>();
+  /** OpString text by id: what the debug instructions name things with. */
+  strings = new Map<number, string>();
+  debugSet = 0;
+  /** DebugTypeComposite: its name, and the DebugTypeMember ids of its fields in declaration order. */
+  debugComposites = new Map<number, { name: number; members: number[] }>();
+  /** DebugTypeMember id -> the OpString id of its name. */
+  debugMembers = new Map<number, number>();
+  debugGlobals: { variable: number; type: number; name: number }[] = [];
   decorations = new Map<number, Map<number, number[]>>();
   memberDecorations = new Map<number, Map<number, Map<number, number[]>>>();
   types = new Map<number, RawType>();
@@ -204,6 +219,32 @@ class Parser {
         let m = this.memberNames.get(words[a]);
         if (!m) { m = new Map(); this.memberNames.set(words[a], m); }
         m.set(words[a + 1], readString(words, a + 2, end).text);
+        break;
+      }
+      case Op.String:
+        this.strings.set(words[a], readString(words, a + 1, end).text);
+        break;
+      case Op.ExtInstImport:
+        if (readString(words, a + 1, end).text === "NonSemantic.Shader.DebugInfo.100") this.debugSet = words[a];
+        break;
+      case Op.ExtInst: {
+        // <result type> <result> <set> <instruction> <operands...>
+        if (!this.debugSet || words[a + 2] !== this.debugSet) break;
+        const o = a + 4;
+        switch (words[a + 3]) {
+          // Name, Tag, Source, Line, Column, Parent, LinkageName, Size, Flags, then the members.
+          case DebugInst.TypeComposite:
+            if (o + 9 <= end) this.debugComposites.set(words[a + 1], { name: words[o], members: Array.from(words.subarray(o + 9, end)) });
+            break;
+          case DebugInst.TypeMember:
+            this.debugMembers.set(words[a + 1], words[o]);
+            break;
+          // Name, Type, Source, Line, Column, Parent, LinkageName, Variable, Flags.
+          case DebugInst.GlobalVariable:
+            if (o + 8 <= end) this.debugGlobals.push({ name: words[o], type: words[o + 1], variable: words[o + 7] });
+            break;
+          default: break;
+        }
         break;
       }
       case Op.EntryPoint: {
@@ -276,6 +317,38 @@ class Parser {
   }
 
   /** Follows pointers. */
+  /**
+   * Names from the Vulkan debug information, for what OpName and OpMemberName do not name: a
+   * module stripped of them (spirv-opt --strip-debug, which keeps this set) otherwise shows a
+   * buffer's fields as member0, member1. Only missing names are filled in.
+   */
+  applyDebugNames(): void {
+    for (const g of this.debugGlobals) {
+      const variableName = this.strings.get(g.name);
+      if (variableName && !this.names.has(g.variable)) this.names.set(g.variable, variableName);
+      const composite = this.debugComposites.get(g.type);
+      const variable = this.variables.find((v) => v.id === g.variable);
+      if (!composite || !variable) continue;
+      const structId = this.unwrapArrays(this.pointee(variable.typeId)).id;
+      if (this.types.get(structId)?.op !== Op.TypeStruct) continue;
+      const structName = this.strings.get(composite.name);
+      if (structName && !this.names.has(structId)) this.names.set(structId, structName);
+      // Only the members: a composite can also list functions (HLSL methods), which are not fields
+      // and would put the names out of step with the struct's own member order.
+      const fields = composite.members.map((id) => this.debugMembers.get(id)).filter((id): id is number => id !== undefined);
+      if (!fields.length) continue;
+      let members = this.memberNames.get(structId);
+      if (!members) {
+        members = new Map();
+        this.memberNames.set(structId, members);
+      }
+      fields.forEach((nameId, index) => {
+        const name = this.strings.get(nameId);
+        if (name && !members.has(index)) members.set(index, name);
+      });
+    }
+  }
+
   pointee(typeId: number): number {
     const t = this.types.get(typeId);
     return t && t.op === Op.TypePointer ? this.pointee(t.operands[2]) : typeId;
@@ -411,6 +484,7 @@ export function reflectSpirv(data: Uint8Array): ShaderReflection | null {
 
   const p = new Parser();
   p.parse(words);
+  p.applyDebugNames();
 
   const r = new ShaderReflection();
   r.version = `${(words[1] >>> 16) & 0xff}.${(words[1] >>> 8) & 0xff}`;

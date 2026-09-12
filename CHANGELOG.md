@@ -6,6 +6,11 @@
   pixel while capturing. `get_pixel_history` in the MCP server.
 - A capture's render target in a tab of its own: the image, the pass's overdraw over it with the
   counts under the pointer, and the clicked pixel's history beside it.
+- Shader editor: `#include` is resolved against the session's source roots.
+- Buffer layouts name their fields from a module's Vulkan debug information where it has no
+  `OpName` / `OpMemberName`, instead of `member0`, `member1`.
+- Shader Flame Graph: fragment stages are weighted by the fragment invocations a pass's GPU
+  counters measured, not by the scissor area, where the capture has them.
 
 ## v0.9.0
 
