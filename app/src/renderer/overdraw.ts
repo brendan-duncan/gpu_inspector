@@ -6,6 +6,16 @@
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import type { CapturedOverdraw } from "./capture_data.js";
 
+/** A render pass of a capture: which frame, which command buffer, and its index in that buffer. */
+export interface OverdrawPassKey {
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+}
+
+export const samePass = (a: OverdrawPassKey, b: OverdrawPassKey): boolean =>
+  a.frame === b.frame && a.commandBuffer === b.commandBuffer && a.passIndex === b.passIndex;
+
 /** The histogram's buckets, as the measurement counts them. */
 export const OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
 
@@ -38,18 +48,22 @@ export function heatColor(n: number): [number, number, number] {
   return [255, 255, 255];
 }
 
-/** The measurement as an RGBA heatmap, or null without per-pixel data. */
-export function overdrawRgba(o: CapturedOverdraw): Uint8ClampedArray<ArrayBuffer> | null {
+/**
+ * The measurement as an RGBA heatmap, or null without per-pixel data. `transparentZero` leaves the
+ * pixels nothing landed on fully transparent, for drawing the heat over the pass's render target.
+ */
+export function overdrawRgba(o: CapturedOverdraw, transparentZero = false): Uint8ClampedArray<ArrayBuffer> | null {
   const { width, height } = o.info;
   const pixels = width * height;
   if (!o.data || o.data.byteLength < pixels * 2) return null;
   const out = new Uint8ClampedArray(pixels * 4);
   for (let p = 0; p < pixels; p++) {
-    const [r, g, b] = heatColor(o.data[p * 2] | (o.data[p * 2 + 1] << 8));
+    const count = o.data[p * 2] | (o.data[p * 2 + 1] << 8);
+    const [r, g, b] = heatColor(count);
     out[p * 4] = r;
     out[p * 4 + 1] = g;
     out[p * 4 + 2] = b;
-    out[p * 4 + 3] = 255;
+    out[p * 4 + 3] = transparentZero && count === 0 ? 0 : 255;
   }
   return out;
 }

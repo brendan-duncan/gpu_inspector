@@ -32,18 +32,20 @@ import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
-import { isMeasured, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary, parseOverdrawFile } from "./overdraw.js";
-import { OverdrawView, type OverdrawPassKey } from "./overdraw_view.js";
+import {
+  isMeasured, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary, parseOverdrawFile,
+  type OverdrawPassKey,
+} from "./overdraw.js";
+import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
-import { PixelHistoryView } from "./pixel_history_view.js";
 
-/** A tab a capture opens beside its own: its overdraw, a pixel's history. */
+/** A tab a capture opens beside its own: a render target, with its overdraw and pixel history. */
 interface CaptureSubTab {
   readonly root: Div;
   dispose(): void;
   debugState(): Record<string, unknown>;
 }
-type SubTabKind = "overdraw" | "pixel-history";
+type SubTabKind = "texture";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -130,8 +132,7 @@ export class CapturePanel {
   debugState(): Record<string, unknown>[] {
     return this._views.map((v) => ({
       ...v.debugState(),
-      overdrawTab: this._subTab(v, "overdraw")?.tab.debugState() ?? null,
-      pixelHistoryTab: this._subTab(v, "pixel-history")?.tab.debugState() ?? null,
+      textureTab: this._subTab(v, "texture")?.tab.debugState() ?? null,
     }));
   }
 
@@ -274,8 +275,7 @@ export class CapturePanel {
     this._handles.set(view, handle);
     view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
-    view.onOpenOverdraw.addListener((key, depthTested) => this._openOverdraw(view, key, depthTested));
-    view.onOpenPixelHistory.addListener((request) => this._openPixelHistory(view, request));
+    view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
@@ -337,65 +337,53 @@ export class CapturePanel {
     this._live?.handleMessage(msg);
   }
 
-  /** Points the capture's overdraw tab at a pass, opening the tab the first time. */
-  private _openOverdraw(view: CaptureView, key: OverdrawPassKey, depthTested: boolean): void {
-    const existing = this._subTab<OverdrawView>(view, "overdraw");
+  /**
+   * Shows one of the capture's render targets in a tab beside the capture's: the image, the pass's
+   * overdraw over it when asked, and the history of the pixel clicked (capture_texture_view.ts).
+   * One such tab per capture, pointed at whichever target is opened next.
+   */
+  private _openTexture(view: CaptureView, target: CaptureTarget, options: CaptureTextureOptions = {}): void {
+    const existing = this._subTab<CaptureTextureView>(view, "texture");
     if (existing) {
-      existing.tab.show(key, depthTested);
+      existing.tab.show(target, options);
+      existing.handle.textElement.text = `${existing.tab.label}: ${view.label}`;
       this._tabs.setHandleActive(existing.handle);
       return;
     }
-    const overdraw = new OverdrawView({
+    const db = view.window.database;
+    // The view's host needs the tab to hand a history to, which only exists once it is built.
+    let tab: CaptureTextureView | null = null;
+    tab = new CaptureTextureView({
       data: view.data,
+      session: view.window,
       passLabelOf: (k) => view.passLabelOf(k),
       selectPass: (k) => {
         this._showCaptureTab(view);
         view.selectPass(k);
       },
-      pixelHistory: (request: PixelRequest) => this._openPixelHistory(view, request),
-    }, key, depthTested);
-    this._addSubTab(view, "overdraw", overdraw, `Overdraw: ${view.label}`);
-  }
-
-  /**
-   * Follows a pixel through the frame, in the capture's pixel history tab: a Vulkan capture is
-   * replayed; a Metal capture shows the pixel it followed while it was taken, and another pixel
-   * captures the application's next frame following that one.
-   */
-  private _openPixelHistory(view: CaptureView, request: PixelRequest): void {
-    if (view.data.api === "metal" && !view.hasPixelHistory(request)) {
-      this._captureWithPixelHistory(request);
-      return;
-    }
-    const tab = this._pixelHistoryTab(view, request).tab;
-    const run = ++this._historyRuns;
-    tab.setRunning(request);
-    view.pixelHistory(request).then(
-      (h: PixelHistory) => { if (run === this._historyRuns) tab.setResult(h); },
-      (e: unknown) => { if (run === this._historyRuns) tab.setError(e instanceof Error ? e.message : String(e)); },
-    );
-  }
-
-  /** The capture's pixel history tab, shown, and opened the first time. */
-  private _pixelHistoryTab(view: CaptureView, request: PixelRequest): { tab: PixelHistoryView; handle: TabHandle } {
-    const entry = this._subTab<PixelHistoryView>(view, "pixel-history");
-    if (entry) {
-      this._tabs.setHandleActive(entry.handle);
-      return entry;
-    }
-    const db = view.window.database;
-    const history = new PixelHistoryView({
-      objectName: (id) => db.getObject(id)?.name ?? `object ${id}`,
-      passLabelOf: (k) => view.passLabelOf(k),
       selectCommand: (index) => {
         this._showCaptureTab(view);
         view.selectCommand(index);
       },
+      objectName: (id) => db.getObject(id)?.name ?? `object ${id}`,
+      imageObject: (id) => db.getObject(id) ?? null,
       showObject: (id) => view.window.showObject(id),
-      run: (r) => this._openPixelHistory(view, r),
-      captures: view.data.api === "metal",
-    }, request);
-    return this._addSubTab(view, "pixel-history", history, `Pixel History: ${view.label}`);
+      followPixel: (request) => { if (tab) this._followPixel(view, tab, request); },
+      storedHistory: (request) => view.hasPixelHistory(request),
+      captureHistory: (request) => this._captureWithPixelHistory(request),
+      measureOverdraw: () => view.measureOverdraw(),
+    }, target, options);
+    this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
+  }
+
+  /** Runs a pixel's history for the capture's render target tab (a Vulkan replay, or Metal's own). */
+  private _followPixel(view: CaptureView, tab: CaptureTextureView, request: PixelRequest): void {
+    const run = ++this._historyRuns;
+    tab.setHistoryRunning(request);
+    view.pixelHistory(request).then(
+      (h: PixelHistory) => { if (run === this._historyRuns) tab.setHistoryResult(h); },
+      (e: unknown) => { if (run === this._historyRuns) tab.setHistoryError(e instanceof Error ? e.message : String(e)); },
+    );
   }
 
   /**
@@ -410,22 +398,25 @@ export class CapturePanel {
       this._statusLabel.text = "not connected: a Metal pixel history captures the application's next frame";
       return;
     }
-    const tab = this._pixelHistoryTab(live, request).tab;
-    const run = ++this._historyRuns;
-    tab.setRunning(request);
+    this._statusLabel.text = `capturing the next frame, following pixel (${request.x}, ${request.y})...`;
     let done = false;
+    // The history arrives at the end of the capture's stream: then the new capture's own render
+    // target tab opens on the pixel, the way clicking a pixel of a Vulkan capture does.
     const finish = (): void => {
-      if (done || run !== this._historyRuns) return;
+      if (done) return;
       done = true;
       if (!live.data.pixelHistory) {
-        tab.setError("the capture ended without a pixel history (a capture library built before pixel history, or not a Metal application)");
+        this._statusLabel.text = "the capture ended without a pixel history (a capture library built before pixel history, or not a Metal application)";
         return;
       }
+      let pixel = request;
       try {
-        tab.setResult(parsePixelHistory(live.data.pixelHistory));
-      } catch (e) {
-        tab.setError(e instanceof Error ? e.message : String(e));
+        const h = parsePixelHistory(live.data.pixelHistory);
+        pixel = { image: h.image, x: h.x, y: h.y, mip: h.mip, layer: h.layer };
+      } catch {
+        // the request's own pixel, and the view will say what went wrong
       }
+      live.openTextureForPixel(pixel);
     };
     live.data.onPixelHistory.addListener(finish);
     live.onCaptureComplete.addListener(finish);
@@ -556,10 +547,11 @@ export class CaptureView implements CaptureHost {
 
   readonly onStatus = new Signal<() => void>();
   readonly onLabelChanged = new Signal<() => void>();
-  /** A pass's overdraw asked to open in a tab of its own (the panel opens it). */
-  readonly onOpenOverdraw = new Signal<(key: OverdrawPassKey, depthTested: boolean) => void>();
-  /** A pixel of a render target asked to be followed through the frame (the panel opens the pixel history tab). */
-  readonly onOpenPixelHistory = new Signal<(request: PixelRequest) => void>();
+  /**
+   * A render target asked to open in a tab of its own: the image, the pass's overdraw over it, and
+   * the history of the pixel clicked (the panel opens it, capture_texture_view.ts).
+   */
+  readonly onOpenTexture = new Signal<(target: CaptureTarget, options: CaptureTextureOptions) => void>();
   /** The capture library marked the end of the capture's stream (CaptureComplete). */
   readonly onCaptureComplete = new Signal<() => void>();
   /** The capture serialized for vkinsp_replay, kept for the next replay of the same capture. */
@@ -1243,8 +1235,8 @@ export class CaptureView implements CaptureHost {
         detail: "Passes and the resources connecting them",
         tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
       { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw", open: () => void this.openOverdraw(),
-        detail: "Fragments per pixel of every pass, as heatmaps",
-        tooltip: "Every pass's overdraw in a tab of its own: how many fragments landed on each pixel, with and without the depth test, and the counts under the pointer. A Vulkan capture is replayed on this machine's GPU to measure it" },
+        detail: "Fragments per pixel, over the pass's render target",
+        tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Vulkan capture is replayed on this machine's GPU to measure it" },
     ];
     for (const report of reports) {
       const item = new Div(menu, { class: "menu-item reports-menu-item" });
@@ -1323,15 +1315,50 @@ export class CaptureView implements CaptureHost {
       if (this.data.pixelHistory) {
         try {
           const h = parsePixelHistory(this.data.pixelHistory);
-          this.onOpenPixelHistory.emit({ image: h.requestedImage, x: h.x, y: h.y, mip: h.mip, layer: h.layer });
+          this.openTextureForPixel({ image: h.image, x: h.x, y: h.y, mip: h.mip, layer: h.layer });
           return;
         } catch {
           // shown as the centre of a render target instead
         }
       }
       const t = this.data.textures.find((x) => x.info.kind !== "sampled" && x.info.aspect === "color" && !x.info.error);
-      if (t) this.onOpenPixelHistory.emit({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+      if (t) this.openTextureForPixel({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
     }
+  }
+
+  /** The captured render target an image belongs to, with the pass that rendered it. */
+  private _targetOf(imageId: number, mip?: number): CaptureTarget | null {
+    const textures = this.data.textures.filter((t) => t.info.kind !== "sampled" && t.info.id === imageId);
+    const tex = textures.find((t) => mip === undefined || t.info.mip === mip) ?? textures[0];
+    if (!tex) return null;
+    return { key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex };
+  }
+
+  /** The pass's first colour target (what its overdraw heat is drawn over). */
+  private _targetOfPass(key: OverdrawPassKey): CaptureTarget | null {
+    const textures = this.data.texturesForPass(key.frame, key.commandBuffer, key.passIndex);
+    const tex = textures.find((t) => t.info.aspect === "color" && !t.info.resolve && !t.info.error) ?? textures[0];
+    return tex ? { key, texture: tex } : null;
+  }
+
+  /** Opens the render target tab following one pixel (a click in an image viewer, or Metal's own history). */
+  openTextureForPixel(request: PixelRequest): void {
+    const target = this._targetOf(request.image, request.mip);
+    if (!target) {
+      this._setStatus("that image is not one of this capture's render targets");
+      return;
+    }
+    this.onOpenTexture.emit(target, { pixel: request });
+  }
+
+  /** Opens the render target tab on a pass, with its overdraw over the image. */
+  openPassOverdraw(key: OverdrawPassKey, depthTested: boolean): void {
+    const target = this._targetOfPass(key);
+    if (!target) {
+      this._setStatus("this pass has no render target read back, so there is nothing to draw the overdraw over");
+      return;
+    }
+    this.onOpenTexture.emit(target, { overdraw: true, depthTested });
   }
 
   /** The capture as a file for vkinsp_replay: serialized once, and again only after the capture changed. */
@@ -1388,7 +1415,7 @@ export class CaptureView implements CaptureHost {
     if ("command" in row) this._selectRow(row as CommandRow);
   }
 
-  /** Opens the overdraw tab on the first measured pass; a Vulkan capture is measured first. */
+  /** Opens the first measured pass's render target with its overdraw over it; a Vulkan capture is measured first. */
   async openOverdraw(): Promise<void> {
     if (!this.data.overdraw.length) {
       if (this.data.api === "metal") {
@@ -1398,14 +1425,14 @@ export class CaptureView implements CaptureHost {
       if (!(await this.measureOverdraw())) return;
     }
     const first = (this.data.overdraw.find((o) => o.info.measured !== false) ?? this.data.overdraw[0])?.info;
-    if (first) this.onOpenOverdraw.emit({ frame: first.frame, commandBuffer: first.commandBuffer, passIndex: first.passIndex }, true);
+    if (first) this.openPassOverdraw({ frame: first.frame, commandBuffer: first.commandBuffer, passIndex: first.passIndex }, true);
     else this._setStatus("the replay measured no pass");
   }
 
   /**
    * Vulkan: replays the capture on this machine's GPU with vkinsp_replay, which draws every pass
    * again with a counting fragment shader (docs/REPLAY.md), and takes its measurements. `open`
-   * opens that pass's overdraw tab afterwards.
+   * opens that pass's render target with the overdraw over it afterwards.
    */
   async measureOverdraw(open?: OverdrawPassKey): Promise<boolean> {
     if (this._overdrawRun?.running) return false;
@@ -1421,7 +1448,7 @@ export class CaptureView implements CaptureHost {
       this.data.overdraw = file.measurements;
       this.data.onOverdraw.emit();
       this._updateStatus();
-      if (open) this.onOpenOverdraw.emit(open, true);
+      if (open) this.openPassOverdraw(open, true);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -1469,8 +1496,8 @@ export class CaptureView implements CaptureHost {
 
   /**
    * The pass's overdraw heatmaps, when the capture has them: a Metal capture measured while it was
-   * taken (metal/src/overdraw.h), a Vulkan one replayed (measureOverdraw). A heatmap opens in the
-   * capture's overdraw tab.
+   * taken (metal/src/overdraw.h), a Vulkan one replayed (measureOverdraw). A heatmap opens over the
+   * pass's render target in the capture's render target tab (capture_texture_view.ts).
    */
   private _renderPassOverdraw(container: Widget, frame: number, commandBufferId: number, passIndex: number): void {
     const key: OverdrawPassKey = { frame, commandBuffer: commandBufferId, passIndex };
@@ -1480,8 +1507,8 @@ export class CaptureView implements CaptureHost {
       return;
     }
     const grp = new collapsible(container, { label: "Overdraw", collapsed: false });
-    new Button(grp.body, { label: "Open in Tab", class: "btn btn-sm", tooltip: "The pass's overdraw in a tab of its own: zoom, the render target underneath, and the counts under the pointer",
-      callback: () => this.onOpenOverdraw.emit(key, true) });
+    new Button(grp.body, { label: "Open in Tab", class: "btn btn-sm", tooltip: "The pass's render target in a tab of its own, with the overdraw over it: zoom, the counts under the pointer, and the history of any pixel you click",
+      callback: () => this.openPassOverdraw(key, true) });
     const strip = new Div(grp.body, { class: "capture_frameImages" });
     for (const o of measurements) {
       const box = new Div(strip, { class: "capture_pass_texture" });
@@ -1502,8 +1529,8 @@ export class CaptureView implements CaptureHost {
       canvas.height = o.info.height;
       canvas.getContext("2d")!.putImageData(new ImageData(rgba, o.info.width, o.info.height), 0, 0);
       canvas.style.maxWidth = "100%";
-      canvas.title = "Click to open in the overdraw tab: zoom, the render target underneath, and the counts under the pointer";
-      canvas.onclick = () => this.onOpenOverdraw.emit(key, o.info.depthTested);
+      canvas.title = "Click to open the render target with this overdraw over it: zoom, the counts under the pointer, and the history of any pixel you click";
+      canvas.onclick = () => this.openPassOverdraw(key, o.info.depthTested);
       box.element.appendChild(canvas);
     }
     new Div(grp.body, {
@@ -1542,6 +1569,11 @@ export class CaptureView implements CaptureHost {
       new Div(box, { text: tex.info.error, class: "text-muted font-sm" });
       return;
     }
+    if (tex.info.kind !== "sampled") {
+      new Button(box, { label: "Open in Tab", class: "btn btn-sm",
+        tooltip: "The render target in a tab of its own: zoom, the pass's overdraw over it, and the history of any pixel you click",
+        callback: () => this.onOpenTexture.emit({ key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex }, {}) });
+    }
     const canvas = this._textureCanvas(tex, "capture-texture-canvas");
     canvas.title = "Click to open in the image viewer (zoom, channels, exposure, texel values)";
     box.element.appendChild(canvas);
@@ -1560,7 +1592,7 @@ export class CaptureView implements CaptureHost {
       new Button(viewer, { label: "Close viewer", class: "btn btn-sm", callback: toggle });
       // A render target's pixel can be followed through the frame: replayed (Vulkan), or the next frame captured following it (Metal).
       const history = tex.info.kind !== "sampled"
-        ? { pixelHistory: (x: number, y: number, mip: number, layer: number) => this.onOpenPixelHistory.emit({ image: tex.info.id, x, y, mip, layer }) }
+        ? { pixelHistory: (x: number, y: number, mip: number, layer: number) => this.openTextureForPixel({ image: tex.info.id, x, y, mip, layer }) }
         : {};
       new ImageView(viewer, this.window, image, { info: tex.info, data: tex.data }, history);
       canvas.style.display = "none";

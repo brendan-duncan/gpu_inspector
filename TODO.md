@@ -139,9 +139,9 @@ application with injected state. Route (a) is the general one and is the prerequ
       pixel's value and depth after each event.
 - [ ] Pixel history, the rest: writes outside render passes (clears, copies, blits, compute),
       multisampled images, per-fragment values (a primitive-id pass), early fragment tests.
-- [x] Pixel history in the app and the MCP server: a Pixel History tab beside the capture's, from a
-      pixel of the overdraw tab or of a render target's image viewer (click and Pixel History, or
-      double-click), and `get_pixel_history`. Both replay the capture with `vkinsp_replay --pixel-data`.
+- [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
+      tab, beside the image, and `get_pixel_history`. Both replay the capture with
+      `vkinsp_replay --pixel-data`.
 - [ ] Pixel history without a fresh replay per pixel: one replay process kept alive with the frame
       rebuilt, answering pixels as they are asked for.
 - [x] Overdraw heatmap (`vkinsp_replay --overdraw`, docs/REPLAY.md): each pass is replayed with a
@@ -151,8 +151,10 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Vulkan overdraw in the app and the MCP server: "Measure Overdraw" (a pass's details, or the
       Reports menu) replays the capture with `vkinsp_replay --overdraw-data` and shows the result the
       way a Metal capture's is shown; `get_overdraw` replays a Vulkan capture on first use.
-- [x] Overdraw tab: a pass's heatmap at any zoom, over its render target, with both counts and the
-      target's texel under the pointer (`renderer/overdraw_view.ts`).
+- [x] A capture's render target in a tab of its own (`renderer/capture_texture_view.ts`), after
+      WebGPU Inspector's capture texture viewer: the image with the pass's overdraw over it when
+      **Overdraw** is ticked (legend, counts under the pointer, how much colour covers it), and the
+      history of the pixel clicked beside the image.
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
 - [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays

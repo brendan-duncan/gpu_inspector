@@ -43,9 +43,21 @@ follow the same way. The feature list below describes the Vulkan layer.
 
   See [Claude Code](#claude-code).
 
-See [docs/PROFILING.md](docs/PROFILING.md) for how to find a GPU bottleneck with it,
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the current state of the
-project, and [TODO.md](TODO.md) for what is planned. Third-party code and licenses are listed in
+## Documentation
+
+The user documentation is in [docs/](docs/README.md):
+
+| | |
+|---|---|
+| [Install](docs/INSTALL.md) · [Getting started](docs/GETTING_STARTED.md) | the first session, start to a saved capture |
+| [Vulkan](docs/VULKAN.md) · [Metal](docs/METAL.md) · [Android and Quest](docs/ANDROID.md) | the workflow for each platform |
+| [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
+| [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |
+| [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) · [Building from source](docs/BUILDING.md) | when something does not work, and building it yourself |
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the design and the current state of the project,
+[TODO.md](TODO.md) is what is planned, and third-party code and licenses are listed in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Install

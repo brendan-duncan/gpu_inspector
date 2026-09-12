@@ -15116,17 +15116,18 @@ function heatColor(n) {
   for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
   return [255, 255, 255];
 }
-function overdrawRgba(o) {
+function overdrawRgba(o, transparentZero = false) {
   const { width, height } = o.info;
   const pixels = width * height;
   if (!o.data || o.data.byteLength < pixels * 2) return null;
   const out = new Uint8ClampedArray(pixels * 4);
   for (let p = 0; p < pixels; p++) {
-    const [r, g, b] = heatColor(o.data[p * 2] | o.data[p * 2 + 1] << 8);
+    const count2 = o.data[p * 2] | o.data[p * 2 + 1] << 8;
+    const [r, g, b] = heatColor(count2);
     out[p * 4] = r;
     out[p * 4 + 1] = g;
     out[p * 4 + 2] = b;
-    out[p * 4 + 3] = 255;
+    out[p * 4 + 3] = transparentZero && count2 === 0 ? 0 : 255;
   }
   return out;
 }

@@ -1,5 +1,7 @@
 # Capture replay
 
+[Docs index](README.md) › Capture replay
+
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the base for the analyses that need to run a frame again with something
 changed: the overdraw heatmap, pixel history, and later per-draw timing and shader debugging
@@ -34,7 +36,7 @@ vkinsp_replay <capture.gpucap> --check
   it (see [Pixel history](#pixel-history)).
 - **`--pixel-data <file>`:** with `--pixel`, writes the history as JSON: every event, including the
   draws that do not reach the pixel, with its sample counts and the texels after it as hex in the
-  formats the file names. GPU Inspector's Pixel History tab runs the tool this way, and so does the
+  formats the file names. GPU Inspector's pixel history pane runs the tool this way, and so does the
   MCP server's `get_pixel_history`.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
   be rebuilt.
@@ -229,11 +231,15 @@ These cases differ for known reasons:
    - Multisampled images.
    - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
    - Early fragment tests.
-3. **The app and the MCP server.** Done for both analyses: **Measure Overdraw** and the overdraw
-   tab, and the Pixel History tab (a pixel of the overdraw tab or of a render target's image
-   viewer), with `get_overdraw` and `get_pixel_history` for Claude. Each pixel replays the whole
-   frame again; keeping one replay process alive between requests would make it quicker.
+3. **The app and the MCP server.** Done for both analyses: the capture's render target tab draws
+   the overdraw over the image and follows the pixel you click beside it, with `get_overdraw` and
+   `get_pixel_history` for Claude. Each pixel replays the whole frame again; keeping one replay
+   process alive between requests would make it quicker.
 
 Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
 templates and push descriptors with templates, queries whose results the frame reads back, and
 Metal captures.
+
+---
+
+[Docs index](README.md) · [Reports](REPORTS.md)

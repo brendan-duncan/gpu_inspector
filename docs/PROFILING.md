@@ -1,5 +1,7 @@
 # Finding GPU bottlenecks with GPU Inspector
 
+[Docs index](README.md) › Finding GPU bottlenecks
+
 A frame that takes too long is taking too long *somewhere*. This walks through finding where,
 using what a capture measures, and says what each measurement means when it is bad. It follows the
 same shape as Apple's and Unity's guidance for Xcode's Metal frame capture, because the reasoning
@@ -221,3 +223,7 @@ when a capture is taken.
 Thresholds are starting points, not laws. A deferred renderer's g-buffer pass legitimately writes
 several targets; a particle system legitimately overdraws. What the numbers are for is telling you
 which pass to spend the afternoon on.
+
+---
+
+Previous: [Reports](REPORTS.md) · [Docs index](README.md) · Next: [Claude Code plugin](MCP.md)

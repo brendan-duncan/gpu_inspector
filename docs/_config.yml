@@ -1,0 +1,20 @@
+# GitHub Pages configuration for the documentation in this directory.
+#
+# To publish: Settings -> Pages -> Source: "Deploy from a branch", branch "main", folder "/docs".
+# The pages are plain Markdown and read the same on GitHub, so nothing here is required for them
+# to be browsable in the repository.
+#
+# jekyll-relative-links (a default GitHub Pages plugin) rewrites the .md links between pages, and
+# jekyll-readme-index makes README.md the site's index page.
+
+title: GPU Inspector
+description: Frame capture and inspection for Vulkan and Metal applications
+theme: jekyll-theme-primer
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-readme-index
+
+relative_links:
+  enabled: true
+  collections: false

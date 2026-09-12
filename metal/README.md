@@ -681,7 +681,8 @@ the application's own objects.
   `CaptureOverdraw`, with per-pass totals, covered pixels, maximum, draws and a histogram, plus one
   `CaptureOverdrawData` frame of little-endian 16-bit counts per measurement. Counts larger than
   `maxTextureSize` go without their pixels. The pass's details show both heatmaps, and one opens
-  in the capture's overdraw tab with the counts under the pointer. The pass header and GPU
+  over the pass's render target in the capture's render target tab, with the counts under the
+  pointer. The pass header and GPU
   Bottlenecks use the measured figure where the GPU
   exposes no statistic counters, the file format keeps the counts, and the MCP server's
   `get_overdraw` returns them.
@@ -707,9 +708,8 @@ target, what each draw's fragments at the pixel met, and the value and depth aft
 captured, with the recorded calls overdraw uses (above).
 
 * **Asking.** The `Capture` message's `pixelHistory` (`{texture, x, y, mip, layer}`) names a
-  texture from an earlier capture. In the app, the pixel is picked in the overdraw tab or in a
-  render target's image viewer (click and **Pixel History**, or double-click), which captures the
-  next frame. `capture_frames` with `pixelHistory` does the same from the MCP server. The next
+  texture from an earlier capture. In the app, the pixel is clicked in a render target's tab, which
+  captures the next frame. `capture_frames` with `pixelHistory` does the same from the MCP server. The next
   frame renders into a new drawable, so a drawable's texture id, or one no longer alive, follows
   whichever drawable the captured frame renders into.
 * **Where it starts.** Every pass whose colour attachment is that texture at that level and slice
@@ -734,7 +734,7 @@ captured, with the recorded calls overdraw uses (above).
 * **Results.** Everything made is kept until the command buffer completes. At the end of the
   capture the counts and texels go out as `CapturePixelHistory`, in the JSON
   `vkinsp_replay --pixel-data` writes. That JSON names the texture followed and the one asked for,
-  and the app's Pixel History tab and `get_pixel_history` read it the same way. Capture files keep
+  and the app's pixel history pane and `get_pixel_history` read it the same way. Capture files keep
   it.
 
 Limits:
