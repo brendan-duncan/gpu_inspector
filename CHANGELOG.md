@@ -1,5 +1,12 @@
 ## v0.10.0
 
+### Added
+- Pixel history: every clear and draw that touched a pixel, what each draw's fragments met, and the
+  pixel's value after each. A Vulkan capture is replayed for it, a Metal application follows the
+  pixel while capturing. `get_pixel_history` in the MCP server.
+- A capture's render target in a tab of its own: the image, the pass's overdraw over it with the
+  counts under the pointer, and the clicked pixel's history beside it.
+
 ## v0.9.0
 
 ### Added
@@ -11,13 +18,6 @@
   stencil tests. A Metal application measures it while capturing (**Overdraw** in the capture bar,
   [metal/README.md](metal/README.md)); a Vulkan capture is replayed for it. Heatmaps in the pass's
   details, the figure in pass headers and GPU Bottlenecks, kept in capture files, `get_overdraw`.
-- Pixel history: every pass start, clear and draw that touched one pixel, what each draw's fragments
-  met (outside the scissor, culled, discarded, failed depth or stencil, or wrote it), and the
-  pixel's colour and depth after each. A Vulkan capture is replayed; a Metal application follows the
-  pixel while capturing the next frame. `get_pixel_history` in the MCP server.
-- A capture's render target in a tab of its own, after WebGPU Inspector's capture texture viewer:
-  the image with the pass's overdraw over it and the counts under the pointer, and the history of
-  the pixel clicked beside it. Opened from a pass's render targets, a heatmap, or the Reports menu.
 - Claude Code plugin (`claude-plugin/`): an MCP server over saved `.gpucap` files and running
   applications — the capture summary, Frame Issues, GPU Bottlenecks, the render graph, commands and
   the state bound at a draw, objects, validation, images, buffers, vertices, shaders (reflection,

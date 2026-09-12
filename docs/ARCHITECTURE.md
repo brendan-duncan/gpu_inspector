@@ -937,10 +937,13 @@ dialog at startup; `--launch-android=<package> --device=<serial>` launches on an
 object and validation counts, refresh source, frame boundary, symbols, and per capture the
 command, draw, pass, texture and buffer counts, the frame findings and the commands carrying
 stacks or validation messages: `debugState()` on the session and capture views, read through
-`window.__inspectorDebugState`). `tools/ui_tests.py` builds its cases on these flags: the
-triangle application's options (plain, `--msaa`, `--offscreen`, `--bad-scissor` with the
-validation layer, `--hazard` with sync validation, stacks) and saved captures with expected
-findings, each a UI run whose dump and log are checked. `python tools/inspector_client.py --capture
+`window.__inspectorDebugState`); `--debug-mouse=x,y[;x,y...]` clicks points on the window before
+the dump, and `--debug-settle=<ms>` waits after them for work a click set going (a pixel history's
+replay). `tools/ui_tests.py` builds its cases on these flags: the triangle application's options
+(plain, `--msaa`, `--offscreen`, `--bad-scissor` with the validation layer, `--hazard` with sync
+validation, stacks), the reports (render graph, bottlenecks, and the render target tab measuring
+overdraw and following a clicked pixel), and saved captures with expected findings, each a UI run
+whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 
 Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):

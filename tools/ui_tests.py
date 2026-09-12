@@ -7,7 +7,7 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-dump, --debug-view, --debug-expand, --screenshot, --quit-after-screenshot), then checks the JSON
+--debug-dump, --debug-view, --debug-expand, --debug-settle, --screenshot, --quit-after-screenshot), then checks the JSON
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
 expected of it ({"findings": {"rule": count, ...}}); without one the file only has to open with
@@ -32,6 +32,15 @@ def find_triangle():
     for c in [os.path.join(ROOT, "build", "bin", "Release", "vkinsp_triangle.exe"),
               os.path.join(ROOT, "build", "bin", "vkinsp_triangle.exe"),
               os.path.join(ROOT, "build", "bin", "vkinsp_triangle")]:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def find_replay():
+    for c in [os.path.join(ROOT, "build", "bin", "Release", "vkinsp_replay.exe"),
+              os.path.join(ROOT, "build", "bin", "vkinsp_replay.exe"),
+              os.path.join(ROOT, "build", "bin", "vkinsp_replay")]:
         if os.path.isfile(c):
             return c
     return None
@@ -211,6 +220,17 @@ def triangle_bottlenecks(state, log):
     return check_connected(state, log) + check_capture_basic(state, log) +         expect("with counters" in log, "the layer never reported pass counters") +         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters")
 
 
+def triangle_overdraw(state, log):
+    c = capture(state)
+    t = c.get("textureTab") or {}
+    h = t.get("history") or {}
+    touched = h.get("touched") or []
+    # The whole render target tab (renderer/capture_texture_view.ts) in one run: the Overdraw report
+    # replays the capture with vkinsp_replay, opens the pass's target with the heat over it, and the
+    # click follows that pixel through the frame in the pane beside the image.
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect((c.get("overdraw") or 0) >= 2, f"{c.get('overdraw')} overdraw measurements (the replay takes two per pass)") +         expect((c.get("overdrawCounts") or 0) >= 2, f"{c.get('overdrawCounts')} measurements carry per-pixel counts") +         expect(bool(t), "the Overdraw report opened no render target tab") +         expect(t.get("overdraw") is True, "the tab did not open with the overdraw overlay on") +         expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw over the image: {t}") +         expect(bool(t.get("picked")), "the click on the image picked no pixel") +         expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") +         expect(bool(touched), f"the pixel history lists no events: {h}") +         expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -253,7 +273,7 @@ def triangle_cases(triangle):
     def start_triangle():
         env = dict(os.environ, VKINSP_ENABLE="1", VKINSP_PORT="47531")
         return subprocess.Popen([triangle, "--frames", "5000"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return [
+    cases = [
         # The implicit layer: registered for the case, the triangle started outside the inspector.
         Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
              companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
@@ -274,6 +294,16 @@ def triangle_cases(triangle):
         # details pane empty and the renderer's console with the error.
         Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
     ]
+    # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
+    # one only runs where vkinsp_replay is built (replay/, docs/REPLAY.md). The click lands on the
+    # image, which fits its pane; --debug-settle waits for the replay the click set going.
+    if find_replay():
+        cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
+                                                "--debug-mouse=340,560", "--debug-settle=8000"],
+                          triangle_overdraw, delay_ms=20000))
+    else:
+        print("  (no vkinsp_replay build: skipping the overdraw case)")
+    return cases
 
 
 def capture_case(path):

@@ -79,6 +79,10 @@ export class CaptureTextureView {
   private _overdrawRow: Div | null = null;
   private _heat: { counts: Uint8Array; rgba: Uint8ClampedArray } | null = null;
   private _picked: PixelRequest | null = null;
+  /** Percent of the width the image takes, dragged on the handle between the panes. */
+  private _split = 60;
+  /** Refits the image (zoom 0) when its pane changes width. */
+  private _resize: ResizeObserver | null = null;
 
   private readonly _onOverdraw = (): void => {
     this._heat = null;
@@ -136,6 +140,8 @@ export class CaptureTextureView {
   dispose(): void {
     this.host.data.onOverdraw.disconnect(this._onOverdraw);
     this.host.data.onTextureLoaded.disconnect(this._onTexture);
+    this._resize?.disconnect();
+    this._resize = null;
   }
 
   /** The UI tests' view of the tab (tools/ui_tests.py). */
@@ -177,7 +183,10 @@ export class CaptureTextureView {
 
     const split = new Div(this.root, { class: "capture-texture-split" });
     const left = new Div(split, { class: "capture-texture-image" });
+    const handle = new Div(split, { class: "capture-texture-handle", tooltip: "Drag to give the image or the history more room" });
     const right = new Div(split, { class: "capture-texture-history" });
+    left.element.style.flex = `0 0 ${this._split}%`;
+    this._dragSplit(handle, split, left);
 
     // The history pane, which the image's clicks fill.
     const metal = this.host.data.api === "metal";
@@ -199,6 +208,7 @@ export class CaptureTextureView {
     }
 
     this._image = new ImageView(left, this.host.session, this.host.imageObject(info.id), { info, data: tex.data }, {
+      fit: true,
       onPick: (x, y, mip, layer) => this._follow({ image: info.id, x, y, mip, layer }),
       overlay: this._overlay(),
       extras: {
@@ -210,6 +220,10 @@ export class CaptureTextureView {
       },
     });
 
+    this._resize?.disconnect();
+    this._resize = new ResizeObserver(() => this._image?.refit());
+    this._resize.observe(left.element);
+
     if (this._picked) {
       const pixel = this._picked;
       this._image.setPicked({ x: pixel.x, y: pixel.y });
@@ -219,6 +233,24 @@ export class CaptureTextureView {
     } else {
       this._history.setPrompt("Click a pixel in the image: every clear and draw of the frame that touched it shows up here.");
     }
+  }
+
+  /** The divider between the image and the history: dragging it moves the split. */
+  private _dragSplit(handle: Div, split: Div, left: Div): void {
+    handle.element.onmousedown = (e: MouseEvent) => {
+      e.preventDefault();
+      const rect = split.element.getBoundingClientRect();
+      const move = (m: MouseEvent): void => {
+        this._split = Math.min(85, Math.max(15, ((m.clientX - rect.left) / Math.max(1, rect.width)) * 100));
+        left.element.style.flex = `0 0 ${this._split}%`;
+      };
+      const up = (): void => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    };
   }
 
   private _buildToolbar(bar: Div): void {

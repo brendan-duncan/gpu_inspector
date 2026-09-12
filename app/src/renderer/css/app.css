@@ -572,9 +572,11 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .capture-texture-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .capture-texture-head { padding: 6px 8px 0 8px; font-size: 9.5pt; }
 .capture-texture-split { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; }
-.capture-texture-image { display: flex; flex-direction: column; flex: 1 1 60%; min-width: 0; min-height: 0; }
+.capture-texture-image { display: flex; flex-direction: column; flex: 0 0 60%; min-width: 0; min-height: 0; }
+.capture-texture-handle { flex: 0 0 5px; cursor: col-resize; background: var(--border-color); opacity: 0.6; }
+.capture-texture-handle:hover { opacity: 1; }
 .capture-texture-image .image-view-scroll { flex: 1 1 auto; max-height: none; min-height: 0; }
-.capture-texture-history { flex: 1 1 40%; min-width: 0; min-height: 0; display: flex; border-left: 1px solid var(--border-color); }
+.capture-texture-history { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
 .capture-texture-history .pixel-history-view { flex: 1 1 auto; min-width: 0; }
 /* The overdraw row under the image's toolbar: where the counts stand, the controls, the legend. */
 .overdraw-bar { display: none; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 8px 4px 8px; font-size: 9pt; }

@@ -124,6 +124,35 @@ jobs:
         working-directory: app
         run: npm run typecheck
 
+      - name: Unit tests
+        working-directory: app
+        run: npm test
+
+      # The MCP server ships as a bundle committed to the repository
+      # (claude-plugin/server/gpu-inspector-mcp.mjs), so a release can carry one built before the
+      # sources it came from. Building it again must leave the file untouched; if it does not, what
+      # was committed is stale. Linux only: the bundle is the same on every platform.
+      - name: Check that the committed MCP bundle is current
+        if: runner.os == 'Linux'
+        working-directory: app
+        shell: bash
+        run: |
+          npm run build
+          if ! git diff --quiet -- ../claude-plugin/server/gpu-inspector-mcp.mjs; then
+            echo "::error::claude-plugin/server/gpu-inspector-mcp.mjs is older than the sources it is built from."
+            git diff --stat -- ../claude-plugin/server/gpu-inspector-mcp.mjs
+            cat <<'MSG'
+
+          The committed MCP server bundle does not match a fresh build of app/src/mcp. Rebuild it
+          and commit the result, then tag again:
+
+            (cd app && npm run build)
+            git commit -am "rebuild the MCP server bundle"
+
+          MSG
+            exit 1
+          fi
+
       # Builds only; the release job below publishes once every platform has built.
       - name: Build installer
         if: runner.os != 'macOS'
