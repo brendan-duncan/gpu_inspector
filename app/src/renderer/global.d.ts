@@ -39,6 +39,8 @@ export interface InspectorApi {
    * every pass's overdraw. `data` is the tool's --overdraw-data file (renderer/overdraw.ts parses it).
    */
   measureOverdraw(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
+  /** Replays a Vulkan capture measuring every draw (vkinsp_replay --draw-data). */
+  measureDraws(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
   /**
    * Vulkan: replays a capture (its file bytes) following one pixel of an image through the frame.
    * `data` is the tool's --pixel-data JSON (renderer/pixel_history.ts parses it).

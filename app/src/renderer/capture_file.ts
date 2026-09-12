@@ -153,6 +153,7 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
     passTimings: [...data.passTimings.values()],
     ...(data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...(o.data ? { payload: addPayload(o.data) } : {}) })) } : {}),
     ...(data.pixelHistory ? { pixelHistory: data.pixelHistory } : {}),
+    ...(data.drawStats?.length ? { drawStats: data.drawStats } : {}),
     validation: db.validation,
     ...(symbols ? { symbols } : {}),
     ...(stacks ? { stacks } : {}),

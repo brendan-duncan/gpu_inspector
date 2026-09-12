@@ -106,8 +106,9 @@ interpreter and re-created pipelines.
 - [x] Shader flame graph: fragment stages are weighted by the fragment invocations a pass's GPU
       counters measured, split between its draws by scissor area, instead of the scissor-area
       upper bound. A pass without counters still uses the estimate.
-- [ ] Shader flame graph: per-draw GPU timing and per-draw fragment counts, which need the replay's
-      timestamp and statistics queries ("Per-draw GPU timing and counters via replay" below).
+- [x] Shader flame graph: per-draw GPU timing and per-draw fragment counts from the replay
+      (**Measure draws**, `get_shader_flame_graph`). A pass's measured time is split between its
+      draws by what the replay timed each at, and fragment stages take their measured counts.
 - [x] Shader editor `#include` resolution from the source roots: `-I` per root for glslang and dxc,
       with the Google include-directive preamble where a GLSL source needs it (glslang counts the
       preamble separately, so error lines stay the source's).
@@ -163,8 +164,9 @@ application with injected state. Route (a) is the general one and is the prerequ
       view of a multiview pass.
 - [ ] Draw-call overlays: wireframe, highlight drawcall, depth/stencil test overlays
       (`vk_overlay.cpp`).
-- [ ] Per-draw GPU timing and counters via replay with timestamp/pipeline-statistics queries
-      (`vk_counters.cpp`).
+- [x] Per-draw GPU timing and counters via replay with timestamp and pipeline-statistics queries
+      (`replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
+      dispatch timed and counted, kept in capture files, read by the Shader Flame Graph.
 - [ ] Mesh output view: post-vertex-shader positions via transform feedback or a compute
       re-execution of the vertex shader (`vk_postvs.cpp`).
 - [ ] Shader debugger: RenderDoc's SPIR-V interpreter (`vk_shader_debug.cpp`, `spirv_debug.cpp`)

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CaptureData, type CapturedOverdraw } from "../renderer/capture_data.js";
+import type { DrawStat } from "../renderer/draw_stats.js";
 import { parseCaptureFile, type CaptureFileManifest } from "../renderer/capture_format.js";
 import { CaptureStatistics } from "../renderer/capture_statistics.js";
 import { labelNameOf } from "../renderer/command_sets.js";
@@ -66,6 +67,11 @@ export class Capture {
     this.data.overdraw = measurements;
     this._metrics = null;
     this._analysis = null;
+  }
+
+  /** Per-draw timings and counters measured by replaying the capture (renderer/draw_stats.ts). */
+  setDrawStats(draws: DrawStat[]): void {
+    this.data.drawStats = draws;
   }
 
   get statistics(): CaptureStatistics {

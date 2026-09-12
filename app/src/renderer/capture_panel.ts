@@ -37,6 +37,7 @@ import {
   type OverdrawPassKey,
 } from "./overdraw.js";
 import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
+import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
 /** A tab a capture opens beside its own: a render target, with its overdraw and pixel history. */
@@ -558,6 +559,8 @@ export class CaptureView implements CaptureHost {
   private _replayFile: Promise<Uint8Array> | null = null;
   /** Vulkan: the replay measuring overdraw, while it runs or after it failed. */
   private _overdrawRun: { running: boolean; error?: string } | null = null;
+  /** Vulkan: the replay measuring the frame's draws, while it runs or after it failed. */
+  private _drawRun: { running: boolean; error?: string } | null = null;
 
   private _listPanel: Div;
   private _infoPanel: Div;
@@ -1171,6 +1174,7 @@ export class CaptureView implements CaptureHost {
       data: this.data, db, models,
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
+      ...(this.data.api !== "metal" ? { measureDraws: () => this.measureDraws() } : {}),
     });
   }
 
@@ -1308,6 +1312,7 @@ export class CaptureView implements CaptureHost {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
     else if (name === "bottlenecks") this._showBottlenecks();
     else if (name === "stats") this._showStats();
+    else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
     else if (name === "overdraw") void this.openOverdraw();
     else if (name === "pixel-history") {
       // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
@@ -1455,6 +1460,36 @@ export class CaptureView implements CaptureHost {
       this._overdrawRun = { running: false, error: message };
       this._refreshSelection();
       this._setStatus(`overdraw not measured: ${message.split("\n")[0]}`);
+      return false;
+    }
+  }
+
+  /**
+   * Vulkan: replays the capture with a timestamp pair and a pipeline statistics query around every
+   * draw and dispatch (replay/src/draw_stats.cpp), for the Shader Flame Graph's per-draw weights.
+   */
+  async measureDraws(): Promise<boolean> {
+    if (this._drawRun?.running) return false;
+    if (this.data.api === "metal") {
+      this._setStatus("per-draw measurements need the capture replayed, and Metal captures do not replay yet");
+      return false;
+    }
+    this._drawRun = { running: true };
+    this._setStatus("measuring draws: replaying the capture on this machine's GPU...");
+    try {
+      const bytes = await this._replayBytes();
+      const result = await window.inspector.measureDraws({ data: bytes, name: this.label });
+      if (!result.data) throw new Error(result.error ?? "the replay wrote no draw measurements");
+      const file = parseDrawStats(result.data);
+      this._drawRun = null;
+      this.data.drawStats = file.draws;
+      this.data.onDrawStats.emit();
+      this._setStatus(drawStatsSummary(file));
+      return true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this._drawRun = { running: false, error: message };
+      this._setStatus(`draws not measured: ${message.split("\n")[0]}`);
       return false;
     }
   }

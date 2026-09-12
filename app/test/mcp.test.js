@@ -286,6 +286,38 @@ test("the shader flame graph spreads the measured pass over its stages", async (
   assert.equal((await call("get_shader_flame_graph", { pass: 3 })).result.isError, true);
 });
 
+test("per-draw measurements weigh the flame graph's draws and fragment stages", async () => {
+  // A capture replayed for its draws (vkinsp_replay --draw-data) carries what each one took and
+  // ran up. The first draw is timed at nine times the others, so the split inside the pass is the
+  // replay's, and the fragment stages take the measured counts rather than the scissor area.
+  const drawStats = [];
+  for (let i = 0; i < 40; i++) {
+    drawStats.push({
+      command: FIRST_DRAW + i, frame: 0, commandBuffer: CB, passIndex: 0, timed: true, ms: i === 0 ? 0.9 : 0.1,
+      // The first draw ran three times the vertices its arguments name, as an indirect draw would:
+      // the measured count is the one to use.
+      counted: true, vertexInvocations: i === 0 ? 9 : 3, primitives: 1, fragmentInvocations: 0, computeInvocations: 0,
+    });
+  }
+  const withShader = objects.map((o) => (o.id === 14 ? { ...o, blobs: [{ name: "vertex:main", size: spirv.byteLength, payload: [100, spirv.byteLength] }] } : o));
+  const file = join(dir, "draws.gpucap");
+  writeFileSync(file, encodeCaptureFile({ ...manifest(withShader, 2.5), drawStats }, [pixels, vertices, spirv]));
+
+  const { json, text } = await call("get_shader_flame_graph", { capture: file, perDraw: true, measureDraws: false });
+  assert.ok(json, text);
+  assert.match(json.meaning, /split between its draws by what the replay timed each draw at/);
+  assert.ok(json.notes.some((n) => /timed one at a time by replaying the frame/.test(n)), `notes: ${JSON.stringify(json.notes)}`);
+  const pass = json.graph.children[0];
+  assert.equal(pass.cost, 2.5, "the pass keeps the duration the capture measured");
+  // 0.9 of 4.8 ms of draw time, scaled into the pass's 2.5 ms.
+  const first = pass.children[0];
+  assert.equal(first.command, FIRST_DRAW);
+  assert.ok(Math.abs(first.cost - 2.5 * 0.9 / 4.8) < 1e-3, `first draw ${first.cost}`);   // the answer rounds to 4 decimals
+  const stage = first.children.find((n) => n.name.startsWith("vertex"));
+  assert.equal(stage.invocations, 9, "the vertex stage takes the measured count, not the draw's arguments");
+  assert.equal(stage.invocationCount, "exact");
+});
+
 test("a shader's source file named by its line information is found under the source roots", async () => {
   const missing = (await call("get_shader", { capture: before, object: 14, view: "source" })).json.stages[0];
   assert.match(missing.note, /names shader\.frag.*set_search_paths/);

@@ -55,6 +55,31 @@ struct ReplayOptions {
         uint32_t mip = 0;
         uint32_t layer = 0;
     } history;
+    /** Time and count every draw of the frame with timestamps and pipeline statistics (DrawResult). */
+    bool drawStats = false;
+};
+
+/**
+ * One draw of the replayed frame, measured where it was issued: a timestamp before and after it,
+ * and a pipeline statistics query around it.
+ *
+ * The GPU pipelines draws, so the spans of consecutive draws overlap and their sum runs longer than
+ * the pass they are in: a draw's time says what share of the pass it is, not what it costs on its
+ * own. The counters are exact.
+ */
+struct DrawResult {
+    uint32_t command = 0;          // index in the capture's command list
+    uint32_t frame = 0;
+    uint64_t commandBuffer = 0;
+    /** The render pass it is in; UINT32_MAX for a dispatch outside one. */
+    uint32_t passIndex = 0;
+    bool timed = false;
+    double durationMs = 0;
+    bool counted = false;
+    uint64_t vertexInvocations = 0;
+    uint64_t primitives = 0;
+    uint64_t fragmentInvocations = 0;
+    uint64_t computeInvocations = 0;
 };
 
 /**
@@ -182,6 +207,10 @@ struct ReplayReport {
     std::vector<TargetComparison> targets;
     std::vector<OverdrawResult> overdraw;
     PixelHistoryResult history;
+    /** With ReplayOptions::drawStats: every draw of the frame, in command order. */
+    std::vector<DrawResult> draws;
+    /** Why the draws carry no timings or no counters (a device without them). */
+    std::string drawStatsNote;
 };
 
 class Replayer {
@@ -356,6 +385,14 @@ private:
     void RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending);
     void ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass);
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
+    bool PrepareDrawStats();
+    void ResetDrawQueries(VkCommandBuffer cb);
+    void DestroyDrawStats();
+    /** Starts this draw's queries; the slot it took, or -1 when there is no room left. */
+    int BeginDrawQuery(VkCommandBuffer cb, uint32_t command, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
+    void EndDrawQuery(VkCommandBuffer cb, int slot);
+    /** Reads the submission's results; `submitted` false drops them (a submission that never ran). */
+    void CompleteDrawStats(bool submitted);
     void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to);
     void RecordSecondaries(size_t executeIndex, const JValue& execute);
     void ApplyBufferData(const CommandGroup& group);
@@ -421,6 +458,20 @@ private:
     bool _overdrawDrawable = false;
     uint32_t _overdrawDraws = 0;
     uint32_t _overdrawSkippedDraws = 0;
+
+    // Per-draw timing and counters: a timestamp pair and a statistics query per draw, reset at the
+    // start of each submission's recording and read once the submission has completed.
+    VkQueryPool _drawTimestamps = VK_NULL_HANDLE;
+    VkQueryPool _drawStatistics = VK_NULL_HANDLE;
+    uint32_t _drawQueryCapacity = 0;
+    uint32_t _drawSlot = 0;
+    /** Nanoseconds per timestamp tick; 0 where the queue cannot write timestamps. */
+    double _timestampPeriod = 0;
+    bool _drawCountersAvailable = false;
+    /** The submission's draws, in slot order, waiting for its results. */
+    std::vector<DrawResult> _pendingDraws;
+    /** Queries the capture's own commands have open: a statistics query cannot nest inside one. */
+    uint32_t _appQueryDepth = 0;
 
     // Pixel history
     std::map<std::pair<uint64_t, int>, VkPipeline> _historyPipelines;

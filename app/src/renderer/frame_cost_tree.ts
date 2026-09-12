@@ -25,6 +25,7 @@ import { passKey } from "./capture_data.js";
 import type { ShaderStage } from "./vulkan/spirv_reflect.js";
 import { dominantDimension, weighCost, type CostDimension, type CostVec, type FunctionAnalysis, type ShaderAnalysis } from "./vulkan/spirv_analysis.js";
 import { isAction } from "./command_sets.js";
+import { drawStatsByCommand } from "./draw_stats.js";
 import { isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { FlameGraphNodeBase } from "./widget/flamegraph.js";
 
@@ -90,7 +91,9 @@ export interface CostTreeResult {
   notes: string[];
   stats: { passes: number; items: number; unknownStages: number; estimatedStages: number; collapsed: number;
            /** Render passes whose fragment stages are weighted by measured invocations, not by area. */
-           measuredFragmentPasses: number };
+           measuredFragmentPasses: number;
+           /** Passes whose draws were timed one by one by the replay, which sets the split between them. */
+           measuredDrawPasses: number };
 }
 
 export function formatCostValue(value: number, units: CostUnits): string {
@@ -137,6 +140,8 @@ interface Item {
   stages: StageInvocations[];
   /** The draw's scissor (clipped to the render area): how a pass's measured fragments are split. */
   area: number | null;
+  /** What the replay timed this draw at, null without per-draw measurements (draw_stats.ts). */
+  ms: number | null;
 }
 
 interface Pass {
@@ -213,6 +218,8 @@ function rectArea(v: ArgValue | undefined): number | null {
 
 function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; measuredFragmentPasses: number } {
   const { data, models } = o;
+  // Per-draw timings and counters, where the capture has been replayed for them.
+  const drawStats = drawStatsByCommand(data.drawStats ?? []);
   const sets = data.sets;
   const passes: Pass[] = [];
   const notes: string[] = [];
@@ -303,11 +310,15 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
       if (!stageModels) { missingModels++; continue; }
       const stages: StageInvocations[] = [];
       let drawArea: number | null = null;
+      // What the replay measured for this very draw: exact counts, indirect arguments included.
+      const measured = drawStats.get(cmd.index);
+      const counted = measured?.counted === true;
       if (isDispatch) {
         const groups = dispatchGroups(cmd, data);
         for (const m of stageModels) {
           const wg = m.workgroupSize ? m.workgroupSize[0] * m.workgroupSize[1] * m.workgroupSize[2] : null;
-          const inv = groups !== null && wg !== null ? groups * wg : null;
+          const fromArgs = groups !== null && wg !== null ? groups * wg : null;
+          const inv = counted && measured!.computeInvocations > 0 ? measured!.computeInvocations : fromArgs;
           stages.push({ model: m, invocations: inv, confidence: inv === null ? "unknown" : "exact" });
         }
       } else {
@@ -317,16 +328,19 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
         const fragmentArea = o.estimateFragments ? drawArea : null;
         for (const m of stageModels) {
           if (m.stage === "fragment") {
-            stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
+            if (counted) stages.push({ model: m, invocations: measured!.fragmentInvocations, confidence: "exact" });
+            else stages.push({ model: m, invocations: fragmentArea, confidence: fragmentArea === null ? "unknown" : "estimated" });
           } else if (m.stage === "vertex") {
-            stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "exact" });
+            const inv = counted && measured!.vertexInvocations > 0 ? measured!.vertexInvocations : vertices;
+            stages.push({ model: m, invocations: inv, confidence: inv === null ? "unknown" : "exact" });
           } else {
             // Tessellation, geometry, mesh: scaled by the vertex count as a stand-in.
             stages.push({ model: m, invocations: vertices, confidence: vertices === null ? "unknown" : "estimated" });
           }
         }
       }
-      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages, area: drawArea });
+      pass.items.push({ command: cmd, pipelineId, kind: isDispatch ? "dispatch" : "draw", stages, area: drawArea,
+                       ms: measured?.timed ? measured.ms : null });
     }
   }
   if (missingModels) notes.push(`${missingModels} draw(s) or dispatch(es) use a pipeline whose shaders could not be fetched and are left out.`);
@@ -344,6 +358,8 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
       for (const stage of item.stages) if (stage.model.stage === "fragment") fragments.push({ stage, area: item.area });
     }
     if (!fragments.length) continue;
+    // Per-draw counts are already exact, and are not to be replaced by a share of the pass total.
+    if (fragments.some((f) => f.stage.confidence === "exact")) continue;
     const totalArea = fragments.reduce((sum, f) => sum + (f.area ?? 0), 0);
     for (const f of fragments) {
       const share = totalArea > 0 ? (f.area ?? 0) / totalArea : 1 / fragments.length;
@@ -410,7 +426,7 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
   const { passes, notes, measuredFragmentPasses } = collectPasses(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses };
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0 };
 
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
@@ -464,13 +480,21 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
       resolved.push({ bucket, stages, cost });
     }
 
+    // Where the replay timed every draw of the pass, those times set the split between the items
+    // and the modeled costs only split each item between its stages. Mixed measurements would put
+    // op units and milliseconds in one pass, so it is all or nothing.
+    const bucketMs = (items: Item[]): number => items.reduce((sum, i) => sum + (i.ms ?? 0), 0);
+    const timedItems = resolved.length > 0 && resolved.every((r) => r.bucket.items.every((i) => i.ms !== null));
+    if (timedItems) stats.measuredDrawPasses++;
+
     let kept = resolved;
     let collapsed: { count: number; draws: number; cost: number } | null = null;
     if (resolved.length > maxFramesPerPass) {
       const sorted = resolved.slice().sort((x, y) => y.cost - x.cost);
       kept = sorted.slice(0, maxFramesPerPass);
       const tail = sorted.slice(maxFramesPerPass);
-      collapsed = { count: tail.length, draws: tail.reduce((s, r) => s + r.bucket.items.length, 0), cost: tail.reduce((s, r) => s + r.cost, 0) };
+      collapsed = { count: tail.length, draws: tail.reduce((s, r) => s + r.bucket.items.length, 0),
+                    cost: timedItems ? tail.reduce((s, r) => s + bucketMs(r.bucket.items), 0) : tail.reduce((s, r) => s + r.cost, 0) };
       stats.collapsed += tail.length;
     }
 
@@ -525,6 +549,13 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
       const itemNode = rollup(node("item", name, 0, stageNodes));
       itemNode.command = first.command;
       itemNode.objectId = bucket.pipelineId;
+      if (timedItems) {
+        const ms = bucketMs(bucket.items);
+        const modeled = itemNode.totalCost;
+        if (modeled > 0) scaleSubtree(itemNode, ms / modeled);
+        else itemNode.totalCost = ms;
+        itemNode.durationMs = ms;
+      }
       itemNodes.push(itemNode);
     }
     if (collapsed) {
@@ -548,6 +579,9 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   const root = rollup(node("frame", "Frame", 0, passNodes));
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
+  if (stats.measuredDrawPasses > 0) {
+    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+  }
   if (stats.measuredFragmentPasses > 0) {
     notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);
   }
