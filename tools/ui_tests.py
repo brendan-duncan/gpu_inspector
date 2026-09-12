@@ -146,7 +146,8 @@ def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
         expect((c.get("textures") or 0) >= textures, f"{c.get('textures')} render targets read back") + \
         expect((c.get("textureErrors") or 0) == 0, f"{c.get('textureErrors')} render targets failed to read back") + \
         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every render target's data arrived") + \
-        expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings") +         expect(not timings or (c.get("passCounters") or 0) >= 1,
+        expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings") + \
+        expect(not timings or (c.get("passCounters") or 0) >= 1,
                "no pass carried GPU counters: the layer's pipeline statistics query (layer/src/pipeline_stats.h) "
                "is what the GPU Bottlenecks report is built from")
 
@@ -217,7 +218,10 @@ def triangle_bottlenecks(state, log):
     c = capture(state)
     # The counters the report divides out have to survive the whole path: the layer's query, the
     # protocol, and the UI's pass keying (a pass whose key does not resolve carries no counters).
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect("with counters" in log, "the layer never reported pass counters") +         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters") +         expect((c.get("passDepthRejection") or 0) >= 1,
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect("with counters" in log, "the layer never reported pass counters") + \
+        expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters") + \
+        expect((c.get("passDepthRejection") or 0) >= 1,
                "no pass carried fragmentsPassed: the layer's occlusion query around each pass "
                "(layer/src/capture.cpp) is what the late-depth-rejection rule needs")
 
@@ -230,7 +234,35 @@ def triangle_overdraw(state, log):
     # The whole render target tab (renderer/capture_texture_view.ts) in one run: the Overdraw report
     # replays the capture with vkinsp_replay, opens the pass's target with the heat over it, and the
     # click follows that pixel through the frame in the pane beside the image.
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect((c.get("overdraw") or 0) >= 2, f"{c.get('overdraw')} overdraw measurements (the replay takes two per pass)") +         expect((c.get("overdrawCounts") or 0) >= 2, f"{c.get('overdrawCounts')} measurements carry per-pixel counts") +         expect(bool(t), "the Overdraw report opened no render target tab") +         expect(t.get("overdraw") is True, "the tab did not open with the overdraw overlay on") +         expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw over the image: {t}") +         expect(bool(t.get("picked")), "the click on the image picked no pixel") +         expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") +         expect(bool(touched), f"the pixel history lists no events: {h}") +         expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect((c.get("overdraw") or 0) >= 2, f"{c.get('overdraw')} overdraw measurements (the replay takes two per pass)") + \
+        expect((c.get("overdrawCounts") or 0) >= 2, f"{c.get('overdrawCounts')} measurements carry per-pixel counts") + \
+        expect(bool(t), "the Overdraw report opened no render target tab") + \
+        expect(t.get("overdraw") is True, "the tab did not open with the overdraw overlay on") + \
+        expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw over the image: {t}") + \
+        expect(bool(t.get("picked")), "the click on the image picked no pixel") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(bool(touched), f"the pixel history lists no events: {h}") + \
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
+
+
+def triangle_overlay(state, log):
+    c = capture(state)
+    t = c.get("textureTab") or {}
+    d = t.get("drawOverlay") or {}
+    # A draw overlay end to end: the draw replayed on its own (replay/src/overlay.cpp), its mask
+    # parsed, and the render target tab drawing it over the image. With --occluded the cube is drawn
+    # twice in place, so the second draw's fragments all fail the depth test.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(t), "--debug-view=overlay opened no render target tab") + \
+        expect(t.get("overlay") == "depth", f"the tab did not open with the depth test overlay: {t.get('overlay')}") + \
+        expect(t.get("draw") is not None, "the tab chose no draw") + \
+        expect(not t.get("drawError"), f"the overlay replay failed: {t.get('drawError')}") + \
+        expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") + \
+        expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") + \
+        expect(d.get("pixelsPassed") == 0 and d.get("pixelsRejected") == d.get("pixelsCovered"),
+               f"the second draw of the same cube should fail the depth test everywhere: {d}") + \
+        expect(d.get("wireframe") is True, f"no wireframe was drawn: {d}")
 
 
 def triangle_stacks(state, log):
@@ -257,7 +289,8 @@ def implicit_layer(on):
 
 def triangle_implicit(state, log):
     s = session(state)
-    return expect(s.get("state") == "connected", f"the waiting session is {s.get('state')!r} ({s.get('detail')})") +         expect("waiting for an application" in log, "the session did not wait for an application") +         check_capture_basic(state, log)
+    return expect(s.get("state") == "connected", f"the waiting session is {s.get('state')!r} ({s.get('detail')})") + \
+        expect("waiting for an application" in log, "the session did not wait for an application") +         check_capture_basic(state, log)
 
 
 def triangle_sources(state, log):
@@ -303,8 +336,11 @@ def triangle_cases(triangle):
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))
+        cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",
+                                               "--debug-settle=8000"],
+                          triangle_overlay, delay_ms=20000))
     else:
-        print("  (no vkinsp_replay build: skipping the overdraw case)")
+        print("  (no vkinsp_replay build: skipping the overdraw and overlay cases)")
     return cases
 
 

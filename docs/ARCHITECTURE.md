@@ -328,10 +328,13 @@ which is what the render target tab below is built from.
 
 `renderer/capture_texture_view.ts` is WebGPU Inspector's capture texture viewer
 (`devtools/capture_texture_viewer.js`): one render target of one pass, the image on the left and
-the pixel history on the right. **Overdraw** in the toolbar blends the pass's heatmap over the
-image (`renderer/overdraw.ts` for the ramp and the counts, transparent where nothing landed) and
-puts both counts in the tooltip; a Vulkan capture is replayed to measure them the first time it is
-ticked. Clicking a pixel follows it through the frame in the pane beside it
+the pixel history on the right. The toolbar's overlay list blends something over the image.
+**Overdraw** is the pass's heatmap (`renderer/overdraw.ts` for the ramp and the counts, transparent
+where nothing landed), with both counts in the tooltip. **Highlight Draw**, **Depth Test** and
+**Wireframe** are RenderDoc's draw overlays for one of the pass's draws, painted from the replay's
+mask (`renderer/draw_overlay.ts`); a pass of up to 48 draws has them all drawn in one replay, so
+stepping through them is immediate. A Vulkan capture is replayed for each the first time it is
+needed. Clicking a pixel follows it through the frame in the pane beside it
 (`renderer/pixel_history_view.ts` in its compact mode) — replayed for a Vulkan capture, and for a
 Metal capture the one the capture was taken with, with a button to capture the next frame
 following another. One such tab per capture, retargeted as other render targets are opened.
@@ -347,7 +350,8 @@ the base for overdraw and pixel history. Its pieces:
 - command replay in submission order
 - per-pass read-backs compared with the capture's own
 - analyses that issue a pass again after the replay has executed it, with edited copies of its
-  pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`) and pixel history (`history.cpp`)
+  pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`), draw-call overlays (`overlay.cpp`)
+  and pixel history (`history.cpp`)
 
 It also measures a frame's draws one at a time (`draw_stats.cpp`, `--draws`): each is issued
 between two timestamps and inside a pipeline statistics query, which is where the Shader Flame
@@ -914,7 +918,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
@@ -946,7 +950,8 @@ the dump, and `--debug-settle=<ms>` waits after them for work a click set going 
 replay). `tools/ui_tests.py` builds its cases on these flags: the triangle application's options
 (plain, `--msaa`, `--offscreen`, `--bad-scissor` with the validation layer, `--hazard` with sync
 validation, stacks), the reports (render graph, bottlenecks, and the render target tab measuring
-overdraw and following a clicked pixel), and saved captures with expected findings, each a UI run
+overdraw, following a clicked pixel, and drawing `--occluded`'s hidden draw with the depth test
+overlay via `--debug-view=overlay:depth:last`), and saved captures with expected findings, each a UI run
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 

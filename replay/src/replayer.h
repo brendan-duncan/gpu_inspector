@@ -57,6 +57,14 @@ struct ReplayOptions {
     } history;
     /** Time and count every draw of the frame with timestamps and pipeline statistics (DrawResult). */
     bool drawStats = false;
+    /** Draw the pixels of named draws on their own, for the overlays of a render target (OverlayResult). */
+    struct {
+        bool enabled = false;
+        /** Command indices of the draws wanted. */
+        std::vector<uint32_t> commands;
+        /** Also trace each draw's wireframe (needs the fillModeNonSolid feature). */
+        bool wireframe = true;
+    } overlay;
 };
 
 /**
@@ -174,6 +182,32 @@ struct OverdrawResult {
     std::string note;
 };
 
+/**
+ * Where one draw of the frame landed, for the overlays of a render target: the draw issued on its own
+ * into a target of its pass's size, with the pass's depth evolved up to it (vk_overlay.cpp does the
+ * same in RenderDoc). `mask` holds, per pixel: bit 0 the draw rasterized a fragment here, bit 1 one
+ * of its fragments passed the depth and stencil tests, bit 2 a line of its wireframe crosses here.
+ */
+struct OverlayResult {
+    uint32_t command = 0;
+    uint64_t commandBuffer = 0;
+    uint32_t frame = 0;
+    uint32_t passIndex = 0;
+    std::string method;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    /** Fragments the draw rasterized, over every pixel (its own overdraw included). */
+    uint64_t fragments = 0;
+    uint64_t pixelsCovered = 0;
+    uint64_t pixelsPassed = 0;
+    uint64_t pixelsRejected = 0;
+    /** Whether the wireframe bit was drawn, and whether the depth-tested bit means anything. */
+    bool wireframe = false;
+    bool depthTested = false;
+    std::vector<uint8_t> mask;
+    std::string note;
+};
+
 /** A render target the capture read back at the end of a pass, and how the replay's copy compares. */
 struct TargetComparison {
     uint64_t image = 0;
@@ -214,6 +248,8 @@ struct ReplayReport {
     std::vector<DrawResult> draws;
     /** Why the draws carry no timings or no counters (a device without them). */
     std::string drawStatsNote;
+    /** With ReplayOptions::overlay: where each named draw landed, in frame order; draws the replay did not reach last. */
+    std::vector<OverlayResult> overlays;
 };
 
 class Replayer {
@@ -310,8 +346,17 @@ private:
         bool history = false;
         size_t historyPending = 0;
     };
+    /** How a reissued draw is drawn: the counting copy, depth and stencil only, or its wireframe. */
+    enum class ReissueMode { Count, DepthOnly, Wireframe };
     struct PendingOverdraw {
         Staging staging;
+        size_t result = 0;
+    };
+    /** One draw's overlay waiting for its submission: a staging buffer per variant drawn. */
+    struct PendingOverlay {
+        Staging rasterized;
+        Staging passed;
+        Staging wireframe;
         size_t result = 0;
     };
     /** A pass's pixel history waiting for its submission: the pixel after each event, and the queries of each draw. */
@@ -383,11 +428,24 @@ private:
                                         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void ReleaseTransients();
     VkRenderPass OverdrawRenderPass(VkFormat depthFormat);
-    VkPipeline OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat);
+    VkPipeline OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode = ReissueMode::Count);
     void PrepareOverdraw(VkCommandBuffer cb, PassState& pass);
     void RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending);
     void ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass);
+    /** Issues a pass's state and commands again, secondaries inline, into a render pass and framebuffer of the replay's own. */
+    void ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
+                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer);
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
+
+    // Draw-call overlays (overlay.cpp): one draw of a pass issued on its own into a mask.
+    /** Whether a draw of the pass beginning at `beginIndex` was asked for, so its starting depth has to be kept. */
+    bool OverlayWantsPass(uint32_t beginIndex) const;
+    void RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex);
+    /** Draws one variant of an overlay into a count target and stages it; false when the draw could not be drawn. */
+    bool DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, uint32_t target,
+                            ReissueMode mode, bool depthTested, Staging& out);
+    /** Reads the submission's overlays back into their masks; `submitted` false drops them. */
+    void CompleteOverlay(bool submitted);
     bool PrepareDrawStats();
     void ResetDrawQueries(VkCommandBuffer cb);
     void DestroyDrawStats();
@@ -454,7 +512,7 @@ private:
     // Overdraw
     std::unordered_map<uint64_t, VkExtent2D> _framebufferExtents;
     VkShaderModule _countModule = VK_NULL_HANDLE;
-    std::map<std::tuple<uint64_t, bool, VkFormat>, VkPipeline> _overdrawPipelines;
+    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode>, VkPipeline> _overdrawPipelines;
     std::map<VkFormat, VkRenderPass> _overdrawRenderPasses;
     std::vector<TransientImage> _transientImages;
     std::vector<VkFramebuffer> _transientFramebuffers;
@@ -462,6 +520,21 @@ private:
     bool _overdrawDrawable = false;
     uint32_t _overdrawDraws = 0;
     uint32_t _overdrawSkippedDraws = 0;
+
+    // Draw-call overlays: while one is being recorded, the draw it is for and how the rest are drawn.
+    /** The command index of the draw the overlay is for; UINT32_MAX when no overlay is being recorded. */
+    uint32_t _overlayTarget = UINT32_MAX;
+    /** Leave every other draw out (the variants that do not need the pass's depth). */
+    bool _overlayOnlyTarget = false;
+    /** How the target draw itself is drawn. */
+    ReissueMode _overlayTargetMode = ReissueMode::Count;
+    /** The pipeline the reissued commands last bound, which the target draw needs a copy of. */
+    uint64_t _overlayPipeline = 0;
+    /** Set once the target draw has been issued: nothing after it is. */
+    bool _overlayIssued = false;
+    bool _wireframeAvailable = false;
+    /** The submission's overlays, waiting for it to complete. */
+    std::vector<PendingOverlay> _pendingOverlays;
 
     // Per-draw timing and counters: a timestamp pair and a statistics query per draw, reset at the
     // start of each submission's recording and read once the submission has completed.

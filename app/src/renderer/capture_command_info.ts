@@ -53,7 +53,8 @@ export function setDebugExpandStacks(on: boolean): void {
 export interface CaptureHost {
   readonly window: SessionContext;
   readonly data: CaptureData;
-  renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number): void;
+  /** `command` is the command selected inside the pass (a draw's targets offer its overlays). */
+  renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number, command?: CaptureCommand): void;
   /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
   textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
   /** Selects a command of the list by its index (scrolls to it and shows its details). */
@@ -1079,7 +1080,7 @@ export class CommandInfoView {
 
   private _renderTargets(container: Widget, cmd: CaptureCommand): void {
     const pass = findPass(this.panel.data, cmd);
-    if (pass) this.panel.renderPassTargets(container, cmd.frame, pass.passBegin, pass.passIndex, cmd.object?.__id ?? 0);
+    if (pass) this.panel.renderPassTargets(container, cmd.frame, pass.passBegin, pass.passIndex, cmd.object?.__id ?? 0, cmd);
   }
 }
 

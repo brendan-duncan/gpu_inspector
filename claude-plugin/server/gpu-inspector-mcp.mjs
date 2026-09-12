@@ -1112,6 +1112,8 @@ var CaptureData = class {
   pixelHistory = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats = null;
+  /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
+  drawOverlays = /* @__PURE__ */ new Map();
   _expectedCommands = 0;
   _pendingBuffers = 0;
   onCaptureStatus = new Signal();
@@ -1129,6 +1131,8 @@ var CaptureData = class {
   onPixelHistory = new Signal();
   /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
   onDrawStats = new Signal();
+  /** Draw-call overlays arrived from a replay. */
+  onDrawOverlays = new Signal();
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets() {
     return setsFor(this.api);
@@ -1144,6 +1148,7 @@ var CaptureData = class {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.drawOverlays = /* @__PURE__ */ new Map();
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -13692,6 +13697,9 @@ function tail(text, lines = 12) {
 function analysisArgs(analysis, out) {
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
+  if (analysis.kind === "overlay") {
+    return [...analysis.commands.flatMap((c2) => ["--overlay", String(Math.max(0, Math.floor(c2)))]), "--overlay-data", out];
+  }
   const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
   return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
 }

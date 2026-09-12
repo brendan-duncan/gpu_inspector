@@ -36,7 +36,8 @@ namespace {
 void PrintUsage() {
     std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
-                         "                     [--draws [--draw-data <file>]] [--trace] | --check\n");
+                         "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
+                         "                     [--trace] | --check\n");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -282,6 +283,61 @@ void PrintDraws(const ReplayReport& report) {
                     (unsigned long long)d.fragmentInvocations, (unsigned long long)d.computeInvocations, samples.c_str());
     }
     if (report.draws.size() > 20) std::printf("  ... %zu more\n", report.draws.size() - 20);
+}
+
+/**
+ * --overlay-data: where each draw asked for landed, for the overlays of GPU Inspector's render target
+ * tab (parseDrawOverlayFile in app/src/renderer/draw_overlay.ts). The layout is --overdraw-data's,
+ * with one byte per pixel of mask (OverlayResult).
+ */
+bool WriteOverlayData(const ReplayReport& report, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-draw-overlay\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"draws\":[";
+    uint64_t offset = 0;
+    for (size_t i = 0; i < report.overlays.size(); ++i) {
+        const OverlayResult& o = report.overlays[i];
+        const uint64_t size = o.mask.size();
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(o.command) + ",\"method\":" + JsonString(o.method) +
+                ",\"frame\":" + std::to_string(o.frame) + ",\"commandBuffer\":" + std::to_string(o.commandBuffer) +
+                ",\"passIndex\":" + std::to_string(o.passIndex) + ",\"measured\":" + (size ? "true" : "false") +
+                ",\"width\":" + std::to_string(o.width) + ",\"height\":" + std::to_string(o.height) +
+                ",\"fragments\":" + std::to_string(o.fragments) + ",\"pixelsCovered\":" + std::to_string(o.pixelsCovered) +
+                ",\"pixelsPassed\":" + std::to_string(o.pixelsPassed) + ",\"pixelsRejected\":" + std::to_string(o.pixelsRejected) +
+                ",\"depthTested\":" + (o.depthTested ? "true" : "false") + ",\"wireframe\":" + (o.wireframe ? "true" : "false");
+        if (!o.note.empty()) json += ",\"note\":" + JsonString(o.note);
+        if (size) json += ",\"payload\":[" + std::to_string(offset) + "," + std::to_string(size) + "]";
+        json += "}";
+        offset += size;
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const char magic[] = "OVERLAY 1\n";
+    out.write(magic, sizeof(magic) - 1);
+    const uint32_t length = (uint32_t)json.size();
+    const uint8_t le[4] = {(uint8_t)length, (uint8_t)(length >> 8), (uint8_t)(length >> 16), (uint8_t)(length >> 24)};
+    out.write((const char*)le, 4);
+    out.write(json.data(), (std::streamsize)json.size());
+    for (const OverlayResult& o : report.overlays) out.write((const char*)o.mask.data(), (std::streamsize)o.mask.size());
+    return (bool)out;
+}
+
+void PrintOverlays(const ReplayReport& report) {
+    std::printf("draw overlays: %zu\n", report.overlays.size());
+    for (const OverlayResult& o : report.overlays) {
+        std::printf("  [%u] %s", o.command, o.method.empty() ? "?" : o.method.c_str());
+        if (o.mask.empty()) {
+            std::printf(": not drawn: %s\n", o.note.c_str());
+            continue;
+        }
+        const double pixels = (double)o.width * o.height;
+        std::printf(" (command buffer %llu, pass %u): %llu fragments on %llu of %.0f pixels (%.2f%%); %llu passed depth and stencil, %llu rejected%s%s%s\n",
+                    (unsigned long long)o.commandBuffer, o.passIndex, (unsigned long long)o.fragments, (unsigned long long)o.pixelsCovered, pixels,
+                    pixels ? 100.0 * o.pixelsCovered / pixels : 0.0, (unsigned long long)o.pixelsPassed, (unsigned long long)o.pixelsRejected,
+                    o.wireframe ? ", wireframe drawn" : "", o.note.empty() ? "" : "; ", o.note.c_str());
+    }
 }
 
 void PrintHistory(const PixelHistoryResult& h) {
@@ -551,7 +607,7 @@ int Check(const CaptureFile& capture) {
 }
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
-           const std::string& overdrawData, const std::string& pixelData, const std::string& drawData) {
+           const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -613,6 +669,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", drawData.c_str());
         }
     }
+    if (options.overlay.enabled) {
+        PrintOverlays(report);
+        if (!overlayData.empty()) {
+            if (WriteOverlayData(report, overlayData)) std::printf("  wrote %s\n", overlayData.c_str());
+            else std::printf("  could not write %s\n", overlayData.c_str());
+        }
+    }
     if (report.history.requested) {
         PrintHistory(report.history);
         if (!pixelData.empty()) {
@@ -640,6 +703,7 @@ int main(int argc, char** argv) {
     std::string overdrawData;
     std::string pixelData;
     std::string drawData;
+    std::string overlayData;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -660,6 +724,11 @@ int main(int argc, char** argv) {
             drawData = argv[++i];
             options.drawStats = true;
         }
+        else if (!std::strcmp(argv[i], "--overlay") && i + 1 < argc) {
+            options.overlay.enabled = true;
+            options.overlay.commands.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 10));
+        }
+        else if (!std::strcmp(argv[i], "--overlay-data") && i + 1 < argc) overlayData = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -692,5 +761,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData);
+    if (!overlayData.empty() && !options.overlay.enabled) {
+        std::fprintf(stderr, "vkinsp_replay: --overlay-data needs --overlay <command>\n");
+        return 2;
+    }
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData);
 }

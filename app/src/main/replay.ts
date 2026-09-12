@@ -46,8 +46,8 @@ export interface PixelRequest {
   layer?: number;
 }
 
-/** What to replay for: every pass's overdraw, or one pixel's history. */
-export type ReplayAnalysis = { kind: "overdraw" } | { kind: "draws" } | ({ kind: "pixel" } & PixelRequest);
+/** What to replay for: every pass's overdraw, every draw's timing, some draws' overlays, or one pixel's history. */
+export type ReplayAnalysis = { kind: "overdraw" } | { kind: "draws" } | { kind: "overlay"; commands: number[] } | ({ kind: "pixel" } & PixelRequest);
 
 /** The last lines of the tool's output, for an error message. */
 function tail(text: string, lines = 12): string {
@@ -57,6 +57,9 @@ function tail(text: string, lines = 12): string {
 function analysisArgs(analysis: ReplayAnalysis, out: string): string[] {
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
+  if (analysis.kind === "overlay") {
+    return [...analysis.commands.flatMap((c) => ["--overlay", String(Math.max(0, Math.floor(c)))]), "--overlay-data", out];
+  }
   const n = (v: number | undefined): string => String(Math.max(0, Math.floor(v ?? 0)));
   return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
 }
