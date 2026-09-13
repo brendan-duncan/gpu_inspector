@@ -13746,9 +13746,199 @@ ${tail(output)}`)
     child.on("close", () => finish2(null));
   });
 }
-function runOverdrawReplay(tool, capturePath, timeoutMs) {
-  return runReplay(tool, capturePath, { kind: "overdraw" }, timeoutMs);
+function serveRequest(id, analysis, out) {
+  if (analysis.kind === "pixel") {
+    return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
+  }
+  return { id, ...analysis, out };
 }
+function tempOutput(kind) {
+  return path9.join(os7.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+}
+var ReplayServer = class {
+  tool;
+  capturePath;
+  lastUsed = Date.now();
+  _child;
+  _ready;
+  _resolveReady = () => {
+  };
+  _pending = /* @__PURE__ */ new Map();
+  _nextId = 1;
+  _output = "";
+  _exited = false;
+  constructor(tool, capturePath) {
+    this.tool = tool;
+    this.capturePath = capturePath;
+    this._ready = new Promise((resolve) => {
+      this._resolveReady = resolve;
+    });
+    this._child = spawn3(tool, [capturePath, "--serve"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let buffered = "";
+    this._child.stdout?.on("data", (chunk2) => {
+      buffered += chunk2.toString();
+      let newline;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline).replace(/\r$/, "");
+        buffered = buffered.slice(newline + 1);
+        this._line(line);
+      }
+    });
+    this._child.stderr?.on("data", (chunk2) => this._collect(chunk2.toString()));
+    this._child.stdin?.on("error", () => {
+    });
+    this._child.on("error", (e) => this._exit(`could not run ${tool}: ${e.message}`));
+    this._child.on("exit", (code) => this._exit(`the replay process exited (${code ?? "killed"})`));
+  }
+  get alive() {
+    return !this._exited;
+  }
+  /**
+   * Replays the frame for an analysis and reads the file it wrote. `fallback` is set when the answer
+   * is not the analysis's: the process could not start (a tool from before --serve) or exited.
+   */
+  async run(analysis, timeoutMs = 10 * 60 * 1e3) {
+    this.lastUsed = Date.now();
+    const startError = await this._ready;
+    if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
+    const id = this._nextId++;
+    const out = tempOutput(analysis.kind);
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(id);
+        this.dispose();
+        resolve({ id, ok: false, error: `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` });
+      }, timeoutMs);
+      this._pending.set(id, (a) => {
+        clearTimeout(timer);
+        resolve(a);
+      });
+      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out)) + "\n");
+    });
+    this.lastUsed = Date.now();
+    let data = null;
+    try {
+      data = new Uint8Array(fs10.readFileSync(out));
+      fs10.unlinkSync(out);
+    } catch {
+    }
+    if (answer.ok && data) return { data, output: tail(this._output) };
+    return { data: null, output: tail(this._output), error: answer.error ?? "the replay wrote no data", fallback: this._exited };
+  }
+  /** Stops the process: asked to quit, and killed if it does not. */
+  dispose() {
+    if (this._exited) return;
+    try {
+      this._child.stdin?.write(JSON.stringify({ kind: "quit" }) + "\n");
+      this._child.stdin?.end();
+    } catch {
+    }
+    setTimeout(() => {
+      if (!this._exited) this._child.kill();
+    }, 2e3).unref();
+  }
+  _line(line) {
+    if (!line.startsWith("@replay ")) {
+      this._collect(line + "\n");
+      return;
+    }
+    let answer;
+    try {
+      answer = JSON.parse(line.slice(8));
+    } catch {
+      return;
+    }
+    if (answer.ready !== void 0) {
+      this._resolveReady(answer.ready ? null : answer.error ?? "the replay could not start");
+      return;
+    }
+    if (answer.id === void 0) return;
+    const resolve = this._pending.get(answer.id);
+    this._pending.delete(answer.id);
+    resolve?.(answer);
+  }
+  _collect(text) {
+    this._output += text;
+    if (this._output.length > 256 * 1024) this._output = this._output.slice(-128 * 1024);
+  }
+  _exit(message) {
+    if (this._exited) return;
+    this._exited = true;
+    this._resolveReady(message);
+    for (const [id, resolve] of this._pending) resolve({ id, ok: false, error: message });
+    this._pending.clear();
+  }
+};
+var ReplayServerPool = class {
+  constructor(max = 3, idleMs = 5 * 60 * 1e3) {
+    this.max = max;
+    this.idleMs = idleMs;
+  }
+  _servers = /* @__PURE__ */ new Map();
+  _sweep = null;
+  /** Runs an analysis in the capture's replay, starting one if needed; a process that cannot serve falls back to a one-shot replay. */
+  async run(tool, capturePath, analysis, timeoutMs) {
+    let stamp = 0;
+    try {
+      stamp = fs10.statSync(capturePath).mtimeMs;
+    } catch {
+      return { data: null, output: "", error: `${capturePath} does not exist` };
+    }
+    const key = `${tool}
+${path9.resolve(capturePath)}
+${stamp}`;
+    let server = this._servers.get(key);
+    if (!server || !server.alive) {
+      server?.dispose();
+      server = new ReplayServer(tool, capturePath);
+      this._servers.set(key, server);
+      this._trim();
+    }
+    this._scheduleSweep();
+    const result = await server.run(analysis, timeoutMs);
+    if (!server.alive) this._servers.delete(key);
+    if (result.fallback) return runReplay(tool, capturePath, analysis, timeoutMs);
+    return result;
+  }
+  /** Stops the replays of a capture file (it is closed, or about to be deleted). */
+  release(capturePath) {
+    const resolved = path9.resolve(capturePath);
+    for (const [key, server] of this._servers) {
+      if (path9.resolve(server.capturePath) !== resolved) continue;
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  disposeAll() {
+    for (const server of this._servers.values()) server.dispose();
+    this._servers.clear();
+  }
+  _trim() {
+    const live = [...this._servers.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    while (live.length > this.max) {
+      const [key, server] = live.shift();
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  _scheduleSweep() {
+    if (this._sweep) return;
+    this._sweep = setInterval(() => {
+      const now = Date.now();
+      for (const [key, server] of this._servers) {
+        if (now - server.lastUsed < this.idleMs) continue;
+        server.dispose();
+        this._servers.delete(key);
+      }
+      if (!this._servers.size && this._sweep) {
+        clearInterval(this._sweep);
+        this._sweep = null;
+      }
+    }, 30 * 1e3);
+    this._sweep.unref();
+  }
+};
+var replayServers = new ReplayServerPool();
 
 // src/renderer/frame_cost_tree.ts
 var MAX_LINE_FRAMES = 16;
@@ -15178,7 +15368,7 @@ function resourceTools(store) {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) drawNote = `The draws are weighted by the model: measuring them replays the capture, and ${NO_REPLAY_TOOL}`;
           else {
-            const run2 = await runReplay(tool, c2.path, { kind: "draws" });
+            const run2 = await replayServers.run(tool, c2.path, { kind: "draws" });
             if (!run2.data) drawNote = `The draws are weighted by the model: the replay could not measure them (${run2.error ?? "no data"}).`;
             else {
               const file = parseDrawStats(run2.data);
@@ -15961,7 +16151,7 @@ function captureTools(store) {
         if (!c2.data.overdraw.length && c2.data.api !== "metal") {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c2.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-          const run2 = await runOverdrawReplay(tool, c2.path);
+          const run2 = await replayServers.run(tool, c2.path, { kind: "overdraw" });
           if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not measure overdraw: ${run2.error ?? "no data"}` });
           const file = parseOverdrawFile(run2.data);
           c2.setOverdraw(file.measurements);
@@ -16036,7 +16226,7 @@ function captureTools(store) {
     },
     {
       name: "get_pixel_history",
-      description: `A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (seconds); a Metal application follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for "why is this pixel this colour": the last draw that wrote it, and the draws that should have but were culled or failed a test.`,
+      description: `A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (under a second; later questions about the same capture are quicker); a Metal application follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for "why is this pixel this colour": the last draw that wrote it, and the draws that should have but were culled or failed a test.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         image: { type: "integer", description: "The image's object id." },
@@ -16087,7 +16277,7 @@ function captureTools(store) {
         const y = requireInt(args, "y");
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `Pixel history replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run2 = await runReplay(tool, c2.path, { kind: "pixel", image, x, y, mip: mip ?? 0, layer: intArg(args, "layer", 0, 0) });
+        const run2 = await replayServers.run(tool, c2.path, { kind: "pixel", image, x, y, mip: mip ?? 0, layer: intArg(args, "layer", 0, 0) });
         if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not follow the pixel: ${run2.error ?? "no data"}` });
         const h = parsePixelHistory(run2.data);
         return jsonResult(pixelHistoryAnswer(c2, h, boolArg(args, "allDraws", false), {
@@ -16099,7 +16289,7 @@ function captureTools(store) {
     },
     {
       name: "get_mesh_output",
-      description: `What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for "why can I not see this mesh": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback (seconds). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the draw read (VS In).`,
+      description: `What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for "why can I not see this mesh": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback (under a second, quicker for later draws of the same capture). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the draw read (VS In).`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw command's index." },
@@ -16117,7 +16307,7 @@ function captureTools(store) {
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run2 = await runReplay(tool, c2.path, { kind: "mesh", commands: [index] });
+        const run2 = await replayServers.run(tool, c2.path, { kind: "mesh", commands: [index] });
         if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not capture the draw's vertices: ${run2.error ?? "no data"}` });
         const file = parseMeshFile(run2.data);
         const m = file.draws.find((d) => d.command === index);

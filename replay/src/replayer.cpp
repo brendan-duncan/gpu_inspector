@@ -25,8 +25,9 @@ namespace {
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
-    auto* report = static_cast<ReplayReport*>(user);
-    if (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
+    // The report of whatever is running: Setup's, then each frame's.
+    ReplayReport* report = *static_cast<ReplayReport**>(user);
+    if (report && (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT))) {
         const bool error = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         report->validation.push_back(std::string(error ? "error: " : "warning: ") + (data && data->pMessage ? data->pMessage : ""));
     }
@@ -132,7 +133,7 @@ bool Replayer::CreateInstance() {
         m.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
         m.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
         m.pfnUserCallback = DebugCallback;
-        m.pUserData = _report;
+        m.pUserData = &_report;
         _fns.CreateDebugUtilsMessengerEXT(_instance, &m, nullptr, &_messenger);
     }
     return true;
@@ -231,7 +232,10 @@ bool Replayer::CreateDevice() {
         }
     }
     // The mesh output view captures vertex shader outputs with transform feedback.
-    const bool xfbExtension = _options.mesh.enabled && hasExtension(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+    // A replay serving many analyses asks for every feature one may use.
+    const bool wantDrawStats = _options.drawStats || _options.allFeatures;
+    const bool wantWireframe = (_options.overlay.enabled && _options.overlay.wireframe) || _options.allFeatures;
+    const bool xfbExtension = (_options.mesh.enabled || _options.allFeatures) && hasExtension(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
     if (xfbExtension && std::none_of(extensions.begin(), extensions.end(), [](const char* e) { return !std::strcmp(e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME); }))
         extensions.push_back(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
     // Render passes that end in PRESENT_SRC_KHR need the swapchain extension, with or without a surface.
@@ -248,7 +252,7 @@ bool Replayer::CreateDevice() {
     // features the application may not have enabled. They go into whichever form the capture used: a
     // chained VkPhysicalDeviceFeatures2 (which must stay the only one), else our own copy of pEnabledFeatures.
     VkPhysicalDeviceFeatures features{};
-    if (_options.drawStats || _options.overlay.enabled) {
+    if (wantDrawStats || wantWireframe) {
         VkPhysicalDeviceFeatures supported{};
         _fns.GetPhysicalDeviceFeatures(_physical, &supported);
         VkPhysicalDeviceFeatures2* features2 = nullptr;
@@ -262,20 +266,20 @@ bool Replayer::CreateDevice() {
             ours = &features;
             info.pEnabledFeatures = &features;
         }
-        if (_options.drawStats && supported.pipelineStatisticsQuery) {
+        if (wantDrawStats && supported.pipelineStatisticsQuery) {
             ours->pipelineStatisticsQuery = VK_TRUE;
             _drawCountersAvailable = true;
-        } else if (_options.drawStats) {
+        } else if (wantDrawStats) {
             _report->drawStatsNote = "this GPU has no pipeline statistics queries, so the draws carry timings only";
         }
-        if (_options.overlay.enabled && _options.overlay.wireframe && supported.fillModeNonSolid) {
+        if (wantWireframe && supported.fillModeNonSolid) {
             ours->fillModeNonSolid = VK_TRUE;
             _wireframeAvailable = true;
         }
         // Samples passing each draw's depth and stencil tests: the layer cannot count them for a
         // pass that executes secondary command buffers, but here the query sits inside the
         // secondary, around one draw.
-        if (_options.drawStats && supported.occlusionQueryPrecise) {
+        if (wantDrawStats && supported.occlusionQueryPrecise) {
             ours->occlusionQueryPrecise = VK_TRUE;
             _drawSamplesAvailable = true;
         }
@@ -366,12 +370,21 @@ bool Replayer::CreateStaging(VkDeviceSize size, Staging& staging, VkBufferUsageF
     const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     bool ok = false;
-    for (uint32_t i = 0; i < _memoryProperties.memoryTypeCount && !ok; ++i) {
-        if (!(req.memoryTypeBits & (1u << i)) || (_memoryProperties.memoryTypes[i].propertyFlags & want) != want) continue;
-        VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        alloc.allocationSize = req.size;
-        alloc.memoryTypeIndex = i;
-        ok = _fns.AllocateMemory(_device, &alloc, nullptr, &memory) == VK_SUCCESS;
+    // Staging memory is read on the CPU, so cached system memory first. The other host-visible types
+    // are for writing: uncached memory (write-combined on NVIDIA) and device-local memory mapped across
+    // PCIe (a resizable BAR) read back slower by orders of magnitude, which made comparing a frame's
+    // render targets take seconds.
+    for (int pass = 0; pass < 3 && !ok; ++pass) {
+        for (uint32_t i = 0; i < _memoryProperties.memoryTypeCount && !ok; ++i) {
+            const VkMemoryPropertyFlags flags = _memoryProperties.memoryTypes[i].propertyFlags;
+            if (!(req.memoryTypeBits & (1u << i)) || (flags & want) != want) continue;
+            if (pass == 0 && (!(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) || (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))) continue;
+            if (pass == 1 && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
+            VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            alloc.allocationSize = req.size;
+            alloc.memoryTypeIndex = i;
+            ok = _fns.AllocateMemory(_device, &alloc, nullptr, &memory) == VK_SUCCESS;
+        }
     }
     if (!ok) {
         _fns.DestroyBuffer(_device, staging.buffer, nullptr);
@@ -1332,7 +1345,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         if (!args) continue;
         if (skippingPass) {
             if (IsEndPass(m)) {
-                InjectReadbacks(cb, pass, readbacks, "the replay left this pass out");
+                if (_options.compareTargets) InjectReadbacks(cb, pass, readbacks, "the replay left this pass out");
                 pass.active = false;
                 skippingPass = false;
             }
@@ -1497,7 +1510,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         _report->commandsRecorded++;
 
         if (IsEndPass(m) && pass.active) {
-            InjectReadbacks(cb, pass, readbacks);
+            if (_options.compareTargets) InjectReadbacks(cb, pass, readbacks);
             // Before the overdraw, which draws into the copy of the pass's starting depth the overlays copy from.
             if (_options.overlay.enabled && pass.extent.width) RecordOverlay(cb, group, pass, i);
             if (_options.mesh.enabled && pass.extent.width) RecordMesh(cb, group, pass, i);
@@ -1582,16 +1595,46 @@ void Replayer::ReplayCommands() {
 // ---------------------------------------------------------------------------------------------
 
 bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, ReplayReport& report) {
+    if (!Setup(capture, options, report)) return false;
+    // One frame, into the same report (which starts from Setup's).
+    RunFrame(options, report);
+    return true;
+}
+
+bool Replayer::Setup(const CaptureFile& capture, const ReplayOptions& options, ReplayReport& report) {
     _capture = &capture;
     _options = options;
+    _setupOptions = options;
     _report = &report;
     if (!LoadVulkan() || !CreateInstance() || !CreateDevice()) {
         for (auto& p : _ctx.problems) report.problems.push_back(p);
+        _ctx.problems.clear();
         return false;
     }
     if (const JValue* buffers = capture.Buffers(); buffers && buffers->IsArray())
         for (uint32_t i = 0; i < buffers->count; ++i)
             if (const JValue* info = buffers->items[i].Get("info")) _bufferData[info->Get("id")->Uint()] = &buffers->items[i];
+    CreateObjects();
+    ComputeInitialLayouts();
+    for (auto& p : _ctx.problems) report.problems.push_back(p);
+    _ctx.problems.clear();
+    _setupReport = report;
+    _setupDone = true;
+    return true;
+}
+
+void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
+    if (!_setupDone) return;
+    const CaptureFile& capture = *_capture;
+    // The analysis is the request's; what the device was created with stays Setup's.
+    ReplayOptions options = requested;
+    options.validation = _setupOptions.validation;
+    options.allFeatures = _setupOptions.allFeatures;
+    _options = options;
+    if (&report != &_setupReport) report = _setupReport;
+    _report = &report;
+    if (_frameRun) ResetFrameState();
+    _frameRun = true;
 
     if (options.history.enabled) {
         report.history.requested = true;
@@ -1602,8 +1645,6 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
         report.history.layer = options.history.layer;
     }
 
-    CreateObjects();
-    ComputeInitialLayouts();
     UploadSampledTextures();
     TransitionToInitialLayouts();
     if (options.drawStats) PrepareDrawStats();
@@ -1637,7 +1678,36 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
     }
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();
-    return true;
+}
+
+void Replayer::ResetFrameState() {
+    // The frame's command buffers are recorded again: their pools let go of the last recording.
+    for (const Created& c : _created)
+        if (c.type == "VkCommandPool") _fns.ResetCommandPool(_device, (VkCommandPool)c.handle, 0);
+    // Images start where a fresh device's do: contents cleared (new memory reads as zero), layout undefined
+    // until the uploads and the initial layouts put them where the frame expects them.
+    RunOneTime([&](VkCommandBuffer cb) {
+        for (auto& [id, image] : _images) {
+            Transition(cb, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            image.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            const VkImageAspectFlags aspects = vkinsp::FormatAspects(image.format);
+            const VkImageSubresourceRange range{aspects, 0, image.mips, 0, image.layers};
+            if (aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+                const VkClearDepthStencilValue zero{0.0f, 0};
+                _fns.CmdClearDepthStencilImage(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+            } else if (vkinsp::FormatBlockInfo(image.format, VK_IMAGE_ASPECT_COLOR_BIT).width == 1) {
+                // Block-compressed images cannot be cleared; they are sampled, and uploaded again.
+                const VkClearColorValue zero{};
+                _fns.CmdClearColorImage(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+            }
+        }
+    });
+    _groups.clear();
+    _historyPasses = 0;
+    _appQueryDepth = 0;
+    _passViews = 1;
+    _overlayTarget = UINT32_MAX;
+    _meshTarget = nullptr;
 }
 
 } // namespace vkreplay

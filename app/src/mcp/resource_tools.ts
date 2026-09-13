@@ -1,6 +1,6 @@
 // The MCP server's resource tools: the images and buffer ranges a capture read back, the vertices
 // a draw read, and shaders (reflection, embedded source, cross-compiled text, static analysis).
-import { NO_REPLAY_TOOL, findReplayTool, runReplay } from "../main/replay.js";
+import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { shaderText } from "../main/shader_tools.js";
 import { drawStatsSummary, parseDrawStats } from "../renderer/draw_stats.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
@@ -733,7 +733,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) drawNote = `The draws are weighted by the model: measuring them replays the capture, and ${NO_REPLAY_TOOL}`;
           else {
-            const run = await runReplay(tool, c.path, { kind: "draws" });
+            const run = await replayServers.run(tool, c.path, { kind: "draws" });
             if (!run.data) drawNote = `The draws are weighted by the model: the replay could not measure them (${run.error ?? "no data"}).`;
             else {
               const file = parseDrawStats(run.data);

@@ -136,7 +136,7 @@ each step.
 3. **Find the draw.** `list_commands` with `pass` (or `label`, `kind: "draw"`). For one wrong
    pixel, `get_pixel_history` names it directly: the last draw that wrote the pixel, and the draws
    that reached it but were culled, discarded or failed the depth or stencil test. A Vulkan capture
-   is replayed for it, which takes seconds. A Metal capture answers only for the pixel it was taken
+   is replayed for it: the first question takes a moment, later ones about the same capture tens of milliseconds. A Metal capture answers only for the pixel it was taken
    with: capture again with `capture_frames` and `pixelHistory: { texture, x, y }` (a render
    target's id from `list_textures`), then ask the new capture.
 4. **Check what the draw read** with `get_command`. The usual suspects:

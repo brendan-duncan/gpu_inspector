@@ -16,17 +16,20 @@
 //       generated decoders, and reports what the capture lacks for a replay.
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "decode.h"
 #include "gpucap.h"
+#include "json.h"
 #include "replayer.h"
 #include "util.h"
 #include "vk_decode.gen.h"
@@ -40,7 +43,7 @@ void PrintUsage() {
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
                          "                     [--mesh <command> ... [--mesh-data <file>]]\n"
-                         "                     [--trace] | --check\n");
+                         "                     [--trace] | --check | --serve [--validate]\n");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -784,6 +787,122 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
     return differing == 0 && skipped == 0 ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------------------------
+// --serve: one replay kept alive for many analyses of the same capture (GPU Inspector's
+// ReplayServer, app/src/main/replay.ts). The device and the capture's objects are created once;
+// each request replays the frame with its analysis and writes the file the one-shot flag would.
+//
+// Requests arrive one per line on stdin, as JSON:
+//   {"id": 1, "kind": "pixel", "image": 17, "x": 320, "y": 240, "mip": 0, "layer": 0, "out": "<file>"}
+//   {"id": 2, "kind": "overdraw" | "draws", "out": "<file>"}
+//   {"id": 3, "kind": "overlay" | "mesh", "commands": [17, 18], "out": "<file>"}
+//   {"id": 4, "kind": "replay"}          the frame alone, comparing its render targets
+//   {"kind": "quit"}
+// Answers are lines on stdout beginning "@replay " (anything else a driver prints is not one):
+//   @replay {"ready": true, "device": "...", "problems": 0}           once, after the setup
+//   @replay {"id": 1, "ok": true, "ms": 84.2, "problems": 0}          per request
+//   @replay {"id": 4, "ok": true, ..., "targets": {"identical": 12, "differing": 0, "notCompared": 0}}
+//   @replay {"id": 5, "ok": false, "error": "..."}
+
+void Answer(const std::string& json) {
+    std::fputs(("@replay " + json + "\n").c_str(), stdout);
+    std::fflush(stdout);
+}
+
+int Serve(const CaptureFile& capture, bool validation) {
+    ReplayOptions setup;
+    setup.allFeatures = true;
+    setup.validation = validation;
+    Replayer replayer;
+    ReplayReport setupReport;
+    if (!replayer.Setup(capture, setup, setupReport)) {
+        Answer("{\"ready\":false,\"error\":" + JsonString(setupReport.problems.empty() ? "the replay could not start" : setupReport.problems.front()) + "}");
+        return 2;
+    }
+    Answer("{\"ready\":true,\"device\":" + JsonString(setupReport.device) + ",\"problems\":" + std::to_string(setupReport.problems.size()) + "}");
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        JsonDocument doc;
+        std::string error;
+        if (!doc.Parse(line.data(), line.size(), error)) {
+            Answer("{\"ok\":false,\"error\":" + JsonString("malformed request: " + error) + "}");
+            continue;
+        }
+        const JValue& request = doc.Root();
+        const std::string id = request.Get("id") ? std::to_string(request.Get("id")->Uint()) : "0";
+        const std::string kind(request.Get("kind") ? request.Get("kind")->Str() : "");
+        const std::string out(request.Get("out") ? request.Get("out")->Str() : "");
+        if (kind == "quit") break;
+        auto fail = [&](const std::string& message) { Answer("{\"id\":" + id + ",\"ok\":false,\"error\":" + JsonString(message) + "}"); };
+        auto commands = [&](std::vector<uint32_t>& into) {
+            if (const JValue* list = request.Get("commands"); list && list->IsArray())
+                for (uint32_t i = 0; i < list->count; ++i) into.push_back((uint32_t)list->items[i].Uint());
+        };
+
+        ReplayOptions options;
+        options.compareTargets = kind == "replay";
+        if (kind == "overdraw") {
+            options.overdraw = true;
+        } else if (kind == "draws") {
+            options.drawStats = true;
+        } else if (kind == "overlay") {
+            options.overlay.enabled = true;
+            commands(options.overlay.commands);
+        } else if (kind == "mesh") {
+            options.mesh.enabled = true;
+            commands(options.mesh.commands);
+        } else if (kind == "pixel") {
+            options.history.enabled = true;
+            options.history.image = request.Get("image") ? request.Get("image")->Uint() : 0;
+            options.history.x = request.Get("x") ? (uint32_t)request.Get("x")->Uint() : 0;
+            options.history.y = request.Get("y") ? (uint32_t)request.Get("y")->Uint() : 0;
+            options.history.mip = request.Get("mip") ? (uint32_t)request.Get("mip")->Uint() : 0;
+            options.history.layer = request.Get("layer") ? (uint32_t)request.Get("layer")->Uint() : 0;
+        } else if (kind != "replay") {
+            fail("unknown request kind \"" + kind + "\"");
+            continue;
+        }
+        if (kind != "replay" && out.empty()) {
+            fail("the request names no \"out\" file");
+            continue;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        ReplayReport report;
+        replayer.RunFrame(options, report);
+        bool wrote = true;
+        if (kind == "overdraw") wrote = WriteOverdrawData(report, out);
+        else if (kind == "draws") wrote = WriteDrawData(report, out);
+        else if (kind == "overlay") wrote = WriteOverlayData(report, out);
+        else if (kind == "mesh") wrote = WriteMeshData(report, out);
+        else if (kind == "pixel") wrote = WritePixelHistoryData(report, out);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        if (!wrote) {
+            fail("could not write " + out);
+            continue;
+        }
+        char elapsed[32];
+        std::snprintf(elapsed, sizeof(elapsed), "%.1f", ms);
+        std::string answer = "{\"id\":" + id + ",\"ok\":true,\"ms\":" + elapsed + ",\"problems\":" + std::to_string(report.problems.size());
+        if (validation) answer += ",\"validation\":" + std::to_string(report.validation.size());
+        if (kind == "replay") {
+            size_t identical = 0, differing = 0, skipped = 0;
+            for (const TargetComparison& t : report.targets) {
+                if (!t.compared) ++skipped;
+                else if (t.differingTexels == 0 && t.note.empty()) ++identical;
+                else ++differing;
+            }
+            answer += ",\"targets\":{\"identical\":" + std::to_string(identical) + ",\"differing\":" + std::to_string(differing) +
+                      ",\"notCompared\":" + std::to_string(skipped) + "}";
+        }
+        Answer(answer + "}");
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -796,9 +915,11 @@ int main(int argc, char** argv) {
     std::string overlayData;
     std::string meshData;
     bool check = false;
+    bool serve = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--check")) check = true;
+        else if (!std::strcmp(argv[i], "--serve")) serve = true;
         else if (!std::strcmp(argv[i], "--validate")) options.validation = true;
         else if (!std::strcmp(argv[i], "--trace")) options.trace = true;
         else if (!std::strcmp(argv[i], "--overdraw") && i + 1 < argc) {
@@ -857,6 +978,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
         return 2;
     }
+    if (serve) return Serve(capture, options.validation);
     if (!meshData.empty() && !options.mesh.enabled) {
         std::fprintf(stderr, "vkinsp_replay: --mesh-data needs --mesh <command>\n");
         return 2;

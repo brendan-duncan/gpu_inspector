@@ -41,6 +41,10 @@ namespace vkreplay {
 struct ReplayOptions {
     /** Enable the Khronos validation layer and report its messages. */
     bool validation = false;
+    /** Create the device with every feature an analysis may use, for a replay that serves many (--serve). */
+    bool allFeatures = false;
+    /** Read back the render targets the capture read back and compare them with its copies (TargetComparison). */
+    bool compareTargets = true;
     /** Keep the captured and replayed pixels of every compared target in the report (for --dump). */
     bool keepPixels = false;
     /** Print every object and command to stderr before it is replayed (to find what a driver crashes on). */
@@ -295,6 +299,17 @@ public:
     /** Replays the capture; false when it could not start (no Vulkan, no device). The report says what happened either way. */
     bool Run(const CaptureFile& capture, const ReplayOptions& options, ReplayReport& report);
 
+    /**
+     * The two halves of Run, for a replay kept alive between analyses: Setup creates the device and
+     * the capture's objects once; RunFrame replays the frame with an analysis, as often as asked.
+     * Each frame after the first starts from the state the first did: command pools reset, images
+     * back in their initial layouts with their contents cleared and the sampled textures uploaded
+     * again, and every buffer range the frame binds uploaded again before its submission.
+     * `options` of RunFrame pick the analysis; the device features are Setup's.
+     */
+    bool Setup(const CaptureFile& capture, const ReplayOptions& options, ReplayReport& report);
+    void RunFrame(const ReplayOptions& options, ReplayReport& report);
+
 private:
     struct ImageRecord {
         VkImage image = VK_NULL_HANDLE;
@@ -529,6 +544,8 @@ private:
     uint64_t Handle(uint64_t id) const;
     void Track(const std::string& type, uint64_t handle);
     void DestroyAll();
+    /** Puts the frame's state back where the first frame found it (RunFrame, after the first). */
+    void ResetFrameState();
 
     const CaptureFile* _capture = nullptr;
     ReplayOptions _options;
@@ -588,6 +605,14 @@ private:
     bool _wireframeAvailable = false;
     /** The submission's overlays, waiting for it to complete. */
     std::vector<PendingOverlay> _pendingOverlays;
+
+    // Setup, kept for every frame run after it
+    bool _setupDone = false;
+    bool _frameRun = false;
+    /** What Setup reported (device, objects, its problems), copied into each frame's report. */
+    ReplayReport _setupReport;
+    /** Setup's options: the device features, validation and tracing stay as they were created. */
+    ReplayOptions _setupOptions;
 
     // Mesh output
     bool _xfbAvailable = false;

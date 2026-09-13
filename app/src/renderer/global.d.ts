@@ -34,22 +34,24 @@ export interface InspectorApi {
   openSessionWindow(sessionId: number): Promise<boolean>;
   /** Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file). */
   openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
-  /**
-   * Vulkan: replays a capture (its file bytes) on this machine's GPU with vkinsp_replay to measure
-   * every pass's overdraw. `data` is the tool's --overdraw-data file (renderer/overdraw.ts parses it).
+  /*
+   * Vulkan replays, on this machine's GPU with vkinsp_replay (main/replay.ts). Each names the capture
+   * by a key its view chose: the main process keeps a replay alive for it, and answers `needData`
+   * when it does not have the capture yet, so the view sends its bytes (`data`) once. `data` in the
+   * answer is the tool's data file for the analysis.
    */
-  measureOverdraw(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
-  /** Replays a Vulkan capture measuring every draw (vkinsp_replay --draw-data). */
-  measureDraws(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
-  /** Replays a Vulkan capture drawing each named draw on its own (vkinsp_replay --overlay-data). */
-  drawOverlay(opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
-  /** Replays a Vulkan capture capturing what each named draw's vertex shader wrote (vkinsp_replay --mesh-data). */
-  meshOutput(opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
-  /**
-   * Vulkan: replays a capture (its file bytes) following one pixel of an image through the frame.
-   * `data` is the tool's --pixel-data JSON (renderer/pixel_history.ts parses it).
-   */
-  pixelHistory(opts: { data: Uint8Array; name?: string; pixel: { image: number; x: number; y: number; mip?: number; layer?: number } }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
+  /** Every pass's overdraw (--overdraw-data; renderer/overdraw.ts parses it). */
+  measureOverdraw(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** Every draw measured (--draw-data). */
+  measureDraws(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** Each named draw drawn on its own (--overlay-data). */
+  drawOverlay(opts: { key: string; data?: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** What each named draw's vertex shader wrote (--mesh-data). */
+  meshOutput(opts: { key: string; data?: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** One pixel of an image followed through the frame (--pixel-data; renderer/pixel_history.ts parses it). */
+  pixelHistory(opts: { key: string; data?: Uint8Array; name?: string; pixel: { image: number; x: number; y: number; mip?: number; layer?: number } }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** Stops the replay kept for a capture key and removes its file. */
+  releaseReplay(key: string): Promise<void>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */
   symbolize(frames: StackFrame[], dirs: string[]): Promise<StackFrame[]>;
   /** The text of shader source files named by debug information, found under the roots (empty: the last ones used). */

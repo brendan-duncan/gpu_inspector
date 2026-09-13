@@ -1,3 +1,15 @@
+## Unreleased
+
+### Changed
+- Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)
+  answer in tens of milliseconds after the first: each capture keeps one `vkinsp_replay --serve`
+  process alive, and the capture is sent to it once.
+
+### Fixed
+- `vkinsp_replay` took seconds to read back render targets and analysis results on NVIDIA GPUs: its
+  staging buffers were in memory meant for writing, where reading is very slow. A Unity frame's
+  replay went from 2.2 s to 0.3 s.
+
 ## v0.10.0
 
 ### Added

@@ -13,6 +13,7 @@ vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [-
               [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]
               [--mesh <command> ... [--mesh-data <file>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
+vkinsp_replay <capture.gpucap> --serve [--validate]
 ```
 
 - **Replay (the default).**
@@ -49,6 +50,8 @@ vkinsp_replay <capture.gpucap> --check
 - **`--mesh-data <file>`:** with `--mesh`, writes each draw's vertex records in `--overdraw-data`'s
   layout (`MESH 1`). GPU Inspector's mesh tab and the MCP server's `get_mesh_output` run the tool
   this way.
+- **`--serve`:** keeps the replay alive for many analyses of the capture (see
+  [Kept alive](#kept-alive)). GPU Inspector and its MCP server run the tool this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
   be rebuilt.
 
@@ -110,6 +113,31 @@ submitted without the application's semaphores and fences, and the replay waits 
 end of each pass the replay copies the targets the capture read back for that pass (render pass
 counter per command buffer, as the layer counts). After the submission the copies are compared.
 Only the undefined top byte of a 24-bit depth copy is ignored.
+
+## Kept alive
+
+`--serve` creates the device and the capture's objects once, then answers analyses read one per line
+from stdin, each by replaying the frame with that analysis added and writing the file its one-shot
+flag would. Answers are JSON lines on stdout that start with `@replay ` (`Serve` in `main.cpp` has
+the protocol):
+
+```
+{"id": 1, "kind": "pixel", "image": 278, "x": 400, "y": 300, "out": "history.json"}
+@replay {"id": 1, "ok": true, "ms": 38.1, "problems": 0}
+```
+
+The kinds are `overdraw`, `draws`, `overlay` and `mesh` (with `commands`), `pixel`, and `replay` (the
+frame alone, comparing its render targets). Every frame after the first starts where the first did
+(`ResetFrameState`): command pools reset, images cleared and back in their initial layouts, sampled
+textures and the frame's buffer ranges uploaded again. Pipeline copies made for an analysis are
+kept, so the next analysis of the same draws does not make them again.
+
+On the Unity frame, a fresh process takes 0.3 to 0.4 s per analysis. Served, setup takes 0.2 s once,
+and then each analysis 35 to 150 ms; each output is byte for byte what the one-shot flag writes
+(draw timings aside), and three `replay` frames in a row compare all 12 targets identical. The app
+keeps one such process per open capture (`ReplayServerPool` in `app/src/main/replay.ts`, at most
+three, stopped after five minutes idle), and falls back to a one-shot replay when a process cannot
+start or dies.
 
 ## Overdraw
 
@@ -350,11 +378,9 @@ These cases differ for known reasons:
    - Multisampled images.
    - Per-fragment values: RenderDoc re-draws each primitive with a primitive-id shader.
    - Early fragment tests.
-3. **Speed.** The analyses are already wired into the app and the MCP server: the capture's
-   render target tab draws the overdraw or a draw's overlay over the image and follows the pixel
-   you click beside it, with `get_overdraw` and `get_pixel_history` for Claude. But each pixel,
-   and each draw of a pass with many, replays the whole frame again; keeping one replay process
-   alive between requests would make it quicker.
+3. **A frame restored between analyses** clears images to zero and uploads the captured buffer
+   ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
+   `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
 Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
 templates and push descriptors with templates, queries whose results the frame reads back, and

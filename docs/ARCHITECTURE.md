@@ -368,10 +368,15 @@ It also measures a frame's draws one at a time (`draw_stats.cpp`, `--draws`): ea
 between two timestamps and inside a pipeline statistics query, which is where the Shader Flame
 Graph's per-draw weights and exact fragment counts come from (`renderer/draw_stats.ts`).
 
-The app runs it for a Vulkan capture's overdraw and pixel history (`app/src/main/replay.ts`: the
-capture serialized to a temporary file, `--overdraw-data` or `--pixel-data`, the result parsed by
-`renderer/overdraw.ts` or `renderer/pixel_history.ts`); the MCP server does the same from
-`get_overdraw` and `get_pixel_history`. `app/tools/stage_layer.mjs` ships the tool beside the layer.
+The app runs it for a Vulkan capture's analyses through one process kept alive per capture
+(`vkinsp_replay --serve`; `ReplayServerPool` in `app/src/main/replay.ts`). A capture view names its
+capture by a key: the main process asks for the serialized bytes the first time a key is used,
+writes them to a temporary file, and keeps the replay and the file until the view releases the key
+(its tab closed, or the capture rebuilt). Each analysis is a request line; the data file it writes
+is parsed by `renderer/overdraw.ts`, `pixel_history.ts`, `draw_overlay.ts`, `mesh_output.ts` or
+`draw_stats.ts`. The MCP server uses the same pool from `get_overdraw`, `get_pixel_history`,
+`get_mesh_output` and `get_shader_flame_graph`. `app/tools/stage_layer.mjs` ships the tool beside
+the layer.
 
 See [REPLAY.md](REPLAY.md).
 

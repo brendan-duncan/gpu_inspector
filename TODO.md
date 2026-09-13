@@ -167,8 +167,11 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
       tab, beside the image, and `get_pixel_history`. Both replay the capture with
       `vkinsp_replay --pixel-data`.
-- [ ] Pixel history without a fresh replay per pixel: one replay process kept alive with the frame
-      rebuilt, answering pixels as they are asked for.
+- [x] Replays kept alive (`vkinsp_replay --serve`, `ReplayServerPool`): one process per capture,
+      its device and objects made once, each analysis replaying only the frame (tens of
+      milliseconds on a Unity frame), for the app and the MCP server.
+- [ ] A frame restored between served analyses: buffers the frame writes outside their captured
+      ranges keep what the previous frame left.
 - [x] Overdraw heatmap (`vkinsp_replay --overdraw`, docs/REPLAY.md): each pass is replayed with a
       counting fragment shader. It gives two counts per pass (every rasterized fragment, and the
       fragments passing depth and stencil in draw order), with a heatmap and a histogram. The
@@ -304,6 +307,210 @@ backend does. Ordered by value per effort.
 - [x] ASTC, ETC2 / EAC, PVRTC and the extended-range and packed 4:2:2 pixel formats, in the
       read-back table and the UI's decoder, with reference vectors.
 - [ ] Stencil attachment read-back; the multi-planar YUV formats.
+
+## iOS devices
+
+Inspecting a Unity iOS player on a device with the full inspector UI, without changing the Unity
+project or the Xcode project it generates. The macOS design carries over unchanged in principle:
+dyld honours `DYLD_INSERT_LIBRARIES` on iOS for a process signed with `get-task-allow` (every
+development-profile build), which is how Xcode itself inserts `libMTLCapture.dylib` for GPU Frame
+Capture; `__DATA,__interpose` and the class hooks work the same; and the transport already binds
+`127.0.0.1` and listens (`metal/src/transport.mm`), which is exactly what a USB port forward
+(usbmux, the iOS `adb forward`) connects to, with no Local Network permission prompt.
+
+What is unknown until measured on a device is where the library may live and whether iOS accepts
+its signature. iOS refuses a library signed by a different team ("mapping process and mapped file
+(non-platform) have different Team IDs"), so the library must be signed with the **same team** as
+the application. Everything below is done on the Mac; this Windows machine cannot build any of it.
+
+Limits known up front: App Store, TestFlight, Ad Hoc and Enterprise builds lack `get-task-allow`
+and would need re-signing with a development profile first; the device needs Developer Mode on
+(Settings > Privacy & Security); a Mac is the host (codesign, devicectl, the signing identity).
+
+### Setup (once)
+- [ ] Tools: Xcode 16 or later (`xcrun devicectl`), CMake, and a USB port forwarder, either
+      `brew install libimobiledevice` (`iproxy`) or `pipx install pymobiledevice3`. pymobiledevice3
+      also answers "where is this app installed" (`apps query`), which step 0 needs.
+- [ ] The device plugged in over USB, trusted, Developer Mode on, Auto-Lock off (a locked device
+      suspends the app and its socket).
+- [ ] The device's identifier: `xcrun devicectl list devices` (the Identifier column), and its
+      UDID for iproxy / pymobiledevice3: `xcrun xctrace list devices` or Finder.
+- [ ] The signing identity and team:
+      ```sh
+      security find-identity -v -p codesigning     # "Apple Development: Name (XXXXXXXXXX)"
+      ```
+      The team the library must match is the one the app is signed with (step below), which is not
+      necessarily the ID in parentheses above.
+- [ ] A Unity iOS player built the normal way: Unity > Build for iOS, open `Unity-iPhone.xcodeproj`,
+      Signing & Capabilities with *Automatically manage signing* and your team, build and run it
+      once from Xcode so it is installed and known to work. Then take the built bundle from
+      DerivedData (Xcode > Product > Show Build Folder in Finder, `Products/<config>-iphoneos/`),
+      or build from the command line:
+      ```sh
+      xcodebuild -project Unity-iPhone.xcodeproj -scheme Unity-iPhone -configuration Release \
+        -destination 'generic/platform=iOS' -derivedDataPath build/ios -allowProvisioningUpdates \
+        DEVELOPMENT_TEAM=<team>
+      # -> build/ios/Build/Products/Release-iphoneos/<product>.app
+      ```
+- [ ] Record what the app is signed with:
+      ```sh
+      APP=path/to/<product>.app
+      codesign -dv --verbose=4 "$APP" 2>&1 | grep -E 'TeamIdentifier|Authority'
+      codesign -d --entitlements - --xml "$APP" > app-entitlements.plist
+      plutil -p app-entitlements.plist             # must contain "get-task-allow" => true
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+      ```
+      No `get-task-allow`: the profile is not a development one, and nothing below can work.
+
+### Step 0: will iOS load an inserted library at all, and from where
+A probe library that only logs, so the answer does not depend on porting `metal/`. The same
+experiment `metal/README.md` records for macOS signing; put the resulting table beside it.
+- [ ] Build and sign the probe:
+      ```c
+      // probe.c
+      #include <os/log.h>
+      #include <stdio.h>
+      #include <unistd.h>
+      __attribute__((constructor)) static void probe(void) {
+          os_log(OS_LOG_DEFAULT, "[mtlinsp-probe] loaded into pid %d", getpid());
+          fprintf(stderr, "[mtlinsp-probe] loaded into pid %d\n", getpid());
+      }
+      ```
+      ```sh
+      xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -dynamiclib \
+        -install_name @rpath/libprobe.dylib probe.c -o libprobe.dylib
+      codesign --force --timestamp=none --sign "Apple Development: <you>" libprobe.dylib
+      codesign -dv libprobe.dylib 2>&1 | grep TeamIdentifier    # must equal the app's
+      ```
+- [ ] How to see the result: the constructor's line in Console.app (pick the device in the sidebar,
+      filter `mtlinsp-probe`, start streaming before launching), or on stdout with `--console` on the
+      launch below. **A library dyld cannot load is fatal**: the app dies at launch, and the reason
+      (`could not load inserted library`, `code signature invalid`, `different Team IDs`) is in the
+      `--console` output, in Console.app under the `kernel` / `amfid` processes, or in the crash
+      log (Xcode > Window > Devices and Simulators > Open Recent Logs). A launch that runs normally
+      with no probe line means dyld dropped the variable.
+- [ ] The launch command, used for every case (check `xcrun devicectl device process launch
+      --help` if a flag has been renamed):
+      ```sh
+      xcrun devicectl device process launch --device <identifier> --terminate-existing --console \
+        --environment-variables '{"DYLD_INSERT_LIBRARIES":"<path>"}' <bundle-id>
+      ```
+      Add `"DYLD_PRINT_LIBRARIES":"1"` to see on the console whether dyld honours `DYLD_*`
+      variables for the process at all.
+- [ ] Case A, in the bundle (re-signs a copy of the app; the Unity and Xcode projects stay as they
+      are):
+      ```sh
+      cp -R "$APP" Probe.app
+      cp libprobe.dylib Probe.app/Frameworks/
+      codesign --force --timestamp=none --sign "Apple Development: <you>" \
+        --entitlements app-entitlements.plist Probe.app
+      codesign --verify --deep --strict Probe.app
+      xcrun devicectl device install app --device <identifier> Probe.app
+      ```
+      - [ ] A1: `DYLD_INSERT_LIBRARIES=@executable_path/Frameworks/libprobe.dylib`
+      - [ ] A2: the absolute path: the install location from `pymobiledevice3 apps query
+            <bundle-id>` (its `Path`), then `<Path>/Frameworks/libprobe.dylib`. The UUID in it
+            changes with every install.
+- [ ] Case B, in the app's data container (no re-signing, the app exactly as Xcode built it;
+      reinstall the original `$APP` first):
+      ```sh
+      xcrun devicectl device copy to --device <identifier> --domain-type appDataContainer \
+        --domain-identifier <bundle-id> --source libprobe.dylib --destination Documents/libprobe.dylib
+      ```
+      - [ ] B1: `DYLD_INSERT_LIBRARIES=<Container>/Documents/libprobe.dylib`, `Container` from
+            `pymobiledevice3 apps query <bundle-id>`. If this loads, the inspector never needs to
+            touch the application bundle, which is the better product.
+- [ ] Controls, so a failure is understood rather than guessed at:
+      - [ ] the probe ad-hoc signed (`codesign --force --sign - libprobe.dylib`) in the winning
+            placement: expected to be refused, and shows what a signature refusal looks like;
+      - [ ] if devicectl turns out not to pass the variables, the same case launched from Xcode
+            instead: in the Unity Xcode project, Product > Scheme > Edit Scheme > Run > Arguments >
+            Environment Variables, with Diagnostics > *Metal API Validation* and Options > *GPU Frame
+            Capture* set to Disabled so Xcode inserts nothing of its own. The scheme only affects
+            the launch, not the build, so this still leaves the build uninstrumented.
+- [ ] Write the results down (placement × path form × launcher → loaded / refused and the message)
+      in `metal/README.md` next to the macOS table. **No case loads: stop here**; Route A is not
+      possible and the remaining option is Xcode's `.gputrace` via LLDB.
+
+### Step 1: build the capture library for iOS
+- [ ] Configure and build with the iOS SDK:
+      ```sh
+      cmake -S metal -B build/ios -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+        -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      cmake --build build/ios
+      # -> build/ios/bin/libmtlinsp_capture.dylib
+      ```
+- [ ] Fix what the iOS SDK marks unavailable, each behind `#if TARGET_OS_OSX` (or `@available` /
+      `respondsToSelector:` where iOS has the API from some version on). Found by reading, so the
+      compiler may find more:
+      - `interpose.mm`: `MTLCopyAllDevices`, `MTLCopyAllDevicesWithObserver`,
+        `CGDirectDisplayCopyCurrentMetalDevice` and the `CGDirectDisplayMetal.h` import are
+        macOS-only; iOS keeps `MTLCreateSystemDefaultDevice` and the `nextDrawable` fallback.
+      - `hooks_descriptors.mm:521`: `lowPower`, `headless`, `removable` are macOS-only;
+        `registryID` depends on the iOS version.
+      - `capture.mm:895` and `capture.mm:1329`, `formats.mm:318`: `MTLStorageModeManaged` and the blit
+        encoder's `synchronizeResource:` do not exist on iOS (no managed storage; shared buffers
+        read directly). Hooking the `synchronizeResource:` selector in `hooks_encoders.mm` is
+        harmless, since the class simply has no such method.
+      - `frame_stats.mm` `QueryDisplayRefreshMs`: no CoreGraphics display modes on iOS; ask
+        `UIScreen.mainScreen.maximumFramesPerSecond` through the runtime, the way `NSScreen` is
+        asked now (60 or 120 with ProMotion).
+      - `gpu_trace.mm` `DefaultPath`: no Desktop; write under `NSTemporaryDirectory()` and fetch with
+        `xcrun devicectl device copy from --domain-type appDataContainer ... --source tmp/<file>`.
+      - `CMakeLists.txt`: guard the CoreGraphics link if nothing else needs it.
+- [ ] Sign it with the same identity as the probe, and check its TeamIdentifier.
+
+### Step 2: inject it into the Unity player and connect
+- [ ] Put `libmtlinsp_capture.dylib` where step 0 said a library loads from (Frameworks + re-sign,
+      or the data container), and launch:
+      ```sh
+      xcrun devicectl device process launch --device <identifier> --terminate-existing --console \
+        --environment-variables '{"DYLD_INSERT_LIBRARIES":"<path>","MTLINSP_PORT":"47531","MTLINSP_LOG":"1","METAL_CAPTURE_ENABLED":"1"}' \
+        <bundle-id>
+      ```
+      Expect `[mtlinsp] loaded into pid …` then `[mtlinsp] listening on 127.0.0.1:47531` on the
+      console.
+- [ ] Forward the port over USB, in a second terminal, and leave it running:
+      ```sh
+      iproxy 47531:47531 -u <udid>            # libimobiledevice 1.3+; older: iproxy 47531 47531 <udid>
+      # or: pymobiledevice3 usbmux forward 47531 47531
+      ```
+- [ ] Connect the UI: **Connect** in the launch bar with port 47531, or from `app/`:
+      `npm start -- --connect=47531`. The MCP server's attach should work the same way.
+- [ ] What to check, in order, noting anything that differs from a Mac:
+      - [ ] Inspect: the snapshot arrives; device, queues, buffers, textures, pipelines listed.
+            Record the concrete class names (the `AGX…Device` family for the device's GPU, and the
+            `MTLDebug*` ones with `MTL_DEBUG_LAYER=1`) in the class-tree table in `metal/README.md`.
+      - [ ] Frame capture of one frame: commands per command buffer and pass, render targets read
+            back, vertex and index buffers, pass timings.
+      - [ ] Pixel formats a phone uses that a Mac player does not: ASTC textures, `BGRA8_sRGB`
+            drawables, memoryless depth (cannot be read back, must not crash).
+      - [ ] Frame Stats: frame time and the refresh rate (60 / 120).
+      - [ ] Validation layer: add `"MTL_DEBUG_LAYER":"1","MTL_DEBUG_LAYER_ERROR_MODE":"nslog",
+            "MTL_DEBUG_LAYER_WARNING_MODE":"nslog"` to the environment (what `captureEnvironment`
+            in `app/src/main/metal.ts` sets on a Mac).
+      - [ ] Stack traces (`MTLINSP_STACKTRACES=1`): addresses symbolize against the dSYMs Xcode
+            wrote for `UnityFramework`, which the host needs via `set_search_paths`.
+      - [ ] Overdraw, pixel history and Xcode Trace (then `devicectl device copy from` the
+            `.gputrace` and open it in Xcode).
+      - [ ] Memory: a full capture's read-back on a phone near jetsam's limit; watch for the app
+            being killed and lower `maxBufferTotal` / `maxTextureSize` as the Android note suggests.
+      - [ ] Backgrounding the app and returning: the listener survives, and the UI can reconnect.
+
+### Step 3: make it a launch target (only once step 2 works)
+- [ ] `app/src/main/ios.ts`, the counterpart of `metal.ts` and the Android launcher: list devices
+      (`xcrun devicectl list devices --json-output`), check the app's `get-task-allow` and team,
+      sign and place the library the way step 0 found works, install, launch with the environment,
+      forward the port, connect. The usbmux forward can be spoken directly (a plist protocol over
+      `/var/run/usbmuxd`) instead of depending on iproxy.
+- [ ] The launch dialog's *Run On* lists iOS devices beside Android ones; a `launch_ios_app` MCP
+      tool beside `launch_android_app`.
+- [ ] The iOS library built by CI and staged into the macOS app's resources
+      (`app/tools/stage_layer.mjs`), signed at launch time with the user's identity rather than
+      the project's (a Developer ID signature is a different team from the app's).
+- [ ] `docs/IOS.md`: requirements (development-signed build, Developer Mode, same team), and a
+      Troubleshooting section built from step 0's failure messages.
 
 ## Distribution
 - [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).

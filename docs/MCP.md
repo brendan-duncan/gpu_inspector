@@ -51,8 +51,8 @@ Or use a command:
 
 ## Replaying a capture
 
-A few tools replay a Vulkan capture on this machine's GPU, the way the app does, and take seconds
-rather than milliseconds:
+A few tools replay a Vulkan capture on this machine's GPU, the way the app does. The first question
+about a capture takes a moment while its replay starts; the replay is kept for the ones after it:
 
 - `get_overdraw` — fragments per pixel, for every pass or as one pass's heatmap
 - `get_pixel_history` — every clear and draw that touched a pixel, and what became of each draw's
