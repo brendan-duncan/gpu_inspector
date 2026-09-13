@@ -18,6 +18,10 @@ git tag v0.2.0
 git push origin main v0.2.0
 ```
 
+`npm version` also rebuilds the app (the `version` script in `app/package.json`), because the
+committed MCP server bundle, `claude-plugin/server/gpu-inspector-mcp.mjs`, carries the version
+number: the workflow fails when that bundle differs from a fresh build, so commit it with the bump.
+
 The workflow then runs on a Windows, an Ubuntu 22.04 and a macOS 14 runner, and:
 
 1. checks out the repository with the `Vulkan-Headers` submodule,

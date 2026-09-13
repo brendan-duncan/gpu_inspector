@@ -18,6 +18,7 @@
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
+    "version": "node build.mjs",
     "icons": "node tools/run_electron.mjs tools/make_icons.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "start": "node build.mjs && node tools/run_electron.mjs .",
