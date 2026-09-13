@@ -9408,6 +9408,7 @@ var Lowering = class {
   symbols = [];
   functions = [];
   globals = [];
+  functionConstants = [];
   diagnostics = [];
   _unit;
   _aliases = /* @__PURE__ */ new Map();
@@ -9451,6 +9452,7 @@ var Lowering = class {
       symbols: this.symbols,
       functions: this.functions,
       globals: this.globals,
+      functionConstants: this.functionConstants,
       diagnostics: this.diagnostics,
       entryPoints: this.functions.filter((f) => f.qualifier)
     };
@@ -9563,6 +9565,8 @@ var Lowering = class {
     }
     this.globals.push({ symbol, value: value ?? this.types.zero(type) });
     this._globalScope.names.set(decl.name, symbol.id);
+    const constant = decl.attributes.find((a) => a.name === "function_constant");
+    if (constant) this.functionConstants.push({ symbol, index: constant.args[0] ?? this.functionConstants.length });
   }
   /** A constant expression's value, for a global initializer or an array size. Undefined when it is not one. */
   _constantValue(expr, type) {
@@ -10506,6 +10510,16 @@ var Lowering = class {
       return this._value(expr.callee);
     }
     const name = expr.callee.name;
+    if (name === "is_function_constant_defined") {
+      const named = expr.args[0]?.kind === "name" ? expr.args[0].name : "";
+      const constant = this.functionConstants.find((c2) => this.symbols[c2.symbol.id].name === named);
+      if (!constant) this._warn(expr.span, `is_function_constant_defined(${named || "?"}) does not name a function constant of this shader`);
+      const index = this._temp(this.types.int);
+      this._emit({ op: "const", dst: index, value: constant ? constant.index : -1, type: this.types.int }, expr.span);
+      const dst2 = this._temp(this.types.bool);
+      this._emit({ op: "builtin", dst: dst2, name, args: [index], type: this.types.bool }, expr.span);
+      return dst2;
+    }
     const overloads = this._functionsByName.get(name);
     const args = expr.args.map((a) => this._value(a));
     if (overloads?.length) {
@@ -12360,6 +12374,9 @@ var MslProgram = class _MslProgram {
   /** What the parser and the lowering could not make sense of, shown as the session's notes. */
   diagnostics;
   _byName = null;
+  _reads = null;
+  _calls = null;
+  _constantsUsed = /* @__PURE__ */ new Map();
   /**
    * The program for a library's source. Parsing a large generated shader is not free and the same
    * library backs every pipeline that came out of it, so the result is kept under the source text.
@@ -12396,6 +12413,59 @@ var MslProgram = class _MslProgram {
       if (ofStage.length) return ofStage[0];
     }
     return void 0;
+  }
+  /**
+   * The `[[function_constant(n)]]` indices an entry point reads, directly or through something it
+   * calls. A library declares its constants at file scope, so every entry point sees all of them;
+   * only the ones a given function actually reads have to have been specialized for it, and only
+   * those are worth telling anyone about.
+   *
+   * A constant reached only through `is_function_constant_defined` is deliberately not counted:
+   * asking whether it was set is exactly what a shader does when it may not have been.
+   */
+  functionConstantsUsedBy(entry) {
+    const at = this.ir.functions.indexOf(entry);
+    const cached = this._constantsUsed.get(at);
+    if (cached) return cached;
+    this._buildReferences();
+    const reached = /* @__PURE__ */ new Set();
+    const queue = [at];
+    while (queue.length) {
+      const fn = queue.pop();
+      if (fn < 0 || reached.has(fn)) continue;
+      reached.add(fn);
+      for (const called of this._calls.get(fn) ?? []) queue.push(called);
+    }
+    const used = /* @__PURE__ */ new Set();
+    for (const { symbol, index } of this.ir.functionConstants) {
+      for (const fn of reached) {
+        if (this._reads.get(fn)?.has(symbol.id)) {
+          used.add(index);
+          break;
+        }
+      }
+    }
+    this._constantsUsed.set(at, used);
+    return used;
+  }
+  /** Per function: the globals its instructions name, and the functions it calls. */
+  _buildReferences() {
+    if (this._reads) return;
+    const reads = /* @__PURE__ */ new Map();
+    const calls = /* @__PURE__ */ new Map();
+    const globals = new Set(this.ir.globals.map((g) => g.symbol.id));
+    const add = (map, fn, value) => {
+      const set = map.get(fn) ?? /* @__PURE__ */ new Set();
+      set.add(value);
+      map.set(fn, set);
+    };
+    for (const instr of this.ir.instructions) {
+      if (instr.op === "addr" && globals.has(instr.variable)) add(reads, instr.fn, instr.variable);
+      else if (instr.op === "move" && globals.has(instr.src)) add(reads, instr.fn, instr.src);
+      else if (instr.op === "call") add(calls, instr.fn, instr.target);
+    }
+    this._reads = reads;
+    this._calls = calls;
   }
   hasSourceText() {
     return !!this.files[0]?.text;
@@ -12458,6 +12528,7 @@ var MslProgram = class _MslProgram {
   }
   variableWhere(v) {
     if (v.binding === void 0) return "";
+    if (v.set === 3) return `function_constant(${v.binding})`;
     const kind = v.set === 1 ? "texture" : v.set === 2 ? "sampler" : "buffer";
     return v.binding < 0 ? `an unnumbered ${kind}` : `${kind}(${v.binding})`;
   }
@@ -13073,6 +13144,8 @@ var MslInvocation = class {
   globals = /* @__PURE__ */ new Map();
   /** Entry-point parameters as the debugger shows them, with what bound each. */
   boundParams = [];
+  /** Function constants the application set, by index: what `is_function_constant_defined` answers from. */
+  definedConstants = /* @__PURE__ */ new Set();
   /** What the entry point returned, once it has. */
   returned = null;
   steps = 0;
@@ -13089,8 +13162,30 @@ var MslInvocation = class {
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
     for (const g of program.ir.globals) this.globals.set(g.symbol.id, { value: cloneValue(g.value) });
+    this._specialize(options.constants);
     this.frames.push(this._frame(entry, -1));
     this._bindEntry(this.frames[0]);
+  }
+  /**
+   * Gives the `[[function_constant(n)]]` globals the values the function was built with. A
+   * constant the capture has no value for keeps its zero and is reported as undefined, which is
+   * what `is_function_constant_defined` is in the shader to ask.
+   */
+  _specialize(constants) {
+    const used = this.program.functionConstantsUsedBy(this.entry);
+    const missing = [];
+    for (const { symbol, index } of this.program.ir.functionConstants) {
+      const value = constants?.byIndex.get(index) ?? constants?.byName.get(symbol.name);
+      if (value === void 0) {
+        if (used.has(index)) missing.push(`${symbol.name} [[function_constant(${index})]]`);
+        continue;
+      }
+      this.definedConstants.add(index);
+      this.globals.set(symbol.id, { value: this._fit(value, symbol.type) });
+    }
+    if (missing.length) {
+      this.warn(`the capture does not record what this function was specialized with, so ${missing.join(", ")} ${missing.length === 1 ? "reads" : "read"} as zero`);
+    }
   }
   get _types() {
     return this.program.ir.types;
@@ -13164,11 +13259,21 @@ var MslInvocation = class {
   }
   /** File-scope `constant` variables, which is the nearest MSL has to a private global. */
   privateVariables() {
+    const constants = new Map(this.program.ir.functionConstants.map((c2) => [c2.symbol.id, c2.index]));
     const out = [];
     for (const [id, cell] of this.globals) {
       const symbol = this._symbol(id);
       if (!symbol) continue;
-      out.push({ id, name: symbol.name, type: symbol.type, value: cloneValue(cell.value), storage: 1 });
+      const index = constants.get(id);
+      out.push({
+        id,
+        name: symbol.name,
+        type: symbol.type,
+        value: cloneValue(cell.value),
+        storage: 1,
+        // A function constant shows where it came from, the way a bound resource does.
+        ...index === void 0 ? {} : { binding: index, set: 3 }
+      });
     }
     return out;
   }
@@ -13517,6 +13622,11 @@ var MslInvocation = class {
       }
       case "builtin": {
         const args = instr.args.map((r) => this._get(frame, r));
+        if (instr.name === "is_function_constant_defined") {
+          frame.pc++;
+          this._set(frame, instr, instr.dst, this.definedConstants.has(Math.trunc(numberOf2(args[0]))));
+          return;
+        }
         const context = {
           types,
           resultType: instr.type,
@@ -18320,7 +18430,26 @@ async function metalStage(ctx, state, stage) {
     blobIndex,
     module: library
   };
-  return { source, program, entry };
+  return { source, program, entry, constants: functionConstants(fn) };
+}
+function functionConstants(fn) {
+  const byIndex = /* @__PURE__ */ new Map();
+  const byName = /* @__PURE__ */ new Map();
+  const list = fn?.args?.constantValues;
+  if (!Array.isArray(list)) return { byIndex, byName };
+  for (const entry of list) {
+    if (!isObject(entry)) continue;
+    const value = entry.value;
+    if (value === void 0 || value === null) continue;
+    const decoded = Array.isArray(value) ? value.map(scalarOf) : scalarOf(value);
+    if (entry.index !== void 0) byIndex.set(num(entry.index), decoded);
+    const name = str(entry.name);
+    if (name) byName.set(name, decoded);
+  }
+  return { byIndex, byName };
+}
+function scalarOf(v) {
+  return typeof v === "boolean" ? v : Number(v) || 0;
 }
 var FILTER = ["nearest", "linear"];
 var ADDRESS = ["clamp", "mirrorClamp", "repeat", "mirror", "clamp", "border"];
@@ -18402,7 +18531,7 @@ function topologyOf(cmd) {
   }
 }
 async function interpretedMeshOutput(ctx, cmd, state) {
-  const { program, entry } = await metalStage(ctx, state, "vertex");
+  const { program, entry, constants } = await metalStage(ctx, state, "vertex");
   const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
   const bindings = metalBindings(ctx, state, "vertex");
   const a = cmd.args ?? {};
@@ -18455,7 +18584,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
         attributes,
         varyings: /* @__PURE__ */ new Map()
       };
-      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs });
+      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants });
       invocation.run();
       for (const w of invocation.warnings) warnings.add(w);
       const written = invocation.outputs();
@@ -18541,7 +18670,7 @@ function metalRasterState(ctx, cmd, state) {
 }
 async function prepareMetalSession(ctx, target, state, cmd) {
   const stage = target.stage;
-  const { source, program, entry } = await metalStage(ctx, state, stage);
+  const { source, program, entry, constants } = await metalStage(ctx, state, stage);
   const bindings = metalBindings(ctx, state, stage);
   const notes = [];
   if (program.diagnostics.length) {
@@ -18566,7 +18695,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
       notes,
       description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with threadgroups of ${localSize.join(" x ")}`,
       limits: { groups, localSize },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs })
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs, constants })
     };
   }
   if (stage === "vertex") {
@@ -18602,7 +18731,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
       notes,
       description: `vertex ${order} of the draw (vertex_id ${vertexId}), instance ${instance}`,
       limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs })
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants })
     };
   }
   const mesh = await interpretedMeshOutput(ctx, cmd, state);
@@ -18630,6 +18759,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
       stage: "fragment",
       bindings,
       derivatives,
+      constants,
       inputs: fragmentInputs(hit, x0 + dx, y0 + dy, interpolationOf)
     }), lane)
   };
@@ -19128,7 +19258,7 @@ function float162(h) {
 }
 
 // src/renderer/spirv/values.ts
-function scalarOf(m, typeId) {
+function scalarOf2(m, typeId) {
   const t = m.types.get(typeId);
   if (!t) return null;
   switch (t.kind) {
@@ -19139,9 +19269,9 @@ function scalarOf(m, typeId) {
     case "float":
       return { base: "float", width: t.width };
     case "vector":
-      return scalarOf(m, t.element);
+      return scalarOf2(m, t.element);
     case "matrix":
-      return scalarOf(m, t.column);
+      return scalarOf2(m, t.column);
     default:
       return null;
   }
@@ -19820,7 +19950,7 @@ var Invocation = class {
     const m = this.module;
     const t = m.types.get(type);
     if (!t) return 0;
-    const s = scalarOf(m, type);
+    const s = scalarOf2(m, type);
     switch (t.kind) {
       case "bool":
       case "int":
@@ -19926,7 +20056,7 @@ var Invocation = class {
       case 251 /* Switch */: {
         const selector = this.value(frame, w[0]);
         const selectorType = this._typeOfId(frame, w[0]);
-        const wide = selectorType ? (scalarOf(this.module, selectorType)?.width ?? 32) > 32 : false;
+        const wide = selectorType ? (scalarOf2(this.module, selectorType)?.width ?? 32) > 32 : false;
         let target = w[1];
         for (let i = 2; i < w.length; i += wide ? 3 : 2) {
           const literal = wide ? BigInt(w[i + 1]) << 32n | BigInt(w[i]) : w[i];
@@ -20040,11 +20170,11 @@ var Invocation = class {
     const w = inst.words;
     const v = (i) => this.value(frame, w[i]);
     const rt = inst.resultType;
-    const s = scalarOf(m, rt);
+    const s = scalarOf2(m, rt);
     const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
     const opWidth = (i) => {
       const t = this._typeOfId(frame, w[i]);
-      return scalarOf(m, t)?.width ?? 32;
+      return scalarOf2(m, t)?.width ?? 32;
     };
     switch (inst.op) {
       case 1 /* Undef */:
@@ -20649,8 +20779,8 @@ var Invocation = class {
     return s ? mapScalars(out, (x) => normalize(x, s)) : out;
   }
   _bitcast(value, fromType, toType) {
-    const from = scalarOf(this.module, fromType);
-    const to = scalarOf(this.module, toType);
+    const from = scalarOf2(this.module, fromType);
+    const to = scalarOf2(this.module, toType);
     if (!to) return value;
     const buf = new DataView(new ArrayBuffer(8));
     return mapScalars(value, (x) => {
@@ -20666,7 +20796,7 @@ var Invocation = class {
   _extendedArithmetic(op, a, b, rt) {
     const t = this.module.types.get(rt);
     const member = t?.kind === "struct" ? t.members[0] : 0;
-    const s = scalarOf(this.module, member) ?? { base: "uint", width: 32 };
+    const s = scalarOf2(this.module, member) ?? { base: "uint", width: 32 };
     const lo = zipScalars(a, b, (x, y) => {
       const X = BigInt.asUintN(32, big2(x)), Y = BigInt.asUintN(32, big2(y));
       const r = op === 149 /* IAddCarry */ ? X + Y : op === 150 /* ISubBorrow */ ? X - Y : op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
@@ -20779,7 +20909,7 @@ var Invocation = class {
         const x = a(0);
         const whole = mapScalars(x, (e) => Math.trunc(num3(e)));
         const member = this.module.types.get(inst.resultType);
-        const fs12 = member?.kind === "struct" ? scalarOf(this.module, member.members[0]) : s;
+        const fs12 = member?.kind === "struct" ? scalarOf2(this.module, member.members[0]) : s;
         const n = (value) => fs12 ? mapScalars(value, (e) => normalize(e, fs12)) : value;
         return [n(zipScalars(x, whole, (e, w) => num3(e) - num3(w))), n(whole)];
       }

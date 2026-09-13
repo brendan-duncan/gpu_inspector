@@ -27,6 +27,11 @@ export interface LoweredProgram {
   functions: FunctionIr[];
   /** Globals with the value they were initialized to. */
   globals: { symbol: Symbol; value: Value }[];
+  /**
+   * Globals declared `[[function_constant(n)]]`: what the application specialized the shader with
+   * when it built the function. They have no value of their own — the invocation supplies it.
+   */
+  functionConstants: { symbol: Symbol; index: number }[];
   entryPoints: FunctionIr[];
   diagnostics: LowerDiagnostic[];
 }
@@ -68,6 +73,7 @@ class Lowering {
   readonly symbols: Symbol[] = [];
   readonly functions: FunctionIr[] = [];
   readonly globals: { symbol: Symbol; value: Value }[] = [];
+  readonly functionConstants: { symbol: Symbol; index: number }[] = [];
   readonly diagnostics: LowerDiagnostic[] = [];
 
   private _unit: Unit;
@@ -113,7 +119,7 @@ class Lowering {
     }
     return {
       types: this.types, instructions: this.instructions, symbols: this.symbols, functions: this.functions,
-      globals: this.globals, diagnostics: this.diagnostics,
+      globals: this.globals, functionConstants: this.functionConstants, diagnostics: this.diagnostics,
       entryPoints: this.functions.filter((f) => f.qualifier),
     };
   }
@@ -235,6 +241,10 @@ class Lowering {
     }
     this.globals.push({ symbol, value: value ?? this.types.zero(type) });
     this._globalScope.names.set(decl.name, symbol.id);
+    // `constant int mode [[function_constant(0)]];` has no value here: the application gave it one
+    // when it built the function, and the invocation fills it in.
+    const constant = decl.attributes.find((a) => a.name === "function_constant");
+    if (constant) this.functionConstants.push({ symbol, index: constant.args[0] ?? this.functionConstants.length });
   }
 
   /** A constant expression's value, for a global initializer or an array size. Undefined when it is not one. */
@@ -1243,6 +1253,19 @@ class Lowering {
       return this._value(expr.callee);
     }
     const name = expr.callee.name;
+    // `is_function_constant_defined(MODE)` asks whether the application set that constant, which
+    // only the invocation knows. Its argument is resolved to the constant's index here rather
+    // than lowered as a read of the constant, which would be a use of a value that may not exist.
+    if (name === "is_function_constant_defined") {
+      const named = expr.args[0]?.kind === "name" ? expr.args[0].name : "";
+      const constant = this.functionConstants.find((c) => this.symbols[c.symbol.id].name === named);
+      if (!constant) this._warn(expr.span, `is_function_constant_defined(${named || "?"}) does not name a function constant of this shader`);
+      const index = this._temp(this.types.int);
+      this._emit({ op: "const", dst: index, value: constant ? constant.index : -1, type: this.types.int }, expr.span);
+      const dst = this._temp(this.types.bool);
+      this._emit({ op: "builtin", dst, name, args: [index], type: this.types.bool }, expr.span);
+      return dst;
+    }
     const overloads = this._functionsByName.get(name);
     const args = expr.args.map((a) => this._value(a));
     if (overloads?.length) {

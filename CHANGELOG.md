@@ -12,6 +12,11 @@
 - Metal captures read back the textures a draw or dispatch sampled, not only its render targets, so
   a debugged fragment samples what the GPU sampled. Deduplicated per capture and capped by
   `maxSampledTextureTotal`.
+- Metal captures record the function constants a shader was specialized with
+  (`newFunctionWithName:constantValues:`), which Metal itself will not report, so the shader
+  debugger steps the variant the draw used rather than the one the constants default to. Engines
+  ship one library of `[[function_constant]]`-guarded variants, so this is what makes their shaders
+  debuggable at all.
 
 ### Changed
 - Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)

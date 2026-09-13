@@ -70,8 +70,17 @@ vertex VertexOut vertex_main(VertexIn in [[stage_in]],
     return out;
 }
 
+// Function constants, the way an engine ships one library of variants: the fragment is
+// specialized at newFunctionWithName:constantValues: rather than compiled twice.
+constant int kTintMode [[function_constant(0)]];
+constant float kTintAmount [[function_constant(1)]];
+
 fragment float4 fragment_main(VertexOut in [[stage_in]]) {
-    return float4(in.colour, 1.0);
+    float3 colour = in.colour;
+    if (is_function_constant_defined(kTintMode) && kTintMode == 1) {
+        colour = mix(colour, float3(1.0, 1.0, 1.0), kTintAmount);
+    }
+    return float4(colour, 1.0);
 }
 
 kernel void wave_main(device float *values [[buffer(0)]],
@@ -151,7 +160,21 @@ constexpr NSUInteger kWaveCount = 256;
     MTLRenderPipelineDescriptor *pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
     pipelineDescriptor.label = @"triangle pipeline";
     pipelineDescriptor.vertexFunction = [library newFunctionWithName:@"vertex_main"];
-    pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"];
+    // Specialized: kTintMode selects the branch, kTintAmount is what it mixes by. Nothing reads
+    // these back out of Metal, so the capture library watches the setters (metal/src/function_constants.h).
+    MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+    const int tintMode = 1;
+    const float tintAmount = 0.25f;
+    [constants setConstantValue:&tintMode type:MTLDataTypeInt atIndex:0];
+    [constants setConstantValue:&tintAmount type:MTLDataTypeFloat atIndex:1];
+    NSError *functionError = nil;
+    pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"
+                                                       constantValues:constants
+                                                                error:&functionError];
+    if (pipelineDescriptor.fragmentFunction == nil) {
+        NSLog(@"specializing fragment_main failed: %@", functionError);
+        exit(1);
+    }
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
     pipelineDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
     pipelineDescriptor.rasterSampleCount = 4;

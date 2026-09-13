@@ -254,7 +254,10 @@ Current limits:
 
 - A Vulkan pixel needs `vkinsp_replay`.
 - A Metal library the application loaded as a precompiled `metallib` has no source to step; one it
-  compiled from source does. Function constants read as their defaults.
+  compiled from source does.
+- A Metal shader specialized with function constants is stepped with the values the draw used, and
+  the Warnings section names any the capture did not record. A function constant that decides
+  whether an *argument* exists is not honoured.
 - A Metal fragment runs the draw's vertex shader once per vertex to find its triangle, so a draw
   with very many vertices is capped, and the notes say so.
 - Tessellation and geometry stages (Metal: object, mesh and tile stages) are not supported.

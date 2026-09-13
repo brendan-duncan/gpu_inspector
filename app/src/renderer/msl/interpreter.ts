@@ -33,6 +33,17 @@ export interface MslBindings {
   label?(kind: "buffer" | "texture" | "sampler", index: number): string;
 }
 
+/**
+ * What an application specialized a shader with: the values it set on the
+ * `MTLFunctionConstantValues` it built the function from, by `[[function_constant(n)]]` index and
+ * by name. A Unity shader is one library of constant-guarded variants, so running it without
+ * these steps the wrong branches.
+ */
+export interface MslFunctionConstants {
+  byIndex: Map<number, Value>;
+  byName: Map<string, Value>;
+}
+
 export interface MslInputs {
   /** Built-ins by MSL attribute name: "vertex_id", "position", "thread_position_in_grid". */
   builtins: Map<string, Value>;
@@ -70,6 +81,8 @@ export class MslInvocation implements DebugInvocation {
   readonly globals = new Map<number, Cell>();
   /** Entry-point parameters as the debugger shows them, with what bound each. */
   readonly boundParams: VariableView[] = [];
+  /** Function constants the application set, by index: what `is_function_constant_defined` answers from. */
+  readonly definedConstants = new Set<number>();
   /** What the entry point returned, once it has. */
   returned: Value = null;
   steps = 0;
@@ -78,7 +91,10 @@ export class MslInvocation implements DebugInvocation {
   /** A builtin that blocked: the same instruction runs again next step. */
   private _blocked = false;
 
-  constructor(program: MslProgram, options: { entryPoint?: string; stage?: string; bindings: MslBindings; inputs: MslInputs; derivatives?: DerivativeSource | null }) {
+  constructor(program: MslProgram, options: {
+    entryPoint?: string; stage?: string; bindings: MslBindings; inputs: MslInputs;
+    derivatives?: DerivativeSource | null; constants?: MslFunctionConstants;
+  }) {
     this.program = program;
     const entry = program.entryPoint(options.entryPoint, options.stage);
     if (!entry) throw new Error(`the library has no ${options.entryPoint ?? options.stage ?? ""} entry point`);
@@ -87,8 +103,33 @@ export class MslInvocation implements DebugInvocation {
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
     for (const g of program.ir.globals) this.globals.set(g.symbol.id, { value: cloneValue(g.value) });
+    this._specialize(options.constants);
     this.frames.push(this._frame(entry, -1));
     this._bindEntry(this.frames[0]);
+  }
+
+  /**
+   * Gives the `[[function_constant(n)]]` globals the values the function was built with. A
+   * constant the capture has no value for keeps its zero and is reported as undefined, which is
+   * what `is_function_constant_defined` is in the shader to ask.
+   */
+  private _specialize(constants?: MslFunctionConstants): void {
+    // A library declares its constants at file scope, so this entry point sees every one of them;
+    // only the ones it reads had to be specialized for it, and only those are worth warning about.
+    const used = this.program.functionConstantsUsedBy(this.entry);
+    const missing: string[] = [];
+    for (const { symbol, index } of this.program.ir.functionConstants) {
+      const value = constants?.byIndex.get(index) ?? constants?.byName.get(symbol.name);
+      if (value === undefined) {
+        if (used.has(index)) missing.push(`${symbol.name} [[function_constant(${index})]]`);
+        continue;
+      }
+      this.definedConstants.add(index);
+      this.globals.set(symbol.id, { value: this._fit(value, symbol.type) });
+    }
+    if (missing.length) {
+      this.warn(`the capture does not record what this function was specialized with, so ${missing.join(", ")} ${missing.length === 1 ? "reads" : "read"} as zero`);
+    }
   }
 
   private get _types(): TypeTable {
@@ -178,11 +219,17 @@ export class MslInvocation implements DebugInvocation {
 
   /** File-scope `constant` variables, which is the nearest MSL has to a private global. */
   privateVariables(): VariableView[] {
+    const constants = new Map(this.program.ir.functionConstants.map((c) => [c.symbol.id, c.index]));
     const out: VariableView[] = [];
     for (const [id, cell] of this.globals) {
       const symbol = this._symbol(id);
       if (!symbol) continue;
-      out.push({ id, name: symbol.name, type: symbol.type, value: cloneValue(cell.value), storage: 1 });
+      const index = constants.get(id);
+      out.push({
+        id, name: symbol.name, type: symbol.type, value: cloneValue(cell.value), storage: 1,
+        // A function constant shows where it came from, the way a bound resource does.
+        ...(index === undefined ? {} : { binding: index, set: 3 }),
+      });
     }
     return out;
   }
@@ -544,6 +591,13 @@ export class MslInvocation implements DebugInvocation {
       }
       case "builtin": {
         const args = instr.args.map((r) => this._get(frame, r));
+        // Answered here rather than in the standard library: what the function was specialized
+        // with belongs to the invocation, not to the language.
+        if (instr.name === "is_function_constant_defined") {
+          frame.pc++;
+          this._set(frame, instr, instr.dst, this.definedConstants.has(Math.trunc(numberOf(args[0]))));
+          return;
+        }
         const context: BuiltinContext = {
           types,
           resultType: instr.type,

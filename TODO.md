@@ -324,9 +324,12 @@ backend does. Ordered by value per effort.
 - [x] ASTC, ETC2 / EAC, PVRTC and the extended-range and packed 4:2:2 pixel formats, in the
       read-back table and the UI's decoder, with reference vectors.
 - [ ] Stencil attachment read-back; the multi-planar YUV formats.
-- [ ] Function constants (`newFunctionWithName:constantValues:`) in the capture: the values are not
-      serialized (`FunctionArgs` in `metal/src/hooks_descriptors.mm`), so the shader debugger runs
-      a specialized shader with their defaults. Unity leans on these.
+- [x] Function constants in the capture (`metal/src/function_constants.mm`): MTLFunctionConstantValues
+      has no getters, so its setters are hooked and the values ride along on the tracked MTLFunction.
+      The shader debugger specializes the invocation with them, so a `[[function_constant]]`-guarded
+      variant steps the branches the draw used. `is_function_constant_defined` answers from them.
+- [ ] Function constants on an entry point's *arguments* (`[[function_constant(isEnabled)]]` on a
+      parameter), which decide whether the argument exists at all: the debugger binds it regardless.
 - [ ] The shader debugger on a Unity player's Metal shaders, which are generated MSL rather than
       hand-written: the parser's coverage is what to watch (`app/test/vectors/msl/`).
 

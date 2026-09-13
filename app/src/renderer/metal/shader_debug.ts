@@ -12,7 +12,7 @@
 //     location number, because that is how MSL pairs one stage's `[[stage_in]]` with the other's
 //     return type.
 import { MslProgram } from "../msl/program.js";
-import { MslInvocation, type MslBindings, type MslInputs } from "../msl/interpreter.js";
+import { MslInvocation, type MslBindings, type MslFunctionConstants, type MslInputs } from "../msl/interpreter.js";
 import { attributeNamed, type FunctionIr } from "../msl/ir.js";
 import type { Attribute } from "../msl/types.js";
 import { PixelQuad, type DerivativeSource } from "../debug/quad.js";
@@ -45,6 +45,8 @@ export interface MetalStage {
   source: StageSource;
   program: MslProgram;
   entry: FunctionIr;
+  /** What the application specialized the function with, from the capture. */
+  constants: MslFunctionConstants;
 }
 
 /** Whether a command's pipeline is a Metal one, and so debugged through here. */
@@ -85,7 +87,35 @@ export async function metalStage(ctx: DebugContext, state: DrawState, stage: Sta
   const source: StageSource = {
     stage, stageFlag: stage, entryPoint: entry.name, object: library, blobIndex, module: library,
   };
-  return { source, program, entry };
+  return { source, program, entry, constants: functionConstants(fn) };
+}
+
+/**
+ * The `[[function_constant(n)]]` values a tracked MTLFunction was built with, which the capture
+ * library recorded by watching the setters of the `MTLFunctionConstantValues` the application
+ * filled in (metal/src/function_constants.h). A function created without any has none, and the
+ * invocation says so.
+ */
+export function functionConstants(fn: VulkanObject | null): MslFunctionConstants {
+  const byIndex = new Map<number, Value>();
+  const byName = new Map<string, Value>();
+  const list = fn?.args?.constantValues;
+  if (!Array.isArray(list)) return { byIndex, byName };
+  for (const entry of list) {
+    if (!isObject(entry)) continue;
+    // Written decoded by the capture library: a number, a boolean, or an array of them.
+    const value = entry.value;
+    if (value === undefined || value === null) continue;
+    const decoded = (Array.isArray(value) ? value.map(scalarOf) : scalarOf(value)) as Value;
+    if (entry.index !== undefined) byIndex.set(num(entry.index), decoded);
+    const name = str(entry.name);
+    if (name) byName.set(name, decoded);
+  }
+  return { byIndex, byName };
+}
+
+function scalarOf(v: unknown): number | boolean {
+  return typeof v === "boolean" ? v : Number(v) || 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -190,7 +220,7 @@ function topologyOf(cmd: CaptureCommand): string {
  * time, and a Metal draw's topology is an argument of the draw rather than pipeline state.
  */
 export async function interpretedMeshOutput(ctx: DebugContext, cmd: CaptureCommand, state: DrawState): Promise<MeshOutput> {
-  const { program, entry } = await metalStage(ctx, state, "vertex");
+  const { program, entry, constants } = await metalStage(ctx, state, "vertex");
   const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? new Map());
   const bindings = metalBindings(ctx, state, "vertex");
   const a = cmd.args ?? {};
@@ -242,7 +272,7 @@ export async function interpretedMeshOutput(ctx: DebugContext, cmd: CaptureComma
         attributes,
         varyings: new Map(),
       };
-      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs });
+      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants });
       invocation.run();
       for (const w of invocation.warnings) warnings.add(w);
       const written = invocation.outputs();
@@ -340,7 +370,7 @@ export function metalRasterState(ctx: DebugContext, cmd: CaptureCommand, state: 
 /** A Metal draw or dispatch prepared for the debugger. */
 export async function prepareMetalSession(ctx: DebugContext, target: DebugTarget, state: DrawState, cmd: CaptureCommand): Promise<DebugSession> {
   const stage: Stage = target.stage;
-  const { source, program, entry } = await metalStage(ctx, state, stage);
+  const { source, program, entry, constants } = await metalStage(ctx, state, stage);
   const bindings = metalBindings(ctx, state, stage);
   const notes: string[] = [];
   if (program.diagnostics.length) {
@@ -365,7 +395,7 @@ export async function prepareMetalSession(ctx: DebugContext, target: DebugTarget
       target, program, stage: source, bindings, notes,
       description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with threadgroups of ${localSize.join(" x ")}`,
       limits: { groups, localSize },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs }),
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs, constants }),
     };
   }
 
@@ -395,7 +425,7 @@ export async function prepareMetalSession(ctx: DebugContext, target: DebugTarget
       target, program, stage: source, bindings, notes,
       description: `vertex ${order} of the draw (vertex_id ${vertexId}), instance ${instance}`,
       limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs }),
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants }),
     };
   }
 
@@ -416,7 +446,7 @@ export async function prepareMetalSession(ctx: DebugContext, target: DebugTarget
     description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing), whose vertices the interpreter ran the vertex shader for`,
     limits: { width: raster.viewport ? Math.abs(raster.viewport.width) : undefined, height: raster.viewport ? Math.abs(raster.viewport.height) : undefined },
     start: () => new PixelQuad((dx, dy, derivatives: DerivativeSource) => new MslInvocation(program, {
-      entryPoint: entry.name, stage: "fragment", bindings, derivatives,
+      entryPoint: entry.name, stage: "fragment", bindings, derivatives, constants,
       inputs: fragmentInputs(hit, x0 + dx, y0 + dy, interpolationOf),
     }), lane),
   };

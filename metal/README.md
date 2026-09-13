@@ -419,6 +419,37 @@ A library the application loaded as a precompiled `metallib` carries bytes rathe
 nothing here disassembles AIR: the debugger refuses such a shader with that reason, which is the
 honest answer.
 
+### Function constants
+
+An engine does not ship one shader per variant; it ships one library of `[[function_constant(n)]]`
+branches and specializes it at `newFunctionWithName:constantValues:`. Stepping such a shader
+without the values takes the wrong branches — usually the ones that read no textures — so the
+values have to be in the capture.
+
+Nothing can read them back. `MTLFunctionConstantValues` is write-only: `setConstantValue:type:…`
+and no getter, and `MTLFunction` does not say what it was built with either. So the setters are
+hooked and what they carry is kept in a side table keyed by the object
+(`function_constants.mm`), and `FunctionArgs` attaches the values to the tracked `MTLFunction` as
+`constantValues`.
+
+Two details were not obvious:
+
+* **`MTLFunctionConstantValues` is a class cluster.** `[[MTLFunctionConstantValues alloc] init]`
+  returns an `MTLFunctionConstantValuesInternal`, so hooking the public class hooks a class no
+  object is ever of — the setters simply never fire, and the capture records nothing while looking
+  like it worked. Its `alloc` is hooked instead and the class of what that returns is hooked from
+  the object, which is the same run-time discovery every private Metal class here goes through. No
+  private class is named in the source.
+* **The entry is dropped at `dealloc`.** These objects are made and released constantly, and a
+  freed one's values answering for the next object at the same address is the pointer-reuse bug the
+  tracker's own dealloc hook exists to prevent.
+
+The values are written decoded (`{"index": 0, "type": "int", "value": 1}`) rather than as bytes,
+because a function constant can only be a scalar or a short vector: there is no layout to get
+wrong. The debugger warns when a constant an entry point *reads* has no recorded value — not for
+every constant the library declares, since one library's constants are visible to all of its entry
+points and each uses a few.
+
 ## Frame timing and capture options
 
 `frame_stats.mm` is the Vulkan layer's frame report: at every frame boundary the interval since
@@ -806,9 +837,10 @@ Limits:
 ## Not done
 
 Stencil attachments are not read back (colour, depth and sampled textures are), and only the pixel
-formats in `PixelFormatDetails` are supported. A shader's function constants
-(`newFunctionWithName:constantValues:`) are not recorded, so the debugger runs such a shader with
-their defaults; tessellation, object, mesh and tile stages are not debugged. What an argument buffer points at is resolved one level
+formats in `PixelFormatDetails` are supported. Tessellation, object, mesh and tile stages are not
+debugged, and a function constant that selects whether an entry point's *argument* exists
+(`[[function_constant(isEnabled)]]` on a parameter) is not honoured — the argument is bound
+regardless, which reads a resource the specialized function does not have. What an argument buffer points at is resolved one level
 deep: the buffers it names are not themselves read back. Resource state and acceleration structure encoders are
 recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary

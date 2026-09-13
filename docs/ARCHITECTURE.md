@@ -382,7 +382,9 @@ shaders arrive as the source the application compiled rather than as an IR:
   MSL's arithmetic conversions once so the interpreter is component-wise. There is no SSA and there
   are no basic blocks: a debugger needs to stop anywhere, not to be optimized.
 - `interpreter.ts` runs that list with a program counter and explicit frames, the same shape as the
-  SPIR-V one; `stdlib.ts` is the `metal::` library, `program.ts` its `DebugProgram`.
+  SPIR-V one; `stdlib.ts` is the `metal::` library, `program.ts` its `DebugProgram`. An invocation
+  is specialized with the function constants the draw's `MTLFunction` was built with, so a library
+  of `[[function_constant]]`-guarded variants steps the one that ran.
 
 `renderer/shader_debug_setup.ts` builds a session from a capture and holds the rasterizer both APIs
 share; `renderer/metal/shader_debug.ts` holds the Metal half. A vertex's inputs are decoded by
