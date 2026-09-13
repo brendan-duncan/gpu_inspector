@@ -156,7 +156,7 @@ test("initialize answers the client's protocol version, and every tool is listed
   assert.equal(await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }), null, "notifications get no reply");
   const list = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const names = list.result.tools.map((t) => t.name);
-  for (const name of ["open_capture", "get_capture_summary", "get_bottlenecks", "get_command", "read_texture", "read_vertices", "get_shader", "compare_captures"]) {
+  for (const name of ["open_capture", "get_capture_summary", "get_bottlenecks", "get_command", "read_texture", "read_vertices", "get_mesh_output", "get_shader", "compare_captures"]) {
     assert.ok(names.includes(name), `${name} is listed`);
   }
   assert.ok(list.result.tools.every((t) => t.inputSchema.type === "object"));

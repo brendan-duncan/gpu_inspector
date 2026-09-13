@@ -116,6 +116,23 @@ Vulkan only: the capture is replayed on this machine's GPU with the draw drawn o
 [Capture replay](REPLAY.md#draw-call-overlays)). As with overdraw, a fragment the draw's own shader
 discards still shows as covered.
 
+## Mesh view
+
+A draw's mesh, as RenderDoc's Mesh Viewer shows it: press **View Mesh** in a draw's details. The tab
+has a turnable wireframe over a table of the draw's vertices; clicking a row marks the vertex. The
+draw list steps through the pass's draws and keeps the view, so their meshes line up.
+
+- **VS In** — the vertices the draw read, decoded from the captured vertex and index buffers, with
+  the attributes named from the vertex shader. The preview draws the attribute that looks like a
+  position.
+- **VS Out** — what the vertex shader wrote: `gl_Position` and every output, drawn in normalized
+  device coordinates inside the outline of the view volume. The status line counts what keeps a
+  mesh from being seen: primitives outside the view volume, vertices behind the eye, triangles with
+  no area and NaN positions. Vulkan only: the capture is replayed with the vertex shader writing
+  its outputs to a buffer (see [Capture replay](REPLAY.md#mesh-output)).
+
+`get_mesh_output` gives Claude the same.
+
 ## Pixel history
 
 Open a render target in a tab of its own and click a pixel. The **Pixel History** pane beside it

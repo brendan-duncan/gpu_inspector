@@ -18,6 +18,9 @@
   image.
 - Draw-call overlays for Vulkan captures: **Highlight Draw**, **Depth Test** and **Wireframe** in
   the render target tab, for any draw of the pass (`vkinsp_replay --overlay`).
+- Mesh view: **View Mesh** shows a draw's vertices as a wireframe and a table, before its vertex
+  shader (VS In) and after it (VS Out, replayed with transform feedback: `vkinsp_replay --mesh`),
+  with what keeps the mesh out of view. `get_mesh_output` in the MCP server.
 - Per-draw timing and counters for Vulkan captures (`vkinsp_replay --draws`): **Measure draws** in
   the Shader Flame Graph replays the frame with a timestamp pair and a pipeline statistics query
   around every draw and dispatch. A pass's measured time is then split between its draws by what
@@ -33,6 +36,9 @@
   overdraw, fragments per primitive and the rest of the GPU Bottlenecks report.
 - `vkinsp_replay --draws` measured nothing for a frame whose draws are recorded into secondary
   command buffers, which is how a Unity player records every draw: they are measured there too.
+- `vkinsp_replay --draws` hung on a multiview frame (an XR application's): each query in a multiview
+  pass takes one index per view, and the draws' queries overlapped. They are spaced by the view
+  count now, and summed over the views.
 - Captures of applications that recreate their swapchain (every Unity player does, on its first
   resize) lost the frame's final image. The driver hands the new swapchain its predecessor's image
   handles, and destroying the old swapchain took those images, and the views over them, out of the

@@ -339,10 +339,20 @@ needed. Clicking a pixel follows it through the frame in the pane beside it
 Metal capture the one the capture was taken with, with a button to capture the next frame
 following another. One such tab per capture, retargeted as other render targets are opened.
 
+### The capture's mesh tab
+
+`renderer/mesh_view.ts` is RenderDoc's Mesh Viewer for one draw, opened from **View Mesh** in its
+details. VS In decodes the captured vertex and index buffers through the pipeline's vertex layout
+(`renderer/mesh_input.ts`, over `draw_state.ts`); VS Out parses the replay's transform feedback
+records (`renderer/mesh_output.ts`), which also counts what keeps geometry from being seen. The
+preview (`renderer/mesh_preview.ts`) is a WebGL2 wireframe with an orbit camera; VS Out is drawn in
+normalized device coordinates with y and z negated so it faces the viewer the way the render target
+does. A pass of up to 16 draws has all its draws captured in one replay. One such tab per capture.
+
 ### replay/ — capture replay
 
 `vkinsp_replay` re-executes a `.gpucap` on this machine's GPU without the application, and is
-the base for overdraw and pixel history. Its pieces:
+the base for overdraw, draw overlays, mesh output and pixel history. Its pieces:
 - decoders for the layer's JSON, generated from vk.xml (`tools/gen_replay.py`,
   `tools/vkgen/deserialize.py`), the inverse of the layer's serializers
 - a Vulkan loader opened at run time
@@ -350,8 +360,9 @@ the base for overdraw and pixel history. Its pieces:
 - command replay in submission order
 - per-pass read-backs compared with the capture's own
 - analyses that issue a pass again after the replay has executed it, with edited copies of its
-  pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`), draw-call overlays (`overlay.cpp`)
-  and pixel history (`history.cpp`)
+  pipelines (`pipeline_copy.cpp`): overdraw (`overdraw.cpp`), draw-call overlays (`overlay.cpp`),
+  mesh output through transform feedback (`mesh.cpp`, with the vertex shader edited by
+  `xfb_patch.cpp`) and pixel history (`history.cpp`)
 
 It also measures a frame's draws one at a time (`draw_stats.cpp`, `--draws`): each is issued
 between two timestamps and inside a pipeline statistics query, which is where the Shader Flame
@@ -951,7 +962,8 @@ replay). `tools/ui_tests.py` builds its cases on these flags: the triangle appli
 (plain, `--msaa`, `--offscreen`, `--bad-scissor` with the validation layer, `--hazard` with sync
 validation, stacks), the reports (render graph, bottlenecks, and the render target tab measuring
 overdraw, following a clicked pixel, and drawing `--occluded`'s hidden draw with the depth test
-overlay via `--debug-view=overlay:depth:last`), and saved captures with expected findings, each a UI run
+overlay via `--debug-view=overlay:depth:last`; the mesh tab's VS In and VS Out via
+`--debug-view=mesh:in` and `mesh:out`), and saved captures with expected findings, each a UI run
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 

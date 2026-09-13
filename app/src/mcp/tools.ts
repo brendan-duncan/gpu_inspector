@@ -11,6 +11,7 @@ import {
 import { NO_REPLAY_TOOL, findReplayTool, runOverdrawReplay, runReplay } from "../main/replay.js";
 import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel, type PixelHistory } from "../renderer/pixel_history.js";
 import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile } from "../renderer/overdraw.js";
+import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -552,6 +553,64 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           replayProblems: h.problems.length ? { count: h.problems.length, first: h.problems.slice(0, 10) } : undefined,
           method: "Each draw is issued again under occlusion queries with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against what the pass held before the draw, with depth and stencil writes off. Counts are samples: two overlapping triangles of one draw that both pass count twice.",
         }));
+      },
+    },
+    {
+      name: "get_mesh_output",
+      description: "What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for \"why can I not see this " +
+        "mesh\": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback " +
+        "(seconds). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices " +
+        "are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area " +
+        "on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the " +
+        "draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the " +
+        "draw read (VS In).",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw command's index." },
+        first: { type: "integer", minimum: 0, description: "The first vertex to list (default 0)." },
+        count: { type: "integer", minimum: 0, maximum: 256, description: "Vertices to list (default 8)." },
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        const index = requireInt(args, "command");
+        const cmd = c.data.commands[index];
+        if (!cmd || !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_mesh_output takes a draw command (list_commands with kind draw).`);
+        if (c.data.api === "metal") {
+          return jsonResult({ capture: c.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+        const run = await runReplay(tool, c.path, { kind: "mesh", commands: [index] });
+        if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not capture the draw's vertices: ${run.error ?? "no data"}` });
+        const file = parseMeshFile(run.data);
+        const m = file.draws.find((d) => d.command === index);
+        if (!m || !m.measured) return jsonResult({ capture: c.id, command: index, method: cmd.method, note: `Not captured: ${m?.note ?? "the replay did not reach the draw"}` });
+        const stats = clipStats(m);
+        const first = intArg(args, "first", 0, 0);
+        const count = intArg(args, "count", 8, 0, 256);
+        const values: Record<string, unknown>[] = [];
+        for (let v = first; v < Math.min(m.vertices, first + count); v++) {
+          const row: Record<string, unknown> = { vertex: v };
+          for (const o of m.outputs) row[o.name] = outputValues(m, o, v).map(tidy);
+          values.push(row);
+        }
+        return jsonResult({
+          capture: c.id, command: index, method: cmd.method, topology: m.topology, summary: meshSummary(m),
+          vertices: m.vertices, bytesPerVertex: m.stride, truncated: m.truncated || undefined,
+          outputs: m.outputs.map((o) => ({ name: o.name, builtin: o.builtin, location: o.location, type: `${o.components} ${o.base}`, offset: o.offset })),
+          clipSpace: stats ? {
+            primitives: stats.primitives, behindEye: stats.behind, outsideViewVolume: stats.outside, noArea: stats.degenerate || undefined, nanOrInfinite: stats.invalid || undefined,
+            ndcInFront: stats.ndc ? { min: stats.ndc.min.map((x) => round(x)), max: stats.ndc.max.map((x) => round(x)) } : undefined,
+          } : undefined,
+          values,
+          note: m.note,
+          replayedOn: file.device || undefined,
+          replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : undefined,
+          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex " +
+            "shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation " +
+            "or geometry stages are not captured.",
+        });
       },
     },
     {

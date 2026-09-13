@@ -4,13 +4,14 @@
 
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the basis for the analyses that have to run a frame again with something
-changed: the overdraw heatmap, pixel history, draw-call overlays, per-draw timing, and later shader
-debugging (TODO.md, "Replay-based features").
+changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output, per-draw timing, and
+later shader debugging (TODO.md, "Replay-based features").
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
               [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]
-              [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]] [--trace]
+              [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]
+              [--mesh <command> ... [--mesh-data <file>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 ```
 
@@ -43,6 +44,11 @@ vkinsp_replay <capture.gpucap> --check
   the highlight, depth test and wireframe overlays (see [Draw-call overlays](#draw-call-overlays)).
 - **`--overlay-data <file>`:** with `--overlay`, writes each draw's mask in `--overdraw-data`'s
   layout (`OVERLAY 1`, one byte per pixel). GPU Inspector's render target tab runs the tool this way.
+- **`--mesh <command>`:** captures what one draw's vertex shader wrote (repeat it for several), for
+  the mesh view's VS Out (see [Mesh output](#mesh-output)).
+- **`--mesh-data <file>`:** with `--mesh`, writes each draw's vertex records in `--overdraw-data`'s
+  layout (`MESH 1`). GPU Inspector's mesh tab and the MCP server's `get_mesh_output` run the tool
+  this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
   be rebuilt.
 
@@ -178,6 +184,48 @@ Limits:
   passed. On a Unity frame the text quads show 3,480 fragments passing, while the draw's occlusion
   query (`--draws`) counts 2,089 samples: the rest were alpha-discarded.
 - A pass the replay leaves out, and a draw whose pipeline cannot be copied, have no overlay.
+
+## Mesh output
+
+`--mesh <command>` captures what a draw's vertex shader wrote, RenderDoc's VS Out. RenderDoc turns
+the vertex shader into a compute shader (`vk_postvs.cpp`); `mesh.cpp` uses transform feedback
+(`VK_EXT_transform_feedback`), which the replay enables where the GPU has it. The edit to the shader
+is much smaller:
+
+- **The shader** (`xfb_patch.cpp`) gets the `TransformFeedback` capability, the `Xfb` execution
+  mode on its entry point, and `XfbBuffer`, `XfbStride` and `Offset` on each output it can capture:
+  `gl_Position`, and every located output of 32-bit floats or integers (scalars, vectors, matrices,
+  arrays, and the members of an output block). Point size, clip distances and 64-bit outputs are
+  left out.
+- **The draw** is issued after the replay has executed its pass, like the overlays: the pass's
+  state again, then the draw alone with a pipeline copy that uses the edited shader, has no fragment
+  stage and discards rasterization.
+- **The buffer** is sized from the draw's arguments (three vertices per primitive for strips and
+  fans, a million vertices for an indirect draw, 256 MB at most), and the counter buffer says how
+  much was written. A draw that fills it is marked truncated.
+
+The vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as
+lists, every instance in turn. The replay prints the position's clip-space range:
+
+```
+vkinsp_replay frame.gpucap --mesh 17
+mesh outputs: 1
+  [17] vkCmdDrawIndexed (command buffer 7, pass 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST): 36 vertices, 36 bytes each
+    gl_Position: offset 0, 4 floats; x [-0.870851, 0.870851], y [-1.45182, 1.45182], z [1.60923, 3.23925], w [1.69314, 3.30686], 0 with w <= 0
+    fragColor: offset 16, 3 floats
+    fragUV: offset 28, 2 floats
+```
+
+Checked with the validation layer on the triangle, a Unity frame (outputs of HLSLcc shaders, a sky
+sphere with 2,664 of its 5,040 vertices behind the eye, a fullscreen triangle spanning -1 to 3) and a
+multiview XR frame: no messages from the edited shaders or the feedback.
+
+Limits:
+- Pipelines with tessellation or geometry stages are not captured (feedback would be the last
+  stage's outputs).
+- In a multiview pass the draw runs in a single-view pass, so a shader that reads `gl_ViewIndex`
+  gives the first view's vertices.
+- A GPU without `VK_EXT_transform_feedback` (most mobile GPUs, MoltenVK) cannot capture VS Out.
 
 ## Pixel history
 

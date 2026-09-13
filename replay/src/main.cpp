@@ -14,6 +14,8 @@
 //   vkinsp_replay <capture.gpucap> --check
 //       Decodes every object's creation arguments and every command's arguments with the
 //       generated decoders, and reports what the capture lacks for a replay.
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -37,6 +39,7 @@ void PrintUsage() {
     std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
+                         "                     [--mesh <command> ... [--mesh-data <file>]]\n"
                          "                     [--trace] | --check\n");
 }
 
@@ -340,6 +343,85 @@ void PrintOverlays(const ReplayReport& report) {
     }
 }
 
+/**
+ * --mesh-data: what each draw asked for had its vertex shader write, for GPU Inspector's mesh view
+ * (parseMeshFile in app/src/renderer/mesh_output.ts). The layout is --overdraw-data's, with each
+ * draw's vertex records as the payload.
+ */
+bool WriteMeshData(const ReplayReport& report, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-mesh\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"draws\":[";
+    uint64_t offset = 0;
+    for (size_t i = 0; i < report.meshes.size(); ++i) {
+        const MeshResult& m = report.meshes[i];
+        const uint64_t size = m.data.size();
+        std::string outputs;
+        for (size_t k = 0; k < m.outputs.size(); ++k) {
+            const XfbOutput& o = m.outputs[k];
+            outputs += std::string(k ? "," : "") + "{\"name\":" + JsonString(o.name) + ",\"offset\":" + std::to_string(o.offset) +
+                       ",\"components\":" + std::to_string(o.components) + ",\"base\":" + JsonString(o.base) +
+                       (o.builtin.empty() ? "" : ",\"builtin\":" + JsonString(o.builtin)) +
+                       (o.location >= 0 ? ",\"location\":" + std::to_string(o.location) : "") + "}";
+        }
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(m.command) + ",\"method\":" + JsonString(m.method) +
+                ",\"frame\":" + std::to_string(m.frame) + ",\"commandBuffer\":" + std::to_string(m.commandBuffer) +
+                ",\"passIndex\":" + std::to_string(m.passIndex) + ",\"measured\":" + (m.stride ? "true" : "false") +
+                ",\"topology\":" + JsonString(m.topology) + ",\"stride\":" + std::to_string(m.stride) +
+                ",\"vertices\":" + std::to_string(m.vertices) + ",\"truncated\":" + (m.truncated ? "true" : "false") +
+                ",\"outputs\":[" + outputs + "]";
+        if (!m.note.empty()) json += ",\"note\":" + JsonString(m.note);
+        if (size) json += ",\"payload\":[" + std::to_string(offset) + "," + std::to_string(size) + "]";
+        json += "}";
+        offset += size;
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const char magic[] = "MESH 1\n";
+    out.write(magic, sizeof(magic) - 1);
+    const uint32_t length = (uint32_t)json.size();
+    const uint8_t le[4] = {(uint8_t)length, (uint8_t)(length >> 8), (uint8_t)(length >> 16), (uint8_t)(length >> 24)};
+    out.write((const char*)le, 4);
+    out.write(json.data(), (std::streamsize)json.size());
+    for (const MeshResult& m : report.meshes) out.write((const char*)m.data.data(), (std::streamsize)m.data.size());
+    return (bool)out;
+}
+
+void PrintMeshes(const ReplayReport& report) {
+    std::printf("mesh outputs: %zu\n", report.meshes.size());
+    for (const MeshResult& m : report.meshes) {
+        std::printf("  [%u] %s", m.command, m.method.empty() ? "?" : m.method.c_str());
+        if (!m.stride) {
+            std::printf(": not captured: %s\n", m.note.c_str());
+            continue;
+        }
+        std::printf(" (command buffer %llu, pass %u, %s): %u vertices, %u bytes each%s%s%s\n", (unsigned long long)m.commandBuffer, m.passIndex,
+                    m.topology.empty() ? "topology unknown" : m.topology.c_str(), m.vertices, m.stride, m.truncated ? ", truncated" : "",
+                    m.note.empty() ? "" : "; ", m.note.c_str());
+        for (const XfbOutput& o : m.outputs) {
+            std::printf("    %s: offset %u, %u %s%s", o.name.c_str(), o.offset, o.components, o.base.c_str(), o.components == 1 ? "" : "s");
+            // The position's range in clip space, and the vertices behind the eye (w <= 0).
+            if (o.builtin == "Position" && o.components == 4 && o.base == "float" && m.vertices) {
+                float lo[4] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX}, hi[4] = {-FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX};
+                uint32_t behind = 0;
+                for (uint32_t v = 0; v < m.vertices; ++v) {
+                    float p[4];
+                    std::memcpy(p, m.data.data() + (size_t)v * m.stride + o.offset, sizeof(p));
+                    for (int k = 0; k < 4; ++k) {
+                        lo[k] = std::min(lo[k], p[k]);
+                        hi[k] = std::max(hi[k], p[k]);
+                    }
+                    if (p[3] <= 0) ++behind;
+                }
+                std::printf("; x [%g, %g], y [%g, %g], z [%g, %g], w [%g, %g], %u with w <= 0", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], lo[3], hi[3], behind);
+            }
+            std::printf("\n");
+        }
+    }
+}
+
 void PrintHistory(const PixelHistoryResult& h) {
     std::printf("pixel history: image %llu, pixel (%u, %u), mip %u, layer %u%s%s\n", (unsigned long long)h.image, h.x, h.y, h.mip, h.layer,
                 h.format.empty() ? "" : (", " + h.format).c_str(), h.depthFormat.empty() ? "" : (", depth " + h.depthFormat).c_str());
@@ -607,7 +689,8 @@ int Check(const CaptureFile& capture) {
 }
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
-           const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData) {
+           const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
+           const std::string& meshData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -676,6 +759,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", overlayData.c_str());
         }
     }
+    if (options.mesh.enabled) {
+        PrintMeshes(report);
+        if (!meshData.empty()) {
+            if (WriteMeshData(report, meshData)) std::printf("  wrote %s\n", meshData.c_str());
+            else std::printf("  could not write %s\n", meshData.c_str());
+        }
+    }
     if (report.history.requested) {
         PrintHistory(report.history);
         if (!pixelData.empty()) {
@@ -704,6 +794,7 @@ int main(int argc, char** argv) {
     std::string pixelData;
     std::string drawData;
     std::string overlayData;
+    std::string meshData;
     bool check = false;
     ReplayOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -729,6 +820,11 @@ int main(int argc, char** argv) {
             options.overlay.commands.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 10));
         }
         else if (!std::strcmp(argv[i], "--overlay-data") && i + 1 < argc) overlayData = argv[++i];
+        else if (!std::strcmp(argv[i], "--mesh") && i + 1 < argc) {
+            options.mesh.enabled = true;
+            options.mesh.commands.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 10));
+        }
+        else if (!std::strcmp(argv[i], "--mesh-data") && i + 1 < argc) meshData = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -761,9 +857,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
         return 2;
     }
+    if (!meshData.empty() && !options.mesh.enabled) {
+        std::fprintf(stderr, "vkinsp_replay: --mesh-data needs --mesh <command>\n");
+        return 2;
+    }
     if (!overlayData.empty() && !options.overlay.enabled) {
         std::fprintf(stderr, "vkinsp_replay: --overlay-data needs --overlay <command>\n");
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData);
+    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData);
 }
