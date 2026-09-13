@@ -26,6 +26,7 @@ const { MslProgram, MslInvocation, PixelQuad, DebugController, sourceKey } = awa
 const source = (name) => readFileSync(join(here, "vectors", "msl", name), "utf8");
 const basic = new MslProgram(source("basic.metal"), "basic.metal");
 const derivatives = new MslProgram(source("derivatives.metal"), "derivatives.metal");
+const constants = new MslProgram(source("constants.metal"), "constants.metal");
 
 /** Little-endian bytes written by a callback given a DataView. */
 function bytes(size, write) {
@@ -101,6 +102,7 @@ const near = (a, b, message) => assert.ok(Math.abs(a - b) < 1e-5, `${message}: $
 test("the vectors parse and lower without a diagnostic", () => {
   assert.deepEqual(basic.diagnostics, []);
   assert.deepEqual(derivatives.diagnostics, []);
+  assert.deepEqual(constants.diagnostics, []);
   assert.deepEqual(basic.entryPoints.map((f) => `${f.qualifier} ${f.name}`), [
     "kernel arithmetic", "kernel control", "kernel layout", "vertex transform", "fragment shade",
   ]);
@@ -272,3 +274,81 @@ function lineOfText(program, text) {
   assert.ok(at >= 0, `the vector has no line containing ${text}`);
   return at + 1;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Function constants: what the application specialized the shader with when it built the function.
+
+/** The `[[function_constant(n)]]` values an application set, as the Metal session gathers them. */
+function specialization({ byIndex = {}, byName = {} } = {}) {
+  return {
+    byIndex: new Map(Object.entries(byIndex).map(([k, v]) => [Number(k), v])),
+    byName: new Map(Object.entries(byName)),
+  };
+}
+
+function runSpecialized(constantValues) {
+  const uniforms = bytes(16, (v) => [0.25, 0.5, 0.75, 1].forEach((x, i) => v.setFloat32(i * 4, x, true)));
+  const invocation = new MslInvocation(constants, {
+    entryPoint: "specialized",
+    bindings: bindings({ buffers: { 0: new Uint8Array(5 * 4), 1: uniforms } }),
+    inputs: inputs({ builtins: { thread_position_in_grid: 4 } }),
+    constants: constantValues,
+  });
+  assert.equal(invocation.run(), "returned", invocation.error);
+  const view = wrote(invocation, 0);
+  return {
+    colour: [0, 1, 2].map((i) => +view.getFloat32(i * 4, true).toFixed(4)),
+    modeDefined: view.getFloat32(12, true),
+    warnings: [...invocation.warnings],
+  };
+}
+
+test("the shader is specialized with the constants the function was built with", () => {
+  // kEnable mixes towards white by kAmount, then kMode 1 swizzles to bgr.
+  const r = runSpecialized(specialization({ byIndex: { 0: 1, 1: 0.5, 2: true } }));
+  const mixed = [0.25, 0.5, 0.75].map((c) => +(c + (1 - c) * 0.5).toFixed(4));
+  assert.deepEqual(r.colour, [mixed[2], mixed[1], mixed[0]]);
+  assert.equal(r.modeDefined, 1, "is_function_constant_defined is true for a constant that was set");
+});
+
+test("a different specialization of the same shader takes different branches", () => {
+  // kMode 2 inverts, and kEnable false skips the mix entirely.
+  const r = runSpecialized(specialization({ byIndex: { 0: 2, 1: 0.5, 2: false } }));
+  assert.deepEqual(r.colour, [0.75, 0.5, 0.25]);
+});
+
+test("a constant set by name reaches the same global", () => {
+  const r = runSpecialized(specialization({ byIndex: { 0: 0, 1: 0, 2: false }, byName: { kBias: [0.1, 0.2, 0.3] } }));
+  assert.deepEqual(r.colour, [0.35, 0.7, 1.05],
+    "is_function_constant_defined(kBias) was true, so the bias was added");
+});
+
+test("a constant the capture has no value for reads as zero, and says so", () => {
+  const r = runSpecialized(specialization());
+  // Nothing set: kEnable is false, kMode is 0, and the guarded bias is not added.
+  assert.deepEqual(r.colour, [0.25, 0.5, 0.75]);
+  assert.equal(r.modeDefined, 0, "is_function_constant_defined is false for a constant that was not set");
+  assert.equal(r.warnings.length, 1, `one warning naming what is missing: ${r.warnings}`);
+  assert.match(r.warnings[0], /kMode \[\[function_constant\(0\)\]\]/);
+  assert.match(r.warnings[0], /specialized/);
+});
+
+test("a constant another entry point reads is not this one's to be missing", () => {
+  // `specialized` reads kMode, kAmount and kEnable; a shader whose entry point reads none of them
+  // is not specialized at all, and must not be reported as though it were.
+  const quiet = new MslProgram(`
+    #include <metal_stdlib>
+    using namespace metal;
+    constant int kUnused [[function_constant(0)]];
+    kernel void plain(device float *out [[buffer(0)]], uint i [[thread_position_in_grid]]) {
+      out[0] = float(i);
+    }
+  `, "quiet.metal");
+  const invocation = new MslInvocation(quiet, {
+    entryPoint: "plain",
+    bindings: bindings({ buffers: { 0: new Uint8Array(8) } }),
+    inputs: inputs({ builtins: { thread_position_in_grid: 2 } }),
+  });
+  assert.equal(invocation.run(), "returned", invocation.error);
+  assert.deepEqual([...invocation.warnings], [], "an entry point that reads no constant warns about none");
+});

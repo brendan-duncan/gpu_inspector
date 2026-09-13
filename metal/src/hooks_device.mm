@@ -1,5 +1,6 @@
 // Hooks on the device and the objects it creates: CAMetalLayer, drawables, MTLDevice, MTLHeap,
 // MTLLibrary, MTLTexture and MTLBuffer. See hooks_common.h for the shape every hook has.
+#include "function_constants.h"
 #include "hooks.h"
 #include "hooks_common.h"
 #include "frame_stats.h"
@@ -871,7 +872,7 @@ id L_newFunctionWithNameConstants(id self, SEL _cmd, NSString *name,
         self, _cmd, name, values, error);
     if (reentry.outermost()) {
         Track(function, "MTLFunction", "newFunctionWithName:constantValues:error:", self,
-              FunctionArgs((id<MTLFunction>)function));
+              FunctionArgs((id<MTLFunction>)function, values));
     }
     return function;
 }
@@ -883,7 +884,7 @@ void L_newFunctionWithNameConstantsAsync(id self, SEL _cmd, NSString *name,
     if (reentry.outermost() && handler != nil) {
         void (^wrapped)(id<MTLFunction>, NSError *) = ^(id<MTLFunction> function, NSError *error) {
             Track(function, "MTLFunction", "newFunctionWithName:constantValues:completionHandler:",
-                  self, FunctionArgs(function));
+                  self, FunctionArgs(function, values));
             handler(function, error);
         };
         ORIG(void (*)(id, SEL, NSString *, MTLFunctionConstantValues *, id))(
@@ -1082,6 +1083,10 @@ void HookHeapClass(id heap) {
 
 void HookLibraryClass(id library) {
     if (library == nil) return;
+    // MTLFunctionConstantValues is public and has no getters, so its setters are watched rather
+    // than the object read (function_constants.h). Hooked here because a library is where a
+    // specialized function comes from, and no application can have made one yet.
+    HookFunctionConstantValues();
     Class cls = object_getClass(library);
     if (!FirstSighting(cls)) return;
     Log("hooking library class %s", class_getName(cls));

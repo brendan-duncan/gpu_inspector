@@ -1,5 +1,6 @@
 // The descriptors: what an AddObject's "args" and a pass's arguments look like. See hooks_common.h.
 #include "hooks_common.h"
+#include "function_constants.h"
 #include "reflection.h"
 
 #import <objc/message.h>
@@ -403,10 +404,15 @@ std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sou
     return a.str();
 }
 
-std::string FunctionArgs(id<MTLFunction> function) {
+std::string FunctionArgs(id<MTLFunction> function, id constantValues) {
     Args a;
     if (function == nil) return a.str();
     a.s("name", function.name);
+    // What the function was specialized with, from the setters that filled the values object
+    // (function_constants.h): Metal itself will not say, and the shader debugger needs it to step
+    // the variant the draw used rather than the one the constants default to.
+    const std::string constants = FunctionConstantsJson(constantValues);
+    if (!constants.empty()) a.raw("constantValues", constants);
     switch (function.functionType) {
         case MTLFunctionTypeVertex: a.c("functionType", "vertex"); break;
         case MTLFunctionTypeFragment: a.c("functionType", "fragment"); break;

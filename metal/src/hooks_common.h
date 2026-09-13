@@ -222,7 +222,11 @@ std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *descript
  */
 constexpr MTLPipelineOption kReflectionOptions = (MTLPipelineOption)((1 << 0) | (1 << 1));
 std::string LibraryArgs(id<MTLLibrary> library, const char *origin, uint64_t sourceLength);
-std::string FunctionArgs(id<MTLFunction> function);
+/**
+ * A function's tracked arguments. `constantValues` is the `MTLFunctionConstantValues` it was
+ * created with, or nil: what the application set on it rides along as `constantValues`.
+ */
+std::string FunctionArgs(id<MTLFunction> function, id constantValues = nil);
 std::string SamplerArgs(MTLSamplerDescriptor *descriptor, id sampler);
 std::string DepthStencilArgs(MTLDepthStencilDescriptor *descriptor);
 std::string HeapArgs(MTLHeapDescriptor *descriptor, id heap);

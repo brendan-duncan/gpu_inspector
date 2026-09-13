@@ -377,6 +377,28 @@ def metal_debug_compute(state, log):
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
 
 
+def metal_debug_constants(state, log):
+    d = debugger_tab(state)
+    outputs = d.get("outputs") or []
+    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    target = (d.get("targetPixel") or {}).get("value") or []
+    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    # The triangle pass's fragment_main is specialized: its tint branch is behind
+    # `[[function_constant(0)]]`, and the values are only knowable because the capture library
+    # watched the setters of the MTLFunctionConstantValues (metal/src/function_constants.h). Without
+    # them the branch is not taken and the colour is the untinted one, which the comparison catches
+    # — and the interpreter says so in its warnings, which is the clearer diagnosis of the two.
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
+        expect(diff is not None and diff < 0.02,
+               f"the output {colour} is not the render target's {target}: the function constants the "
+               f"fragment was specialized with may not have reached the interpreter")
+
+
 def metal_debug_vertex(state, log):
     d = debugger_tab(state)
     outputs = d.get("outputs") or []
@@ -415,6 +437,9 @@ def metal_cases(triangle):
              metal_debug_compute, delay_ms=16000),
         Case("metal-debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::end"],
              metal_debug_vertex, delay_ms=16000),
+        # The first draw's fragment is the specialized one, so this is the function constants case.
+        Case("metal-debug-constants", launch + ["--debug-capture", "--debug-view=debugger:pixel::end"],
+             metal_debug_constants, delay_ms=18000),
         # The last draw is the blit, which samples a texture: the one case that needs the sampled
         # read-back (metal/src/capture.mm, QueueTextureCapture) as well as the interpreter.
         Case("metal-debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel:last:end"],
