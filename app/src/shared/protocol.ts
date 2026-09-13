@@ -176,6 +176,7 @@ export interface CaptureChildCommand {
   descriptors?: CaptureDescriptorSets;
   bufferData?: number[];
   textureData?: number[];
+  imageData?: number[];
   /** Position in the secondary command buffer's recording. */
   slot?: number;
   stack?: string[];
@@ -200,8 +201,16 @@ export interface CaptureCommand {
   secondary?: number;
   /** vkCmdBindDescriptorSets / vkCmdPushDescriptorSet: what the bound sets contained. */
   descriptors?: CaptureDescriptorSets;
-  /** vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / indirect draws: CaptureBuffers ids per bound buffer (0 = none). */
+  /**
+   * vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / indirect draws: CaptureBuffers ids per bound buffer (0 = none).
+   * vkCmdCopyBuffer / vkCmdCopyBufferToImage: the source range of each region, read whole, for a replay to write.
+   */
   bufferData?: number[];
+  /**
+   * Vulkan passes that load attachments, and copies, blits and transfers from images: the CaptureTextureFrames `capture`
+   * ids of what the images read held before the command (kind "initial"), for the parts nothing in the capture wrote first.
+   */
+  imageData?: number[];
   /**
    * Metal texture binds (`setFragmentTexture:atIndex:` and the rest): the CaptureTextureFrames
    * `capture` id of each bound texture's read-back contents, 0 where it was not read (the same
@@ -242,9 +251,13 @@ export interface CaptureTextureInfo {
   samples?: number;
   /** Dynamic rendering: this is the resolve target of attachment `attachment`. */
   resolve?: boolean;
-  /** "sampled": an image bound by a descriptor set (read back once per view); absent = a render pass attachment. */
-  kind?: "attachment" | "sampled";
-  /** Sampled images: the id descriptors reference in `data`, the view, and the view's first layer. */
+  /**
+   * "sampled": an image bound by a descriptor set (read back once per view). "initial": what an image held when the
+   * frame first read it (a pass loading it, a copy from it), before anything in the capture wrote it: one mip, for
+   * a replay to start from. Absent = a render pass attachment.
+   */
+  kind?: "attachment" | "sampled" | "initial";
+  /** Sampled images and initial contents: the id descriptors and the reading command's `imageData` reference, the view, and the first layer. */
   capture?: number;
   view?: number;
   baseLayer?: number;

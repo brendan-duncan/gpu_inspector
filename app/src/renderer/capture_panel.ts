@@ -15,7 +15,7 @@ import { TabWidget } from "./widget/tab_widget.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
-import { CaptureData, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
+import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
 import { fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
 import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, type LoadedCapture } from "./capture_format.js";
@@ -1041,7 +1041,7 @@ export class CaptureView implements CaptureHost {
       buffers = `, ${d.buffers.size} buffers${failed ? ` (${failed} failed)` : ""}${d.buffersLoading ? " loading..." : ""}`;
     }
     const [images, failedImages] = d.sampledImageCounts;
-    const targets = d.textures.length - images - failedImages;
+    const targets = d.textures.filter((t) => isRenderTarget(t.info)).length;
     const imageText = images || failedImages ? `, ${images} image${images === 1 ? "" : "s"}${failedImages ? ` (${failedImages} failed)` : ""}` : "";
     this._setStatus(`${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${targets} render targets${imageText}${buffers}`);
   }
@@ -1452,14 +1452,14 @@ export class CaptureView implements CaptureHost {
           // shown as the centre of a render target instead
         }
       }
-      const t = this.data.textures.find((x) => x.info.kind !== "sampled" && x.info.aspect === "color" && !x.info.error);
+      const t = this.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
       if (t) this.openTextureForPixel({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
     }
   }
 
   /** The captured render target an image belongs to, with the pass that rendered it. */
   private _targetOf(imageId: number, mip?: number): CaptureTarget | null {
-    const textures = this.data.textures.filter((t) => t.info.kind !== "sampled" && t.info.id === imageId);
+    const textures = this.data.textures.filter((t) => isRenderTarget(t.info) && t.info.id === imageId);
     const tex = textures.find((t) => mip === undefined || t.info.mip === mip) ?? textures[0];
     if (!tex) return null;
     return { key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex };
@@ -1879,7 +1879,7 @@ export class CaptureView implements CaptureHost {
       new Div(box, { text: tex.info.error, class: "text-muted font-sm" });
       return;
     }
-    if (tex.info.kind !== "sampled") {
+    if (isRenderTarget(tex.info)) {
       new Button(box, { label: "Open in Tab", class: "btn btn-sm",
         tooltip: "The render target in a tab of its own: zoom, the pass's overdraw over it, and the history of any pixel you click",
         callback: () => this.onOpenTexture.emit({ key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex }, {}) });
@@ -1907,7 +1907,7 @@ export class CaptureView implements CaptureHost {
       viewer = new Div(box, { class: "capture-texture-viewer" });
       new Button(viewer, { label: "Close viewer", class: "btn btn-sm", callback: toggle });
       // A render target's pixel can be followed through the frame: replayed (Vulkan), or the next frame captured following it (Metal).
-      const history = tex.info.kind !== "sampled"
+      const history = isRenderTarget(tex.info)
         ? { pixelHistory: (x: number, y: number, mip: number, layer: number) => this.openTextureForPixel({ image: tex.info.id, x, y, mip, layer }) }
         : {};
       new ImageView(viewer, this.window, image, { info: tex.info, data: tex.data }, history);

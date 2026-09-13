@@ -164,6 +164,7 @@ export function captureSummary(c: Capture): Record<string, unknown> {
   for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
   const [errors, warnings] = db.validationCounts;
   const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
+  const initial = d.textures.filter((t) => t.info.kind === "initial").length;
   const g = c.graph;
   const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null)
     .sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
@@ -174,7 +175,8 @@ export function captureSummary(c: Capture): Record<string, unknown> {
       commands: d.commands.length, draws, dispatches,
       renderPasses: passes.filter((p) => !p.compute).length, computePasses: passes.filter((p) => p.compute).length,
       objects: db.allObjects.size + db.destroyedObjects.size, pipelinesUsed: pipelineUses(d).size,
-      renderTargets: d.textures.length - sampled, sampledImages: sampled, bufferRanges: d.buffers.size,
+      renderTargets: d.textures.length - sampled - initial, sampledImages: sampled, frameStartImages: initial || undefined,
+      bufferRanges: d.buffers.size,
     },
     timing: frameTiming(c),
     slowestPasses: slowest.length ? slowest.map((x) => passBrief(c, x.i)) : undefined,

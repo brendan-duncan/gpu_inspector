@@ -393,11 +393,13 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
     {
       name: "list_textures",
       description: "List the images a capture read back: every render pass attachment at the end of its pass (kind attachment, " +
-        "with the pass number) and the images bound through descriptor sets (kind sampled), with format, size, mips and " +
-        "layers, and why a read-back failed. The texture numbers are what read_texture takes.",
+        "with the pass number), the images bound through descriptor sets (kind sampled), and what images held when the " +
+        "frame first read them before writing them (kind initial: a pass loading an attachment, a copy from an image; what a " +
+        "replay starts from), with format, size, mips and layers, and why a read-back failed. The texture numbers are what " +
+        "read_texture takes.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
-        kind: { type: "string", enum: ["all", "attachment", "sampled"], description: "Which read-backs (default all)." },
+        kind: { type: "string", enum: ["all", "attachment", "sampled", "initial"], description: "Which read-backs (default all)." },
         pass: { type: "integer", minimum: 0, description: "Only the attachments of this pass." },
         image: { type: "integer", minimum: 0, description: "Only read-backs of this image object id." },
         ...PAGE_PARAMS,
@@ -405,10 +407,10 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
       readOnly: true,
       handler: (args) => {
         const c = store.resolve(stringArg(args, "capture"));
-        const kind = enumArg(args, "kind", ["all", "attachment", "sampled"] as const, "all");
+        const kind = enumArg(args, "kind", ["all", "attachment", "sampled", "initial"] as const, "all");
         const pass = optionalInt(args, "pass");
         const image = optionalInt(args, "image");
-        const list = c.data.textures.filter((t) => (kind === "all" || (kind === "sampled") === (t.info.kind === "sampled"))
+        const list = c.data.textures.filter((t) => (kind === "all" || kind === (t.info.kind ?? "attachment"))
           && (image === undefined || t.info.id === image) && (pass === undefined || c.passOfTexture(t.info) === pass));
         const p = page(list, args, 100, 500);
         return jsonResult({ capture: c.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, textures: p.items.map((t) => textureBrief(c, t)) });

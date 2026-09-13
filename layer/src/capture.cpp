@@ -58,6 +58,7 @@ void CaptureManager::Start(DeviceData* dev) {
     _nextBufferId = 1;
     _imageCaptureByView.clear();
     _imageBytes = 0;
+    _imageStates.clear();
     _passTimings.clear();
     _queriesUsed.store(0, std::memory_order_relaxed);
     _statsUsed.store(0, std::memory_order_relaxed);
@@ -635,29 +636,41 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
 
     TextureCapture tc;
     tc.sampled = true;
-    tc.recorded = false;
-    tc.imageId = Tracker::Get().Resolve(HT_VkImage, (uint64_t)(uintptr_t)vi.image);
     tc.viewId = Tracker::Get().Resolve(HT_VkImageView, (uint64_t)(uintptr_t)view);
-    tc.format = img.format;
     tc.mip = vi.range.baseMipLevel;
     tc.baseLayer = vi.range.baseArrayLayer;
-    tc.width = std::max(1u, img.extent.width >> tc.mip);
-    tc.height = std::max(1u, img.extent.height >> tc.mip);
-    tc.depth = std::max(1u, img.extent.depth >> tc.mip);
     tc.layers = vi.range.layerCount == VK_REMAINING_ARRAY_LAYERS ? img.arrayLayers - vi.range.baseArrayLayer : vi.range.layerCount;
-    tc.layers = std::max(1u, tc.layers);
     VkImageAspectFlags aspects = FormatAspects(img.format);
     tc.aspect = aspects & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
               : aspects & VK_IMAGE_ASPECT_STENCIL_BIT ? VK_IMAGE_ASPECT_STENCIL_BIT
               : VK_IMAGE_ASPECT_COLOR_BIT;
+    if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
+        if (!LayoutTracker::Get().GetLayout(vi.image, layout)) layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    // Every mip of the view, back to back (each mip: its layers), so the viewer can show them.
+    const uint32_t mips = vi.range.levelCount == VK_REMAINING_MIP_LEVELS ? img.mipLevels - tc.mip : vi.range.levelCount;
+    const uint32_t id = QueueImageCopy(dev, rec, vi.image, img, tc, mips, layout);
+    // Every later binding of the same view in this capture refers to it, failed or pending.
+    std::lock_guard lock(_mutex);
+    _imageCaptureByView[(uint64_t)(uintptr_t)view] = id;
+    return id;
+}
 
-    // Registers the capture (failed or pending) under the view, so every later binding of the
-    // same view in this capture refers to it.
+uint32_t CaptureManager::QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
+                                        uint32_t mips, VkImageLayout layout) {
+    tc.recorded = false;
+    tc.imageId = Tracker::Get().Resolve(HT_VkImage, (uint64_t)(uintptr_t)image);
+    tc.format = img.format;
+    tc.width = std::max(1u, img.extent.width >> tc.mip);
+    tc.height = std::max(1u, img.extent.height >> tc.mip);
+    tc.depth = std::max(1u, img.extent.depth >> tc.mip);
+    tc.layers = std::max(1u, tc.layers);
+    const VkImageAspectFlags aspects = FormatAspects(img.format);
+
     auto add = [&]() {
         std::lock_guard lock(_mutex);
         tc.captureId = (uint32_t)_textures.size() + 1;
         _textures.push_back(tc);
-        _imageCaptureByView[(uint64_t)(uintptr_t)view] = tc.captureId;
         return tc.captureId;
     };
     auto fail = [&](const char* why) {
@@ -672,13 +685,9 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
         return fail("multisampled stencil image (no stencil resolve)");
     if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
         return fail("multisampled depth image (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
-    if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
-        if (!LayoutTracker::Get().GetLayout(vi.image, layout) || layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown image layout");
-    }
+    if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED) return fail("unknown image layout");
     FormatBlock block = FormatBlockInfo(img.format, tc.aspect);
     if (block.bytes == 0) return fail("unsupported format for readback");
-    // Every mip of the view, back to back (each mip: its layers), so the viewer can show them.
-    uint32_t mips = vi.range.levelCount == VK_REMAINING_MIP_LEVELS ? img.mipLevels - tc.mip : vi.range.levelCount;
     if (tc.mip >= img.mipLevels) mips = 1;
     else if (tc.mip + mips > img.mipLevels) mips = img.mipLevels - tc.mip;
     tc.mips = std::max(1u, mips);
@@ -715,7 +724,7 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
         PendingImageCopy p;
         p.resolve = m == 0 ? resolve : VK_NULL_HANDLE;   // multisampled images have one mip
         p.captureId = id;
-        p.image = vi.image;
+        p.image = image;
         p.layout = layout;
         p.range = {aspects, tc.mip + m, 1, tc.baseLayer, tc.layers};
         p.copyAspect = tc.aspect;
@@ -740,6 +749,84 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     return id;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Frame-start contents
+
+void CaptureManager::SnapshotImageRead(DeviceData* dev, CommandRecorder* rec, VkImage image, VkImageAspectFlags aspect, uint32_t baseMip,
+                                       uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount, VkImageLayout layout,
+                                       std::vector<uint32_t>& ids) {
+    if (!rec || !image || !IsCapturing() || !_options.captureImages || rec->InsidePass()) return;
+    if (!(aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) return;   // stencil is not read back
+    ImageInfo img;
+    if (!ResourceRegistry::Get().GetImage(image, img) || img.samples != VK_SAMPLE_COUNT_1_BIT) return;
+    if (baseMip >= img.mipLevels || baseLayer >= img.arrayLayers) return;
+    if (mipCount == VK_REMAINING_MIP_LEVELS || baseMip + mipCount > img.mipLevels) mipCount = img.mipLevels - baseMip;
+    if (layerCount == VK_REMAINING_ARRAY_LAYERS || baseLayer + layerCount > img.arrayLayers) layerCount = img.arrayLayers - baseLayer;
+    for (uint32_t m = baseMip; m < baseMip + mipCount; ++m) {
+        {
+            std::lock_guard lock(_mutex);
+            auto& states = _imageStates[(uint64_t)(uintptr_t)image];
+            states.resize((size_t)img.mipLevels * img.arrayLayers, kUntouched);
+            bool untouched = false;
+            for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
+                uint8_t& s = states[(size_t)m * img.arrayLayers + l];
+                if (s == kUntouched) {
+                    s = kRead;
+                    untouched = true;
+                }
+            }
+            if (!untouched) continue;
+        }
+        TextureCapture tc;
+        tc.initial = true;
+        tc.mip = m;
+        tc.baseLayer = baseLayer;
+        tc.layers = layerCount;
+        tc.aspect = aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+        ids.push_back(QueueImageCopy(dev, rec, image, img, tc, 1, layout));
+    }
+}
+
+void CaptureManager::NoteImageWrite(VkImage image, VkImageAspectFlags aspect, uint32_t baseMip, uint32_t mipCount, uint32_t baseLayer,
+                                    uint32_t layerCount) {
+    if (!image || !IsCapturing() || !(aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) return;
+    ImageInfo img;
+    if (!ResourceRegistry::Get().GetImage(image, img) || baseMip >= img.mipLevels || baseLayer >= img.arrayLayers) return;
+    if (mipCount == VK_REMAINING_MIP_LEVELS || baseMip + mipCount > img.mipLevels) mipCount = img.mipLevels - baseMip;
+    if (layerCount == VK_REMAINING_ARRAY_LAYERS || baseLayer + layerCount > img.arrayLayers) layerCount = img.arrayLayers - baseLayer;
+    std::lock_guard lock(_mutex);
+    auto& states = _imageStates[(uint64_t)(uintptr_t)image];
+    states.resize((size_t)img.mipLevels * img.arrayLayers, kUntouched);
+    for (uint32_t m = baseMip; m < baseMip + mipCount; ++m)
+        for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
+            uint8_t& s = states[(size_t)m * img.arrayLayers + l];
+            if (s == kUntouched) s = kWritten;
+        }
+}
+
+void CaptureManager::OnAttachmentBegin(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageAspectFlags aspects,
+                                       VkAttachmentLoadOp loadOp, VkImageLayout layout, const VkRect2D& renderArea,
+                                       std::vector<uint32_t>& ids) {
+    if (!view || !IsCapturing()) return;
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    ImageViewInfo vi;
+    ImageInfo img;
+    if (!reg.GetImageView(view, vi) || !reg.GetImage(vi.image, img)) return;
+    const uint32_t mip = vi.range.baseMipLevel;
+    // LOAD reads the attachment; NONE keeps it for later readers, which is a read as far as the
+    // contents a replay needs are concerned.
+    if (loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || loadOp == VK_ATTACHMENT_LOAD_OP_NONE) {
+        if (layout != VK_IMAGE_LAYOUT_UNDEFINED)
+            SnapshotImageRead(dev, rec, vi.image, aspects, mip, 1, vi.range.baseArrayLayer, vi.range.layerCount, layout, ids);
+        return;
+    }
+    const uint32_t width = std::max(1u, img.extent.width >> mip);
+    const uint32_t height = std::max(1u, img.extent.height >> mip);
+    if (renderArea.offset.x <= 0 && renderArea.offset.y <= 0 && (int64_t)renderArea.offset.x + renderArea.extent.width >= width &&
+        (int64_t)renderArea.offset.y + renderArea.extent.height >= height)
+        NoteImageWrite(vi.image, aspects, mip, 1, vi.range.baseArrayLayer, vi.range.layerCount);
+}
+
 void CaptureManager::FlushImageCopies(DeviceData* dev, CommandRecorder* rec) {
     auto& pending = rec->pendingImages();
     if (pending.empty()) return;
@@ -760,7 +847,7 @@ void CaptureManager::FlushImageCopies(DeviceData* dev, CommandRecorder* rec) {
 // Buffer readback
 
 uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer,
-                                            VkDeviceSize offset, VkDeviceSize size) {
+                                            VkDeviceSize offset, VkDeviceSize size, bool whole) {
     if (!rec || !buffer || !IsCapturing() || !_options.captureBuffers) return 0;
     BufferInfo bi;
     if (!ResourceRegistry::Get().GetBuffer(buffer, bi)) return 0;
@@ -773,7 +860,7 @@ uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* re
     bc.bufferId = Tracker::Get().Resolve(HT_VkBuffer, (uint64_t)(uintptr_t)buffer);
     bc.offset = offset;
     bc.size = size;
-    if (size > _options.maxBufferSize) {
+    if (size > _options.maxBufferSize && !whole) {
         bc.originalSize = size;
         bc.size = _options.maxBufferSize;
     }
@@ -1356,10 +1443,10 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         w.Key("size"); w.Uint(tc.failed ? 0 : tc.size);
         if (tc.samples > 1) { w.Key("samples"); w.Uint(tc.samples); }
         if (tc.resolveTarget) { w.Key("resolve"); w.Boolean(true); }
-        if (tc.sampled) {
-            w.Key("kind"); w.String("sampled");
+        if (tc.sampled || tc.initial) {
+            w.Key("kind"); w.String(tc.initial ? "initial" : "sampled");
             w.Key("capture"); w.Uint(tc.captureId);
-            w.Key("view"); w.Uint(tc.viewId);
+            if (tc.viewId) { w.Key("view"); w.Uint(tc.viewId); }
             w.Key("baseLayer"); w.Uint(tc.baseLayer);
         }
         if (tc.failed) { w.Key("error"); w.String(tc.note); }
@@ -1381,7 +1468,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         h.Key("commandBuffer"); h.Uint(tc.commandBufferId);
         h.Key("passIndex"); h.Uint(tc.passIndex);
         h.Key("attachment"); h.Uint(tc.attachment);
-        if (tc.sampled) { h.Key("capture"); h.Uint(tc.captureId); }
+        if (tc.sampled || tc.initial) { h.Key("capture"); h.Uint(tc.captureId); }
         h.Key("size"); h.Uint(tc.size);
         h.EndObject();
         t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c.mapped) + tc.stagingOffset, (size_t)tc.size);

@@ -44,13 +44,18 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
         out.push({
           index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer,
           children: cc.children, descriptors: cc.descriptors, bufferData: cc.bufferData, textureData: cc.textureData,
-          slot: cc.slot, stack: cc.stack,
+          imageData: cc.imageData, slot: cc.slot, stack: cc.stack,
         });
       }
     }
   }
   out.forEach((c, i) => { c.index = i; });
   return out;
+}
+
+/** A render pass attachment's read-back, rather than a sampled image or what an image held at the start of the frame. */
+export function isRenderTarget(info: CaptureTextureInfo): boolean {
+  return !info.kind || info.kind === "attachment";
 }
 
 /** Key of a pass in CaptureData.passTimings: "frame:commandBuffer:index" for render passes, "...:cN" for compute. */
@@ -137,14 +142,17 @@ export class CaptureData {
   }
 
   texturesForPass(frame: number, commandBufferId: number, passIndex: number): CapturedTexture[] {
-    return this.textures.filter((t) => t.info.kind !== "sampled" && t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
+    return this.textures.filter((t) => isRenderTarget(t.info) && t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex)
       .sort((a, b) => a.info.attachment - b.info.attachment);
   }
 
-  /** A sampled / storage image read back for a descriptor, by the id the descriptor carries in `data`. */
+  /**
+   * An image read back by capture id: a sampled / storage image by the id its descriptor carries in `data`, or what
+   * an image held at the start of the frame by an id in a command's `imageData`.
+   */
   capturedImage(captureId: number | undefined | null): CapturedTexture | null {
     if (!captureId) return null;
-    return this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === captureId) ?? null;
+    return this.textures.find((t) => !isRenderTarget(t.info) && t.info.capture === captureId) ?? null;
   }
 
   /** Any captured contents of an image (a sampled read-back or a render target), with data. */
@@ -229,8 +237,8 @@ export class CaptureData {
         break;
       case "CaptureTextureData": {
         const tex = msg.capture
-          ? this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === msg.capture)
-          : this.textures.find((t) => t.info.kind !== "sampled" && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
+          ? this.textures.find((t) => !isRenderTarget(t.info) && t.info.capture === msg.capture)
+          : this.textures.find((t) => isRenderTarget(t.info) && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);

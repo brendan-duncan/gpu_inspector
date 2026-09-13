@@ -4,6 +4,7 @@
 
 #include "capture.h"
 #include "descriptors.h"
+#include "format_info.h"
 #include "image_readback.h"
 #include "refresh_rate.h"
 #include "shader_edit.h"
@@ -168,19 +169,250 @@ static const VkRenderingInfo* OriginalRendering(const VkRenderingInfo* info) {
     return info == &t_renderingCopy && t_renderingOriginal ? t_renderingOriginal : info;
 }
 
+// Frame-start contents (CaptureManager::SnapshotImageRead): what a command reads that the capture
+// has not written yet is copied by its pre-call hook, before the command runs, and the ids go onto
+// the command once it is recorded (AttachPendingData, from the post-call hook).
+static CommandRecorder* CapturingRecorder(VkCommandBuffer cb, DeviceData*& dev) {
+    dev = GetDeviceData(cb);
+    return dev && CaptureManager::Get().IsCapturing() ? dev->RecorderFor(cb) : nullptr;
+}
+
+static void AttachPendingData(VkCommandBuffer cb) {
+    DeviceData* dev = GetDeviceData(cb);
+    CommandRecorder* rec = dev ? dev->RecorderFor(cb) : nullptr;
+    if (!rec || (rec->pendingImageData.empty() && rec->pendingBufferData.empty())) return;
+    auto list = [](const char* key, const std::vector<uint32_t>& ids) {
+        std::string s = std::string(",\"") + key + "\":[";
+        for (size_t i = 0; i < ids.size(); ++i) s += (i ? "," : "") + std::to_string(ids[i]);
+        return s + "]";
+    };
+    std::string extra;
+    if (!rec->pendingImageData.empty()) extra += list("imageData", rec->pendingImageData);
+    if (!rec->pendingBufferData.empty()) extra += list("bufferData", rec->pendingBufferData);
+    rec->SetExtraOnLast(std::move(extra));
+    rec->pendingImageData.clear();
+    rec->pendingBufferData.clear();
+}
+
+/** A render pass's attachment views: the framebuffer's, or an imageless framebuffer's from the begin info. */
+static std::vector<VkImageView> PassAttachmentViews(const VkRenderPassBeginInfo* info, const FramebufferInfo& fb) {
+    std::vector<VkImageView> views = fb.attachments;
+    if (fb.imageless) {
+        for (auto* n = static_cast<const VkBaseInStructure*>(info->pNext); n; n = n->pNext) {
+            if (n->sType == VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO) {
+                auto* ab = reinterpret_cast<const VkRenderPassAttachmentBeginInfo*>(n);
+                views.assign(ab->pAttachments, ab->pAttachments + ab->attachmentCount);
+            }
+        }
+    }
+    return views;
+}
+
+static void SnapshotPassLoads(VkCommandBuffer cb, const VkRenderPassBeginInfo* info) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    FramebufferInfo fb;
+    RenderPassInfo rp;
+    if (!rec || !info || !ResourceRegistry::Get().GetFramebuffer(info->framebuffer, fb) ||
+        !ResourceRegistry::Get().GetRenderPass(info->renderPass, rp))
+        return;
+    // A run of dispatches before the pass ends here, so its timing leaves the copies out.
+    CaptureManager::Get().OnEndComputePass(dev, rec);
+    const std::vector<VkImageView> views = PassAttachmentViews(info, fb);
+    for (size_t i = 0; i < views.size() && i < rp.attachments.size(); ++i) {
+        // A depth/stencil attachment's loadOp is its depth's; stencil contents are not taken.
+        const RenderPassAttachment& a = rp.attachments[i];
+        const VkImageAspectFlags aspects = FormatAspects(a.format) & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT);
+        if (aspects)
+            CaptureManager::Get().OnAttachmentBegin(dev, rec, views[i], aspects, a.loadOp, a.initialLayout, info->renderArea, rec->pendingImageData);
+    }
+}
+
+static void SnapshotRenderingLoads(VkCommandBuffer cb, const VkRenderingInfo* info) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    // A resumed pass carries on from its suspended part, whatever its load ops say.
+    if (!rec || !info || (info->flags & VK_RENDERING_RESUMING_BIT)) return;
+    CaptureManager::Get().OnEndComputePass(dev, rec);
+    auto begin = [&](const VkRenderingAttachmentInfo* a, VkImageAspectFlags aspects) {
+        if (a && a->imageView)
+            CaptureManager::Get().OnAttachmentBegin(dev, rec, a->imageView, aspects, a->loadOp, a->imageLayout, info->renderArea, rec->pendingImageData);
+    };
+    for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) begin(&info->pColorAttachments[i], VK_IMAGE_ASPECT_COLOR_BIT);
+    begin(info->pDepthAttachment, VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
+/** Whether offset + extent covers all of an image's mip level. */
+static bool CoversMip(VkImage image, uint32_t mip, VkOffset3D offset, VkExtent3D extent) {
+    ImageInfo img;
+    if (!ResourceRegistry::Get().GetImage(image, img) || mip >= img.mipLevels) return false;
+    return offset.x <= 0 && offset.y <= 0 && offset.z <= 0 && (int64_t)offset.x + extent.width >= std::max(1u, img.extent.width >> mip) &&
+           (int64_t)offset.y + extent.height >= std::max(1u, img.extent.height >> mip) &&
+           (int64_t)offset.z + extent.depth >= std::max(1u, img.extent.depth >> mip);
+}
+
+/** A blit's destination corners, which may be given in either order. */
+static void BlitArea(const VkOffset3D offsets[2], VkOffset3D& offset, VkExtent3D& extent) {
+    offset = {std::min(offsets[0].x, offsets[1].x), std::min(offsets[0].y, offsets[1].y), std::min(offsets[0].z, offsets[1].z)};
+    extent = {(uint32_t)std::abs(offsets[1].x - offsets[0].x), (uint32_t)std::abs(offsets[1].y - offsets[0].y),
+              (uint32_t)std::abs(offsets[1].z - offsets[0].z)};
+}
+
+/** Copies, blits and resolves between images (VkImageCopy, VkImageBlit, VkImageResolve and their 2 forms). */
+template <typename Region>
+static void BeforeImageTransfer(VkCommandBuffer cb, VkImage src, VkImageLayout srcLayout, VkImage dst, uint32_t count, const Region* regions,
+                                void (*area)(const Region&, VkOffset3D&, VkExtent3D&)) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    if (!rec || !regions) return;
+    CaptureManager& cm = CaptureManager::Get();
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkImageSubresourceLayers& s = regions[i].srcSubresource;
+        cm.SnapshotImageRead(dev, rec, src, s.aspectMask, s.mipLevel, 1, s.baseArrayLayer, s.layerCount, srcLayout, rec->pendingImageData);
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkImageSubresourceLayers& d = regions[i].dstSubresource;
+        VkOffset3D offset{};
+        VkExtent3D extent{};
+        area(regions[i], offset, extent);
+        if (CoversMip(dst, d.mipLevel, offset, extent)) cm.NoteImageWrite(dst, d.aspectMask, d.mipLevel, 1, d.baseArrayLayer, d.layerCount);
+    }
+}
+
+template <typename Region>
+static void CopyArea(const Region& r, VkOffset3D& offset, VkExtent3D& extent) {
+    offset = r.dstOffset;
+    extent = r.extent;
+}
+
+template <typename Region>
+static void BlitRegionArea(const Region& r, VkOffset3D& offset, VkExtent3D& extent) {
+    BlitArea(r.dstOffsets, offset, extent);
+}
+
+template <typename Region>
+static void BeforeImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout srcLayout, uint32_t count, const Region* regions) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    if (!rec || !regions) return;
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkImageSubresourceLayers& s = regions[i].imageSubresource;
+        CaptureManager::Get().SnapshotImageRead(dev, rec, src, s.aspectMask, s.mipLevel, 1, s.baseArrayLayer, s.layerCount, srcLayout,
+                                                rec->pendingImageData);
+    }
+}
+
+/** A buffer's texels copied into an image: the source ranges in full (a replay writes them), and whole-extent writes. */
+template <typename Region>
+static void BeforeBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, uint32_t count, const Region* regions) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    if (!rec || !regions) return;
+    CaptureManager& cm = CaptureManager::Get();
+    ImageInfo img;
+    const bool known = ResourceRegistry::Get().GetImage(dst, img);
+    for (uint32_t i = 0; i < count; ++i) {
+        const Region& r = regions[i];
+        // The texels the region reads, as the buffer lays them out (rows of bufferRowLength, images of bufferImageHeight).
+        VkDeviceSize size = VK_WHOLE_SIZE;
+        if (known) {
+            const FormatBlock block = FormatBlockInfo(img.format, r.imageSubresource.aspectMask);
+            const uint32_t rowLength = r.bufferRowLength ? r.bufferRowLength : r.imageExtent.width;
+            const uint32_t imageHeight = r.bufferImageHeight ? r.bufferImageHeight : r.imageExtent.height;
+            const uint32_t layers = r.imageSubresource.layerCount == VK_REMAINING_ARRAY_LAYERS
+                                  ? img.arrayLayers - std::min(img.arrayLayers, r.imageSubresource.baseArrayLayer) : r.imageSubresource.layerCount;
+            if (block.bytes)
+                size = (VkDeviceSize)((rowLength + block.width - 1) / block.width) * ((imageHeight + block.height - 1) / block.height) *
+                       std::max(1u, r.imageExtent.depth) * std::max(1u, layers) * block.bytes;
+        }
+        rec->pendingBufferData.push_back(cm.QueueBufferCapture(dev, rec, src, r.bufferOffset, size, true));
+        const VkImageSubresourceLayers& d = r.imageSubresource;
+        if (CoversMip(dst, d.mipLevel, r.imageOffset, r.imageExtent)) cm.NoteImageWrite(dst, d.aspectMask, d.mipLevel, 1, d.baseArrayLayer, d.layerCount);
+    }
+}
+
+template <typename Region>
+static void BeforeBufferCopy(VkCommandBuffer cb, VkBuffer src, uint32_t count, const Region* regions) {
+    DeviceData* dev = nullptr;
+    CommandRecorder* rec = CapturingRecorder(cb, dev);
+    if (!rec || !regions) return;
+    for (uint32_t i = 0; i < count; ++i)
+        rec->pendingBufferData.push_back(CaptureManager::Get().QueueBufferCapture(dev, rec, src, regions[i].srcOffset, regions[i].size, true));
+}
+
+void PreHook_vkCmdCopyImage(VkCommandBuffer& commandBuffer, VkImage& srcImage, VkImageLayout& srcImageLayout, VkImage& dstImage,
+                            VkImageLayout& dstImageLayout, uint32_t& regionCount, const VkImageCopy*& pRegions) {
+    BeforeImageTransfer<VkImageCopy>(commandBuffer, srcImage, srcImageLayout, dstImage, regionCount, pRegions, CopyArea);
+}
+void PreHook_vkCmdCopyImage2(VkCommandBuffer& commandBuffer, const VkCopyImageInfo2*& pCopyImageInfo) {
+    if (const VkCopyImageInfo2* i = pCopyImageInfo)
+        BeforeImageTransfer<VkImageCopy2>(commandBuffer, i->srcImage, i->srcImageLayout, i->dstImage, i->regionCount, i->pRegions, CopyArea);
+}
+void PreHook_vkCmdCopyImage2KHR(VkCommandBuffer& commandBuffer, const VkCopyImageInfo2*& pCopyImageInfo) { PreHook_vkCmdCopyImage2(commandBuffer, pCopyImageInfo); }
+void PreHook_vkCmdBlitImage(VkCommandBuffer& commandBuffer, VkImage& srcImage, VkImageLayout& srcImageLayout, VkImage& dstImage,
+                            VkImageLayout& dstImageLayout, uint32_t& regionCount, const VkImageBlit*& pRegions, VkFilter& filter) {
+    BeforeImageTransfer<VkImageBlit>(commandBuffer, srcImage, srcImageLayout, dstImage, regionCount, pRegions, BlitRegionArea);
+}
+void PreHook_vkCmdBlitImage2(VkCommandBuffer& commandBuffer, const VkBlitImageInfo2*& pBlitImageInfo) {
+    if (const VkBlitImageInfo2* i = pBlitImageInfo)
+        BeforeImageTransfer<VkImageBlit2>(commandBuffer, i->srcImage, i->srcImageLayout, i->dstImage, i->regionCount, i->pRegions, BlitRegionArea);
+}
+void PreHook_vkCmdBlitImage2KHR(VkCommandBuffer& commandBuffer, const VkBlitImageInfo2*& pBlitImageInfo) { PreHook_vkCmdBlitImage2(commandBuffer, pBlitImageInfo); }
+// A resolve reads a multisampled image, whose contents are not taken; its destination can be written whole.
+void PreHook_vkCmdResolveImage(VkCommandBuffer& commandBuffer, VkImage& srcImage, VkImageLayout& srcImageLayout, VkImage& dstImage,
+                               VkImageLayout& dstImageLayout, uint32_t& regionCount, const VkImageResolve*& pRegions) {
+    BeforeImageTransfer<VkImageResolve>(commandBuffer, srcImage, srcImageLayout, dstImage, regionCount, pRegions, CopyArea);
+}
+void PreHook_vkCmdResolveImage2(VkCommandBuffer& commandBuffer, const VkResolveImageInfo2*& pResolveImageInfo) {
+    if (const VkResolveImageInfo2* i = pResolveImageInfo)
+        BeforeImageTransfer<VkImageResolve2>(commandBuffer, i->srcImage, i->srcImageLayout, i->dstImage, i->regionCount, i->pRegions, CopyArea);
+}
+void PreHook_vkCmdResolveImage2KHR(VkCommandBuffer& commandBuffer, const VkResolveImageInfo2*& pResolveImageInfo) { PreHook_vkCmdResolveImage2(commandBuffer, pResolveImageInfo); }
+void PreHook_vkCmdCopyImageToBuffer(VkCommandBuffer& commandBuffer, VkImage& srcImage, VkImageLayout& srcImageLayout, VkBuffer& dstBuffer,
+                                    uint32_t& regionCount, const VkBufferImageCopy*& pRegions) {
+    BeforeImageToBuffer(commandBuffer, srcImage, srcImageLayout, regionCount, pRegions);
+}
+void PreHook_vkCmdCopyImageToBuffer2(VkCommandBuffer& commandBuffer, const VkCopyImageToBufferInfo2*& pCopyImageToBufferInfo) {
+    if (const VkCopyImageToBufferInfo2* i = pCopyImageToBufferInfo) BeforeImageToBuffer(commandBuffer, i->srcImage, i->srcImageLayout, i->regionCount, i->pRegions);
+}
+void PreHook_vkCmdCopyImageToBuffer2KHR(VkCommandBuffer& commandBuffer, const VkCopyImageToBufferInfo2*& pCopyImageToBufferInfo) {
+    PreHook_vkCmdCopyImageToBuffer2(commandBuffer, pCopyImageToBufferInfo);
+}
+void PreHook_vkCmdCopyBuffer(VkCommandBuffer& commandBuffer, VkBuffer& srcBuffer, VkBuffer& dstBuffer, uint32_t& regionCount, const VkBufferCopy*& pRegions) {
+    BeforeBufferCopy(commandBuffer, srcBuffer, regionCount, pRegions);
+}
+void PreHook_vkCmdCopyBuffer2(VkCommandBuffer& commandBuffer, const VkCopyBufferInfo2*& pCopyBufferInfo) {
+    if (const VkCopyBufferInfo2* i = pCopyBufferInfo) BeforeBufferCopy(commandBuffer, i->srcBuffer, i->regionCount, i->pRegions);
+}
+void PreHook_vkCmdCopyBuffer2KHR(VkCommandBuffer& commandBuffer, const VkCopyBufferInfo2*& pCopyBufferInfo) { PreHook_vkCmdCopyBuffer2(commandBuffer, pCopyBufferInfo); }
+void PreHook_vkCmdCopyBufferToImage(VkCommandBuffer& commandBuffer, VkBuffer& srcBuffer, VkImage& dstImage, VkImageLayout& dstImageLayout,
+                                    uint32_t& regionCount, const VkBufferImageCopy*& pRegions) {
+    BeforeBufferToImage(commandBuffer, srcBuffer, dstImage, regionCount, pRegions);
+}
+void PreHook_vkCmdCopyBufferToImage2(VkCommandBuffer& commandBuffer, const VkCopyBufferToImageInfo2*& pCopyBufferToImageInfo) {
+    if (const VkCopyBufferToImageInfo2* i = pCopyBufferToImageInfo) BeforeBufferToImage(commandBuffer, i->srcBuffer, i->dstImage, i->regionCount, i->pRegions);
+}
+void PreHook_vkCmdCopyBufferToImage2KHR(VkCommandBuffer& commandBuffer, const VkCopyBufferToImageInfo2*& pCopyBufferToImageInfo) {
+    PreHook_vkCmdCopyBufferToImage2(commandBuffer, pCopyBufferToImageInfo);
+}
+
 void PreHook_vkCmdBeginRenderPass(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, VkSubpassContents& contents) {
+    SnapshotPassLoads(commandBuffer, pRenderPassBegin);
     BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
+    SnapshotPassLoads(commandBuffer, pRenderPassBegin);
     BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
+    SnapshotPassLoads(commandBuffer, pRenderPassBegin);
     BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
+    SnapshotRenderingLoads(commandBuffer, pRenderingInfo);
     BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
     pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
@@ -247,6 +479,7 @@ void PreHook_vkCmdDebugMarkerBeginEXT(VkCommandBuffer& commandBuffer, const VkDe
 void PreHook_vkCmdDebugMarkerEndEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
 
 void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
+    SnapshotRenderingLoads(commandBuffer, pRenderingInfo);
     BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
     pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
@@ -375,7 +608,7 @@ void Hook_vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* pCre
     info.storeAll = StoreAllRenderPass(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription& a = pCreateInfo->pAttachments[i];
-        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp});
+        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.initialLayout});
     }
     for (uint32_t s = 0; s < pCreateInfo->subpassCount; ++s) {
         const VkSubpassDescription& sp = pCreateInfo->pSubpasses[s];
@@ -400,7 +633,7 @@ void Hook_vkCreateRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* pC
     info.storeAll = StoreAllRenderPass2(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription2& a = pCreateInfo->pAttachments[i];
-        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp});
+        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.initialLayout});
     }
     for (uint32_t s = 0; s < pCreateInfo->subpassCount; ++s) {
         const VkSubpassDescription2& sp = pCreateInfo->pSubpasses[s];
@@ -738,15 +971,7 @@ static void NotePassFinalLayouts(VkCommandBuffer commandBuffer, const VkRenderPa
     FramebufferInfo fb;
     RenderPassInfo rp;
     if (!reg.GetFramebuffer(info->framebuffer, fb) || !reg.GetRenderPass(info->renderPass, rp)) return;
-    std::vector<VkImageView> views = fb.attachments;
-    if (fb.imageless) {
-        for (auto* n = static_cast<const VkBaseInStructure*>(info->pNext); n; n = n->pNext) {
-            if (n->sType == VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO) {
-                auto* ab = reinterpret_cast<const VkRenderPassAttachmentBeginInfo*>(n);
-                views.assign(ab->pAttachments, ab->pAttachments + ab->attachmentCount);
-            }
-        }
-    }
+    const std::vector<VkImageView> views = PassAttachmentViews(info, fb);
     for (size_t i = 0; i < views.size() && i < rp.attachments.size(); ++i) {
         ImageViewInfo vi;
         if (reg.GetImageView(views[i], vi))
@@ -801,6 +1026,7 @@ void Hook_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitI
 void Hook_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                VkSubpassContents contents) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    AttachPendingData(commandBuffer);
     pRenderPassBegin = OriginalBegin(pRenderPassBegin);
     NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
@@ -809,6 +1035,7 @@ void Hook_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPass
 void Hook_vkCmdBeginRenderPass2(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin,
                                 const VkSubpassBeginInfo* pSubpassBeginInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    AttachPendingData(commandBuffer);
     pRenderPassBegin = OriginalBegin(pRenderPassBegin);
     NotePassFinalLayouts(commandBuffer, pRenderPassBegin);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRenderPass(dev, rec, pRenderPassBegin);
@@ -821,6 +1048,7 @@ void Hook_vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRender
 
 void Hook_vkCmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo* pRenderingInfo) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    AttachPendingData(commandBuffer);
     pRenderingInfo = OriginalRendering(pRenderingInfo);
     NoteRenderingLayouts(commandBuffer, pRenderingInfo);
     if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeginRendering(dev, rec, pRenderingInfo);
@@ -1104,6 +1332,55 @@ void Hook_vkCmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffe
 
 void Hook_vkCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset) {
     AttachBufferData(commandBuffer, 1, &buffer, &offset, nullptr, sizeof(VkDispatchIndirectCommand));
+}
+
+// =============================================================================================
+// Frame-start contents: the transfers' pre-call hooks took what they read; it goes onto the command
+
+void Hook_vkCmdCopyImage(VkCommandBuffer commandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageCopy*) {
+    AttachPendingData(commandBuffer);
+}
+void Hook_vkCmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const VkCopyImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdBlitImage(VkCommandBuffer commandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageBlit*, VkFilter) {
+    AttachPendingData(commandBuffer);
+}
+void Hook_vkCmdBlitImage2(VkCommandBuffer commandBuffer, const VkBlitImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const VkBlitImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdResolveImage(VkCommandBuffer commandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageResolve*) {
+    AttachPendingData(commandBuffer);
+}
+void Hook_vkCmdResolveImage2(VkCommandBuffer commandBuffer, const VkResolveImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const VkResolveImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage, VkImageLayout, VkBuffer, uint32_t, const VkBufferImageCopy*) {
+    AttachPendingData(commandBuffer);
+}
+void Hook_vkCmdCopyImageToBuffer2(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer, VkBuffer, uint32_t, const VkBufferCopy*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer, VkImage, VkImageLayout, uint32_t, const VkBufferImageCopy*) {
+    AttachPendingData(commandBuffer);
+}
+void Hook_vkCmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2*) { AttachPendingData(commandBuffer); }
+void Hook_vkCmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2*) { AttachPendingData(commandBuffer); }
+
+static void NoteClears(VkImage image, uint32_t rangeCount, const VkImageSubresourceRange* ranges) {
+    if (!CaptureManager::Get().IsCapturing()) return;
+    for (uint32_t i = 0; ranges && i < rangeCount; ++i)
+        CaptureManager::Get().NoteImageWrite(image, ranges[i].aspectMask, ranges[i].baseMipLevel, ranges[i].levelCount, ranges[i].baseArrayLayer,
+                                             ranges[i].layerCount);
+}
+
+void Hook_vkCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearColorValue* pColor,
+                               uint32_t rangeCount, const VkImageSubresourceRange* pRanges) {
+    if (GetDeviceData(commandBuffer)->RecorderFor(commandBuffer)) NoteClears(image, rangeCount, pRanges);
+}
+
+void Hook_vkCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout,
+                                      const VkClearDepthStencilValue* pDepthStencil, uint32_t rangeCount, const VkImageSubresourceRange* pRanges) {
+    if (GetDeviceData(commandBuffer)->RecorderFor(commandBuffer)) NoteClears(image, rangeCount, pRanges);
 }
 
 } // namespace vkinsp

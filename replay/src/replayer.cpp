@@ -442,16 +442,40 @@ void Replayer::UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_
     DestroyStaging(staging);
 }
 
-void Replayer::Transition(VkCommandBuffer cb, const ImageRecord& image, VkImageLayout from, VkImageLayout to) {
-    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    b.oldLayout = from;
-    b.newLayout = to;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image.image;
-    b.subresourceRange = {vkinsp::FormatAspects(image.format), 0, image.mips, 0, image.layers};
-    b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+void Replayer::TransitionSubresources(VkCommandBuffer cb, ImageRecord& image, const std::vector<VkImageLayout>& targets) {
+    // One barrier per run of layers in a mip that share their current and target layouts.
+    std::vector<VkImageMemoryBarrier> barriers;
+    for (uint32_t m = 0; m < image.mips; ++m) {
+        for (uint32_t l = 0; l < image.layers;) {
+            const size_t i = (size_t)m * image.layers + l;
+            const VkImageLayout from = image.layouts[i];
+            const VkImageLayout to = i < targets.size() ? targets[i] : VK_IMAGE_LAYOUT_UNDEFINED;
+            uint32_t end = l + 1;
+            while (end < image.layers && image.layouts[i + end - l] == from &&
+                   (i + end - l < targets.size() ? targets[i + end - l] : VK_IMAGE_LAYOUT_UNDEFINED) == to)
+                ++end;
+            if (to != VK_IMAGE_LAYOUT_UNDEFINED && to != from) {
+                VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                b.oldLayout = from;
+                b.newLayout = to;
+                b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = image.image;
+                b.subresourceRange = {vkinsp::FormatAspects(image.format), m, 1, l, end - l};
+                b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+                b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+                barriers.push_back(b);
+                for (uint32_t k = l; k < end; ++k) image.layouts[(size_t)m * image.layers + k] = to;
+            }
+            l = end;
+        }
+    }
+    if (!barriers.empty())
+        _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                                (uint32_t)barriers.size(), barriers.data());
+}
+
+void Replayer::TransitionAll(VkCommandBuffer cb, ImageRecord& image, VkImageLayout to) {
+    TransitionSubresources(cb, image, std::vector<VkImageLayout>(image.layouts.size(), to));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -497,6 +521,7 @@ uint64_t Replayer::CreateImage(uint64_t id, const VkImageCreateInfo& captured) {
     rec.mips = info.mipLevels;
     rec.layers = info.arrayLayers;
     rec.samples = info.samples;
+    rec.layouts.assign((size_t)rec.mips * rec.layers, VK_IMAGE_LAYOUT_UNDEFINED);
     _images[id] = rec;
     return (uint64_t)image;
 }
@@ -879,14 +904,55 @@ void Replayer::DestroyAll() {
 // Frame-start state
 
 void Replayer::ComputeInitialLayouts() {
-    // The first layout the frame expects each image in: the old layout of its first barrier, the
-    // layout a descriptor snapshot binds it with, or the initial layout of a pass that loads it.
+    // The first layout the frame expects each subresource in: the old layout of its first barrier,
+    // the layout a descriptor snapshot binds it with, the initial layout of a pass that renders to
+    // it, or the layout a transfer or clear names. Mips and layers of one image can start apart (a
+    // mip chain being built, one layer of an array bound for sampling).
     const JValue* commands = _capture->Commands();
     if (!commands || !commands->IsArray()) return;
-    auto note = [&](uint64_t image, VkImageLayout layout) {
-        if (image && layout != VK_IMAGE_LAYOUT_UNDEFINED && !_initialLayouts.count(image)) _initialLayouts[image] = layout;
-    };
     auto layoutOf = [&](const JValue* v) { return (VkImageLayout)DecodeEnum_VkImageLayout(_ctx, v); };
+    auto u32 = [](const JValue* v, uint32_t fallback) { return v ? (uint32_t)v->Uint() : fallback; };
+    auto note = [&](uint64_t id, uint32_t baseMip, uint32_t mips, uint32_t baseLayer, uint32_t layers, VkImageLayout layout) {
+        auto it = _images.find(id);
+        if (it == _images.end() || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+        const ImageRecord& image = it->second;
+        if (baseMip >= image.mips || baseLayer >= image.layers) return;
+        mips = std::min(mips, image.mips - baseMip);        // VK_REMAINING_* included
+        layers = std::min(layers, image.layers - baseLayer);
+        auto& layouts = _initialLayouts[id];
+        layouts.resize((size_t)image.mips * image.layers, VK_IMAGE_LAYOUT_UNDEFINED);
+        for (uint32_t m = baseMip; m < baseMip + mips; ++m)
+            for (uint32_t l = baseLayer; l < baseLayer + layers; ++l)
+                if (layouts[(size_t)m * image.layers + l] == VK_IMAGE_LAYOUT_UNDEFINED) layouts[(size_t)m * image.layers + l] = layout;
+    };
+    auto noteRange = [&](uint64_t id, const JValue* range, VkImageLayout layout) {
+        if (range)
+            note(id, u32(range->Get("baseMipLevel"), 0), u32(range->Get("levelCount"), 1), u32(range->Get("baseArrayLayer"), 0),
+                 u32(range->Get("layerCount"), 1), layout);
+    };
+    auto noteLayers = [&](uint64_t id, const JValue* layers, VkImageLayout layout) {
+        if (layers) note(id, u32(layers->Get("mipLevel"), 0), 1, u32(layers->Get("baseArrayLayer"), 0), u32(layers->Get("layerCount"), 1), layout);
+    };
+    auto noteView = [&](uint64_t viewId, VkImageLayout layout) {
+        auto it = _views.find(viewId);
+        if (it == _views.end()) return;
+        const VkImageSubresourceRange& r = it->second.range;
+        note(it->second.image, r.baseMipLevel, r.levelCount, r.baseArrayLayer, r.layerCount, layout);
+    };
+    // Copies, blits and resolves between images, and transfers between an image and a buffer: the
+    // arguments themselves, or the info struct of the commands' 2 forms.
+    static const char* const kTransferInfos[] = {"pCopyImageInfo", "pBlitImageInfo", "pResolveImageInfo", "pCopyImageToBufferInfo",
+                                                 "pCopyBufferToImageInfo"};
+    auto noteTransfer = [&](const JValue* a) {
+        const JValue* regions = a ? a->Get("pRegions") : nullptr;
+        for (uint32_t k = 0; regions && regions->IsArray() && k < regions->count; ++k) {
+            const JValue& r = regions->items[k];
+            if (const JValue* src = a->Get("srcImage"))
+                noteLayers(IdOf(src), r.Get("srcSubresource") ? r.Get("srcSubresource") : r.Get("imageSubresource"), layoutOf(a->Get("srcImageLayout")));
+            if (const JValue* dst = a->Get("dstImage"))
+                noteLayers(IdOf(dst), r.Get("dstSubresource") ? r.Get("dstSubresource") : r.Get("imageSubresource"), layoutOf(a->Get("dstImageLayout")));
+        }
+    };
     for (uint32_t i = 0; i < commands->count; ++i) {
         const JValue& c = commands->items[i];
         const std::string m = Str(c.Get("method"));
@@ -897,7 +963,8 @@ void Replayer::ComputeInitialLayouts() {
                 const JValue* barriers = m == "vkCmdPipelineBarrier" ? list : list->Get("pImageMemoryBarriers");
                 if (barriers && barriers->IsArray())
                     for (uint32_t b = 0; b < barriers->count; ++b)
-                        note(IdOf(barriers->items[b].Get("image")), layoutOf(barriers->items[b].Get("oldLayout")));
+                        noteRange(IdOf(barriers->items[b].Get("image")), barriers->items[b].Get("subresourceRange"),
+                                  layoutOf(barriers->items[b].Get("oldLayout")));
             }
         }
         if (const JValue* d = c.Get("descriptors")) {
@@ -908,39 +975,67 @@ void Replayer::ComputeInitialLayouts() {
                         const JValue* list = bindings->items[b].Get("descriptors");
                         for (uint32_t k = 0; list && k < list->count; ++k) {
                             const JValue& desc = list->items[k];
-                            const uint64_t view = IdOf(desc.Get("imageView"));
-                            auto it = _views.find(view);
-                            if (it != _views.end()) note(it->second.image, layoutOf(desc.Get("imageLayout")));
+                            noteView(IdOf(desc.Get("imageView")), layoutOf(desc.Get("imageLayout")));
                         }
                     }
                 }
             }
         }
         if (IsBeginRenderPass(m)) {
-            const JValue* begin = args->Get(m == "vkCmdBeginRenderPass" ? "pRenderPassBegin" : "pRenderPassBegin");
+            const JValue* begin = args->Get("pRenderPassBegin");
             const uint64_t rp = begin ? IdOf(begin->Get("renderPass")) : 0;
             const uint64_t fb = begin ? IdOf(begin->Get("framebuffer")) : 0;
             auto rit = _renderPasses.find(rp);
             auto fit = _framebufferViews.find(fb);
             if (rit != _renderPasses.end() && fit != _framebufferViews.end()) {
                 // A pass requires its attachments in their initial layout whatever it loads or clears.
-                for (size_t a = 0; a < fit->second.size() && a < rit->second.initialLayouts.size(); ++a) {
-                    auto vit = _views.find(fit->second[a]);
-                    if (vit != _views.end()) note(vit->second.image, rit->second.initialLayouts[a]);
-                }
+                for (size_t a = 0; a < fit->second.size() && a < rit->second.initialLayouts.size(); ++a)
+                    noteView(fit->second[a], rit->second.initialLayouts[a]);
             }
+        } else if (IsBeginRendering(m)) {
+            const JValue* info = args->Get("pRenderingInfo");
+            const bool resuming = info && Str(info->Get("flags")).find("VK_RENDERING_RESUMING_BIT") != std::string::npos;
+            auto attachment = [&](const JValue* a) {
+                if (!a || a->IsNull()) return;
+                noteView(IdOf(a->Get("imageView")), layoutOf(a->Get("imageLayout")));
+                noteView(IdOf(a->Get("resolveImageView")), layoutOf(a->Get("resolveImageLayout")));
+            };
+            if (info && !resuming) {
+                if (const JValue* colors = info->Get("pColorAttachments"); colors && colors->IsArray())
+                    for (uint32_t k = 0; k < colors->count; ++k) attachment(&colors->items[k]);
+                attachment(info->Get("pDepthAttachment"));
+                attachment(info->Get("pStencilAttachment"));
+            }
+        } else if (m == "vkCmdClearColorImage" || m == "vkCmdClearDepthStencilImage") {
+            if (const JValue* ranges = args->Get("pRanges"); ranges && ranges->IsArray())
+                for (uint32_t k = 0; k < ranges->count; ++k) noteRange(IdOf(args->Get("image")), &ranges->items[k], layoutOf(args->Get("imageLayout")));
+        } else if (StartsWith(m, "vkCmdCopy") || StartsWith(m, "vkCmdBlitImage") || StartsWith(m, "vkCmdResolveImage")) {
+            noteTransfer(args);
+            for (const char* name : kTransferInfos) noteTransfer(args->Get(name));
         }
     }
     _arena.Reset();
 }
 
-void Replayer::UploadSampledTextures() {
+void Replayer::UploadImageContents() {
     const JValue* textures = _capture->Textures();
     if (!textures || !textures->IsArray()) return;
-    for (uint32_t i = 0; i < textures->count; ++i) {
-        const JValue& t = textures->items[i];
+    // Sampled images first: each is read back when the pass that binds it ends, so it may already hold
+    // what the frame wrote there. What an image held when the frame first read it comes second, and wins.
+    std::vector<const JValue*> ordered;
+    for (const char* kind : {"sampled", "initial"})
+        for (uint32_t i = 0; i < textures->count; ++i)
+            if (const JValue* info = textures->items[i].Get("info"); info && Str(info->Get("kind")) == kind) ordered.push_back(&textures->items[i]);
+    for (const JValue* texture : ordered) {
+        const JValue& t = *texture;
         const JValue* info = t.Get("info");
-        if (!info || Str(info->Get("kind")) != "sampled" || info->Get("error")) continue;
+        const bool initial = Str(info->Get("kind")) == "initial";
+        if (info->Get("error")) {
+            if (initial)
+                Problem("image " + std::to_string(info->Get("id")->Uint()) + ": what it held at the start of the frame was not captured (" +
+                        Str(info->Get("error")) + ")");
+            continue;
+        }
         const uint8_t* data = nullptr;
         size_t size = 0;
         if (!_capture->Payload(t.Get("payload"), data, size)) continue;
@@ -954,10 +1049,9 @@ void Replayer::UploadSampledTextures() {
         const VkImageAspectFlags aspect = Str(info->Get("aspect")) == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         const vkinsp::FormatBlock block = vkinsp::FormatBlockInfo(image.format, aspect);
         if (!block.bytes) {
-            Problem("sampled image " + std::to_string(info->Get("id")->Uint()) + ": its format cannot be uploaded");
+            Problem(std::string(initial ? "image " : "sampled image ") + std::to_string(info->Get("id")->Uint()) + ": its format cannot be uploaded");
             continue;
-        }
-        std::vector<VkBufferImageCopy> regions;
+        }        std::vector<VkBufferImageCopy> regions;
         VkDeviceSize offset = 0;
         for (uint32_t m = baseMip; m < baseMip + mips && m < image.mips; ++m) {
             uint32_t w = std::max(1u, image.extent.width >> m);
@@ -977,12 +1071,12 @@ void Replayer::UploadSampledTextures() {
         if (!CreateStaging(offset, staging)) continue;
         std::memcpy(staging.mapped, data, (size_t)offset);
         RunOneTime([&](VkCommandBuffer cb) {
-            Transition(cb, image, image.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            image.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            TransitionAll(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             _fns.CmdCopyBufferToImage(cb, staging.buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regions.size(), regions.data());
         });
         DestroyStaging(staging);
-        _report->texturesUploaded++;
+        if (initial) _report->initialImagesUploaded++;
+        else _report->texturesUploaded++;
     }
 }
 
@@ -990,10 +1084,12 @@ void Replayer::TransitionToInitialLayouts() {
     RunOneTime([&](VkCommandBuffer cb) {
         for (auto& [id, image] : _images) {
             auto it = _initialLayouts.find(id);
-            if (it == _initialLayouts.end() || it->second == image.layout) continue;
-            if (it->second == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && !_hasSwapchainExtension) continue;
-            Transition(cb, image, image.layout, it->second);
-            image.layout = it->second;
+            if (it == _initialLayouts.end()) continue;
+            std::vector<VkImageLayout> targets = it->second;
+            if (!_hasSwapchainExtension)
+                for (VkImageLayout& t : targets)
+                    if (t == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) t = VK_IMAGE_LAYOUT_UNDEFINED;
+            TransitionSubresources(cb, image, targets);
         }
     });
 }
@@ -1152,7 +1248,8 @@ void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::v
     for (uint32_t i = 0; i < textures->count; ++i) {
         const JValue& t = textures->items[i];
         const JValue* info = t.Get("info");
-        if (!info || Str(info->Get("kind")) == "sampled") continue;
+        // Render pass attachments only: sampled images and frame-start contents are uploaded, not compared.
+        if (!info || (info->Get("kind") && Str(info->Get("kind")) != "attachment")) continue;
         if (info->Get("commandBuffer")->Uint() != pass.commandBuffer || info->Get("passIndex")->Uint() != pass.index ||
             info->Get("frame")->Uint() != pass.frame)
             continue;
@@ -1182,36 +1279,154 @@ void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::v
         auto iit = _images.find(vit->second.image);
         if (iit == _images.end()) { skip("the attachment's image was not replayed"); continue; }
         const ImageRecord& image = iit->second;
-        if (image.samples != VK_SAMPLE_COUNT_1_BIT) { skip("multisampled targets are not compared yet"); continue; }
         const VkImageAspectFlags aspect = cmp.aspect == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         const VkDeviceSize size = info->Get("size")->Uint();
+        const VkImageLayout layout = cmp.attachment < layouts.size() ? layouts[cmp.attachment] : VK_IMAGE_LAYOUT_UNDEFINED;
+        const uint32_t mip = vit->second.range.baseMipLevel;
+        const uint32_t baseLayer = vit->second.range.baseArrayLayer;
+        const uint32_t layers = std::max<uint32_t>(1, (uint32_t)info->Get("layers")->Uint());
+        if (image.samples != VK_SAMPLE_COUNT_1_BIT && layers > 1) { skip("multisampled layered targets are not compared yet"); continue; }
         PendingReadback pending;
         pending.target = target;
         pending.texture = &t;
         if (!CreateStaging(size, pending.staging)) { skip("no staging memory"); continue; }
-        const VkImageLayout layout = cmp.attachment < layouts.size() ? layouts[cmp.attachment] : VK_IMAGE_LAYOUT_UNDEFINED;
-        const uint32_t mip = vit->second.range.baseMipLevel;
-        const uint32_t layers = std::max<uint32_t>(1, (uint32_t)info->Get("layers")->Uint());
-        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = image.image;
-        b.subresourceRange = {vkinsp::FormatAspects(image.format), mip, 1, vit->second.range.baseArrayLayer, layers};
-        b.oldLayout = layout;
-        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
         VkBufferImageCopy copy{};
-        copy.imageSubresource = {aspect, mip, vit->second.range.baseArrayLayer, layers};
         copy.imageExtent = {std::max(1u, image.extent.width >> mip), std::max(1u, image.extent.height >> mip), 1};
-        _fns.CmdCopyImageToBuffer(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.staging.buffer, 1, &copy);
-        std::swap(b.oldLayout, b.newLayout);
-        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-        _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+        if (image.samples != VK_SAMPLE_COUNT_1_BIT) {
+            // The capture read it back through a resolve (sample zero for depth), and so does the replay.
+            std::string why;
+            const VkImage resolved = ResolveTarget(cb, image, aspect, mip, baseLayer, layout, why);
+            if (!resolved) {
+                DestroyStaging(pending.staging);
+                skip(why);
+                continue;
+            }
+            copy.imageSubresource = {aspect, 0, 0, 1};
+            _fns.CmdCopyImageToBuffer(cb, resolved, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.staging.buffer, 1, &copy);
+        } else {
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = image.image;
+            b.subresourceRange = {vkinsp::FormatAspects(image.format), mip, 1, baseLayer, layers};
+            b.oldLayout = layout;
+            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+            copy.imageSubresource = {aspect, mip, baseLayer, layers};
+            _fns.CmdCopyImageToBuffer(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.staging.buffer, 1, &copy);
+            std::swap(b.oldLayout, b.newLayout);
+            b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+        }
         _report->targets.push_back(cmp);
         readbacks.push_back(pending);
     }
+}
+
+VkImage Replayer::ResolveTarget(VkCommandBuffer cb, const ImageRecord& image, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
+                                VkImageLayout layout, std::string& why) {
+    const VkExtent2D extent{std::max(1u, image.extent.width >> mip), std::max(1u, image.extent.height >> mip)};
+    const VkImageAspectFlags aspects = vkinsp::FormatAspects(image.format);
+    const VkImageSubresourceRange range{aspects, mip, 1, baseLayer, 1};
+    if (aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+        // Attachment usage only so the transient image may have its view.
+        const TransientImage resolved = CreateTransientImage(image.format, extent,
+                                                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        if (!resolved.image) {
+            why = "no memory to resolve the multisampled target into";
+            return VK_NULL_HANDLE;
+        }
+        Barrier(cb, image.image, range, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        Barrier(cb, resolved.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageResolve region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, baseLayer, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.extent = {extent.width, extent.height, 1};
+        _fns.CmdResolveImage(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, resolved.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        Barrier(cb, image.image, range, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout);
+        Barrier(cb, resolved.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        return resolved.image;
+    }
+
+    // Depth: a subpass that resolves sample zero into a single-sampled attachment (VK_KHR_depth_stencil_resolve,
+    // core in 1.2), which is the value the capture layer's depth resolve reads back.
+    if (!_fns.CreateRenderPass2) {
+        why = "resolving multisampled depth needs Vulkan 1.2 render passes";
+        return VK_NULL_HANDLE;
+    }
+    VkRenderPass& rp = _depthResolvePasses[{image.format, image.samples}];
+    if (!rp) {
+        VkAttachmentDescription2 attachments[2]{};
+        for (VkAttachmentDescription2& a : attachments) {
+            a.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+            a.format = image.format;
+            a.storeOp = a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        }
+        attachments[0].samples = image.samples;
+        attachments[0].loadOp = attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachments[0].initialLayout = attachments[0].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        VkAttachmentReference2 source{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, aspects};
+        VkAttachmentReference2 target{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, aspects};
+        VkSubpassDescriptionDepthStencilResolve resolve{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+        resolve.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+        resolve.stencilResolveMode = (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT : VK_RESOLVE_MODE_NONE;
+        resolve.pDepthStencilResolveAttachment = &target;
+        VkSubpassDescription2 subpass{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+        subpass.pNext = &resolve;
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.pDepthStencilAttachment = &source;
+        VkRenderPassCreateInfo2 info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+        info.attachmentCount = 2;
+        info.pAttachments = attachments;
+        info.subpassCount = 1;
+        info.pSubpasses = &subpass;
+        if (_fns.CreateRenderPass2(_device, &info, nullptr, &rp) == VK_SUCCESS) Track("VkRenderPass", (uint64_t)rp);
+        else rp = VK_NULL_HANDLE;
+    }
+    const TransientImage resolved = CreateTransientImage(image.format, extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    VkImageView source = VK_NULL_HANDLE;
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = image.image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = image.format;
+    view.subresourceRange = range;
+    if (resolved.image) _fns.CreateImageView(_device, &view, nullptr, &source);
+    if (!rp || !resolved.view || !source) {
+        if (source) _fns.DestroyImageView(_device, source, nullptr);
+        why = "the multisampled depth target could not be resolved";
+        return VK_NULL_HANDLE;
+    }
+    // Released with the pass's other transient objects once the submission has run.
+    _transientImages.push_back({VK_NULL_HANDLE, source, VK_NULL_HANDLE});
+    VkImageView views[2] = {source, resolved.view};
+    VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb.renderPass = rp;
+    fb.attachmentCount = 2;
+    fb.pAttachments = views;
+    fb.width = extent.width;
+    fb.height = extent.height;
+    fb.layers = 1;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    if (_fns.CreateFramebuffer(_device, &fb, nullptr, &framebuffer) != VK_SUCCESS) {
+        why = "the multisampled depth target could not be resolved";
+        return VK_NULL_HANDLE;
+    }
+    _transientFramebuffers.push_back(framebuffer);
+    Barrier(cb, image.image, range, layout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    begin.renderPass = rp;
+    begin.framebuffer = framebuffer;
+    begin.renderArea = {{0, 0}, extent};
+    _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    _fns.CmdEndRenderPass(cb);
+    Barrier(cb, image.image, range, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, layout);
+    return resolved.image;
 }
 
 void Replayer::CompareReadbacks(std::vector<PendingReadback>& readbacks) {
@@ -1645,7 +1860,7 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
         report.history.layer = options.history.layer;
     }
 
-    UploadSampledTextures();
+    UploadImageContents();
     TransitionToInitialLayouts();
     if (options.drawStats) PrepareDrawStats();
     ReplayCommands();
@@ -1688,8 +1903,8 @@ void Replayer::ResetFrameState() {
     // until the uploads and the initial layouts put them where the frame expects them.
     RunOneTime([&](VkCommandBuffer cb) {
         for (auto& [id, image] : _images) {
-            Transition(cb, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            image.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            std::fill(image.layouts.begin(), image.layouts.end(), VK_IMAGE_LAYOUT_UNDEFINED);
+            TransitionAll(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             const VkImageAspectFlags aspects = vkinsp::FormatAspects(image.format);
             const VkImageSubresourceRange range{aspects, 0, image.mips, 0, image.layers};
             if (aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
