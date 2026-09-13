@@ -702,7 +702,8 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
     }  // the device is destroyed here, so validation messages about teardown are in the report too
     std::printf("device: %s\n", report.device.c_str());
     std::printf("objects: %zu created, %zu left out\n", report.objectsCreated, report.objectsSkipped);
-    std::printf("uploads: %zu sampled textures, %zu buffer ranges\n", report.texturesUploaded, report.bufferUploads);
+    std::printf("uploads: %zu sampled textures, %zu images as the frame found them, %zu buffer ranges\n", report.texturesUploaded,
+                report.initialImagesUploaded, report.bufferUploads);
     std::printf("commands: %zu recorded in %zu submissions\n", report.commandsRecorded, report.submissions);
     size_t exact = 0, differing = 0, skipped = 0;
     std::printf("render targets: %zu\n", report.targets.size());

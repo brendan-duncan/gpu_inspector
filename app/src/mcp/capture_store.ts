@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CaptureData, type CapturedOverdraw } from "../renderer/capture_data.js";
+import { CaptureData, isRenderTarget, type CapturedOverdraw } from "../renderer/capture_data.js";
 import type { DrawStat } from "../renderer/draw_stats.js";
 import { parseCaptureFile, type CaptureFileManifest } from "../renderer/capture_format.js";
 import { CaptureStatistics } from "../renderer/capture_statistics.js";
@@ -131,9 +131,9 @@ export class Capture {
     return labels ? `${label} [${labels}]` : label;
   }
 
-  /** The metrics pass a render target was read back at the end of; -1 for sampled images. */
+  /** The metrics pass a render target was read back at the end of; -1 for sampled images and frame-start contents. */
   passOfTexture(info: CaptureTextureInfo): number {
-    if (info.kind === "sampled") return -1;
+    if (!isRenderTarget(info)) return -1;
     return this.metrics.passes.findIndex((p) => !p.compute && p.frame === info.frame && p.commandBuffer === info.commandBuffer && p.passIndex === info.passIndex);
   }
 

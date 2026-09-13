@@ -6,7 +6,7 @@ import { float16ToFloat32 } from "../renderer/utils/float.js";
 import { isHandleRef, refId, type ObjectLookup } from "../renderer/vulkan/vulkan_object.js";
 import type { ReflType, ScalarType } from "../renderer/vulkan/spirv_reflect.js";
 import { vertexFormat } from "../renderer/vulkan/vk_format.js";
-import type { CapturedTexture } from "../renderer/capture_data.js";
+import { isRenderTarget, type CapturedTexture } from "../renderer/capture_data.js";
 import type { FrameFinding } from "../renderer/vulkan/frame_analysis.js";
 import type { ArgValue, StackFrame, ValidationMessage } from "../shared/protocol.js";
 import type { Capture } from "./capture_store.js";
@@ -279,14 +279,14 @@ export function stackLines(frames: StackFrame[]): string[] {
 export function textureBrief(c: Capture, t: CapturedTexture): Record<string, unknown> {
   const info = t.info;
   const pass = c.passOfTexture(info);
-  const sampled = info.kind === "sampled";
+  const target = isRenderTarget(info);
   return {
-    texture: c.data.textures.indexOf(t), kind: sampled ? "sampled" : "attachment",
+    texture: c.data.textures.indexOf(t), kind: info.kind ?? "attachment",
     image: refText(c.db, info.id), view: refText(c.db, info.view), format: info.format,
     size: `${info.width}x${info.height}${info.depth > 1 ? `x${info.depth}` : ""}`,
     layers: info.layers > 1 ? info.layers : undefined, mip: info.mip || undefined, mips: (info.mips ?? 1) > 1 ? info.mips : undefined,
     aspect: info.aspect, samples: (info.samples ?? 1) > 1 ? info.samples : undefined,
-    attachment: sampled ? undefined : info.attachment, resolve: info.resolve || undefined,
+    attachment: target ? info.attachment : undefined, resolve: info.resolve || undefined,
     pass: pass >= 0 ? pass : undefined, frame: c.data.frames > 1 ? info.frame : undefined,
     bytes: t.data?.byteLength, error: info.error,
   };

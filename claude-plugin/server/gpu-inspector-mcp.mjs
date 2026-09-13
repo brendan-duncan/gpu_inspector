@@ -1156,6 +1156,7 @@ function flattenSecondaries(commands) {
           descriptors: cc.descriptors,
           bufferData: cc.bufferData,
           textureData: cc.textureData,
+          imageData: cc.imageData,
           slot: cc.slot,
           stack: cc.stack
         });
@@ -1166,6 +1167,9 @@ function flattenSecondaries(commands) {
     c2.index = i;
   });
   return out;
+}
+function isRenderTarget(info) {
+  return !info.kind || info.kind === "attachment";
 }
 function passKey(frame, commandBufferId, passIndex, compute = false) {
   return `${frame}:${commandBufferId}:${compute ? "c" : ""}${passIndex}`;
@@ -1235,12 +1239,15 @@ var CaptureData = class {
     return this.passTimings.get(passKey(frame, commandBufferId, passIndex, compute)) ?? null;
   }
   texturesForPass(frame, commandBufferId, passIndex) {
-    return this.textures.filter((t) => t.info.kind !== "sampled" && t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex).sort((a, b) => a.info.attachment - b.info.attachment);
+    return this.textures.filter((t) => isRenderTarget(t.info) && t.info.frame === frame && t.info.commandBuffer === commandBufferId && t.info.passIndex === passIndex).sort((a, b) => a.info.attachment - b.info.attachment);
   }
-  /** A sampled / storage image read back for a descriptor, by the id the descriptor carries in `data`. */
+  /**
+   * An image read back by capture id: a sampled / storage image by the id its descriptor carries in `data`, or what
+   * an image held at the start of the frame by an id in a command's `imageData`.
+   */
   capturedImage(captureId) {
     if (!captureId) return null;
-    return this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === captureId) ?? null;
+    return this.textures.find((t) => !isRenderTarget(t.info) && t.info.capture === captureId) ?? null;
   }
   /** Any captured contents of an image (a sampled read-back or a render target), with data. */
   imageContents(imageId) {
@@ -1317,7 +1324,7 @@ var CaptureData = class {
         this.onTexturesAnnounced.emit();
         break;
       case "CaptureTextureData": {
-        const tex = msg.capture ? this.textures.find((t) => t.info.kind === "sampled" && t.info.capture === msg.capture) : this.textures.find((t) => t.info.kind !== "sampled" && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
+        const tex = msg.capture ? this.textures.find((t) => !isRenderTarget(t.info) && t.info.capture === msg.capture) : this.textures.find((t) => isRenderTarget(t.info) && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);
@@ -1635,7 +1642,7 @@ var CaptureStatistics = class {
     this.secondaryCommandBuffers = secondaries.size;
     this.uniquePipelines = pipelines.size;
     this.uniqueDescriptorSets = sets.size;
-    this.renderTargetsCaptured = data.textures.filter((t) => !t.info.error).length;
+    this.renderTargetsCaptured = data.textures.filter((t) => t.info.kind !== "initial" && !t.info.error).length;
     for (const b of data.buffers.values()) {
       if (b.info.error) continue;
       this.capturedBuffers++;
@@ -4913,7 +4920,7 @@ function sizeOf(d) {
   const height = num(extent?.height) || num(d.height);
   return { pixels: width * height, levels: num(d.mipLevels) || num(d.mipmapLevelCount) || 1 };
 }
-function isRenderTarget(d) {
+function isRenderTarget2(d) {
   const usage = str(d.usage);
   return usage.includes("RenderTarget") || usage.includes("ATTACHMENT_BIT");
 }
@@ -4927,7 +4934,7 @@ function analyzeSampling(data, db) {
     const d = imageOf(id, db);
     if (!d) continue;
     const { pixels, levels } = sizeOf(d);
-    if (levels > 1 || pixels < LARGE_TEXTURE_PIXELS || isRenderTarget(d)) continue;
+    if (levels > 1 || pixels < LARGE_TEXTURE_PIXELS || isRenderTarget2(d)) continue;
     if (first === null) first = cmd.index;
     count2++;
     if (commands.length < 64) commands.push(cmd.index);
@@ -6359,9 +6366,9 @@ var Capture = class {
     const labels = this.labelsOf(p.commandIndex);
     return labels ? `${label} [${labels}]` : label;
   }
-  /** The metrics pass a render target was read back at the end of; -1 for sampled images. */
+  /** The metrics pass a render target was read back at the end of; -1 for sampled images and frame-start contents. */
   passOfTexture(info) {
-    if (info.kind === "sampled") return -1;
+    if (!isRenderTarget(info)) return -1;
     return this.metrics.passes.findIndex((p) => !p.compute && p.frame === info.frame && p.commandBuffer === info.commandBuffer && p.passIndex === info.passIndex);
   }
   /** The captured command a validation message fired on, when it names one. */
@@ -7107,10 +7114,10 @@ function stackLines(frames) {
 function textureBrief(c2, t) {
   const info = t.info;
   const pass = c2.passOfTexture(info);
-  const sampled = info.kind === "sampled";
+  const target = isRenderTarget(info);
   return {
     texture: c2.data.textures.indexOf(t),
-    kind: sampled ? "sampled" : "attachment",
+    kind: info.kind ?? "attachment",
     image: refText(c2.db, info.id),
     view: refText(c2.db, info.view),
     format: info.format,
@@ -7120,7 +7127,7 @@ function textureBrief(c2, t) {
     mips: (info.mips ?? 1) > 1 ? info.mips : void 0,
     aspect: info.aspect,
     samples: (info.samples ?? 1) > 1 ? info.samples : void 0,
-    attachment: sampled ? void 0 : info.attachment,
+    attachment: target ? info.attachment : void 0,
     resolve: info.resolve || void 0,
     pass: pass >= 0 ? pass : void 0,
     frame: c2.data.frames > 1 ? info.frame : void 0,
@@ -24610,10 +24617,10 @@ function resourceTools(store) {
   return [
     {
       name: "list_textures",
-      description: "List the images a capture read back: every render pass attachment at the end of its pass (kind attachment, with the pass number) and the images bound through descriptor sets (kind sampled), with format, size, mips and layers, and why a read-back failed. The texture numbers are what read_texture takes.",
+      description: "List the images a capture read back: every render pass attachment at the end of its pass (kind attachment, with the pass number), the images bound through descriptor sets (kind sampled), and what images held when the frame first read them before writing them (kind initial: a pass loading an attachment, a copy from an image; what a replay starts from), with format, size, mips and layers, and why a read-back failed. The texture numbers are what read_texture takes.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
-        kind: { type: "string", enum: ["all", "attachment", "sampled"], description: "Which read-backs (default all)." },
+        kind: { type: "string", enum: ["all", "attachment", "sampled", "initial"], description: "Which read-backs (default all)." },
         pass: { type: "integer", minimum: 0, description: "Only the attachments of this pass." },
         image: { type: "integer", minimum: 0, description: "Only read-backs of this image object id." },
         ...PAGE_PARAMS
@@ -24621,10 +24628,10 @@ function resourceTools(store) {
       readOnly: true,
       handler: (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
-        const kind = enumArg(args, "kind", ["all", "attachment", "sampled"], "all");
+        const kind = enumArg(args, "kind", ["all", "attachment", "sampled", "initial"], "all");
         const pass = optionalInt(args, "pass");
         const image = optionalInt(args, "image");
-        const list = c2.data.textures.filter((t) => (kind === "all" || kind === "sampled" === (t.info.kind === "sampled")) && (image === void 0 || t.info.id === image) && (pass === void 0 || c2.passOfTexture(t.info) === pass));
+        const list = c2.data.textures.filter((t) => (kind === "all" || kind === (t.info.kind ?? "attachment")) && (image === void 0 || t.info.id === image) && (pass === void 0 || c2.passOfTexture(t.info) === pass));
         const p = page(list, args, 100, 500);
         return jsonResult({ capture: c2.id, total: p.total, offset: p.offset, nextOffset: p.nextOffset, textures: p.items.map((t) => textureBrief(c2, t)) });
       }
@@ -25357,6 +25364,7 @@ function captureSummary(c2) {
   for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
   const [errors, warnings] = db.validationCounts;
   const sampled = d.textures.filter((t) => t.info.kind === "sampled").length;
+  const initial = d.textures.filter((t) => t.info.kind === "initial").length;
   const g = c2.graph;
   const slowest = passes.map((p, i) => ({ p, i })).filter((x) => x.p.durationMs !== null).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0)).slice(0, 5);
   return {
@@ -25375,8 +25383,9 @@ function captureSummary(c2) {
       computePasses: passes.filter((p) => p.compute).length,
       objects: db.allObjects.size + db.destroyedObjects.size,
       pipelinesUsed: pipelineUses(d).size,
-      renderTargets: d.textures.length - sampled,
+      renderTargets: d.textures.length - sampled - initial,
       sampledImages: sampled,
+      frameStartImages: initial || void 0,
       bufferRanges: d.buffers.size
     },
     timing: frameTiming(c2),

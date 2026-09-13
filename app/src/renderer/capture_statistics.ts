@@ -185,7 +185,7 @@ export class CaptureStatistics {
     this.secondaryCommandBuffers = secondaries.size;
     this.uniquePipelines = pipelines.size;
     this.uniqueDescriptorSets = sets.size;
-    this.renderTargetsCaptured = data.textures.filter((t) => !t.info.error).length;
+    this.renderTargetsCaptured = data.textures.filter((t) => t.info.kind !== "initial" && !t.info.error).length;
     for (const b of data.buffers.values()) {
       if (b.info.error) continue;
       this.capturedBuffers++;

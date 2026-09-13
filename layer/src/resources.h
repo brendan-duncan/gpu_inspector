@@ -55,6 +55,10 @@ struct RenderPassAttachment {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    // What the pass starts from: a loaded attachment's contents are taken while capturing
+    // (CaptureManager::OnAttachmentBegin), in the layout the pass requires.
+    VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 struct SwapchainInfo {

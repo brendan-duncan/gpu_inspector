@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "command_recorder.h"
+#include "resources.h"
 
 namespace vkinsp {
 
@@ -89,6 +90,9 @@ struct TextureCapture {
     // Sampled / storage images bound by descriptor sets (rather than render pass attachments):
     // referenced from the descriptor by `captureId`, copied when the binding pass ends.
     bool sampled = false;
+    // What an image held when the frame first read it (CaptureManager::SnapshotImageRead):
+    // referenced from the reading command's "imageData" by `captureId`, one mip per capture.
+    bool initial = false;
     uint32_t captureId = 0;
     uint64_t viewId = 0;
     uint32_t baseLayer = 0;
@@ -175,12 +179,32 @@ public:
     // Queues a readback of [offset, offset + size) of a buffer bound by the command being
     // recorded. Returns the capture id to reference from the command's JSON, or 0 when nothing is
     // captured (no capture in progress, buffers disabled, empty range, budget exhausted).
+    // `whole`: not truncated to maxBufferSize (the source of a copy, which a replay must write whole).
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
-                                VkDeviceSize size);
+                                VkDeviceSize size, bool whole = false);
     // Queues a readback of the subresource an image view covers (its base mip, all its layers),
     // once per view per capture. Returns the texture capture id to reference from the descriptor
     // JSON, or 0 when nothing is captured. `layout` is the layout the descriptor promises.
     uint32_t QueueImageCapture(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageLayout layout);
+
+    // Frame-start contents. A capture only reads back what the frame shows on its way (render
+    // targets, bound buffers and images), which is not enough to replay it: a pass that loads an
+    // attachment, or a copy from an image, reads what earlier frames left there. The first read of
+    // each subresource in a capture that nothing in the capture wrote whole before takes a copy of
+    // it (texture kind "initial"), recorded before the reading command, outside a render pass. The
+    // ids go into `ids`, for the command's "imageData". Stencil and multisampled contents are not
+    // taken (neither can be read back into something a replay could upload).
+    void SnapshotImageRead(DeviceData* dev, CommandRecorder* rec, VkImage image, VkImageAspectFlags aspect, uint32_t baseMip,
+                           uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount, VkImageLayout layout,
+                           std::vector<uint32_t>& ids);
+    // A write that replaces whole subresources (a clear, a copy over the whole extent, a pass that
+    // does not load and renders everywhere): a later read of them in the capture takes no copy.
+    void NoteImageWrite(VkImage image, VkImageAspectFlags aspect, uint32_t baseMip, uint32_t mipCount, uint32_t baseLayer,
+                        uint32_t layerCount);
+    // A render pass attachment about to begin: a snapshot when it loads, a whole write when it
+    // does not and the render area covers it.
+    void OnAttachmentBegin(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageAspectFlags aspects, VkAttachmentLoadOp loadOp,
+                           VkImageLayout layout, const VkRect2D& renderArea, std::vector<uint32_t>& ids);
 
 private:
     CaptureManager() = default;
@@ -196,6 +220,11 @@ private:
     void ReleaseStaging(DeviceData* dev);
     void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
     void FlushImageCopies(DeviceData* dev, CommandRecorder* rec);
+    // The capture record and pending copies of `tc.mip` .. + `mips` of an image (tc carries the
+    // kind, the first layer, the layer count and the aspect); the texture capture id, of a failed
+    // record when the copy cannot be made.
+    uint32_t QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
+                            uint32_t mips, VkImageLayout layout);
     void EnsureQueryPool(DeviceData* dev);
     void ReleaseQueryPool(DeviceData* dev);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
@@ -264,6 +293,10 @@ private:
     // Sampled image captures: one per image view per capture, and the bytes taken so far.
     std::unordered_map<uint64_t, uint32_t> _imageCaptureByView;
     uint64_t _imageBytes = 0;
+    // Frame-start contents: per image, per subresource (mip * layers + layer), whether the capture
+    // has read it (and taken its contents) or written it whole first.
+    enum SubresourceState : uint8_t { kUntouched = 0, kRead = 1, kWritten = 2 };
+    std::unordered_map<uint64_t, std::vector<uint8_t>> _imageStates;
 
     // Pass profiling: one timestamp query pool per capture (created on the capturing device),
     // and beside it a pipeline statistics pool when the device has the feature (pipeline_stats.h).

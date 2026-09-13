@@ -22,6 +22,14 @@
   debugger steps the variant the draw used rather than the one the constants default to. Engines
   ship one library of `[[function_constant]]`-guarded variants, so this is what makes their shaders
   debuggable at all.
+- Vulkan captures hold what a frame found in the images it reads before writing them, so frames that
+  build on earlier ones replay: a pass that loads an attachment and a copy or blit from an image take
+  the image's contents first, once, unless the frame already wrote it whole; the source of every
+  buffer copy is read whole, including staging buffers the host fills each frame. Part of **Images**
+  and **Buffers**; `list_textures` lists them as kind `initial`.
+- `vkinsp_replay` compares multisampled render targets, through the same resolve the capture read
+  them through, and starts each mip and layer of an image in the layout the frame expects it in.
+- The test application's `--persistent` option renders a frame that depends on the frames before it.
 
 ### Changed
 - Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)

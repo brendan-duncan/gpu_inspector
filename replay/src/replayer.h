@@ -273,6 +273,8 @@ struct ReplayReport {
     size_t commandsRecorded = 0;
     size_t submissions = 0;
     size_t texturesUploaded = 0;
+    /** Images put back as the frame first read them (the capture's "initial" contents). */
+    size_t initialImagesUploaded = 0;
     size_t bufferUploads = 0;
     std::vector<std::string> problems;
     std::vector<std::string> validation;
@@ -318,7 +320,8 @@ private:
         uint32_t mips = 1;
         uint32_t layers = 1;
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        /** Per subresource, mip * layers + layer: the layout outside the frame's own command buffers. */
+        std::vector<VkImageLayout> layouts;
     };
     struct ViewRecord {
         uint64_t image = 0;
@@ -458,7 +461,8 @@ private:
     uint64_t CreatePipeline(const JValue& object, std::string_view cmd, uint32_t index, const JValue& args, size_t unresolvedBefore);
 
     void ComputeInitialLayouts();
-    void UploadSampledTextures();
+    /** Sampled images, then what images held when the frame first read them. */
+    void UploadImageContents();
     void TransitionToInitialLayouts();
     void ReplayCommands();
     void BuildGroups();
@@ -539,7 +543,12 @@ private:
     bool AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track = true);
     bool RunOneTime(const std::function<void(VkCommandBuffer)>& record);
     void UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_t* data, size_t size);
-    void Transition(VkCommandBuffer cb, const ImageRecord& image, VkImageLayout from, VkImageLayout to);
+    /** Moves each subresource of an image to its target (UNDEFINED: left where it is), from the layouts the record holds. */
+    void TransitionSubresources(VkCommandBuffer cb, ImageRecord& image, const std::vector<VkImageLayout>& targets);
+    void TransitionAll(VkCommandBuffer cb, ImageRecord& image, VkImageLayout to);
+    /** A multisampled target resolved into a single-sampled copy the size of its mip, which the caller copies from; TRANSFER_SRC_OPTIMAL. */
+    VkImage ResolveTarget(VkCommandBuffer cb, const ImageRecord& image, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
+                          VkImageLayout layout, std::string& why);
     void Problem(std::string message);
     uint64_t Handle(uint64_t id) const;
     void Track(const std::string& type, uint64_t handle);
@@ -572,7 +581,10 @@ private:
     std::unordered_map<uint64_t, BufferRecord> _buffers;
     std::unordered_map<uint64_t, RenderPassRecord> _renderPasses;
     std::unordered_map<uint64_t, std::vector<uint64_t>> _framebufferViews;
-    std::unordered_map<uint64_t, VkImageLayout> _initialLayouts;
+    /** Per image, per subresource as in ImageRecord::layouts: the first layout the frame expects it in (UNDEFINED: none). */
+    std::unordered_map<uint64_t, std::vector<VkImageLayout>> _initialLayouts;
+    /** Render passes resolving a multisampled depth target (sample zero), by format and sample count. */
+    std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkRenderPass> _depthResolvePasses;
     std::unordered_map<uint64_t, std::string> _descriptorContents;  // set id -> contents last written
     std::unordered_map<uint64_t, const JValue*> _bufferData;        // capture data id -> buffers entry
     std::vector<CommandGroup> _groups;

@@ -141,6 +141,9 @@ struct App {
     // --offscreen: render into an image of our own and never present, like an OpenXR
     // application whose runtime composites (the inspector's frame boundaries without presents).
     bool offscreen = false;
+    // --persistent: every frame reads state the frames before it left behind, which a capture
+    // must hold for its replay to match (see RecordPersistent).
+    bool persistent = false;
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -204,8 +207,24 @@ struct App {
     VkPipeline computePipeline{};
     VkDescriptorSet computeSet{};
 
+    // --persistent: small images that keep their contents from frame to frame, one render pass
+    // that loads them, and a staging buffer per frame slot the host writes every frame.
+    static const uint32_t kPersistSize = 64;
+    static const uint32_t kStagingSize = 16;
+    struct PersistImage {
+        VkImage image{};
+        VkDeviceMemory memory{};
+        VkImageView view{};
+        VkFramebuffer framebuffer{};
+    };
+    VkRenderPass persistPass{};
+    PersistImage trail, source, copy;
+
     VkCommandPool commandPool{};
     static const int kFramesInFlight = 2;
+    VkBuffer persistStaging[kFramesInFlight]{};
+    VkDeviceMemory persistStagingMemory[kFramesInFlight]{};
+    void* persistStagingMapped[kFramesInFlight]{};
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
     VkCommandBuffer hazardBuffers[kFramesInFlight]{};   // --hazard: the vertex update, submitted first
     std::vector<VkCommandBuffer> prerecorded;            // --prerecord: one per swapchain image
@@ -985,6 +1004,191 @@ struct App {
         vkDestroyShaderModule(device, fs, nullptr);
     }
 
+    void CreatePersistImage(PersistImage& p, uint32_t mips, const char* name) {
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent = {kPersistSize, kPersistSize, 1};
+        ici.mipLevels = mips;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        CHECK(vkCreateImage(device, &ici, nullptr, &p.image));
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(device, p.image, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        CHECK(vkAllocateMemory(device, &mai, nullptr, &p.memory));
+        CHECK(vkBindImageMemory(device, p.image, p.memory, 0));
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = p.image;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = ici.format;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        CHECK(vkCreateImageView(device, &vci, nullptr, &p.view));
+        VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        fci.renderPass = persistPass;
+        fci.attachmentCount = 1;
+        fci.pAttachments = &p.view;
+        fci.width = fci.height = kPersistSize;
+        fci.layers = 1;
+        CHECK(vkCreateFramebuffer(device, &fci, nullptr, &p.framebuffer));
+        Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)p.image, name);
+    }
+
+    void CreatePersistent() {
+        VkAttachmentDescription att{};
+        att.format = VK_FORMAT_R8G8B8A8_UNORM;
+        att.samples = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+        att.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_GENERAL};
+        VkSubpassDescription sp{};
+        sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp.colorAttachmentCount = 1;
+        sp.pColorAttachments = &ref;
+        VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpci.attachmentCount = 1;
+        rpci.pAttachments = &att;
+        rpci.subpassCount = 1;
+        rpci.pSubpasses = &sp;
+        CHECK(vkCreateRenderPass(device, &rpci, nullptr, &persistPass));
+        CreatePersistImage(trail, 2, "Persistent trail");
+        CreatePersistImage(source, 1, "Persistent source");
+        CreatePersistImage(copy, 1, "Persistent copy");
+        VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        for (int i = 0; i < kFramesInFlight; ++i) {
+            CreateBuffer(kStagingSize * kStagingSize * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, persistStaging[i], persistStagingMemory[i], "Persistent staging");
+            CHECK(vkMapMemory(device, persistStagingMemory[i], 0, VK_WHOLE_SIZE, 0, &persistStagingMapped[i]));
+        }
+
+        // Every first mip GENERAL and cleared; the trail's second mip stays TRANSFER_SRC between frames.
+        VkCommandBuffer cb = BeginOneShot();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkImageMemoryBarrier barriers[4] = {b, b, b, b};
+        barriers[0].image = trail.image;
+        barriers[1].image = source.image;
+        barriers[2].image = copy.image;
+        barriers[3].image = trail.image;
+        for (VkImageMemoryBarrier& c : barriers) c.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barriers[3].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barriers[3].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barriers[3].subresourceRange.baseMipLevel = 1;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 4, barriers);
+        const VkClearColorValue dark{{0.05f, 0.05f, 0.08f, 1.0f}};
+        for (VkImage image : {trail.image, source.image, copy.image})
+            vkCmdClearColorImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, &dark, 1, &b.subresourceRange);
+        EndOneShot(cb);
+    }
+
+    // An access of the first mip of a persistent image ending and the next beginning, in its layout
+    // (synchronization validation wants each change of use marked).
+    struct Use {
+        VkAccessFlags access;
+        VkPipelineStageFlags stage;
+    };
+    static constexpr Use kTransferRead{VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+    static constexpr Use kTransferWrite{VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+    static constexpr Use kAttachment{VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    void Hand(VkCommandBuffer cb, VkImage image, Use from, Use to) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.srcAccessMask = from.access;
+        b.dstAccessMask = to.access;
+        vkCmdPipelineBarrier(cb, from.stage, to.stage, 0, 0, nullptr, 0, nullptr, 1, &b);
+    }
+
+    void ClearRect(VkCommandBuffer cb, const PersistImage& p, int32_t x, int32_t y, uint32_t size, uint64_t n) {
+        VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rpbi.renderPass = persistPass;
+        rpbi.framebuffer = p.framebuffer;
+        rpbi.renderArea = {{0, 0}, {kPersistSize, kPersistSize}};
+        vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+        VkClearAttachment clear{VK_IMAGE_ASPECT_COLOR_BIT, 0};
+        clear.clearValue.color.float32[0] = (float)((n * 37) & 255) / 255.0f;
+        clear.clearValue.color.float32[1] = (float)((n * 91) & 255) / 255.0f;
+        clear.clearValue.color.float32[2] = (float)((n * 53) & 255) / 255.0f;
+        clear.clearValue.color.float32[3] = 1.0f;
+        VkClearRect rect{{{x, y}, {size, size}}, 0, 1};
+        vkCmdClearAttachments(cb, 1, &clear, 1, &rect);
+        vkCmdEndRenderPass(cb);
+    }
+
+    // --persistent: before anything writes them, the frame reads what earlier frames left in
+    //  - the source image, copied whole into the copy image (a transfer read);
+    //  - a staging buffer the host writes every frame, copied into part of the copy image;
+    //  - the trail and source images, which render passes load and add a square to;
+    //  - the trail's second mip, blitted from the first, which stays TRANSFER_SRC between frames
+    //    while the first mip is GENERAL (initial layouts differ per subresource).
+    void RecordPersistent(VkCommandBuffer cb) {
+        const uint64_t n = frameCount;
+        auto* texels = static_cast<uint8_t*>(persistStagingMapped[frameSlot]);
+        for (uint32_t y = 0; y < kStagingSize; ++y)
+            for (uint32_t x = 0; x < kStagingSize; ++x) {
+                uint8_t* px = &texels[(y * kStagingSize + x) * 4];
+                const bool on = ((x / 4 + y / 4 + n) & 1) != 0;
+                px[0] = on ? (uint8_t)(n * 29) : 20;
+                px[1] = on ? 200 : (uint8_t)(n * 13);
+                px[2] = 60;
+                px[3] = 255;
+            }
+        // Where the previous frame left them: source and copy rendered to, the trail's first mip blitted from.
+        VkImageCopy whole{};
+        whole.srcSubresource = whole.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        whole.extent = {kPersistSize, kPersistSize, 1};
+        Hand(cb, source.image, kAttachment, kTransferRead);
+        Hand(cb, copy.image, kAttachment, kTransferWrite);
+        vkCmdCopyImage(cb, source.image, VK_IMAGE_LAYOUT_GENERAL, copy.image, VK_IMAGE_LAYOUT_GENERAL, 1, &whole);
+        VkBufferImageCopy upload{};
+        upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        upload.imageOffset = {24, 24, 0};
+        upload.imageExtent = {kStagingSize, kStagingSize, 1};
+        Hand(cb, copy.image, kTransferWrite, kTransferWrite);
+        vkCmdCopyBufferToImage(cb, persistStaging[frameSlot], copy.image, VK_IMAGE_LAYOUT_GENERAL, 1, &upload);
+
+        Hand(cb, trail.image, kTransferRead, kAttachment);
+        ClearRect(cb, trail, (int32_t)((n * 3) % 56), (int32_t)((n * 7) % 56), 8, n);
+        Hand(cb, trail.image, kAttachment, kTransferRead);
+        VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.srcQueueFamilyIndex = toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = trail.image;
+        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, 0, 1};
+        toDst.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[1] = {(int32_t)kPersistSize, (int32_t)kPersistSize, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
+        blit.dstOffsets[1] = {(int32_t)kPersistSize / 2, (int32_t)kPersistSize / 2, 1};
+        vkCmdBlitImage(cb, trail.image, VK_IMAGE_LAYOUT_GENERAL, trail.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        VkImageMemoryBarrier toSrc = toDst;
+        std::swap(toSrc.oldLayout, toSrc.newLayout);
+        std::swap(toSrc.srcAccessMask, toSrc.dstAccessMask);
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
+
+        Hand(cb, source.image, kTransferRead, kAttachment);
+        ClearRect(cb, source, (int32_t)((n * 5) % 60), (int32_t)((n * 2) % 60), 4, n + 7);
+        Hand(cb, copy.image, kTransferWrite, kAttachment);
+        ClearRect(cb, copy, 4, 4, 6, n + 13);
+    }
+
     // Records one frame's commands: the compute pass, then the cube in the main pass.
     void Record(VkCommandBuffer cb, uint32_t imageIndex, float t) {
         CHECK(vkResetCommandBuffer(cb, 0));
@@ -992,6 +1196,7 @@ struct App {
         // Prerecorded buffers may be resubmitted while a previous submission is still pending.
         bi.flags = prerecord ? VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         CHECK(vkBeginCommandBuffer(cb, &bi));
+        if (persistent && !prerecord) RecordPersistent(cb);
 
         // Compute first: two dispatches refreshing the wave buffer, then a barrier. The inspector
         // times the run as one compute pass.
@@ -1174,6 +1379,19 @@ struct App {
             sampler = VK_NULL_HANDLE;
             waveBuffer = VK_NULL_HANDLE;
         }
+        if (persistent) {
+            for (PersistImage* p : {&trail, &source, &copy}) {
+                vkDestroyFramebuffer(device, p->framebuffer, nullptr);
+                vkDestroyImageView(device, p->view, nullptr);
+                vkDestroyImage(device, p->image, nullptr);
+                vkFreeMemory(device, p->memory, nullptr);
+            }
+            for (int i = 0; i < kFramesInFlight; ++i) {
+                vkDestroyBuffer(device, persistStaging[i], nullptr);
+                vkFreeMemory(device, persistStagingMemory[i], nullptr);
+            }
+            vkDestroyRenderPass(device, persistPass, nullptr);
+        }
         vkDestroyPipeline(device, computePipeline, nullptr);
         vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, computeSetLayout, nullptr);
@@ -1215,6 +1433,7 @@ struct App {
         CreateFramebuffers();
         CreateResources();
         CreateCompute();
+        if (persistent) CreatePersistent();
         if (prerecord) PrerecordAll();
         auto start = std::chrono::steady_clock::now();
         while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
@@ -1240,6 +1459,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
+        else if (!strcmp(argv[i], "--persistent")) app.persistent = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen")) {
             app.offscreen = true;

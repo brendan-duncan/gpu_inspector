@@ -141,12 +141,18 @@ application with injected state. Route (a) is the general one and is the prerequ
       it took them and the views over them away. A recycled handle now moves to its new owner
       (`layer/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
       two passes in the replay; it now replays with 0 problems and every target identical.
-- [ ] Capture enough to replay any frame, RenderDoc's "initial contents" (`vk_initstate.cpp`):
-      - resource contents at frame start: images never read back, buffers never bound in the
-        frame, mapped-memory writes between submits
-      - initial layouts per subresource
-
-      Also compare multisampled targets through a resolve.
+- [x] Frame-start contents, RenderDoc's "initial contents" (`vk_initstate.cpp`), the way a layer
+      that sees every command can take them: the first read of an image subresource the capture has
+      not written whole (a loaded attachment, a copy, blit or copy-to-buffer source) copies it before
+      the command runs (texture kind `initial`, the command's `imageData`), and buffer copy sources
+      are read whole into `bufferData`, which covers staging buffers the host writes between
+      submits. The replay uploads them, starts every subresource in its own layout, and compares
+      multisampled targets through the capture's resolve. `test/triangle --persistent` replays
+      identical (its 3 persistent targets differed before), and a Unity frame takes no copies.
+- [ ] Frame-start contents, the rest (docs/REPLAY.md, "What is left"): stencil and multisampled
+      contents, memory no command names (buffer device addresses, descriptor buffers), storage
+      resources a shader reads before writing inside a pass, command buffers recorded in another
+      order than they run.
 - [x] Per-draw timing and counters inside secondary command buffers: the replay instruments them
       there too, so a Unity frame (every draw in a secondary) measures all of them. Its per-draw
       fragment counts add up to the layer's own per-pass counters exactly.

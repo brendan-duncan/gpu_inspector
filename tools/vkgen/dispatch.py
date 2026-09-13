@@ -120,6 +120,28 @@ EXTRA_HOOKS = {
     "vkCmdDrawIndirect",
     "vkCmdDrawIndexedIndirect",
     "vkCmdDispatchIndirect",
+    # frame-start contents: what a transfer read is attached to it (see the pre-call hooks), and
+    # clears are whole writes
+    "vkCmdCopyImage",
+    "vkCmdCopyImage2",
+    "vkCmdCopyImage2KHR",
+    "vkCmdBlitImage",
+    "vkCmdBlitImage2",
+    "vkCmdBlitImage2KHR",
+    "vkCmdResolveImage",
+    "vkCmdResolveImage2",
+    "vkCmdResolveImage2KHR",
+    "vkCmdCopyImageToBuffer",
+    "vkCmdCopyImageToBuffer2",
+    "vkCmdCopyImageToBuffer2KHR",
+    "vkCmdCopyBuffer",
+    "vkCmdCopyBuffer2",
+    "vkCmdCopyBuffer2KHR",
+    "vkCmdCopyBufferToImage",
+    "vkCmdCopyBufferToImage2",
+    "vkCmdCopyBufferToImage2KHR",
+    "vkCmdClearColorImage",
+    "vkCmdClearDepthStencilImage",
 }
 
 # Hand-written pre-call hooks: PreHook_<cmd>(<params by reference>). They run before the
@@ -169,6 +191,26 @@ PRE_HOOKS = {
     "vkCmdEndDebugUtilsLabelEXT",
     "vkCmdDebugMarkerBeginEXT",
     "vkCmdDebugMarkerEndEXT",
+    # frame-start contents: a transfer's source is copied before the transfer runs, unless the
+    # capture wrote it first; whole-extent destinations are noted as written
+    "vkCmdCopyImage",
+    "vkCmdCopyImage2",
+    "vkCmdCopyImage2KHR",
+    "vkCmdBlitImage",
+    "vkCmdBlitImage2",
+    "vkCmdBlitImage2KHR",
+    "vkCmdResolveImage",
+    "vkCmdResolveImage2",
+    "vkCmdResolveImage2KHR",
+    "vkCmdCopyImageToBuffer",
+    "vkCmdCopyImageToBuffer2",
+    "vkCmdCopyImageToBuffer2KHR",
+    "vkCmdCopyBuffer",
+    "vkCmdCopyBuffer2",
+    "vkCmdCopyBuffer2KHR",
+    "vkCmdCopyBufferToImage",
+    "vkCmdCopyBufferToImage2",
+    "vkCmdCopyBufferToImage2KHR",
 }
 
 SKIP_COMMANDS = {"vkNegotiateLoaderLayerInterfaceVersion"}

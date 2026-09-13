@@ -70,7 +70,8 @@ const add = (method, args = {}, extra = {}) => commands.push({ index: commands.l
 const bindPipeline = { pipelineBindPoint: "VK_PIPELINE_BIND_POINT_GRAPHICS", pipeline: ref(14, "VkPipeline") };
 add("vkBeginCommandBuffer");
 add("vkCmdBeginDebugUtilsLabelEXT", { pLabelInfo: { pLabelName: "Opaque" } });
-add("vkCmdBeginRenderPass", { pRenderPassBegin: { renderPass: ref(12, "VkRenderPass"), framebuffer: ref(13, "VkFramebuffer"), renderArea: { offset: { x: 0, y: 0 }, extent: { width: 4, height: 4 } } } });
+// The pass loads its target, so the capture carries what the image held before it (texture kind "initial").
+add("vkCmdBeginRenderPass", { pRenderPassBegin: { renderPass: ref(12, "VkRenderPass"), framebuffer: ref(13, "VkFramebuffer"), renderArea: { offset: { x: 0, y: 0 }, extent: { width: 4, height: 4 } } } }, { imageData: [2] });
 const PIPELINE_BIND = commands.length;
 add("vkCmdBindPipeline", bindPipeline);
 add("vkCmdBindPipeline", bindPipeline);
@@ -128,7 +129,10 @@ function manifest(objectList, passMs) {
     format: "gpu-inspector-capture", version: 1, api: "vulkan", application: "GPU Inspector", savedAt: "2026-09-10T00:00:00.000Z",
     source: { name: "test.exe" }, frame: 7, frames: 1, frameTimeMs: 16.7, submitMs: 1.5, refreshMs: 16.667, refreshSource: "estimate", frameBoundary: "present",
     objects: objectList, commands,
-    textures: [{ info: { id: 10, frame: 0, commandBuffer: CB, passIndex: 0, attachment: 0, format: "VK_FORMAT_R8G8B8A8_UNORM", aspect: "color", width: 4, height: 4, depth: 1, layers: 1, mip: 0, size: 64 }, payload: [0, 64] }],
+    textures: [
+      { info: { id: 10, frame: 0, commandBuffer: CB, passIndex: 0, attachment: 0, format: "VK_FORMAT_R8G8B8A8_UNORM", aspect: "color", width: 4, height: 4, depth: 1, layers: 1, mip: 0, size: 64 }, payload: [0, 64] },
+      { info: { id: 10, frame: 0, commandBuffer: CB, passIndex: 0, attachment: 0, format: "VK_FORMAT_R8G8B8A8_UNORM", aspect: "color", width: 4, height: 4, depth: 1, layers: 1, mip: 0, size: 64, kind: "initial", capture: 2, baseLayer: 0 }, payload: [0, 64] },
+    ],
     buffers: [{ info: { id: 1, buffer: 15, frame: 0, commandBuffer: CB, offset: 0, size: 36 }, payload: [64, 36] }],
     passTimings: [{ frame: 0, commandBuffer: CB, passIndex: 0, startMs: 0, durationMs: passMs, counters: { vertexInvocations: 120, fragmentInvocations: 64, clipperPrimitivesOut: 40 } }],
     validation: [{
@@ -167,6 +171,8 @@ test("a capture opens with its summary", async () => {
   assert.equal(json.capture, "cap-1");
   assert.equal(json.counts.draws, 40);
   assert.equal(json.counts.renderPasses, 1);
+  assert.equal(json.counts.renderTargets, 1, "what the loaded target held before the pass is not one of its targets");
+  assert.equal(json.counts.frameStartImages, 1);
   assert.equal(json.timing.profiled, true);
   assert.match(json.timing.frameBound.verdict, /Vsync bound/);
   assert.equal(json.validation.errors, 1);
@@ -227,6 +233,18 @@ test("a render target comes back as an image with its numbers", async () => {
   assert.equal(json.uniform, true);
   assert.equal(json.stats[0].min, 1);
   assert.deepEqual(json.texels[0].value, [1, 0, 0, 1]);
+});
+
+test("an image's contents at the start of the frame list apart from the render targets", async () => {
+  const all = (await call("list_textures")).json;
+  assert.deepEqual(all.textures.map((t) => t.kind), ["attachment", "initial"]);
+  const initial = (await call("list_textures", { kind: "initial" })).json.textures;
+  assert.equal(initial.length, 1);
+  assert.equal(initial[0].texture, 1);
+  assert.equal(initial[0].pass, undefined, "not read back at the end of a pass");
+  assert.equal(initial[0].attachment, undefined);
+  assert.deepEqual((await call("list_textures", { pass: 0 })).json.textures.map((t) => t.texture), [0]);
+  assert.equal((await call("read_texture", { texture: 1 })).json.uniform, true);
 });
 
 test("vertices decode through the pipeline's layout, with bounds", async () => {

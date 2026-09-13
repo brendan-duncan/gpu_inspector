@@ -98,11 +98,19 @@ than the installed runtime.
   up to its end. The driver is never handed a null handle.
 
 **What goes in.** The replay uses only what the capture read back:
-- **Sampled images** (every mip of the view the capture read) are uploaded before the frame. Each
-  image is then moved to the first layout the frame expects: the old layout of its first barrier,
-  the layout a descriptor binds it with, or the initial layout of a pass that renders to it.
-- **Buffer ranges** captured when bound are uploaded before the submission of the command buffer
-  that binds them.
+- **Sampled images** (every mip of the view the capture read) are uploaded before the frame.
+- **What images held when the frame first read them** (texture kind `initial`) is uploaded after
+  them, and wins where both cover a mip. The capture takes these where the frame reads an image it
+  has not written whole: a pass that loads an attachment, the source of a copy or a blit
+  ([Architecture](ARCHITECTURE.md), the capture's read-backs). That is state earlier frames left
+  behind: a history buffer, an accumulated target, a texture updated a piece at a time.
+- **Every subresource** then moves to the first layout the frame expects it in: the old layout of
+  its first barrier, the layout a descriptor binds it with, the layout of a pass that renders to it,
+  or the layout a copy, blit or clear names. Mips and layers of one image can start apart, as a mip
+  chain being built does.
+- **Buffer ranges** captured when bound, and the sources of the frame's buffer copies (read whole),
+  are uploaded before the submission of the command buffer that binds or copies them. A staging
+  buffer the host writes every frame arrives this way.
 - **Descriptor sets** are written from the snapshot taken when they were bound. A set is only
   rewritten when its contents changed, since rewriting a bound set would invalidate the command
   buffers that bound it.
@@ -111,8 +119,10 @@ than the installed runtime.
 list, including the secondary command buffers inlined after `vkCmdExecuteCommands`. They are
 submitted without the application's semaphores and fences, and the replay waits for them. At the
 end of each pass the replay copies the targets the capture read back for that pass (render pass
-counter per command buffer, as the layer counts). After the submission the copies are compared.
-Only the undefined top byte of a 24-bit depth copy is ignored.
+counter per command buffer, as the layer counts). A multisampled target goes through the resolve
+the capture read it through: `vkCmdResolveImage` for color, and for depth a render pass that resolves
+sample zero. After the submission the copies are compared. Only the undefined top byte of a 24-bit
+depth copy is ignored.
 
 ## Kept alive
 
@@ -129,7 +139,7 @@ the protocol):
 The kinds are `overdraw`, `draws`, `overlay` and `mesh` (with `commands`), `pixel`, and `replay` (the
 frame alone, comparing its render targets). Every frame after the first starts where the first did
 (`ResetFrameState`): command pools reset, images cleared and back in their initial layouts, sampled
-textures and the frame's buffer ranges uploaded again. Pipeline copies made for an analysis are
+textures, the images' frame-start contents and the frame's buffer ranges uploaded again. Pipeline copies made for an analysis are
 kept, so the next analysis of the same draws does not make them again.
 
 On the Unity frame, a fresh process takes 0.3 to 0.4 s per analysis. Served, setup takes 0.2 s once,
@@ -353,25 +363,35 @@ Every capture replayed so far, with its result:
 |---|---|
 | test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
-| test/triangle `--msaa` | the resolve target identical; the multisampled target is not compared yet |
+| test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |
+| test/triangle `--persistent` (images loaded and copied from what earlier frames left, a host-written staging buffer, a mip in another layout) | all 5 targets identical, no validation messages; before frame-start contents, the 3 persistent targets differed in nearly every texel |
 | Unity player frame (secondary command buffers, two subpasses, `vkCmdSetVertexInputEXT`, MRT) | all 12 targets identical, 0 problems |
+| Unity player frame, captured again with frame-start contents (9 passes, the last loading the depth the one before it cleared) | all 14 targets identical, no validation messages; the loaded depth was written earlier in the frame, so the capture took no copies |
 | XR triangle captured on an Adreno 740, replayed on an RTX 4080 | visually identical; 0.4% of texels differ slightly (shader precision and rasterization of two GPUs) |
 
 These cases differ for known reasons:
 - **A frame captured while `replace_shader` was active** reads back the edited shader's output.
   The capture keeps the original pipeline, which is what the replay draws.
 - **Captures older than sampled-image read-back** have no texture contents to upload.
+- **Captures older than frame-start contents** start images the frame loads or copies from at zero,
+  and copy zeros from staging buffers the host wrote.
 
 ## What is left
 
-1. **Replayable captures.** The capture has to hold the state a frame starts from, not only what
-   it read back on the way. That means resource contents at frame start: images never read back,
-   buffers never bound in the frame, and host writes to mapped memory between submissions.
-   - Diffing mapped ranges at each submit, as RenderDoc does, covers the host writes.
-   - It also needs initial layouts per subresource.
-   - It needs objects the layer did not track: swapchain images of swapchains created before it
-     loaded.
-   - Multisampled targets should be compared through a resolve.
+1. **Replayable captures, the rest.** The capture holds what the frame reads before writing it
+   through passes and transfers, and the replay starts every subresource in its own layout. Still
+   missing:
+   - Stencil contents, and the contents of multisampled images a frame loads (neither can be read
+     back into something a replay could upload yet).
+   - Memory the frame reads with no command naming it: buffer device addresses, descriptor buffers,
+     and buffers bound in command buffers recorded before the capture. RenderDoc diffs mapped ranges
+     at each submit; here a copy is taken where a command reads, which is when the GPU sees what the
+     host wrote.
+   - Storage images and buffers a shader reads before it writes them, inside a pass: their read-back
+     is taken when the pass ends.
+   - Command buffers recorded in another order than they run can take an image's contents after a
+     write rather than before it.
+   - Objects the layer did not track: swapchain images of swapchains created before it loaded.
    - Live shader replacements should be recorded.
 2. **Pixel history, the rest.**
    - Writes outside passes.

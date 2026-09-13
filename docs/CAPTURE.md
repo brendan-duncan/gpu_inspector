@@ -16,8 +16,8 @@ The bar above it controls what is recorded:
 | **Frames** | How many consecutive frames to capture. Each gets its own list inside the tab |
 | **At frame** | Capture that frame number instead of the next one (0 is the first frame the inspector sees). Leave it empty for the next frame |
 | **Render targets** | Read back each render pass's attachments at the end of the pass |
-| **Buffers** | Read back the buffers bound by descriptor sets, vertex and index bindings, and indirect draws |
-| **Images** | Read back the images bound by descriptor sets, so the capture shows what the shaders sampled |
+| **Buffers** | Read back the buffers bound by descriptor sets, vertex and index bindings, and indirect draws, and the source of every buffer copy |
+| **Images** | Read back the images bound by descriptor sets, so the capture shows what the shaders sampled, and what the frame found in the images it reads before writing them (a pass that loads an attachment, a copy from an image), so a [replay](REPLAY.md) can start where the frame did |
 | **Profile passes** | Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |

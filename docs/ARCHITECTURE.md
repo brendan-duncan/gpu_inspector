@@ -211,6 +211,20 @@ much slower than on the desktop.
    are not allowed inside one); secondary command buffers hand their pending copies to the primary
    that executes them. The binding command references each capture by id (`data` in the snapshot,
    `bufferData` for vertex/index/indirect bindings).
+   The contents the frame starts from are read back too, since a replay needs them and the read-backs
+   above only see what the frame shows on its way. The transfer commands get pre-call hooks: the
+   source of `vkCmdCopyBuffer` and `vkCmdCopyBufferToImage` (and their `2` forms) is queued whole
+   (not truncated to `maxBufferSize`) into the command's `bufferData`, which covers a staging buffer
+   the host writes every frame. For images, the capture keeps a state per subresource: untouched,
+   read, or written whole (a clear, a copy or blit over the whole extent, a pass that does not load
+   the attachment and whose render area covers it). The first read of an untouched subresource (a
+   render pass or `vkCmdBeginRendering` attachment with loadOp LOAD or NONE, the source of a copy,
+   blit or copy to a buffer) copies it before the command runs (`SnapshotImageRead`, one mip per
+   texture entry of `kind: "initial"`, recorded outside the pass in the pre-hook, under the
+   `maxImageTotal` budget with the sampled images), and the command carries the capture ids in
+   `imageData`. Reads of what the frame wrote itself take nothing: a Unity frame, whose one loading
+   pass loads the depth the pass before it cleared, takes no copies at all. Stencil and multisampled contents are not taken, and the state follows recording order, so
+   command buffers recorded in another order than they run can take a copy after a write.
 5. `vkQueueSubmit` records which command buffers ran in which order; the command buffer's record
    is frozen at submit so later re-recording does not disturb the capture.
 6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
@@ -996,7 +1010,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
