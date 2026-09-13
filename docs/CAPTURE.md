@@ -47,12 +47,17 @@ Selecting a command fills the right side with everything that was true at that p
 - **Descriptor sets** — every set bound at the draw and what each binding held, with buffers
   decoded into the types the shader declares. **Format** lets you override the type, and
   **Radix** the base.
+- **View Mesh** (a draw) — the draw's mesh in a tab of its own, as a wireframe and a table: the
+  vertices it read, and what its vertex shader wrote. See [Mesh view](REPORTS.md#mesh-view).
 - **Vertex and index buffers** — decoded into the attributes the pipeline declares, with their
   values.
 - **Push constants**.
 - **Render targets** — the pass's attachments as they were at the end of the pass. Clicking one
   opens the image viewer, with zoom, mip and layer selection, and the value of the texel under the
-  pointer.
+  pointer. **Open in Tab** shows the target in the
+  [render target tab](REPORTS.md#the-render-target-tab), where a pixel's history is one click and the
+  pass's overdraw or a draw's overlays can be drawn over the image; a draw's targets also have
+  **Highlight Draw**.
 - **Stack trace** — where the command was recorded, when stack traces were captured.
 - Commands recorded into a secondary command buffer say so, and link to it.
 
@@ -64,8 +69,13 @@ Anything the frame's analysis flagged about a command is shown with it, linked t
 ## Reports
 
 The **Reports** menu answers questions about the whole frame instead of one command: Frame Stats,
-Analyze Shaders, Shader Flame Graph, GPU Bottlenecks, Render Graph and Overdraw. See
+Analyze Shaders, Shader Flame Graph, GPU Bottlenecks, Render Graph and Overdraw. Pixel history,
+draw overlays and the mesh view answer questions about one pixel or one draw. See
 [Reports](REPORTS.md).
+
+Overdraw, pixel history, draw overlays, the mesh view's VS Out and **Measure draws** replay a Vulkan
+capture on this machine's GPU with `vkinsp_replay`, which the Windows and Linux installers include. The application
+does not need to be running; see [Capture replay](REPLAY.md).
 
 ## Capture files
 

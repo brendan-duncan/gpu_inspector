@@ -49,6 +49,21 @@ Or use a command:
 | `/gpu-inspector:compare <before> <after>` | Says whether a change moved the numbers it should have |
 | `/gpu-inspector:live <exe> [args]` | Launches an application, captures it, and tries shader changes while it runs |
 
+## Replaying a capture
+
+A few tools replay a Vulkan capture on this machine's GPU, the way the app does, and take seconds
+rather than milliseconds:
+
+- `get_overdraw` — fragments per pixel, for every pass or as one pass's heatmap
+- `get_pixel_history` — every clear and draw that touched a pixel, and what became of each draw's
+  fragments
+- `get_mesh_output` — what a draw's vertex shader wrote: vertices behind the eye, primitives
+  outside the view volume, triangles with no area
+- `get_shader_flame_graph` — measures every draw the first time it is asked
+
+They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout
+builds it (`cmake --build build --target vkinsp_replay`). See [Capture replay](REPLAY.md).
+
 ## What to turn on before capturing
 
 Claude can only read what the capture recorded, so in GPU Inspector, before you capture:

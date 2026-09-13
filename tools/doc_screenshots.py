@@ -10,8 +10,9 @@ The UI is the one in app/dist, so build it first (`npm run build` in app/, or `n
 
 Shots taken from capture files need those files: name a directory holding them with --captures
 (or GPU_INSPECTOR_DOC_CAPTURES). Shots whose capture is missing are skipped. The captures used
-are listed in SHOTS below; any .gpucap of the same shape works, since nothing here depends on
-their contents beyond looking like a real frame.
+are listed in SHOTS below. Most work from any .gpucap of the same shape, since they depend on
+nothing beyond looking like a real frame; the ones that name a draw by its command index
+(draw-overlay, mesh-view) need the capture they were taken from, or a draw index changed to suit.
 """
 
 import argparse
@@ -82,6 +83,19 @@ SHOTS = [
          delay_ms=25000, launch=True),
     Shot("pixel-history", ["--launch={triangle}", "--debug-capture", "--debug-view=pixel-history"],
          delay_ms=30000, launch=True),
+    # The Shader Flame Graph of a real frame, whose passes each run different shaders.
+    Shot("flame-graph", ["--debug-open={capture}", "--debug-view=flame"], delay_ms=15000,
+         capture="unity-ui.gpucap"),
+    # A draw overlay over a real frame: a Unity frame whose last passes draw a menu (unity-ui.gpucap,
+    # command 143 is the buttons' draw). Replayed, so slower.
+    Shot("draw-overlay", ["--debug-open={capture}", "--debug-view=overlay:highlight:143"],
+         delay_ms=25000, capture="unity-ui.gpucap"),
+    # The mesh tab: VS In of a real mesh (unity.gpucap, command 71 is the sky sphere), and VS Out of
+    # the test application's cube inside the view volume (replayed).
+    Shot("mesh-view", ["--debug-open={capture}", "--debug-view=mesh:in:71"], delay_ms=12000,
+         capture="unity.gpucap"),
+    Shot("mesh-output", ["--launch={triangle}", "--debug-capture", "--debug-view=mesh:out"],
+         delay_ms=22000, launch=True),
     # A shader with its embedded source, in a captured draw.
     Shot("shader-source", ["--debug-open={capture}", "--debug-command=4", "--debug-expand=Fragment Shader"],
          delay_ms=12000, capture="xrstack.gpucap"),

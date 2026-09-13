@@ -30,6 +30,15 @@ follow the same way. The feature list below describes the Vulkan layer.
   depth test is rejecting work, each with what usually causes it. Both APIs; the counters come
   from a pipeline statistics query on Vulkan and Metal's counter sets on macOS.
   [docs/PROFILING.md](docs/PROFILING.md) is the walkthrough.
+* **Replay** — a saved Vulkan capture is replayed on this machine's GPU, without the application,
+  to answer what the capture alone cannot:
+  - how many times each pixel was shaded (overdraw)
+  - every draw that touched a pixel, and what became of its fragments (pixel history)
+  - where one draw landed: highlighted, its depth test, its wireframe (draw overlays)
+  - what the vertex shader wrote, as a wireframe and a table beside the vertices it read (mesh view)
+  - each draw's GPU time and counters, for the Shader Flame Graph
+
+  [docs/REPORTS.md](docs/REPORTS.md) shows each.
 * **Render graph** — the same frame as a dependency graph: which pass produced what each pass
   reads, drawn as a resource lifetime chart with the selected pass's producers and consumers
   beside it, its GPU time and the frame's critical path, what it reads from before the capture,
