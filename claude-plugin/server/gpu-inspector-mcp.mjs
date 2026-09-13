@@ -17026,7 +17026,7 @@ var INSTRUCTIONS = [
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
 function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
-  const version = true ? "0.9.0" : "dev";
+  const version = true ? "0.10.0" : "dev";
   return new McpStdioServer({ name: "gpu-inspector", version }, [
     ...captureTools(store),
     ...commandTools(store),
