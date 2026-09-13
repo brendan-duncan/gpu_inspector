@@ -114,9 +114,9 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
     _overlayOnlyTarget = !depthTested;  // without the tests, the other draws change nothing
     _overlayTargetMode = mode;
     _overlayIssued = false;
+    _overlayDrawn = false;
     ReissuePass(cb, group, pass, endIndex, depthTested, depthFormat, rp, fb);
-    // Nothing is issued after the target draw, so what was bound for it still says whether it drew.
-    const bool drawn = _overlayIssued && _overdrawDrawable;
+    const bool drawn = _overlayIssued && _overlayDrawn;
     _overlayTarget = UINT32_MAX;
     _overlayOnlyTarget = false;
     if (!drawn || !CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, out)) return false;

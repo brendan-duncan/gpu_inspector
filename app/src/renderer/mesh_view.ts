@@ -30,6 +30,8 @@ export interface MeshViewHost {
   meshOutput(command: number, passDraws: CaptureCommand[]): Promise<MeshOutput>;
   /** The vertex shader's input names by location. */
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
+  /** Vulkan: opens the shader debugger on a vertex (a VS In row, or the VS Out record). */
+  debugVertex?(command: number, row: number, stage: MeshStage): void;
 }
 
 export interface MeshViewOptions {
@@ -155,6 +157,10 @@ export class MeshView {
     if (draws.length > 1) new Button(bar, { label: "›", class: "btn btn-sm", tooltip: "The pass's next draw", disabled: at === draws.length - 1, callback: () => choose(at + 1) });
     new Button(bar, { label: "Go to Draw", class: "btn btn-sm", tooltip: "Select the draw in the capture's tab", callback: () => this.host.selectCommand(this._draw.index) });
     new Button(bar, { label: "Reset View", class: "btn btn-sm", tooltip: "Frame the mesh again (or double-click the preview)", callback: () => this._preview?.resetView() });
+    if (this.host.debugVertex) {
+      new Button(bar, { label: "Debug Vertex", class: "btn btn-sm", tooltip: "Debug the vertex shader on the vertex selected in the table (the first when none is)",
+        callback: () => this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage) });
+    }
     this._status = new Span(bar, { class: "text-muted" });
     this._notes = new Div(this.root, { class: "mesh-view-notes text-muted" });
 

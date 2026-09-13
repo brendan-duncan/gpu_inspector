@@ -36,6 +36,7 @@ follow the same way. The feature list below describes the Vulkan layer.
   - every draw that touched a pixel, and what became of its fragments (pixel history)
   - where one draw landed: highlighted, its depth test, its wireframe (draw overlays)
   - what the vertex shader wrote, as a wireframe and a table beside the vertices it read (mesh view)
+  - a vertex, pixel or compute invocation stepped through line by line, with its values (shader debugger)
   - each draw's GPU time and counters, for the Shader Flame Graph
 
   [docs/REPORTS.md](docs/REPORTS.md) shows each.

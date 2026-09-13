@@ -9,10 +9,10 @@ import os from "node:os";
 import path from "node:path";
 
 // src/renderer/utils/float.ts
-function float16ToFloat32(float16) {
-  const s = (float16 & 32768) >> 15;
-  const e = (float16 & 31744) >> 10;
-  const f = float16 & 1023;
+function float16ToFloat32(float162) {
+  const s = (float162 & 32768) >> 15;
+  const e = (float162 & 31744) >> 10;
+  const f = float162 & 1023;
   if (e == 0) {
     return (s ? -1 : 1) * Math.pow(2, -14) * (f / Math.pow(2, 10));
   } else if (e == 31) {
@@ -1858,10 +1858,10 @@ function buildRenderGraph(passes, options = {}) {
       }
       if (!version.readers.includes(node2)) version.readers.push(node2);
       if (version.producer && version.producer !== node2) {
-        const edge = { from: version.producer, to: node2, version, usage: access.usage };
-        edges.push(edge);
-        version.producer.outputs.push(edge);
-        node2.inputs.push(edge);
+        const edge2 = { from: version.producer, to: node2, version, usage: access.usage };
+        edges.push(edge2);
+        version.producer.outputs.push(edge2);
+        node2.inputs.push(edge2);
       } else if (!version.producer) {
         resource2.externalInput = true;
       }
@@ -1925,11 +1925,11 @@ function computeCriticalPath(graph) {
     const node2 = graph.nodes[i];
     let bestChild = null;
     let bestChildMs = 0;
-    for (const edge of node2.outputs) {
-      if (edge.to.ordinal <= node2.ordinal) continue;
-      if (edge.to.pathMs > bestChildMs) {
-        bestChildMs = edge.to.pathMs;
-        bestChild = edge.to;
+    for (const edge2 of node2.outputs) {
+      if (edge2.to.ordinal <= node2.ordinal) continue;
+      if (edge2.to.pathMs > bestChildMs) {
+        bestChildMs = edge2.to.pathMs;
+        bestChild = edge2.to;
       }
     }
     node2.pathMs = (node2.durationMs ?? 0) + bestChildMs;
@@ -2837,24 +2837,24 @@ function parseDrawStats(input) {
     throw new Error(`The draw measurements are not valid JSON: ${e.message}`);
   }
   if (json.format !== "gpu-inspector-draw-stats") throw new Error("Not draw measurements from vkinsp_replay.");
-  const num2 = (v) => typeof v === "number" ? v : 0;
+  const num3 = (v) => typeof v === "number" ? v : 0;
   const draws = (Array.isArray(json.draws) ? json.draws : []).map((raw) => {
     const d = raw;
-    const pass = num2(d.passIndex);
+    const pass = num3(d.passIndex);
     return {
-      command: num2(d.command),
-      frame: num2(d.frame),
-      commandBuffer: num2(d.commandBuffer),
+      command: num3(d.command),
+      frame: num3(d.frame),
+      commandBuffer: num3(d.commandBuffer),
       ...pass === NO_PASS ? {} : { passIndex: pass },
       timed: d.timed === true,
-      ms: num2(d.ms),
+      ms: num3(d.ms),
       counted: d.counted === true,
-      vertexInvocations: num2(d.vertexInvocations),
-      primitives: num2(d.primitives),
-      fragmentInvocations: num2(d.fragmentInvocations),
-      computeInvocations: num2(d.computeInvocations),
+      vertexInvocations: num3(d.vertexInvocations),
+      primitives: num3(d.primitives),
+      fragmentInvocations: num3(d.fragmentInvocations),
+      computeInvocations: num3(d.computeInvocations),
       sampled: d.sampled === true,
-      samplesPassed: num2(d.samplesPassed)
+      samplesPassed: num3(d.samplesPassed)
     };
   });
   return {
@@ -7856,1583 +7856,3134 @@ function commandTools(store) {
   ];
 }
 
-// src/mcp/live_session.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs8 from "node:fs";
-import net2 from "node:net";
-import os5 from "node:os";
-import path7 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// src/main/android.ts
-import { execFile as execFile2, execFileSync, spawn } from "node:child_process";
-import crypto from "node:crypto";
+// src/main/replay.ts
+import { spawn } from "node:child_process";
 import fs5 from "node:fs";
 import os3 from "node:os";
 import path4 from "node:path";
-var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
-var LAYER_LIB = "libVkLayer_inspector_capture.so";
-var LAYER_APK = "gpu_inspector_layer.apk";
-var DEVICE_TMP = "/data/local/tmp";
-var ADB_TIMEOUT_MS = 2e4;
-var INSTALL_TIMEOUT_MS = 18e4;
-var START_TIMEOUT_MS = 6e4;
-var PID_RETRIES = 20;
-var PID_RETRY_MS = 500;
-var POLL_MS = 2e3;
-var MIN_SDK = 28;
-var LAYER_APP_SDK = 29;
-function findAdb() {
-  const exe = process.platform === "win32" ? "adb.exe" : "adb";
-  const candidates = [];
-  if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
-  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path4.join(process.env[v], "platform-tools", exe));
-  }
-  if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path4.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
-  } else if (process.platform === "darwin") {
-    candidates.push(path4.join(os3.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
-  } else {
-    candidates.push(path4.join(os3.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
-  }
-  for (const c2 of candidates) if (fs5.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path4.delimiter)) {
-    if (dir && fs5.existsSync(path4.join(dir, exe))) return path4.join(dir, exe);
-  }
-  return null;
+var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
+function findReplayTool(roots, layerDirs) {
+  const candidates = [
+    process.env.INSPECTOR_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path4.join(dir, REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs5.existsSync(f)) ?? null;
 }
-function adbArgs(serial, args) {
-  return serial ? ["-s", serial, ...args] : args;
+var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
+function tail(text, lines = 12) {
+  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
-function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) {
-        const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
-        reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
-      } else {
-        resolve(stdout);
+function analysisArgs(analysis, out) {
+  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
+  if (analysis.kind === "draws") return ["--draw-data", out];
+  if (analysis.kind === "overlay" || analysis.kind === "mesh") {
+    const flag = `--${analysis.kind}`;
+    return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
+  }
+  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
+  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
+}
+function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
+  return new Promise((resolve) => {
+    const out = path4.join(os3.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    let output = "";
+    let done = false;
+    let timedOut = false;
+    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    const collect = (chunk2) => {
+      output += chunk2.toString();
+      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    const finish2 = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      let data = null;
+      try {
+        data = new Uint8Array(fs5.readFileSync(out));
+        fs5.unlinkSync(out);
+      } catch {
       }
-    });
+      if (data) {
+        resolve({ data, output: tail(output) });
+        return;
+      }
+      resolve({
+        data: null,
+        output: tail(output),
+        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
+${tail(output)}`)
+      });
+    };
+    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
+    child.on("close", () => finish2(null));
   });
 }
-function shell(adbPath, serial, command, timeoutMs = ADB_TIMEOUT_MS) {
-  return adb(adbPath, serial, ["shell", command], timeoutMs);
+function serveRequest(id, analysis, out) {
+  if (analysis.kind === "pixel") {
+    return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
+  }
+  return { id, ...analysis, out };
 }
-function parseDevices(text) {
+function tempOutput(kind) {
+  return path4.join(os3.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+}
+var ReplayServer = class {
+  tool;
+  capturePath;
+  lastUsed = Date.now();
+  _child;
+  _ready;
+  _resolveReady = () => {
+  };
+  _pending = /* @__PURE__ */ new Map();
+  _nextId = 1;
+  _output = "";
+  _exited = false;
+  constructor(tool, capturePath) {
+    this.tool = tool;
+    this.capturePath = capturePath;
+    this._ready = new Promise((resolve) => {
+      this._resolveReady = resolve;
+    });
+    this._child = spawn(tool, [capturePath, "--serve"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let buffered = "";
+    this._child.stdout?.on("data", (chunk2) => {
+      buffered += chunk2.toString();
+      let newline;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline).replace(/\r$/, "");
+        buffered = buffered.slice(newline + 1);
+        this._line(line);
+      }
+    });
+    this._child.stderr?.on("data", (chunk2) => this._collect(chunk2.toString()));
+    this._child.stdin?.on("error", () => {
+    });
+    this._child.on("error", (e) => this._exit(`could not run ${tool}: ${e.message}`));
+    this._child.on("exit", (code) => this._exit(`the replay process exited (${code ?? "killed"})`));
+  }
+  get alive() {
+    return !this._exited;
+  }
+  /**
+   * Replays the frame for an analysis and reads the file it wrote. `fallback` is set when the answer
+   * is not the analysis's: the process could not start (a tool from before --serve) or exited.
+   */
+  async run(analysis, timeoutMs = 10 * 60 * 1e3) {
+    this.lastUsed = Date.now();
+    const startError = await this._ready;
+    if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
+    const id = this._nextId++;
+    const out = tempOutput(analysis.kind);
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(id);
+        this.dispose();
+        resolve({ id, ok: false, error: `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` });
+      }, timeoutMs);
+      this._pending.set(id, (a) => {
+        clearTimeout(timer);
+        resolve(a);
+      });
+      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out)) + "\n");
+    });
+    this.lastUsed = Date.now();
+    let data = null;
+    try {
+      data = new Uint8Array(fs5.readFileSync(out));
+      fs5.unlinkSync(out);
+    } catch {
+    }
+    if (answer.ok && data) return { data, output: tail(this._output) };
+    return { data: null, output: tail(this._output), error: answer.error ?? "the replay wrote no data", fallback: this._exited };
+  }
+  /** Stops the process: asked to quit, and killed if it does not. */
+  dispose() {
+    if (this._exited) return;
+    try {
+      this._child.stdin?.write(JSON.stringify({ kind: "quit" }) + "\n");
+      this._child.stdin?.end();
+    } catch {
+    }
+    setTimeout(() => {
+      if (!this._exited) this._child.kill();
+    }, 2e3).unref();
+  }
+  _line(line) {
+    if (!line.startsWith("@replay ")) {
+      this._collect(line + "\n");
+      return;
+    }
+    let answer;
+    try {
+      answer = JSON.parse(line.slice(8));
+    } catch {
+      return;
+    }
+    if (answer.ready !== void 0) {
+      this._resolveReady(answer.ready ? null : answer.error ?? "the replay could not start");
+      return;
+    }
+    if (answer.id === void 0) return;
+    const resolve = this._pending.get(answer.id);
+    this._pending.delete(answer.id);
+    resolve?.(answer);
+  }
+  _collect(text) {
+    this._output += text;
+    if (this._output.length > 256 * 1024) this._output = this._output.slice(-128 * 1024);
+  }
+  _exit(message) {
+    if (this._exited) return;
+    this._exited = true;
+    this._resolveReady(message);
+    for (const [id, resolve] of this._pending) resolve({ id, ok: false, error: message });
+    this._pending.clear();
+  }
+};
+var ReplayServerPool = class {
+  constructor(max = 3, idleMs = 5 * 60 * 1e3) {
+    this.max = max;
+    this.idleMs = idleMs;
+  }
+  _servers = /* @__PURE__ */ new Map();
+  _sweep = null;
+  /** Runs an analysis in the capture's replay, starting one if needed; a process that cannot serve falls back to a one-shot replay. */
+  async run(tool, capturePath, analysis, timeoutMs) {
+    let stamp = 0;
+    try {
+      stamp = fs5.statSync(capturePath).mtimeMs;
+    } catch {
+      return { data: null, output: "", error: `${capturePath} does not exist` };
+    }
+    const key = `${tool}
+${path4.resolve(capturePath)}
+${stamp}`;
+    let server = this._servers.get(key);
+    if (!server || !server.alive) {
+      server?.dispose();
+      server = new ReplayServer(tool, capturePath);
+      this._servers.set(key, server);
+      this._trim();
+    }
+    this._scheduleSweep();
+    const result = await server.run(analysis, timeoutMs);
+    if (!server.alive) this._servers.delete(key);
+    if (result.fallback) return runReplay(tool, capturePath, analysis, timeoutMs);
+    return result;
+  }
+  /** Stops the replays of a capture file (it is closed, or about to be deleted). */
+  release(capturePath) {
+    const resolved = path4.resolve(capturePath);
+    for (const [key, server] of this._servers) {
+      if (path4.resolve(server.capturePath) !== resolved) continue;
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  disposeAll() {
+    for (const server of this._servers.values()) server.dispose();
+    this._servers.clear();
+  }
+  _trim() {
+    const live = [...this._servers.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    while (live.length > this.max) {
+      const [key, server] = live.shift();
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  _scheduleSweep() {
+    if (this._sweep) return;
+    this._sweep = setInterval(() => {
+      const now = Date.now();
+      for (const [key, server] of this._servers) {
+        if (now - server.lastUsed < this.idleMs) continue;
+        server.dispose();
+        this._servers.delete(key);
+      }
+      if (!this._servers.size && this._sweep) {
+        clearInterval(this._sweep);
+        this._sweep = null;
+      }
+    }, 30 * 1e3);
+    this._sweep.unref();
+  }
+};
+var replayServers = new ReplayServerPool();
+
+// src/renderer/mesh_output.ts
+var MESH_MAGIC = "MESH 1\n";
+function parseMeshFile(bytes) {
+  const magic = new TextEncoder().encode(MESH_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not a mesh output file from vkinsp_replay.");
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length;
+  if (base > bytes.byteLength) throw new Error("The mesh output file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const draws = (manifest.draws ?? []).map(({ payload, ...info }) => {
+    let data = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The mesh output file is truncated (vertices out of range).");
+      data = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { ...info, outputs: info.outputs ?? [], data };
+  });
+  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
+}
+function primitiveKind(topology) {
+  if (/POINT/.test(topology)) return "points";
+  if (/LINE/.test(topology)) return "lines";
+  return "triangles";
+}
+function verticesPerPrimitive(kind) {
+  return kind === "triangles" ? 3 : kind === "lines" ? 2 : 1;
+}
+function positionOutput(m) {
+  return m.outputs.find((o) => o.builtin === "Position" && o.base === "float" && o.components === 4) ?? null;
+}
+function outputValues(m, output, vertex) {
+  if (!m.data) return [];
+  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+  const at = vertex * m.stride + output.offset;
+  if (at + output.components * 4 > m.data.byteLength) return [];
   const out = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("List of devices") || line.startsWith("*")) continue;
-    const parts2 = line.split(/\s+/);
-    if (parts2.length < 2) continue;
-    const model = parts2.find((p) => p.startsWith("model:"))?.substring(6).replace(/_/g, " ") ?? "";
-    out.push({ serial: parts2[0], state: parts2[1], model });
+  for (let k = 0; k < output.components; k++) {
+    const o = at + k * 4;
+    out.push(output.base === "float" ? view.getFloat32(o, true) : output.base === "int" ? view.getInt32(o, true) : view.getUint32(o, true));
   }
   return out;
 }
-async function listDevices(adbPath) {
-  const listed = parseDevices(await adb(adbPath, null, ["devices", "-l"]));
-  const devices = [];
-  for (const d of listed) {
-    const dev = { serial: d.serial, state: d.state, model: d.model, sdk: 0, abi: "" };
-    if (d.state === "device") {
-      try {
-        const props = (await shell(adbPath, d.serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.manufacturer; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
-        dev.sdk = Number(props[0]) || 0;
-        dev.abi = props[1] ?? "";
-        if (!dev.model) dev.model = [props[2], props[3]].filter(Boolean).join(" ");
-      } catch {
+function clipPositions(m) {
+  const p = positionOutput(m);
+  if (!p || !m.data) return null;
+  const out = new Float32Array(m.vertices * 4);
+  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+  for (let v = 0; v < m.vertices; v++) {
+    const at = v * m.stride + p.offset;
+    if (at + 16 > m.data.byteLength) break;
+    for (let k = 0; k < 4; k++) out[v * 4 + k] = view.getFloat32(at + k * 4, true);
+  }
+  return out;
+}
+function clipStats(m) {
+  const clip2 = clipPositions(m);
+  if (!clip2) return null;
+  const kind = primitiveKind(m.topology);
+  const per = verticesPerPrimitive(kind);
+  const stats = { vertices: m.vertices, primitives: Math.floor(m.vertices / per), behind: 0, invalid: 0, outside: 0, degenerate: 0, ndc: null };
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < m.vertices; v++) {
+    const [x, y, z, w] = clip2.subarray(v * 4, v * 4 + 4);
+    if (![x, y, z, w].every(Number.isFinite)) {
+      stats.invalid++;
+      continue;
+    }
+    if (w <= 0) {
+      stats.behind++;
+      continue;
+    }
+    const ndc = [x / w, y / w, z / w];
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], ndc[k]);
+      max[k] = Math.max(max[k], ndc[k]);
+    }
+  }
+  if (min[0] <= max[0]) stats.ndc = { min, max };
+  const planes = [
+    (x, _y, _z, w) => x < -w,
+    (x, _y, _z, w) => x > w,
+    (_x, y, _z, w) => y < -w,
+    (_x, y, _z, w) => y > w,
+    (_x, _y, z) => z < 0,
+    (_x, _y, z, w) => z > w
+  ];
+  for (let p = 0; p < stats.primitives; p++) {
+    const at = p * per;
+    const vertex = (i) => Array.from(clip2.subarray((at + i) * 4, (at + i) * 4 + 4));
+    const vs = Array.from({ length: per }, (_, i) => vertex(i));
+    if (planes.some((out) => vs.every(([x, y, z, w]) => out(x, y, z, w)))) {
+      stats.outside++;
+      continue;
+    }
+    if (kind === "triangles" && vs.every(([, , , w]) => w > 0)) {
+      const s = vs.map(([x, y, , w]) => [x / w, y / w]);
+      const area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+      if (Math.abs(area) < 1e-12) stats.degenerate++;
+    }
+  }
+  return stats;
+}
+function meshSummary(m) {
+  if (!m.measured) return `Not captured: ${m.note ?? "the replay could not capture it"}`;
+  const kind = primitiveKind(m.topology);
+  const stats = clipStats(m);
+  const parts2 = [`${m.vertices.toLocaleString()} vertices, ${Math.floor(m.vertices / verticesPerPrimitive(kind)).toLocaleString()} ${kind}`];
+  if (m.truncated) parts2.push("truncated");
+  if (!stats) {
+    parts2.push("no gl_Position the replay could capture");
+  } else {
+    if (stats.outside) parts2.push(`${stats.outside.toLocaleString()} outside the view`);
+    if (stats.behind) parts2.push(`${stats.behind.toLocaleString()} vertices behind the eye`);
+    if (stats.degenerate) parts2.push(`${stats.degenerate.toLocaleString()} with no area`);
+    if (stats.invalid) parts2.push(`${stats.invalid.toLocaleString()} NaN or infinite positions`);
+  }
+  return parts2.join(", ");
+}
+
+// src/renderer/spirv/module.ts
+var BUILTIN_NAMES = {
+  0: "gl_Position",
+  1: "gl_PointSize",
+  3: "gl_ClipDistance",
+  4: "gl_CullDistance",
+  5: "gl_VertexID",
+  6: "gl_InstanceID",
+  7: "gl_PrimitiveID",
+  9: "gl_Layer",
+  15: "gl_FragCoord",
+  16: "gl_PointCoord",
+  17: "gl_FrontFacing",
+  18: "gl_SampleID",
+  19: "gl_SamplePosition",
+  20: "gl_SampleMask",
+  22: "gl_FragDepth",
+  23: "gl_HelperInvocation",
+  24: "gl_NumWorkGroups",
+  25: "gl_WorkGroupSize",
+  26: "gl_WorkGroupID",
+  27: "gl_LocalInvocationID",
+  28: "gl_GlobalInvocationID",
+  29: "gl_LocalInvocationIndex",
+  42: "gl_VertexIndex",
+  43: "gl_InstanceIndex",
+  4424: "gl_BaseVertex",
+  4425: "gl_BaseInstance",
+  4426: "gl_DrawID",
+  4440: "gl_ViewIndex"
+};
+function literalString(words2, start) {
+  const bytes = [];
+  for (let i = start; i < words2.length; i++) {
+    const w = words2[i];
+    for (let b = 0; b < 4; b++) {
+      const c2 = w >>> b * 8 & 255;
+      if (c2 === 0) return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: i - start + 1 };
+      bytes.push(c2);
+    }
+  }
+  return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: words2.length - start };
+}
+function hasResultTypeAndId(op) {
+  if (op === 1 /* Undef */ || op === 12 /* ExtInst */ || op === 55 /* FunctionParameter */ || op === 57 /* FunctionCall */ || op === 59 /* Variable */) return true;
+  if (op === 54 /* Function */) return true;
+  if (op >= 41 /* ConstantTrue */ && op <= 52 /* SpecConstantOp */ && op !== 47) return true;
+  if (op >= 60 /* ImageTexelPointer */ && op <= 70 /* InBoundsPtrAccessChain */ && op !== 62 /* Store */ && op !== 63 /* CopyMemory */ && op !== 64 /* CopyMemorySized */) return true;
+  if (op >= 77 /* VectorExtractDynamic */ && op <= 84 /* Transpose */) return true;
+  if (op >= 86 /* SampledImage */ && op <= 107 /* ImageQuerySamples */ && op !== 99 /* ImageWrite */) return true;
+  if (op >= 109 /* ConvertFToU */ && op <= 124 /* Bitcast */) return true;
+  if (op >= 126 /* SNegate */ && op <= 152 /* SMulExtended */) return true;
+  if (op >= 154 /* Any */ && op <= 191 /* FUnordGreaterThanEqual */) return true;
+  if (op >= 194 /* ShiftRightLogical */ && op <= 205 /* BitCount */) return true;
+  if (op >= 207 /* DPdx */ && op <= 215 /* FwidthCoarse */) return true;
+  if (op === 245 /* Phi */ || op === 400 /* CopyLogical */ || op === 5381 /* IsHelperInvocation */) return true;
+  return false;
+}
+function hasResultIdOnly(op) {
+  return op === 7 /* String */ || op === 11 /* ExtInstImport */ || op === 248 /* Label */ || op === 73 /* DecorationGroup */ || op >= 19 /* TypeVoid */ && op <= 33 /* TypeFunction */ || op === 39 /* TypeForwardPointer */;
+}
+var SpirvModule = class {
+  words;
+  instructions = [];
+  types = /* @__PURE__ */ new Map();
+  /** Constant values (spec constants at their defaults), by id. */
+  constants = /* @__PURE__ */ new Map();
+  /** The spec constants: id to SpecId, for a pipeline's specialization. */
+  specIds = /* @__PURE__ */ new Map();
+  names = /* @__PURE__ */ new Map();
+  memberNames = /* @__PURE__ */ new Map();
+  decorations = /* @__PURE__ */ new Map();
+  memberDecorations = /* @__PURE__ */ new Map();
+  /** Global variables: id to pointer type and storage class, with their initializer when they have one. */
+  globals = /* @__PURE__ */ new Map();
+  functions = /* @__PURE__ */ new Map();
+  entryPoints = [];
+  /** Extended instruction sets imported, by id: "GLSL.std.450", "NonSemantic.Shader.DebugInfo.100", ... */
+  extSets = /* @__PURE__ */ new Map();
+  /** OpString contents by id. */
+  strings = /* @__PURE__ */ new Map();
+  /** Source locations per instruction ordinal, from the module's debug information. */
+  debug;
+  /** NonSemantic debug info: a local variable's name, by the OpVariable its DebugDeclare names. */
+  debugVariableNames = /* @__PURE__ */ new Map();
+  /** The result type of every id that has one (instructions, parameters, variables). */
+  idTypes = /* @__PURE__ */ new Map();
+  constructor(data) {
+    if (data.byteLength < 20 || data.byteLength % 4 !== 0) throw new Error("not a SPIR-V module");
+    const words2 = new Uint32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    if (words2[0] !== 119734787) throw new Error("not a SPIR-V module (bad magic number)");
+    this.words = words2;
+    this.debug = parseSpirvDebugInfo(data);
+    let fn = null;
+    let block = null;
+    const groups = /* @__PURE__ */ new Map();
+    const debugLocals = /* @__PURE__ */ new Map();
+    for (let at = 5, index = 0; at < words2.length; index++) {
+      const count2 = words2[at] >>> 16;
+      const op = words2[at] & 65535;
+      if (count2 === 0 || at + count2 > words2.length) throw new Error(`malformed SPIR-V at word ${at}`);
+      const operands = words2.subarray(at + 1, at + count2);
+      let resultType2 = 0;
+      let result = 0;
+      if (hasResultTypeAndId(op)) {
+        resultType2 = operands[0];
+        result = operands[1];
+      } else if (hasResultIdOnly(op)) {
+        result = operands[0];
+      }
+      const inst = { op, words: operands, index, resultType: resultType2, result };
+      this.instructions.push(inst);
+      if (result && resultType2) this.idTypes.set(result, resultType2);
+      at += count2;
+      switch (op) {
+        case 5 /* Name */:
+          this.names.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 6 /* MemberName */: {
+          let m = this.memberNames.get(operands[0]);
+          if (!m) this.memberNames.set(operands[0], m = /* @__PURE__ */ new Map());
+          m.set(operands[1], literalString(operands, 2).text);
+          break;
+        }
+        case 7 /* String */:
+          this.strings.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 11 /* ExtInstImport */:
+          this.extSets.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 15 /* EntryPoint */: {
+          const name = literalString(operands, 2);
+          this.entryPoints.push({ model: operands[0], function: operands[1], name: name.text, interface: Array.from(operands.subarray(2 + name.words)), modes: /* @__PURE__ */ new Map() });
+          break;
+        }
+        case 16 /* ExecutionMode */:
+        case 331 /* ExecutionModeId */:
+          for (const e of this.entryPoints) if (e.function === operands[0]) e.modes.set(operands[1], Array.from(operands.subarray(2)));
+          break;
+        case 71 /* Decorate */:
+        case 332 /* DecorateId */:
+        case 5632 /* DecorateString */:
+          this._decorate(this.decorations, operands[0], operands[1], Array.from(operands.subarray(2)));
+          break;
+        case 72 /* MemberDecorate */:
+        case 5633 /* MemberDecorateString */: {
+          let m = this.memberDecorations.get(operands[0]);
+          if (!m) this.memberDecorations.set(operands[0], m = /* @__PURE__ */ new Map());
+          this._decorate(m, operands[1], operands[2], Array.from(operands.subarray(3)));
+          break;
+        }
+        case 73 /* DecorationGroup */:
+          groups.set(operands[0], this.decorations.get(operands[0]) ?? /* @__PURE__ */ new Map());
+          break;
+        case 74 /* GroupDecorate */: {
+          const g = this.decorations.get(operands[0]);
+          for (const target of operands.subarray(1)) for (const [d, v] of g ?? []) this._decorate(this.decorations, target, d, v);
+          break;
+        }
+        case 75 /* GroupMemberDecorate */: {
+          const g = this.decorations.get(operands[0]);
+          for (let i = 1; i + 1 < operands.length; i += 2) {
+            let m = this.memberDecorations.get(operands[i]);
+            if (!m) this.memberDecorations.set(operands[i], m = /* @__PURE__ */ new Map());
+            for (const [d, v] of g ?? []) this._decorate(m, operands[i + 1], d, v);
+          }
+          break;
+        }
+        case 19 /* TypeVoid */:
+          this.types.set(result, { kind: "void" });
+          break;
+        case 20 /* TypeBool */:
+          this.types.set(result, { kind: "bool" });
+          break;
+        case 21 /* TypeInt */:
+          this.types.set(result, { kind: "int", width: operands[1], signed: operands[2] !== 0 });
+          break;
+        case 22 /* TypeFloat */:
+          this.types.set(result, { kind: "float", width: operands[1] });
+          break;
+        case 23 /* TypeVector */:
+          this.types.set(result, { kind: "vector", element: operands[1], count: operands[2] });
+          break;
+        case 24 /* TypeMatrix */:
+          this.types.set(result, { kind: "matrix", column: operands[1], count: operands[2] });
+          break;
+        case 25 /* TypeImage */:
+          this.types.set(result, { kind: "image", sampled: operands[1], dim: operands[2], depth: operands[3], arrayed: operands[4] !== 0, ms: operands[5] !== 0, usage: operands[6], format: operands[7] });
+          break;
+        case 26 /* TypeSampler */:
+          this.types.set(result, { kind: "sampler" });
+          break;
+        case 27 /* TypeSampledImage */:
+          this.types.set(result, { kind: "sampledImage", image: operands[1] });
+          break;
+        case 28 /* TypeArray */:
+          this.types.set(result, { kind: "array", element: operands[1], lengthId: operands[2], length: Number(this.constants.get(operands[2]) ?? 0) });
+          break;
+        case 29 /* TypeRuntimeArray */:
+          this.types.set(result, { kind: "runtimeArray", element: operands[1] });
+          break;
+        case 30 /* TypeStruct */:
+          this.types.set(result, { kind: "struct", members: Array.from(operands.subarray(1)) });
+          break;
+        case 31 /* TypeOpaque */:
+          this.types.set(result, { kind: "opaque", name: literalString(operands, 1).text });
+          break;
+        case 32 /* TypePointer */:
+          this.types.set(result, { kind: "pointer", storage: operands[1], pointee: operands[2] });
+          break;
+        case 33 /* TypeFunction */:
+          this.types.set(result, { kind: "function", returnType: operands[1], params: Array.from(operands.subarray(2)) });
+          break;
+        case 41 /* ConstantTrue */:
+        case 48 /* SpecConstantTrue */:
+          this.constants.set(result, true);
+          break;
+        case 42 /* ConstantFalse */:
+        case 49 /* SpecConstantFalse */:
+          this.constants.set(result, false);
+          break;
+        case 43 /* Constant */:
+        case 50 /* SpecConstant */:
+          this.constants.set(result, this.scalarFromWords(resultType2, operands.subarray(2)));
+          break;
+        case 44 /* ConstantComposite */:
+        case 51 /* SpecConstantComposite */:
+          this.constants.set(result, Array.from(operands.subarray(2)).map((id) => this.constants.get(id)));
+          break;
+        case 46 /* ConstantNull */:
+          this.constants.set(result, this.zero(resultType2));
+          break;
+        case 59 /* Variable */:
+          if (!fn) this.globals.set(result, { type: resultType2, storage: operands[2], initializer: operands[3] ?? 0 });
+          break;
+        case 54 /* Function */:
+          fn = { id: result, returnType: resultType2, start: index, params: [], blocks: [], blockByLabel: /* @__PURE__ */ new Map() };
+          this.functions.set(result, fn);
+          break;
+        case 55 /* FunctionParameter */:
+          fn?.params.push({ id: result, type: resultType2 });
+          break;
+        case 248 /* Label */:
+          if (fn) {
+            block = { label: result, start: index, end: index };
+            fn.blocks.push(block);
+            fn.blockByLabel.set(result, block);
+          }
+          break;
+        case 249 /* Branch */:
+        case 250 /* BranchConditional */:
+        case 251 /* Switch */:
+        case 252 /* Kill */:
+        case 253 /* Return */:
+        case 254 /* ReturnValue */:
+        case 255 /* Unreachable */:
+        case 4416 /* TerminateInvocation */:
+          if (block) block.end = index;
+          block = null;
+          break;
+        case 56 /* FunctionEnd */:
+          fn = null;
+          break;
+        case 12 /* ExtInst */: {
+          const set = this.extSets.get(operands[2]);
+          if (set === "NonSemantic.Shader.DebugInfo.100") {
+            const instruction = operands[3];
+            if (instruction === 26) debugLocals.set(result, this.strings.get(operands[4]) ?? "");
+            if (instruction === 28) {
+              const name = debugLocals.get(operands[4]);
+              if (name) this.debugVariableNames.set(operands[5], name);
+            }
+          }
+          break;
+        }
+        default:
+          break;
       }
     }
-    devices.push(dev);
-  }
-  return devices;
-}
-async function listPackages(adbPath, serial) {
-  const text = await shell(adbPath, serial, "pm list packages -3");
-  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("package:")).map((l) => l.substring(8)).sort();
-}
-async function resolveActivity(adbPath, serial, pkg) {
-  try {
-    const text = await shell(adbPath, serial, `cmd package resolve-activity --brief ${pkg}`);
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const component = lines.reverse().find((l) => l.startsWith(`${pkg}/`));
-    return component ?? null;
-  } catch {
-    return null;
-  }
-}
-function findAndroidLayer(candidates) {
-  for (const dir of candidates) {
-    const libRoot = path4.join(dir, "lib");
-    if (!fs5.existsSync(libRoot)) continue;
-    const libs = {};
-    for (const abi of fs5.readdirSync(libRoot)) {
-      const lib = path4.join(libRoot, abi, LAYER_LIB);
-      if (fs5.existsSync(lib)) libs[abi] = lib;
+    for (const [id, decorations] of this.decorations) {
+      const spec = decorations.get(1 /* SpecId */);
+      if (spec) this.specIds.set(id, spec[0]);
     }
-    if (!Object.keys(libs).length) continue;
-    const apk = path4.join(dir, LAYER_APK);
-    let apkInfo = null;
-    if (fs5.existsSync(apk)) {
-      try {
-        apkInfo = JSON.parse(fs5.readFileSync(`${apk}.json`, "utf8"));
-      } catch {
-        apkInfo = null;
+    void groups;
+  }
+  _decorate(into, target, decoration, operands) {
+    let d = into.get(target);
+    if (!d) into.set(target, d = /* @__PURE__ */ new Map());
+    d.set(decoration, operands);
+  }
+  /** A scalar constant's value from its literal words: a number for 32-bit and float values, a bigint for 64-bit integers. */
+  scalarFromWords(typeId, literal) {
+    const t = this.types.get(typeId);
+    if (!t) return 0;
+    if (t.kind === "bool") return literal[0] !== 0;
+    if (t.kind === "float") {
+      const buf = new ArrayBuffer(8);
+      const view = new DataView(buf);
+      if (t.width === 64) {
+        view.setUint32(0, literal[0], true);
+        view.setUint32(4, literal[1] ?? 0, true);
+        return view.getFloat64(0, true);
       }
+      if (t.width === 16) {
+        return float16(literal[0] & 65535);
+      }
+      view.setUint32(0, literal[0], true);
+      return view.getFloat32(0, true);
     }
-    return { dir, libs, apk: apkInfo ? apk : null, apkInfo };
+    if (t.kind === "int") {
+      if (t.width === 64) {
+        const v = BigInt(literal[1] ?? 0) << 32n | BigInt(literal[0]);
+        return t.signed ? BigInt.asIntN(64, v) : v;
+      }
+      const bits = literal[0];
+      if (t.width < 32) {
+        const mask = (1 << t.width) - 1;
+        const v = bits & mask;
+        return t.signed && v & 1 << t.width - 1 ? v - (1 << t.width) : v;
+      }
+      return t.signed ? bits | 0 : bits >>> 0;
+    }
+    return 0;
   }
-  return null;
+  /** The zero value of a type (OpConstantNull, OpUndef, uninitialized variables). */
+  zero(typeId) {
+    const t = this.types.get(typeId);
+    if (!t) return 0;
+    switch (t.kind) {
+      case "bool":
+        return false;
+      case "int":
+        return t.width === 64 ? 0n : 0;
+      case "float":
+        return 0;
+      case "vector":
+        return Array.from({ length: t.count }, () => this.zero(t.element));
+      case "matrix":
+        return Array.from({ length: t.count }, () => this.zero(t.column));
+      case "array":
+        return Array.from({ length: t.length }, () => this.zero(t.element));
+      case "runtimeArray":
+        return [];
+      case "struct":
+        return t.members.map((m) => this.zero(m));
+      default:
+        return null;
+    }
+  }
+  decoration(id, decoration) {
+    return this.decorations.get(id)?.get(decoration);
+  }
+  memberDecoration(struct, member, decoration) {
+    return this.memberDecorations.get(struct)?.get(member)?.get(decoration);
+  }
+  /** A readable name for an id: its OpName, its debug info name, else "%id". */
+  nameOf(id) {
+    return this.names.get(id) || this.debugVariableNames.get(id) || `%${id}`;
+  }
+  /** The type's name as GLSL writes it. */
+  typeName(typeId) {
+    const t = this.types.get(typeId);
+    if (!t) return `%${typeId}`;
+    switch (t.kind) {
+      case "void":
+        return "void";
+      case "bool":
+        return "bool";
+      case "int":
+        return t.width === 32 ? t.signed ? "int" : "uint" : `${t.signed ? "int" : "uint"}${t.width}_t`;
+      case "float":
+        return t.width === 32 ? "float" : t.width === 64 ? "double" : `float${t.width}_t`;
+      case "vector": {
+        const e = this.types.get(t.element);
+        const prefix = e?.kind === "bool" ? "b" : e?.kind === "int" ? e.signed ? "i" : "u" : e?.kind === "float" && e.width === 64 ? "d" : "";
+        return `${prefix}vec${t.count}`;
+      }
+      case "matrix": {
+        const c2 = this.types.get(t.column);
+        const rows = c2?.kind === "vector" ? c2.count : 0;
+        return rows === t.count ? `mat${t.count}` : `mat${t.count}x${rows}`;
+      }
+      case "array":
+        return `${this.typeName(t.element)}[${t.length}]`;
+      case "runtimeArray":
+        return `${this.typeName(t.element)}[]`;
+      case "struct":
+        return this.names.get(typeId) || "struct";
+      case "pointer":
+        return this.typeName(t.pointee);
+      case "image":
+        return "image";
+      case "sampler":
+        return "sampler";
+      case "sampledImage":
+        return "sampler2D";
+      default:
+        return t.kind;
+    }
+  }
+  entryPoint(name, model) {
+    return this.entryPoints.find((e) => (name === void 0 || e.name === name) && (model === void 0 || e.model === model)) ?? this.entryPoints.find((e) => model === void 0 || e.model === model) ?? null;
+  }
+};
+function float16(h) {
+  const sign = h & 32768 ? -1 : 1;
+  const exponent = h >> 10 & 31;
+  const mantissa = h & 1023;
+  if (exponent === 0) return sign * Math.pow(2, -14) * (mantissa / 1024);
+  if (exponent === 31) return mantissa ? NaN : sign * Infinity;
+  return sign * Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
 }
-var AndroidTarget = class {
-  constructor(opts) {
-    this.opts = opts;
+
+// src/renderer/spirv/values.ts
+var Pointer = class {
+  constructor(cell, path11, type, storage, variable) {
+    this.cell = cell;
+    this.path = path11;
+    this.type = type;
+    this.storage = storage;
+    this.variable = variable;
   }
-  pid = null;
-  _logcat = null;
-  _poll = null;
-  _polling = false;
-  _stopped = false;
-  /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
-  async start() {
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    const log = this.opts.onLog;
-    const props = (await shell(adbPath, serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.cpu.abilist; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
-    const sdk = Number(props[0]) || 0;
-    const abi = props[1] ?? "";
-    const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
-    log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
-    if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
-    const how = await this._installLayer(sdk, abilist);
-    log(`layer: ${how}`);
-    await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
-    await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
-    await shell(adbPath, serial, `am force-stop ${pkg}`);
-    for (let i = 0; i < 20 && !this._stopped; ++i) {
-      const pid = await this._findPid();
-      if (pid === null) break;
-      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
-      await new Promise((r) => setTimeout(r, 250));
+};
+var ImageValue = class {
+  constructor(texture, binding) {
+    this.texture = texture;
+    this.binding = binding;
+  }
+};
+var SamplerValue = class {
+  constructor(sampler, binding) {
+    this.sampler = sampler;
+    this.binding = binding;
+  }
+};
+var SampledImageValue = class {
+  constructor(image, sampler) {
+    this.image = image;
+    this.sampler = sampler;
+  }
+};
+function cloneValue(v) {
+  return Array.isArray(v) ? v.map(cloneValue) : v;
+}
+function scalarOf(m, typeId) {
+  const t = m.types.get(typeId);
+  if (!t) return null;
+  switch (t.kind) {
+    case "bool":
+      return { base: "bool", width: 1 };
+    case "int":
+      return { base: t.signed ? "int" : "uint", width: t.width };
+    case "float":
+      return { base: "float", width: t.width };
+    case "vector":
+      return scalarOf(m, t.element);
+    case "matrix":
+      return scalarOf(m, t.column);
+    default:
+      return null;
+  }
+}
+function normalize(v, s) {
+  if (s.base === "bool") return Boolean(v);
+  if (s.base === "float") {
+    const n2 = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? v ? 1 : 0 : v;
+    return s.width === 32 ? Math.fround(n2) : s.width === 16 ? Math.fround(n2) : n2;
+  }
+  if (s.width === 64) {
+    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? v ? 1 : 0 : v));
+    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
+  }
+  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? v ? 1 : 0 : Math.trunc(v);
+  if (s.width < 32) {
+    const mod = 2 ** s.width;
+    n = (n % mod + mod) % mod;
+    return s.base === "int" && n >= mod / 2 ? n - mod : n;
+  }
+  return s.base === "int" ? n | 0 : n >>> 0;
+}
+function mapScalars(v, f) {
+  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
+}
+function zipScalars(a, b, f) {
+  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
+  return f(a, b);
+}
+function layoutSize(m, typeId, bytes = 0, offset = 0) {
+  const t = m.types.get(typeId);
+  if (!t) return 0;
+  switch (t.kind) {
+    case "bool":
+      return 4;
+    case "int":
+    case "float":
+      return t.width / 8;
+    case "vector":
+      return layoutSize(m, t.element) * t.count;
+    case "matrix":
+      return layoutSize(m, t.column) * t.count;
+    case "array": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      return stride * t.length;
     }
-    if (!this._stopped) {
-      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
-      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
+    case "runtimeArray": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) * stride : 0;
     }
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
-    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
-    if (this._stopped) return;
-    this._startLogcat();
-    let activity = this.opts.activity.trim();
-    if (!activity) activity = await resolveActivity(adbPath, serial, pkg) ?? "";
-    if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
-    if (activity) {
-      log(`starting ${activity}`);
-      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
-      const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
-      if (error) throw new Error(`${error.trim()} (activity ${activity})`);
+    case "struct": {
+      let end = 0;
+      t.members.forEach((member, i) => {
+        const at = m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? end;
+        end = Math.max(end, at + layoutSize(m, member, bytes, offset + at));
+      });
+      return end;
+    }
+    default:
+      return 0;
+  }
+}
+function runtimeArrayLength(m, typeId, bytes, offset) {
+  const t = m.types.get(typeId);
+  if (t?.kind !== "runtimeArray") return 0;
+  const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+  return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) : 0;
+}
+function readScalar2(view, at, m, typeId) {
+  const t = m.types.get(typeId);
+  if (!t || at < 0) return 0;
+  const size2 = t.kind === "bool" ? 4 : t.kind === "int" || t.kind === "float" ? t.width / 8 : 0;
+  if (at + size2 > view.byteLength) return t.kind === "bool" ? false : t.kind === "int" && t.width === 64 ? 0n : 0;
+  if (t.kind === "bool") return view.getUint32(at, true) !== 0;
+  if (t.kind === "float") {
+    if (t.width === 64) return view.getFloat64(at, true);
+    if (t.width === 16) {
+      const h = view.getUint16(at, true);
+      const sign = h & 32768 ? -1 : 1;
+      const e = h >> 10 & 31;
+      const f = h & 1023;
+      return e === 0 ? sign * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign * Infinity : sign * 2 ** (e - 15) * (1 + f / 1024);
+    }
+    return view.getFloat32(at, true);
+  }
+  if (t.kind === "int") {
+    if (t.width === 64) return t.signed ? view.getBigInt64(at, true) : view.getBigUint64(at, true);
+    if (t.width === 16) return t.signed ? view.getInt16(at, true) : view.getUint16(at, true);
+    if (t.width === 8) return t.signed ? view.getInt8(at) : view.getUint8(at);
+    return t.signed ? view.getInt32(at, true) : view.getUint32(at, true);
+  }
+  return 0;
+}
+function readBuffer(m, view, at, typeId, matrix, limit = Infinity) {
+  const t = m.types.get(typeId);
+  if (!t) return 0;
+  switch (t.kind) {
+    case "bool":
+    case "int":
+    case "float":
+      return readScalar2(view, at, m, typeId);
+    case "vector": {
+      const size2 = layoutSize(m, t.element);
+      return Array.from({ length: t.count }, (_, i) => readScalar2(view, at + i * size2, m, t.element));
+    }
+    case "matrix": {
+      const column = m.types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      const element = column?.kind === "vector" ? column.element : t.column;
+      const scalar = layoutSize(m, element);
+      const stride = matrix?.stride ?? rows * scalar;
+      return Array.from({ length: t.count }, (_, c2) => Array.from({ length: rows }, (_2, r) => readScalar2(view, matrix?.rowMajor ? at + r * stride + c2 * scalar : at + c2 * stride + r * scalar, m, element)));
+    }
+    case "array":
+    case "runtimeArray": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      const length = t.kind === "array" ? t.length : runtimeArrayLength(m, typeId, view.byteLength, at);
+      return Array.from({ length: Math.min(length, limit) }, (_, i) => readBuffer(m, view, at + i * stride, t.element, matrix, limit));
+    }
+    case "struct":
+      return t.members.map((member, i) => readBuffer(
+        m,
+        view,
+        at + (m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? 0),
+        member,
+        memberMatrix(m, typeId, i),
+        limit
+      ));
+    default:
+      return null;
+  }
+}
+function memberMatrix(m, struct, member) {
+  const stride = m.memberDecoration(struct, member, 7 /* MatrixStride */)?.[0];
+  if (stride === void 0) return void 0;
+  return { stride, rowMajor: m.memberDecoration(struct, member, 4 /* RowMajor */) !== void 0 };
+}
+function bufferLocation(m, blockType, path11, bytes) {
+  let at = 0;
+  let type = blockType;
+  let matrix;
+  for (const index of path11) {
+    const t = m.types.get(type);
+    if (!t) return null;
+    if (t.kind === "struct") {
+      at += m.memberDecoration(type, index, 35 /* Offset */)?.[0] ?? 0;
+      matrix = memberMatrix(m, type, index) ?? matrix;
+      type = t.members[index];
+    } else if (t.kind === "array" || t.kind === "runtimeArray") {
+      const stride = m.decoration(type, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element, bytes, at);
+      at += index * stride;
+      type = t.element;
+    } else if (t.kind === "matrix") {
+      const column = m.types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      const element = column?.kind === "vector" ? column.element : t.column;
+      const stride = matrix?.stride ?? rows * layoutSize(m, element);
+      if (matrix?.rowMajor) {
+        return null;
+      }
+      at += index * stride;
+      type = t.column;
+      matrix = void 0;
+    } else if (t.kind === "vector") {
+      at += index * layoutSize(m, t.element);
+      type = t.element;
     } else {
-      log(`starting ${pkg} (no launchable activity resolved; using the launcher intent)`);
-      const out = await shell(adbPath, serial, `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, START_TIMEOUT_MS);
-      if (/No activities found|monkey aborted/i.test(out)) throw new Error(`no launchable activity in ${pkg}`);
-    }
-    for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
-      this.pid = await this._findPid();
-      if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
-      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
-    }
-    if (this._stopped) return;
-    if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
-    await this._launchDiagnostics(false);
-    this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
-  }
-  /** The layer's abstract socket on the device: the port and the package (see transport.cpp). */
-  get socketName() {
-    return `vkinsp:${this.opts.port}:${this.opts.package}`;
-  }
-  /**
-   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
-   * device disconnects, and a headset's USB link blips when it changes power state, so a
-   * connection attempt refused on the host side is checked against `adb forward --list`.
-   * Resolves true when the forward had to be re-created.
-   */
-  async ensureForward() {
-    if (this._stopped) return false;
-    const { adb: adbPath, serial, port } = this.opts;
-    const target = `localabstract:${this.socketName}`;
-    const list = await adb(adbPath, serial, ["forward", "--list"]);
-    const present = list.split(/\r?\n/).some((l) => {
-      const f = l.trim().split(/\s+/);
-      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
-    });
-    if (present || this._stopped) return false;
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
-    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
-    return true;
-  }
-  /** Terminates the application, the port forward and the watches. */
-  async stop() {
-    this._stopWatching();
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    try {
-      await shell(adbPath, serial, `am force-stop ${pkg}`);
-    } catch {
-    }
-    try {
-      await adb(adbPath, serial, ["forward", "--remove", `tcp:${port}`]);
-    } catch {
-    }
-  }
-  /** stop() for application exit, where nothing can be awaited. */
-  stopSync() {
-    this._stopWatching();
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
-      try {
-        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
-      } catch {
-      }
-    }
-  }
-  _stopWatching() {
-    this._stopped = true;
-    if (this._poll) {
-      clearInterval(this._poll);
-      this._poll = null;
-    }
-    if (this._logcat) {
-      try {
-        this._logcat.kill();
-      } catch {
-      }
-      this._logcat = null;
-    }
-  }
-  /**
-   * Gets the layer where the device's loader will find it. Android 10+ with the layer APK:
-   * install it (when the installed version differs) and point gpu_debug_layer_app at it. Otherwise
-   * copy the .so into the target's data directory with run-as, skipped when the copy there
-   * already matches.
-   */
-  async _installLayer(sdk, abilist) {
-    const { adb: adbPath, serial, package: pkg, layer } = this.opts;
-    const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo.abis.includes(a)) : void 0;
-    if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
-      const info = layer.apkInfo;
-      let installed = "";
-      try {
-        const dump = await shell(adbPath, serial, `dumpsys package ${info.package}`);
-        installed = /versionName=(\S+)/.exec(dump)?.[1] ?? "";
-      } catch {
-        installed = "";
-      }
-      if (installed !== info.versionName) {
-        this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
-        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
-      }
-      await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
-      return `${info.package} ${info.versionName} (${apkAbi})`;
-    }
-    const abi = abilist.find((a) => layer.libs[a]);
-    if (!abi) {
-      throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
-    }
-    const lib = layer.libs[abi];
-    const local = crypto.createHash("md5").update(fs5.readFileSync(lib)).digest("hex");
-    let remote = "";
-    try {
-      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
-        throw new Error(`${pkg} is not debuggable: Android only loads layers into debuggable applications (a Unity Development Build) or on rooted devices`);
-      }
-      remote = "";
-    }
-    if (remote !== local) {
-      this.opts.onLog(`copying ${LAYER_LIB} (${abi}) into ${pkg}'s data directory`);
-      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${LAYER_LIB}`], INSTALL_TIMEOUT_MS);
-      try {
-        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${LAYER_LIB} . && run-as ${pkg} chmod 700 ${LAYER_LIB}`);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
-      }
-    }
-    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
-    return `${LAYER_LIB} (${abi}) in ${pkg}'s data directory`;
-  }
-  _startLogcat() {
-    const { adb: adbPath, serial } = this.opts;
-    const proc = spawn(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", "vkinsp:*", "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-    this._logcat = proc;
-    let rest = "";
-    proc.stdout?.on("data", (d) => {
-      rest += d.toString("utf8");
-      const lines = rest.split(/\r?\n/);
-      rest = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.length || line.startsWith("--------- beginning of")) continue;
-        this.opts.onLog(line.startsWith("I/vkinsp") ? `[vkinsp] ${line.replace(/^I\/vkinsp\s*:\s?/, "")}` : line);
-      }
-    });
-    proc.on("exit", () => {
-      if (this._logcat === proc) this._logcat = null;
-    });
-    proc.on("error", () => {
-      if (this._logcat === proc) this._logcat = null;
-    });
-  }
-  /**
-   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
-   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
-   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
-   * which then blocks every later launch until the shell restarts.
-   */
-  async _launchDiagnostics(noProcess) {
-    const { adb: adbPath, serial } = this.opts;
-    const log = this.opts.onLog;
-    try {
-      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
-      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
-      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
-    } catch {
-    }
-    try {
-      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
-      if (Number(windows.trim()) > 0) {
-        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
-      }
-    } catch {
-    }
-    if (!noProcess) return;
-    try {
-      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
-      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
-      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
-    } catch {
-    }
-  }
-  async _findPid() {
-    try {
-      const out = (await shell(this.opts.adb, this.opts.serial, `pidof ${this.opts.package}`)).trim();
-      const pid = Number(out.split(/\s+/)[0]);
-      return pid > 0 ? pid : null;
-    } catch {
       return null;
     }
   }
-  async _pollProcess() {
-    if (this._polling || this._stopped) return;
-    this._polling = true;
-    try {
-      const pid = await this._findPid();
-      if (this._stopped) return;
-      if (pid === null || this.pid !== null && pid !== this.pid) {
-        this._stopWatching();
-        this.opts.onExit();
-      }
-    } finally {
-      this._polling = false;
-    }
-  }
-};
-async function disableLayer(adbPath, serial) {
-  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app"]) {
-    try {
-      await shell(adbPath, serial, `settings delete global ${key}`);
-    } catch {
-    }
-  }
+  return { at, type, matrix };
 }
 
-// src/main/layer_protocol.ts
-function encodeRequest(msg) {
-  const payload = Buffer.from(JSON.stringify(msg), "utf8");
-  const header = Buffer.alloc(5);
-  header.writeUInt32LE(payload.length, 0);
-  header.writeUInt8(0, 4);
-  return Buffer.concat([header, payload]);
+// src/renderer/shader_debugger.ts
+var MAX_LINE_RESULTS = 2e3;
+function sourceKey(file, line) {
+  return `f:${file}:${line}`;
 }
-var FrameReader = class {
-  _buffered = Buffer.alloc(0);
-  /** The messages `chunk` completes, in order; a frame that does not parse goes to `onError` and is skipped. */
-  push(chunk2, onError) {
-    this._buffered = this._buffered.length ? Buffer.concat([this._buffered, chunk2]) : chunk2;
-    const out = [];
-    while (this._buffered.length >= 5) {
-      const len = this._buffered.readUInt32LE(0);
-      const kind = this._buffered.readUInt8(4);
-      if (this._buffered.length < 5 + len) break;
-      const payload = this._buffered.subarray(5, 5 + len);
-      this._buffered = this._buffered.subarray(5 + len);
-      if (kind === 0) {
-        try {
-          out.push(JSON.parse(payload.toString("utf8")));
-        } catch (e) {
-          onError?.({ kind: "json", error: String(e), payload });
-        }
-      } else if (kind === 1) {
-        const hl = payload.readUInt32LE(0);
-        let header;
-        try {
-          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8"));
-        } catch (e) {
-          onError?.({ kind: "header", error: String(e), payload });
+function instructionKey(ordinal) {
+  return `i:${ordinal}`;
+}
+function hasLineInfo(module) {
+  const info = module.debug;
+  return !!info && info.form !== "none" && info.locations.some((l) => l !== null);
+}
+var DebugController = class {
+  session;
+  stepper;
+  /** Breakpoints, by line key (either mode's keys: the mode decides which apply). */
+  breakpoints = /* @__PURE__ */ new Set();
+  _mode;
+  /** Per frame depth, the values of the line running at that depth. */
+  _lines = [];
+  /** Per frame depth, the line before, for a line that computed nothing (a closing brace). */
+  _previous = [];
+  _lastDepth = 1;
+  _pending = null;
+  /** Instructions run by the current step so far. */
+  stepSteps = 0;
+  constructor(session, mode) {
+    this.session = session;
+    this._mode = mode ?? (hasLineInfo(session.module) ? "source" : "instruction");
+    this.stepper = session.start();
+    this._settle();
+  }
+  get module() {
+    return this.session.module;
+  }
+  get invocation() {
+    return this.stepper.invocation;
+  }
+  get finished() {
+    return this.invocation.finished;
+  }
+  /** A step is under way (proceed() has more to run). */
+  get running() {
+    return this._pending !== null;
+  }
+  get mode() {
+    return this._mode;
+  }
+  /** Switches between source lines and instructions; the invocation stays where it is. */
+  set mode(mode) {
+    if (mode === "source" && !hasLineInfo(this.module)) return;
+    this._mode = mode;
+    if (!this.running) this._settle();
+  }
+  /** The source location of an instruction, when the module's debug information has one. */
+  location(inst) {
+    return inst ? this.module.debug?.locations[inst.index] ?? null : null;
+  }
+  /** The key a stop at an instruction has in the current mode; null where one cannot stop. */
+  keyOf(inst) {
+    if (!inst) return null;
+    if (this._mode === "instruction") return instructionKey(inst.index);
+    const loc = this.location(inst);
+    return loc ? sourceKey(loc.file, loc.line) : null;
+  }
+  /** The key of where the invocation is stopped. */
+  get currentKey() {
+    return this.keyOf(this.invocation.current);
+  }
+  /** The values of the line that ran last (at the current depth, or the call it stepped into from). */
+  get lastLine() {
+    const depth = Math.min(this._lastDepth, this.invocation.frames.length || this._lastDepth);
+    const line = this._lines[depth - 1];
+    if (line?.results.length) return line;
+    return this._previous[depth - 1] ?? line ?? { key: null, results: [] };
+  }
+  toggleBreakpoint(key) {
+    if (this.breakpoints.has(key)) {
+      this.breakpoints.delete(key);
+      return false;
+    }
+    this.breakpoints.add(key);
+    return true;
+  }
+  /** Starts the invocation again from the beginning, keeping the breakpoints. */
+  restart() {
+    this._pending = null;
+    this._lines = [];
+    this._previous = [];
+    this._lastDepth = 1;
+    this.stepper = this.session.start();
+    this._settle();
+  }
+  /** Begins a step; proceed() runs it. */
+  begin(kind) {
+    if (this.finished) return;
+    this._pending = { kind, depth: this.invocation.frames.length, key: this.currentKey, lastKey: this.currentKey };
+    this.stepSteps = 0;
+  }
+  /** Runs up to `budget` instructions of the step begun; true when it has stopped (or the invocation finished). */
+  proceed(budget = Infinity) {
+    const p = this._pending;
+    if (!p) return true;
+    const inv = this.invocation;
+    let stopped = false;
+    for (let n = 0; n < budget && !inv.finished; n++) {
+      this._stepOnce();
+      this.stepSteps++;
+      if (inv.finished) break;
+      const key = this.currentKey;
+      if (key === null) continue;
+      const entered = key !== p.lastKey;
+      p.lastKey = key;
+      if (entered && this.breakpoints.has(key) || this._reached(p, key, inv.frames.length)) {
+        stopped = true;
+        break;
+      }
+    }
+    if (stopped || inv.finished) this._pending = null;
+    return this._pending === null;
+  }
+  /** Abandons the step under way, stopping at the next instruction a stop can be at. */
+  cancel() {
+    if (!this._pending) return;
+    this._pending = null;
+    this._settle();
+  }
+  /** begin() and proceed() to the end of the step. */
+  advance(kind, budget = Infinity) {
+    this.begin(kind);
+    return this.proceed(budget);
+  }
+  _reached(p, key, depth) {
+    switch (p.kind) {
+      case "instruction":
+        return true;
+      case "into":
+        return key !== p.key || depth !== p.depth;
+      case "over":
+        return depth < p.depth || depth === p.depth && key !== p.key;
+      case "out":
+        return depth < p.depth;
+      case "continue":
+        return false;
+    }
+  }
+  _stepOnce() {
+    const inv = this.invocation;
+    const key = this.currentKey;
+    const depth = inv.frames.length;
+    this.stepper.step();
+    const results = inv.takeResults();
+    if (key !== null || !this._lines[depth - 1]) {
+      const line2 = this._lines[depth - 1];
+      if (!line2 || key !== null && line2.key !== key) {
+        if (line2?.results.length) this._previous[depth - 1] = line2;
+        this._lines[depth - 1] = { key, results: [] };
+      }
+    }
+    this._lines.length = Math.min(this._lines.length, depth);
+    this._previous.length = Math.min(this._previous.length, depth);
+    const line = this._lines[depth - 1];
+    for (const r of results) if (line.results.length < MAX_LINE_RESULTS) line.results.push(r);
+    this._lastDepth = depth;
+  }
+  /** Runs to the first instruction a stop can be at (source mode skips instructions without a line). */
+  _settle() {
+    let guard = 0;
+    while (!this.finished && this.currentKey === null && guard++ < 1e6) this._stepOnce();
+  }
+};
+function valueType(m, id) {
+  const type = m.idTypes.get(id) ?? m.globals.get(id)?.type ?? 0;
+  const t = m.types.get(type);
+  return t?.kind === "pointer" ? t.pointee : type;
+}
+function resultType(m, r) {
+  return r.inst.resultType || valueType(m, r.id);
+}
+function scalarText(v) {
+  if (typeof v === "number") {
+    if (Number.isInteger(v)) return String(v);
+    if (Number.isNaN(v)) return "NaN";
+    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
+    const a = Math.abs(v);
+    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
+  }
+  if (typeof v === "bigint") return String(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return "?";
+}
+function valueText(module, type, value, limit = 16) {
+  if (value === void 0 || value === null) return "undefined";
+  if (value instanceof Pointer) return `\u2192 ${module.nameOf(value.variable)}${value.path.length ? `[${value.path.join("][")}]` : ""}`;
+  if (value instanceof SampledImageValue) return `${imageText(value.image)}, ${samplerText(value.sampler)}`;
+  if (value instanceof ImageValue) return imageText(value);
+  if (value instanceof SamplerValue) return samplerText(value);
+  if (!Array.isArray(value)) return scalarText(value);
+  const t = module.types.get(type);
+  const inner = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : 0;
+  const parts2 = [];
+  for (let i = 0; i < Math.min(value.length, limit); i++) {
+    const memberType = t?.kind === "struct" ? t.members[i] : inner;
+    const text = valueText(module, memberType, value[i], limit);
+    const name = t?.kind === "struct" ? module.memberNames.get(type)?.get(i) : void 0;
+    parts2.push(name ? `${name}: ${text}` : text);
+  }
+  if (value.length > limit) parts2.push(`\u2026 ${value.length - limit} more`);
+  return t?.kind === "struct" ? `{ ${parts2.join(", ")} }` : t?.kind === "array" || t?.kind === "runtimeArray" ? `[${parts2.join(", ")}]` : `(${parts2.join(", ")})`;
+}
+function imageText(image) {
+  const t = image.texture;
+  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
+}
+function samplerText(sampler) {
+  const s = sampler.sampler;
+  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
+}
+function nonFinite(value) {
+  if (typeof value === "number") return !Number.isFinite(value);
+  return Array.isArray(value) && value.some(nonFinite);
+}
+function scalars(value) {
+  if (Array.isArray(value)) return value.flatMap(scalars);
+  if (typeof value === "number") return [value];
+  if (typeof value === "bigint") return [Number(value)];
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  return [];
+}
+
+// src/renderer/mesh_input.ts
+var MESH_INPUT_LIMIT = 1e6;
+var INDIRECT_FIELDS2 = {
+  vkCmdDrawIndirect: ["vertexCount", "instanceCount", "firstVertex", "firstInstance"],
+  vkCmdDrawIndexedIndirect: ["indexCount", "instanceCount", "firstIndex", "vertexOffset", "firstInstance"]
+};
+function indexBytes(indexType) {
+  if (/UINT8/i.test(indexType)) return 1;
+  if (/16/.test(indexType)) return 2;
+  if (/32/.test(indexType)) return 4;
+  return 0;
+}
+function drawArgs(data, cmd, notes) {
+  const a = cmd.args ?? {};
+  const fields = INDIRECT_FIELDS2[cmd.method];
+  if (!fields) {
+    return { vertexCount: num(a.vertexCount), indexCount: num(a.indexCount), firstVertex: num(a.firstVertex), firstIndex: num(a.firstIndex), vertexOffset: num(a.vertexOffset) };
+  }
+  const b = data.buffer(cmd.bufferData?.[0]);
+  if (!b?.data || b.data.byteLength < fields.length * 4) {
+    notes.push("An indirect draw's counts are in a buffer the capture did not read back.");
+    return {};
+  }
+  const view = new DataView(b.data.buffer, b.data.byteOffset, b.data.byteLength);
+  const out = {};
+  fields.forEach((f, k) => {
+    out[f] = f === "vertexOffset" ? view.getInt32(k * 4, true) : view.getUint32(k * 4, true);
+  });
+  if (num(a.drawCount) > 1) notes.push(`The first of the indirect draw's ${num(a.drawCount)} draws.`);
+  return out;
+}
+function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
+  const state = drawState(data, db, cmd);
+  const notes = [];
+  const d = state.pipeline?.descriptor;
+  const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
+  const topology = assembly ? str(assembly.topology) : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  const args = drawArgs(data, cmd, notes);
+  let ids = [];
+  let indices = null;
+  const indexed = /Indexed/.test(cmd.method);
+  if (indexed) {
+    const ib = state.indexBuffer;
+    const captured = ib ? data.buffer(ib.dataId) : null;
+    const size2 = ib ? indexBytes(ib.indexType) : 0;
+    if (!captured?.data || !size2) {
+      notes.push("The index buffer was not captured.");
+    } else {
+      const view = new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength);
+      const count2 = Math.min(args.indexCount ?? 0, MESH_INPUT_LIMIT);
+      const first = args.firstIndex ?? 0;
+      indices = [];
+      for (let i = first; i < first + count2 && (i + 1) * size2 <= captured.data.byteLength; i++) {
+        indices.push(size2 === 1 ? view.getUint8(i * size2) : size2 === 2 ? view.getUint16(i * size2, true) : view.getUint32(i * size2, true));
+      }
+      if (indices.length < count2) notes.push(`The captured index buffer holds ${indices.length.toLocaleString()} of the draw's ${count2.toLocaleString()} indices.`);
+      ids = indices.map((v) => v + (args.vertexOffset ?? 0));
+    }
+  } else {
+    const count2 = Math.min(args.vertexCount ?? 0, MESH_INPUT_LIMIT);
+    ids = Array.from({ length: count2 }, (_, i) => (args.firstVertex ?? 0) + i);
+  }
+  const attributes = [];
+  const readers = [];
+  for (const vb of [...state.vertexBuffers.values()].sort((x, y) => x.binding - y.binding)) {
+    const layout = vertexLayout(state, vb.binding, vb);
+    if (!layout?.stride) continue;
+    const captured = data.buffer(vb.dataId);
+    if (!captured?.data) notes.push(`Vertex buffer binding ${vb.binding} was not captured.`);
+    const view = captured?.data ? new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength) : null;
+    for (const a of layout.attributes) {
+      const format = vertexFormat(a.format);
+      if (!format) continue;
+      const perInstance = layout.rate.includes("INSTANCE");
+      attributes.push({ name: names.get(a.location) || `location${a.location}`, location: a.location, binding: vb.binding, format: a.format, components: format.channels.length, perInstance });
+      readers.push({ layout, format, offset: a.offset, view, available: view ? Math.floor(view.byteLength / layout.stride) : 0 });
+    }
+  }
+  if (!state.vertexBuffers.size) notes.push("No vertex buffers are bound: the vertex shader makes its vertices (from gl_VertexIndex, or a storage buffer).");
+  let position = attributes.findIndex((a) => /pos/i.test(a.name) && a.components >= 2 && !vertexFormat(a.format)?.integer);
+  if (position < 0) position = attributes.findIndex((a) => a.location === 0 && a.components >= 3 && !vertexFormat(a.format)?.integer);
+  return {
+    topology,
+    attributes,
+    ids,
+    indices,
+    position,
+    notes,
+    values: (order, attribute, instance = 0) => {
+      const r = readers[attribute];
+      if (!r?.view) return null;
+      const id = attributes[attribute].perInstance ? instance : ids[order];
+      if (id === void 0 || id >= r.available) return null;
+      return r.format.read(r.view, id * r.layout.stride + r.offset);
+    }
+  };
+}
+
+// src/renderer/spirv/sampling.ts
+var DEFAULT_SAMPLER = {
+  magFilter: "linear",
+  minFilter: "linear",
+  mipmapMode: "linear",
+  address: ["repeat", "repeat", "repeat"],
+  border: [0, 0, 0, 0],
+  compareOp: null,
+  minLod: 0,
+  maxLod: 1e3,
+  lodBias: 0,
+  unnormalized: false
+};
+function wrap(i, size2, mode) {
+  switch (mode) {
+    case "repeat":
+      return (i % size2 + size2) % size2;
+    case "mirror": {
+      const period = size2 * 2;
+      const t = (i % period + period) % period;
+      return t < size2 ? t : period - 1 - t;
+    }
+    case "mirrorClamp": {
+      const t = i < 0 ? -1 - i : i;
+      return Math.min(t, size2 - 1);
+    }
+    case "border":
+      return i < 0 || i >= size2 ? null : i;
+    default:
+      return Math.min(Math.max(i, 0), size2 - 1);
+  }
+}
+function texel(level, x, y, s) {
+  const wx = wrap(x, level.width, s.address[0]);
+  const wy = wrap(y, level.height, s.address[1]);
+  if (wx === null || wy === null) return s.border.slice(0, 4);
+  const o = (wy * level.width + wx) * 4;
+  return [level.texels[o], level.texels[o + 1], level.texels[o + 2], level.texels[o + 3]];
+}
+function compare(op, reference, value) {
+  switch (op) {
+    case "VK_COMPARE_OP_NEVER":
+      return 0;
+    case "VK_COMPARE_OP_LESS":
+      return reference < value ? 1 : 0;
+    case "VK_COMPARE_OP_EQUAL":
+      return reference === value ? 1 : 0;
+    case "VK_COMPARE_OP_LESS_OR_EQUAL":
+      return reference <= value ? 1 : 0;
+    case "VK_COMPARE_OP_GREATER":
+      return reference > value ? 1 : 0;
+    case "VK_COMPARE_OP_NOT_EQUAL":
+      return reference !== value ? 1 : 0;
+    case "VK_COMPARE_OP_GREATER_OR_EQUAL":
+      return reference >= value ? 1 : 0;
+    default:
+      return 1;
+  }
+}
+function filterLevel(level, u, v, linear, s, dref) {
+  const x = s.unnormalized ? u : u * level.width;
+  const y = s.unnormalized ? v : v * level.height;
+  const tap = (tx, ty) => {
+    const t = texel(level, tx, ty, s);
+    return dref === void 0 ? t : [compare(s.compareOp, dref, t[0]), 0, 0, 1];
+  };
+  if (!linear) return tap(Math.floor(x), Math.floor(y));
+  const fx = x - 0.5;
+  const fy = y - 0.5;
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const ax = fx - x0;
+  const ay = fy - y0;
+  const t00 = tap(x0, y0), t10 = tap(x0 + 1, y0), t01 = tap(x0, y0 + 1), t11 = tap(x0 + 1, y0 + 1);
+  return t00.map((c2, i) => (c2 * (1 - ax) + t10[i] * ax) * (1 - ay) + (t01[i] * (1 - ax) + t11[i] * ax) * ay);
+}
+function cubeFace(dir) {
+  const [x, y, z] = dir;
+  const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+  let face, sc, tc, ma;
+  if (ax >= ay && ax >= az) {
+    ma = ax;
+    face = x >= 0 ? 0 : 1;
+    sc = x >= 0 ? -z : z;
+    tc = -y;
+  } else if (ay >= az) {
+    ma = ay;
+    face = y >= 0 ? 2 : 3;
+    sc = x;
+    tc = y >= 0 ? z : -z;
+  } else {
+    ma = az;
+    face = z >= 0 ? 4 : 5;
+    sc = z >= 0 ? x : -x;
+    tc = -y;
+  }
+  return { face, u: 0.5 * (sc / (ma || 1) + 1), v: 0.5 * (tc / (ma || 1) + 1) };
+}
+function implicitLod(texture, dx, dy) {
+  const size2 = [texture.width, texture.height, texture.depth];
+  let px = 0;
+  let py = 0;
+  for (let i = 0; i < Math.min(dx.length, 3); i++) {
+    px += (dx[i] * size2[i]) ** 2;
+    py += (dy[i] * size2[i]) ** 2;
+  }
+  const rho = Math.sqrt(Math.max(px, py));
+  return rho > 0 ? Math.log2(rho) : -Infinity;
+}
+function sample(texture, sampler, req) {
+  if (!texture) return [0, 0, 0, 1];
+  const s = sampler ?? DEFAULT_SAMPLER;
+  let layer = 0;
+  let u = req.coord[0] ?? 0;
+  let v = req.dim === 0 /* D1 */ ? 0.5 : req.coord[1] ?? 0;
+  if (req.dim === 3 /* Cube */) {
+    const f = cubeFace(req.coord);
+    const cubeLayer = req.arrayed ? Math.max(0, Math.round(req.coord[3] ?? 0)) * 6 : 0;
+    layer = cubeLayer + f.face;
+    u = f.u;
+    v = f.v;
+  } else if (req.arrayed) {
+    layer = Math.max(0, Math.round(req.dim === 0 /* D1 */ ? req.coord[1] ?? 0 : req.coord[2] ?? 0));
+  } else if (req.dim === 2 /* D3 */) {
+    layer = Math.min(texture.depth - 1, Math.max(0, Math.floor((req.coord[2] ?? 0) * texture.depth)));
+  }
+  layer = Math.min(layer, Math.max(0, (req.dim === 2 /* D3 */ ? texture.depth : texture.layers) - 1));
+  if (req.offset && !s.unnormalized) {
+    u += (req.offset[0] ?? 0) / texture.width;
+    v += (req.offset[1] ?? 0) / texture.height;
+  }
+  const lod = Math.min(Math.max(req.lod + s.lodBias, s.minLod), s.maxLod);
+  const magnified = !(lod > 0);
+  const linear = magnified ? s.magFilter === "linear" : s.minFilter === "linear";
+  const first = texture.baseMip;
+  const last = first + texture.mips - 1;
+  const clampLevel = (l) => Math.min(Math.max(l, first), last);
+  const at = Number.isFinite(lod) ? Math.max(0, lod) : 0;
+  const read = (mip) => {
+    const level = texture.level(clampLevel(mip), layer);
+    return level ? filterLevel(level, u, v, linear, s, req.dref) : [0, 0, 0, 1];
+  };
+  if (s.mipmapMode === "nearest" || Math.floor(at) === at) return read(Math.round(at));
+  const lo = Math.floor(at);
+  const t = at - lo;
+  const a = read(lo);
+  const b = read(lo + 1);
+  return a.map((c2, i) => c2 * (1 - t) + b[i] * t);
+}
+function fetch(texture, coord, mip, dim, arrayed) {
+  if (!texture) return [0, 0, 0, 0];
+  const layer = arrayed ? coord[dim === 0 /* D1 */ ? 1 : 2] ?? 0 : dim === 2 /* D3 */ ? coord[2] ?? 0 : 0;
+  const key = `${mip}/${layer}/${coord[0]}/${coord[1] ?? 0}`;
+  const written = texture.writes?.get(key);
+  if (written) return written.slice(0, 4);
+  const level = texture.level(texture.baseMip + Math.max(0, mip), layer);
+  if (!level) return [0, 0, 0, 0];
+  const x = coord[0] ?? 0;
+  const y = dim === 0 /* D1 */ ? 0 : coord[1] ?? 0;
+  if (x < 0 || y < 0 || x >= level.width || y >= level.height) return [0, 0, 0, 0];
+  const o = (y * level.width + x) * 4;
+  return [level.texels[o], level.texels[o + 1], level.texels[o + 2], level.texels[o + 3]];
+}
+function gather(texture, sampler, coord, component, dref) {
+  if (!texture) return [0, 0, 0, 0];
+  const s = sampler ?? DEFAULT_SAMPLER;
+  const level = texture.level(texture.baseMip, 0);
+  if (!level) return [0, 0, 0, 0];
+  const fx = coord[0] * level.width - 0.5;
+  const fy = coord[1] * level.height - 0.5;
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const pick2 = (x, y) => {
+    const t = texel(level, x, y, s);
+    return dref === void 0 ? t[component] : compare(s.compareOp, dref, t[0]);
+  };
+  return [pick2(x0, y0 + 1), pick2(x0 + 1, y0 + 1), pick2(x0 + 1, y0), pick2(x0, y0)];
+}
+
+// src/renderer/spirv/interpreter.ts
+var GLSL_STD_450 = "GLSL.std.450";
+var MAX_STEPS = 5e7;
+function num2(v) {
+  return typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0;
+}
+function big(v) {
+  return typeof v === "bigint" ? v : BigInt(Math.trunc(num2(v)));
+}
+function signed(v, width) {
+  if (width === 64) return BigInt.asIntN(64, big(v));
+  const n = num2(v);
+  if (width === 32) return n | 0;
+  const mod = 2 ** width;
+  const u = (n % mod + mod) % mod;
+  return u >= mod / 2 ? u - mod : u;
+}
+function unsigned(v, width) {
+  if (width === 64) return BigInt.asUintN(64, big(v));
+  const n = num2(v);
+  if (width === 32) return n >>> 0;
+  const mod = 2 ** width;
+  return (n % mod + mod) % mod;
+}
+function flat(v) {
+  if (Array.isArray(v)) return v.flatMap(flat);
+  return [num2(v)];
+}
+var Invocation = class {
+  module;
+  entry;
+  bindings;
+  inputs;
+  derivatives;
+  status = "running";
+  error = "";
+  /** Things the interpreter could not do faithfully: uncaptured resources, unsupported operations. */
+  warnings = /* @__PURE__ */ new Set();
+  frames = [];
+  /** Global variables: their pointers, by id. */
+  globals = /* @__PURE__ */ new Map();
+  constants;
+  /** Demoted to a helper invocation (its outputs are discarded, execution goes on). */
+  helper = false;
+  steps = 0;
+  /** Results of the instructions executed since takeResults(). */
+  _results = [];
+  /** Called with every value an instruction produces (the MCP tool's trace). */
+  onResult = null;
+  constructor(module, options) {
+    this.module = module;
+    const entry = module.entryPoint(options.entryPoint, options.model);
+    if (!entry) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
+    this.entry = entry;
+    this.bindings = options.bindings;
+    this.inputs = options.inputs;
+    this.derivatives = options.derivatives ?? null;
+    this.constants = new Map(module.constants);
+    this._specialize();
+    this._createGlobals();
+    const fn = module.functions.get(entry.function);
+    if (!fn || !fn.blocks.length) throw new Error(`the entry point ${entry.name} has no body`);
+    this.frames.push(this._frame(fn, 0));
+    this._skipNoops();
+  }
+  get stage() {
+    const m = this.entry.model;
+    return m === 0 /* Vertex */ ? "vertex" : m === 4 /* Fragment */ ? "fragment" : m === 5 /* GLCompute */ ? "compute" : "other";
+  }
+  /** Itself: an invocation steps itself (a PixelQuad steps one of four). */
+  get invocation() {
+    return this;
+  }
+  get finished() {
+    return this.status === "returned" || this.status === "discarded" || this.status === "error";
+  }
+  /** The instruction about to execute, null when finished. */
+  get current() {
+    const frame = this.frames[this.frames.length - 1];
+    return frame && !this.finished ? this.module.instructions[frame.pc] ?? null : null;
+  }
+  /** The results produced since the last call, and forgets them. */
+  takeResults() {
+    const r = this._results;
+    this._results = [];
+    return r;
+  }
+  /** Executes one instruction (instructions that do nothing, like OpLine, are passed over with it). */
+  step() {
+    if (this.finished) return this.status;
+    if (++this.steps > MAX_STEPS) return this._fail(`stopped after ${MAX_STEPS.toLocaleString()} instructions: an endless loop?`);
+    try {
+      let guard = 0;
+      while (!this.finished) {
+        const frame = this.frames[this.frames.length - 1];
+        const inst = this.module.instructions[frame.pc];
+        if (!inst) return this._fail("ran off the end of a function");
+        if (this._isNoop(inst)) {
+          frame.pc++;
+          if (++guard > 1e5) return this._fail("too many instructions without effect");
           continue;
         }
-        out.push({ ...header, __binary: new Uint8Array(payload.subarray(4 + hl)) });
+        const r = this._execute(frame, inst);
+        this.status = r === "blocked" ? "blocked" : this.finished ? this.status : "running";
+        if (r !== "blocked") this._skipNoops();
+        return this.status;
       }
+    } catch (e) {
+      return this._fail(e instanceof Error ? e.message : String(e));
+    }
+    return this.status;
+  }
+  _skipNoops() {
+    const frame = this.frames[this.frames.length - 1];
+    if (!frame || this.finished) return;
+    while (frame.pc < this.module.instructions.length && this._isNoop(this.module.instructions[frame.pc])) frame.pc++;
+  }
+  /** Runs to the end (or a block on derivatives); for tests and the trace. */
+  run() {
+    while (!this.finished) {
+      if (this.step() === "blocked") return "blocked";
+    }
+    return this.status;
+  }
+  // ---------------------------------------------------------------------------------------
+  // What a debugger shows
+  /** The outputs the invocation wrote: by location and built-in. */
+  outputs() {
+    return this._interfaceVariables(3 /* Output */);
+  }
+  inputVariables() {
+    return this._interfaceVariables(1 /* Input */);
+  }
+  /** Uniform, storage and push constant blocks, images and samplers. */
+  resourceVariables() {
+    const out = [];
+    for (const [id, ptr] of this.globals) {
+      if (ptr.storage === 1 /* Input */ || ptr.storage === 3 /* Output */) continue;
+      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) continue;
+      out.push(this._view(id, ptr));
     }
     return out;
   }
-};
-
-// src/main/launch_env.ts
-import { execFile as execFile3 } from "node:child_process";
-import fs6 from "node:fs";
-import net from "node:net";
-import os4 from "node:os";
-import path5 from "node:path";
-var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
-var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
-var DEFAULT_PORT = 47531;
-function findLayerDir(roots, packaged = []) {
-  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
-  const candidates = [];
-  for (const root of roots) {
-    const bin = path5.join(root, "build", "bin");
-    candidates.push(path5.join(bin, "Release"), path5.join(bin, "RelWithDebInfo"), path5.join(bin, "Debug"), bin);
-  }
-  candidates.push(...packaged);
-  for (const dir of candidates) {
-    if (fs6.existsSync(path5.join(dir, `${LAYER_NAME2}.json`))) return dir;
-  }
-  return null;
-}
-function findValidationLayerDir() {
-  const manifest = "VkLayer_khronos_validation.json";
-  const candidates = [];
-  const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path5.join(sdk, "Bin"), path5.join(sdk, "share", "vulkan", "explicit_layer.d"), path5.join(sdk, "etc", "vulkan", "explicit_layer.d"));
-  if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path5.join(os4.homedir(), "VulkanSDK")]) {
-      try {
-        const versions = fs6.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path5.join(root, v, "Bin"));
-      } catch {
-      }
+  /** Private and workgroup variables. */
+  privateVariables() {
+    const out = [];
+    for (const [id, ptr] of this.globals) {
+      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) out.push(this._view(id, ptr));
     }
-  } else {
-    candidates.push(
-      "/usr/share/vulkan/explicit_layer.d",
-      "/usr/local/share/vulkan/explicit_layer.d",
-      "/etc/vulkan/explicit_layer.d",
-      path5.join(os4.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
-    );
+    return out;
   }
-  for (const c2 of candidates) if (fs6.existsSync(path5.join(c2, manifest))) return c2;
-  return null;
-}
-function vulkanLayerEnvironment(o) {
-  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
-  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
-  return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path5.delimiter),
-    VK_LOADER_LAYERS_ENABLE: layers.join(","),
-    // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path5.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path5.delimiter),
-    VKINSP_PORT: String(o.port),
-    VKINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
-    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    // The validation layer stops reporting a message after a few repeats (its
-    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
-    // attaches a message to the captured command it fired on, which needs every occurrence.
-    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
-    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
-    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
-  };
-}
-function splitArgs(s) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-function portFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
-  });
-}
-async function findFreePort(start, taken = () => false) {
-  for (let port = start; port < start + 100 && port < 65536; port++) {
-    if (taken(port)) continue;
-    if (await portFree(port)) return port;
-  }
-  return start;
-}
-function terminate(proc) {
-  if (process.platform === "win32" && proc.pid) {
-    execFile3("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
-      try {
-        proc.kill();
-      } catch {
-      }
-    });
-    return;
-  }
-  proc.kill();
-}
-
-// src/main/metal.ts
-import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
-import fs7 from "node:fs";
-import path6 from "node:path";
-import { fileURLToPath } from "node:url";
-var moduleDir = path6.dirname(fileURLToPath(import.meta.url));
-var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path6.resolve(moduleDir, "..", "..", "..")], packaged = [path6.join(process.resourcesPath ?? "", "layer")]) {
-  const candidates = [];
-  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
-  for (const root of roots) {
-    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path6.join(root, dir, CAPTURE_LIBRARY));
+  /** A frame's local variables and parameters (depth 0 is the innermost frame). */
+  locals(depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    if (!frame) return [];
+    const out = [];
+    for (const p of frame.fn.params) {
+      const v = frame.values.get(p.id);
+      const value = v instanceof Pointer ? this._load(v) : v ?? null;
+      out.push({ id: p.id, name: this.module.nameOf(p.id), type: v instanceof Pointer ? v.type : p.type, value, storage: 7 /* Function */ });
     }
-  }
-  for (const dir of packaged) candidates.push(path6.join(dir, CAPTURE_LIBRARY));
-  return candidates.find((p) => fs7.existsSync(p)) ?? null;
-}
-function resolveExecutable(exe) {
-  if (!exe.endsWith(".app")) return exe;
-  const macOS = path6.join(exe, "Contents", "MacOS");
-  const plist = path6.join(exe, "Contents", "Info.plist");
-  if (fs7.existsSync(plist)) {
-    try {
-      const name = execFileSync2(
-        "/usr/libexec/PlistBuddy",
-        ["-c", "Print :CFBundleExecutable", plist],
-        { encoding: "utf8" }
-      ).trim();
-      const candidate = path6.join(macOS, name);
-      if (name && fs7.existsSync(candidate)) return candidate;
-    } catch {
+    for (const l of frame.locals) {
+      out.push({ id: l.id, name: this.module.nameOf(l.id), type: l.type, value: cloneValue(l.cell.value), storage: 7 /* Function */ });
     }
+    return out;
   }
-  const byBundleName = path6.join(macOS, path6.basename(exe, ".app"));
-  if (fs7.existsSync(byBundleName)) return byBundleName;
-  try {
-    const entries = fs7.readdirSync(macOS);
-    if (entries.length === 1) return path6.join(macOS, entries[0]);
-  } catch {
+  /** A value an id has in a frame, for hovering over a name: SSA values and variables. */
+  valueOf(id, depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    const v = frame?.values.get(id) ?? this.globals.get(id);
+    if (v === void 0) return this.constants.get(id);
+    return v instanceof Pointer ? this._load(v) : v;
   }
-  return exe;
-}
-function injectionBlockedReason(exe) {
-  const r = spawnSync(
-    "codesign",
-    ["-d", "-v", "--entitlements", "-", "--xml", exe],
-    { encoding: "utf8" }
-  );
-  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
-  if (!/flags=[^\s]*runtime/.test(output)) return null;
-  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
-  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
-  if (hasDyld && hasLibrary) return null;
-  return `${path6.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
-
-  /usr/bin/codesign --force --deep --sign - --options runtime \\
-    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
-    "<the .app>"
-
-This invalidates the application's signature and notarization, so do it to a development build rather than to a shipping copy.`;
-}
-function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
-  const env = {
-    // A stack at every object creation (metal/src/stacktrace.mm), the launch dialog's option.
-    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
-    // Appended rather than replacing: another inserted library is the caller's business.
-    DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
-    MTLINSP_PORT: String(port),
-    MTLINSP_LOG: log ? "1" : "0",
-    // Lets the library write an Xcode GPU trace of a frame on request (metal/src/gpu_trace.mm);
-    // without it MTLCaptureManager refuses the document destination.
-    ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
-  };
-  if (validation) {
-    const defaults = {
-      MTL_DEBUG_LAYER: "1",
-      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
-      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
-      MTL_SHADER_VALIDATION: "1",
-      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1"
-    };
-    for (const [key, value] of Object.entries(defaults)) {
-      if (!process.env[key]) env[key] = value;
-    }
-  }
-  return env;
-}
-
-// src/renderer/stack_requests.ts
-var REQUEST_TIMEOUT_MS = 15e3;
-function requestStacks(session, ids) {
-  const db = session.database;
-  const out = /* @__PURE__ */ new Map();
-  const missing = [];
-  for (const id of ids) {
-    const cached = db.stacks.get(id);
-    if (cached) out.set(id, cached);
-    else missing.push(id);
-  }
-  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = (ok) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onStacktraces.disconnect(listener);
-      if (!ok) {
-        resolve(out.size ? out : null);
-        return;
-      }
-      for (const id of missing) {
-        const s = db.stacks.get(id);
-        if (s) out.set(id, s);
-      }
-      resolve(out);
-    };
-    const listener = () => finish2(true);
-    const timer = setTimeout(() => finish2(false), REQUEST_TIMEOUT_MS);
-    db.onStacktraces.addListener(listener);
-    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => {
-      if (!ok) finish2(false);
-    });
-  });
-}
-async function resolveSymbols(session, addresses, symbolizeOnHost2) {
-  const out = await resolveFromLayer(session, addresses);
-  if (symbolizeOnHost2) await symbolizeOnHost2(out);
-  return out;
-}
-function resolveFromLayer(session, addresses) {
-  const db = session.database;
-  const out = /* @__PURE__ */ new Map();
-  const missing = [];
-  for (const a of addresses) {
-    const cached = db.symbols.get(a);
-    if (cached) out.set(a, cached);
-    else if (!missing.includes(a)) missing.push(a);
-  }
-  if (!missing.length) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onSymbols.disconnect(listener);
-      for (const a of missing) {
-        const f = db.symbols.get(a);
-        if (f) out.set(a, f);
-      }
-      resolve(out);
-    };
-    const listener = () => finish2();
-    const timer = setTimeout(finish2, REQUEST_TIMEOUT_MS);
-    db.onSymbols.addListener(listener);
-    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => {
-      if (!ok) finish2();
-    });
-  });
-}
-
-// src/renderer/capture_file.ts
-var BLOB_TIMEOUT_MS = 15e3;
-function fetchBlob(session, object, index) {
-  const db = session.database;
-  const key = `${object.id}:${index}`;
-  const cached = db.blobData.get(key);
-  if (cached) return Promise.resolve(cached);
-  if (!session.connected) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = (data) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onObjectBlob.disconnect(listener);
-      resolve(data);
-    };
-    const listener = (id, idx, data) => {
-      if (id === object.id && idx === index) finish2(data);
-    };
-    const timer = setTimeout(() => finish2(null), BLOB_TIMEOUT_MS);
-    db.onObjectBlob.addListener(listener);
-    void session.send({ action: "RequestBlob", id: object.id, index }).then((ok) => {
-      if (!ok) finish2(null);
-    });
-  });
-}
-function referencedObjects(session, data) {
-  const db = session.database;
-  const ids = /* @__PURE__ */ new Set();
-  for (const c2 of data.commands) {
-    if (c2.object) ids.add(c2.object.__id);
-    if (c2.secondary) ids.add(c2.secondary);
-    db.collectReferences(c2.args, ids);
-    db.collectReferences(c2.descriptors, ids);
-  }
-  for (const t of data.textures) {
-    ids.add(t.info.id);
-    ids.add(t.info.commandBuffer);
-  }
-  for (const b of data.buffers.values()) {
-    ids.add(b.info.buffer);
-    ids.add(b.info.commandBuffer);
-  }
-  for (const v of db.validation) db.collectReferences(v.objects, ids);
-  const out = /* @__PURE__ */ new Map();
-  const queue = [...ids];
-  while (queue.length) {
-    const id = queue.pop();
-    if (out.has(id)) continue;
-    const o = db.getObject(id);
-    if (!o) continue;
-    out.set(id, o);
-    if (o.parentId && !out.has(o.parentId)) queue.push(o.parentId);
-    for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
-    const more = /* @__PURE__ */ new Set();
-    db.collectReferences(o.updates, more);
-    for (const m of more) if (!out.has(m)) queue.push(m);
-  }
-  return [...out.values()].sort((a, b) => a.id - b.id);
-}
-async function serializeCapture(session, data, options = {}) {
-  const onProgress = options.onProgress;
-  const payloads = [];
-  let payloadBytes = 0;
-  const addPayload = (bytes) => {
-    if (!bytes) return void 0;
-    const p = [payloadBytes, bytes.byteLength];
-    payloads.push(bytes);
-    payloadBytes += bytes.byteLength;
-    return p;
-  };
-  const objects = referencedObjects(session, data);
-  const records = [];
-  let fetched = 0;
-  const withBlobs = objects.filter((o) => o.blobs.length).length;
-  for (const o of objects) {
-    const blobs = [];
-    for (let i = 0; i < o.blobs.length; i++) {
-      const b = o.blobs[i];
-      if (onProgress) onProgress(`saving: shader ${++fetched} of ${withBlobs}...`);
-      const bytes = await fetchBlob(session, o, i);
-      blobs.push({ name: b.name, size: b.size, ...bytes ? { payload: addPayload(bytes) } : {} });
-    }
-    records.push({
-      id: o.id,
-      parent: o.parentId,
-      type: o.type,
-      cmd: o.cmd,
-      index: o.index,
-      handle: o.handle,
-      label: o.label || null,
-      args: o.args,
-      blobs,
-      updates: o.updates,
-      deleted: o.isDeleted
-    });
-  }
-  const db = session.database;
-  const addresses = /* @__PURE__ */ new Set();
-  for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
-  let symbols;
-  if (addresses.size && !options.forReplay) {
-    if (onProgress) onProgress("saving: symbols...");
-    const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
-    symbols = {};
-    for (const [a, f] of resolved) symbols[a] = f;
-  }
-  let stacks;
-  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
-    if (onProgress) onProgress("saving: stack traces...");
-    const got = await requestStacks(session, objects.map((o) => o.id));
-    if (got && db.stacksAvailable !== false) {
-      stacks = {};
-      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
-    }
-  }
-  if (onProgress) onProgress("saving: writing...");
-  const manifest = {
-    format: CAPTURE_FORMAT,
-    version: CAPTURE_VERSION,
-    api: data.api,
-    application: "GPU Inspector",
-    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    source: { name: session.name },
-    frame: data.frame,
-    frames: data.frames,
-    frameTimeMs: db.frameTimeMs,
-    submitMs: db.submitMs,
-    refreshMs: db.refreshMs,
-    refreshSource: db.refreshSource,
-    displayRefreshMs: db.displayRefreshMs,
-    frameBoundary: db.frameBoundary,
-    objects: records,
-    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
-    commands: data.commands.map((c2) => {
-      const { children: _children, ...rest } = c2;
-      return rest;
-    }),
-    textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
-    buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
-    passTimings: [...data.passTimings.values()],
-    ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
-    ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
-    ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
-    validation: db.validation,
-    ...symbols ? { symbols } : {},
-    ...stacks ? { stacks } : {}
-  };
-  return encodeCaptureFile(manifest, payloads);
-}
-
-// src/mcp/live_session.ts
-var MAX_LOG_LINES = 2e3;
-var MAX_FRAME_STATS = 600;
-var DEFAULT_QUIET_MS = 2e3;
-var SNAPSHOT_TIMEOUT_MS = 1e4;
-var KILL_TIMEOUT_MS = 3e3;
-var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
-  "CaptureFrameResults",
-  "CaptureFrameCommands",
-  "CaptureTextureFrames",
-  "CaptureTextureData",
-  "CaptureBuffers",
-  "CaptureBufferData",
-  "CapturePassTimings",
-  "CaptureOverdraw",
-  "CaptureOverdrawData",
-  "CapturePixelHistory"
-]);
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path7.join(os5.tmpdir(), "gpu-inspector-captures");
-}
-function checkoutRoots() {
-  const roots = [];
-  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path7.resolve(path7.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
-  return roots;
-}
-function installedLayerDirs() {
-  const home = os5.homedir();
-  if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path7.join(home, "AppData", "Local");
-    const apps = [path7.join(local, "Programs", "gpu-inspector"), path7.join(local, "Programs", "GPU Inspector")];
-    for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path7.join(programFiles, "GPU Inspector"));
-    }
-    return apps.map((dir) => path7.join(dir, "resources", "layer"));
-  }
-  if (process.platform === "darwin") {
-    return ["/Applications", path7.join(home, "Applications")].map((dir) => path7.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
-  }
-  return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
-}
-function androidLayer() {
-  const candidates = [
-    process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path7.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path7.join(dir, "android"))
-  ].filter((d) => !!d);
-  return findAndroidLayer(candidates);
-}
-function applicationName(db) {
-  for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
-    const info = o.descriptor?.pApplicationInfo;
-    const name = isObject(info) ? str(info.pApplicationName) : "";
-    if (name) return name;
-  }
-  return null;
-}
-var LiveSession = class {
-  constructor(id, name, port, launched) {
-    this.id = id;
-    this.name = name;
-    this.port = port;
-    this.launched = launched;
-    const db = this.database;
-    db.onFrameStats.addListener((msg) => {
-      this.frameStats.push({ at: Date.now(), msg });
-      if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
-    });
-    db.onValidationMessage.addListener((entry, isNew) => {
-      if (isNew) this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${entry.message.split("\n")[0].slice(0, 300)}`);
-    });
-    db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
-    db.onOtherMessage.addListener((msg) => {
-      if (msg.action === "ShaderReplaced") {
-        this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
-      }
-    });
-  }
-  database = new ObjectDatabase();
-  log = [];
-  /** Frame reports with the time each arrived. */
-  frameStats = [];
-  startedAt = Date.now();
-  state = "connecting";
-  detail = "";
-  pid = null;
-  exitCode = null;
-  _proc = null;
-  _socket = null;
-  _listeners = /* @__PURE__ */ new Set();
-  _capturing = false;
-  /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
-  _stopping = false;
-  /** The launched application is gone: it exited, failed to start, or was stopped. */
-  _ended = false;
-  /**
-   * A launched target that is not a child process of this server (an Android application): how
-   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
-   */
-  remote = null;
-  get connected() {
-    return this._socket !== null && !this._socket.destroyed;
-  }
-  /** The API the capture library reports objects of; null before any arrived. */
-  get api() {
-    for (const type of this.database.objectsByType.keys()) if (type.startsWith("MTL")) return "metal";
-    return this.database.allObjects.size ? "vulkan" : null;
-  }
-  appendLog(line) {
-    this.log.push(line);
-    if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
-  }
-  setState(state, detail = "") {
-    this.state = state;
-    this.detail = detail;
-    this.appendLog(`[${state}]${detail ? ` ${detail}` : ""}`);
-  }
-  send(msg) {
-    if (!this._socket || this._socket.destroyed) return Promise.resolve(false);
-    this._socket.write(encodeRequest(msg));
-    return Promise.resolve(true);
-  }
-  /** Hears every message from the capture library, after the object database; returns the unsubscribe. */
-  onMessage(listener) {
-    this._listeners.add(listener);
-    return () => {
-      this._listeners.delete(listener);
-    };
-  }
-  /** The first message `match` accepts (its return value), or null after `timeoutMs`. */
-  waitFor(match, timeoutMs) {
-    return new Promise((resolve) => {
-      const off = this.onMessage((msg) => {
-        const hit = match(msg);
-        if (hit === void 0) return;
-        clearTimeout(timer);
-        off();
-        resolve(hit);
-      });
-      const timer = setTimeout(() => {
-        off();
-        resolve(null);
-      }, timeoutMs);
-    });
-  }
-  /** Starts the application; its output goes to the session's log. */
-  startProcess(exe, args, cwd, env) {
-    const proc = spawn2(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    this._proc = proc;
-    this.pid = proc.pid ?? null;
-    for (const stream of [proc.stdout, proc.stderr]) {
-      let rest = "";
-      stream?.on("data", (d) => {
-        rest += d.toString("utf8");
-        const lines = rest.split(/\r?\n/);
-        rest = lines.pop() ?? "";
-        for (const line of lines) if (line.length) this.appendLog(line);
-      });
-    }
-    proc.on("exit", (code, signal) => {
-      if (this._proc !== proc) return;
-      this._proc = null;
-      this.pid = null;
-      this._ended = true;
-      this.exitCode = String(signal ?? code);
-      this._disconnect();
-      this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
-    });
-    proc.on("error", (e) => {
-      if (this._proc !== proc) return;
-      this._proc = null;
-      this.pid = null;
-      this._disconnect();
-      this._ended = true;
-      this.setState("error", e.message);
-    });
-  }
-  /**
-   * Connects to the capture library, retrying until it answers, the launched process exits, or
-   * `timeoutMs` passes; resolves once the snapshot of live objects that follows a connection is in.
-   */
-  async connect(timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    this.setState("connecting", `port ${this.port}`);
-    let attempts = 0;
-    while (Date.now() < deadline) {
-      if (this._ended) return false;
-      const sock = await this._tryConnect();
-      attempts++;
-      if (sock) {
-        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
-        this._attach(sock);
-        if (await snapshot !== "closed" || this.connected) {
-          const name = applicationName(this.database);
-          if (name && !this.launched) this.name = name;
-          return this.connected;
-        }
-      } else if (this.remote?.repair && attempts % 4 === 0) {
-        await this.remote.repair().catch(() => void 0);
-      }
-      await sleep(this.launched && !this.remote ? 250 : 500);
-    }
-    this.setState("disconnected", `nothing answered on port ${this.port}`);
-    return false;
-  }
-  _tryConnect() {
-    return new Promise((resolve) => {
-      const sock = net2.createConnection({ host: "127.0.0.1", port: this.port });
-      sock.once("connect", () => {
-        sock.removeAllListeners("error");
-        resolve(sock);
-      });
-      sock.once("error", () => {
-        sock.destroy();
-        resolve(null);
-      });
-    });
-  }
-  _attach(sock) {
-    sock.setNoDelay(true);
-    this._socket = sock;
-    const reader = new FrameReader();
-    let heard = false;
-    sock.on("data", (chunk2) => {
-      if (!heard) {
-        heard = true;
-        this.setState("connected", `port ${this.port}`);
-      }
-      const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
-      for (const msg of messages) {
-        this.database.handleMessage(msg);
-        for (const listener of [...this._listeners]) listener(msg);
-      }
-    });
-    const gone = () => {
-      if (this._socket !== sock) return;
-      this._socket = null;
-      if (this.state === "connected") this.setState("disconnected", "the connection closed (the application exited, or another client connected to it)");
-    };
-    sock.on("error", gone);
-    sock.on("close", gone);
-    void this.send({ action: "Ping" });
-  }
-  /**
-   * Resolves when the snapshot the capture library sends on connection has arrived, when the
-   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
-   */
-  _waitForSnapshot(timeoutMs, sock) {
-    const db = this.database;
-    return new Promise((resolve) => {
-      let started = false;
-      const done = (outcome) => {
-        clearTimeout(timer);
-        db.onSnapshotBegin.disconnect(begin);
-        db.onAddObject.disconnect(add);
-        sock.off("close", closed);
-        resolve(outcome);
-      };
-      const begin = (count2) => {
-        started = true;
-        if (count2 === 0) done("snapshot");
-      };
-      const add = (_object, inSnapshot) => {
-        if (started && !inSnapshot) done("snapshot");
-      };
-      const closed = () => done(started ? "snapshot" : "closed");
-      const timer = setTimeout(() => done("timeout"), timeoutMs);
-      db.onSnapshotBegin.addListener(begin);
-      db.onAddObject.addListener(add);
-      sock.once("close", closed);
-    });
-  }
-  _disconnect() {
-    const sock = this._socket;
-    this._socket = null;
-    sock?.destroy();
-  }
-  /**
-   * Requests a capture and waits for all of it: until the capture library marks its end, or, for
-   * one built before that marker existed, until the stream has been silent for a while after the
-   * commands and buffers are in.
-   */
-  async capture(o) {
-    if (!this.connected) throw new Error(`${this.id} is not connected (${this.state}${this.detail ? `: ${this.detail}` : ""}).`);
-    if (this._capturing) throw new Error(`${this.id} is already capturing.`);
-    this._capturing = true;
-    const data = new CaptureData();
-    const started = Date.now();
-    let commandsComplete = false;
-    let marker = false;
-    let lastTraffic = 0;
-    const onCommands = () => {
-      commandsComplete = true;
-    };
-    data.onCommandsComplete.addListener(onCommands);
-    const off = this.onMessage((msg) => {
-      if (msg.action === "CaptureComplete") {
-        marker = true;
-      } else if (CAPTURE_ACTIONS.has(msg.action)) {
-        lastTraffic = Date.now();
-        data.handleMessage(msg);
-      }
-    });
-    const quietMs = Number(process.env.GPU_INSPECTOR_CAPTURE_QUIET_MS) || DEFAULT_QUIET_MS;
-    try {
-      const request = {
-        action: "Capture",
-        frameCount: o.frames,
-        ...o.atFrame !== void 0 ? { atFrame: o.atFrame } : {},
-        captureTextures: o.renderTargets,
-        captureBuffers: o.buffers,
-        captureImages: o.images,
-        profilePasses: o.profilePasses,
-        stacktraces: o.stacktraces,
-        maxBufferSize: o.maxBufferBytes,
-        ...o.overdraw ? { overdraw: true } : {},
-        ...o.pixelHistory ? { pixelHistory: o.pixelHistory } : {}
-      };
-      await this.send(request);
-      for (; ; ) {
-        await sleep(50);
-        const now = Date.now();
-        if (marker) return { data, completion: "marker", elapsedMs: now - started };
-        if (commandsComplete && lastTraffic && now - lastTraffic >= quietMs && !data.buffersLoading) return { data, completion: "quiet", elapsedMs: now - started };
-        if (!this.connected) {
-          throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
-        }
-        if (now - started > o.timeoutMs) {
-          throw new Error(lastTraffic ? `The capture did not finish streaming within ${o.timeoutMs / 1e3} s.` : `No capture arrived within ${o.timeoutMs / 1e3} s: a capture starts at ${o.atFrame !== void 0 ? `frame ${o.atFrame}` : "the next frame"}, so the application may not be rendering (minimized, paused, or waiting).`);
+  // ---------------------------------------------------------------------------------------
+  // Setup
+  _specialize() {
+    const m = this.module;
+    if (this.bindings.specialization.size) {
+      for (const [id, specId] of m.specIds) {
+        const bytes = this.bindings.specialization.get(specId);
+        if (!bytes) continue;
+        const inst = m.instructions.find((i) => i.result === id && (i.op === 50 /* SpecConstant */ || i.op === 48 /* SpecConstantTrue */ || i.op === 49 /* SpecConstantFalse */));
+        if (!inst) continue;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (inst.op === 48 /* SpecConstantTrue */ || inst.op === 49 /* SpecConstantFalse */) {
+          this.constants.set(id, bytes.byteLength >= 4 ? view.getUint32(0, true) !== 0 : bytes[0] !== 0);
+        } else if (inst.op === 50 /* SpecConstant */) {
+          const words2 = new Uint32Array(Math.max(1, Math.ceil(bytes.byteLength / 4)));
+          for (let i = 0; i < words2.length && (i + 1) * 4 <= bytes.byteLength; i++) words2[i] = view.getUint32(i * 4, true);
+          this.constants.set(id, m.scalarFromWords(inst.resultType, words2));
         }
       }
-    } finally {
-      off();
-      data.onCommandsComplete.disconnect(onCommands);
-      this._capturing = false;
     }
-  }
-  /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
-  async saveCapture(data, file) {
-    const bytes = await serializeCapture(this, data, {
-      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames))
-    });
-    let target;
-    if (file) {
-      target = path7.resolve(file);
-      fs8.mkdirSync(path7.dirname(target), { recursive: true });
-    } else {
-      const dir = capturesDir();
-      fs8.mkdirSync(dir, { recursive: true });
-      const name = captureFileName(this.name, data.frame, data.frames);
-      target = path7.join(dir, name);
-      for (let n = 2; fs8.existsSync(target); n++) target = path7.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
-    }
-    fs8.writeFileSync(target, bytes);
-    return target;
-  }
-  /**
-   * Rebuilds a pipeline with one stage's code replaced (Vulkan); the layer's answer, or null without
-   * one. The request names the stage by its flag, the answer by the layer's stage name ("fragment").
-   */
-  async replaceShader(pipeline, stageFlag, stageName, spirv, timeoutMs = 15e3) {
-    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline && (msg.stage === stageName || msg.stage === stageFlag) ? msg : void 0, timeoutMs);
-    await this.send({ action: "ReplaceShader", pipeline, stage: stageFlag, spirv: Buffer.from(spirv).toString("base64") });
-    return answer;
-  }
-  /** Drops the replacement of one stage (or every stage) of a pipeline. */
-  async restoreShader(pipeline, stageFlag, timeoutMs = 15e3) {
-    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline ? msg : void 0, timeoutMs);
-    await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
-    return answer;
-  }
-  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
-  async readImage(id, mip, layer, timeoutMs) {
-    const answer = this.waitFor((msg) => msg.action === "ImageData" && msg.id === id ? msg : void 0, timeoutMs);
-    await this.send({ action: "RequestImage", id, mip, layer });
-    return answer;
-  }
-  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
-  async readDescriptorSet(id, timeoutMs = 1e4) {
-    const answer = this.waitFor((msg) => msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : void 0, timeoutMs);
-    await this.send({ action: "RequestDescriptorSet", id });
-    return await answer ?? false;
-  }
-  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
-  remoteEnded(state, detail) {
-    if (this._ended) return;
-    this._ended = true;
-    this.pid = null;
-    this._disconnect();
-    this.setState(state, detail);
-  }
-  /** Terminates a launched application; an attached one is only disconnected. */
-  async stop() {
-    const proc = this._proc;
-    const remote = this.remote;
-    this._disconnect();
-    if (remote) {
-      this.remote = null;
-      if (!this._ended) {
-        this._stopping = true;
-        await remote.stop().catch(() => void 0);
-        this.remoteEnded("exited", "terminated by stop_app");
-      }
-      return;
-    }
-    if (!proc) {
-      if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
-      return;
-    }
-    this._stopping = true;
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, KILL_TIMEOUT_MS);
-      proc.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      try {
-        terminate(proc);
-      } catch {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-  }
-};
-var SessionManager = class {
-  _sessions = /* @__PURE__ */ new Map();
-  _counter = 0;
-  _latest = null;
-  /** Launches an application with the capture library in it and waits for it to connect. */
-  async launch(o, waitMs) {
-    const requested = path7.resolve(o.exe);
-    if (!fs8.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
-    const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
-    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
-    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
-    let exe = requested;
-    let env;
-    let note;
-    if (process.platform === "darwin") {
-      const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
-      if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
-      exe = resolveExecutable(requested);
-      const blocked = injectionBlockedReason(exe);
-      if (blocked) throw new Error(blocked);
-      env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
-      note = `capture library: ${library}`;
-    } else {
-      const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
-      if (!layerDir) {
-        throw new Error("The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
-      }
-      const validationDir = o.validation ? findValidationLayerDir() : null;
-      env = {
-        ...process.env,
-        ...o.env,
-        ...vulkanLayerEnvironment({
-          layerDir,
-          validationDir,
-          port,
-          log: true,
-          recordAlways: !!o.recordAlways,
-          stacktraces: o.stacktraces ?? true,
-          validation: !!o.validation,
-          syncValidation: !!o.syncValidation
-        })
-      };
-      note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
-    }
-    const session = new LiveSession(`app-${++this._counter}`, `${path7.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
-    session.appendLog(`launching ${exe} ${args.join(" ")}`);
-    session.appendLog(note);
-    this._sessions.set(session.id, session);
-    this._latest = session;
-    session.startProcess(exe, args, o.cwd && fs8.existsSync(o.cwd) ? o.cwd : path7.dirname(exe), env);
-    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
-    return session;
-  }
-  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
-  async androidDevices() {
-    const adb2 = findAdb();
-    return { adb: adb2, devices: adb2 ? await listDevices(adb2) : [], layer: androidLayer()?.dir ?? null };
-  }
-  /**
-   * Starts an Android package on a device with the layer installed and enabled for it, and waits
-   * for the layer to connect over the adb forward. A launch that fails on the device is reported
-   * through the session's state and log rather than thrown.
-   */
-  async launchAndroid(o, waitMs) {
-    const adb2 = findAdb();
-    if (!adb2) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
-    const layer = androidLayer();
-    if (!layer) {
-      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
-    }
-    const devices = await listDevices(adb2);
-    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
-    let device;
-    if (o.device) {
-      device = devices.find((d) => d.serial === o.device);
-      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
-      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
-    } else {
-      const usable = devices.filter((d) => d.state === "device");
-      if (usable.length !== 1) {
-        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
-      }
-      device = usable[0];
-    }
-    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
-    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
-    const serial = device.serial;
-    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
-    this._sessions.set(session.id, session);
-    this._latest = session;
-    const target = new AndroidTarget({
-      adb: adb2,
-      serial,
-      package: o.package,
-      activity: o.activity ?? "",
-      port,
-      log: true,
-      recordAlways: !!o.recordAlways,
-      stacktraces: o.stacktraces ?? true,
-      layer,
-      onLog: (line) => session.appendLog(line),
-      onExit: () => session.remoteEnded("exited", "the application exited on the device")
-    });
-    const stop = async () => {
-      await target.stop();
-      await disableLayer(adb2, serial);
-    };
-    session.remote = { stop, repair: () => target.ensureForward() };
-    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
-    try {
-      await target.start();
-    } catch (e) {
-      session.remote = null;
-      await stop().catch(() => void 0);
-      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
-      return session;
-    }
-    session.pid = target.pid;
-    await session.connect(waitMs);
-    return session;
-  }
-  /** Attaches to an application whose capture library already listens on `port`. */
-  async attach(port, waitMs) {
-    const session = new LiveSession(`app-${++this._counter}`, `port ${port}`, port, false);
-    if (!await session.connect(waitMs)) {
-      throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
-    }
-    this._sessions.set(session.id, session);
-    this._latest = session;
-    return session;
-  }
-  /** A session by id, or the one started most recently. */
-  get(id) {
-    if (!id) {
-      if (!this._latest) throw new Error("No live session: launch_app starts an application with the capture library, attach_app connects to one already running.");
-      return this._latest;
-    }
-    const s = this._sessions.get(id);
-    if (!s) throw new Error(`No live session "${id}". ${this._sessions.size ? `Sessions: ${[...this._sessions.keys()].join(", ")}.` : "There are none."}`);
-    return s;
-  }
-  list() {
-    return [...this._sessions.values()];
-  }
-  async stopAll() {
-    await Promise.all([...this._sessions.values()].map((s) => s.stop()));
-  }
-};
-
-// src/main/shader_tools.ts
-import { execFile as execFile4 } from "node:child_process";
-import fs9 from "node:fs";
-import os6 from "node:os";
-import path8 from "node:path";
-var tempCounter = 0;
-function tempBase() {
-  return path8.join(os6.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
-}
-function findTool(name) {
-  const exe = process.platform === "win32" ? `${name}.exe` : name;
-  const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path8.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path8.join(process.env.VULKAN_SDK, "Bin", exe), path8.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs9.existsSync(c2)) return c2;
-  return exe;
-}
-function shaderText(spirv, mode) {
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.spv`;
-    fs9.writeFileSync(tmp, Buffer.from(spirv));
-    let tool;
-    let args;
-    if (mode === "dis") {
-      tool = findTool("spirv-dis");
-      args = ["--comment", "--no-color", tmp];
-    } else {
-      tool = findTool("spirv-cross");
-      args = [tmp];
-      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
-      else if (mode === "msl") args.push("--msl");
-      else args.push("--vulkan-semantics", "--version", "460");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs9.unlinkSync(tmp);
-      } catch {
-      }
-      if (err) resolve({ ok: false, text: `${path8.basename(tool)} failed: ${stderr || err.message}` });
-      else resolve({ ok: true, text: stdout });
-    });
-  });
-}
-var GLSL_STAGES = {
-  vertex: "vert",
-  tess_control: "tesc",
-  tess_eval: "tese",
-  geometry: "geom",
-  fragment: "frag",
-  compute: "comp",
-  task: "task",
-  mesh: "mesh",
-  raygen: "rgen",
-  intersection: "rint",
-  any_hit: "rahit",
-  closest_hit: "rchit",
-  miss: "rmiss",
-  callable: "rcall"
-};
-var HLSL_PROFILES = {
-  vertex: "vs_6_0",
-  tess_control: "hs_6_0",
-  tess_eval: "ds_6_0",
-  geometry: "gs_6_0",
-  fragment: "ps_6_0",
-  compute: "cs_6_0",
-  task: "as_6_5",
-  mesh: "ms_6_5",
-  raygen: "lib_6_3",
-  intersection: "lib_6_3",
-  any_hit: "lib_6_3",
-  closest_hit: "lib_6_3",
-  miss: "lib_6_3",
-  callable: "lib_6_3"
-};
-function targetEnv(spirvVersion, tool) {
-  const v = spirvVersion || "1.5";
-  if (tool === "spirv-as") return `spv${v}`;
-  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
-  const env = glslang[v] ?? "vulkan1.2";
-  return tool === "dxc" ? env : env.replace("spirv", "spv");
-}
-function needsIncludeExtension(source) {
-  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
-}
-function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
-  return new Promise((resolve) => {
-    const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs9.existsSync(d));
-    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
-    const out = base + ".spv";
-    fs9.writeFileSync(src, source);
-    const entry = entryPoint || "main";
-    let tool;
-    let args;
-    if (language === "spirv-asm") {
-      tool = findTool("spirv-as");
-      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
-    } else if (language === "hlsl") {
-      tool = findTool("dxc");
-      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
-      for (const dir of includeDirs) args.push("-I", dir);
-    } else {
-      tool = findTool("glslangValidator");
-      args = [
-        "-V",
-        "-S",
-        GLSL_STAGES[stage] ?? "frag",
-        "--target-env",
-        targetEnv(spirvVersion, "glslang"),
-        "--source-entrypoint",
-        "main",
-        "-e",
-        entry,
-        "-o",
-        out,
-        src
-      ];
-      for (const dir of includeDirs) args.push(`-I${dir}`);
-      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-      let spirv;
-      try {
-        if (fs9.existsSync(out)) spirv = new Uint8Array(fs9.readFileSync(out));
-      } catch {
-        spirv = void 0;
-      }
-      for (const f of [src, out]) {
+    for (const inst of m.instructions) {
+      if (inst.op === 51 /* SpecConstantComposite */) {
+        this.constants.set(inst.result, Array.from(inst.words.subarray(2)).map((id) => this.constants.get(id)));
+      } else if (inst.op === 52 /* SpecConstantOp */) {
+        const opcode = inst.words[2];
+        const operands = inst.words.subarray(3);
+        const fake = { op: opcode, words: new Uint32Array([inst.resultType, inst.result, ...operands]), index: inst.index, resultType: inst.resultType, result: inst.result };
+        const frame = { values: /* @__PURE__ */ new Map() };
         try {
-          fs9.unlinkSync(f);
+          const value = this._compute(frame, fake);
+          if (value !== void 0) this.constants.set(inst.result, value);
         } catch {
+          this.warnings.add(`specialization constant operation ${opcode} is not evaluated`);
         }
       }
-      const name = path8.basename(tool);
-      if (err || !spirv || spirv.byteLength < 20) {
-        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
-        resolve({ ok: false, log: reason, tool: name });
-      } else {
-        resolve({ ok: true, spirv, log, tool: name });
+    }
+    for (const t of m.types.values()) if (t.kind === "array") t.length = Number(this.constants.get(t.lengthId) ?? t.length);
+  }
+  _createGlobals() {
+    const m = this.module;
+    for (const [id, g] of m.globals) {
+      const ptrType = m.types.get(g.type);
+      if (ptrType?.kind !== "pointer") continue;
+      const pointee = ptrType.pointee;
+      const cell = { value: null };
+      const set = m.decoration(id, 34 /* DescriptorSet */)?.[0] ?? 0;
+      const binding = m.decoration(id, 33 /* Binding */)?.[0] ?? 0;
+      switch (g.storage) {
+        case 2 /* Uniform */:
+        case 12 /* StorageBuffer */:
+        case 9 /* PushConstant */: {
+          const t = m.types.get(pointee);
+          if (g.storage !== 9 /* PushConstant */ && (t?.kind === "array" || t?.kind === "runtimeArray")) {
+            const element = t.kind === "array" || t.kind === "runtimeArray" ? t.element : pointee;
+            const count2 = t.kind === "array" ? t.length : 1;
+            cell.value = Array.from({ length: count2 }, (_, i) => {
+              const bytes = this.bindings.buffer(set, binding, i);
+              if (!bytes) this.warnings.add(`set ${set} binding ${binding}[${i}] (${m.nameOf(id)}) was not captured: it reads as zeros`);
+              return { buffer: { bytes: bytes ?? new Uint8Array(0), type: element, overrides: /* @__PURE__ */ new Map() } };
+            });
+            cell.bufferArray = true;
+          } else {
+            const bytes = g.storage === 9 /* PushConstant */ ? this.bindings.pushConstants : this.bindings.buffer(set, binding, 0);
+            if (!bytes) {
+              this.warnings.add(g.storage === 9 /* PushConstant */ ? "the push constants were not captured: they read as zeros" : `set ${set} binding ${binding} (${m.nameOf(id)}) was not captured: it reads as zeros`);
+            }
+            cell.buffer = { bytes: bytes ?? new Uint8Array(0), type: pointee, overrides: /* @__PURE__ */ new Map() };
+          }
+          break;
+        }
+        case 0 /* UniformConstant */:
+          cell.value = this._resource(id, pointee, set, binding, 0);
+          break;
+        case 1 /* Input */:
+          cell.value = this._input(id, pointee);
+          break;
+        case 3 /* Output */:
+        case 6 /* Private */:
+        case 4 /* Workgroup */:
+        default:
+          cell.value = g.initializer ? cloneValue(this.constants.get(g.initializer)) : m.zero(pointee);
+          break;
       }
+      this.globals.set(id, new Pointer(cell, [], pointee, g.storage, id));
+    }
+  }
+  _resource(id, type, set, binding, element) {
+    const m = this.module;
+    const t = m.types.get(type);
+    const label = `set ${set} binding ${binding}${element ? `[${element}]` : ""} (${m.nameOf(id)})`;
+    if (t?.kind === "array" || t?.kind === "runtimeArray") {
+      const count2 = t.kind === "array" ? t.length : 1;
+      return Array.from({ length: count2 }, (_, i) => this._resource(id, t.element, set, binding, i));
+    }
+    const texture = () => {
+      const tex = this.bindings.texture(set, binding, element);
+      if (!tex) this.warnings.add(`${label}: its image was not captured, so it reads as black`);
+      return tex;
+    };
+    if (t?.kind === "image") return new ImageValue(texture(), label);
+    if (t?.kind === "sampler") return new SamplerValue(this.bindings.sampler(set, binding, element), label);
+    if (t?.kind === "sampledImage") return new SampledImageValue(new ImageValue(texture(), label), new SamplerValue(this.bindings.sampler(set, binding, element), label));
+    return null;
+  }
+  /** An input variable's value: a built-in, or the scalars at its location shaped into its type. */
+  _input(id, type) {
+    const m = this.module;
+    const builtin = m.decoration(id, 11 /* BuiltIn */)?.[0];
+    if (builtin !== void 0) {
+      const v = this.inputs.builtins.get(builtin);
+      if (v === void 0) {
+        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`} has no value here: it reads as zero`);
+        return m.zero(type);
+      }
+      return this._shape(type, flat(v), { at: 0 });
+    }
+    const t = m.types.get(type);
+    if (t?.kind === "struct") {
+      const base = m.decoration(id, 30 /* Location */)?.[0] ?? 0;
+      return t.members.map((member, i) => {
+        const location2 = m.memberDecoration(type, i, 30 /* Location */)?.[0] ?? base + i;
+        return this._shape(member, this.inputs.locations.get(location2) ?? [], { at: 0 });
+      });
+    }
+    const location = m.decoration(id, 30 /* Location */)?.[0];
+    if (location === void 0) return m.zero(type);
+    const scalars2 = this.inputs.locations.get(location);
+    if (!scalars2) {
+      this.warnings.add(`input ${m.nameOf(id)} (location ${location}) has no value here: it reads as zero`);
+      return m.zero(type);
+    }
+    if (t?.kind === "array" || t?.kind === "matrix") {
+      const count2 = t.kind === "array" ? t.length : t.count;
+      const element = t.kind === "array" ? t.element : t.column;
+      return Array.from({ length: count2 }, (_, i) => this._shape(element, this.inputs.locations.get(location + i) ?? [], { at: 0 }));
+    }
+    return this._shape(type, scalars2, { at: 0 });
+  }
+  /** Scalars poured into a type in order (missing ones zero, a missing alpha one). */
+  _shape(type, scalars2, cursor) {
+    const m = this.module;
+    const t = m.types.get(type);
+    if (!t) return 0;
+    const s = scalarOf(m, type);
+    switch (t.kind) {
+      case "bool":
+      case "int":
+      case "float": {
+        const v = scalars2[cursor.at++] ?? 0;
+        return s ? normalize(v, s) : v;
+      }
+      case "vector":
+        return Array.from({ length: t.count }, () => this._shape(t.element, scalars2, cursor));
+      case "matrix":
+        return Array.from({ length: t.count }, () => this._shape(t.column, scalars2, cursor));
+      case "array":
+        return Array.from({ length: t.length }, () => this._shape(t.element, scalars2, cursor));
+      case "struct":
+        return t.members.map((member) => this._shape(member, scalars2, cursor));
+      default:
+        return null;
+    }
+  }
+  _frame(fn, resultId) {
+    const first = fn.blocks[0];
+    return { fn, pc: first.start + 1, block: first.label, previousBlock: 0, values: /* @__PURE__ */ new Map(), locals: [], resultId };
+  }
+  _interfaceVariables(storage) {
+    const out = [];
+    for (const id of this.entry.interface) {
+      const ptr = this.globals.get(id);
+      if (!ptr || ptr.storage !== storage) continue;
+      out.push(this._view(id, ptr));
+    }
+    return out;
+  }
+  _view(id, ptr) {
+    const m = this.module;
+    const name = m.names.get(id) || BUILTIN_NAMES[m.decoration(id, 11 /* BuiltIn */)?.[0] ?? -1] || m.names.get(ptr.type) || m.nameOf(id);
+    return {
+      id,
+      name,
+      type: ptr.type,
+      value: this._load(ptr, 256),
+      storage: ptr.storage,
+      location: m.decoration(id, 30 /* Location */)?.[0],
+      builtin: m.decoration(id, 11 /* BuiltIn */)?.[0],
+      set: m.decoration(id, 34 /* DescriptorSet */)?.[0],
+      binding: m.decoration(id, 33 /* Binding */)?.[0]
+    };
+  }
+  // ---------------------------------------------------------------------------------------
+  // Execution
+  _fail(message) {
+    const inst = this.current;
+    const loc = inst ? this.module.debug?.locations[inst.index] : null;
+    this.error = loc ? `${message} (line ${loc.line})` : message;
+    this.status = "error";
+    return this.status;
+  }
+  _isNoop(inst) {
+    switch (inst.op) {
+      case 0 /* Nop */:
+      case 8 /* Line */:
+      case 317 /* NoLine */:
+      case 247 /* SelectionMerge */:
+      case 246 /* LoopMerge */:
+      case 248 /* Label */:
+        return true;
+      case 12 /* ExtInst */:
+        return this.module.extSets.get(inst.words[2])?.startsWith("NonSemantic.") ?? false;
+      default:
+        return false;
+    }
+  }
+  value(frame, id) {
+    const v = frame.values.get(id);
+    if (v !== void 0) return v;
+    const g = this.globals.get(id);
+    if (g) return g;
+    if (this.constants.has(id)) return cloneValue(this.constants.get(id));
+    return 0;
+  }
+  _record(frame, inst, value) {
+    frame.values.set(inst.result, value);
+    const r = { inst, id: inst.result, value };
+    this._results.push(r);
+    if (this._results.length > 4096) this._results.splice(0, 2048);
+    this.onResult?.(r);
+  }
+  _branch(frame, label) {
+    const block = frame.fn.blockByLabel.get(label);
+    if (!block) throw new Error(`branch to a missing block %${label}`);
+    frame.previousBlock = frame.block;
+    frame.block = label;
+    frame.pc = block.start + 1;
+  }
+  _execute(frame, inst) {
+    const w = inst.words;
+    switch (inst.op) {
+      case 249 /* Branch */:
+        this._branch(frame, w[0]);
+        return "ok";
+      case 250 /* BranchConditional */:
+        this._branch(frame, this.value(frame, w[0]) ? w[1] : w[2]);
+        return "ok";
+      case 251 /* Switch */: {
+        const selector = this.value(frame, w[0]);
+        const selectorType = this._typeOfId(frame, w[0]);
+        const wide = selectorType ? (scalarOf(this.module, selectorType)?.width ?? 32) > 32 : false;
+        let target = w[1];
+        for (let i = 2; i < w.length; i += wide ? 3 : 2) {
+          const literal = wide ? BigInt(w[i + 1]) << 32n | BigInt(w[i]) : w[i];
+          const matches = wide ? big(selector) === BigInt.asIntN(64, literal) || big(selector) === literal : num2(selector) >>> 0 === literal >>> 0;
+          if (matches) {
+            target = w[i + (wide ? 2 : 1)];
+            break;
+          }
+        }
+        this._branch(frame, target);
+        return "ok";
+      }
+      case 253 /* Return */:
+      case 254 /* ReturnValue */: {
+        const value = inst.op === 254 /* ReturnValue */ ? cloneValue(this.value(frame, w[0])) : null;
+        this.frames.pop();
+        const caller = this.frames[this.frames.length - 1];
+        if (!caller) {
+          this.status = "returned";
+          return "ok";
+        }
+        if (frame.resultId) this._record(caller, { ...this.module.instructions[caller.pc], result: frame.resultId }, value);
+        caller.pc++;
+        return "ok";
+      }
+      case 252 /* Kill */:
+      case 4416 /* TerminateInvocation */:
+        this.status = "discarded";
+        return "ok";
+      case 5380 /* DemoteToHelperInvocation */:
+        this.helper = true;
+        frame.pc++;
+        return "ok";
+      case 255 /* Unreachable */:
+        this._fail("reached OpUnreachable");
+        return "ok";
+      case 57 /* FunctionCall */: {
+        const fn = this.module.functions.get(w[2]);
+        if (!fn) throw new Error(`call to a missing function %${w[2]}`);
+        const callee = this._frame(fn, inst.result);
+        fn.params.forEach((p, i) => callee.values.set(p.id, this.value(frame, w[3 + i])));
+        this.frames.push(callee);
+        return "ok";
+      }
+      case 62 /* Store */: {
+        const ptr = this.value(frame, w[0]);
+        if (!(ptr instanceof Pointer)) throw new Error("OpStore through something that is not a pointer");
+        this._store(ptr, cloneValue(this.value(frame, w[1])));
+        frame.pc++;
+        this._results.push({ inst, id: ptr.variable, value: this._load(ptr) });
+        return "ok";
+      }
+      case 63 /* CopyMemory */: {
+        const target = this.value(frame, w[0]);
+        const source = this.value(frame, w[1]);
+        if (target instanceof Pointer && source instanceof Pointer) this._store(target, this._load(source));
+        frame.pc++;
+        return "ok";
+      }
+      case 99 /* ImageWrite */: {
+        const image = this.value(frame, w[0]);
+        const coord = flat(this.value(frame, w[1]));
+        const texel3 = flat(this.value(frame, w[2]));
+        if (image instanceof ImageValue && image.texture) {
+          image.texture.writes ??= /* @__PURE__ */ new Map();
+          image.texture.writes.set(`0/${coord[2] ?? 0}/${coord[0]}/${coord[1] ?? 0}`, [...texel3, 0, 0, 0, 1].slice(0, 4));
+        }
+        frame.pc++;
+        return "ok";
+      }
+      case 59 /* Variable */: {
+        const ptrType = this.module.types.get(inst.resultType);
+        const pointee = ptrType?.kind === "pointer" ? ptrType.pointee : 0;
+        const cell = { value: w[3] ? cloneValue(this.value(frame, w[3])) : this.module.zero(pointee) };
+        frame.locals.push({ id: inst.result, cell, type: pointee });
+        this._record(frame, inst, new Pointer(cell, [], pointee, 7 /* Function */, inst.result));
+        frame.pc++;
+        return "ok";
+      }
+      case 245 /* Phi */: {
+        let value = 0;
+        for (let i = 2; i + 1 < w.length; i += 2) {
+          if (w[i + 1] === frame.previousBlock) {
+            value = cloneValue(this.value(frame, w[i]));
+            break;
+          }
+        }
+        this._record(frame, inst, value);
+        frame.pc++;
+        return "ok";
+      }
+      default: {
+        if (!inst.result) {
+          frame.pc++;
+          return "ok";
+        }
+        const value = this._compute(frame, inst);
+        if (value === "blocked") return "blocked";
+        this._record(frame, inst, value);
+        if (this.status === "running" || this.status === "blocked") frame.pc++;
+        return "ok";
+      }
+    }
+  }
+  _typeOfId(_frame, id) {
+    return this.module.idTypes.get(id) ?? 0;
+  }
+  /** The value an instruction with a result computes. May return "blocked" for derivative points. */
+  _compute(frame, inst) {
+    const m = this.module;
+    const w = inst.words;
+    const v = (i) => this.value(frame, w[i]);
+    const rt = inst.resultType;
+    const s = scalarOf(m, rt);
+    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
+    const opWidth = (i) => {
+      const t = this._typeOfId(frame, w[i]);
+      return scalarOf(m, t)?.width ?? 32;
+    };
+    switch (inst.op) {
+      case 1 /* Undef */:
+      case 46 /* ConstantNull */:
+        return m.zero(rt);
+      case 61 /* Load */: {
+        const ptr = v(2);
+        if (!(ptr instanceof Pointer)) throw new Error("OpLoad of something that is not a pointer");
+        return this._load(ptr);
+      }
+      case 65 /* AccessChain */:
+      case 66 /* InBoundsAccessChain */:
+      case 67 /* PtrAccessChain */:
+      case 70 /* InBoundsPtrAccessChain */: {
+        const base = v(2);
+        if (!(base instanceof Pointer)) throw new Error("access chain on something that is not a pointer");
+        const first = inst.op === 67 /* PtrAccessChain */ || inst.op === 70 /* InBoundsPtrAccessChain */ ? 4 : 3;
+        const indices = Array.from(w.subarray(first)).map((id) => num2(this.value(frame, id)));
+        const ptrType = m.types.get(rt);
+        return new Pointer(base.cell, [...base.path, ...indices], ptrType?.kind === "pointer" ? ptrType.pointee : 0, base.storage, base.variable);
+      }
+      case 68 /* ArrayLength */: {
+        const ptr = v(2);
+        const member = w[3];
+        if (!(ptr instanceof Pointer)) return 0;
+        const storage = this._bufferOf(ptr);
+        if (!storage) {
+          const value = this._load(ptr);
+          return Array.isArray(value) && Array.isArray(value[member]) ? value[member].length : 0;
+        }
+        const struct = m.types.get(ptr.type);
+        if (struct?.kind !== "struct") return 0;
+        const loc = bufferLocation(m, storage.buffer.type, [...storage.path, member], storage.buffer.bytes.byteLength);
+        return loc ? runtimeArrayLength(m, struct.members[member], storage.buffer.bytes.byteLength, loc.at) : 0;
+      }
+      case 83 /* CopyObject */:
+      case 400 /* CopyLogical */:
+        return cloneValue(v(2));
+      case 80 /* CompositeConstruct */: {
+        const parts2 = Array.from(w.subarray(2)).map((id) => cloneValue(this.value(frame, id)));
+        const t = m.types.get(rt);
+        if (t?.kind === "vector") return norm(parts2.flatMap((p) => Array.isArray(p) ? p : [p]));
+        return parts2;
+      }
+      case 81 /* CompositeExtract */: {
+        let value = v(2);
+        for (const index of w.subarray(3)) value = Array.isArray(value) ? value[index] : 0;
+        return cloneValue(value);
+      }
+      case 82 /* CompositeInsert */: {
+        const composite = cloneValue(v(3));
+        const indices = Array.from(w.subarray(4));
+        let at = composite;
+        for (let i = 0; i < indices.length - 1; i++) at = at[indices[i]];
+        at[indices[indices.length - 1]] = cloneValue(v(2));
+        return composite;
+      }
+      case 77 /* VectorExtractDynamic */: {
+        const vec = v(2);
+        const index = num2(v(3));
+        return cloneValue(vec[index] ?? 0);
+      }
+      case 78 /* VectorInsertDynamic */: {
+        const vec = cloneValue(v(2));
+        const index = num2(v(4));
+        if (index >= 0 && index < vec.length) vec[index] = v(3);
+        return vec;
+      }
+      case 79 /* VectorShuffle */: {
+        const a = v(2);
+        const b = v(3);
+        return Array.from(w.subarray(4)).map((c2) => c2 === 4294967295 ? 0 : c2 < a.length ? a[c2] : b[c2 - a.length]);
+      }
+      case 84 /* Transpose */: {
+        const mat = v(2);
+        const rows = mat[0]?.length ?? 0;
+        return Array.from({ length: rows }, (_, r) => mat.map((col) => col[r]));
+      }
+      case 86 /* SampledImage */: {
+        const image = v(2);
+        const sampler = v(3);
+        return new SampledImageValue(image instanceof ImageValue ? image : new ImageValue(null, "?"), sampler instanceof SamplerValue ? sampler : new SamplerValue(null, "?"));
+      }
+      case 100 /* Image */: {
+        const si = v(2);
+        return si instanceof SampledImageValue ? si.image : si;
+      }
+      // Conversions
+      case 109 /* ConvertFToU */:
+      case 110 /* ConvertFToS */:
+        return norm(mapScalars(v(2), (x) => {
+          const n = num2(x);
+          return Number.isFinite(n) ? Math.trunc(n) : 0;
+        }));
+      case 111 /* ConvertSToF */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => Number(signed(x, width))));
+      }
+      case 112 /* ConvertUToF */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => Number(unsigned(x, width))));
+      }
+      case 113 /* UConvert */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => unsigned(x, width)));
+      }
+      case 114 /* SConvert */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => signed(x, width)));
+      }
+      case 115 /* FConvert */:
+        return norm(v(2));
+      case 116 /* QuantizeToF16 */:
+        return norm(mapScalars(v(2), (x) => {
+          const n = num2(x);
+          if (Math.abs(n) > 65504) return n > 0 ? Infinity : -Infinity;
+          return Math.abs(n) < 2 ** -14 ? 0 : n;
+        }));
+      case 118 /* SatConvertSToU */:
+        return norm(mapScalars(v(2), (x) => Math.max(0, num2(x))));
+      case 119 /* SatConvertUToS */:
+        return norm(v(2));
+      case 124 /* Bitcast */:
+        return this._bitcast(v(2), this._typeOfId(frame, w[2]), rt);
+      // Arithmetic
+      case 126 /* SNegate */:
+        return norm(mapScalars(v(2), (x) => typeof x === "bigint" ? -x : -num2(x)));
+      case 127 /* FNegate */:
+        return norm(mapScalars(v(2), (x) => -num2(x)));
+      case 128 /* IAdd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) + big(b) : num2(a) + num2(b)));
+      case 130 /* ISub */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) - big(b) : num2(a) - num2(b)));
+      case 132 /* IMul */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) * big(b) : Math.imul(num2(a), num2(b))));
+      case 134 /* UDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = unsigned(a, width), y = unsigned(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
+          return y === 0 ? 0 : Math.floor(x / y);
+        }));
+      case 135 /* SDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
+          return y === 0 ? 0 : Math.trunc(x / y);
+        }));
+      case 137 /* UMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = unsigned(a, width), y = unsigned(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
+          return y === 0 ? 0 : x % y;
+        }));
+      case 138 /* SRem */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
+          return y === 0 ? 0 : x % y;
+        }));
+      case 139 /* SMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") {
+            if (y === 0n) return 0n;
+            const r2 = x % y;
+            return r2 !== 0n && r2 < 0n !== y < 0n ? r2 + y : r2;
+          }
+          if (y === 0) return 0;
+          const r = x % y;
+          return r !== 0 && r < 0 !== y < 0 ? r + y : r;
+        }));
+      case 129 /* FAdd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) + num2(b)));
+      case 131 /* FSub */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) - num2(b)));
+      case 133 /* FMul */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) * num2(b)));
+      case 136 /* FDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) / num2(b)));
+      case 140 /* FRem */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const x = num2(a), y = num2(b);
+          return x - y * Math.trunc(x / y);
+        }));
+      case 141 /* FMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const x = num2(a), y = num2(b);
+          return x - y * Math.floor(x / y);
+        }));
+      case 142 /* VectorTimesScalar */:
+      case 143 /* MatrixTimesScalar */: {
+        const k = num2(v(3));
+        return norm(mapScalars(v(2), (x) => num2(x) * k));
+      }
+      case 144 /* VectorTimesMatrix */: {
+        const vec = flat(v(2));
+        const mat = v(3);
+        return norm(mat.map((col) => col.reduce((sum, c2, r) => sum + num2(c2) * vec[r], 0)));
+      }
+      case 145 /* MatrixTimesVector */: {
+        const mat = v(2);
+        const vec = flat(v(3));
+        const rows = mat[0]?.length ?? 0;
+        return norm(Array.from({ length: rows }, (_, r) => mat.reduce((sum, col, c2) => sum + num2(col[r]) * vec[c2], 0)));
+      }
+      case 146 /* MatrixTimesMatrix */: {
+        const a = v(2);
+        const b = v(3);
+        const rows = a[0]?.length ?? 0;
+        return norm(b.map((bcol) => Array.from({ length: rows }, (_, r) => a.reduce((sum, acol, k) => sum + num2(acol[r]) * num2(bcol[k]), 0))));
+      }
+      case 147 /* OuterProduct */: {
+        const a = flat(v(2));
+        const b = flat(v(3));
+        return norm(b.map((bc) => a.map((ar) => ar * bc)));
+      }
+      case 148 /* Dot */: {
+        const a = flat(v(2));
+        const b = flat(v(3));
+        return norm(a.reduce((sum, x, i) => sum + x * b[i], 0));
+      }
+      case 149 /* IAddCarry */:
+      case 150 /* ISubBorrow */:
+      case 151 /* UMulExtended */:
+      case 152 /* SMulExtended */:
+        return this._extendedArithmetic(inst.op, v(2), v(3), rt);
+      // Logic and comparison
+      case 154 /* Any */:
+        return flat(v(2)).some((x) => x !== 0);
+      case 155 /* All */:
+        return flat(v(2)).every((x) => x !== 0);
+      case 156 /* IsNan */:
+        return mapScalars(v(2), (x) => Number.isNaN(num2(x)));
+      case 157 /* IsInf */:
+        return mapScalars(v(2), (x) => !Number.isFinite(num2(x)) && !Number.isNaN(num2(x)));
+      case 158 /* IsFinite */:
+        return mapScalars(v(2), (x) => Number.isFinite(num2(x)));
+      case 159 /* IsNormal */:
+        return mapScalars(v(2), (x) => Number.isFinite(num2(x)) && num2(x) !== 0);
+      case 160 /* SignBitSet */:
+        return mapScalars(v(2), (x) => num2(x) < 0 || Object.is(num2(x), -0));
+      case 164 /* LogicalEqual */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) === Boolean(b));
+      case 165 /* LogicalNotEqual */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) !== Boolean(b));
+      case 166 /* LogicalOr */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) || Boolean(b));
+      case 167 /* LogicalAnd */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) && Boolean(b));
+      case 168 /* LogicalNot */:
+        return mapScalars(v(2), (a) => !a);
+      case 169 /* Select */: {
+        const c2 = v(2);
+        const a = v(3);
+        const b = v(4);
+        if (Array.isArray(c2)) return a.map((x, i) => c2[i] ? x : b[i]);
+        return cloneValue(c2 ? a : b);
+      }
+      case 170 /* IEqual */:
+        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big(a)) === BigInt.asUintN(64, big(b)) : num2(a) >>> 0 === num2(b) >>> 0 || num2(a) === num2(b));
+      case 171 /* INotEqual */:
+        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big(a)) !== BigInt.asUintN(64, big(b)) : !(num2(a) >>> 0 === num2(b) >>> 0 || num2(a) === num2(b)));
+      case 172 /* UGreaterThan */:
+      case 174 /* UGreaterThanEqual */:
+      case 176 /* ULessThan */:
+      case 178 /* ULessThanEqual */: {
+        const width = opWidth(2);
+        return zipScalars(v(2), v(3), (a, b) => {
+          const x = unsigned(a, width), y = unsigned(b, width);
+          return inst.op === 172 /* UGreaterThan */ ? x > y : inst.op === 174 /* UGreaterThanEqual */ ? x >= y : inst.op === 176 /* ULessThan */ ? x < y : x <= y;
+        });
+      }
+      case 173 /* SGreaterThan */:
+      case 175 /* SGreaterThanEqual */:
+      case 177 /* SLessThan */:
+      case 179 /* SLessThanEqual */: {
+        const width = opWidth(2);
+        return zipScalars(v(2), v(3), (a, b) => {
+          const x = signed(a, width), y = signed(b, width);
+          return inst.op === 173 /* SGreaterThan */ ? x > y : inst.op === 175 /* SGreaterThanEqual */ ? x >= y : inst.op === 177 /* SLessThan */ ? x < y : x <= y;
+        });
+      }
+      case 180 /* FOrdEqual */:
+      case 181 /* FUnordEqual */:
+      case 182 /* FOrdNotEqual */:
+      case 183 /* FUnordNotEqual */:
+      case 184 /* FOrdLessThan */:
+      case 185 /* FUnordLessThan */:
+      case 186 /* FOrdGreaterThan */:
+      case 187 /* FUnordGreaterThan */:
+      case 188 /* FOrdLessThanEqual */:
+      case 189 /* FUnordLessThanEqual */:
+      case 190 /* FOrdGreaterThanEqual */:
+      case 191 /* FUnordGreaterThanEqual */:
+      case 161 /* LessOrGreater */:
+      case 162 /* Ordered */:
+      case 163 /* Unordered */:
+        return zipScalars(v(2), v(3), (a, b) => floatCompare(inst.op, num2(a), num2(b)));
+      // Bits
+      case 194 /* ShiftRightLogical */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          if (width === 64) return BigInt.asUintN(64, big(a)) >> big(b);
+          return unsigned(a, width) >>> num2(b);
+        }));
+      case 195 /* ShiftRightArithmetic */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          if (width === 64) return BigInt.asIntN(64, big(a)) >> big(b);
+          return signed(a, width) >> num2(b);
+        }));
+      case 196 /* ShiftLeftLogical */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) << big(b) : num2(a) << num2(b)));
+      case 197 /* BitwiseOr */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) | big(b) : num2(a) | num2(b)));
+      case 198 /* BitwiseXor */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) ^ big(b) : num2(a) ^ num2(b)));
+      case 199 /* BitwiseAnd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) & big(b) : num2(a) & num2(b)));
+      case 200 /* Not */:
+        return norm(mapScalars(v(2), (a) => s?.width === 64 ? ~big(a) : ~num2(a)));
+      case 201 /* BitFieldInsert */: {
+        const offset = num2(v(4)), count2 = num2(v(5));
+        return norm(zipScalars(v(2), v(3), (base, insert) => {
+          const mask = count2 >= 32 ? 4294967295 : (1 << count2) - 1 << offset;
+          return num2(base) & ~mask | num2(insert) << offset & mask;
+        }));
+      }
+      case 202 /* BitFieldSExtract */:
+      case 203 /* BitFieldUExtract */: {
+        const offset = num2(v(3)), count2 = num2(v(4));
+        return norm(mapScalars(v(2), (base) => {
+          if (count2 === 0) return 0;
+          const shifted = num2(base) >>> offset & (count2 >= 32 ? 4294967295 : (1 << count2) - 1);
+          if (inst.op === 203 /* BitFieldUExtract */) return shifted;
+          return count2 < 32 && shifted & 1 << count2 - 1 ? shifted - (1 << count2) : shifted | 0;
+        }));
+      }
+      case 204 /* BitReverse */:
+        return norm(mapScalars(v(2), (a) => {
+          let x = num2(a) >>> 0, r = 0;
+          for (let i = 0; i < 32; i++) {
+            r = r << 1 | x & 1;
+            x >>>= 1;
+          }
+          return r >>> 0;
+        }));
+      case 205 /* BitCount */:
+        return norm(mapScalars(v(2), (a) => {
+          let x = num2(a) >>> 0, c2 = 0;
+          while (x) {
+            c2 += x & 1;
+            x >>>= 1;
+          }
+          return c2;
+        }));
+      // Derivatives
+      case 207 /* DPdx */:
+      case 208 /* DPdy */:
+      case 209 /* Fwidth */:
+      case 210 /* DPdxFine */:
+      case 211 /* DPdyFine */:
+      case 212 /* FwidthFine */:
+      case 213 /* DPdxCoarse */:
+      case 214 /* DPdyCoarse */:
+      case 215 /* FwidthCoarse */: {
+        const operand = v(2);
+        const d = this._derivative(inst, operand);
+        if (d === "blocked") return "blocked";
+        const x = inst.op === 207 /* DPdx */ || inst.op === 210 /* DPdxFine */ || inst.op === 213 /* DPdxCoarse */;
+        const y = inst.op === 208 /* DPdy */ || inst.op === 211 /* DPdyFine */ || inst.op === 214 /* DPdyCoarse */;
+        if (x) return norm(d.dx);
+        if (y) return norm(d.dy);
+        return norm(zipScalars(d.dx, d.dy, (a, b) => Math.abs(num2(a)) + Math.abs(num2(b))));
+      }
+      case 5381 /* IsHelperInvocation */:
+        return this.helper;
+      // Images
+      case 87 /* ImageSampleImplicitLod */:
+      case 88 /* ImageSampleExplicitLod */:
+      case 89 /* ImageSampleDrefImplicitLod */:
+      case 90 /* ImageSampleDrefExplicitLod */:
+      case 91 /* ImageSampleProjImplicitLod */:
+      case 92 /* ImageSampleProjExplicitLod */:
+      case 93 /* ImageSampleProjDrefImplicitLod */:
+      case 94 /* ImageSampleProjDrefExplicitLod */:
+        return this._sample(frame, inst, s);
+      case 95 /* ImageFetch */:
+      case 98 /* ImageRead */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        const type = img instanceof ImageValue ? this._imageType(frame, w[2]) : null;
+        const coord = flat(v(3)).map(Math.trunc);
+        let lod = 0;
+        if (inst.op === 95 /* ImageFetch */ && w.length > 4) {
+          const mask = w[4];
+          if (mask & 2 /* Lod */) lod = num2(this.value(frame, w[5]));
+        }
+        const texel3 = fetch(img instanceof ImageValue ? img.texture : null, coord, lod, type?.dim ?? 1 /* D2 */, type?.arrayed ?? false);
+        return this._texelResult(texel3, rt, s, img instanceof ImageValue ? img.texture : null);
+      }
+      case 96 /* ImageGather */:
+      case 97 /* ImageDrefGather */: {
+        const si = v(2);
+        const coord = flat(v(3));
+        const dref = inst.op === 97 /* ImageDrefGather */ ? num2(v(4)) : void 0;
+        const component = inst.op === 96 /* ImageGather */ ? num2(v(4)) : 0;
+        const tex = si instanceof SampledImageValue ? si.image.texture : null;
+        const smp = si instanceof SampledImageValue ? si.sampler.sampler : null;
+        return norm(gather(tex, smp, coord, component, dref));
+      }
+      case 104 /* ImageQuerySize */:
+      case 103 /* ImageQuerySizeLod */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        const tex = img instanceof ImageValue ? img.texture : null;
+        const lod = inst.op === 103 /* ImageQuerySizeLod */ ? num2(v(3)) : 0;
+        const type = this._imageType(frame, w[2]);
+        const size2 = tex ? [Math.max(1, tex.width >> lod), Math.max(1, tex.height >> lod), Math.max(1, tex.depth >> lod)] : [0, 0, 0];
+        const dims = type?.dim === 0 /* D1 */ ? 1 : type?.dim === 2 /* D3 */ ? 3 : 2;
+        const out = size2.slice(0, dims);
+        if (type?.arrayed) out.push(tex ? type.dim === 3 /* Cube */ ? tex.layers / 6 : tex.layers : 0);
+        const t = m.types.get(rt);
+        return norm(t?.kind === "vector" ? out.slice(0, t.count) : out[0]);
+      }
+      case 106 /* ImageQueryLevels */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        return norm(img instanceof ImageValue && img.texture ? img.texture.baseMip + img.texture.mips : 0);
+      }
+      case 107 /* ImageQuerySamples */:
+        return norm(1);
+      case 105 /* ImageQueryLod */: {
+        const si = v(2);
+        const coord = v(3);
+        const d = this._derivative(inst, coord);
+        if (d === "blocked") return "blocked";
+        const tex = si instanceof SampledImageValue ? si.image.texture : null;
+        const lod = tex ? implicitLod(tex, flat(d.dx), flat(d.dy)) : 0;
+        return norm([Math.max(0, lod), lod]);
+      }
+      case 60 /* ImageTexelPointer */:
+        this.warnings.add("pointers to storage image texels (imageAtomic operations) are not followed");
+        return null;
+      case 12 /* ExtInst */: {
+        const set = m.extSets.get(w[2]);
+        if (set !== GLSL_STD_450) throw new Error(`the extended instruction set ${set ?? `%${w[2]}`} is not interpreted`);
+        return this._glsl(frame, inst, w[3], Array.from(w.subarray(4)), s);
+      }
+      default:
+        throw new Error(`the interpreter does not handle opcode ${inst.op} yet`);
+    }
+  }
+  // ---------------------------------------------------------------------------------------
+  // Memory
+  _bufferOf(ptr) {
+    if (ptr.cell.buffer) return { buffer: ptr.cell.buffer, path: ptr.path };
+    if (ptr.cell.bufferArray) {
+      const element = ptr.cell.value[ptr.path[0] ?? 0];
+      return element ? { buffer: element.buffer, path: ptr.path.slice(1) } : null;
+    }
+    return null;
+  }
+  /** The value a pointer points at (`limit` caps runtime arrays read for display). */
+  _load(ptr, limit = Infinity) {
+    const storage = this._bufferOf(ptr);
+    if (storage) return this._loadBuffer(storage.buffer, storage.path, limit);
+    if (ptr.cell.bufferArray) {
+      return ptr.cell.value.map((e) => this._loadBuffer(e.buffer, [], limit));
+    }
+    let value = ptr.cell.value;
+    for (const index of ptr.path) value = Array.isArray(value) ? value[index] : 0;
+    return value instanceof ImageValue || value instanceof SamplerValue || value instanceof SampledImageValue ? value : cloneValue(value ?? 0);
+  }
+  _store(ptr, value) {
+    const storage = this._bufferOf(ptr);
+    if (storage) {
+      const key = storage.path.join("/");
+      for (const k of [...storage.buffer.overrides.keys()]) if (k.startsWith(key ? `${key}/` : "")) storage.buffer.overrides.delete(k);
+      storage.buffer.overrides.set(key, value);
+      return;
+    }
+    if (!ptr.path.length) {
+      ptr.cell.value = value;
+      return;
+    }
+    let parent = ptr.cell.value;
+    for (let i = 0; i < ptr.path.length - 1; i++) parent = parent[ptr.path[i]];
+    parent[ptr.path[ptr.path.length - 1]] = value;
+  }
+  _loadBuffer(buffer, path11, limit = Infinity) {
+    const m = this.module;
+    const key = path11.join("/");
+    for (let n = path11.length; n >= 0; n--) {
+      const k = path11.slice(0, n).join("/");
+      const stored = buffer.overrides.get(k);
+      if (stored === void 0) continue;
+      let value2 = stored;
+      for (const index of path11.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
+      return cloneValue(value2);
+    }
+    const view = new DataView(buffer.bytes.buffer, buffer.bytes.byteOffset, buffer.bytes.byteLength);
+    let value;
+    const loc = bufferLocation(m, buffer.type, path11, buffer.bytes.byteLength);
+    if (loc) {
+      value = readBuffer(m, view, loc.at, loc.type, loc.matrix, limit);
+      if (loc.at >= buffer.bytes.byteLength && buffer.bytes.byteLength) this.warnings.add("a read past the captured end of a buffer reads zeros (the capture's Max KB truncated it?)");
+    } else {
+      value = readBuffer(m, view, 0, buffer.type, void 0, limit);
+      for (const index of path11) value = Array.isArray(value) ? value[index] : 0;
+    }
+    for (const [k, stored] of buffer.overrides) {
+      if (!k.startsWith(key ? `${key}/` : "") || k === key) continue;
+      const rest = (key ? k.slice(key.length + 1) : k).split("/").map(Number);
+      let at = value;
+      for (let i = 0; i < rest.length - 1 && Array.isArray(at); i++) at = at[rest[i]];
+      if (Array.isArray(at)) at[rest[rest.length - 1]] = cloneValue(stored);
+    }
+    return value;
+  }
+  // ---------------------------------------------------------------------------------------
+  // Helpers
+  _derivative(inst, operand) {
+    if (!this.derivatives) {
+      this.warnings.add("derivatives are zero outside a fragment shader's pixel quad");
+      const zero = mapScalars(operand, () => 0);
+      return { dx: zero, dy: zero };
+    }
+    return this.derivatives.derivative(this, inst, operand);
+  }
+  _imageType(frame, id) {
+    let type = this._typeOfId(frame, id);
+    if (!type) {
+      const g = this.globals.get(id);
+      if (g) type = g.type;
+    }
+    let t = this.module.types.get(type);
+    if (t?.kind === "sampledImage") t = this.module.types.get(t.image);
+    if (t?.kind === "image") return { dim: t.dim, arrayed: t.arrayed, ms: t.ms };
+    return null;
+  }
+  _texelResult(texel3, rt, s, texture) {
+    const t = this.module.types.get(rt);
+    const values = t?.kind === "vector" ? texel3.slice(0, t.count) : texel3[0];
+    void texture;
+    return s ? mapScalars(values, (x) => normalize(x, s)) : values;
+  }
+  _sample(frame, inst, s) {
+    const w = inst.words;
+    const op = inst.op;
+    const si = this.value(frame, w[2]);
+    if (!(si instanceof SampledImageValue)) throw new Error("sampling something that is not a sampled image");
+    const dref = op === 89 /* ImageSampleDrefImplicitLod */ || op === 90 /* ImageSampleDrefExplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */ || op === 94 /* ImageSampleProjDrefExplicitLod */;
+    const proj = op >= 91 /* ImageSampleProjImplicitLod */ && op <= 94 /* ImageSampleProjDrefExplicitLod */;
+    const implicit = op === 87 /* ImageSampleImplicitLod */ || op === 89 /* ImageSampleDrefImplicitLod */ || op === 91 /* ImageSampleProjImplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */;
+    let coord = flat(this.value(frame, w[3]));
+    let next = 4;
+    let reference = dref ? num2(this.value(frame, w[next++])) : void 0;
+    if (proj) {
+      const q2 = coord[coord.length - 1] || 1;
+      coord = coord.slice(0, -1).map((c2) => c2 / q2);
+      if (reference !== void 0) reference /= q2;
+    }
+    const imageTypeInst = this.module.types.get(this._typeOfId(frame, w[2]));
+    const imageType = imageTypeInst?.kind === "sampledImage" ? this.module.types.get(imageTypeInst.image) : null;
+    const dim = imageType?.kind === "image" ? imageType.dim : 1 /* D2 */;
+    const arrayed = imageType?.kind === "image" ? imageType.arrayed : false;
+    let bias = 0;
+    let lod = null;
+    let grad = null;
+    let offset;
+    if (next < w.length) {
+      const mask = w[next++];
+      if (mask & 1 /* Bias */) bias = num2(this.value(frame, w[next++]));
+      if (mask & 2 /* Lod */) lod = num2(this.value(frame, w[next++]));
+      if (mask & 4 /* Grad */) {
+        grad = { dx: flat(this.value(frame, w[next])), dy: flat(this.value(frame, w[next + 1])) };
+        next += 2;
+      }
+      if (mask & 8 /* ConstOffset */) offset = flat(this.value(frame, w[next++]));
+      if (mask & 16 /* Offset */) offset = flat(this.value(frame, w[next++]));
+      if (mask & 32 /* ConstOffsets */) next++;
+      if (mask & 128 /* MinLod */) next++;
+    }
+    const texture = si.image.texture;
+    if (implicit) {
+      const d = this._derivative(inst, coord.slice(0, dim === 3 /* Cube */ ? 3 : dim === 0 /* D1 */ ? 1 : 2));
+      if (d === "blocked") return "blocked";
+      lod = (texture ? implicitLod(texture, flat(d.dx), flat(d.dy)) : 0) + bias;
+    } else if (grad && texture) {
+      lod = implicitLod(texture, grad.dx, grad.dy);
+    }
+    const rgba = sample(texture, si.sampler.sampler, { dim, arrayed, coord, lod: lod ?? 0, dref: reference, offset });
+    if (dref) return s ? normalize(rgba[0], s) : rgba[0];
+    const t = this.module.types.get(inst.resultType);
+    const out = t?.kind === "vector" ? rgba.slice(0, t.count) : rgba[0];
+    return s ? mapScalars(out, (x) => normalize(x, s)) : out;
+  }
+  _bitcast(value, fromType, toType) {
+    const from = scalarOf(this.module, fromType);
+    const to = scalarOf(this.module, toType);
+    if (!to) return value;
+    const buf = new DataView(new ArrayBuffer(8));
+    return mapScalars(value, (x) => {
+      if (from?.base === "float" && from.width === 32) buf.setFloat32(0, num2(x), true);
+      else if (from?.base === "float" && from.width === 64) buf.setFloat64(0, num2(x), true);
+      else if (from?.width === 64) buf.setBigUint64(0, BigInt.asUintN(64, big(x)), true);
+      else buf.setUint32(0, num2(x) >>> 0, true);
+      if (to.base === "float") return to.width === 64 ? buf.getFloat64(0, true) : buf.getFloat32(0, true);
+      if (to.width === 64) return to.base === "int" ? buf.getBigInt64(0, true) : buf.getBigUint64(0, true);
+      return to.base === "int" ? buf.getInt32(0, true) : buf.getUint32(0, true);
     });
+  }
+  _extendedArithmetic(op, a, b, rt) {
+    const t = this.module.types.get(rt);
+    const member = t?.kind === "struct" ? t.members[0] : 0;
+    const s = scalarOf(this.module, member) ?? { base: "uint", width: 32 };
+    const lo = zipScalars(a, b, (x, y) => {
+      const X = BigInt.asUintN(32, big(x)), Y = BigInt.asUintN(32, big(y));
+      const r = op === 149 /* IAddCarry */ ? X + Y : op === 150 /* ISubBorrow */ ? X - Y : op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
+      return normalize(Number(BigInt.asUintN(32, r)), s);
+    });
+    const hi = zipScalars(a, b, (x, y) => {
+      const X = BigInt.asUintN(32, big(x)), Y = BigInt.asUintN(32, big(y));
+      if (op === 149 /* IAddCarry */) return X + Y > 0xffffffffn ? 1 : 0;
+      if (op === 150 /* ISubBorrow */) return Y > X ? 1 : 0;
+      const r = op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
+      return normalize(Number(BigInt.asUintN(32, r >> 32n)), s);
+    });
+    return [lo, hi];
+  }
+  // ---------------------------------------------------------------------------------------
+  // GLSL.std.450
+  _glsl(frame, inst, number, args, s) {
+    const a = (i) => this.value(frame, args[i]);
+    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
+    const unary = (f) => norm(mapScalars(a(0), (x) => f(num2(x))));
+    const binary = (f) => norm(zipScalars(a(0), a(1), (x, y) => f(num2(x), num2(y))));
+    const ternary = (f) => {
+      const x0 = a(0), y0 = a(1), z0 = a(2);
+      const at = (value, i) => Array.isArray(value) ? num2(value[i]) : num2(value);
+      if (Array.isArray(x0)) return norm(x0.map((_, i) => f(at(x0, i), at(y0, i), at(z0, i))));
+      return norm(f(num2(x0), num2(y0), num2(z0)));
+    };
+    const vec = (i) => flat(a(i));
+    const width = s?.width ?? 32;
+    switch (number) {
+      case 1:
+        return unary((x) => x < 0 ? -Math.round(-x) : Math.round(x));
+      case 2:
+        return unary((x) => {
+          const r = Math.round(x);
+          return Math.abs(x % 1) === 0.5 ? 2 * Math.round(x / 2) : r;
+        });
+      case 3:
+        return unary(Math.trunc);
+      case 4:
+        return unary(Math.abs);
+      case 5:
+        return norm(mapScalars(a(0), (x) => Math.abs(Number(signed(x, width)))));
+      case 6:
+        return unary((x) => x > 0 ? 1 : x < 0 ? -1 : 0);
+      case 7:
+        return norm(mapScalars(a(0), (x) => Math.sign(Number(signed(x, width)))));
+      case 8:
+        return unary(Math.floor);
+      case 9:
+        return unary(Math.ceil);
+      case 10:
+        return unary((x) => x - Math.floor(x));
+      case 11:
+        return unary((x) => x * Math.PI / 180);
+      case 12:
+        return unary((x) => x * 180 / Math.PI);
+      case 13:
+        return unary(Math.sin);
+      case 14:
+        return unary(Math.cos);
+      case 15:
+        return unary(Math.tan);
+      case 16:
+        return unary(Math.asin);
+      case 17:
+        return unary(Math.acos);
+      case 18:
+        return unary(Math.atan);
+      case 19:
+        return unary(Math.sinh);
+      case 20:
+        return unary(Math.cosh);
+      case 21:
+        return unary(Math.tanh);
+      case 22:
+        return unary(Math.asinh);
+      case 23:
+        return unary(Math.acosh);
+      case 24:
+        return unary(Math.atanh);
+      case 25:
+        return binary(Math.atan2);
+      case 26:
+        return binary(Math.pow);
+      case 27:
+        return unary(Math.exp);
+      case 28:
+        return unary(Math.log);
+      case 29:
+        return unary((x) => 2 ** x);
+      case 30:
+        return unary(Math.log2);
+      case 31:
+        return unary(Math.sqrt);
+      case 32:
+        return unary((x) => 1 / Math.sqrt(x));
+      case 33:
+        return norm(determinant(a(0)));
+      case 34:
+        return norm(inverse(a(0)));
+      case 35: {
+        const x = a(0);
+        const whole = mapScalars(x, (e) => Math.trunc(num2(e)));
+        const ptr = a(1);
+        if (ptr instanceof Pointer) this._store(ptr, norm(whole));
+        return norm(zipScalars(x, whole, (e, w) => num2(e) - num2(w)));
+      }
+      case 36: {
+        const x = a(0);
+        const whole = mapScalars(x, (e) => Math.trunc(num2(e)));
+        const member = this.module.types.get(inst.resultType);
+        const fs12 = member?.kind === "struct" ? scalarOf(this.module, member.members[0]) : s;
+        const n = (value) => fs12 ? mapScalars(value, (e) => normalize(e, fs12)) : value;
+        return [n(zipScalars(x, whole, (e, w) => num2(e) - num2(w))), n(whole)];
+      }
+      case 37:
+        return binary((x, y) => y < x ? y : x);
+      case 38:
+        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(y, width) < unsigned(x, width) ? y : x));
+      case 39:
+        return norm(zipScalars(a(0), a(1), (x, y) => signed(y, width) < signed(x, width) ? y : x));
+      case 40:
+        return binary((x, y) => x < y ? y : x);
+      case 41:
+        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(x, width) < unsigned(y, width) ? y : x));
+      case 42:
+        return norm(zipScalars(a(0), a(1), (x, y) => signed(x, width) < signed(y, width) ? y : x));
+      case 43:
+        return ternary((x, lo, hi) => Math.min(Math.max(x, lo), hi));
+      case 44:
+        return ternary((x, lo, hi) => Math.min(Math.max(x >>> 0, lo >>> 0), hi >>> 0));
+      case 45:
+        return ternary((x, lo, hi) => Math.min(Math.max(x | 0, lo | 0), hi | 0));
+      case 46:
+        return ternary((x, y, t) => x * (1 - t) + y * t);
+      case 47:
+        return ternary((x, y, t) => t ? y : x);
+      case 48:
+        return binary((edge2, x) => x < edge2 ? 0 : 1);
+      case 49:
+        return ternary((e0, e1, x) => {
+          const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+          return t * t * (3 - 2 * t);
+        });
+      case 50:
+        return ternary((x, y, z) => x * y + z);
+      case 51: {
+        const x = a(0);
+        const exps = mapScalars(x, (e) => frexp(num2(e))[1]);
+        const ptr = a(1);
+        if (ptr instanceof Pointer) this._store(ptr, exps);
+        return norm(mapScalars(x, (e) => frexp(num2(e))[0]));
+      }
+      case 52: {
+        const x = a(0);
+        return [norm(mapScalars(x, (e) => frexp(num2(e))[0])), mapScalars(x, (e) => frexp(num2(e))[1])];
+      }
+      case 53:
+        return norm(zipScalars(a(0), a(1), (x, e) => num2(x) * 2 ** num2(e)));
+      case 54:
+        return packNorm(vec(0), 8, true);
+      case 55:
+        return packNorm(vec(0), 8, false);
+      case 56:
+        return packNorm(vec(0), 16, true);
+      case 57:
+        return packNorm(vec(0), 16, false);
+      case 58:
+        return packHalf(vec(0));
+      case 60:
+        return unpackNorm(num2(a(0)), 16, true, 2);
+      case 61:
+        return unpackNorm(num2(a(0)), 16, false, 2);
+      case 62:
+        return unpackHalf(num2(a(0)));
+      case 63:
+        return unpackNorm(num2(a(0)), 8, true, 4);
+      case 64:
+        return unpackNorm(num2(a(0)), 8, false, 4);
+      case 66:
+        return norm(Math.hypot(...vec(0)));
+      case 67: {
+        const p = vec(0), q2 = vec(1);
+        return norm(Math.hypot(...p.map((x, i) => x - q2[i])));
+      }
+      case 68: {
+        const [x1, y1, z1] = vec(0), [x2, y2, z2] = vec(1);
+        return norm([y1 * z2 - z1 * y2, z1 * x2 - x1 * z2, x1 * y2 - y1 * x2]);
+      }
+      case 69: {
+        const x = a(0);
+        if (!Array.isArray(x)) return norm(Math.sign(num2(x)));
+        const len = Math.hypot(...flat(x));
+        return norm(x.map((e) => num2(e) / len));
+      }
+      case 70: {
+        const n = vec(0), i = vec(1), nref = vec(2);
+        const d = nref.reduce((sum, x, k) => sum + x * i[k], 0);
+        return norm(d < 0 ? n : n.map((x) => -x));
+      }
+      case 71: {
+        const i = vec(0), n = vec(1);
+        const d = n.reduce((sum, x, k) => sum + x * i[k], 0);
+        return norm(i.map((x, k) => x - 2 * d * n[k]));
+      }
+      case 72: {
+        const i = vec(0), n = vec(1), eta = num2(a(2));
+        const d = n.reduce((sum, x, k2) => sum + x * i[k2], 0);
+        const k = 1 - eta * eta * (1 - d * d);
+        return norm(k < 0 ? i.map(() => 0) : i.map((x, j) => eta * x - (eta * d + Math.sqrt(k)) * n[j]));
+      }
+      case 73:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num2(x) >>> 0;
+          return n === 0 ? -1 : 31 - Math.clz32(n & -n);
+        }));
+      case 74:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num2(x) | 0;
+          const m = n < 0 ? ~n : n;
+          return m === 0 ? -1 : 31 - Math.clz32(m);
+        }));
+      case 75:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num2(x) >>> 0;
+          return n === 0 ? -1 : 31 - Math.clz32(n);
+        }));
+      case 76:
+      case 77:
+      case 78: {
+        const ptr = a(0);
+        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel centre");
+        return ptr instanceof Pointer ? this._load(ptr) : ptr;
+      }
+      case 79:
+        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.min(x, y));
+      case 80:
+        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.max(x, y));
+      case 81:
+        return ternary((x, lo, hi) => Number.isNaN(x) ? lo : Math.min(Math.max(x, lo), hi));
+      default:
+        throw new Error(`GLSL.std.450 instruction ${number} is not interpreted`);
+    }
+  }
+};
+function floatCompare(op, a, b) {
+  const unordered = Number.isNaN(a) || Number.isNaN(b);
+  switch (op) {
+    case 180 /* FOrdEqual */:
+      return !unordered && a === b;
+    case 181 /* FUnordEqual */:
+      return unordered || a === b;
+    case 182 /* FOrdNotEqual */:
+      return !unordered && a !== b;
+    case 183 /* FUnordNotEqual */:
+      return unordered || a !== b;
+    case 184 /* FOrdLessThan */:
+      return !unordered && a < b;
+    case 185 /* FUnordLessThan */:
+      return unordered || a < b;
+    case 186 /* FOrdGreaterThan */:
+      return !unordered && a > b;
+    case 187 /* FUnordGreaterThan */:
+      return unordered || a > b;
+    case 188 /* FOrdLessThanEqual */:
+      return !unordered && a <= b;
+    case 189 /* FUnordLessThanEqual */:
+      return unordered || a <= b;
+    case 190 /* FOrdGreaterThanEqual */:
+      return !unordered && a >= b;
+    case 191 /* FUnordGreaterThanEqual */:
+      return unordered || a >= b;
+    case 161 /* LessOrGreater */:
+      return !unordered && a !== b;
+    case 162 /* Ordered */:
+      return !unordered;
+    case 163 /* Unordered */:
+      return unordered;
+    default:
+      return false;
+  }
+}
+function frexp(x) {
+  if (x === 0 || !Number.isFinite(x)) return [x, 0];
+  const e = Math.floor(Math.log2(Math.abs(x))) + 1;
+  let m = x / 2 ** e;
+  if (Math.abs(m) >= 1) return [m / 2, e + 1];
+  if (Math.abs(m) < 0.5) m *= 2;
+  return Math.abs(x / 2 ** e) < 0.5 ? [m, e - 1] : [m, e];
+}
+function determinant(m) {
+  const n = m.length;
+  if (n === 2) return m[0][0] * m[1][1] - m[1][0] * m[0][1];
+  if (n === 3) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2]) + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+  }
+  let det = 0;
+  for (let c2 = 0; c2 < n; c2++) {
+    const minor = m.filter((_, i) => i !== c2).map((col) => col.slice(1));
+    det += (c2 % 2 ? -1 : 1) * m[c2][0] * determinant(minor);
+  }
+  return det;
+}
+function inverse(m) {
+  const n = m.length;
+  const a = Array.from({ length: n }, (_, r) => [...Array.from({ length: n }, (_2, c2) => m[c2][r]), ...Array.from({ length: n }, (_2, c2) => c2 === r ? 1 : 0)]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    const p = a[col][col];
+    if (p === 0) return m.map((c2) => c2.map(() => NaN));
+    for (let c2 = 0; c2 < 2 * n; c2++) a[col][c2] /= p;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = a[r][col];
+      for (let c2 = 0; c2 < 2 * n; c2++) a[r][c2] -= f * a[col][c2];
+    }
+  }
+  return Array.from({ length: n }, (_, c2) => Array.from({ length: n }, (_2, r) => a[r][n + c2]));
+}
+function packNorm(v, bits, isSigned) {
+  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
+  let out = 0;
+  v.forEach((x, i) => {
+    const clamped = isSigned ? Math.min(Math.max(x, -1), 1) : Math.min(Math.max(x, 0), 1);
+    const q2 = Math.round(clamped * max) & 2 ** bits - 1;
+    out += q2 * 2 ** (bits * i);
+  });
+  return out >>> 0;
+}
+function unpackNorm(p, bits, isSigned, count2) {
+  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
+  return Array.from({ length: count2 }, (_, i) => {
+    let q2 = Math.floor((p >>> 0) / 2 ** (bits * i)) % 2 ** bits;
+    if (isSigned && q2 >= 2 ** (bits - 1)) q2 -= 2 ** bits;
+    return Math.fround(isSigned ? Math.max(q2 / max, -1) : q2 / max);
   });
 }
+function toHalf(x) {
+  const f = new Float32Array([x]);
+  const bits = new Uint32Array(f.buffer)[0];
+  const sign = bits >>> 16 & 32768;
+  const exponent = (bits >>> 23 & 255) - 127 + 15;
+  const mantissa = bits & 8388607;
+  if (exponent <= 0) return sign;
+  if (exponent >= 31) return sign | 31744 | ((bits >>> 23 & 255) === 255 && mantissa ? 512 : 0);
+  return sign | exponent << 10 | mantissa >>> 13;
+}
+function packHalf(v) {
+  return (toHalf(v[1] ?? 0) << 16 | toHalf(v[0] ?? 0)) >>> 0;
+}
+function unpackHalf(p) {
+  const half = (h) => {
+    const sign = h & 32768 ? -1 : 1;
+    const e = h >> 10 & 31;
+    const f = h & 1023;
+    return e === 0 ? sign * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign * Infinity : sign * 2 ** (e - 15) * (1 + f / 1024);
+  };
+  return [Math.fround(half(p & 65535)), Math.fround(half(p >>> 16 & 65535))];
+}
+
+// src/renderer/spirv/quad.ts
+var MAX_CATCH_UP = 1e7;
+var PixelQuad = class {
+  /** Top-left, top-right, bottom-left, bottom-right. */
+  lanes;
+  /** The lane of the pixel being debugged. */
+  target;
+  _state = /* @__PURE__ */ new Map();
+  /**
+   * `create(dx, dy)` makes the invocation of the pixel at that offset from the quad's top-left
+   * corner; `target` is the debugged pixel's position in the quad (0 to 3).
+   */
+  constructor(create, target) {
+    this.lanes = [create(0, 0, this), create(1, 0, this), create(0, 1, this), create(1, 1, this)];
+    this.target = target;
+    for (const lane of this.lanes) this._state.set(lane, { operand: void 0, result: void 0, points: 0 });
+  }
+  /** The quad's corner and the debugged pixel's lane for a pixel. */
+  static place(x, y) {
+    const x0 = x - (x & 1);
+    const y0 = y - (y & 1);
+    return { x0, y0, target: (y & 1) * 2 + (x & 1) };
+  }
+  get invocation() {
+    return this.lanes[this.target];
+  }
+  derivative(invocation, _inst, operand) {
+    const state = this._state.get(invocation);
+    if (!state) return { dx: zipScalars(operand, operand, () => 0), dy: zipScalars(operand, operand, () => 0) };
+    if (state.result) {
+      const result = state.result;
+      state.result = void 0;
+      state.operand = void 0;
+      state.points++;
+      return result;
+    }
+    state.operand = operand;
+    return "blocked";
+  }
+  /** Steps the debugged invocation; a derivative point brings the other three up to it first. */
+  step() {
+    const target = this.invocation;
+    let status = target.step();
+    if (status === "blocked") {
+      this._resolve();
+      status = target.step();
+    }
+    return status;
+  }
+  /** Runs every lane to the end. */
+  run() {
+    while (!this.invocation.finished) this.step();
+    return this.invocation.status;
+  }
+  _resolve() {
+    for (const lane of this.lanes) {
+      if (lane === this.invocation) continue;
+      let guard = 0;
+      while (!lane.finished && this._state.get(lane).operand === void 0 && guard++ < MAX_CATCH_UP) {
+        if (lane.step() === "blocked") break;
+      }
+    }
+    const fallback = this._state.get(this.invocation).operand;
+    const at = (i) => this._state.get(this.lanes[i]).operand ?? fallback;
+    const diff = (a, b) => zipScalars(at(b), at(a), (x, y) => Number(x) - Number(y));
+    const rowDx = [diff(0, 1), diff(0, 1), diff(2, 3), diff(2, 3)];
+    const colDy = [diff(0, 2), diff(1, 3), diff(0, 2), diff(1, 3)];
+    this.lanes.forEach((lane, i) => {
+      const state = this._state.get(lane);
+      if (state.operand !== void 0) state.result = { dx: rowDx[i], dy: colDy[i] };
+    });
+    for (const lane of this.lanes) {
+      if (lane === this.invocation) continue;
+      const state = this._state.get(lane);
+      if (state.result) lane.step();
+    }
+  }
+};
 
 // src/renderer/vulkan/astc_decode.ts
 var q = (levels, bits, trits = false, quints = false) => ({ levels, bits, trits, quints });
@@ -12292,14 +13843,14 @@ var Bits = class {
     return v;
   }
 };
-function subsetOf(subsets, partition, texel2) {
+function subsetOf(subsets, partition, texel3) {
   if (subsets === 1) return 0;
-  return subsets === 2 ? PARTITIONS_2[partition * 16 + texel2] : PARTITIONS_3[partition * 16 + texel2];
+  return subsets === 2 ? PARTITIONS_2[partition * 16 + texel3] : PARTITIONS_3[partition * 16 + texel3];
 }
-function isAnchor(subsets, partition, texel2) {
-  if (texel2 === 0) return true;
-  if (subsets === 2) return ANCHOR_2[partition] === texel2;
-  if (subsets === 3) return ANCHOR_3A[partition] === texel2 || ANCHOR_3B[partition] === texel2;
+function isAnchor(subsets, partition, texel3) {
+  if (texel3 === 0) return true;
+  if (subsets === 2) return ANCHOR_2[partition] === texel3;
+  if (subsets === 3) return ANCHOR_3A[partition] === texel3 || ANCHOR_3B[partition] === texel3;
   return false;
 }
 var BC7_MODES = [
@@ -12697,8 +14248,8 @@ function signExtend(v, bits) {
   const shift = 32 - bits;
   return v << shift >> shift;
 }
-function unquantize(v, bits, signed) {
-  if (signed) {
+function unquantize(v, bits, signed2) {
+  if (signed2) {
     if (bits >= 16) return v;
     const negative = v < 0;
     const x = negative ? -v : v;
@@ -12713,8 +14264,8 @@ function unquantize(v, bits, signed) {
   if (v === (1 << bits) - 1) return 65535;
   return (v << 15) + 16384 >> bits - 1;
 }
-function finishBc6(v, signed) {
-  if (signed) return v < 0 ? -v * 31 >> 5 | 32768 : v * 31 >> 5;
+function finishBc6(v, signed2) {
+  if (signed2) return v < 0 ? -v * 31 >> 5 | 32768 : v * 31 >> 5;
   return v * 31 >> 6;
 }
 function halfBitsToFloat(h) {
@@ -12725,7 +14276,7 @@ function halfBitsToFloat(h) {
   if (exp === 31) return frac ? NaN : sign * Infinity;
   return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
 }
-function decodeBc6hBlock(s, block, px, signed) {
+function decodeBc6hBlock(s, block, px, signed2) {
   const bits = new Bits(s, block);
   let code = bits.read(2);
   if (code >= 2) code |= bits.read(3) << 2;
@@ -12752,19 +14303,19 @@ function decodeBc6hBlock(s, block, px, signed) {
   const endpoints = m.subsets * 2;
   const e = [];
   for (let i = 0; i < endpoints; i++) e.push([fields[i * 3], fields[i * 3 + 1], fields[i * 3 + 2]]);
-  if (signed) for (let c2 = 0; c2 < 3; c2++) e[0][c2] = signExtend(e[0][c2], epb);
+  if (signed2) for (let c2 = 0; c2 < 3; c2++) e[0][c2] = signExtend(e[0][c2], epb);
   if (m.transformed) {
     for (let i = 1; i < endpoints; i++) {
       for (let c2 = 0; c2 < 3; c2++) {
         const delta = signExtend(e[i][c2], m.deltaBits[c2]);
         const sum = e[0][c2] + delta & (1 << epb) - 1;
-        e[i][c2] = signed ? signExtend(sum, epb) : sum;
+        e[i][c2] = signed2 ? signExtend(sum, epb) : sum;
       }
     }
-  } else if (signed) {
+  } else if (signed2) {
     for (let i = 1; i < endpoints; i++) for (let c2 = 0; c2 < 3; c2++) e[i][c2] = signExtend(e[i][c2], epb);
   }
-  for (let i = 0; i < endpoints; i++) for (let c2 = 0; c2 < 3; c2++) e[i][c2] = unquantize(e[i][c2], epb, signed);
+  for (let i = 0; i < endpoints; i++) for (let c2 = 0; c2 < 3; c2++) e[i][c2] = unquantize(e[i][c2], epb, signed2);
   const indexBits = m.subsets === 1 ? 4 : 3;
   const weights = indexBits === 4 ? WEIGHTS_4 : WEIGHTS_3;
   for (let t = 0; t < 16; t++) {
@@ -12776,7 +14327,7 @@ function decodeBc6hBlock(s, block, px, signed) {
     const b = e[subset * 2 + 1];
     for (let c2 = 0; c2 < 3; c2++) {
       const v = (64 - w) * a[c2] + w * b[c2] + 32 >> 6;
-      px[t * 4 + c2] = halfBitsToFloat(finishBc6(v, signed));
+      px[t * 4 + c2] = halfBitsToFloat(finishBc6(v, signed2));
     }
     px[t * 4 + 3] = 1;
   }
@@ -12952,11 +14503,11 @@ function decodeEtc2Color(hi, lo, px, punchthrough) {
     }
   }
 }
-function decodeEac(hi, lo, out, channel, eleven, signed) {
+function decodeEac(hi, lo, out, channel, eleven, signed2) {
   let base = field(hi, 31, 24);
   const multiplier = field(hi, 23, 20);
   const table = ALPHA_MODIFIERS[field(hi, 19, 16)];
-  if (signed) {
+  if (signed2) {
     base = base << 24 >> 24;
     if (base === -128) base = -127;
   }
@@ -12973,7 +14524,7 @@ function decodeEac(hi, lo, out, channel, eleven, signed) {
     let v;
     if (!eleven) {
       v = clamp2552(base + scale * table[sel]) / 255;
-    } else if (signed) {
+    } else if (signed2) {
       const raw = base * 8 + scale * table[sel];
       v = Math.max(-1023, Math.min(1023, raw)) / 1023;
     } else {
@@ -13000,17 +14551,17 @@ function decodeEtc2Rgba8(s, block, px) {
   const [ahi, alo] = words(s, block);
   decodeEac(ahi, alo, px, 3, false, false);
 }
-function decodeEacR11(s, block, px, signed) {
+function decodeEacR11(s, block, px, signed2) {
   px.fill(0);
   const [hi, lo] = words(s, block);
-  decodeEac(hi, lo, px, 0, true, signed);
+  decodeEac(hi, lo, px, 0, true, signed2);
 }
-function decodeEacRg11(s, block, px, signed) {
+function decodeEacRg11(s, block, px, signed2) {
   px.fill(0);
   const [rhi, rlo] = words(s, block);
-  decodeEac(rhi, rlo, px, 0, true, signed);
+  decodeEac(rhi, rlo, px, 0, true, signed2);
   const [ghi, glo] = words(s, block + 8);
-  decodeEac(ghi, glo, px, 1, true, signed);
+  decodeEac(ghi, glo, px, 1, true, signed2);
 }
 
 // src/renderer/vulkan/pvrtc_decode.ts
@@ -13405,19 +14956,19 @@ function decodeBc1(s, t, px, alpha1Bit) {
     px[i * 4 + 3] = c2[3];
   }
 }
-function decodeBc4Channel(s, t, px, channel, signed) {
+function decodeBc4Channel(s, t, px, channel, signed2) {
   const raw0 = s.getUint8(t);
   const raw1 = s.getUint8(t + 1);
-  const toValue = signed ? (v) => Math.max(-127, v << 24 >> 24) / 127 : (v) => v / 255;
+  const toValue = signed2 ? (v) => Math.max(-127, v << 24 >> 24) / 127 : (v) => v / 255;
   const a0 = toValue(raw0);
   const a1 = toValue(raw1);
   const palette = [a0, a1];
-  const gt = signed ? raw0 << 24 >> 24 > raw1 << 24 >> 24 : raw0 > raw1;
+  const gt = signed2 ? raw0 << 24 >> 24 > raw1 << 24 >> 24 : raw0 > raw1;
   if (gt) {
     for (let i = 1; i <= 6; i++) palette.push(((7 - i) * a0 + i * a1) / 7);
   } else {
     for (let i = 1; i <= 4; i++) palette.push(((5 - i) * a0 + i * a1) / 5);
-    palette.push(signed ? -1 : 0, 1);
+    palette.push(signed2 ? -1 : 0, 1);
   }
   const lo = s.getUint32(t + 2, true);
   const hi = s.getUint16(t + 6, true);
@@ -13439,14 +14990,14 @@ var BC3 = { bytes: 16, width: 4, height: 4, channels: 4, decode: (s, b, px) => {
   decodeBc1(s, b + 8, px, false);
   decodeBc4Channel(s, b, px, 3, false);
 } };
-var bc4 = (signed) => ({ bytes: 8, width: 4, height: 4, channels: 1, decode: (s, b, px) => {
+var bc4 = (signed2) => ({ bytes: 8, width: 4, height: 4, channels: 1, decode: (s, b, px) => {
   px.fill(0);
-  decodeBc4Channel(s, b, px, 0, signed);
+  decodeBc4Channel(s, b, px, 0, signed2);
 } });
-var bc5 = (signed) => ({ bytes: 16, width: 4, height: 4, channels: 2, decode: (s, b, px) => {
+var bc5 = (signed2) => ({ bytes: 16, width: 4, height: 4, channels: 2, decode: (s, b, px) => {
   px.fill(0);
-  decodeBc4Channel(s, b, px, 0, signed);
-  decodeBc4Channel(s, b + 8, px, 1, signed);
+  decodeBc4Channel(s, b, px, 0, signed2);
+  decodeBc4Channel(s, b + 8, px, 1, signed2);
 } });
 var BLOCK_FORMATS = {
   VK_FORMAT_BC1_RGB_UNORM_BLOCK: { ...BC1, channels: 3 },
@@ -13676,269 +15227,2233 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
   return out;
 }
 
-// src/main/replay.ts
-import { spawn as spawn3 } from "node:child_process";
-import fs10 from "node:fs";
-import os7 from "node:os";
-import path9 from "node:path";
-var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
-function findReplayTool(roots, layerDirs) {
-  const candidates = [
-    process.env.INSPECTOR_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path9.join(root, "build", "bin", config, REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path9.join(dir, REPLAY_TOOL))
-  ].filter((f) => !!f);
-  return candidates.find((f) => fs10.existsSync(f)) ?? null;
-}
-var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
-function tail(text, lines = 12) {
-  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
-}
-function analysisArgs(analysis, out) {
-  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
-  if (analysis.kind === "draws") return ["--draw-data", out];
-  if (analysis.kind === "overlay" || analysis.kind === "mesh") {
-    const flag = `--${analysis.kind}`;
-    return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
+// src/renderer/shader_debug_setup.ts
+var STAGE_MODEL = { vertex: 0 /* Vertex */, fragment: 4 /* Fragment */, compute: 5 /* GLCompute */ };
+function bytesOf(v) {
+  if (!isObject(v) || typeof v.base64 !== "string") return null;
+  try {
+    return decodeBase64(v.base64);
+  } catch {
+    return null;
   }
-  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
-  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
 }
-function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
-  return new Promise((resolve) => {
-    const out = path9.join(os7.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
-    let output = "";
-    let done = false;
-    let timedOut = false;
-    const child = spawn3(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
-    const collect = (chunk2) => {
-      output += chunk2.toString();
-      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
+function stageOf(ctx, state, stage) {
+  const pipeline = state.pipeline;
+  if (!pipeline) throw new Error("no pipeline is bound at the command");
+  if (pipeline.type.startsWith("MTL")) throw new Error("the shader debugger runs SPIR-V: Metal shaders are not debugged yet");
+  const source = pipelineStages(pipeline, ctx.db).find((s) => s.stage === stage);
+  if (!source) throw new Error(`the pipeline has no ${stage} stage`);
+  const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
+  if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
+  return { source, module: new SpirvModule(bytes) };
+}
+function specialization(state, source) {
+  const out = /* @__PURE__ */ new Map();
+  const stages = state.pipeline?.descriptor?.pStages;
+  const stageInfo = Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
+  const spec = isObject(stageInfo) ? stageInfo.pSpecializationInfo : null;
+  if (!isObject(spec)) return out;
+  const data = bytesOf(spec.pData);
+  if (!data || !Array.isArray(spec.pMapEntries)) return out;
+  for (const e of spec.pMapEntries) {
+    if (!isObject(e)) continue;
+    const offset = num(e.offset), size2 = num(e.size);
+    out.set(num(e.constantID), data.subarray(offset, offset + size2));
+  }
+  return out;
+}
+function srgbToLinear(c2) {
+  return c2 <= 0.04045 ? c2 / 12.92 : Math.pow((c2 + 0.055) / 1.055, 2.4);
+}
+function swizzle(components) {
+  if (!isObject(components)) return null;
+  const pick2 = (value, identity) => {
+    const v = str(value);
+    if (!v || v.endsWith("IDENTITY")) return identity;
+    if (v.endsWith("ZERO")) return -1;
+    if (v.endsWith("ONE")) return -2;
+    return "RGBA".indexOf(v.slice(-1));
+  };
+  const map = [pick2(components.r, 0), pick2(components.g, 1), pick2(components.b, 2), pick2(components.a, 3)];
+  return map.every((m, i) => m === i) ? null : map;
+}
+function debugTexture(tex, components) {
+  const info = tex.info;
+  const data = tex.data;
+  if (!data) return null;
+  const mips = Math.max(1, info.mips ?? 1);
+  const layers = Math.max(1, info.layers);
+  const srgb = info.format.includes("_SRGB");
+  const mapping = swizzle(components);
+  const levels = /* @__PURE__ */ new Map();
+  const offsets = [];
+  let at = 0;
+  for (let k = 0; k < mips; k++) {
+    offsets.push(at);
+    const w = Math.max(1, info.width >> k), h = Math.max(1, info.height >> k);
+    const slices = Math.max(layers, Math.max(1, info.depth >> k));
+    at += sliceBytes({ format: info.format, aspect: info.aspect, width: w, height: h }) * slices;
+  }
+  return {
+    width: info.width,
+    height: info.height,
+    depth: Math.max(1, info.depth),
+    layers,
+    mips,
+    baseMip: info.mip,
+    format: info.format,
+    integer: /_UINT|_SINT/.test(info.format),
+    level: (mip, layer) => {
+      const k = mip - info.mip;
+      if (k < 0 || k >= mips) return null;
+      const key = `${k}/${layer}`;
+      if (levels.has(key)) return levels.get(key) ?? null;
+      const w = Math.max(1, info.width >> k), h = Math.max(1, info.height >> k);
+      const texels = decodeTexels({ format: info.format, aspect: info.aspect, width: w, height: h }, data.subarray(offsets[k]), layer);
+      let level = null;
+      if (texels) {
+        const values = texels.values;
+        for (let i = 0; i < w * h; i++) {
+          const o = i * 4;
+          if (texels.channels < 2) values[o + 1] = 0;
+          if (texels.channels < 3) values[o + 2] = 0;
+          if (texels.channels < 4) values[o + 3] = 1;
+          if (srgb) for (let c2 = 0; c2 < 3; c2++) values[o + c2] = srgbToLinear(values[o + c2]);
+          if (mapping) {
+            const src = [values[o], values[o + 1], values[o + 2], values[o + 3]];
+            for (let c2 = 0; c2 < 4; c2++) values[o + c2] = mapping[c2] === -1 ? 0 : mapping[c2] === -2 ? 1 : src[mapping[c2]];
+          }
+        }
+        level = { width: w, height: h, texels: values };
+      }
+      levels.set(key, level);
+      return level;
+    }
+  };
+}
+var ADDRESS = {
+  VK_SAMPLER_ADDRESS_MODE_REPEAT: "repeat",
+  VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: "mirror",
+  VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: "clamp",
+  VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: "border",
+  VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE: "mirrorClamp"
+};
+var BORDERS = {
+  VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: [0, 0, 0, 0],
+  VK_BORDER_COLOR_INT_TRANSPARENT_BLACK: [0, 0, 0, 0],
+  VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: [0, 0, 0, 1],
+  VK_BORDER_COLOR_INT_OPAQUE_BLACK: [0, 0, 0, 1],
+  VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE: [1, 1, 1, 1],
+  VK_BORDER_COLOR_INT_OPAQUE_WHITE: [1, 1, 1, 1]
+};
+function debugSampler(db, id) {
+  const d = id ? db.getObject(id)?.descriptor : null;
+  if (!d) return null;
+  return {
+    magFilter: str(d.magFilter).includes("NEAREST") ? "nearest" : "linear",
+    minFilter: str(d.minFilter).includes("NEAREST") ? "nearest" : "linear",
+    mipmapMode: str(d.mipmapMode).includes("NEAREST") ? "nearest" : "linear",
+    address: [ADDRESS[str(d.addressModeU)] ?? "repeat", ADDRESS[str(d.addressModeV)] ?? "repeat", ADDRESS[str(d.addressModeW)] ?? "repeat"],
+    border: BORDERS[str(d.borderColor)] ?? [0, 0, 0, 0],
+    compareOp: d.compareEnable ? str(d.compareOp) : null,
+    minLod: num(d.minLod),
+    maxLod: d.maxLod === void 0 ? 1e3 : num(d.maxLod),
+    lodBias: num(d.mipLodBias),
+    unnormalized: Boolean(d.unnormalizedCoordinates)
+  };
+}
+function commandBindings(ctx, state, source) {
+  const descriptor = (set, binding, element) => {
+    const bound = state.sets.get(set);
+    const b = bound?.set.bindings.find((x) => x.binding === binding);
+    return b?.descriptors[element] ?? null;
+  };
+  const textures = /* @__PURE__ */ new Map();
+  let push = null;
+  const stageBit = source.stageFlag;
+  const updates = state.pushConstants.filter((p) => !p.stageFlags || p.stageFlags.includes(stageBit) || p.stageFlags.includes("ALL"));
+  if (updates.length) {
+    const size2 = Math.max(...updates.map((p) => p.offset + p.size));
+    push = new Uint8Array(size2);
+    for (const p of updates) if (p.data) push.set(p.data.subarray(0, Math.min(p.data.byteLength, size2 - p.offset)), p.offset);
+  }
+  return {
+    buffer: (set, binding, element) => {
+      const d = descriptor(set, binding, element);
+      return d?.data ? ctx.data.buffer(d.data)?.data ?? null : null;
+    },
+    texture: (set, binding, element) => {
+      const key = `${set}/${binding}/${element}`;
+      if (textures.has(key)) return textures.get(key) ?? null;
+      const d = descriptor(set, binding, element);
+      const captured = d?.data ? ctx.data.capturedImage(d.data) : null;
+      const view = ctx.db.getObject(refId(d?.imageView) ?? captured?.info.view ?? 0)?.descriptor;
+      const tex = captured ? debugTexture(captured, view?.components) : null;
+      textures.set(key, tex);
+      return tex;
+    },
+    sampler: (set, binding, element) => debugSampler(ctx.db, refId(descriptor(set, binding, element)?.sampler) ?? null),
+    pushConstants: push,
+    specialization: specialization(state, source)
+  };
+}
+function viewportOf(state) {
+  const pick2 = (v) => Array.isArray(v) ? v[0] ?? null : v ?? null;
+  let vp = pick2(state.viewports);
+  if (!isObject(vp)) {
+    const vs = state.pipeline?.descriptor?.pViewportState;
+    vp = isObject(vs) ? pick2(vs.pViewports) : null;
+  }
+  if (!isObject(vp)) return null;
+  return { x: num(vp.x), y: num(vp.y), width: num(vp.width), height: num(vp.height), minDepth: num(vp.minDepth), maxDepth: vp.maxDepth === void 0 ? 1 : num(vp.maxDepth) };
+}
+function clipNear(tri) {
+  const eps = 1e-6;
+  const out = [];
+  for (let i = 0; i < tri.length; i++) {
+    const a = tri[i], b = tri[(i + 1) % tri.length];
+    const ain = a.clip[3] > eps, bin = b.clip[3] > eps;
+    if (ain) out.push(a);
+    if (ain !== bin) {
+      const t = (eps - a.clip[3]) / (b.clip[3] - a.clip[3]);
+      const lerp = (x, y) => x.map((v, k) => v + (y[k] - v) * t);
+      const outputs = /* @__PURE__ */ new Map();
+      for (const [loc, value] of a.outputs) outputs.set(loc, lerp(value, b.outputs.get(loc) ?? value));
+      out.push({ clip: lerp(a.clip, b.clip), outputs });
+    }
+  }
+  return out;
+}
+function edge(ax, ay, bx, by, px, py) {
+  return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+function coveringTriangle(state, mesh, px, py) {
+  const viewport = viewportOf(state);
+  const pos = positionOutput(mesh);
+  if (!viewport) return { hit: null, triangles: 0, reason: "the draw has no viewport" };
+  if (!pos || !mesh.data) return { hit: null, triangles: 0, reason: "the replay captured no gl_Position for the draw" };
+  if (primitiveKind(mesh.topology) !== "triangles") return { hit: null, triangles: 0, reason: "the draw does not draw triangles" };
+  const view = new DataView(mesh.data.buffer, mesh.data.byteOffset, mesh.data.byteLength);
+  const vertex = (i) => {
+    const base = i * mesh.stride;
+    const read = (offset, components, base2) => Array.from({ length: components }, (_, k) => base2 === "float" ? view.getFloat32(base + offset + k * 4, true) : base2 === "int" ? view.getInt32(base + offset + k * 4, true) : view.getUint32(base + offset + k * 4, true));
+    const outputs = /* @__PURE__ */ new Map();
+    for (const o of mesh.outputs) if (o.location !== void 0) outputs.set(o.location, read(o.offset, o.components, o.base));
+    return { clip: read(pos.offset, 4, "float"), outputs };
+  };
+  const d = state.pipeline?.descriptor;
+  const raster = isObject(d?.pRasterizationState) ? d.pRasterizationState : null;
+  const ds = isObject(d?.pDepthStencilState) ? d.pDepthStencilState : null;
+  const cull = str(raster?.cullMode);
+  const ccwFront = !str(raster?.frontFace).includes("CLOCKWISE") || str(raster?.frontFace).includes("COUNTER");
+  const compare2 = ds?.depthTestEnable ? str(ds.depthCompareOp) : "";
+  const prefersLess = compare2.includes("LESS");
+  const prefersGreater = compare2.includes("GREATER");
+  const cx = px + 0.5, cy = py + 0.5;
+  let best = null;
+  let bestDepth = 0;
+  const triangles = Math.floor(mesh.vertices / 3);
+  for (let t = 0; t < triangles; t++) {
+    const tri = [vertex(t * 3), vertex(t * 3 + 1), vertex(t * 3 + 2)];
+    const poly = tri.some((v) => v.clip[3] <= 1e-6) ? clipNear(tri) : tri;
+    if (poly.length < 3) continue;
+    const win = poly.map((v) => {
+      const w = v.clip[3];
+      return {
+        x: viewport.x + (v.clip[0] / w + 1) * viewport.width / 2,
+        y: viewport.y + (v.clip[1] / w + 1) * viewport.height / 2,
+        z: viewport.minDepth + v.clip[2] / w * (viewport.maxDepth - viewport.minDepth),
+        invW: 1 / w,
+        v
+      };
+    });
+    let area = 0;
+    for (let i = 0; i < win.length; i++) {
+      const a = win[i], b = win[(i + 1) % win.length];
+      area += a.x * b.y - b.x * a.y;
+    }
+    area *= -0.5;
+    const ccw = area > 0;
+    const front = ccw === ccwFront;
+    if (cull.includes("BACK") && !front || cull.includes("FRONT") && front || cull.includes("FRONT_AND_BACK")) continue;
+    for (let f = 1; f + 1 < win.length; f++) {
+      const a = win[0], b = win[f], c2 = win[f + 1];
+      const total = edge(a.x, a.y, b.x, b.y, c2.x, c2.y);
+      if (Math.abs(total) < 1e-12) continue;
+      const l0 = edge(b.x, b.y, c2.x, c2.y, cx, cy) / total;
+      const l1 = edge(c2.x, c2.y, a.x, a.y, cx, cy) / total;
+      const l2 = edge(a.x, a.y, b.x, b.y, cx, cy) / total;
+      if (l0 < 0 || l1 < 0 || l2 < 0) continue;
+      const depth = l0 * a.z + l1 * b.z + l2 * c2.z;
+      const better = !best || (prefersLess ? depth <= bestDepth : prefersGreater ? depth >= bestDepth : true);
+      if (better) {
+        best = { primitive: t, window: [a, b, c2], front, provoking: tri[0] };
+        bestDepth = depth;
+      }
+    }
+  }
+  return { hit: best, triangles, reason: best ? "" : `none of the draw's ${triangles.toLocaleString()} triangles covers pixel (${px}, ${py})` };
+}
+function fragmentInputs(module, hit, px, py) {
+  const [a, b, c2] = hit.window;
+  const cx = px + 0.5, cy = py + 0.5;
+  const total = edge(a.x, a.y, b.x, b.y, c2.x, c2.y);
+  const l = [edge(b.x, b.y, c2.x, c2.y, cx, cy) / total, edge(c2.x, c2.y, a.x, a.y, cx, cy) / total, edge(a.x, a.y, b.x, b.y, cx, cy) / total];
+  const invW = l[0] * a.invW + l[1] * b.invW + l[2] * c2.invW;
+  const persp = [l[0] * a.invW / invW, l[1] * b.invW / invW, l[2] * c2.invW / invW];
+  const z = l[0] * a.z + l[1] * b.z + l[2] * c2.z;
+  const locations = /* @__PURE__ */ new Map();
+  const decorations = /* @__PURE__ */ new Map();
+  for (const [id, g] of module.globals) {
+    if (g.storage !== 1 /* Input */) continue;
+    const location = module.decoration(id, 30 /* Location */)?.[0];
+    if (location === void 0) continue;
+    decorations.set(location, { flat: module.decoration(id, 14 /* Flat */) !== void 0, noPerspective: module.decoration(id, 13 /* NoPerspective */) !== void 0 });
+  }
+  for (const [location, provoking] of hit.provoking.outputs) {
+    const deco = decorations.get(location);
+    if (deco?.flat) {
+      locations.set(location, provoking);
+      continue;
+    }
+    const weights = deco?.noPerspective ? l : persp;
+    const va = a.v.outputs.get(location) ?? provoking, vb = b.v.outputs.get(location) ?? provoking, vc = c2.v.outputs.get(location) ?? provoking;
+    locations.set(location, va.map((x, k) => weights[0] * x + weights[1] * vb[k] + weights[2] * vc[k]));
+  }
+  const builtins = /* @__PURE__ */ new Map([
+    [15 /* FragCoord */, [cx, cy, z, invW]],
+    [17 /* FrontFacing */, hit.front],
+    [7 /* PrimitiveId */, hit.primitive],
+    [18 /* SampleId */, 0],
+    [19 /* SamplePosition */, [0.5, 0.5]],
+    [23 /* HelperInvocation */, false],
+    [16 /* PointCoord */, [0.5, 0.5]],
+    [9 /* Layer */, 0],
+    [4440 /* ViewIndex */, 0]
+  ]);
+  return { locations, builtins };
+}
+async function prepareDebugSession(ctx, target) {
+  const { data, db } = ctx;
+  const cmd = data.commands[target.command];
+  if (!cmd) throw new Error(`the capture has no command ${target.command}`);
+  const sets = data.sets;
+  if (target.stage === "compute" ? !sets.DISPATCH.has(cmd.method) : !sets.DRAW.has(cmd.method)) {
+    throw new Error(`command ${target.command} (${cmd.method}) is not a ${target.stage === "compute" ? "dispatch" : "draw"}`);
+  }
+  const state = drawState(data, db, cmd);
+  const { source, module } = stageOf(ctx, state, target.stage);
+  const bindings = commandBindings(ctx, state, source);
+  const model = STAGE_MODEL[target.stage];
+  const notes = [];
+  const entryPoint = source.entryPoint;
+  const a = cmd.args ?? {};
+  if (target.stage === "compute") {
+    const entry = module.entryPoint(entryPoint, model);
+    let localSize = [1, 1, 1];
+    const literal = entry?.modes.get(17);
+    const ids = entry?.modes.get(38);
+    if (literal) localSize = [literal[0] ?? 1, literal[1] ?? 1, literal[2] ?? 1];
+    else if (ids) localSize = ids.map((id) => Number(module.constants.get(id) ?? 1));
+    const groups = cmd.method.includes("Indirect") ? [1, 1, 1] : [Math.max(1, num(a.groupCountX)), Math.max(1, num(a.groupCountY)), Math.max(1, num(a.groupCountZ))];
+    if (cmd.method.includes("Indirect")) notes.push("An indirect dispatch's group counts are in a buffer: gl_NumWorkGroups reads (1, 1, 1).");
+    const g = target.invocation;
+    const inputs = {
+      locations: /* @__PURE__ */ new Map(),
+      builtins: /* @__PURE__ */ new Map([
+        [28 /* GlobalInvocationId */, g],
+        [27 /* LocalInvocationId */, g.map((v, i) => v % localSize[i])],
+        [26 /* WorkgroupId */, g.map((v, i) => Math.floor(v / localSize[i]))],
+        [29 /* LocalInvocationIndex */, g[2] % localSize[2] * localSize[0] * localSize[1] + g[1] % localSize[1] * localSize[0] + g[0] % localSize[0]],
+        [24 /* NumWorkgroups */, groups],
+        [25 /* WorkgroupSize */, localSize]
+      ])
     };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    const finish2 = (error) => {
+    return {
+      target,
+      module,
+      stage: source,
+      bindings,
+      notes,
+      description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with local size ${localSize.join(" x ")}`,
+      limits: { groups, localSize },
+      start: () => new Invocation(module, { entryPoint, model, bindings, inputs })
+    };
+  }
+  if (target.stage === "vertex") {
+    const input = meshInput(data, db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
+    notes.push(...input.notes);
+    const order = target.vertex;
+    if (order < 0 || order >= input.ids.length) throw new Error(`the draw reads ${input.ids.length.toLocaleString()} vertices: there is no vertex ${order}`);
+    const locations = /* @__PURE__ */ new Map();
+    input.attributes.forEach((attr, k) => {
+      const values = input.values(order, k, target.instance);
+      if (values) locations.set(attr.location, values);
+    });
+    const firstInstance = num(a.firstInstance);
+    const baseVertex = num(a.vertexOffset ?? a.firstVertex);
+    const vertexId = input.ids[order];
+    const inputs = {
+      locations,
+      builtins: /* @__PURE__ */ new Map([
+        [42 /* VertexIndex */, vertexId],
+        [5 /* VertexId */, vertexId],
+        [43 /* InstanceIndex */, firstInstance + target.instance],
+        [6 /* InstanceId */, target.instance],
+        [4424 /* BaseVertex */, baseVertex],
+        [4425 /* BaseInstance */, firstInstance],
+        [4426 /* DrawIndex */, 0],
+        [4440 /* ViewIndex */, 0]
+      ])
+    };
+    let replayedOutputs;
+    if (ctx.meshOutput) {
+      try {
+        const mesh2 = await ctx.meshOutput(target.command);
+        const record = target.instance * input.ids.length + order;
+        if (mesh2.measured && mesh2.data && primitiveKind(mesh2.topology) === primitiveKind(input.topology) && !/STRIP|FAN/.test(mesh2.topology) && record < mesh2.vertices) {
+          const view = new DataView(mesh2.data.buffer, mesh2.data.byteOffset, mesh2.data.byteLength);
+          replayedOutputs = mesh2.outputs.map((o) => ({
+            name: o.name,
+            location: o.location,
+            builtin: o.builtin,
+            value: Array.from({ length: o.components }, (_, k) => {
+              const at = record * mesh2.stride + o.offset + k * 4;
+              return o.base === "float" ? view.getFloat32(at, true) : o.base === "int" ? view.getInt32(at, true) : view.getUint32(at, true);
+            })
+          }));
+        }
+      } catch {
+      }
+    }
+    return {
+      target,
+      module,
+      stage: source,
+      bindings,
+      notes,
+      replayedOutputs,
+      description: `vertex ${order} of the draw (gl_VertexIndex ${vertexId}), instance ${target.instance}`,
+      limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
+      start: () => new Invocation(module, { entryPoint, model, bindings, inputs })
+    };
+  }
+  if (!ctx.meshOutput) throw new Error("a fragment's inputs come from replaying the draw's vertex shader, and no replay is available here");
+  const mesh = await ctx.meshOutput(target.command);
+  if (!mesh.measured) throw new Error(`the draw's vertex shader outputs could not be captured: ${mesh.note ?? "the replay did not reach the draw"}`);
+  const { x, y } = target;
+  const { hit, triangles, reason } = coveringTriangle(state, mesh, x, y);
+  if (!hit) throw new Error(reason);
+  if (triangles !== Math.floor(mesh.vertices / 3)) notes.push("The replay truncated the draw's vertices.");
+  const viewport = viewportOf(state);
+  const { x0, y0, target: lane } = PixelQuad.place(x, y);
+  let targetPixel;
+  const passInfo = findPass(data, cmd);
+  const colour = passInfo ? data.texturesForPass(cmd.frame, passInfo.passBegin.object?.__id ?? 0, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data) : void 0;
+  if (colour?.data && x < colour.info.width && y < colour.info.height) {
+    const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+    if (texels) {
+      const o = (y * texels.width + x) * 4;
+      targetPixel = { image: colour.info.id, attachment: colour.info.attachment, value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))), format: colour.info.format };
+    }
+  }
+  return {
+    target,
+    module,
+    stage: source,
+    bindings,
+    notes,
+    targetPixel,
+    description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing)`,
+    limits: { width: viewport ? Math.abs(viewport.width) : void 0, height: viewport ? Math.abs(viewport.height) : void 0 },
+    start: () => new PixelQuad((dx, dy, derivatives) => new Invocation(module, {
+      entryPoint,
+      model,
+      bindings,
+      inputs: fragmentInputs(module, hit, x0 + dx, y0 + dy),
+      derivatives
+    }), lane)
+  };
+}
+function coveredPixel(state, mesh) {
+  const viewport = viewportOf(state);
+  const pos = positionOutput(mesh);
+  if (!viewport || !pos || !mesh.data || primitiveKind(mesh.topology) !== "triangles") return null;
+  const view = new DataView(mesh.data.buffer, mesh.data.byteOffset, mesh.data.byteLength);
+  for (let t = 0; t * 3 + 2 < mesh.vertices; t++) {
+    let sx = 0, sy = 0, ok = true;
+    for (let k = 0; k < 3; k++) {
+      const at = (t * 3 + k) * mesh.stride + pos.offset;
+      const w = view.getFloat32(at + 12, true);
+      if (!(w > 1e-6)) {
+        ok = false;
+        break;
+      }
+      sx += viewport.x + (view.getFloat32(at, true) / w + 1) * viewport.width / 2;
+      sy += viewport.y + (view.getFloat32(at + 4, true) / w + 1) * viewport.height / 2;
+    }
+    if (!ok) continue;
+    const x = Math.floor(sx / 3), y = Math.floor(sy / 3);
+    const minX = Math.min(viewport.x, viewport.x + viewport.width), minY = Math.min(viewport.y, viewport.y + viewport.height);
+    if (x < minX || y < minY || x >= minX + Math.abs(viewport.width) || y >= minY + Math.abs(viewport.height)) continue;
+    if (coveringTriangle(state, mesh, x, y).hit) return { x, y };
+  }
+  return null;
+}
+
+// src/mcp/live_session.ts
+import { spawn as spawn3 } from "node:child_process";
+import fs9 from "node:fs";
+import net2 from "node:net";
+import os6 from "node:os";
+import path8 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/main/android.ts
+import { execFile as execFile2, execFileSync, spawn as spawn2 } from "node:child_process";
+import crypto from "node:crypto";
+import fs6 from "node:fs";
+import os4 from "node:os";
+import path5 from "node:path";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var LAYER_LIB = "libVkLayer_inspector_capture.so";
+var LAYER_APK = "gpu_inspector_layer.apk";
+var DEVICE_TMP = "/data/local/tmp";
+var ADB_TIMEOUT_MS = 2e4;
+var INSTALL_TIMEOUT_MS = 18e4;
+var START_TIMEOUT_MS = 6e4;
+var PID_RETRIES = 20;
+var PID_RETRY_MS = 500;
+var POLL_MS = 2e3;
+var MIN_SDK = 28;
+var LAYER_APP_SDK = 29;
+function findAdb() {
+  const exe = process.platform === "win32" ? "adb.exe" : "adb";
+  const candidates = [];
+  if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
+  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
+    if (process.env[v]) candidates.push(path5.join(process.env[v], "platform-tools", exe));
+  }
+  if (process.platform === "win32") {
+    if (process.env.LOCALAPPDATA) candidates.push(path5.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+  } else if (process.platform === "darwin") {
+    candidates.push(path5.join(os4.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+  } else {
+    candidates.push(path5.join(os4.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+  }
+  for (const c2 of candidates) if (fs6.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path5.delimiter)) {
+    if (dir && fs6.existsSync(path5.join(dir, exe))) return path5.join(dir, exe);
+  }
+  return null;
+}
+function adbArgs(serial, args) {
+  return serial ? ["-s", serial, ...args] : args;
+}
+function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
+        reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+function shell(adbPath, serial, command, timeoutMs = ADB_TIMEOUT_MS) {
+  return adb(adbPath, serial, ["shell", command], timeoutMs);
+}
+function parseDevices(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("List of devices") || line.startsWith("*")) continue;
+    const parts2 = line.split(/\s+/);
+    if (parts2.length < 2) continue;
+    const model = parts2.find((p) => p.startsWith("model:"))?.substring(6).replace(/_/g, " ") ?? "";
+    out.push({ serial: parts2[0], state: parts2[1], model });
+  }
+  return out;
+}
+async function listDevices(adbPath) {
+  const listed = parseDevices(await adb(adbPath, null, ["devices", "-l"]));
+  const devices = [];
+  for (const d of listed) {
+    const dev = { serial: d.serial, state: d.state, model: d.model, sdk: 0, abi: "" };
+    if (d.state === "device") {
+      try {
+        const props = (await shell(adbPath, d.serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.manufacturer; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+        dev.sdk = Number(props[0]) || 0;
+        dev.abi = props[1] ?? "";
+        if (!dev.model) dev.model = [props[2], props[3]].filter(Boolean).join(" ");
+      } catch {
+      }
+    }
+    devices.push(dev);
+  }
+  return devices;
+}
+async function listPackages(adbPath, serial) {
+  const text = await shell(adbPath, serial, "pm list packages -3");
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("package:")).map((l) => l.substring(8)).sort();
+}
+async function resolveActivity(adbPath, serial, pkg) {
+  try {
+    const text = await shell(adbPath, serial, `cmd package resolve-activity --brief ${pkg}`);
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const component = lines.reverse().find((l) => l.startsWith(`${pkg}/`));
+    return component ?? null;
+  } catch {
+    return null;
+  }
+}
+function findAndroidLayer(candidates) {
+  for (const dir of candidates) {
+    const libRoot = path5.join(dir, "lib");
+    if (!fs6.existsSync(libRoot)) continue;
+    const libs = {};
+    for (const abi of fs6.readdirSync(libRoot)) {
+      const lib = path5.join(libRoot, abi, LAYER_LIB);
+      if (fs6.existsSync(lib)) libs[abi] = lib;
+    }
+    if (!Object.keys(libs).length) continue;
+    const apk = path5.join(dir, LAYER_APK);
+    let apkInfo = null;
+    if (fs6.existsSync(apk)) {
+      try {
+        apkInfo = JSON.parse(fs6.readFileSync(`${apk}.json`, "utf8"));
+      } catch {
+        apkInfo = null;
+      }
+    }
+    return { dir, libs, apk: apkInfo ? apk : null, apkInfo };
+  }
+  return null;
+}
+var AndroidTarget = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  pid = null;
+  _logcat = null;
+  _poll = null;
+  _polling = false;
+  _stopped = false;
+  /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
+  async start() {
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    const log = this.opts.onLog;
+    const props = (await shell(adbPath, serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.cpu.abilist; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+    const sdk = Number(props[0]) || 0;
+    const abi = props[1] ?? "";
+    const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
+    log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
+    if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
+    const how = await this._installLayer(sdk, abilist);
+    log(`layer: ${how}`);
+    await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+    await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
+    await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
+    await shell(adbPath, serial, `am force-stop ${pkg}`);
+    for (let i = 0; i < 20 && !this._stopped; ++i) {
+      const pid = await this._findPid();
+      if (pid === null) break;
+      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!this._stopped) {
+      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
+      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
+    }
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
+    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
+    if (this._stopped) return;
+    this._startLogcat();
+    let activity = this.opts.activity.trim();
+    if (!activity) activity = await resolveActivity(adbPath, serial, pkg) ?? "";
+    if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
+    if (activity) {
+      log(`starting ${activity}`);
+      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
+      const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
+      if (error) throw new Error(`${error.trim()} (activity ${activity})`);
+    } else {
+      log(`starting ${pkg} (no launchable activity resolved; using the launcher intent)`);
+      const out = await shell(adbPath, serial, `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, START_TIMEOUT_MS);
+      if (/No activities found|monkey aborted/i.test(out)) throw new Error(`no launchable activity in ${pkg}`);
+    }
+    for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
+      this.pid = await this._findPid();
+      if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
+      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
+    }
+    if (this._stopped) return;
+    if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
+    await this._launchDiagnostics(false);
+    this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
+  }
+  /** The layer's abstract socket on the device: the port and the package (see transport.cpp). */
+  get socketName() {
+    return `vkinsp:${this.opts.port}:${this.opts.package}`;
+  }
+  /**
+   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
+   * device disconnects, and a headset's USB link blips when it changes power state, so a
+   * connection attempt refused on the host side is checked against `adb forward --list`.
+   * Resolves true when the forward had to be re-created.
+   */
+  async ensureForward() {
+    if (this._stopped) return false;
+    const { adb: adbPath, serial, port } = this.opts;
+    const target = `localabstract:${this.socketName}`;
+    const list = await adb(adbPath, serial, ["forward", "--list"]);
+    const present = list.split(/\r?\n/).some((l) => {
+      const f = l.trim().split(/\s+/);
+      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
+    });
+    if (present || this._stopped) return false;
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
+    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
+    return true;
+  }
+  /** Terminates the application, the port forward and the watches. */
+  async stop() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    try {
+      await shell(adbPath, serial, `am force-stop ${pkg}`);
+    } catch {
+    }
+    try {
+      await adb(adbPath, serial, ["forward", "--remove", `tcp:${port}`]);
+    } catch {
+    }
+  }
+  /** stop() for application exit, where nothing can be awaited. */
+  stopSync() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
+      try {
+        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
+      } catch {
+      }
+    }
+  }
+  _stopWatching() {
+    this._stopped = true;
+    if (this._poll) {
+      clearInterval(this._poll);
+      this._poll = null;
+    }
+    if (this._logcat) {
+      try {
+        this._logcat.kill();
+      } catch {
+      }
+      this._logcat = null;
+    }
+  }
+  /**
+   * Gets the layer where the device's loader will find it. Android 10+ with the layer APK:
+   * install it (when the installed version differs) and point gpu_debug_layer_app at it. Otherwise
+   * copy the .so into the target's data directory with run-as, skipped when the copy there
+   * already matches.
+   */
+  async _installLayer(sdk, abilist) {
+    const { adb: adbPath, serial, package: pkg, layer } = this.opts;
+    const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo.abis.includes(a)) : void 0;
+    if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
+      const info = layer.apkInfo;
+      let installed = "";
+      try {
+        const dump = await shell(adbPath, serial, `dumpsys package ${info.package}`);
+        installed = /versionName=(\S+)/.exec(dump)?.[1] ?? "";
+      } catch {
+        installed = "";
+      }
+      if (installed !== info.versionName) {
+        this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
+        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+      }
+      await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
+      return `${info.package} ${info.versionName} (${apkAbi})`;
+    }
+    const abi = abilist.find((a) => layer.libs[a]);
+    if (!abi) {
+      throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
+    }
+    const lib = layer.libs[abi];
+    const local = crypto.createHash("md5").update(fs6.readFileSync(lib)).digest("hex");
+    let remote = "";
+    try {
+      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
+        throw new Error(`${pkg} is not debuggable: Android only loads layers into debuggable applications (a Unity Development Build) or on rooted devices`);
+      }
+      remote = "";
+    }
+    if (remote !== local) {
+      this.opts.onLog(`copying ${LAYER_LIB} (${abi}) into ${pkg}'s data directory`);
+      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${LAYER_LIB}`], INSTALL_TIMEOUT_MS);
+      try {
+        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${LAYER_LIB} . && run-as ${pkg} chmod 700 ${LAYER_LIB}`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
+      }
+    }
+    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
+    return `${LAYER_LIB} (${abi}) in ${pkg}'s data directory`;
+  }
+  _startLogcat() {
+    const { adb: adbPath, serial } = this.opts;
+    const proc = spawn2(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", "vkinsp:*", "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    this._logcat = proc;
+    let rest = "";
+    proc.stdout?.on("data", (d) => {
+      rest += d.toString("utf8");
+      const lines = rest.split(/\r?\n/);
+      rest = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.length || line.startsWith("--------- beginning of")) continue;
+        this.opts.onLog(line.startsWith("I/vkinsp") ? `[vkinsp] ${line.replace(/^I\/vkinsp\s*:\s?/, "")}` : line);
+      }
+    });
+    proc.on("exit", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+    proc.on("error", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+  }
+  /**
+   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
+   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
+   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
+   * which then blocks every later launch until the shell restarts.
+   */
+  async _launchDiagnostics(noProcess) {
+    const { adb: adbPath, serial } = this.opts;
+    const log = this.opts.onLog;
+    try {
+      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
+      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
+      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
+    } catch {
+    }
+    try {
+      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
+      if (Number(windows.trim()) > 0) {
+        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+      }
+    } catch {
+    }
+    if (!noProcess) return;
+    try {
+      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
+      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
+      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+    } catch {
+    }
+  }
+  async _findPid() {
+    try {
+      const out = (await shell(this.opts.adb, this.opts.serial, `pidof ${this.opts.package}`)).trim();
+      const pid = Number(out.split(/\s+/)[0]);
+      return pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+  async _pollProcess() {
+    if (this._polling || this._stopped) return;
+    this._polling = true;
+    try {
+      const pid = await this._findPid();
+      if (this._stopped) return;
+      if (pid === null || this.pid !== null && pid !== this.pid) {
+        this._stopWatching();
+        this.opts.onExit();
+      }
+    } finally {
+      this._polling = false;
+    }
+  }
+};
+async function disableLayer(adbPath, serial) {
+  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app"]) {
+    try {
+      await shell(adbPath, serial, `settings delete global ${key}`);
+    } catch {
+    }
+  }
+}
+
+// src/main/layer_protocol.ts
+function encodeRequest(msg) {
+  const payload = Buffer.from(JSON.stringify(msg), "utf8");
+  const header = Buffer.alloc(5);
+  header.writeUInt32LE(payload.length, 0);
+  header.writeUInt8(0, 4);
+  return Buffer.concat([header, payload]);
+}
+var FrameReader = class {
+  _buffered = Buffer.alloc(0);
+  /** The messages `chunk` completes, in order; a frame that does not parse goes to `onError` and is skipped. */
+  push(chunk2, onError) {
+    this._buffered = this._buffered.length ? Buffer.concat([this._buffered, chunk2]) : chunk2;
+    const out = [];
+    while (this._buffered.length >= 5) {
+      const len = this._buffered.readUInt32LE(0);
+      const kind = this._buffered.readUInt8(4);
+      if (this._buffered.length < 5 + len) break;
+      const payload = this._buffered.subarray(5, 5 + len);
+      this._buffered = this._buffered.subarray(5 + len);
+      if (kind === 0) {
+        try {
+          out.push(JSON.parse(payload.toString("utf8")));
+        } catch (e) {
+          onError?.({ kind: "json", error: String(e), payload });
+        }
+      } else if (kind === 1) {
+        const hl = payload.readUInt32LE(0);
+        let header;
+        try {
+          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8"));
+        } catch (e) {
+          onError?.({ kind: "header", error: String(e), payload });
+          continue;
+        }
+        out.push({ ...header, __binary: new Uint8Array(payload.subarray(4 + hl)) });
+      }
+    }
+    return out;
+  }
+};
+
+// src/main/launch_env.ts
+import { execFile as execFile3 } from "node:child_process";
+import fs7 from "node:fs";
+import net from "node:net";
+import os5 from "node:os";
+import path6 from "node:path";
+var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
+var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
+var DEFAULT_PORT = 47531;
+function findLayerDir(roots, packaged = []) {
+  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
+  const candidates = [];
+  for (const root of roots) {
+    const bin = path6.join(root, "build", "bin");
+    candidates.push(path6.join(bin, "Release"), path6.join(bin, "RelWithDebInfo"), path6.join(bin, "Debug"), bin);
+  }
+  candidates.push(...packaged);
+  for (const dir of candidates) {
+    if (fs7.existsSync(path6.join(dir, `${LAYER_NAME2}.json`))) return dir;
+  }
+  return null;
+}
+function findValidationLayerDir() {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path6.join(sdk, "Bin"), path6.join(sdk, "share", "vulkan", "explicit_layer.d"), path6.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    for (const root of ["C:\\VulkanSDK", path6.join(os5.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs7.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path6.join(root, v, "Bin"));
+      } catch {
+      }
+    }
+  } else {
+    candidates.push(
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/local/share/vulkan/explicit_layer.d",
+      "/etc/vulkan/explicit_layer.d",
+      path6.join(os5.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+    );
+  }
+  for (const c2 of candidates) if (fs7.existsSync(path6.join(c2, manifest))) return c2;
+  return null;
+}
+function vulkanLayerEnvironment(o) {
+  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
+  return {
+    VK_ADD_LAYER_PATH: layerPaths.join(path6.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
+    // Older loaders:
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path6.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path6.delimiter),
+    VKINSP_PORT: String(o.port),
+    VKINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
+    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
+    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
+  };
+}
+function splitArgs(s) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
+  });
+}
+async function findFreePort(start, taken = () => false) {
+  for (let port = start; port < start + 100 && port < 65536; port++) {
+    if (taken(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return start;
+}
+function terminate(proc) {
+  if (process.platform === "win32" && proc.pid) {
+    execFile3("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+      try {
+        proc.kill();
+      } catch {
+      }
+    });
+    return;
+  }
+  proc.kill();
+}
+
+// src/main/metal.ts
+import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import fs8 from "node:fs";
+import path7 from "node:path";
+import { fileURLToPath } from "node:url";
+var moduleDir = path7.dirname(fileURLToPath(import.meta.url));
+var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
+function findCaptureLibrary(roots = [path7.resolve(moduleDir, "..", "..", "..")], packaged = [path7.join(process.resourcesPath ?? "", "layer")]) {
+  const candidates = [];
+  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
+  for (const root of roots) {
+    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
+      candidates.push(path7.join(root, dir, CAPTURE_LIBRARY));
+    }
+  }
+  for (const dir of packaged) candidates.push(path7.join(dir, CAPTURE_LIBRARY));
+  return candidates.find((p) => fs8.existsSync(p)) ?? null;
+}
+function resolveExecutable(exe) {
+  if (!exe.endsWith(".app")) return exe;
+  const macOS = path7.join(exe, "Contents", "MacOS");
+  const plist = path7.join(exe, "Contents", "Info.plist");
+  if (fs8.existsSync(plist)) {
+    try {
+      const name = execFileSync2(
+        "/usr/libexec/PlistBuddy",
+        ["-c", "Print :CFBundleExecutable", plist],
+        { encoding: "utf8" }
+      ).trim();
+      const candidate = path7.join(macOS, name);
+      if (name && fs8.existsSync(candidate)) return candidate;
+    } catch {
+    }
+  }
+  const byBundleName = path7.join(macOS, path7.basename(exe, ".app"));
+  if (fs8.existsSync(byBundleName)) return byBundleName;
+  try {
+    const entries = fs8.readdirSync(macOS);
+    if (entries.length === 1) return path7.join(macOS, entries[0]);
+  } catch {
+  }
+  return exe;
+}
+function injectionBlockedReason(exe) {
+  const r = spawnSync(
+    "codesign",
+    ["-d", "-v", "--entitlements", "-", "--xml", exe],
+    { encoding: "utf8" }
+  );
+  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+  if (!/flags=[^\s]*runtime/.test(output)) return null;
+  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
+  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
+  if (hasDyld && hasLibrary) return null;
+  return `${path7.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+
+  /usr/bin/codesign --force --deep --sign - --options runtime \\
+    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
+    "<the .app>"
+
+This invalidates the application's signature and notarization, so do it to a development build rather than to a shipping copy.`;
+}
+function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
+  const env = {
+    // A stack at every object creation (metal/src/stacktrace.mm), the launch dialog's option.
+    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
+    // Appended rather than replacing: another inserted library is the caller's business.
+    DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
+    MTLINSP_PORT: String(port),
+    MTLINSP_LOG: log ? "1" : "0",
+    // Lets the library write an Xcode GPU trace of a frame on request (metal/src/gpu_trace.mm);
+    // without it MTLCaptureManager refuses the document destination.
+    ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
+  };
+  if (validation) {
+    const defaults = {
+      MTL_DEBUG_LAYER: "1",
+      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
+      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
+      MTL_SHADER_VALIDATION: "1",
+      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1"
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!process.env[key]) env[key] = value;
+    }
+  }
+  return env;
+}
+
+// src/renderer/stack_requests.ts
+var REQUEST_TIMEOUT_MS = 15e3;
+function requestStacks(session, ids) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const id of ids) {
+    const cached = db.stacks.get(id);
+    if (cached) out.set(id, cached);
+    else missing.push(id);
+  }
+  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (ok) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      let data = null;
-      try {
-        data = new Uint8Array(fs10.readFileSync(out));
-        fs10.unlinkSync(out);
-      } catch {
-      }
-      if (data) {
-        resolve({ data, output: tail(output) });
+      db.onStacktraces.disconnect(listener);
+      if (!ok) {
+        resolve(out.size ? out : null);
         return;
       }
-      resolve({
-        data: null,
-        output: tail(output),
-        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
-${tail(output)}`)
-      });
+      for (const id of missing) {
+        const s = db.stacks.get(id);
+        if (s) out.set(id, s);
+      }
+      resolve(out);
     };
-    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
-    child.on("close", () => finish2(null));
+    const listener = () => finish2(true);
+    const timer = setTimeout(() => finish2(false), REQUEST_TIMEOUT_MS);
+    db.onStacktraces.addListener(listener);
+    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => {
+      if (!ok) finish2(false);
+    });
   });
 }
-function serveRequest(id, analysis, out) {
-  if (analysis.kind === "pixel") {
-    return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
+async function resolveSymbols(session, addresses, symbolizeOnHost2) {
+  const out = await resolveFromLayer(session, addresses);
+  if (symbolizeOnHost2) await symbolizeOnHost2(out);
+  return out;
+}
+function resolveFromLayer(session, addresses) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const a of addresses) {
+    const cached = db.symbols.get(a);
+    if (cached) out.set(a, cached);
+    else if (!missing.includes(a)) missing.push(a);
   }
-  return { id, ...analysis, out };
-}
-function tempOutput(kind) {
-  return path9.join(os7.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
-}
-var ReplayServer = class {
-  tool;
-  capturePath;
-  lastUsed = Date.now();
-  _child;
-  _ready;
-  _resolveReady = () => {
-  };
-  _pending = /* @__PURE__ */ new Map();
-  _nextId = 1;
-  _output = "";
-  _exited = false;
-  constructor(tool, capturePath) {
-    this.tool = tool;
-    this.capturePath = capturePath;
-    this._ready = new Promise((resolve) => {
-      this._resolveReady = resolve;
+  if (!missing.length) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onSymbols.disconnect(listener);
+      for (const a of missing) {
+        const f = db.symbols.get(a);
+        if (f) out.set(a, f);
+      }
+      resolve(out);
+    };
+    const listener = () => finish2();
+    const timer = setTimeout(finish2, REQUEST_TIMEOUT_MS);
+    db.onSymbols.addListener(listener);
+    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => {
+      if (!ok) finish2();
     });
-    this._child = spawn3(tool, [capturePath, "--serve"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    let buffered = "";
-    this._child.stdout?.on("data", (chunk2) => {
-      buffered += chunk2.toString();
-      let newline;
-      while ((newline = buffered.indexOf("\n")) >= 0) {
-        const line = buffered.slice(0, newline).replace(/\r$/, "");
-        buffered = buffered.slice(newline + 1);
-        this._line(line);
+  });
+}
+
+// src/renderer/capture_file.ts
+var BLOB_TIMEOUT_MS = 15e3;
+function fetchBlob(session, object, index) {
+  const db = session.database;
+  const key = `${object.id}:${index}`;
+  const cached = db.blobData.get(key);
+  if (cached) return Promise.resolve(cached);
+  if (!session.connected) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (data) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onObjectBlob.disconnect(listener);
+      resolve(data);
+    };
+    const listener = (id, idx, data) => {
+      if (id === object.id && idx === index) finish2(data);
+    };
+    const timer = setTimeout(() => finish2(null), BLOB_TIMEOUT_MS);
+    db.onObjectBlob.addListener(listener);
+    void session.send({ action: "RequestBlob", id: object.id, index }).then((ok) => {
+      if (!ok) finish2(null);
+    });
+  });
+}
+function referencedObjects(session, data) {
+  const db = session.database;
+  const ids = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) {
+    if (c2.object) ids.add(c2.object.__id);
+    if (c2.secondary) ids.add(c2.secondary);
+    db.collectReferences(c2.args, ids);
+    db.collectReferences(c2.descriptors, ids);
+  }
+  for (const t of data.textures) {
+    ids.add(t.info.id);
+    ids.add(t.info.commandBuffer);
+  }
+  for (const b of data.buffers.values()) {
+    ids.add(b.info.buffer);
+    ids.add(b.info.commandBuffer);
+  }
+  for (const v of db.validation) db.collectReferences(v.objects, ids);
+  const out = /* @__PURE__ */ new Map();
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop();
+    if (out.has(id)) continue;
+    const o = db.getObject(id);
+    if (!o) continue;
+    out.set(id, o);
+    if (o.parentId && !out.has(o.parentId)) queue.push(o.parentId);
+    for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
+    const more = /* @__PURE__ */ new Set();
+    db.collectReferences(o.updates, more);
+    for (const m of more) if (!out.has(m)) queue.push(m);
+  }
+  return [...out.values()].sort((a, b) => a.id - b.id);
+}
+async function serializeCapture(session, data, options = {}) {
+  const onProgress = options.onProgress;
+  const payloads = [];
+  let payloadBytes = 0;
+  const addPayload = (bytes) => {
+    if (!bytes) return void 0;
+    const p = [payloadBytes, bytes.byteLength];
+    payloads.push(bytes);
+    payloadBytes += bytes.byteLength;
+    return p;
+  };
+  const objects = referencedObjects(session, data);
+  const records = [];
+  let fetched = 0;
+  const withBlobs = objects.filter((o) => o.blobs.length).length;
+  for (const o of objects) {
+    const blobs = [];
+    for (let i = 0; i < o.blobs.length; i++) {
+      const b = o.blobs[i];
+      if (onProgress) onProgress(`saving: shader ${++fetched} of ${withBlobs}...`);
+      const bytes = await fetchBlob(session, o, i);
+      blobs.push({ name: b.name, size: b.size, ...bytes ? { payload: addPayload(bytes) } : {} });
+    }
+    records.push({
+      id: o.id,
+      parent: o.parentId,
+      type: o.type,
+      cmd: o.cmd,
+      index: o.index,
+      handle: o.handle,
+      label: o.label || null,
+      args: o.args,
+      blobs,
+      updates: o.updates,
+      deleted: o.isDeleted
+    });
+  }
+  const db = session.database;
+  const addresses = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
+  let symbols;
+  if (addresses.size && !options.forReplay) {
+    if (onProgress) onProgress("saving: symbols...");
+    const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
+    symbols = {};
+    for (const [a, f] of resolved) symbols[a] = f;
+  }
+  let stacks;
+  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+    if (onProgress) onProgress("saving: stack traces...");
+    const got = await requestStacks(session, objects.map((o) => o.id));
+    if (got && db.stacksAvailable !== false) {
+      stacks = {};
+      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
+    }
+  }
+  if (onProgress) onProgress("saving: writing...");
+  const manifest = {
+    format: CAPTURE_FORMAT,
+    version: CAPTURE_VERSION,
+    api: data.api,
+    application: "GPU Inspector",
+    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    source: { name: session.name },
+    frame: data.frame,
+    frames: data.frames,
+    frameTimeMs: db.frameTimeMs,
+    submitMs: db.submitMs,
+    refreshMs: db.refreshMs,
+    refreshSource: db.refreshSource,
+    displayRefreshMs: db.displayRefreshMs,
+    frameBoundary: db.frameBoundary,
+    objects: records,
+    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
+    commands: data.commands.map((c2) => {
+      const { children: _children, ...rest } = c2;
+      return rest;
+    }),
+    textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
+    buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
+    passTimings: [...data.passTimings.values()],
+    ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
+    ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
+    ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
+    validation: db.validation,
+    ...symbols ? { symbols } : {},
+    ...stacks ? { stacks } : {}
+  };
+  return encodeCaptureFile(manifest, payloads);
+}
+
+// src/mcp/live_session.ts
+var MAX_LOG_LINES = 2e3;
+var MAX_FRAME_STATS = 600;
+var DEFAULT_QUIET_MS = 2e3;
+var SNAPSHOT_TIMEOUT_MS = 1e4;
+var KILL_TIMEOUT_MS = 3e3;
+var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
+  "CaptureFrameResults",
+  "CaptureFrameCommands",
+  "CaptureTextureFrames",
+  "CaptureTextureData",
+  "CaptureBuffers",
+  "CaptureBufferData",
+  "CapturePassTimings",
+  "CaptureOverdraw",
+  "CaptureOverdrawData",
+  "CapturePixelHistory"
+]);
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function capturesDir() {
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path8.join(os6.tmpdir(), "gpu-inspector-captures");
+}
+function checkoutRoots() {
+  const roots = [];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  roots.push(path8.resolve(path8.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  return roots;
+}
+function installedLayerDirs() {
+  const home = os6.homedir();
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA ?? path8.join(home, "AppData", "Local");
+    const apps = [path8.join(local, "Programs", "gpu-inspector"), path8.join(local, "Programs", "GPU Inspector")];
+    for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
+      if (programFiles) apps.push(path8.join(programFiles, "GPU Inspector"));
+    }
+    return apps.map((dir) => path8.join(dir, "resources", "layer"));
+  }
+  if (process.platform === "darwin") {
+    return ["/Applications", path8.join(home, "Applications")].map((dir) => path8.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+  }
+  return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+}
+function androidLayer() {
+  const candidates = [
+    process.env.INSPECTOR_ANDROID_LAYER_DIR,
+    ...checkoutRoots().map((root) => path8.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path8.join(dir, "android"))
+  ].filter((d) => !!d);
+  return findAndroidLayer(candidates);
+}
+function applicationName(db) {
+  for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
+    const info = o.descriptor?.pApplicationInfo;
+    const name = isObject(info) ? str(info.pApplicationName) : "";
+    if (name) return name;
+  }
+  return null;
+}
+var LiveSession = class {
+  constructor(id, name, port, launched) {
+    this.id = id;
+    this.name = name;
+    this.port = port;
+    this.launched = launched;
+    const db = this.database;
+    db.onFrameStats.addListener((msg) => {
+      this.frameStats.push({ at: Date.now(), msg });
+      if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
+    });
+    db.onValidationMessage.addListener((entry, isNew) => {
+      if (isNew) this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${entry.message.split("\n")[0].slice(0, 300)}`);
+    });
+    db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
+    db.onOtherMessage.addListener((msg) => {
+      if (msg.action === "ShaderReplaced") {
+        this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
       }
     });
-    this._child.stderr?.on("data", (chunk2) => this._collect(chunk2.toString()));
-    this._child.stdin?.on("error", () => {
-    });
-    this._child.on("error", (e) => this._exit(`could not run ${tool}: ${e.message}`));
-    this._child.on("exit", (code) => this._exit(`the replay process exited (${code ?? "killed"})`));
   }
-  get alive() {
-    return !this._exited;
+  database = new ObjectDatabase();
+  log = [];
+  /** Frame reports with the time each arrived. */
+  frameStats = [];
+  startedAt = Date.now();
+  state = "connecting";
+  detail = "";
+  pid = null;
+  exitCode = null;
+  _proc = null;
+  _socket = null;
+  _listeners = /* @__PURE__ */ new Set();
+  _capturing = false;
+  /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
+  _stopping = false;
+  /** The launched application is gone: it exited, failed to start, or was stopped. */
+  _ended = false;
+  /**
+   * A launched target that is not a child process of this server (an Android application): how
+   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
+   */
+  remote = null;
+  get connected() {
+    return this._socket !== null && !this._socket.destroyed;
+  }
+  /** The API the capture library reports objects of; null before any arrived. */
+  get api() {
+    for (const type of this.database.objectsByType.keys()) if (type.startsWith("MTL")) return "metal";
+    return this.database.allObjects.size ? "vulkan" : null;
+  }
+  appendLog(line) {
+    this.log.push(line);
+    if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
+  }
+  setState(state, detail = "") {
+    this.state = state;
+    this.detail = detail;
+    this.appendLog(`[${state}]${detail ? ` ${detail}` : ""}`);
+  }
+  send(msg) {
+    if (!this._socket || this._socket.destroyed) return Promise.resolve(false);
+    this._socket.write(encodeRequest(msg));
+    return Promise.resolve(true);
+  }
+  /** Hears every message from the capture library, after the object database; returns the unsubscribe. */
+  onMessage(listener) {
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
+  }
+  /** The first message `match` accepts (its return value), or null after `timeoutMs`. */
+  waitFor(match, timeoutMs) {
+    return new Promise((resolve) => {
+      const off = this.onMessage((msg) => {
+        const hit = match(msg);
+        if (hit === void 0) return;
+        clearTimeout(timer);
+        off();
+        resolve(hit);
+      });
+      const timer = setTimeout(() => {
+        off();
+        resolve(null);
+      }, timeoutMs);
+    });
+  }
+  /** Starts the application; its output goes to the session's log. */
+  startProcess(exe, args, cwd, env) {
+    const proc = spawn3(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    this._proc = proc;
+    this.pid = proc.pid ?? null;
+    for (const stream of [proc.stdout, proc.stderr]) {
+      let rest = "";
+      stream?.on("data", (d) => {
+        rest += d.toString("utf8");
+        const lines = rest.split(/\r?\n/);
+        rest = lines.pop() ?? "";
+        for (const line of lines) if (line.length) this.appendLog(line);
+      });
+    }
+    proc.on("exit", (code, signal) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this._ended = true;
+      this.exitCode = String(signal ?? code);
+      this._disconnect();
+      this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
+    });
+    proc.on("error", (e) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this._disconnect();
+      this._ended = true;
+      this.setState("error", e.message);
+    });
   }
   /**
-   * Replays the frame for an analysis and reads the file it wrote. `fallback` is set when the answer
-   * is not the analysis's: the process could not start (a tool from before --serve) or exited.
+   * Connects to the capture library, retrying until it answers, the launched process exits, or
+   * `timeoutMs` passes; resolves once the snapshot of live objects that follows a connection is in.
    */
-  async run(analysis, timeoutMs = 10 * 60 * 1e3) {
-    this.lastUsed = Date.now();
-    const startError = await this._ready;
-    if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
-    const id = this._nextId++;
-    const out = tempOutput(analysis.kind);
-    const answer = await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this._pending.delete(id);
-        this.dispose();
-        resolve({ id, ok: false, error: `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` });
-      }, timeoutMs);
-      this._pending.set(id, (a) => {
-        clearTimeout(timer);
-        resolve(a);
+  async connect(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    this.setState("connecting", `port ${this.port}`);
+    let attempts = 0;
+    while (Date.now() < deadline) {
+      if (this._ended) return false;
+      const sock = await this._tryConnect();
+      attempts++;
+      if (sock) {
+        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
+        this._attach(sock);
+        if (await snapshot !== "closed" || this.connected) {
+          const name = applicationName(this.database);
+          if (name && !this.launched) this.name = name;
+          return this.connected;
+        }
+      } else if (this.remote?.repair && attempts % 4 === 0) {
+        await this.remote.repair().catch(() => void 0);
+      }
+      await sleep(this.launched && !this.remote ? 250 : 500);
+    }
+    this.setState("disconnected", `nothing answered on port ${this.port}`);
+    return false;
+  }
+  _tryConnect() {
+    return new Promise((resolve) => {
+      const sock = net2.createConnection({ host: "127.0.0.1", port: this.port });
+      sock.once("connect", () => {
+        sock.removeAllListeners("error");
+        resolve(sock);
       });
-      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out)) + "\n");
+      sock.once("error", () => {
+        sock.destroy();
+        resolve(null);
+      });
     });
-    this.lastUsed = Date.now();
-    let data = null;
-    try {
-      data = new Uint8Array(fs10.readFileSync(out));
-      fs10.unlinkSync(out);
-    } catch {
-    }
-    if (answer.ok && data) return { data, output: tail(this._output) };
-    return { data: null, output: tail(this._output), error: answer.error ?? "the replay wrote no data", fallback: this._exited };
   }
-  /** Stops the process: asked to quit, and killed if it does not. */
-  dispose() {
-    if (this._exited) return;
-    try {
-      this._child.stdin?.write(JSON.stringify({ kind: "quit" }) + "\n");
-      this._child.stdin?.end();
-    } catch {
-    }
-    setTimeout(() => {
-      if (!this._exited) this._child.kill();
-    }, 2e3).unref();
+  _attach(sock) {
+    sock.setNoDelay(true);
+    this._socket = sock;
+    const reader = new FrameReader();
+    let heard = false;
+    sock.on("data", (chunk2) => {
+      if (!heard) {
+        heard = true;
+        this.setState("connected", `port ${this.port}`);
+      }
+      const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
+      for (const msg of messages) {
+        this.database.handleMessage(msg);
+        for (const listener of [...this._listeners]) listener(msg);
+      }
+    });
+    const gone = () => {
+      if (this._socket !== sock) return;
+      this._socket = null;
+      if (this.state === "connected") this.setState("disconnected", "the connection closed (the application exited, or another client connected to it)");
+    };
+    sock.on("error", gone);
+    sock.on("close", gone);
+    void this.send({ action: "Ping" });
   }
-  _line(line) {
-    if (!line.startsWith("@replay ")) {
-      this._collect(line + "\n");
+  /**
+   * Resolves when the snapshot the capture library sends on connection has arrived, when the
+   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
+   */
+  _waitForSnapshot(timeoutMs, sock) {
+    const db = this.database;
+    return new Promise((resolve) => {
+      let started = false;
+      const done = (outcome) => {
+        clearTimeout(timer);
+        db.onSnapshotBegin.disconnect(begin);
+        db.onAddObject.disconnect(add);
+        sock.off("close", closed);
+        resolve(outcome);
+      };
+      const begin = (count2) => {
+        started = true;
+        if (count2 === 0) done("snapshot");
+      };
+      const add = (_object, inSnapshot) => {
+        if (started && !inSnapshot) done("snapshot");
+      };
+      const closed = () => done(started ? "snapshot" : "closed");
+      const timer = setTimeout(() => done("timeout"), timeoutMs);
+      db.onSnapshotBegin.addListener(begin);
+      db.onAddObject.addListener(add);
+      sock.once("close", closed);
+    });
+  }
+  _disconnect() {
+    const sock = this._socket;
+    this._socket = null;
+    sock?.destroy();
+  }
+  /**
+   * Requests a capture and waits for all of it: until the capture library marks its end, or, for
+   * one built before that marker existed, until the stream has been silent for a while after the
+   * commands and buffers are in.
+   */
+  async capture(o) {
+    if (!this.connected) throw new Error(`${this.id} is not connected (${this.state}${this.detail ? `: ${this.detail}` : ""}).`);
+    if (this._capturing) throw new Error(`${this.id} is already capturing.`);
+    this._capturing = true;
+    const data = new CaptureData();
+    const started = Date.now();
+    let commandsComplete = false;
+    let marker = false;
+    let lastTraffic = 0;
+    const onCommands = () => {
+      commandsComplete = true;
+    };
+    data.onCommandsComplete.addListener(onCommands);
+    const off = this.onMessage((msg) => {
+      if (msg.action === "CaptureComplete") {
+        marker = true;
+      } else if (CAPTURE_ACTIONS.has(msg.action)) {
+        lastTraffic = Date.now();
+        data.handleMessage(msg);
+      }
+    });
+    const quietMs = Number(process.env.GPU_INSPECTOR_CAPTURE_QUIET_MS) || DEFAULT_QUIET_MS;
+    try {
+      const request = {
+        action: "Capture",
+        frameCount: o.frames,
+        ...o.atFrame !== void 0 ? { atFrame: o.atFrame } : {},
+        captureTextures: o.renderTargets,
+        captureBuffers: o.buffers,
+        captureImages: o.images,
+        profilePasses: o.profilePasses,
+        stacktraces: o.stacktraces,
+        maxBufferSize: o.maxBufferBytes,
+        ...o.overdraw ? { overdraw: true } : {},
+        ...o.pixelHistory ? { pixelHistory: o.pixelHistory } : {}
+      };
+      await this.send(request);
+      for (; ; ) {
+        await sleep(50);
+        const now = Date.now();
+        if (marker) return { data, completion: "marker", elapsedMs: now - started };
+        if (commandsComplete && lastTraffic && now - lastTraffic >= quietMs && !data.buffersLoading) return { data, completion: "quiet", elapsedMs: now - started };
+        if (!this.connected) {
+          throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
+        }
+        if (now - started > o.timeoutMs) {
+          throw new Error(lastTraffic ? `The capture did not finish streaming within ${o.timeoutMs / 1e3} s.` : `No capture arrived within ${o.timeoutMs / 1e3} s: a capture starts at ${o.atFrame !== void 0 ? `frame ${o.atFrame}` : "the next frame"}, so the application may not be rendering (minimized, paused, or waiting).`);
+        }
+      }
+    } finally {
+      off();
+      data.onCommandsComplete.disconnect(onCommands);
+      this._capturing = false;
+    }
+  }
+  /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
+  async saveCapture(data, file) {
+    const bytes = await serializeCapture(this, data, {
+      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames))
+    });
+    let target;
+    if (file) {
+      target = path8.resolve(file);
+      fs9.mkdirSync(path8.dirname(target), { recursive: true });
+    } else {
+      const dir = capturesDir();
+      fs9.mkdirSync(dir, { recursive: true });
+      const name = captureFileName(this.name, data.frame, data.frames);
+      target = path8.join(dir, name);
+      for (let n = 2; fs9.existsSync(target); n++) target = path8.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+    }
+    fs9.writeFileSync(target, bytes);
+    return target;
+  }
+  /**
+   * Rebuilds a pipeline with one stage's code replaced (Vulkan); the layer's answer, or null without
+   * one. The request names the stage by its flag, the answer by the layer's stage name ("fragment").
+   */
+  async replaceShader(pipeline, stageFlag, stageName, spirv, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline && (msg.stage === stageName || msg.stage === stageFlag) ? msg : void 0, timeoutMs);
+    await this.send({ action: "ReplaceShader", pipeline, stage: stageFlag, spirv: Buffer.from(spirv).toString("base64") });
+    return answer;
+  }
+  /** Drops the replacement of one stage (or every stage) of a pipeline. */
+  async restoreShader(pipeline, stageFlag, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline ? msg : void 0, timeoutMs);
+    await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
+    return answer;
+  }
+  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
+  async readImage(id, mip, layer, timeoutMs) {
+    const answer = this.waitFor((msg) => msg.action === "ImageData" && msg.id === id ? msg : void 0, timeoutMs);
+    await this.send({ action: "RequestImage", id, mip, layer });
+    return answer;
+  }
+  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
+  async readDescriptorSet(id, timeoutMs = 1e4) {
+    const answer = this.waitFor((msg) => msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : void 0, timeoutMs);
+    await this.send({ action: "RequestDescriptorSet", id });
+    return await answer ?? false;
+  }
+  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
+  remoteEnded(state, detail) {
+    if (this._ended) return;
+    this._ended = true;
+    this.pid = null;
+    this._disconnect();
+    this.setState(state, detail);
+  }
+  /** Terminates a launched application; an attached one is only disconnected. */
+  async stop() {
+    const proc = this._proc;
+    const remote = this.remote;
+    this._disconnect();
+    if (remote) {
+      this.remote = null;
+      if (!this._ended) {
+        this._stopping = true;
+        await remote.stop().catch(() => void 0);
+        this.remoteEnded("exited", "terminated by stop_app");
+      }
       return;
     }
-    let answer;
-    try {
-      answer = JSON.parse(line.slice(8));
-    } catch {
+    if (!proc) {
+      if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
       return;
     }
-    if (answer.ready !== void 0) {
-      this._resolveReady(answer.ready ? null : answer.error ?? "the replay could not start");
-      return;
-    }
-    if (answer.id === void 0) return;
-    const resolve = this._pending.get(answer.id);
-    this._pending.delete(answer.id);
-    resolve?.(answer);
-  }
-  _collect(text) {
-    this._output += text;
-    if (this._output.length > 256 * 1024) this._output = this._output.slice(-128 * 1024);
-  }
-  _exit(message) {
-    if (this._exited) return;
-    this._exited = true;
-    this._resolveReady(message);
-    for (const [id, resolve] of this._pending) resolve({ id, ok: false, error: message });
-    this._pending.clear();
+    this._stopping = true;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, KILL_TIMEOUT_MS);
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      try {
+        terminate(proc);
+      } catch {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
   }
 };
-var ReplayServerPool = class {
-  constructor(max = 3, idleMs = 5 * 60 * 1e3) {
-    this.max = max;
-    this.idleMs = idleMs;
+var SessionManager = class {
+  _sessions = /* @__PURE__ */ new Map();
+  _counter = 0;
+  _latest = null;
+  /** Launches an application with the capture library in it and waits for it to connect. */
+  async launch(o, waitMs) {
+    const requested = path8.resolve(o.exe);
+    if (!fs9.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    let exe = requested;
+    let env;
+    let note;
+    if (process.platform === "darwin") {
+      const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
+      if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
+      exe = resolveExecutable(requested);
+      const blocked = injectionBlockedReason(exe);
+      if (blocked) throw new Error(blocked);
+      env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
+      note = `capture library: ${library}`;
+    } else {
+      const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
+      if (!layerDir) {
+        throw new Error("The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
+      }
+      const validationDir = o.validation ? findValidationLayerDir() : null;
+      env = {
+        ...process.env,
+        ...o.env,
+        ...vulkanLayerEnvironment({
+          layerDir,
+          validationDir,
+          port,
+          log: true,
+          recordAlways: !!o.recordAlways,
+          stacktraces: o.stacktraces ?? true,
+          validation: !!o.validation,
+          syncValidation: !!o.syncValidation
+        })
+      };
+      note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
+    }
+    const session = new LiveSession(`app-${++this._counter}`, `${path8.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    session.appendLog(`launching ${exe} ${args.join(" ")}`);
+    session.appendLog(note);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    session.startProcess(exe, args, o.cwd && fs9.existsSync(o.cwd) ? o.cwd : path8.dirname(exe), env);
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
   }
-  _servers = /* @__PURE__ */ new Map();
-  _sweep = null;
-  /** Runs an analysis in the capture's replay, starting one if needed; a process that cannot serve falls back to a one-shot replay. */
-  async run(tool, capturePath, analysis, timeoutMs) {
-    let stamp = 0;
+  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
+  async androidDevices() {
+    const adb2 = findAdb();
+    return { adb: adb2, devices: adb2 ? await listDevices(adb2) : [], layer: androidLayer()?.dir ?? null };
+  }
+  /**
+   * Starts an Android package on a device with the layer installed and enabled for it, and waits
+   * for the layer to connect over the adb forward. A launch that fails on the device is reported
+   * through the session's state and log rather than thrown.
+   */
+  async launchAndroid(o, waitMs) {
+    const adb2 = findAdb();
+    if (!adb2) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
+    const layer = androidLayer();
+    if (!layer) {
+      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
+    }
+    const devices = await listDevices(adb2);
+    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
+    let device;
+    if (o.device) {
+      device = devices.find((d) => d.serial === o.device);
+      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
+      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
+    } else {
+      const usable = devices.filter((d) => d.state === "device");
+      if (usable.length !== 1) {
+        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
+      }
+      device = usable[0];
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const serial = device.serial;
+    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    const target = new AndroidTarget({
+      adb: adb2,
+      serial,
+      package: o.package,
+      activity: o.activity ?? "",
+      port,
+      log: true,
+      recordAlways: !!o.recordAlways,
+      stacktraces: o.stacktraces ?? true,
+      layer,
+      onLog: (line) => session.appendLog(line),
+      onExit: () => session.remoteEnded("exited", "the application exited on the device")
+    });
+    const stop = async () => {
+      await target.stop();
+      await disableLayer(adb2, serial);
+    };
+    session.remote = { stop, repair: () => target.ensureForward() };
+    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
     try {
-      stamp = fs10.statSync(capturePath).mtimeMs;
-    } catch {
-      return { data: null, output: "", error: `${capturePath} does not exist` };
+      await target.start();
+    } catch (e) {
+      session.remote = null;
+      await stop().catch(() => void 0);
+      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
+      return session;
     }
-    const key = `${tool}
-${path9.resolve(capturePath)}
-${stamp}`;
-    let server = this._servers.get(key);
-    if (!server || !server.alive) {
-      server?.dispose();
-      server = new ReplayServer(tool, capturePath);
-      this._servers.set(key, server);
-      this._trim();
+    session.pid = target.pid;
+    await session.connect(waitMs);
+    return session;
+  }
+  /** Attaches to an application whose capture library already listens on `port`. */
+  async attach(port, waitMs) {
+    const session = new LiveSession(`app-${++this._counter}`, `port ${port}`, port, false);
+    if (!await session.connect(waitMs)) {
+      throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
     }
-    this._scheduleSweep();
-    const result = await server.run(analysis, timeoutMs);
-    if (!server.alive) this._servers.delete(key);
-    if (result.fallback) return runReplay(tool, capturePath, analysis, timeoutMs);
-    return result;
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    return session;
   }
-  /** Stops the replays of a capture file (it is closed, or about to be deleted). */
-  release(capturePath) {
-    const resolved = path9.resolve(capturePath);
-    for (const [key, server] of this._servers) {
-      if (path9.resolve(server.capturePath) !== resolved) continue;
-      server.dispose();
-      this._servers.delete(key);
+  /** A session by id, or the one started most recently. */
+  get(id) {
+    if (!id) {
+      if (!this._latest) throw new Error("No live session: launch_app starts an application with the capture library, attach_app connects to one already running.");
+      return this._latest;
     }
+    const s = this._sessions.get(id);
+    if (!s) throw new Error(`No live session "${id}". ${this._sessions.size ? `Sessions: ${[...this._sessions.keys()].join(", ")}.` : "There are none."}`);
+    return s;
   }
-  disposeAll() {
-    for (const server of this._servers.values()) server.dispose();
-    this._servers.clear();
+  list() {
+    return [...this._sessions.values()];
   }
-  _trim() {
-    const live = [...this._servers.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-    while (live.length > this.max) {
-      const [key, server] = live.shift();
-      server.dispose();
-      this._servers.delete(key);
-    }
-  }
-  _scheduleSweep() {
-    if (this._sweep) return;
-    this._sweep = setInterval(() => {
-      const now = Date.now();
-      for (const [key, server] of this._servers) {
-        if (now - server.lastUsed < this.idleMs) continue;
-        server.dispose();
-        this._servers.delete(key);
-      }
-      if (!this._servers.size && this._sweep) {
-        clearInterval(this._sweep);
-        this._sweep = null;
-      }
-    }, 30 * 1e3);
-    this._sweep.unref();
+  async stopAll() {
+    await Promise.all([...this._sessions.values()].map((s) => s.stop()));
   }
 };
-var replayServers = new ReplayServerPool();
+
+// src/mcp/debug_tools.ts
+var MAX_TRACE = 400;
+var MAX_VALUES_PER_LINE = 24;
+function meshOutputs(c2) {
+  const cache3 = /* @__PURE__ */ new Map();
+  return async (command) => {
+    const hit = cache3.get(command);
+    if (hit) return hit;
+    const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+    if (!tool) throw new Error(`a fragment's inputs come from replaying the draw's vertex shader, and ${NO_REPLAY_TOOL}`);
+    const run2 = await replayServers.run(tool, c2.path, { kind: "mesh", commands: [command] });
+    if (!run2.data) throw new Error(`the replay could not capture the draw's vertex outputs: ${run2.error ?? "no data"}`);
+    const m = parseMeshFile(run2.data).draws.find((d) => d.command === command);
+    if (!m) throw new Error("the replay did not reach the draw");
+    cache3.set(command, m);
+    return m;
+  };
+}
+function debugTools(store) {
+  return [
+    {
+      name: "debug_shader",
+      description: "Runs one shader invocation of a Vulkan capture in GPU Inspector's SPIR-V interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel (its inputs rasterized from the replayed vertex shader outputs, so this needs vkinsp_replay), or a dispatch's compute invocation, on the descriptor sets, push constants and specialization the command had. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "Default: compute for a dispatch, fragment for a draw." },
+        vertex: { type: "integer", minimum: 0, description: "Vertex: the vertex, in the order the draw read them (an indexed draw's index order). Default 0." },
+        instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
+        x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
+        y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
+        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID. Default [0, 0, 0]." },
+        line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
+        trace: { type: "boolean", description: "Include the line-by-line values (default true)." }
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const command = requireInt(args, "command");
+        const cmd = c2.data.commands[command];
+        if (!cmd) throw new Error(`The capture has no command ${command}.`);
+        const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
+        if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
+        if (c2.data.api === "metal") return jsonResult({ capture: c2.id, command, note: "The shader debugger runs SPIR-V: Metal shaders are not debugged yet." });
+        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
+        const meshOutput = meshOutputs(c2);
+        const state = drawState(c2.data, c2.db, cmd);
+        const inputNames = /* @__PURE__ */ new Map();
+        for (const v of vertexInputs(c2, state.pipeline)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
+        const ctx = { data: c2.data, db: c2.db, meshOutput, inputNames };
+        let target;
+        if (stage === "compute") {
+          const inv2 = Array.isArray(args.invocation) ? args.invocation.map((v) => Math.max(0, Math.floor(Number(v) || 0))) : [0, 0, 0];
+          target = { stage, command, invocation: [inv2[0] ?? 0, inv2[1] ?? 0, inv2[2] ?? 0] };
+        } else if (stage === "vertex") {
+          target = { stage, command, vertex: intArg(args, "vertex", 0, 0), instance: intArg(args, "instance", 0, 0) };
+        } else {
+          let x = optionalInt(args, "x"), y = optionalInt(args, "y");
+          if (x === void 0 || y === void 0) {
+            let mesh;
+            try {
+              mesh = await meshOutput(command);
+            } catch (e) {
+              return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug the fragment: ${e.message}` });
+            }
+            const pixel = mesh.measured ? coveredPixel(state, mesh) : null;
+            if (!pixel) return jsonResult({ capture: c2.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
+            x = pixel.x;
+            y = pixel.y;
+          }
+          target = { stage, command, x, y };
+        }
+        let session;
+        try {
+          session = await prepareDebugSession(ctx, target);
+        } catch (e) {
+          return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug: ${e.message}` });
+        }
+        const m = session.module;
+        const info = m.debug;
+        const missing = info?.files.filter((f) => f.text === null && f.name) ?? [];
+        if (info && missing.length) {
+          const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
+          for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+        }
+        const maps = info?.files.map((f) => f.text == null ? null : sourceLineMap(f.text)) ?? [];
+        const sourceOf = (file, line) => {
+          const map = maps[file];
+          const phys = map?.physicalOf.get(line);
+          return map && phys !== void 0 ? map.lines[phys].trim() : void 0;
+        };
+        const ctl = new DebugController(session);
+        const onlyLine = optionalInt(args, "line");
+        const wantTrace = boolArg(args, "trace", true);
+        const trace = [];
+        let traceTruncated = false;
+        let firstNonFinite;
+        while (!ctl.finished) {
+          ctl.advance(ctl.mode === "source" ? "into" : "instruction", 1e6);
+          const last = ctl.lastLine;
+          if (!last.results.length) continue;
+          const inst = last.results[last.results.length - 1].inst;
+          const loc = ctl.location(inst);
+          for (const r of last.results) {
+            if (!firstNonFinite && nonFinite(r.value)) {
+              const l = ctl.location(r.inst);
+              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: m.nameOf(r.id), value: valueText(m, resultType(m, r), r.value), source: l ? sourceOf(l.file, l.line) : void 0 };
+            }
+          }
+          if (!wantTrace || onlyLine !== void 0 && loc?.line !== onlyLine) continue;
+          if (trace.length >= MAX_TRACE) {
+            traceTruncated = true;
+            continue;
+          }
+          const values = last.results.filter((r) => !(r.value instanceof Pointer));
+          if (!values.length) continue;
+          const named = values.filter((r) => m.names.has(r.id) || m.debugVariableNames.has(r.id));
+          const shown = (named.length ? named : values).slice(-MAX_VALUES_PER_LINE);
+          const texts = shown.map((r) => `${m.nameOf(r.id)} = ${valueText(m, resultType(m, r), r.value)}`);
+          if (ctl.mode === "instruction") {
+            trace.push(`${inst.index}: ${texts.join("; ")}`);
+          } else {
+            trace.push({
+              line: loc?.line,
+              file: (info?.files.length ?? 0) > 1 && loc ? info.files[loc.file]?.name : void 0,
+              source: loc ? sourceOf(loc.file, loc.line) : void 0,
+              values: texts,
+              depth: ctl.invocation.frames.length > 1 ? ctl.invocation.frames.length : void 0
+            });
+          }
+          ctl.lastLine.results.length = 0;
+        }
+        const inv = ctl.invocation;
+        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: m.typeName(o.type), value: valueText(m, o.type, o.value, 64) }));
+        let compare2;
+        if (inv.status === "returned" && session.targetPixel) {
+          compare2 = {
+            renderTargetAfterPass: session.targetPixel.value.map(tidy),
+            format: session.targetPixel.format,
+            note: "The pixel after the whole pass: blending and later draws come between. get_pixel_history has the value after this draw."
+          };
+        } else if (inv.status === "returned" && session.replayedOutputs) {
+          const outs = inv.outputs();
+          compare2 = {
+            replayedVertexOutputs: session.replayedOutputs.map((r) => {
+              const mine = r.builtin === "Position" ? outs.find((o) => o.builtin === 0)?.value ?? outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]))?.value?.[0] : outs.find((o) => o.location === r.location)?.value;
+              const values = scalars(mine);
+              const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
+              return { name: r.name, gpu: r.value.map(tidy), matches: diff < 1e-4 };
+            })
+          };
+        }
+        return jsonResult({
+          capture: c2.id,
+          command,
+          method: cmd.method,
+          stage,
+          entryPoint: session.stage.entryPoint,
+          invocation: session.description,
+          notes: session.notes.length ? session.notes : void 0,
+          status: inv.status,
+          error: inv.error || void 0,
+          instructions: inv.steps,
+          steppedBy: ctl.mode === "source" ? `source line (${info?.language ?? "source"})` : "SPIR-V instruction (the shader has no line information)",
+          outputs,
+          compare: compare2,
+          firstNonFinite,
+          warnings: inv.warnings.size ? [...inv.warnings] : void 0,
+          trace: wantTrace ? trace : void 0,
+          traceTruncated: traceTruncated || void 0
+        });
+      }
+    }
+  ];
+}
+
+// src/main/shader_tools.ts
+import { execFile as execFile4 } from "node:child_process";
+import fs10 from "node:fs";
+import os7 from "node:os";
+import path9 from "node:path";
+var tempCounter = 0;
+function tempBase() {
+  return path9.join(os7.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+}
+function findTool(name) {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  const candidates = [];
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path9.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path9.join(process.env.VULKAN_SDK, "Bin", exe), path9.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs10.existsSync(c2)) return c2;
+  return exe;
+}
+function shaderText(spirv, mode) {
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs10.writeFileSync(tmp, Buffer.from(spirv));
+    let tool;
+    let args;
+    if (mode === "dis") {
+      tool = findTool("spirv-dis");
+      args = ["--comment", "--no-color", tmp];
+    } else {
+      tool = findTool("spirv-cross");
+      args = [tmp];
+      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
+      else if (mode === "msl") args.push("--msl");
+      else args.push("--vulkan-semantics", "--version", "460");
+    }
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs10.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) resolve({ ok: false, text: `${path9.basename(tool)} failed: ${stderr || err.message}` });
+      else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+var GLSL_STAGES = {
+  vertex: "vert",
+  tess_control: "tesc",
+  tess_eval: "tese",
+  geometry: "geom",
+  fragment: "frag",
+  compute: "comp",
+  task: "task",
+  mesh: "mesh",
+  raygen: "rgen",
+  intersection: "rint",
+  any_hit: "rahit",
+  closest_hit: "rchit",
+  miss: "rmiss",
+  callable: "rcall"
+};
+var HLSL_PROFILES = {
+  vertex: "vs_6_0",
+  tess_control: "hs_6_0",
+  tess_eval: "ds_6_0",
+  geometry: "gs_6_0",
+  fragment: "ps_6_0",
+  compute: "cs_6_0",
+  task: "as_6_5",
+  mesh: "ms_6_5",
+  raygen: "lib_6_3",
+  intersection: "lib_6_3",
+  any_hit: "lib_6_3",
+  closest_hit: "lib_6_3",
+  miss: "lib_6_3",
+  callable: "lib_6_3"
+};
+function targetEnv(spirvVersion, tool) {
+  const v = spirvVersion || "1.5";
+  if (tool === "spirv-as") return `spv${v}`;
+  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
+  const env = glslang[v] ?? "vulkan1.2";
+  return tool === "dxc" ? env : env.replace("spirv", "spv");
+}
+function needsIncludeExtension(source) {
+  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
+}
+function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs10.existsSync(d));
+    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const out = base + ".spv";
+    fs10.writeFileSync(src, source);
+    const entry = entryPoint || "main";
+    let tool;
+    let args;
+    if (language === "spirv-asm") {
+      tool = findTool("spirv-as");
+      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
+    } else if (language === "hlsl") {
+      tool = findTool("dxc");
+      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      for (const dir of includeDirs) args.push("-I", dir);
+    } else {
+      tool = findTool("glslangValidator");
+      args = [
+        "-V",
+        "-S",
+        GLSL_STAGES[stage] ?? "frag",
+        "--target-env",
+        targetEnv(spirvVersion, "glslang"),
+        "--source-entrypoint",
+        "main",
+        "-e",
+        entry,
+        "-o",
+        out,
+        src
+      ];
+      for (const dir of includeDirs) args.push(`-I${dir}`);
+      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
+    }
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let spirv;
+      try {
+        if (fs10.existsSync(out)) spirv = new Uint8Array(fs10.readFileSync(out));
+      } catch {
+        spirv = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs10.unlinkSync(f);
+        } catch {
+        }
+      }
+      const name = path9.basename(tool);
+      if (err || !spirv || spirv.byteLength < 20) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
+        resolve({ ok: false, log: reason, tool: name });
+      } else {
+        resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
 
 // src/renderer/frame_cost_tree.ts
 var MAX_LINE_FRAMES = 16;
@@ -14684,7 +18199,7 @@ function texelStats(tex) {
   }
   return out;
 }
-function texel(tex, x, y) {
+function texel2(tex, x, y) {
   const o = (y * tex.width + x) * 4;
   const v = [];
   for (let ch2 = 0; ch2 < tex.channels; ch2++) v.push(tidy(tex.values[o + ch2]));
@@ -14696,7 +18211,7 @@ function texelAnswer(tex, args, head, aspect) {
     for (let gx = 0; gx < 3; gx++) {
       const x = Math.min(tex.width - 1, Math.floor((gx + 0.5) * tex.width / 3));
       const y = Math.min(tex.height - 1, Math.floor((gy + 0.5) * tex.height / 3));
-      grid.push({ x, y, value: texel(tex, x, y) });
+      grid.push({ x, y, value: texel2(tex, x, y) });
     }
   }
   const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
@@ -14704,7 +18219,7 @@ function texelAnswer(tex, args, head, aspect) {
     const x = Array.isArray(pt) ? Number(pt[0]) : NaN;
     const y = Array.isArray(pt) ? Number(pt[1]) : NaN;
     if (!(x >= 0 && x < tex.width && y >= 0 && y < tex.height)) throw new Error(`texel [${String(pt)}] is outside the ${tex.width}x${tex.height} image.`);
-    return { x: Math.floor(x), y: Math.floor(y), value: texel(tex, Math.floor(x), Math.floor(y)) };
+    return { x: Math.floor(x), y: Math.floor(y), value: texel2(tex, Math.floor(x), Math.floor(y)) };
   });
   const stats = texelStats(tex);
   const uniform = tex.min.slice(0, tex.channels).every((v, ch2) => v === tex.max[ch2]);
@@ -15064,18 +18579,18 @@ function resourceTools(store) {
           depth: Math.max(1, (info.depth || 1) >> m - info.mip)
         });
         const layers = Math.max(1, info.layers || 1);
-        const bytesOf = (m) => {
+        const bytesOf2 = (m) => {
           const dd = dims(m);
           return sliceBytes({ format: info.format, aspect: info.aspect, width: dd.width, height: dd.height }) * Math.max(dd.depth, layers);
         };
         let offset = 0;
-        for (let m = info.mip; m < mip; m++) offset += bytesOf(m);
+        for (let m = info.mip; m < mip; m++) offset += bytesOf2(m);
         const size2 = dims(mip);
         const imageInfo = { format: info.format, aspect: info.aspect, width: size2.width, height: size2.height };
         if (!isFormatSupported(imageInfo)) return jsonResult({ ...brief, note: `Decoding ${info.format} is not supported.` });
         const slices = Math.max(size2.depth, layers);
         const layer = intArg(args, "layer", 0, 0, slices - 1);
-        const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf(mip)), layer);
+        const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf2(mip)), layer);
         if (!tex) return jsonResult({ ...brief, note: "The pixel data is shorter than the image's size says." });
         return texelAnswer(tex, args, { ...brief, mip, layer, slices: slices > 1 ? slices : void 0 }, info.aspect);
       }
@@ -15446,28 +18961,28 @@ function parsePixelHistory(input) {
     json = input;
   }
   if (json?.format !== "gpu-inspector-pixel-history") throw new Error("Not a pixel history.");
-  const num2 = (v) => typeof v === "number" ? v : 0;
+  const num3 = (v) => typeof v === "number" ? v : 0;
   const str3 = (v) => typeof v === "string" ? v : "";
   const events = (Array.isArray(json.events) ? json.events : []).map((raw) => {
     const e = raw;
     const kind = str3(e.kind);
     return {
       kind: kind === "load" || kind === "clear" ? kind : "draw",
-      command: num2(e.command),
+      command: num3(e.command),
       method: str3(e.method),
       detail: str3(e.detail),
-      commandBuffer: num2(e.commandBuffer),
-      frame: num2(e.frame),
-      passIndex: num2(e.passIndex),
-      pipeline: num2(e.pipeline),
+      commandBuffer: num3(e.commandBuffer),
+      frame: num3(e.frame),
+      passIndex: num3(e.passIndex),
+      pipeline: num3(e.pipeline),
       scissored: e.scissored === true,
-      testsMeasured: num2(e.testsMeasured),
-      covered: num2(e.covered),
-      facing: num2(e.facing),
-      shaded: num2(e.shaded),
-      depthPassed: num2(e.depthPassed),
-      stencilPassed: num2(e.stencilPassed),
-      passed: num2(e.passed),
+      testsMeasured: num3(e.testsMeasured),
+      covered: num3(e.covered),
+      facing: num3(e.facing),
+      shaded: num3(e.shaded),
+      depthPassed: num3(e.depthPassed),
+      stencilPassed: num3(e.stencilPassed),
+      passed: num3(e.passed),
       value: hexBytes(e.value),
       depth: hexBytes(e.depth)
     };
@@ -15475,12 +18990,12 @@ function parsePixelHistory(input) {
   const strings = (v) => Array.isArray(v) ? v.filter((s) => typeof s === "string") : [];
   return {
     device: str3(json.device),
-    image: num2(json.image),
-    requestedImage: typeof json.requestedImage === "number" ? json.requestedImage : num2(json.image),
-    x: num2(json.x),
-    y: num2(json.y),
-    mip: num2(json.mip),
-    layer: num2(json.layer),
+    image: num3(json.image),
+    requestedImage: typeof json.requestedImage === "number" ? json.requestedImage : num3(json.image),
+    x: num3(json.x),
+    y: num3(json.y),
+    mip: num3(json.mip),
+    layer: num3(json.layer),
     pixelFormat: str3(json.pixelFormat),
     depthFormat: str3(json.depthFormat),
     events,
@@ -15613,128 +19128,6 @@ function parseOverdrawFile(bytes) {
     return { info, data };
   });
   return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
-}
-
-// src/renderer/mesh_output.ts
-var MESH_MAGIC = "MESH 1\n";
-function parseMeshFile(bytes) {
-  const magic = new TextEncoder().encode(MESH_MAGIC);
-  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not a mesh output file from vkinsp_replay.");
-  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
-  const start = magic.byteLength + 4;
-  const base = start + length;
-  if (base > bytes.byteLength) throw new Error("The mesh output file is truncated.");
-  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
-  const draws = (manifest.draws ?? []).map(({ payload, ...info }) => {
-    let data = null;
-    if (payload) {
-      const [offset, size2] = payload;
-      if (base + offset + size2 > bytes.byteLength) throw new Error("The mesh output file is truncated (vertices out of range).");
-      data = bytes.slice(base + offset, base + offset + size2);
-    }
-    return { ...info, outputs: info.outputs ?? [], data };
-  });
-  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
-}
-function primitiveKind(topology) {
-  if (/POINT/.test(topology)) return "points";
-  if (/LINE/.test(topology)) return "lines";
-  return "triangles";
-}
-function verticesPerPrimitive(kind) {
-  return kind === "triangles" ? 3 : kind === "lines" ? 2 : 1;
-}
-function positionOutput(m) {
-  return m.outputs.find((o) => o.builtin === "Position" && o.base === "float" && o.components === 4) ?? null;
-}
-function outputValues(m, output, vertex) {
-  if (!m.data) return [];
-  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
-  const at = vertex * m.stride + output.offset;
-  if (at + output.components * 4 > m.data.byteLength) return [];
-  const out = [];
-  for (let k = 0; k < output.components; k++) {
-    const o = at + k * 4;
-    out.push(output.base === "float" ? view.getFloat32(o, true) : output.base === "int" ? view.getInt32(o, true) : view.getUint32(o, true));
-  }
-  return out;
-}
-function clipPositions(m) {
-  const p = positionOutput(m);
-  if (!p || !m.data) return null;
-  const out = new Float32Array(m.vertices * 4);
-  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
-  for (let v = 0; v < m.vertices; v++) {
-    const at = v * m.stride + p.offset;
-    if (at + 16 > m.data.byteLength) break;
-    for (let k = 0; k < 4; k++) out[v * 4 + k] = view.getFloat32(at + k * 4, true);
-  }
-  return out;
-}
-function clipStats(m) {
-  const clip2 = clipPositions(m);
-  if (!clip2) return null;
-  const kind = primitiveKind(m.topology);
-  const per = verticesPerPrimitive(kind);
-  const stats = { vertices: m.vertices, primitives: Math.floor(m.vertices / per), behind: 0, invalid: 0, outside: 0, degenerate: 0, ndc: null };
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let v = 0; v < m.vertices; v++) {
-    const [x, y, z, w] = clip2.subarray(v * 4, v * 4 + 4);
-    if (![x, y, z, w].every(Number.isFinite)) {
-      stats.invalid++;
-      continue;
-    }
-    if (w <= 0) {
-      stats.behind++;
-      continue;
-    }
-    const ndc = [x / w, y / w, z / w];
-    for (let k = 0; k < 3; k++) {
-      min[k] = Math.min(min[k], ndc[k]);
-      max[k] = Math.max(max[k], ndc[k]);
-    }
-  }
-  if (min[0] <= max[0]) stats.ndc = { min, max };
-  const planes = [
-    (x, _y, _z, w) => x < -w,
-    (x, _y, _z, w) => x > w,
-    (_x, y, _z, w) => y < -w,
-    (_x, y, _z, w) => y > w,
-    (_x, _y, z) => z < 0,
-    (_x, _y, z, w) => z > w
-  ];
-  for (let p = 0; p < stats.primitives; p++) {
-    const at = p * per;
-    const vertex = (i) => Array.from(clip2.subarray((at + i) * 4, (at + i) * 4 + 4));
-    const vs = Array.from({ length: per }, (_, i) => vertex(i));
-    if (planes.some((out) => vs.every(([x, y, z, w]) => out(x, y, z, w)))) {
-      stats.outside++;
-      continue;
-    }
-    if (kind === "triangles" && vs.every(([, , , w]) => w > 0)) {
-      const s = vs.map(([x, y, , w]) => [x / w, y / w]);
-      const area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
-      if (Math.abs(area) < 1e-12) stats.degenerate++;
-    }
-  }
-  return stats;
-}
-function meshSummary(m) {
-  if (!m.measured) return `Not captured: ${m.note ?? "the replay could not capture it"}`;
-  const kind = primitiveKind(m.topology);
-  const stats = clipStats(m);
-  const parts2 = [`${m.vertices.toLocaleString()} vertices, ${Math.floor(m.vertices / verticesPerPrimitive(kind)).toLocaleString()} ${kind}`];
-  if (m.truncated) parts2.push("truncated");
-  if (!stats) {
-    parts2.push("no gl_Position the replay could capture");
-  } else {
-    if (stats.outside) parts2.push(`${stats.outside.toLocaleString()} outside the view`);
-    if (stats.behind) parts2.push(`${stats.behind.toLocaleString()} vertices behind the eye`);
-    if (stats.degenerate) parts2.push(`${stats.degenerate.toLocaleString()} with no area`);
-    if (stats.invalid) parts2.push(`${stats.invalid.toLocaleString()} NaN or infinite positions`);
-  }
-  return parts2.join(", ");
 }
 
 // src/mcp/tools.ts
@@ -16538,7 +19931,7 @@ var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
 function compilerLog(log) {
   return log.split(/\r?\n/).filter((line) => line.trim().replace(TEMP_SOURCE, "") !== "").join("\n").replace(TEMP_SOURCE, "source").trim();
 }
-function stageOf(s, pipelineId, stage) {
+function stageOf2(s, pipelineId, stage) {
   const pipeline = s.database.getObject(pipelineId);
   if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
   const stages = pipelineStages(pipeline, s.database);
@@ -17037,7 +20430,7 @@ function liveTools(sessions2, store) {
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stageName = requireString(args, "stage").toLowerCase();
-        const { flag, entryPoint, source } = stageOf(s, pipelineId, stageName);
+        const { flag, entryPoint, source } = stageOf2(s, pipelineId, stageName);
         const original = await fetchBlob(s, source.object, source.blobIndex);
         const version = original && reflectSpirv(original)?.version || "";
         const language = enumArg(args, "language", LANGUAGES, "glsl");
@@ -17082,7 +20475,7 @@ function liveTools(sessions2, store) {
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stage = stringArg(args, "stage");
-        const flag = stage ? stageOf(s, pipelineId, stage).flag : void 0;
+        const flag = stage ? stageOf2(s, pipelineId, stage).flag : void 0;
         const reply = await s.restoreShader(pipelineId, flag);
         return jsonResult({ ok: reply?.ok ?? false, pipeline: refText(s.database, pipelineId), stage, error: reply ? reply.error : "The layer did not answer within 15 s." });
       }
@@ -17221,6 +20614,7 @@ function createServer(store = new CaptureStore(), sessions2 = new SessionManager
     ...captureTools(store),
     ...commandTools(store),
     ...resourceTools(store),
+    ...debugTools(store),
     ...liveTools(sessions2, store)
   ], INSTRUCTIONS);
 }

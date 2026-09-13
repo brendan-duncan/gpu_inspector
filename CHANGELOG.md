@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Added
+- Shader debugger: step through a draw's vertex or fragment shader, or a dispatch's compute
+  shader, line by line on the capture's inputs, with breakpoints and every variable's value.
+  Opened from a draw's or dispatch's details, a pixel history or the mesh view. `debug_shader` in
+  the MCP server.
+
 ### Changed
 - Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)
   answer in tens of milliseconds after the first: each capture keeps one `vkinsp_replay --serve`

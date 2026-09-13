@@ -1,0 +1,33 @@
+#version 450
+layout(local_size_x = 4, local_size_y = 1) in;
+
+layout(set = 0, binding = 0) buffer Data {
+    uint count;
+    float values[];
+} data;
+
+layout(set = 0, binding = 1) buffer Results {
+    int results[];
+} outBuf;
+
+uint hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(data.values.length())) {
+        return;
+    }
+    float v = data.values[i];
+    int r = int(floor(v * 10.0)) % 7;
+    r = r - int(i) * 3;
+    r ^= int(hash(i) & 0xffu);
+    outBuf.results[i] = r + int(data.count);
+    data.values[i] = v * 2.0;
+}

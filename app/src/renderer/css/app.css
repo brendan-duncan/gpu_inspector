@@ -599,6 +599,37 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .mesh-table { border-collapse: collapse; font-family: var(--font-mono); font-size: 9pt; white-space: nowrap; }
 .mesh-table th { position: sticky; top: 0; background: var(--bg-secondary); text-align: left; padding: 2px 10px; border-bottom: 1px solid var(--border-color); font-weight: normal; }
 .mesh-table td { padding: 1px 10px; }
+.shader-debugger { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.shader-debugger-sep { width: 1px; align-self: stretch; background: var(--border-color); margin: 0 2px; }
+.shader-debugger-number { width: 6ch; }
+.shader-debugger-status { margin-left: 4px; }
+.shader-debugger-split { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; border-top: 1px solid var(--border-subtle); }
+.shader-debugger-code { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.shader-debugger-code .shader-file-bar:empty { display: none; }
+.shader-debugger-text { flex: 1 1 auto; overflow: auto; margin: 0; min-height: 0; max-height: none; }
+.shader-debugger-text .dbg-gutter { display: inline-block; width: 1.6ch; margin-right: 0.4ch; text-align: center; user-select: none; }
+.shader-debugger-text .dbg-stoppable .dbg-gutter, .shader-debugger-text .dbg-stoppable .code-lineno { cursor: pointer; }
+.shader-debugger-text .dbg-stoppable .dbg-gutter:hover::before { content: "\25CF"; color: var(--fg-muted); }
+.shader-debugger-text .dbg-breakpoint .dbg-gutter::before, .shader-debugger-text .dbg-breakpoint .dbg-gutter:hover::before { content: "\25CF"; color: #e0484a; }
+.shader-debugger-text .code-line:not(.dbg-stoppable) .code-lineno { opacity: 0.55; }
+.shader-debugger-text .dbg-current { background: rgba(230, 190, 60, 0.28); outline: 1px solid rgba(230, 190, 60, 0.8); }
+.shader-debugger-text .dbg-current .dbg-gutter::after { content: "\25B6"; color: #e6be3c; }
+.shader-debugger-text .dbg-breakpoint.dbg-current .dbg-gutter::before { content: ""; }
+.shader-debugger-text .dbg-frame { background: rgba(74, 141, 184, 0.2); }
+.shader-debugger-side { flex: 1 1 auto; min-width: 0; overflow: auto; font-size: 9pt; }
+.shader-debugger-section-head { position: sticky; top: 0; z-index: 1; padding: 3px 8px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-subtle); cursor: pointer; user-select: none; }
+.shader-debugger-section-head::before { content: "\25BE  "; color: var(--fg-muted); }
+.shader-debugger-section-head.collapsed::before { content: "\25B8  "; }
+.shader-debugger-section-body { padding: 3px 8px 6px 8px; }
+.shader-debugger-vars { border-collapse: collapse; font-family: var(--font-mono); white-space: nowrap; }
+.shader-debugger-vars td { padding: 1px 12px 1px 4px; vertical-align: top; }
+.shader-debugger-vars .dbg-var-value { white-space: pre-wrap; word-break: break-all; }
+.shader-debugger-vars .dbg-var-toggle { color: var(--fg-muted); }
+.shader-debugger-frame { padding: 1px 4px; font-family: var(--font-mono); cursor: pointer; }
+.shader-debugger-frame:hover { background: var(--bg-hover); }
+.shader-debugger-frame.selected { background: var(--bg-selected, rgba(74, 141, 184, 0.25)); }
+.shader-debugger-warning { color: var(--accent-warning); }
+.pixel-event-debug { margin-left: 8px; font-size: 9pt; }
 .mesh-table tbody tr:hover { background: var(--bg-hover); cursor: pointer; }
 .mesh-table tbody tr.selected { background: rgba(255, 153, 26, 0.25); }
 /* Pixel history tab (pixel_history_view.ts). */

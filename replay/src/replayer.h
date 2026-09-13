@@ -602,6 +602,12 @@ private:
     uint64_t _overlayPipeline = 0;
     /** Set once the target draw has been issued: nothing after it is. */
     bool _overlayIssued = false;
+    /**
+     * Whether the target draw was issued with its pipeline copy, and which captured pipeline that
+     * copied: kept apart from the per-secondary state, which the pass's later secondaries reset.
+     */
+    bool _overlayDrawn = false;
+    uint64_t _overlayDrawnPipeline = 0;
     bool _wireframeAvailable = false;
     /** The submission's overlays, waiting for it to complete. */
     std::vector<PendingOverlay> _pendingOverlays;

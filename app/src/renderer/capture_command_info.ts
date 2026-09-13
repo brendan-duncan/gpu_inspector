@@ -5,6 +5,7 @@
 // bind. This is the counterpart of WebGPU Inspector's _showCaptureCommandInfo_* family
 // (capture_panel.js, MIT).
 import { Button } from "./widget/button.js";
+import type { DebugRequest } from "./shader_debugger_view.js";
 import { collapsible } from "./widget/collapsible.js";
 import { Dialog } from "./widget/dialog.js";
 import { Div } from "./widget/div.js";
@@ -57,6 +58,8 @@ export interface CaptureHost {
   renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number, command?: CaptureCommand): void;
   /** Opens the draw's mesh in a tab (VS In and VS Out). */
   openMesh(cmd: CaptureCommand): void;
+  /** Opens the shader debugger on an invocation of a draw or dispatch. */
+  debugShader(request: DebugRequest): void;
   /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
   textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
   /** Selects a command of the list by its index (scrolls to it and shows its details). */
@@ -192,11 +195,22 @@ export class CommandInfoView {
           const row = new Div(container, { class: "capture-mesh-row" });
           new Button(row, { label: "View Mesh", class: "btn btn-sm", callback: () => this.panel.openMesh(cmd),
             tooltip: "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table" });
+          if (this.panel.data.api !== "metal") {
+            new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
+              tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
+            new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
+              tooltip: "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
+          }
         }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
       }
       this._renderStageBuffers(container, state, [...state.stageBuffers.values()].filter((sb) => graphics ? sb.stage !== "compute" : sb.stage === "compute"));
+      if (!graphics && cmdSets.DISPATCH.has(method) && this.panel.data.api !== "metal") {
+        const row = new Div(container, { class: "capture-mesh-row" });
+        new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
+          tooltip: "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });
+      }
       if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
       this._renderPushConstants(container, state, state.pushConstants, token);
       if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);

@@ -298,11 +298,13 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         _overlayIssued = true;  // drawn or not, nothing after it matters
+        _overlayDrawnPipeline = _overlayPipeline;
         // The mesh output view: the draw writes its vertices into a buffer instead of rasterizing.
         if (pipeline && _overlayTargetMode == ReissueMode::Xfb) {
             feedback = PrepareMeshBuffers();
             if (!feedback) _overdrawDrawable = false;
         }
+        _overlayDrawn = _overdrawDrawable;
     } else if (overlay && draw && _overlayOnlyTarget) {
         return;
     }

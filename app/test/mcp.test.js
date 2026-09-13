@@ -156,7 +156,7 @@ test("initialize answers the client's protocol version, and every tool is listed
   assert.equal(await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }), null, "notifications get no reply");
   const list = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const names = list.result.tools.map((t) => t.name);
-  for (const name of ["open_capture", "get_capture_summary", "get_bottlenecks", "get_command", "read_texture", "read_vertices", "get_mesh_output", "get_shader", "compare_captures"]) {
+  for (const name of ["open_capture", "get_capture_summary", "get_bottlenecks", "get_command", "read_texture", "read_vertices", "get_mesh_output", "debug_shader", "get_shader", "compare_captures"]) {
     assert.ok(names.includes(name), `${name} is listed`);
   }
   assert.ok(list.result.tools.every((t) => t.inputSchema.type === "object"));
@@ -530,4 +530,15 @@ test("the bundled server speaks MCP over stdio", async () => {
   child.stdin.end();
   assert.equal(replies[0].result.protocolVersion, "2024-11-05");
   assert.equal(JSON.parse(replies[1].result.content[0].text).counts.draws, 40);
+});
+
+test("debug_shader runs a vertex in the interpreter, line by line", async () => {
+  await call("open_capture", { path: before });
+  const { json } = await call("debug_shader", { command: FIRST_DRAW, stage: "vertex", vertex: 1 });
+  assert.equal(json.status, "returned", JSON.stringify(json));
+  assert.equal(json.invocation, "vertex 1 of the draw (gl_VertexIndex 1), instance 0");
+  assert.match(json.steppedBy, /^source line/);
+  assert.deepEqual(json.trace, [{ line: 3, values: ["%7 = 2"] }], "the shader's one line adds 1.0 and 1.0");
+  const { json: notDraw } = await call("debug_shader", { command: 0 }).catch((e) => ({ json: { error: e.message } }));
+  assert.equal(notDraw, null, "a command that is neither a draw nor a dispatch is an error");
 });

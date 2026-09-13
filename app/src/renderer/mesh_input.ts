@@ -28,8 +28,8 @@ export interface MeshInput {
   position: number;
   /** Why something is missing: buffers not captured, an indirect draw's counts, a truncated range. */
   notes: string[];
-  /** An attribute's values at a position in draw order; null where the capture does not reach. */
-  values(order: number, attribute: number): number[] | null;
+  /** An attribute's values at a position in draw order (per-instance ones: of `instance`); null where the capture does not reach. */
+  values(order: number, attribute: number, instance?: number): number[] | null;
 }
 
 /** Vertices read at most: a draw with more is decoded up to here. */
@@ -125,10 +125,10 @@ export function meshInput(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
 
   return {
     topology, attributes, ids, indices, position, notes,
-    values: (order, attribute) => {
+    values: (order, attribute, instance = 0) => {
       const r = readers[attribute];
       if (!r?.view) return null;
-      const id = attributes[attribute].perInstance ? 0 : ids[order];
+      const id = attributes[attribute].perInstance ? instance : ids[order];
       if (id === undefined || id >= r.available) return null;
       return r.format.read(r.view, id * r.layout.stride + r.offset);
     },
