@@ -55,6 +55,8 @@ export interface CaptureHost {
   readonly data: CaptureData;
   /** `command` is the command selected inside the pass (a draw's targets offer its overlays). */
   renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number, command?: CaptureCommand): void;
+  /** Opens the draw's mesh in a tab (VS In and VS Out). */
+  openMesh(cmd: CaptureCommand): void;
   /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
   textureCanvas(tex: CapturedTexture, className: string): HTMLCanvasElement;
   /** Selects a command of the list by its index (scrolls to it and shows its details). */
@@ -186,6 +188,11 @@ export class CommandInfoView {
       this._renderShaders(container, state.pipeline, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
       if (graphics) {
+        if (cmdSets.DRAW.has(method)) {
+          const row = new Div(container, { class: "capture-mesh-row" });
+          new Button(row, { label: "View Mesh", class: "btn btn-sm", callback: () => this.panel.openMesh(cmd),
+            tooltip: "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table" });
+        }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
       }

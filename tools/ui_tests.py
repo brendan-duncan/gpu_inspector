@@ -265,6 +265,37 @@ def triangle_overlay(state, log):
         expect(d.get("wireframe") is True, f"no wireframe was drawn: {d}")
 
 
+def triangle_mesh(state, log):
+    c = capture(state)
+    m = c.get("meshTab") or {}
+    o = m.get("output") or {}
+    stats = o.get("stats") or {}
+    preview = m.get("preview") or {}
+    # The mesh tab's VS Out end to end: the cube's vertex shader edited to write transform feedback
+    # (replay/src/xfb_patch.cpp), its 36 vertices read back, and the wireframe drawn in the preview.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(m), "--debug-view=mesh opened no mesh tab") + \
+        expect(not m.get("error"), f"the mesh replay failed: {m.get('error')}") + \
+        expect(o.get("measured") is True and o.get("vertices") == 36, f"the cube's 36 vertices were not captured: {o}") + \
+        expect("gl_Position" in (o.get("outputs") or []) and "fragUV" in (o.get("outputs") or []), f"the outputs are not all there: {o.get('outputs')}") + \
+        expect(stats.get("behind") == 0 and stats.get("outside") == 0, f"the cube is in view, but: {stats}") + \
+        expect(preview.get("webgl") is True and preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
+
+
+def triangle_mesh_input(state, log):
+    c = capture(state)
+    m = c.get("meshTab") or {}
+    i = m.get("input") or {}
+    preview = m.get("preview") or {}
+    # VS In needs no replay: the captured vertex and index buffers through the pipeline's layout.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(m), "--debug-view=mesh:in opened no mesh tab") + \
+        expect(i.get("vertices") == 36, f"the cube's 36 indices were not decoded: {i}") + \
+        expect(i.get("attributes") == ["inPosition", "inColor", "inUV"], f"the attributes are not named from the shader: {i.get('attributes')}") + \
+        expect(i.get("position") == 0, f"inPosition was not taken as the position: {i}") + \
+        expect(preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -328,6 +359,7 @@ def triangle_cases(triangle):
         # The GPU Bottlenecks report rendering at all: a throw while building it would leave the
         # details pane empty and the renderer's console with the error.
         Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
+        Case("mesh-in", launch + ["--debug-capture", "--debug-view=mesh:in"], triangle_mesh_input, delay_ms=16000),
     ]
     # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
     # one only runs where vkinsp_replay is built (replay/, docs/REPLAY.md). The click lands on the
@@ -336,11 +368,13 @@ def triangle_cases(triangle):
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))
+        cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
+                          triangle_mesh, delay_ms=20000))
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",
                                                "--debug-settle=8000"],
                           triangle_overlay, delay_ms=20000))
     else:
-        print("  (no vkinsp_replay build: skipping the overdraw and overlay cases)")
+        print("  (no vkinsp_replay build: skipping the overdraw, mesh and overlay cases)")
     return cases
 
 

@@ -38,17 +38,19 @@ import {
 } from "./overdraw.js";
 import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
 import { parseDrawOverlayFile, type DrawOverlay } from "./draw_overlay.js";
-import { findPass } from "./draw_state.js";
+import { drawState, findPass } from "./draw_state.js";
+import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
+import { MeshView, type MeshViewOptions } from "./mesh_view.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
-/** A tab a capture opens beside its own: a render target, with its overdraw and pixel history. */
+/** A tab a capture opens beside its own: a render target (its overlays and pixel history), or a draw's mesh. */
 interface CaptureSubTab {
   readonly root: Div;
   dispose(): void;
   debugState(): Record<string, unknown>;
 }
-type SubTabKind = "texture";
+type SubTabKind = "texture" | "mesh";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -92,6 +94,8 @@ const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill=
 
 /** Draw overlays: a pass with this many draws or fewer has all of them drawn in the replay the first one needs. */
 const OVERLAY_BATCH = 48;
+/** The mesh tab: a pass with this many draws or fewer has all of them captured in the replay the first one needs. */
+const MESH_BATCH = 16;
 /** Stacked squares: fragments landing on the same pixels. */
 const ICON_OVERDRAW = '<svg viewBox="0 0 16 16"><rect x="2" y="6.5" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="4.25" y="4.25" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="6.5" y="2" width="7.5" height="7.5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3"/></svg>';
 
@@ -138,6 +142,7 @@ export class CapturePanel {
     return this._views.map((v) => ({
       ...v.debugState(),
       textureTab: this._subTab(v, "texture")?.tab.debugState() ?? null,
+      meshTab: this._subTab(v, "mesh")?.tab.debugState() ?? null,
     }));
   }
 
@@ -281,6 +286,7 @@ export class CapturePanel {
     view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
     view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
+    view.onOpenMesh.addListener((draw, options) => this._openMesh(view, draw, options));
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
@@ -381,6 +387,34 @@ export class CapturePanel {
       drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
     }, target, options);
     this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
+  }
+
+  /** Shows a draw's mesh in a tab beside the capture's (mesh_view.ts); one such tab per capture, pointed at the next draw opened. */
+  private _openMesh(view: CaptureView, draw: CaptureCommand, options: MeshViewOptions = {}): void {
+    const existing = this._subTab<MeshView>(view, "mesh");
+    if (existing) {
+      existing.tab.show(draw, options);
+      existing.handle.textElement.text = `${existing.tab.label}: ${view.label}`;
+      this._tabs.setHandleActive(existing.handle);
+      return;
+    }
+    const tab = new MeshView({
+      data: view.data,
+      db: view.window.database,
+      passLabelOf: (k) => view.passLabelOf(k),
+      passOfDraw: (cmd) => view.passOfDraw(cmd),
+      drawsOfPass: (k) => view.drawsOfPass(k),
+      selectCommand: (index) => {
+        this._showCaptureTab(view);
+        view.selectCommand(index);
+      },
+      meshOutput: (command, passDraws) => view.meshOutput(command, passDraws),
+      inputNames: (cmd) => view.vertexInputNames(cmd),
+    }, draw, options);
+    const entry = this._addSubTab(view, "mesh", tab, `${tab.label}: ${view.label}`);
+    // The label follows the draw the tab is stepped to.
+    const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
+    relabel.observe(tab.root.element, { childList: true });
   }
 
   /** Runs a pixel's history for the capture's render target tab (a Vulkan replay, or Metal's own). */
@@ -562,6 +596,7 @@ export class CaptureView implements CaptureHost {
    * the history of the pixel clicked (the panel opens it, capture_texture_view.ts).
    */
   readonly onOpenTexture = new Signal<(target: CaptureTarget, options: CaptureTextureOptions) => void>();
+  readonly onOpenMesh = new Signal<(draw: CaptureCommand, options: MeshViewOptions) => void>();
   /** The capture library marked the end of the capture's stream (CaptureComplete). */
   readonly onCaptureComplete = new Signal<() => void>();
   /** The capture serialized for vkinsp_replay, kept for the next replay of the same capture. */
@@ -572,6 +607,9 @@ export class CaptureView implements CaptureHost {
   private _drawRun: { running: boolean; error?: string } | null = null;
   /** Replays under way for draw overlays, by each draw they will answer for. */
   private _overlayRuns = new Map<number, Promise<void>>();
+  /** Vertex shader outputs replayed so far, by draw, and the replays under way. */
+  private _meshes = new Map<number, MeshOutput>();
+  private _meshRuns = new Map<number, Promise<void>>();
 
   private _listPanel: Div;
   private _infoPanel: Div;
@@ -1330,6 +1368,14 @@ export class CaptureView implements CaptureHost {
     else if (name === "stats") this._showStats();
     else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
     else if (name === "overdraw") void this.openOverdraw();
+    else if (name.startsWith("mesh")) {
+      // Testing aid (--debug-view=mesh[:in|out[:<command>|last]]): the mesh tab on the first draw, or the one named.
+      const [, stage = "out", at] = name.split(":");
+      const draws = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method));
+      const draw = at === "last" ? draws[draws.length - 1] : at !== undefined ? this.data.commands[Number(at)] : draws[0];
+      if (draw) this.onOpenMesh.emit(draw, { stage: stage === "in" ? "in" : "out" });
+      else this._setStatus("this capture has no draws");
+    }
     else if (name.startsWith("overlay")) {
       // Testing aid (--debug-view=overlay[:<kind>[:<command>|last]]): a draw overlay, on the first draw of a
       // pass with a render target unless a command (or the last such draw) is named.
@@ -1387,6 +1433,64 @@ export class CaptureView implements CaptureHost {
       return;
     }
     this.onOpenTexture.emit(t, { overlay, draw: cmd.index });
+  }
+
+  /** Opens the mesh tab on a draw (View Mesh in a draw's details). */
+  openMesh(cmd: CaptureCommand): void {
+    this.onOpenMesh.emit(cmd, {});
+  }
+
+  /** The render pass a draw is in, keyed the way passes are everywhere else (its primary command buffer). */
+  passOfDraw(cmd: CaptureCommand): OverdrawPassKey | null {
+    const pass = findPass(this.data, cmd);
+    return pass ? { frame: cmd.frame ?? 0, commandBuffer: pass.passBegin.object?.__id ?? 0, passIndex: pass.passIndex } : null;
+  }
+
+  /** The vertex shader's input names by location, from its reflection. */
+  async vertexInputNames(cmd: CaptureCommand): Promise<Map<number, string>> {
+    const names = new Map<number, string>();
+    const pipeline = drawState(this.data, this.window.database, cmd).pipeline;
+    if (!pipeline || pipeline.type.startsWith("MTL")) return names;
+    const stages = await this.window.shaders.stages(pipeline);
+    const vs = stages.find((s) => s.source.stage === "vertex");
+    for (const input of vs?.reflection?.entryPoint(vs.source.entryPoint)?.inputs ?? []) {
+      if (input.location !== undefined && input.name) names.set(input.location, input.name);
+    }
+    return names;
+  }
+
+  /**
+   * Vulkan: replays the capture with the draw's vertex shader writing transform feedback
+   * (replay/src/mesh.cpp) for the mesh tab's VS Out. A pass with few draws has them all captured
+   * in the same replay.
+   */
+  async meshOutput(command: number, passDraws: CaptureCommand[] = []): Promise<MeshOutput> {
+    if (!this._meshes.has(command)) {
+      let run = this._meshRuns.get(command);
+      if (!run) {
+        const batch = passDraws.length <= MESH_BATCH ? passDraws.map((c) => c.index) : [];
+        const commands = [...new Set([command, ...batch])].filter((c) => !this._meshes.has(c) && !this._meshRuns.has(c));
+        run = this._runMeshOutputs(commands);
+        for (const c of commands) this._meshRuns.set(c, run);
+      }
+      await run;
+    }
+    const m = this._meshes.get(command);
+    if (!m) throw new Error(`the replay did not answer for draw #${command}`);
+    return m;
+  }
+
+  private async _runMeshOutputs(commands: number[]): Promise<void> {
+    this._setStatus(`mesh output: replaying the capture for ${commands.length === 1 ? `draw #${commands[0]}` : `${commands.length} draws`}...`);
+    try {
+      const bytes = await this._replayBytes();
+      const result = await window.inspector.meshOutput({ data: bytes, name: this.label, commands });
+      if (!result.data) throw new Error(result.error ?? "the replay wrote no vertex outputs");
+      for (const m of parseMeshFile(result.data).draws) this._meshes.set(m.command, m);
+    } finally {
+      for (const c of commands) this._meshRuns.delete(c);
+      this._updateStatus();
+    }
   }
 
   /** A pass's draws, in command order: those of its secondary command buffers included. */

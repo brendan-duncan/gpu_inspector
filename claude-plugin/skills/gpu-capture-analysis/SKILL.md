@@ -151,6 +151,10 @@ each step.
    - **Geometry**: `read_vertices`. Bounds all zero or NaN mean uninitialized data. A huge range
      means a wrong stride or format. Indices out of range, and a first vertex or index past the
      data, are problems too.
+   - **Where the vertex shader put it**: `get_mesh_output` (a Vulkan capture, replayed). A mesh that
+     does not show up is usually here: every vertex behind the eye (a view or projection matrix
+     transposed, or w of 0), every primitive outside the view volume, triangles with no area (a scale
+     of 0), or NaN positions from a bad uniform. `ndcInFront` says where the rest landed on screen.
    - **Shaders**: `get_shader`. `source` when it is embedded, `glsl` or `hlsl` otherwise, and
      `reflection` to check the bindings the shader expects against what `get_command` shows bound.
 5. **Compare with a draw that works**: `get_command` on both, and diff the state.

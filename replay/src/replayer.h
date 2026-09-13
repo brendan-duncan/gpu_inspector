@@ -34,6 +34,7 @@
 #include "decode.h"
 #include "gpucap.h"
 #include "vk_decode.gen.h"
+#include "xfb_patch.h"
 
 namespace vkreplay {
 
@@ -65,6 +66,11 @@ struct ReplayOptions {
         /** Also trace each draw's wireframe (needs the fillModeNonSolid feature). */
         bool wireframe = true;
     } overlay;
+    /** Capture what the vertex shader wrote for named draws, through transform feedback (MeshResult). */
+    struct {
+        bool enabled = false;
+        std::vector<uint32_t> commands;
+    } mesh;
 };
 
 /**
@@ -147,6 +153,8 @@ struct PipelineCopy {
     bool hasDepthStencil = false;
     bool hasBlend = false;
     bool hasDynamic = false;
+    /** Shader modules an edit created, destroyed once the copy exists. */
+    std::vector<VkShaderModule> temporary;
 
     /** Replaces the fragment stage (adds one to a pipeline without). */
     void ReplaceFragment(VkShaderModule module);
@@ -208,6 +216,29 @@ struct OverlayResult {
     std::string note;
 };
 
+/**
+ * What one draw's vertex shader wrote, for the mesh output view: every vertex the draw assembled
+ * (an indexed draw's vertices in index order, strips and fans as lists, every instance), each a
+ * record of `stride` bytes with the outputs at their offsets. Captured with transform feedback
+ * (mesh.cpp, xfb_patch.cpp).
+ */
+struct MeshResult {
+    uint32_t command = 0;
+    uint64_t commandBuffer = 0;
+    uint32_t frame = 0;
+    uint32_t passIndex = 0;
+    std::string method;
+    /** The pipeline's primitive topology, as vk.xml names it. */
+    std::string topology;
+    uint32_t stride = 0;
+    uint32_t vertices = 0;
+    /** The buffer filled up: the draw wrote more than was captured. */
+    bool truncated = false;
+    std::vector<XfbOutput> outputs;
+    std::vector<uint8_t> data;
+    std::string note;
+};
+
 /** A render target the capture read back at the end of a pass, and how the replay's copy compares. */
 struct TargetComparison {
     uint64_t image = 0;
@@ -250,6 +281,8 @@ struct ReplayReport {
     std::string drawStatsNote;
     /** With ReplayOptions::overlay: where each named draw landed, in frame order; draws the replay did not reach last. */
     std::vector<OverlayResult> overlays;
+    /** With ReplayOptions::mesh: each named draw's vertex shader outputs, in the same order. */
+    std::vector<MeshResult> meshes;
 };
 
 class Replayer {
@@ -287,6 +320,8 @@ private:
         std::vector<VkFormat> formats;
         /** The first subpass's depth/stencil attachment, -1 without. */
         int depthAttachment = -1;
+        /** Views a subpass renders at most (multiview): a query inside takes one index per view. */
+        uint32_t views = 1;
     };
     struct TransientImage {
         VkImage image = VK_NULL_HANDLE;
@@ -347,10 +382,19 @@ private:
         size_t historyPending = 0;
     };
     /** How a reissued draw is drawn: the counting copy, depth and stencil only, or its wireframe. */
-    enum class ReissueMode { Count, DepthOnly, Wireframe };
+    enum class ReissueMode { Count, DepthOnly, Wireframe, Xfb };
     struct PendingOverdraw {
         Staging staging;
         size_t result = 0;
+    };
+    /** One draw's vertex shader outputs waiting for its submission: the feedback buffer and its counter. */
+    struct PendingMesh {
+        Staging buffer;
+        Staging counter;
+        size_t result = 0;
+        uint64_t pipeline = 0;
+        /** Vertices the draw's arguments say it assembles, three times over for strips and fans; 0 for indirect draws. */
+        uint64_t estimate = 0;
     };
     /** One draw's overlay waiting for its submission: a staging buffer per variant drawn. */
     struct PendingOverlay {
@@ -438,20 +482,29 @@ private:
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
 
     // Draw-call overlays (overlay.cpp): one draw of a pass issued on its own into a mask.
-    /** Whether a draw of the pass beginning at `beginIndex` was asked for, so its starting depth has to be kept. */
-    bool OverlayWantsPass(uint32_t beginIndex) const;
+    /** Whether one of `commands` is in the pass beginning at `beginIndex` (its secondaries included). */
+    bool PassHoldsAny(uint32_t beginIndex, const std::vector<uint32_t>& commands) const;
     void RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex);
     /** Draws one variant of an overlay into a count target and stages it; false when the draw could not be drawn. */
     bool DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, uint32_t target,
                             ReissueMode mode, bool depthTested, Staging& out);
     /** Reads the submission's overlays back into their masks; `submitted` false drops them. */
     void CompleteOverlay(bool submitted);
+
+    // Mesh output (mesh.cpp): one draw issued again with its vertex shader writing transform feedback.
+    void RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex);
+    /** At the draw a mesh is for, once its pipeline copy is bound: the feedback buffers; false without them. */
+    bool PrepareMeshBuffers();
+    void CompleteMesh(bool submitted);
+    /** The topology a pipeline's create info names, and whether it is dynamic. */
+    std::string PipelineTopology(uint64_t pipelineId, bool& dynamic) const;
     bool PrepareDrawStats();
     void ResetDrawQueries(VkCommandBuffer cb);
     void DestroyDrawStats();
     /** Starts this draw's queries; the slot it took, or -1 when there is no room left. */
+    /** Begins a draw's queries; the index to end them with, -1 when the pools are full. */
     int BeginDrawQuery(VkCommandBuffer cb, uint32_t command, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
-    void EndDrawQuery(VkCommandBuffer cb, int slot);
+    void EndDrawQuery(VkCommandBuffer cb, int pending);
     /** Reads the submission's results; `submitted` false drops them (a submission that never ran). */
     void CompleteDrawStats(bool submitted);
     void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to);
@@ -465,7 +518,7 @@ private:
     void InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::vector<PendingReadback>& readbacks, const char* skipReason = nullptr);
     void CompareReadbacks(std::vector<PendingReadback>& readbacks);
 
-    bool CreateStaging(VkDeviceSize size, Staging& staging);
+    bool CreateStaging(VkDeviceSize size, Staging& staging, VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     void DestroyStaging(Staging& staging);
     /** Allocates memory for requirements, preferring `want`; tracked memory is freed with the device, untracked is the caller's. */
     bool AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track = true);
@@ -536,6 +589,14 @@ private:
     /** The submission's overlays, waiting for it to complete. */
     std::vector<PendingOverlay> _pendingOverlays;
 
+    // Mesh output
+    bool _xfbAvailable = false;
+    /** The edited vertex shader of each pipeline copied for feedback: its record layout, or why it could not be edited. */
+    std::map<uint64_t, XfbPatch> _xfbLayouts;
+    /** The mesh being recorded, whose buffers the target draw binds. */
+    PendingMesh* _meshTarget = nullptr;
+    std::vector<PendingMesh> _pendingMeshes;
+
     // Per-draw timing and counters: a timestamp pair and a statistics query per draw, reset at the
     // start of each submission's recording and read once the submission has completed.
     VkQueryPool _drawTimestamps = VK_NULL_HANDLE;
@@ -549,6 +610,10 @@ private:
     bool _drawSamplesAvailable = false;
     /** The submission's draws, in slot order, waiting for its results. */
     std::vector<DrawResult> _pendingDraws;
+    /** Each pending draw's first query and how many it takes: one per view in a multiview pass. */
+    std::vector<std::pair<uint32_t, uint32_t>> _pendingDrawSlots;
+    /** Views the pass being recorded renders (1 outside multiview). */
+    uint32_t _passViews = 1;
     /** Queries the capture's own commands have open: a statistics query cannot nest inside one. */
     uint32_t _appQueryDepth = 0;
 

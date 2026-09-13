@@ -1124,6 +1124,12 @@ ipcMain.handle("inspector:drawOverlay", async (_e, opts: { data: Uint8Array; nam
   if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
   return replayBytes(tool, opts.data, { kind: "overlay", commands: opts.commands }, opts.name);
 });
+// Vulkan mesh output: what some draws' vertex shaders wrote, through transform feedback (replay/src/mesh.cpp).
+ipcMain.handle("inspector:meshOutput", async (_e, opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<ReplayRun> => {
+  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
+  return replayBytes(tool, opts.data, { kind: "mesh", commands: opts.commands }, opts.name);
+});
 // Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", async (_e, opts: { data: Uint8Array; name?: string; pixel: PixelRequest }): Promise<ReplayRun> => {
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);

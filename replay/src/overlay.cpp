@@ -25,13 +25,12 @@ namespace vkreplay {
 //   * wireframe: the draw alone with line polygons (the fillModeNonSolid feature).
 // The three are folded into one byte per pixel (OverlayResult::mask).
 
-bool Replayer::OverlayWantsPass(uint32_t beginIndex) const {
-    if (!_options.overlay.enabled) return false;
+bool Replayer::PassHoldsAny(uint32_t beginIndex, const std::vector<uint32_t>& wanted) const {
+    if (wanted.empty()) return false;
     const JValue* commands = _capture->Commands();
     uint32_t end = beginIndex + 1;
     while (end < commands->count && (commands->items[end].Get("secondary") || !IsEndPass(Str(commands->items[end].Get("method"))))) ++end;
-    return std::any_of(_options.overlay.commands.begin(), _options.overlay.commands.end(),
-                       [&](uint32_t c) { return c > beginIndex && c < end; });
+    return std::any_of(wanted.begin(), wanted.end(), [&](uint32_t c) { return c > beginIndex && c < end; });
 }
 
 void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex) {

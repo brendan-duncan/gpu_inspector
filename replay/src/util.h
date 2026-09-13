@@ -34,6 +34,13 @@ inline bool IsBeginRenderPass(std::string_view m) {
     return m == "vkCmdBeginRenderPass" || m == "vkCmdBeginRenderPass2" || m == "vkCmdBeginRenderPass2KHR";
 }
 
+/** Views a multiview mask renders; 1 for a mask of 0 (no multiview). */
+inline uint32_t ViewCount(uint32_t mask) {
+    uint32_t n = 0;
+    for (; mask; mask &= mask - 1) ++n;
+    return n ? n : 1;
+}
+
 inline bool IsBeginRendering(std::string_view m) { return m == "vkCmdBeginRendering" || m == "vkCmdBeginRenderingKHR"; }
 
 /** A command that does GPU work of its own: what per-draw timing and counters measure. */

@@ -137,8 +137,57 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
     if (it != _overdrawPipelines.end()) return it->second;
     _overdrawPipelines[key] = VK_NULL_HANDLE;  // a copy that cannot be made is not tried again
     const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : "overlay", [&](PipelineCopy& p) {
-        if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) return false;  // no fragments to count
+    const JValue* object = _capture->Object(pipelineId);
+    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : mode == ReissueMode::Xfb ? "mesh" : "overlay", [&](PipelineCopy& p) {
+        if (mode == ReissueMode::Xfb) {
+            // The vertex shader edited to write its outputs to the feedback buffer, and nothing rasterized.
+            XfbPatch& layout = _xfbLayouts[pipelineId];
+            for (const VkPipelineShaderStageCreateInfo& s : p.stages) {
+                if (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT)) {
+                    layout.error = "the pipeline has tessellation or geometry stages, and only a vertex shader's outputs are captured";
+                    return false;
+                }
+            }
+            auto vs = std::find_if(p.stages.begin(), p.stages.end(), [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_VERTEX_BIT; });
+            const uint8_t* data = nullptr;
+            size_t size = 0;
+            const std::string entry = vs != p.stages.end() && vs->pName ? vs->pName : "main";
+            if (vs == p.stages.end() || !object || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size)) {
+                layout.error = "the capture has no vertex shader code for the pipeline";
+                return false;
+            }
+            std::vector<uint32_t> words(size / 4);
+            std::memcpy(words.data(), data, words.size() * 4);
+            layout = PatchForTransformFeedback(words.data(), words.size(), entry);
+            if (!layout.error.empty()) return false;
+            VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            m.codeSize = layout.words.size() * 4;
+            m.pCode = layout.words.data();
+            VkShaderModule module = VK_NULL_HANDLE;
+            const VkResult created = _fns.CreateShaderModule(_device, &m, nullptr, &module);
+            layout.words.clear();
+            layout.words.shrink_to_fit();
+            if (created != VK_SUCCESS) {
+                layout.error = "the edited vertex shader was refused (" + std::to_string(created) + ")";
+                return false;
+            }
+            p.temporary.push_back(module);
+            vs->module = module;
+            vs->pNext = nullptr;
+            if (!p.hasRasterization) {
+                p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                p.rasterization.lineWidth = 1.0f;
+                p.hasRasterization = true;
+            }
+            p.rasterization.rasterizerDiscardEnable = VK_TRUE;
+            p.RemoveDynamic({VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE});
+            // Nothing is rasterized, so a fragment stage is not allowed.
+            p.stages.erase(std::remove_if(p.stages.begin(), p.stages.end(),
+                                          [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_FRAGMENT_BIT; }),
+                           p.stages.end());
+        } else if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) {
+            return false;  // no fragments to count
+        }
         if (mode == ReissueMode::Wireframe) {
             // The draw's edges, one pixel wide, whatever the application set.
             if (!p.hasRasterization) return false;
@@ -146,7 +195,7 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
             p.rasterization.lineWidth = 1.0f;
             p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
         }
-        p.ReplaceFragment(CountModule());
+        if (mode != ReissueMode::Xfb) p.ReplaceFragment(CountModule());
         VkPipelineColorBlendAttachmentState add{};
         add.blendEnable = VK_TRUE;
         add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -243,11 +292,17 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     }
     const bool draw = StartsWith(m, "vkCmdDraw");
     const bool target = overlay && draw && index == _overlayTarget;
+    bool feedback = false;
     if (target) {
         VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         _overlayIssued = true;  // drawn or not, nothing after it matters
+        // The mesh output view: the draw writes its vertices into a buffer instead of rasterizing.
+        if (pipeline && _overlayTargetMode == ReissueMode::Xfb) {
+            feedback = PrepareMeshBuffers();
+            if (!feedback) _overdrawDrawable = false;
+        }
     } else if (overlay && draw && _overlayOnlyTarget) {
         return;
     }
@@ -265,7 +320,13 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     // Problems were reported when the pass itself was replayed.
     const size_t problems = _ctx.problems.size();
     const size_t unresolved = _ctx.unresolved;
+    VkDeviceSize zero = 0;
+    if (feedback) {
+        _fns.CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &_meshTarget->buffer.buffer, &zero, &_meshTarget->buffer.size);
+        _fns.CmdBeginTransformFeedbackEXT(cb, 0, 0, nullptr, nullptr);
+    }
     fn(_ctx, *args, cb);
+    if (feedback) _fns.CmdEndTransformFeedbackEXT(cb, 0, 1, &_meshTarget->counter.buffer, &zero);
     _ctx.problems.resize(problems);
     _ctx.unresolved = unresolved;
     _arena.Reset();

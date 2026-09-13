@@ -124,6 +124,7 @@ VkPipeline Replayer::CopyGraphicsPipeline(uint64_t pipelineId, const std::string
         }
     }
     for (VkShaderModule m : temporary) _fns.DestroyShaderModule(_device, m, nullptr);
+    for (VkShaderModule m : p.temporary) _fns.DestroyShaderModule(_device, m, nullptr);
     _arena.Reset();
     return pipeline;
 }

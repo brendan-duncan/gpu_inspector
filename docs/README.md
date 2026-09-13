@@ -29,7 +29,7 @@ Pick the one that matches the application you want to inspect.
 |---|---|
 | [Inspect](INSPECT.md) | The live object list: creation arguments, textures, buffers, shaders, validation messages |
 | [Capture](CAPTURE.md) | Capturing a frame, reading the command list, and capture files |
-| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, overdraw, pixel history |
+| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, overdraw, draw overlays, mesh view, pixel history |
 | [Finding GPU bottlenecks](PROFILING.md) | A step-by-step method for working out what limits a frame |
 
 ## Claude Code
@@ -44,7 +44,7 @@ Pick the one that matches the application you want to inspect.
 |---|---|
 | [Troubleshooting](TROUBLESHOOTING.md) | What to do when something does not work |
 | [Building from source](BUILDING.md) | Prerequisites and build steps for each platform |
-| [Capture replay](REPLAY.md) | `vkinsp_replay`, the tool behind overdraw and pixel history |
+| [Capture replay](REPLAY.md) | `vkinsp_replay`, the tool behind overdraw, draw overlays, mesh output and pixel history |
 | [Architecture](ARCHITECTURE.md) | How the layer, the protocol and the UI are put together |
 | [Releasing](RELEASING.md) | How releases are built and published |
 

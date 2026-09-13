@@ -190,8 +190,12 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Per-draw GPU timing and counters via replay with timestamp and pipeline-statistics queries
       (`replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
       dispatch timed and counted, kept in capture files, read by the Shader Flame Graph.
-- [ ] Mesh output view: post-vertex-shader positions via transform feedback or a compute
-      re-execution of the vertex shader (`vk_postvs.cpp`).
+- [x] Mesh output view (`renderer/mesh_view.ts`, `vkinsp_replay --mesh`, `replay/src/mesh.cpp`):
+      VS In from the captured buffers and VS Out through transform feedback, as a wireframe and a
+      table, with `get_mesh_output` in the MCP server.
+- [ ] Mesh output, the rest: tessellation and geometry stage outputs, every view of a multiview
+      pass, GPUs without transform feedback (RenderDoc's compute-shader conversion), Metal captures,
+      and a solid shaded preview.
 - [ ] Shader debugger: RenderDoc's SPIR-V interpreter (`vk_shader_debug.cpp`, `spirv_debug.cpp`)
       for vertex, pixel and compute invocations, with variables, stepping and breakpoints.
 - [ ] Shader flame graph / statement cost via ablation once per-draw replay timing exists.

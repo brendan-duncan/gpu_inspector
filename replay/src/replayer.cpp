@@ -230,6 +230,10 @@ bool Replayer::CreateDevice() {
             else if (name) Problem(std::string("device extension not available here: ") + name);
         }
     }
+    // The mesh output view captures vertex shader outputs with transform feedback.
+    const bool xfbExtension = _options.mesh.enabled && hasExtension(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+    if (xfbExtension && std::none_of(extensions.begin(), extensions.end(), [](const char* e) { return !std::strcmp(e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME); }))
+        extensions.push_back(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
     // Render passes that end in PRESENT_SRC_KHR need the swapchain extension, with or without a surface.
     _hasSwapchainExtension = hasExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     if (_hasSwapchainExtension && std::none_of(extensions.begin(), extensions.end(), [](const char* e) { return !std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME); }))
@@ -277,11 +281,35 @@ bool Replayer::CreateDevice() {
         }
     }
 
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT xfbFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+    if (xfbExtension && _fns.GetPhysicalDeviceFeatures2) {
+        VkPhysicalDeviceTransformFeedbackFeaturesEXT supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        query.pNext = &supported;
+        _fns.GetPhysicalDeviceFeatures2(_physical, &query);
+        if (supported.transformFeedback) {
+            // Into the capture's own features struct when its chain has one: a chain may hold each only once.
+            VkPhysicalDeviceTransformFeedbackFeaturesEXT* existing = nullptr;
+            for (auto* s = (VkBaseOutStructure*)const_cast<void*>(info.pNext); s; s = s->pNext)
+                if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT) existing = (VkPhysicalDeviceTransformFeedbackFeaturesEXT*)s;
+            if (existing) {
+                existing->transformFeedback = VK_TRUE;
+            } else {
+                xfbFeatures.transformFeedback = VK_TRUE;
+                xfbFeatures.pNext = const_cast<void*>(info.pNext);
+                info.pNext = &xfbFeatures;
+            }
+            _xfbAvailable = true;
+        }
+    }
+
     VkResult r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     if (r != VK_SUCCESS && (info.pNext || info.pEnabledFeatures)) {
         Problem("vkCreateDevice with the captured features failed (" + std::to_string(r) + "); retrying without them");
         info.pNext = nullptr;
         info.pEnabledFeatures = nullptr;
+        // Nothing that needed a feature can be used now.
+        _drawCountersAvailable = _drawSamplesAvailable = _wireframeAvailable = _xfbAvailable = false;
         r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     }
     _arena.Reset();
@@ -327,11 +355,11 @@ bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryProperty
     return false;
 }
 
-bool Replayer::CreateStaging(VkDeviceSize size, Staging& staging) {
+bool Replayer::CreateStaging(VkDeviceSize size, Staging& staging, VkBufferUsageFlags usage) {
     staging = Staging{};
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = std::max<VkDeviceSize>(size, 1);
-    info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    info.usage = usage;
     if (_fns.CreateBuffer(_device, &info, nullptr, &staging.buffer) != VK_SUCCESS) return false;
     VkMemoryRequirements req{};
     _fns.GetBufferMemoryRequirements(_device, staging.buffer, &req);
@@ -713,6 +741,11 @@ void Replayer::CreateObject(const JValue& o) {
             }
             if (info.subpassCount && info.pSubpasses[0].pDepthStencilAttachment && info.pSubpasses[0].pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
                 rec.depthAttachment = (int)info.pSubpasses[0].pDepthStencilAttachment->attachment;
+            for (auto* s = (const VkBaseInStructure*)info.pNext; s; s = s->pNext) {
+                if (s->sType != VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO) continue;
+                const auto* mv = (const VkRenderPassMultiviewCreateInfo*)s;
+                for (uint32_t k = 0; mv->pViewMasks && k < mv->subpassCount; ++k) rec.views = std::max(rec.views, ViewCount(mv->pViewMasks[k]));
+            }
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
             if (_fns.CreateRenderPass(d, &info, nullptr, &rp) == VK_SUCCESS) {
@@ -737,6 +770,7 @@ void Replayer::CreateObject(const JValue& o) {
             }
             if (info.subpassCount && info.pSubpasses[0].pDepthStencilAttachment && info.pSubpasses[0].pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
                 rec.depthAttachment = (int)info.pSubpasses[0].pDepthStencilAttachment->attachment;
+            for (uint32_t k = 0; k < info.subpassCount; ++k) rec.views = std::max(rec.views, ViewCount(info.pSubpasses[k].viewMask));
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
             if (_fns.CreateRenderPass2(d, &info, nullptr, &rp) == VK_SUCCESS) {
@@ -1321,6 +1355,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             if (auto eit = _framebufferExtents.find(fb); eit != _framebufferExtents.end()) pass.extent = eit->second;
             pass.renderPass = rp;
             auto rit = _renderPasses.find(rp);
+            _passViews = rit != _renderPasses.end() ? rit->second.views : 1;
             if (rit != _renderPasses.end()) {
                 pass.layouts = rit->second.finalLayouts;
                 pass.formats = rit->second.formats;
@@ -1348,7 +1383,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             if (const JValue* clears = beginInfo2 ? beginInfo2->Get("pClearValues") : nullptr; clears && clears->IsArray())
                 for (uint32_t k = 0; k < clears->count; ++k) pass.clearValues.push_back(ClearValueOf(clears->items[k]));
             // What the pass starts from is copied before it begins; not for a pass the replay leaves out.
-            const bool overlay = OverlayWantsPass(i);
+            const bool overlay = PassHoldsAny(i, _options.overlay.commands);
             if ((_options.overdraw || overlay || _options.history.enabled) && ArgsResolve(m, *args)) {
                 if (_options.overdraw || overlay) PrepareOverdraw(cb, pass);
                 if (_options.history.enabled) PrepareHistory(cb, pass, histories);
@@ -1368,6 +1403,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                 skippingPass = true;
             } else if (a.pRenderingInfo) {
                 VkRenderingInfo info = *a.pRenderingInfo;
+                _passViews = ViewCount(info.viewMask);
                 std::vector<VkRenderingAttachmentInfo> colors(info.pColorAttachments, info.pColorAttachments + info.colorAttachmentCount);
                 VkRenderingAttachmentInfo depth{}, stencil{};
                 const JValue* ri = args->Get("pRenderingInfo");
@@ -1406,8 +1442,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                     if (!info.pDepthAttachment || stencil.imageView != depth.imageView) pass.dynamicStencil = note(stencil, ri ? ri->Get("pStencilAttachment") : nullptr);
                     else pass.dynamicStencil = pass.dynamicDepth;
                 }
-                const bool overlay = OverlayWantsPass(i);
-                if (_options.overdraw || overlay || _options.history.enabled) {
+                const bool overlay = PassHoldsAny(i, _options.overlay.commands);
+                if (_options.overdraw || overlay || PassHoldsAny(i, _options.mesh.commands) || _options.history.enabled) {
                     pass.extent = {(uint32_t)std::max(0, info.renderArea.offset.x) + info.renderArea.extent.width,
                                    (uint32_t)std::max(0, info.renderArea.offset.y) + info.renderArea.extent.height};
                     const JValue* depthJson = ri ? ri->Get("pDepthAttachment") : nullptr;
@@ -1464,9 +1500,11 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             InjectReadbacks(cb, pass, readbacks);
             // Before the overdraw, which draws into the copy of the pass's starting depth the overlays copy from.
             if (_options.overlay.enabled && pass.extent.width) RecordOverlay(cb, group, pass, i);
+            if (_options.mesh.enabled && pass.extent.width) RecordMesh(cb, group, pass, i);
             if (_options.overdraw) RecordOverdraw(cb, group, pass, i, overdraws);
             if (_options.history.enabled) RecordHistory(cb, group, pass, i, histories);
             pass.active = false;
+            _passViews = 1;
         }
     }
     _fns.EndCommandBuffer(cb);
@@ -1490,6 +1528,7 @@ void Replayer::ReplayCommands() {
         std::vector<VkCommandBuffer> cbs;
         _drawSlot = 0;
         _pendingDraws.clear();
+        _pendingDrawSlots.clear();
         const JValue* submits = args->Get("pSubmits");
         for (uint32_t s = 0; submits && s < submits->count; ++s) {
             const JValue& submit = submits->items[s];
@@ -1514,6 +1553,7 @@ void Replayer::ReplayCommands() {
             CompleteHistory(histories);
             CompleteDrawStats(false);
             CompleteOverlay(false);
+            CompleteMesh(false);
             ReleaseTransients();
             continue;
         }
@@ -1532,6 +1572,7 @@ void Replayer::ReplayCommands() {
         CompareReadbacks(readbacks);
         CompleteHistory(histories);
         CompleteOverlay(r == VK_SUCCESS);
+        CompleteMesh(r == VK_SUCCESS);
         CompleteOverdraw(overdraws);
     }
     for (const CommandGroup& g : _groups)
@@ -1583,6 +1624,16 @@ bool Replayer::Run(const CaptureFile& capture, const ReplayOptions& options, Rep
         missing.note = !commands || command >= commands->count ? "the capture has no command " + std::to_string(command)
                      : "command " + std::to_string(command) + " is not in a render pass the replay drew";
         report.overlays.push_back(std::move(missing));
+    }
+    for (uint32_t command : options.mesh.commands) {
+        if (std::any_of(report.meshes.begin(), report.meshes.end(), [&](const MeshResult& m) { return m.command == command; })) continue;
+        MeshResult missing;
+        missing.command = command;
+        const JValue* commands = capture.Commands();
+        if (commands && command < commands->count) missing.method = Str(commands->items[command].Get("method"));
+        missing.note = !commands || command >= commands->count ? "the capture has no command " + std::to_string(command)
+                     : "command " + std::to_string(command) + " is not in a render pass the replay drew";
+        report.meshes.push_back(std::move(missing));
     }
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();

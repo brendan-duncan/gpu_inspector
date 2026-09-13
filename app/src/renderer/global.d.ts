@@ -43,6 +43,8 @@ export interface InspectorApi {
   measureDraws(opts: { data: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
   /** Replays a Vulkan capture drawing each named draw on its own (vkinsp_replay --overlay-data). */
   drawOverlay(opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
+  /** Replays a Vulkan capture capturing what each named draw's vertex shader wrote (vkinsp_replay --mesh-data). */
+  meshOutput(opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string }>;
   /**
    * Vulkan: replays a capture (its file bytes) following one pixel of an image through the frame.
    * `data` is the tool's --pixel-data JSON (renderer/pixel_history.ts parses it).

@@ -13697,8 +13697,9 @@ function tail(text, lines = 12) {
 function analysisArgs(analysis, out) {
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
-  if (analysis.kind === "overlay") {
-    return [...analysis.commands.flatMap((c2) => ["--overlay", String(Math.max(0, Math.floor(c2)))]), "--overlay-data", out];
+  if (analysis.kind === "overlay" || analysis.kind === "mesh") {
+    const flag = `--${analysis.kind}`;
+    return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
   }
   const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
   return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
@@ -15424,6 +15425,128 @@ function parseOverdrawFile(bytes) {
   return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
 }
 
+// src/renderer/mesh_output.ts
+var MESH_MAGIC = "MESH 1\n";
+function parseMeshFile(bytes) {
+  const magic = new TextEncoder().encode(MESH_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not a mesh output file from vkinsp_replay.");
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length;
+  if (base > bytes.byteLength) throw new Error("The mesh output file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const draws = (manifest.draws ?? []).map(({ payload, ...info }) => {
+    let data = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The mesh output file is truncated (vertices out of range).");
+      data = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { ...info, outputs: info.outputs ?? [], data };
+  });
+  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
+}
+function primitiveKind(topology) {
+  if (/POINT/.test(topology)) return "points";
+  if (/LINE/.test(topology)) return "lines";
+  return "triangles";
+}
+function verticesPerPrimitive(kind) {
+  return kind === "triangles" ? 3 : kind === "lines" ? 2 : 1;
+}
+function positionOutput(m) {
+  return m.outputs.find((o) => o.builtin === "Position" && o.base === "float" && o.components === 4) ?? null;
+}
+function outputValues(m, output, vertex) {
+  if (!m.data) return [];
+  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+  const at = vertex * m.stride + output.offset;
+  if (at + output.components * 4 > m.data.byteLength) return [];
+  const out = [];
+  for (let k = 0; k < output.components; k++) {
+    const o = at + k * 4;
+    out.push(output.base === "float" ? view.getFloat32(o, true) : output.base === "int" ? view.getInt32(o, true) : view.getUint32(o, true));
+  }
+  return out;
+}
+function clipPositions(m) {
+  const p = positionOutput(m);
+  if (!p || !m.data) return null;
+  const out = new Float32Array(m.vertices * 4);
+  const view = new DataView(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+  for (let v = 0; v < m.vertices; v++) {
+    const at = v * m.stride + p.offset;
+    if (at + 16 > m.data.byteLength) break;
+    for (let k = 0; k < 4; k++) out[v * 4 + k] = view.getFloat32(at + k * 4, true);
+  }
+  return out;
+}
+function clipStats(m) {
+  const clip2 = clipPositions(m);
+  if (!clip2) return null;
+  const kind = primitiveKind(m.topology);
+  const per = verticesPerPrimitive(kind);
+  const stats = { vertices: m.vertices, primitives: Math.floor(m.vertices / per), behind: 0, invalid: 0, outside: 0, degenerate: 0, ndc: null };
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < m.vertices; v++) {
+    const [x, y, z, w] = clip2.subarray(v * 4, v * 4 + 4);
+    if (![x, y, z, w].every(Number.isFinite)) {
+      stats.invalid++;
+      continue;
+    }
+    if (w <= 0) {
+      stats.behind++;
+      continue;
+    }
+    const ndc = [x / w, y / w, z / w];
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], ndc[k]);
+      max[k] = Math.max(max[k], ndc[k]);
+    }
+  }
+  if (min[0] <= max[0]) stats.ndc = { min, max };
+  const planes = [
+    (x, _y, _z, w) => x < -w,
+    (x, _y, _z, w) => x > w,
+    (_x, y, _z, w) => y < -w,
+    (_x, y, _z, w) => y > w,
+    (_x, _y, z) => z < 0,
+    (_x, _y, z, w) => z > w
+  ];
+  for (let p = 0; p < stats.primitives; p++) {
+    const at = p * per;
+    const vertex = (i) => Array.from(clip2.subarray((at + i) * 4, (at + i) * 4 + 4));
+    const vs = Array.from({ length: per }, (_, i) => vertex(i));
+    if (planes.some((out) => vs.every(([x, y, z, w]) => out(x, y, z, w)))) {
+      stats.outside++;
+      continue;
+    }
+    if (kind === "triangles" && vs.every(([, , , w]) => w > 0)) {
+      const s = vs.map(([x, y, , w]) => [x / w, y / w]);
+      const area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+      if (Math.abs(area) < 1e-12) stats.degenerate++;
+    }
+  }
+  return stats;
+}
+function meshSummary(m) {
+  if (!m.measured) return `Not captured: ${m.note ?? "the replay could not capture it"}`;
+  const kind = primitiveKind(m.topology);
+  const stats = clipStats(m);
+  const parts2 = [`${m.vertices.toLocaleString()} vertices, ${Math.floor(m.vertices / verticesPerPrimitive(kind)).toLocaleString()} ${kind}`];
+  if (m.truncated) parts2.push("truncated");
+  if (!stats) {
+    parts2.push("no gl_Position the replay could capture");
+  } else {
+    if (stats.outside) parts2.push(`${stats.outside.toLocaleString()} outside the view`);
+    if (stats.behind) parts2.push(`${stats.behind.toLocaleString()} vertices behind the eye`);
+    if (stats.degenerate) parts2.push(`${stats.degenerate.toLocaleString()} with no area`);
+    if (stats.invalid) parts2.push(`${stats.invalid.toLocaleString()} NaN or infinite positions`);
+  }
+  return parts2.join(", ");
+}
+
 // src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
@@ -15972,6 +16095,66 @@ function captureTools(store) {
           replayProblems: h.problems.length ? { count: h.problems.length, first: h.problems.slice(0, 10) } : void 0,
           method: "Each draw is issued again under occlusion queries with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against what the pass held before the draw, with depth and stencil writes off. Counts are samples: two overlapping triangles of one draw that both pass count twice."
         }));
+      }
+    },
+    {
+      name: "get_mesh_output",
+      description: `What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for "why can I not see this mesh": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback (seconds). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the draw read (VS In).`,
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw command's index." },
+        first: { type: "integer", minimum: 0, description: "The first vertex to list (default 0)." },
+        count: { type: "integer", minimum: 0, maximum: 256, description: "Vertices to list (default 8)." }
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const index = requireInt(args, "command");
+        const cmd = c2.data.commands[index];
+        if (!cmd || !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_mesh_output takes a draw command (list_commands with kind draw).`);
+        if (c2.data.api === "metal") {
+          return jsonResult({ capture: c2.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c2.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+        const run2 = await runReplay(tool, c2.path, { kind: "mesh", commands: [index] });
+        if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not capture the draw's vertices: ${run2.error ?? "no data"}` });
+        const file = parseMeshFile(run2.data);
+        const m = file.draws.find((d) => d.command === index);
+        if (!m || !m.measured) return jsonResult({ capture: c2.id, command: index, method: cmd.method, note: `Not captured: ${m?.note ?? "the replay did not reach the draw"}` });
+        const stats = clipStats(m);
+        const first = intArg(args, "first", 0, 0);
+        const count2 = intArg(args, "count", 8, 0, 256);
+        const values = [];
+        for (let v = first; v < Math.min(m.vertices, first + count2); v++) {
+          const row = { vertex: v };
+          for (const o of m.outputs) row[o.name] = outputValues(m, o, v).map(tidy);
+          values.push(row);
+        }
+        return jsonResult({
+          capture: c2.id,
+          command: index,
+          method: cmd.method,
+          topology: m.topology,
+          summary: meshSummary(m),
+          vertices: m.vertices,
+          bytesPerVertex: m.stride,
+          truncated: m.truncated || void 0,
+          outputs: m.outputs.map((o) => ({ name: o.name, builtin: o.builtin, location: o.location, type: `${o.components} ${o.base}`, offset: o.offset })),
+          clipSpace: stats ? {
+            primitives: stats.primitives,
+            behindEye: stats.behind,
+            outsideViewVolume: stats.outside,
+            noArea: stats.degenerate || void 0,
+            nanOrInfinite: stats.invalid || void 0,
+            ndcInFront: stats.ndc ? { min: stats.ndc.min.map((x) => round(x)), max: stats.ndc.max.map((x) => round(x)) } : void 0
+          } : void 0,
+          values,
+          note: m.note,
+          replayedOn: file.device || void 0,
+          replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : void 0,
+          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation or geometry stages are not captured."
+        });
       }
     },
     {
