@@ -199,8 +199,11 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Mesh output, the rest: tessellation and geometry stage outputs, every view of a multiview
       pass, GPUs without transform feedback (RenderDoc's compute-shader conversion), Metal captures,
       and a solid shaded preview.
-- [ ] Shader debugger: RenderDoc's SPIR-V interpreter (`vk_shader_debug.cpp`, `spirv_debug.cpp`)
-      for vertex, pixel and compute invocations, with variables, stepping and breakpoints.
+- [x] Shader debugger (`renderer/spirv/`, `renderer/shader_debugger_view.ts`, `debug_shader`): a
+      SPIR-V interpreter for vertex, pixel and compute invocations, with variables, stepping and
+      breakpoints.
+- [ ] Shader debugger, the rest: tessellation and geometry stages, per-sample shading, watch
+      expressions, editing a value and running on, and Metal shaders.
 - [ ] Shader flame graph / statement cost via ablation once per-draw replay timing exists.
 
 ## Vulkan-specific

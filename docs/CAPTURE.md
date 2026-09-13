@@ -49,6 +49,8 @@ Selecting a command fills the right side with everything that was true at that p
   **Radix** the base.
 - **View Mesh** (a draw) — the draw's mesh in a tab of its own, as a wireframe and a table: the
   vertices it read, and what its vertex shader wrote. See [Mesh view](REPORTS.md#mesh-view).
+- **Debug Vertex**, **Debug Pixel** (a draw) and **Debug Invocation** (a dispatch) — step through
+  the shader on the command's inputs. See [Shader debugger](REPORTS.md#shader-debugger).
 - **Vertex and index buffers** — decoded into the attributes the pipeline declares, with their
   values.
 - **Push constants**.
@@ -70,10 +72,10 @@ Anything the frame's analysis flagged about a command is shown with it, linked t
 
 The **Reports** menu answers questions about the whole frame instead of one command: Frame Stats,
 Analyze Shaders, Shader Flame Graph, GPU Bottlenecks, Render Graph and Overdraw. Pixel history,
-draw overlays and the mesh view answer questions about one pixel or one draw. See
+draw overlays, the mesh view and the shader debugger answer questions about one pixel or one draw. See
 [Reports](REPORTS.md).
 
-Overdraw, pixel history, draw overlays, the mesh view's VS Out and **Measure draws** replay a Vulkan
+Overdraw, pixel history, draw overlays, the mesh view's VS Out, the shader debugger's pixels and **Measure draws** replay a Vulkan
 capture on this machine's GPU with `vkinsp_replay`, which the Windows and Linux installers include. The application
 does not need to be running; see [Capture replay](REPLAY.md).
 

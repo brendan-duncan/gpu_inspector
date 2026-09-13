@@ -63,6 +63,8 @@ export interface CaptureTextureHost {
   drawsOfPass(key: OverdrawPassKey): CaptureCommand[];
   /** Vulkan: replays the capture for a draw's overlay (and its pass's other draws, when there are few). */
   drawOverlay(command: number, passDraws: CaptureCommand[]): Promise<DrawOverlay>;
+  /** Vulkan: opens the shader debugger on a draw's fragment at a pixel. */
+  debugPixel?(command: number, x: number, y: number): void;
 }
 
 export interface CaptureTextureOptions {
@@ -260,6 +262,7 @@ export class CaptureTextureView {
       selectCommand: (index) => this.host.selectCommand(index),
       showObject: (id) => this.host.showObject(id),
       run: (r) => this._follow(r),
+      debugPixel: this.host.debugPixel ? (command, x, y) => this.host.debugPixel!(command, x, y) : undefined,
       captures: metal,
       compact: true,
     }, this._picked ?? { image: info.id, x: 0, y: 0, mip: info.mip, layer: 0 });

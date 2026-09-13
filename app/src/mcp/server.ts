@@ -2,6 +2,7 @@
 // the applications it launches. main.ts serves it on stdio; the tests call it directly.
 import { CaptureStore } from "./capture_store.js";
 import { commandTools } from "./command_tools.js";
+import { debugTools } from "./debug_tools.js";
 import { SessionManager } from "./live_session.js";
 import { liveTools } from "./live_tools.js";
 import { resourceTools } from "./resource_tools.js";
@@ -23,7 +24,7 @@ const INSTRUCTIONS = [
 export function createServer(store = new CaptureStore(), sessions = new SessionManager()): McpStdioServer {
   const version = typeof __GPU_INSPECTOR_VERSION__ === "string" ? __GPU_INSPECTOR_VERSION__ : "dev";
   return new McpStdioServer({ name: "gpu-inspector", version }, [
-    ...captureTools(store), ...commandTools(store), ...resourceTools(store), ...liveTools(sessions, store),
+    ...captureTools(store), ...commandTools(store), ...resourceTools(store), ...debugTools(store), ...liveTools(sessions, store),
   ], INSTRUCTIONS);
 }
 

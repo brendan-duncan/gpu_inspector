@@ -26,6 +26,8 @@ export interface PixelHistoryHost {
   showObject(id: number): void;
   /** Follows another pixel (the result arrives through setRunning / setResult / setError). */
   run(request: PixelRequest): void;
+  /** Opens the shader debugger on a draw's fragment at the pixel. */
+  debugPixel?(command: number, x: number, y: number): void;
   /** Metal: a pixel is followed by capturing the next frame with it, not by replaying this one. */
   captures?: boolean;
   /**
@@ -214,6 +216,10 @@ export class PixelHistoryView {
     const link = new Span(head, { text: `[${e.command}]`, class: "dependency_link", tooltip: "Select the command in the capture" });
     link.element.onclick = () => this.host.selectCommand(e.command);
     new Span(head, { text: eventSummary(e), class: "pixel-event-summary", tooltip: sampleCountsText(e) || undefined });
+    if (e.kind === "draw" && this.host.debugPixel) {
+      const debug = new Span(head, { text: "Debug", class: "dependency_link pixel-event-debug", tooltip: "Debug the draw's fragment shader at this pixel" });
+      debug.element.onclick = () => this.host.debugPixel!(e.command, h.x, h.y);
+    }
 
     const where = new Div(main, { class: "pixel-event-where text-muted font-sm" });
     new Span(where, { text: this.host.passLabelOf(e) });

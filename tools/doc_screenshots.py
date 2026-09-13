@@ -96,6 +96,10 @@ SHOTS = [
          capture="unity.gpucap"),
     Shot("mesh-output", ["--launch={triangle}", "--debug-capture", "--debug-view=mesh:out"],
          delay_ms=22000, launch=True),
+    # The shader debugger, paused one line into the cube's fragment shader at a pixel the cube covers
+    # (its inputs rasterized from the replayed vertex outputs).
+    Shot("shader-debugger", ["--launch={triangle}", "--debug-capture", "--debug-view=debugger:pixel::1"],
+         delay_ms=22000, launch=True),
     # A shader with its embedded source, in a captured draw.
     Shot("shader-source", ["--debug-open={capture}", "--debug-command=4", "--debug-expand=Fragment Shader"],
          delay_ms=12000, capture="xrstack.gpucap"),

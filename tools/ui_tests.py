@@ -296,6 +296,51 @@ def triangle_mesh_input(state, log):
         expect(preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
 
 
+def debugger_tab(state):
+    return capture(state).get("debuggerTab") or {}
+
+
+def triangle_debug_pixel(state, log):
+    d = debugger_tab(state)
+    outputs = d.get("outputs") or []
+    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    target = (d.get("targetPixel") or {}).get("value") or []
+    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    # The cube's fragment shader at a pixel the draw covers: its inputs rasterized from the replay's
+    # vertex outputs, the checker texture sampled with derivatives from the pixel quad, and the colour
+    # it writes compared with the render target (the cube is the pass's only draw there).
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
+        expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 10, f"cube.frag's source is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
+        expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+
+
+def triangle_debug_vertex(state, log):
+    d = debugger_tab(state)
+    replayed = d.get("replayedOutputs") or []
+    # Stopped part way through cube.vert: two lines stepped over, one left to run.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:vertex opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the vertex: {d.get('error')}") + \
+        expect(d.get("status") == "running" and d.get("line") == 17, f"not paused on line 17 after two steps: {d.get('status')} line {d.get('line')}") + \
+        expect((d.get("lineValues") or 0) > 0, "the line stepped over shows no values") + \
+        expect(len(replayed) >= 3, f"the replay's outputs of the vertex are missing: {replayed}")
+
+
+def triangle_debug_compute(state, log):
+    d = debugger_tab(state)
+    # wave.comp ships without its text: the source roots supply it (like the sources case).
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:compute opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the invocation: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(d.get("mode") == "source", f"wave.comp's source was not found under the source root: {d.get('mode')}")
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -360,6 +405,8 @@ def triangle_cases(triangle):
         # details pane empty and the renderer's console with the error.
         Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
         Case("mesh-in", launch + ["--debug-capture", "--debug-view=mesh:in"], triangle_mesh_input, delay_ms=16000),
+        Case("debug-compute", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-view=debugger:compute::end"],
+             triangle_debug_compute, delay_ms=16000),
     ]
     # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
     # one only runs where vkinsp_replay is built (replay/, docs/REPLAY.md). The click lands on the
@@ -373,8 +420,12 @@ def triangle_cases(triangle):
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",
                                                "--debug-settle=8000"],
                           triangle_overlay, delay_ms=20000))
+        cases.append(Case("debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel::end", "--debug-settle=8000"],
+                          triangle_debug_pixel, delay_ms=20000))
+        cases.append(Case("debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::2", "--debug-settle=8000"],
+                          triangle_debug_vertex, delay_ms=20000))
     else:
-        print("  (no vkinsp_replay build: skipping the overdraw, mesh and overlay cases)")
+        print("  (no vkinsp_replay build: skipping the overdraw, mesh, overlay and pixel debugger cases)")
     return cases
 
 

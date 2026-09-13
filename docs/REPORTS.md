@@ -8,7 +8,7 @@ from the draw that produced it.
 
 Some answers are about one render target or one draw rather than the whole frame. They open in
 tabs beside the capture's own: the [render target tab](#the-render-target-tab) (overdraw, draw
-overlays and pixel history) and the [mesh view](#mesh-view).
+overlays and pixel history), the [mesh view](#mesh-view) and the [shader debugger](#shader-debugger).
 
 For the order to use them in when a frame is slow, see
 [Finding GPU bottlenecks](PROFILING.md).
@@ -192,6 +192,67 @@ This is the report for "why is this pixel the wrong colour".
 Current limits: writes outside render passes (copies, blits, compute) are not followed,
 multisampled images are followed through their resolve attachment, and a draw is one event with no
 detail per primitive inside it. The full list is in [Capture replay](REPLAY.md#pixel-history).
+
+A draw's row has **Debug**, which opens the [shader debugger](#shader-debugger) on that draw's
+fragment shader at the pixel.
+
+## Shader debugger
+
+One run of a shader, stepped through line by line, like RenderDoc's shader debugger. It shows the
+values each line computed. Open it from:
+
+- **Debug Vertex** or **Debug Pixel** in a draw's details. Debug Pixel starts on a pixel the draw
+  covers.
+- **Debug Invocation** in a dispatch's details.
+- **Debug** on a draw in a [pixel history](#pixel-history), for that pixel.
+- **Debug Vertex** in the [mesh view](#mesh-view), for the selected row.
+
+![The shader debugger, paused on the second line of the test application's fragment shader: the source with the current line, the values the first line computed, the locals, call stack, inputs and outputs](images/shader-debugger.png)
+
+- **Continue** (F5), **Step Over** (F10), **Step Into** (F11), **Step Out** (Shift+F11) and
+  **Restart** (Ctrl+Shift+F5).
+- Click a line number to set a breakpoint. Breakpoints are kept when you restart or pick another
+  invocation of the same shader.
+- The fields at the top pick the invocation: a vertex and instance, a pixel, or a compute
+  invocation's `gl_GlobalInvocationID`.
+- Hover over a name in the source to see its value.
+- The side pane shows:
+  - **Values computed**: every value the last line produced
+  - **Locals** and **Call Stack**: click a frame to see its locals
+  - **Inputs**, **Outputs**, **Globals** and **Resources** (uniform and storage blocks, push
+    constants, textures and samplers)
+  - **Warnings**: anything the debugger could not reproduce exactly
+- When the shader returns, **Result** compares its outputs with what the GPU produced:
+  - a vertex with the replay's outputs for that vertex
+  - a pixel with the render target's value after the pass
+
+The debugger steps by source line when the shader has line information and its source (embedded
+with `-g`, or found under the launch dialog's Source roots). Otherwise it steps by SPIR-V
+instruction through the disassembly; **Source** / **Disassembly** switches between the two.
+
+What it runs on:
+
+- **A vertex**: the attributes decoded from the captured vertex buffers.
+- **A pixel**: the vertex shader's outputs, replayed and interpolated at the pixel's centre from the
+  front-most triangle covering it. The four pixels of its 2x2 quad run together, so derivatives and
+  mip selection match a GPU.
+- **All three**: the descriptor sets, push constants and specialization constants the command had
+  bound, and textures sampled from their read-backs.
+
+Enable **Buffers** and **Images** before capturing. A buffer or image that was not captured reads as
+zeros, and the Warnings section lists it.
+
+Current limits:
+
+- Vulkan captures only.
+- A pixel needs `vkinsp_replay`.
+- Tessellation and geometry stages are not supported.
+- Multisampled pixels are shaded at the centre.
+- An indirect dispatch's group counts read (1, 1, 1).
+- A GPU driver may reorder floating-point operations the debugger performs in source order, so a
+  value can differ in the last digits, or more where a shader cancels large numbers.
+
+`debug_shader` gives Claude the same run, with every line's values in order.
 
 ---
 

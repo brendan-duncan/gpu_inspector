@@ -349,6 +349,29 @@ preview (`renderer/mesh_preview.ts`) is a WebGL2 wireframe with an orbit camera;
 normalized device coordinates with y and z negated so it faces the viewer the way the render target
 does. A pass of up to 16 draws has all its draws captured in one replay. One such tab per capture.
 
+### The shader debugger
+
+`renderer/spirv/` is a SPIR-V interpreter, after RenderDoc's (`spirv_debug.cpp`):
+
+- `module.ts` parses a module into instructions in module order, so the ordinals match the source
+  locations of `vulkan/spirv_debug.ts` and the instructions of `spirv-dis`.
+- `interpreter.ts` runs one invocation an instruction at a time, with explicit frames rather than
+  JavaScript recursion, so it can stop anywhere.
+- `values.ts` reads uniform and storage blocks lazily from their bytes (std140 / std430 offsets from
+  the decorations), with stores laid over them.
+- `sampling.ts` samples captured textures: filters, wrap modes, mips, comparison and cube maps.
+- `quad.ts` runs a fragment's 2x2 pixel quad in lockstep for derivatives and implicit LOD.
+
+`renderer/shader_debug_setup.ts` builds a session from a capture: the stage's SPIR-V, the bindings
+of the command (dynamic offsets, image view component mappings, sRGB decoded to linear), and the
+inputs. A vertex's inputs are decoded by `mesh_input.ts`. A fragment's are rasterized from the
+replay's transform feedback (`mesh_output.ts`): near-plane clipping, the pipeline's culling and
+depth compare to pick the covering triangle, and perspective-correct, flat or noperspective
+interpolation from the fragment inputs' decorations. `renderer/shader_debugger.ts` steps a session
+by source line or instruction with breakpoints and per-line values, without a UI. The capture's
+debugger tab (`renderer/shader_debugger_view.ts`) and the MCP server's `debug_shader`
+(`mcp/debug_tools.ts`) are both built on it.
+
 ### replay/ — capture replay
 
 `vkinsp_replay` re-executes a `.gpucap` on this machine's GPU without the application, and is
@@ -375,7 +398,7 @@ writes them to a temporary file, and keeps the replay and the file until the vie
 (its tab closed, or the capture rebuilt). Each analysis is a request line; the data file it writes
 is parsed by `renderer/overdraw.ts`, `pixel_history.ts`, `draw_overlay.ts`, `mesh_output.ts` or
 `draw_stats.ts`. The MCP server uses the same pool from `get_overdraw`, `get_pixel_history`,
-`get_mesh_output` and `get_shader_flame_graph`. `app/tools/stage_layer.mjs` ships the tool beside
+`get_mesh_output`, `debug_shader` (a pixel's inputs) and `get_shader_flame_graph`. `app/tools/stage_layer.mjs` ships the tool beside
 the layer.
 
 See [REPLAY.md](REPLAY.md).
@@ -968,7 +991,8 @@ replay). `tools/ui_tests.py` builds its cases on these flags: the triangle appli
 validation, stacks), the reports (render graph, bottlenecks, and the render target tab measuring
 overdraw, following a clicked pixel, and drawing `--occluded`'s hidden draw with the depth test
 overlay via `--debug-view=overlay:depth:last`; the mesh tab's VS In and VS Out via
-`--debug-view=mesh:in` and `mesh:out`), and saved captures with expected findings, each a UI run
+`--debug-view=mesh:in` and `mesh:out`; the shader debugger via
+`--debug-view=debugger:pixel|vertex|compute[:<command>[:<lines>|end]]`), and saved captures with expected findings, each a UI run
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 

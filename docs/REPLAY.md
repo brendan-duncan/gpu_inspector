@@ -4,8 +4,8 @@
 
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the basis for the analyses that have to run a frame again with something
-changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output, per-draw timing, and
-later shader debugging (TODO.md, "Replay-based features").
+changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output (which the shader
+debugger's pixels are rasterized from) and per-draw timing.
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]

@@ -105,10 +105,13 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         _overlayOnlyTarget = true;
         _overlayTargetMode = ReissueMode::Xfb;
         _overlayIssued = false;
+        _overlayDrawn = false;
+        _overlayDrawnPipeline = 0;
         _meshTarget = &p;
         ReissuePass(cb, group, pass, endIndex, false, VK_FORMAT_UNDEFINED, rp, fb);
-        const bool drawn = _overlayIssued && _overdrawDrawable && p.buffer.buffer;
-        const uint64_t pipeline = _overlayPipeline;
+        const bool drawn = _overlayIssued && _overlayDrawn && p.buffer.buffer;
+        // The pipeline the draw was issued with (a later secondary of the pass resets the one bound last).
+        const uint64_t pipeline = _overlayIssued ? _overlayDrawnPipeline : _overlayPipeline;
         _meshTarget = nullptr;
         _overlayTarget = UINT32_MAX;
         _overlayOnlyTarget = false;
@@ -117,7 +120,14 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         result.topology = pipeline ? PipelineTopology(pipeline, dynamic) : "";
         if (dynamic) result.topology += " (dynamic)";
         auto layout = _xfbLayouts.find(pipeline);
-        if (!drawn) {
+        if (!drawn || layout == _xfbLayouts.end()) {
+            // Buffers a draw was issued with stay until the submission completes; only unused ones go now.
+            if (p.buffer.buffer && _overlayIssued) {
+                result.note = "the draw's vertex shader outputs could not be read";
+                _report->meshes.push_back(std::move(result));
+                _pendingMeshes.push_back(p);
+                continue;
+            }
             result.note = layout != _xfbLayouts.end() && !layout->second.error.empty() ? layout->second.error
                         : !pipeline ? "no pipeline is bound at the draw"
                         : "the draw could not be issued again (its pipeline could not be copied, or there was no memory for its vertices)";

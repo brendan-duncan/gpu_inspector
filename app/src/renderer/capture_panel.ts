@@ -41,16 +41,17 @@ import { parseDrawOverlayFile, type DrawOverlay } from "./draw_overlay.js";
 import { drawState, findPass } from "./draw_state.js";
 import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
+import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
-/** A tab a capture opens beside its own: a render target (its overlays and pixel history), or a draw's mesh. */
+/** A tab a capture opens beside its own: a render target (its overlays and pixel history), a draw's mesh, or the shader debugger. */
 interface CaptureSubTab {
   readonly root: Div;
   dispose(): void;
   debugState(): Record<string, unknown>;
 }
-type SubTabKind = "texture" | "mesh";
+type SubTabKind = "texture" | "mesh" | "debugger";
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -143,6 +144,7 @@ export class CapturePanel {
       ...v.debugState(),
       textureTab: this._subTab(v, "texture")?.tab.debugState() ?? null,
       meshTab: this._subTab(v, "mesh")?.tab.debugState() ?? null,
+      debuggerTab: this._subTab(v, "debugger")?.tab.debugState() ?? null,
     }));
   }
 
@@ -287,6 +289,7 @@ export class CapturePanel {
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
     view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
     view.onOpenMesh.addListener((draw, options) => this._openMesh(view, draw, options));
+    view.onDebugShader.addListener((request, options) => this._openDebugger(view, request, options));
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
@@ -385,6 +388,7 @@ export class CapturePanel {
       measureOverdraw: () => view.measureOverdraw(),
       drawsOfPass: (k) => view.drawsOfPass(k),
       drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
+      debugPixel: view.data.api === "metal" ? undefined : (command, x, y) => view.debugShader({ stage: "fragment", command, x, y }),
     }, target, options);
     this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
   }
@@ -410,9 +414,38 @@ export class CapturePanel {
       },
       meshOutput: (command, passDraws) => view.meshOutput(command, passDraws),
       inputNames: (cmd) => view.vertexInputNames(cmd),
+      debugVertex: view.data.api === "metal" ? undefined : (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
     }, draw, options);
     const entry = this._addSubTab(view, "mesh", tab, `${tab.label}: ${view.label}`);
     // The label follows the draw the tab is stepped to.
+    const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
+    relabel.observe(tab.root.element, { childList: true });
+  }
+
+  /** Debugs a shader invocation in a tab beside the capture's (shader_debugger_view.ts); one such tab per capture. */
+  private _openDebugger(view: CaptureView, request: DebugRequest, options: ShaderDebuggerOptions = {}): void {
+    const existing = this._subTab<ShaderDebuggerView>(view, "debugger");
+    if (existing) {
+      existing.tab.show(request, options);
+      existing.handle.textElement.text = `${existing.tab.label}: ${view.label}`;
+      this._tabs.setHandleActive(existing.handle);
+      return;
+    }
+    const tab = new ShaderDebuggerView({
+      data: view.data,
+      db: view.window.database,
+      session: view.window,
+      passLabelOf: (k) => view.passLabelOf(k),
+      passOfDraw: (cmd) => view.passOfDraw(cmd),
+      selectCommand: (index) => {
+        this._showCaptureTab(view);
+        view.selectCommand(index);
+      },
+      meshOutput: (command) => view.meshOutput(command),
+      inputNames: (cmd) => view.vertexInputNames(cmd),
+      disassemble: (spirv) => window.inspector.shaderText(spirv, "dis"),
+    }, request, options);
+    const entry = this._addSubTab(view, "debugger", tab, `${tab.label}: ${view.label}`);
     const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
     relabel.observe(tab.root.element, { childList: true });
   }
@@ -598,6 +631,8 @@ export class CaptureView implements CaptureHost {
    */
   readonly onOpenTexture = new Signal<(target: CaptureTarget, options: CaptureTextureOptions) => void>();
   readonly onOpenMesh = new Signal<(draw: CaptureCommand, options: MeshViewOptions) => void>();
+  /** The shader debugger asked for, on an invocation of a draw or dispatch (shader_debugger_view.ts). */
+  readonly onDebugShader = new Signal<(request: DebugRequest, options: ShaderDebuggerOptions) => void>();
   /** The capture library marked the end of the capture's stream (CaptureComplete). */
   readonly onCaptureComplete = new Signal<() => void>();
   /** The capture serialized for vkinsp_replay, kept for the next replay of the same capture. */
@@ -1380,6 +1415,17 @@ export class CaptureView implements CaptureHost {
       if (draw) this.onOpenMesh.emit(draw, { stage: stage === "in" ? "in" : "out" });
       else this._setStatus("this capture has no draws");
     }
+    else if (name.startsWith("debugger")) {
+      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end]]]): the shader debugger on the
+      // first draw (or dispatch), or the one named, stepped over that many lines or run to the end.
+      const [, kind = "pixel", at, steps] = name.split(":");
+      const compute = kind === "compute";
+      const commands = this.data.commands.filter((c) => (compute ? this.data.sets.DISPATCH : this.data.sets.DRAW).has(c.method));
+      const cmd = at === "last" ? commands[commands.length - 1] : at !== undefined && at !== "" ? this.data.commands[Number(at)] : commands[0];
+      const options: ShaderDebuggerOptions = steps === "end" ? { steps: -1 } : steps !== undefined ? { steps: Number(steps) } : {};
+      if (!cmd) this._setStatus(`this capture has no ${compute ? "dispatches" : "draws"}`);
+      else this.debugShader(compute ? { stage: "compute", command: cmd.index } : kind === "vertex" ? { stage: "vertex", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
+    }
     else if (name.startsWith("overlay")) {
       // Testing aid (--debug-view=overlay[:<kind>[:<command>|last]]): a draw overlay, on the first draw of a
       // pass with a render target unless a command (or the last such draw) is named.
@@ -1442,6 +1488,11 @@ export class CaptureView implements CaptureHost {
   /** Opens the mesh tab on a draw (View Mesh in a draw's details). */
   openMesh(cmd: CaptureCommand): void {
     this.onOpenMesh.emit(cmd, {});
+  }
+
+  /** Opens the shader debugger on an invocation (Debug Vertex / Pixel / Invocation). */
+  debugShader(request: DebugRequest, options: ShaderDebuggerOptions = {}): void {
+    this.onDebugShader.emit(request, options);
   }
 
   /** The render pass a draw is in, keyed the way passes are everywhere else (its primary command buffer). */

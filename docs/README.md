@@ -29,7 +29,7 @@ Pick the one that matches the application you want to inspect.
 |---|---|
 | [Inspect](INSPECT.md) | The live object list: creation arguments, textures, buffers, shaders, validation messages |
 | [Capture](CAPTURE.md) | Capturing a frame, reading the command list, and capture files |
-| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, overdraw, draw overlays, mesh view, pixel history |
+| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, overdraw, draw overlays, mesh view, pixel history, shader debugger |
 | [Finding GPU bottlenecks](PROFILING.md) | A step-by-step method for working out what limits a frame |
 
 ## Claude Code

@@ -157,6 +157,10 @@ each step.
      of 0), or NaN positions from a bad uniform. `ndcInFront` says where the rest landed on screen.
    - **Shaders**: `get_shader`. `source` when it is embedded, `glsl` or `hlsl` otherwise, and
      `reflection` to check the bindings the shader expects against what `get_command` shows bound.
+   - **What the shader computed**: `debug_shader` (a Vulkan capture) runs one vertex, pixel (`x`,
+     `y`; a pixel the draw covers by default) or compute invocation. Read the `trace` for the line
+     where a value goes wrong, and `firstNonFinite` for a NaN. For a pixel, `compare` has the render
+     target after the whole pass; later draws and blending come between.
 5. **Compare with a draw that works**: `get_command` on both, and diff the state.
 
 ## Live applications
