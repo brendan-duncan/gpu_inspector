@@ -5,6 +5,13 @@
   shader, line by line on the capture's inputs, with breakpoints and every variable's value.
   Opened from a draw's or dispatch's details, a pixel history or the mesh view. `debug_shader` in
   the MCP server.
+- The shader debugger works on Metal captures, stepping the Metal Shading Language the application
+  compiled rather than SPIR-V. A fragment needs no replay: the draw's own vertex shader is run in
+  the interpreter and its result rasterized, so a pixel can be debugged with nothing else built.
+  A library loaded as a precompiled `metallib` has no source, and the debugger says so.
+- Metal captures read back the textures a draw or dispatch sampled, not only its render targets, so
+  a debugged fragment samples what the GPU sampled. Deduplicated per capture and capped by
+  `maxSampledTextureTotal`.
 
 ### Changed
 - Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)

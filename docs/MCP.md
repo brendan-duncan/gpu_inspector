@@ -60,8 +60,9 @@ about a capture takes a moment while its replay starts; the replay is kept for t
 - `get_mesh_output` — what a draw's vertex shader wrote: vertices behind the eye, primitives
   outside the view volume, triangles with no area
 - `debug_shader` — one vertex, pixel or compute invocation run in the shader debugger: its outputs,
-  the values every line computed in order, and the first NaN or infinity. A vertex or compute
-  invocation needs no replay; a pixel does.
+  the values every line computed in order, and the first NaN or infinity. A Vulkan capture's SPIR-V
+  or a Metal capture's Metal Shading Language. A vertex or compute invocation needs no replay; a
+  Vulkan pixel does, and a Metal one does not.
 - `get_shader_flame_graph` — measures every draw the first time it is asked
 
 They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout

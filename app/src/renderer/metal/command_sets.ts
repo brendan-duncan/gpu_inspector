@@ -5,7 +5,9 @@
 // method. Where Vulkan needs several spellings of the same command for its extensions and core
 // versions, Metal needs one per overload — `drawPrimitives:` has four, differing only in whether
 // instancing and base-instance arguments are present.
-import type { BoundIndexBuffer, BoundStageBuffer, BoundVertexBuffer, CommandSets } from "../command_sets.js";
+import type {
+  BoundIndexBuffer, BoundStageBuffer, BoundStageSampler, BoundStageTexture, BoundVertexBuffer, CommandSets,
+} from "../command_sets.js";
 import type { ArgValue, CaptureCommand } from "../../shared/protocol.js";
 // Generic argument coercers that happen to live beside the Vulkan object model.
 import { isObject, num, str } from "../vulkan/vulkan_object.js";
@@ -88,6 +90,47 @@ const STAGE_BUFFER_METHODS: Record<string, { stage: string; kind: "one" | "many"
   "setTileBytes:length:atIndex:": { stage: "tile", kind: "bytes" },
 };
 const BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
+
+// Textures and samplers bound to a stage by index, the same shape as the buffer table: "one"
+// binds a single index, "many" a range given by `withRange:`. A draw samples whatever these left
+// bound, which is what the shader debugger reads its textures and samplers through.
+const STAGE_TEXTURE_METHODS: Record<string, { stage: string; kind: "one" | "many" }> = {
+  "setVertexTexture:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexTextures:withRange:": { stage: "vertex", kind: "many" },
+  "setFragmentTexture:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentTextures:withRange:": { stage: "fragment", kind: "many" },
+  "setTexture:atIndex:": { stage: "compute", kind: "one" },
+  "setTextures:withRange:": { stage: "compute", kind: "many" },
+  "setObjectTexture:atIndex:": { stage: "object", kind: "one" },
+  "setObjectTextures:withRange:": { stage: "object", kind: "many" },
+  "setMeshTexture:atIndex:": { stage: "mesh", kind: "one" },
+  "setMeshTextures:withRange:": { stage: "mesh", kind: "many" },
+  "setTileTexture:atIndex:": { stage: "tile", kind: "one" },
+  "setTileTextures:withRange:": { stage: "tile", kind: "many" },
+};
+const BIND_STAGE_TEXTURE = new Set(Object.keys(STAGE_TEXTURE_METHODS));
+
+const STAGE_SAMPLER_METHODS: Record<string, { stage: string; kind: "one" | "many" }> = {
+  "setVertexSamplerState:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexSamplerStates:withRange:": { stage: "vertex", kind: "many" },
+  "setVertexSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "vertex", kind: "many" },
+  "setFragmentSamplerState:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentSamplerStates:withRange:": { stage: "fragment", kind: "many" },
+  "setFragmentSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "fragment", kind: "many" },
+  "setSamplerState:atIndex:": { stage: "compute", kind: "one" },
+  "setSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "compute", kind: "one" },
+  "setSamplerStates:withRange:": { stage: "compute", kind: "many" },
+  "setSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "compute", kind: "many" },
+  "setObjectSamplerState:atIndex:": { stage: "object", kind: "one" },
+  "setObjectSamplerStates:withRange:": { stage: "object", kind: "many" },
+  "setMeshSamplerState:atIndex:": { stage: "mesh", kind: "one" },
+  "setMeshSamplerStates:withRange:": { stage: "mesh", kind: "many" },
+  "setTileSamplerState:atIndex:": { stage: "tile", kind: "one" },
+  "setTileSamplerStates:withRange:": { stage: "tile", kind: "many" },
+};
+const BIND_STAGE_SAMPLER = new Set(Object.keys(STAGE_SAMPLER_METHODS));
 
 /** "MTLPrimitiveTypeTriangle" as "Triangle", given the key it came under. */
 function enumShort(key: string, v: ArgValue | undefined): string {
@@ -283,6 +326,45 @@ export const METAL_SETS: CommandSets = {
     return a.buffers.map((buffer, i) => ({
       cmd, stage: entry.stage, index: first + i, buffer, offset: num(offsets[i]), dataId: cmd.bufferData?.[i] ?? 0, inline: false,
     }));
+  },
+
+  BIND_STAGE_TEXTURE,
+
+  stageTexturesOf(cmd: CaptureCommand): BoundStageTexture[] {
+    const entry = STAGE_TEXTURE_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    if (entry.kind === "one") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), texture: a.texture ?? null, dataId: cmd.textureData?.[0] ?? 0 }];
+    }
+    if (!Array.isArray(a.textures)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return a.textures.map((texture, i) => ({
+      cmd, stage: entry.stage, index: first + i, texture, dataId: cmd.textureData?.[i] ?? 0,
+    }));
+  },
+
+  BIND_STAGE_SAMPLER,
+
+  stageSamplersOf(cmd: CaptureCommand): BoundStageSampler[] {
+    const entry = STAGE_SAMPLER_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    const clamps = (i: number): { lodMinClamp?: number; lodMaxClamp?: number } => {
+      // The plural form carries parallel arrays; the singular one a pair of scalars.
+      const min = Array.isArray(a.lodMinClamps) ? a.lodMinClamps[i] : a.lodMinClamp;
+      const max = Array.isArray(a.lodMaxClamps) ? a.lodMaxClamps[i] : a.lodMaxClamp;
+      return {
+        ...(min === undefined ? {} : { lodMinClamp: num(min) }),
+        ...(max === undefined ? {} : { lodMaxClamp: num(max) }),
+      };
+    };
+    if (entry.kind === "one") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), sampler: a.sampler ?? null, ...clamps(0) }];
+    }
+    if (!Array.isArray(a.samplers)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return a.samplers.map((sampler, i) => ({ cmd, stage: entry.stage, index: first + i, sampler, ...clamps(i) }));
   },
 
   indexBufferOf(cmd: CaptureCommand): BoundIndexBuffer | null {

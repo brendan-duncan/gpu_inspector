@@ -9,19 +9,11 @@
 // line it belongs to. The instruction ordinal is what ties this to `spirv-dis` output, which
 // prints exactly one instruction per (possibly multi-line) statement in module order.
 
-export interface DebugSourceFile {
-  name: string;
-  /** Source text, or null when only the file name was embedded. */
-  text: string | null;
-  /** The text came from a file on this machine (the launch configuration's source roots), not the module. */
-  fromHost?: boolean;
-}
+// A source file and a source location mean the same thing for every language the debugger steps,
+// so they are the debugger's own (../debug/program.ts) and re-exported here for SPIR-V's callers.
+import type { DebugLocation, DebugSourceFile } from "../debug/program.js";
 
-export interface DebugLocation {
-  file: number;     // index into SpirvDebugInfo.files
-  line: number;     // 1-based
-  column: number;   // 1-based, 0 when unknown
-}
+export type { DebugLocation, DebugSourceFile };
 
 export type DebugInfoForm = "OpLine" | "NonSemantic.Shader.DebugInfo.100" | "none";
 

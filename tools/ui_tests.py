@@ -37,6 +37,14 @@ def find_triangle():
     return None
 
 
+def find_metal_triangle():
+    """The Metal sample (test/metal_triangle), which only exists on macOS."""
+    if sys.platform != "darwin":
+        return None
+    path = os.path.join(ROOT, "build", "bin", "mtlinsp_triangle")
+    return path if os.path.isfile(path) else None
+
+
 def find_replay():
     for c in [os.path.join(ROOT, "build", "bin", "Release", "vkinsp_replay.exe"),
               os.path.join(ROOT, "build", "bin", "vkinsp_replay.exe"),
@@ -341,6 +349,79 @@ def triangle_debug_compute(state, log):
         expect(d.get("mode") == "source", f"wave.comp's source was not found under the source root: {d.get('mode')}")
 
 
+# --------------------------------------------------------------------------------------------
+# Metal (test/metal_triangle, captured through metal/): the shader debugger on a Metal capture,
+# whose shaders are Metal Shading Language rather than SPIR-V. There is no replay on this path: a
+# fragment's inputs come from running the draw's own vertex shader in the interpreter.
+
+
+def check_metal_capture(state, log):
+    c = capture(state)
+    return expect(bool(c), "no capture tab") + \
+        expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") + \
+        expect((c.get("draws") or 0) >= 2, f"{c.get('draws')} draws") + \
+        expect((c.get("textureErrors") or 0) == 0, f"{c.get('textureErrors')} textures failed to read back") + \
+        expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every texture's data arrived")
+
+
+def metal_debug_compute(state, log):
+    d = debugger_tab(state)
+    # wave_main: the kernel's source comes from the library the application compiled, so unlike the
+    # Vulkan compute case there are no source roots to find it in.
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(d), "--debug-view=debugger:compute opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the invocation: {d.get('error')}") + \
+        expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 20,
+               f"the library's Metal Shading Language is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
+
+
+def metal_debug_vertex(state, log):
+    d = debugger_tab(state)
+    outputs = d.get("outputs") or []
+    position = next((o.get("value") for o in outputs if o.get("builtin") == 0), None) or []
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(d), "--debug-view=debugger:vertex opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the vertex: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the vertex did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(len(position) == 4 and position[3] == 1 and any(abs(v) > 1e-4 for v in position[:2]),
+               f"[[position]] is not a transformed clip position: {position}")
+
+
+def metal_debug_pixel(state, log):
+    d = debugger_tab(state)
+    outputs = d.get("outputs") or []
+    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    target = (d.get("targetPixel") or {}).get("value") or []
+    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    # The blit pass's fragment: its varyings rasterized from the vertex shader the interpreter ran,
+    # its texture sampled from the read-back the capture made of what the draw bound, and the colour
+    # it writes compared with the render target (the blit is the pass's only draw).
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+
+
+def metal_cases(triangle):
+    launch = [f"--launch={triangle}"]
+    return [
+        Case("metal-debug-compute", launch + ["--debug-capture", "--debug-view=debugger:compute::end"],
+             metal_debug_compute, delay_ms=16000),
+        Case("metal-debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::end"],
+             metal_debug_vertex, delay_ms=16000),
+        # The last draw is the blit, which samples a texture: the one case that needs the sampled
+        # read-back (metal/src/capture.mm, QueueTextureCapture) as well as the interpreter.
+        Case("metal-debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel:last:end"],
+             metal_debug_pixel, delay_ms=18000),
+    ]
+
+
 def triangle_stacks(state, log):
     c = capture(state)
     s = session(state)
@@ -459,6 +540,7 @@ def main():
     ap.add_argument("--only", help="comma-separated case names")
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     ap.add_argument("--no-triangle", action="store_true", help="skip the live triangle cases")
+    ap.add_argument("--no-metal", action="store_true", help="skip the live Metal cases (macOS)")
     args = ap.parse_args()
     if not electron():
         print("electron not installed: run npm install in app/", file=sys.stderr)
@@ -470,6 +552,12 @@ def main():
             print("vkinsp_triangle not built (cmake --build build --config Release --target vkinsp_triangle)", file=sys.stderr)
             return 2
         cases += triangle_cases(triangle)
+    if not args.no_metal:
+        metal_triangle = find_metal_triangle()
+        if metal_triangle:
+            cases += metal_cases(metal_triangle)
+        elif sys.platform == "darwin":
+            print("  (mtlinsp_triangle not built: skipping the Metal cases)")
     if args.captures:
         for p in sorted(glob.glob(os.path.join(args.captures, "*.gpucap"))):
             cases.append(capture_case(p))

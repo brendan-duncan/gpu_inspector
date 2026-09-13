@@ -218,7 +218,7 @@ test("basic.hlsl (dxc): a cbuffer matrix, lerp and saturate, a separate texture 
 
 test("derivatives.frag: dFdx, dFdy, fwidth and implicit-LOD sampling across the pixel quad", async () => {
   const quadOut = join(dir, "quad.mjs");
-  buildSync({ entryPoints: [join(here, "..", "src", "renderer", "spirv", "quad.ts")], bundle: true, format: "esm", platform: "node", outfile: quadOut, logLevel: "silent" });
+  buildSync({ entryPoints: [join(here, "..", "src", "renderer", "debug", "quad.ts")], bundle: true, format: "esm", platform: "node", outfile: quadOut, logLevel: "silent" });
   const { PixelQuad } = await import(pathToFileURL(quadOut).href);
   const m = vector("derivatives.frag.spv");
   // inUV varies by 0.01 a pixel across and 0.02 down; the debugged pixel is the quad's bottom-right one.

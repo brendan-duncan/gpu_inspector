@@ -1,103 +1,13 @@
-// Values of the shader debugger's SPIR-V interpreter, and reading them out of buffer bytes.
+// Reading SPIR-V values out of buffer bytes: the layout rules (Offset, ArrayStride, MatrixStride)
+// a uniform, storage or push constant block is read through.
 //
-// A scalar is a number (32-bit integers normalized to their type's signedness, floats rounded to
-// their width), a bigint for 64-bit integers, or a boolean; vectors, matrices (arrays of columns),
-// arrays and structs are JavaScript arrays. Pointers, images and samplers are objects of the
-// classes below. Buffer-backed variables (uniform, storage and push constant blocks) are read from
-// their bytes as they are accessed rather than all at once, so a storage buffer with a million
-// elements costs only what the shader touches; a store puts its value over the bytes.
+// The values themselves — scalars, composites, pointers, images and samplers — are the debugger's
+// shared ones (../debug/values.ts), which the MSL interpreter uses too; they are re-exported here
+// so everything SPIR-V keeps importing them from one place.
 import { Decoration, type SpirvModule } from "./module.js";
+import type { ScalarKind, Value } from "../debug/values.js";
 
-export type Value = number | bigint | boolean | Value[] | Pointer | ImageValue | SamplerValue | SampledImageValue | null;
-
-/** Where a variable's value lives. */
-export interface Cell {
-  value: Value;
-  /** Buffer-backed: the bytes the value is read from, with the stores made over them. */
-  buffer?: BufferStorage;
-  /** An array of blocks: the value is one { buffer } per element. */
-  bufferArray?: boolean;
-}
-
-export interface BufferStorage {
-  bytes: Uint8Array;
-  /** The block's type. */
-  type: number;
-  /** Values stored over the bytes, by access path ("0/3/1"). */
-  overrides: Map<string, Value>;
-}
-
-export class Pointer {
-  constructor(
-    readonly cell: Cell,
-    readonly path: number[],
-    /** The type pointed at. */
-    readonly type: number,
-    readonly storage: number,
-    /** The variable the pointer is into, for names and the watch view. */
-    readonly variable: number,
-  ) {}
-}
-
-/** An image a descriptor bound, with the captured texels the shader reads. */
-export interface DebugTexture {
-  width: number;
-  height: number;
-  depth: number;
-  layers: number;
-  /** Mip levels the capture holds, from `baseMip`. */
-  mips: number;
-  baseMip: number;
-  format: string;
-  /** UINT / SINT formats: fetched as integers, not normalized. */
-  integer: boolean;
-  /** RGBA per texel (a missing channel reads 0, alpha 1), for one level and layer; null where not captured. */
-  level(mip: number, layer: number): { width: number; height: number; texels: Float32Array } | null;
-  /** Texels a shader wrote (storage images), by "mip/layer/x/y". */
-  writes?: Map<string, number[]>;
-}
-
-export interface DebugSampler {
-  magFilter: "nearest" | "linear";
-  minFilter: "nearest" | "linear";
-  mipmapMode: "nearest" | "linear";
-  address: ("repeat" | "mirror" | "clamp" | "border" | "mirrorClamp")[];
-  border: number[];
-  compareOp: string | null;
-  minLod: number;
-  maxLod: number;
-  lodBias: number;
-  unnormalized: boolean;
-}
-
-export class ImageValue {
-  constructor(readonly texture: DebugTexture | null, readonly binding: string) {}
-}
-
-export class SamplerValue {
-  constructor(readonly sampler: DebugSampler | null, readonly binding: string) {}
-}
-
-export class SampledImageValue {
-  constructor(readonly image: ImageValue, readonly sampler: SamplerValue) {}
-}
-
-export function isComposite(v: Value): v is Value[] {
-  return Array.isArray(v);
-}
-
-/** A deep copy of a value (a load or a store must not share arrays with the variable). */
-export function cloneValue(v: Value): Value {
-  return Array.isArray(v) ? v.map(cloneValue) : v;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Scalars
-
-export interface ScalarKind {
-  base: "float" | "int" | "uint" | "bool";
-  width: number;
-}
+export * from "../debug/values.js";
 
 /** The scalar type a type is made of (a vector's or matrix's element), or null for other types. */
 export function scalarOf(m: SpirvModule, typeId: number): ScalarKind | null {
@@ -111,37 +21,6 @@ export function scalarOf(m: SpirvModule, typeId: number): ScalarKind | null {
     case "matrix": return scalarOf(m, t.column);
     default: return null;
   }
-}
-
-/** A scalar brought into its type's range: floats rounded to their width, integers wrapped to theirs. */
-export function normalize(v: Value, s: ScalarKind): Value {
-  if (s.base === "bool") return Boolean(v);
-  if (s.base === "float") {
-    const n = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? (v ? 1 : 0) : (v as number);
-    return s.width === 32 ? Math.fround(n) : s.width === 16 ? Math.fround(n) : n;
-  }
-  if (s.width === 64) {
-    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? (v ? 1 : 0) : (v as number)));
-    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
-  }
-  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? (v ? 1 : 0) : Math.trunc(v as number);
-  if (s.width < 32) {
-    const mod = 2 ** s.width;
-    n = ((n % mod) + mod) % mod;
-    return s.base === "int" && n >= mod / 2 ? n - mod : n;
-  }
-  return s.base === "int" ? n | 0 : n >>> 0;
-}
-
-/** Applies `f` to every scalar of a value (a scalar, or a vector's or matrix's elements). */
-export function mapScalars(v: Value, f: (x: Value) => Value): Value {
-  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
-}
-
-/** Applies `f` to matching scalars of two values of the same shape. */
-export function zipScalars(a: Value, b: Value, f: (x: Value, y: Value) => Value): Value {
-  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
-  return f(a, b);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -293,18 +293,23 @@ What works:
   the Metal Shading Language it was compiled from when it was compiled here rather than loaded as
   a precompiled `metallib`.
 * **Frame capture** — the frame's commands grouped by command buffer and pass, each draw with the
-  pipeline bound at it, its decoded vertex and index buffers, and the pass's read-back colour
-  attachments. Captures save to the same `.gpucap` files and reopen on any platform.
+  pipeline bound at it, its decoded vertex and index buffers, the textures it sampled and the
+  pass's read-back colour attachments. Captures save to the same `.gpucap` files and reopen on any
+  platform.
+* **Shader debugging** — a draw's vertex or fragment shader, or a dispatch's compute shader,
+  stepped line by line through its Metal Shading Language, on the buffers, textures and samplers
+  the encoder had bound. There is no replay on this path: a fragment's inputs come from running
+  the draw's own vertex shader in the same interpreter and rasterizing the result, so it needs
+  nothing built. A library the application loaded as a precompiled `metallib` carries no source,
+  and the debugger says so rather than guessing.
 * **Android and saved captures** — unchanged from the Windows and Linux builds: Vulkan
   applications on Android devices over adb (see [Android](#android)), and `.gpucap` files taken
   anywhere.
 
-What is not there yet: pass timings, so the profile view still sits at *"waiting for GPU
-timestamps"*; depth attachments and sampled images are not read back, and only the pixel formats
-`metal/src/formats.h` maps are (no ASTC, ETC or PVRTC); Metal's own validation layers are not
-surfaced as validation messages; there are no creation stack traces; and shader editing does not
-apply — it is built around SPIR-V and its compilers, and Metal's shaders are already source. Only
-Apple Silicon has been verified. `metal/README.md` is the detailed account, including what the
+What is not there yet: only the pixel formats `metal/src/formats.h` maps are read back (no ASTC,
+ETC or PVRTC); stencil attachments are not; and shader editing does not apply — it is built around
+SPIR-V and its compilers, and Metal's shaders are already source. Only Apple Silicon has been
+verified. `metal/README.md` is the detailed account, including what the
 interception itself cost to get right, and it keeps the current list.
 
 ### Injecting into an application

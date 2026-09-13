@@ -388,7 +388,7 @@ export class CapturePanel {
       measureOverdraw: () => view.measureOverdraw(),
       drawsOfPass: (k) => view.drawsOfPass(k),
       drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
-      debugPixel: view.data.api === "metal" ? undefined : (command, x, y) => view.debugShader({ stage: "fragment", command, x, y }),
+      debugPixel: (command, x, y) => view.debugShader({ stage: "fragment", command, x, y }),
     }, target, options);
     this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
   }
@@ -414,7 +414,7 @@ export class CapturePanel {
       },
       meshOutput: (command, passDraws) => view.meshOutput(command, passDraws),
       inputNames: (cmd) => view.vertexInputNames(cmd),
-      debugVertex: view.data.api === "metal" ? undefined : (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
+      debugVertex: (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
     }, draw, options);
     const entry = this._addSubTab(view, "mesh", tab, `${tab.label}: ${view.label}`);
     // The label follows the draw the tab is stepped to.
@@ -444,6 +444,7 @@ export class CapturePanel {
       meshOutput: (command) => view.meshOutput(command),
       inputNames: (cmd) => view.vertexInputNames(cmd),
       disassemble: (spirv) => window.inspector.shaderText(spirv, "dis"),
+      fetchBlob: (objectId, index) => view.fetchShaderBlob(objectId, index),
     }, request, options);
     const entry = this._addSubTab(view, "debugger", tab, `${tab.label}: ${view.label}`);
     const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
@@ -1502,6 +1503,16 @@ export class CaptureView implements CaptureHost {
   }
 
   /** The vertex shader's input names by location, from its reflection. */
+  /**
+   * An object's payload, from the database's cache or from the layer: a Metal library's source,
+   * which nothing asks for until the debugger is opened on one of its functions.
+   */
+  async fetchShaderBlob(objectId: number, index: number): Promise<Uint8Array | null> {
+    const object = this.window.database.getObject(objectId);
+    if (!object) return null;
+    return fetchBlob(this.window, object, index).catch(() => null);
+  }
+
   async vertexInputNames(cmd: CaptureCommand): Promise<Map<number, string>> {
     const names = new Map<number, string>();
     const pipeline = drawState(this.data, this.window.database, cmd).pipeline;

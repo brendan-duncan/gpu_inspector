@@ -1,14 +1,17 @@
-// debug_shader: the shader debugger for an agent. One invocation of a Vulkan draw's vertex or fragment
-// shader, or of a dispatch's compute shader, run in the SPIR-V interpreter on the capture's inputs
+// debug_shader: the shader debugger for an agent. One invocation of a draw's vertex or fragment
+// shader, or of a dispatch's compute shader, run in the interpreter of whichever language it is in
+// — SPIR-V for a Vulkan capture, Metal Shading Language for a Metal one — on the capture's inputs
 // (renderer/shader_debug_setup.ts), with the values every source line computed in the order they
 // ran, the first NaN or infinity, the outputs, and how they compare with what the GPU produced.
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { findShaderSources } from "../main/shader_sources.js";
 import { drawState } from "../renderer/draw_state.js";
 import { parseMeshFile, type MeshOutput } from "../renderer/mesh_output.js";
-import { DebugController, nonFinite, resultType, scalars, valueText } from "../renderer/shader_debugger.js";
+import { DebugController } from "../renderer/shader_debugger.js";
 import { coveredPixel, prepareDebugSession, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
-import { Pointer } from "../renderer/spirv/values.js";
+import { interpretedMeshOutput, metalRasterState } from "../renderer/metal/shader_debug.js";
+import { nonFinite, Pointer, scalars } from "../renderer/debug/values.js";
+import { SpirvProgram } from "../renderer/spirv/program.js";
 import { sourceLineMap } from "../renderer/vulkan/spirv_debug.js";
 import type { Capture, CaptureStore } from "./capture_store.js";
 import { vertexInputs } from "./command_tools.js";
@@ -40,13 +43,15 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
   return [
     {
       name: "debug_shader",
-      description: "Runs one shader invocation of a Vulkan capture in GPU Inspector's SPIR-V interpreter, the way RenderDoc's shader debugger " +
-        "does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a draw's vertex (its attributes decoded " +
-        "from the captured buffers), a draw's fragment at a pixel (its inputs rasterized from the replayed vertex shader outputs, so this " +
-        "needs vkinsp_replay), or a dispatch's compute invocation, on the descriptor sets, push constants and specialization the command had. " +
-        "Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed " +
-        "in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the " +
-        "interpreter could not do faithfully. `line` keeps only that line's values.",
+      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger " +
+        "does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V or a Metal " +
+        "capture's Metal Shading Language. A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a " +
+        "pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized " +
+        "from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal fragment's come from running the draw's own vertex " +
+        "shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to " +
+        "compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line " +
+        "information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. " +
+        "A Metal library the application loaded precompiled has no source, and says so.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
@@ -55,7 +60,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
         x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
         y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
-        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID. Default [0, 0, 0]." },
+        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
         trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
       }, ["command"]),
@@ -67,13 +72,17 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
         const isDispatch = c.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
-        if (c.data.api === "metal") return jsonResult({ capture: c.id, command, note: "The shader debugger runs SPIR-V: Metal shaders are not debugged yet." });
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");
-        const meshOutput = meshOutputs(c);
         const state = drawState(c.data, c.db, cmd);
         const inputNames = new Map<number, string>();
         for (const v of vertexInputs(c, state.pipeline)) if (v.location !== undefined && v.name) inputNames.set(v.location, v.name);
-        const ctx: DebugContext = { data: c.data, db: c.db, meshOutput, inputNames };
+        // A Metal capture needs no replay: its fragment inputs come from interpreting the draw's
+        // own vertex shader, so the replay is only wired up for a Vulkan one.
+        const metal = c.data.api === "metal";
+        const ctx: DebugContext = {
+          data: c.data, db: c.db, inputNames,
+          meshOutput: metal ? undefined : meshOutputs(c),
+        };
 
         let target: DebugTarget;
         if (stage === "compute") {
@@ -86,11 +95,12 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           if (x === undefined || y === undefined) {
             let mesh: MeshOutput;
             try {
-              mesh = await meshOutput(command);
+              // Metal has no replay: the vertex shader is interpreted to find a covered pixel.
+              mesh = metal ? await interpretedMeshOutput(ctx, cmd, state) : await ctx.meshOutput!(command);
             } catch (e) {
               return jsonResult({ capture: c.id, command, stage, note: `Cannot debug the fragment: ${(e as Error).message}` });
             }
-            const pixel = mesh.measured ? coveredPixel(state, mesh) : null;
+            const pixel = mesh.measured ? coveredPixel(state, mesh, metal ? metalRasterState(ctx, cmd, state) : undefined) : null;
             if (!pixel) return jsonResult({ capture: c.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
             x = pixel.x;
             y = pixel.y;
@@ -104,15 +114,17 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         } catch (e) {
           return jsonResult({ capture: c.id, command, stage, note: `Cannot debug: ${(e as Error).message}` });
         }
-        const m = session.module;
-        // Line information without text: the source roots may have the files.
-        const info = m.debug;
-        const missing = info?.files.filter((f) => f.text === null && f.name) ?? [];
-        if (info && missing.length) {
-          const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
-          for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+        const program = session.program;
+        // SPIR-V with line information but no text: the source roots may have the files. MSL is
+        // the capture's own text, so there is nothing to look for.
+        if (program instanceof SpirvProgram) {
+          const missing = program.files.filter((f) => f.text === null && f.name);
+          if (missing.length) {
+            const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
+            for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+          }
         }
-        const maps = info?.files.map((f) => (f.text == null ? null : sourceLineMap(f.text))) ?? [];
+        const maps = program.files.map((f) => (f.text == null ? null : sourceLineMap(f.text)));
         const sourceOf = (file: number, line: number): string | undefined => {
           const map = maps[file];
           const phys = map?.physicalOf.get(line);
@@ -134,7 +146,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           for (const r of last.results) {
             if (!firstNonFinite && nonFinite(r.value)) {
               const l = ctl.location(r.inst);
-              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: m.nameOf(r.id), value: valueText(m, resultType(m, r), r.value), source: l ? sourceOf(l.file, l.line) : undefined };
+              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: program.nameOf(r.id), value: program.valueText(program.resultType(r), r.value), source: l ? sourceOf(l.file, l.line) : undefined };
             }
           }
           if (!wantTrace || (onlyLine !== undefined && loc?.line !== onlyLine)) continue;
@@ -145,19 +157,19 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           // Pointers (variables, access chains) are where values go, not values.
           const values = last.results.filter((r) => !(r.value instanceof Pointer));
           if (!values.length) continue;
-          const named = values.filter((r) => m.names.has(r.id) || m.debugVariableNames.has(r.id));
+          const named = values.filter((r) => !program.resultTemporary(r));
           const shown = (named.length ? named : values).slice(-MAX_VALUES_PER_LINE);
-          const texts = shown.map((r) => `${m.nameOf(r.id)} = ${valueText(m, resultType(m, r), r.value)}`);
+          const texts = shown.map((r) => `${program.nameOf(r.id)} = ${program.valueText(program.resultType(r), r.value)}`);
           if (ctl.mode === "instruction") {
             // Without lines, an entry per instruction: "ordinal: name = value" (get_shader's disassembly has the instructions).
             trace.push(`${inst.index}: ${texts.join("; ")}`);
           } else {
             trace.push({
               line: loc?.line,
-              file: (info?.files.length ?? 0) > 1 && loc ? info!.files[loc.file]?.name : undefined,
+              file: program.files.length > 1 && loc ? program.files[loc.file]?.name : undefined,
               source: loc ? sourceOf(loc.file, loc.line) : undefined,
               values: texts,
-              depth: ctl.invocation.frames.length > 1 ? ctl.invocation.frames.length : undefined,
+              depth: ctl.invocation.depth > 1 ? ctl.invocation.depth : undefined,
             });
           }
           // A partial pass over the same line by "into" (a loop) is fine: each entry is one visit.
@@ -165,7 +177,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         }
 
         const inv = ctl.invocation;
-        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: m.typeName(o.type), value: valueText(m, o.type, o.value, 64) }));
+        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
         let compare: Record<string, unknown> | undefined;
         if (inv.status === "returned" && session.targetPixel) {
           compare = {
@@ -189,7 +201,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           capture: c.id, command, method: cmd.method, stage, entryPoint: session.stage.entryPoint,
           invocation: session.description, notes: session.notes.length ? session.notes : undefined,
           status: inv.status, error: inv.error || undefined, instructions: inv.steps,
-          steppedBy: ctl.mode === "source" ? `source line (${info?.language ?? "source"})` : "SPIR-V instruction (the shader has no line information)",
+          steppedBy: ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
           outputs, compare, firstNonFinite,
           warnings: inv.warnings.size ? [...inv.warnings] : undefined,
           trace: wantTrace ? trace : undefined, traceTruncated: traceTruncated || undefined,

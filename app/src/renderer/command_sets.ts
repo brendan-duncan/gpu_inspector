@@ -56,6 +56,31 @@ export interface BoundStageBuffer {
   inline: boolean;
 }
 
+/**
+ * A texture or a sampler bound to a stage by index, the counterpart of BoundStageBuffer:
+ * `setFragmentTexture:atIndex:`, `setVertexSamplerState:atIndex:`, the compute encoder's
+ * `setTexture:atIndex:`, and the plural forms that bind a range at once.
+ */
+export interface BoundStageTexture {
+  cmd: CaptureCommand;
+  /** "vertex", "fragment", "compute", "object", "mesh" or "tile". */
+  stage: string;
+  index: number;
+  texture: ArgValue;
+  /** Id of the CaptureTextureFrames entry holding the texels, 0 when they were not read back. */
+  dataId: number;
+}
+
+export interface BoundStageSampler {
+  cmd: CaptureCommand;
+  stage: string;
+  index: number;
+  sampler: ArgValue;
+  /** `setVertexSamplerState:lodMinClamp:lodMaxClamp:atIndex:` overrides the sampler's own clamps. */
+  lodMinClamp?: number;
+  lodMaxClamp?: number;
+}
+
 export interface CommandSets {
   DRAW: ReadonlySet<string>;
   DISPATCH: ReadonlySet<string>;
@@ -120,6 +145,15 @@ export interface CommandSets {
   BIND_STAGE_BUFFER?: ReadonlySet<string>;
   /** The stage buffers `cmd` binds, empty when it binds none. */
   stageBuffersOf?(cmd: CaptureCommand): BoundStageBuffer[];
+
+  /**
+   * Commands that bind a texture or a sampler to a stage by index (Metal). What a draw sampled is
+   * what these left bound, which is what the shader debugger reads its textures through.
+   */
+  BIND_STAGE_TEXTURE?: ReadonlySet<string>;
+  stageTexturesOf?(cmd: CaptureCommand): BoundStageTexture[];
+  BIND_STAGE_SAMPLER?: ReadonlySet<string>;
+  stageSamplersOf?(cmd: CaptureCommand): BoundStageSampler[];
 
   /**
    * The short text shown beside a command in the tree: the arguments worth reading at a glance,

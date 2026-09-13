@@ -360,6 +360,65 @@ staging holds nothing until the GPU has run the blits.
 
 See "Pixel formats" below for how a format is named and which ones can be read back.
 
+## Sampled texture read-back
+
+A render target says what the frame looked like; the textures a draw *read* say why. Every
+`setVertexTexture:`/`setFragmentTexture:`/`setTexture:` (and the plural forms) recorded during a
+capture queues its texture through `QueueTextureCapture`, and the command carries the id of the
+read-back in `textureData`, the way a bound buffer range carries one in `bufferData`. That is what
+lets the shader debugger sample what the GPU sampled instead of reading zero.
+
+Three things differ from an attachment's read-back:
+
+* **The whole texture is copied, not one image.** A shader picks its own level of detail, so every
+  mip level is read, each with all of its slices — array layers, cube faces, or a 3D texture's
+  depth planes — laid out level by level with each level's slices back to back, which is the order
+  the UI's decoder walks. That is one blit per region into one staging buffer.
+* **It is read once per capture.** A texture bound at every draw of a pass would otherwise be
+  copied at every draw; `g_sampledTextures` keys the queue by the tracked texture id, and the
+  binding commands all carry the same read-back id.
+* **It is budgeted.** A frame that binds every atlas it owns could turn a capture into a gigabyte,
+  so `maxSampledTextureTotal` (256 MB, like the render targets' `maxTextureSize` per texture) caps
+  the total and what is over it is reported rather than dropped. `captureSampledTextures` turns the
+  whole thing off.
+
+The blit goes where the render targets' and the private buffers' do — the end of the pass the bind
+was made in — for the same reason: a command buffer allows one encoder at a time. A texture that
+cannot be a blit source (multisampled, `framebufferOnly`, memoryless, or of a format
+`PixelFormatDetails` has no entry for) is reported with the reason, and the debugger repeats it as
+a warning on the invocation that sampled it.
+
+## Shader debugging
+
+A Metal capture's shaders reach the debugger as the Metal Shading Language the application handed
+`newLibraryWithSource:`, which the library already keeps as a blob (see "Library contents"). The
+interpreter that runs it is `app/src/renderer/msl/`; nothing in this directory executes shaders.
+
+What the capture has to provide for it, and where each comes from:
+
+| What the debugger needs | Where it comes from |
+| --- | --- |
+| The entry point's source | the pipeline's `vertexFunction`/`fragmentFunction`/`function` ref → the `MTLFunction`'s name and its parent `MTLLibrary`'s source blob |
+| Its buffers | `setVertexBuffer:` and the rest, read back at bind time ("Buffer read-back") |
+| Its textures and samplers | `setFragmentTexture:` and `setFragmentSamplerState:`, with the texels from the read-back above and the filters from the `MTLSamplerState`'s descriptor |
+| A vertex's attributes | the vertex buffers and the pipeline's `MTLVertexDescriptor`, which the UI already decodes for the mesh view |
+| A dispatch's thread ids | `dispatchThreads:` or `dispatchThreadgroups:` |
+| A fragment's varyings | the draw's own vertex shader, run in the interpreter and rasterized — there is no replay on this path |
+| The viewport, cull mode and winding | `setViewport:`, `setCullMode:`, `setFrontFacingWinding:` and the `MTLDepthStencilState`, which are commands on the encoder rather than pipeline state as they are in Vulkan |
+
+Two conventions differ from Vulkan and are easy to get wrong; both are in the UI's rasterizer
+rather than here, and both have a test:
+
+* **Clip-space +Y is the top of the render target**, as in Direct3D. Vulkan's +Y is the bottom. A
+  fragment debugged with the wrong sign comes from the triangle mirrored about the middle of the
+  screen, which looks plausible and is wrong.
+* **A `float3` is sixteen bytes.** So is its alignment, and `bool` is one byte where SPIR-V's is
+  four — a uniform struct read with the wrong rule shifts every member after the first vector.
+
+A library the application loaded as a precompiled `metallib` carries bytes rather than source, and
+nothing here disassembles AIR: the debugger refuses such a shader with that reason, which is the
+honest answer.
+
 ## Frame timing and capture options
 
 `frame_stats.mm` is the Vulkan layer's frame report: at every frame boundary the interval since
@@ -746,8 +805,10 @@ Limits:
 
 ## Not done
 
-Stencil attachments are not read back (colour and depth are), nor are sampled images, and only
-the pixel formats in `PixelFormatDetails` are supported. What an argument buffer points at is resolved one level
+Stencil attachments are not read back (colour, depth and sampled textures are), and only the pixel
+formats in `PixelFormatDetails` are supported. A shader's function constants
+(`newFunctionWithName:constantValues:`) are not recorded, so the debugger runs such a shader with
+their defaults; tessellation, object, mesh and tile stages are not debugged. What an argument buffer points at is resolved one level
 deep: the buffers it names are not themselves read back. Resource state and acceleration structure encoders are
 recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary

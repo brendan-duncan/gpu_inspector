@@ -1,9 +1,13 @@
-// Texture reads of the shader debugger's interpreter, on the CPU from the captured texels: what a
+// Texture reads of the shader debugger's interpreters, on the CPU from the captured texels: what a
 // sampler with its filters, address modes, level of detail and comparison gives, and texel fetches.
 // The levels a capture did not read back are clamped to the ones it did.
+//
+// Nothing here knows which shading language asked: a DebugTexture is a captured Vulkan image or a
+// captured Metal texture alike (both arrive with VK_FORMAT names), so the SPIR-V and MSL
+// interpreters sample through the same code.
 import type { DebugSampler, DebugTexture } from "./values.js";
 
-/** SPIR-V Dim: 1D, 2D, 3D, Cube, Rect, Buffer, SubpassData. */
+/** SPIR-V Dim, which the MSL interpreter maps its texture types onto: 1D, 2D, 3D, Cube, Rect, Buffer, SubpassData. */
 export const enum Dim { D1 = 0, D2 = 1, D3 = 2, Cube = 3, Rect = 4, Buffer = 5, SubpassData = 6 }
 
 const DEFAULT_SAMPLER: DebugSampler = {

@@ -10,12 +10,19 @@ import {
   BUILTIN_NAMES, BuiltIn, Decoration, ExecutionModel, Op, StorageClass, type EntryPointInfo, type FunctionInfo, type Instruction,
   type SpirvModule,
 } from "./module.js";
-import { Dim, fetch, gather, implicitLod, sample } from "./sampling.js";
+import { SpirvProgram } from "./program.js";
+import { Dim, fetch, gather, implicitLod, sample } from "../debug/sampling.js";
+import type { DerivativeSource } from "../debug/quad.js";
+import type {
+  DebugFrameView, DebugInvocation, DebugProgram, InvocationStatus, StepResult, VariableView,
+} from "../debug/program.js";
 import {
   ImageValue, Pointer, SampledImageValue, SamplerValue, bufferLocation, cloneValue, mapScalars, normalize, readBuffer,
   runtimeArrayLength, scalarOf, zipScalars, type BufferStorage, type Cell, type DebugSampler, type DebugTexture, type ScalarKind,
   type Value,
 } from "./values.js";
+
+export type { DerivativeSource, InvocationStatus, StepResult, VariableView };
 
 export interface ShaderBindings {
   /** A buffer descriptor's bound range (dynamic offset applied); null when not captured. */
@@ -35,13 +42,6 @@ export interface InvocationInputs {
   locations: Map<number, number[]>;
 }
 
-export interface DerivativeSource {
-  /** The screen-space derivatives of a value at a derivative point; "blocked" while the other invocations catch up. */
-  derivative(invocation: Invocation, inst: Instruction, operand: Value): { dx: Value; dy: Value } | "blocked";
-}
-
-export type InvocationStatus = "running" | "blocked" | "returned" | "discarded" | "error";
-
 export interface Frame {
   fn: FunctionInfo;
   /** Ordinal of the next instruction to execute. */
@@ -55,23 +55,9 @@ export interface Frame {
   resultId: number;
 }
 
-/** One result the stepped instructions produced: what the watch shows as "values on this line". */
-export interface StepResult {
+/** A step result of this interpreter: the debugger's shape, narrowed to the instruction it came from. */
+export interface SpirvStepResult extends StepResult {
   inst: Instruction;
-  id: number;
-  value: Value;
-}
-
-export interface VariableView {
-  id: number;
-  name: string;
-  type: number;
-  value: Value;
-  storage: number;
-  location?: number;
-  builtin?: number;
-  set?: number;
-  binding?: number;
 }
 
 const GLSL_STD_450 = "GLSL.std.450";
@@ -112,7 +98,7 @@ function flat(v: Value): number[] {
   return [num(v)];
 }
 
-export class Invocation {
+export class Invocation implements DebugInvocation {
   readonly module: SpirvModule;
   readonly entry: EntryPointInfo;
   readonly bindings: ShaderBindings;
@@ -130,9 +116,9 @@ export class Invocation {
   helper = false;
   steps = 0;
   /** Results of the instructions executed since takeResults(). */
-  private _results: StepResult[] = [];
+  private _results: SpirvStepResult[] = [];
   /** Called with every value an instruction produces (the MCP tool's trace). */
-  onResult: ((r: StepResult) => void) | null = null;
+  onResult: ((r: SpirvStepResult) => void) | null = null;
 
   constructor(module: SpirvModule, options: { entryPoint?: string; model?: number; bindings: ShaderBindings; inputs: InvocationInputs; derivatives?: DerivativeSource | null }) {
     this.module = module;
@@ -161,8 +147,18 @@ export class Invocation {
     return this;
   }
 
+  /** The module as the debugger reads it: its source, names and value formatting. */
+  get program(): DebugProgram {
+    return SpirvProgram.of(this.module);
+  }
+
   get finished(): boolean {
     return this.status === "returned" || this.status === "discarded" || this.status === "error";
+  }
+
+  /** How deep the call stack is (1 in the entry point). */
+  get depth(): number {
+    return this.frames.length;
   }
 
   /** The instruction about to execute, null when finished. */
@@ -172,7 +168,7 @@ export class Invocation {
   }
 
   /** The results produced since the last call, and forgets them. */
-  takeResults(): StepResult[] {
+  takeResults(): SpirvStepResult[] {
     const r = this._results;
     this._results = [];
     return r;
@@ -273,6 +269,26 @@ export class Invocation {
     const v = frame?.values.get(id) ?? this.globals.get(id);
     if (v === undefined) return this.constants.get(id) as Value | undefined;
     return v instanceof Pointer ? this._load(v) : v;
+  }
+
+  /** The call stack, innermost first: the function of each frame and where it is stopped. */
+  callStack(): DebugFrameView[] {
+    const out: DebugFrameView[] = [];
+    for (let d = 0; d < this.frames.length; d++) {
+      const frame = this.frames[this.frames.length - 1 - d];
+      out.push({
+        name: this.module.nameOf(frame.fn.id),
+        // The innermost frame is at `current`; an outer one is at the call it is waiting on.
+        step: d === 0 ? this.current : this.module.instructions[frame.pc] ?? null,
+      });
+    }
+    return out;
+  }
+
+  /** Whether a frame is the one an id belongs to, so a hover prefers its value over a global's. */
+  frameOwns(depth: number, id: number): boolean {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    return !!frame && (frame.values.has(id) || frame.locals.some((l) => l.id === id));
   }
 
   // ---------------------------------------------------------------------------------------

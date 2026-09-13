@@ -14,12 +14,12 @@ const dir = mkdtempSync(join(tmpdir(), "dbgctl-"));
 const out = join(dir, "dbg.mjs");
 buildSync({
   stdin: {
-    contents: `export { SpirvModule } from "./spirv/module.js"; export { Invocation } from "./spirv/interpreter.js"; export * from "./shader_debugger.js"; export { debugTexture } from "./shader_debug_setup.js"; export { recordVertex } from "./shader_debugger_view.js";`,
+    contents: `export { SpirvModule } from "./spirv/module.js"; export { Invocation } from "./spirv/interpreter.js"; export { SpirvProgram, valueText, executableInstructions } from "./spirv/program.js"; export * from "./shader_debugger.js"; export { debugTexture } from "./shader_debug_setup.js"; export { recordVertex } from "./shader_debugger_view.js";`,
     resolveDir: join(here, "..", "src", "renderer"), loader: "ts",
   },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { SpirvModule, Invocation, DebugController, sourceKey, valueText, executableInstructions, debugTexture, recordVertex } = await import(pathToFileURL(out).href);
+const { SpirvModule, Invocation, SpirvProgram, DebugController, sourceKey, valueText, executableInstructions, debugTexture, recordVertex } = await import(pathToFileURL(out).href);
 
 const module = new SpirvModule(new Uint8Array(readFileSync(join(here, "vectors", "interpreter", "basic.frag.spv"))));
 
@@ -47,7 +47,7 @@ function session(mode = 0) {
   };
   const inputs = { locations: new Map([[0, [0.5, 0.25, 1]], [1, [0.75, 0.25]]]), builtins: new Map([[15, [10.5, 20.5, 0.5, 1]]]) };
   return {
-    target: { stage: "fragment", command: 0, x: 10, y: 20 }, module, notes: [], limits: {}, description: "test",
+    target: { stage: "fragment", command: 0, x: 10, y: 20 }, program: SpirvProgram.of(module), notes: [], limits: {}, description: "test",
     start: () => new Invocation(module, { bindings, inputs }),
   };
 }

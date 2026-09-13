@@ -197,13 +197,20 @@ application with injected state. Route (a) is the general one and is the prerequ
       VS In from the captured buffers and VS Out through transform feedback, as a wireframe and a
       table, with `get_mesh_output` in the MCP server.
 - [ ] Mesh output, the rest: tessellation and geometry stage outputs, every view of a multiview
-      pass, GPUs without transform feedback (RenderDoc's compute-shader conversion), Metal captures,
-      and a solid shaded preview.
+      pass, GPUs without transform feedback (RenderDoc's compute-shader conversion), and a solid
+      shaded preview. A Metal draw's VS Out could come from the interpreter the shader debugger
+      already runs it in (`renderer/metal/shader_debug.ts`, `interpretedMeshOutput`).
 - [x] Shader debugger (`renderer/spirv/`, `renderer/shader_debugger_view.ts`, `debug_shader`): a
       SPIR-V interpreter for vertex, pixel and compute invocations, with variables, stepping and
       breakpoints.
-- [ ] Shader debugger, the rest: tessellation and geometry stages, per-sample shading, watch
-      expressions, editing a value and running on, and Metal shaders.
+- [x] The debugger behind an API-neutral seam (`renderer/debug/program.ts`): the stepping, the tab
+      and `debug_shader` are written against DebugProgram and DebugInvocation, and each language
+      supplies one (`renderer/spirv/program.ts`, `renderer/msl/program.ts`).
+- [x] Metal shaders (`renderer/msl/`): the Metal Shading Language a capture holds, lexed, parsed,
+      lowered to a linear form and interpreted, for all three stages. A fragment's varyings come
+      from running the draw's own vertex shader rather than from a replay, since Metal has none.
+- [ ] Shader debugger, the rest: tessellation and geometry stages (Metal: object, mesh and tile),
+      per-sample shading, watch expressions, and editing a value and running on.
 - [ ] Shader flame graph / statement cost via ablation once per-draw replay timing exists.
 
 ## Vulkan-specific
@@ -249,7 +256,14 @@ backend does. Ordered by value per effort.
       so the frame-time meter and the Frame Bound card fill in; the refresh period from the
       display, or the layer's interval estimate, and none with display sync off.
 - [x] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
-      `captureTextures`, `captureBuffers`, `profilePasses`.
+      `captureTextures`, `captureBuffers`, `profilePasses`, `captureSampledTextures`,
+      `maxSampledTextureTotal`.
+- [x] Sampled texture read-back (`QueueTextureCapture` in `metal/src/capture.mm`): every texture a
+      draw or dispatch bound, whole (all mips, all slices), read once per capture and blitted at
+      the end of the pass the bind was in, carried on the binding command as `textureData`. It is
+      what lets a debugged fragment sample what the GPU sampled.
+- [x] The shader debugger on a Metal capture: the Metal Shading Language interpreter in
+      `app/src/renderer/msl/`, with the sessions in `app/src/renderer/metal/shader_debug.ts`.
 - [x] Validation messages: a command buffer's error with the encoder that faulted (encoder
       execution status is on while a client is connected), Metal's validation layer in its
       logging mode through an NSLog interpose (the launch dialog's "Validation layer" sets
@@ -310,6 +324,11 @@ backend does. Ordered by value per effort.
 - [x] ASTC, ETC2 / EAC, PVRTC and the extended-range and packed 4:2:2 pixel formats, in the
       read-back table and the UI's decoder, with reference vectors.
 - [ ] Stencil attachment read-back; the multi-planar YUV formats.
+- [ ] Function constants (`newFunctionWithName:constantValues:`) in the capture: the values are not
+      serialized (`FunctionArgs` in `metal/src/hooks_descriptors.mm`), so the shader debugger runs
+      a specialized shader with their defaults. Unity leans on these.
+- [ ] The shader debugger on a Unity player's Metal shaders, which are generated MSL rather than
+      hand-written: the parser's coverage is what to watch (`app/test/vectors/msl/`).
 
 ## iOS devices
 

@@ -3,7 +3,9 @@
 // walking back through its command buffer. The command details view (capture_command_info.ts)
 // renders it and the MCP server (src/mcp/) reports it, so both read one reconstruction.
 import { decodeBase64 } from "./utils/base64.js";
-import type { BoundIndexBuffer, BoundStageBuffer, BoundVertexBuffer, CommandSets } from "./command_sets.js";
+import type {
+  BoundIndexBuffer, BoundStageBuffer, BoundStageSampler, BoundStageTexture, BoundVertexBuffer, CommandSets,
+} from "./command_sets.js";
 import { isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ArgObject, ArgValue, CaptureCommand, CaptureDescriptorSet } from "../shared/protocol.js";
@@ -27,12 +29,23 @@ export interface DrawState {
   vertexBuffers: Map<number, BoundVertexBuffer>;
   /** Metal: buffers bound to a stage by index, keyed "stage:index". */
   stageBuffers: Map<string, BoundStageBuffer>;
+  /** Metal: textures and samplers bound to a stage by index, keyed "stage:index". */
+  stageTextures: Map<string, BoundStageTexture>;
+  stageSamplers: Map<string, BoundStageSampler>;
   indexBuffer: BoundIndexBuffer | null;
   /** vkCmdSetVertexInputEXT arguments when the vertex layout is dynamic. */
   vertexInput: ArgObject | null;
   viewports: ArgValue | null;
   scissors: ArgValue | null;
   pushConstants: PushConstantUpdate[];   // in recording order
+  /**
+   * Metal: rasterizer state, which is set by commands on the encoder rather than baked into the
+   * pipeline. The shader debugger's rasterizer reads these where a Vulkan draw's come from
+   * `pRasterizationState` and `pDepthStencilState`.
+   */
+  cullMode: ArgValue | null;
+  frontFace: ArgValue | null;
+  depthStencil: VulkanObject | null;
 }
 
 /** The vertex layout of one binding: stride, input rate and the attributes read from it. */
@@ -61,8 +74,10 @@ export function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: Capture
 
 export function emptyDrawState(bindPoint: string): DrawState {
   return {
-    bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(), indexBuffer: null,
+    bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(),
+    stageTextures: new Map(), stageSamplers: new Map(), indexBuffer: null,
     vertexInput: null, viewports: null, scissors: null, pushConstants: [],
+    cullMode: null, frontFace: null, depthStencil: null,
   };
 }
 
@@ -108,6 +123,18 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
         if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
       }
     }
+    if (cmdSets.BIND_STAGE_TEXTURE?.has(c.method) && cmdSets.stageTexturesOf) {
+      for (const st of cmdSets.stageTexturesOf(c)) {
+        const key = `${st.stage}:${st.index}`;
+        if (!state.stageTextures.has(key)) state.stageTextures.set(key, st);
+      }
+    }
+    if (cmdSets.BIND_STAGE_SAMPLER?.has(c.method) && cmdSets.stageSamplersOf) {
+      for (const ss of cmdSets.stageSamplersOf(c)) {
+        const key = `${ss.stage}:${ss.index}`;
+        if (!state.stageSamplers.has(key)) state.stageSamplers.set(key, ss);
+      }
+    }
     if (cmdSets.BIND_VERTEX.has(c.method)) {
       for (const vb of cmdSets.vertexBuffersOf(c)) {
         if (!state.vertexBuffers.has(vb.binding)) state.vertexBuffers.set(vb.binding, vb);
@@ -131,6 +158,28 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       case "vkCmdSetScissorWithCount":
       case "vkCmdSetScissorWithCountEXT":
         if (!state.scissors) state.scissors = a.pScissors ?? null;
+        break;
+      // Metal sets the rasterizer's state with commands on the encoder.
+      case "setViewport:":
+        if (!state.viewports) state.viewports = a.viewport ?? null;
+        break;
+      case "setViewports:count:":
+        if (!state.viewports) state.viewports = a.viewports ?? null;
+        break;
+      case "setScissorRect:":
+        if (!state.scissors) state.scissors = a.rect ?? null;
+        break;
+      case "setScissorRects:count:":
+        if (!state.scissors) state.scissors = a.rects ?? null;
+        break;
+      case "setCullMode:":
+        if (!state.cullMode) state.cullMode = a.cullMode ?? null;
+        break;
+      case "setFrontFacingWinding:":
+        if (!state.frontFace) state.frontFace = a.frontFacingWinding ?? a.winding ?? null;
+        break;
+      case "setDepthStencilState:":
+        if (!state.depthStencil) state.depthStencil = db.getObject(refId(a.depthStencilState));
         break;
       case "vkCmdPushConstants":
       case "vkCmdPushConstants2":

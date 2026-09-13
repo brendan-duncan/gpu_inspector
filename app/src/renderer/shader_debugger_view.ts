@@ -1,9 +1,13 @@
 // The shader debugger in a tab of its own, after RenderDoc's shader viewer and WebGPU Inspector's
 // shader debugger: one invocation of a draw's vertex or fragment shader, or of a dispatch's compute
-// shader, run in the SPIR-V interpreter (spirv/) on the capture's inputs (shader_debug_setup.ts),
+// shader, run in the interpreter of whichever language the shader is in — SPIR-V (spirv/) for a
+// Vulkan capture, MSL (msl/) for a Metal one — on the capture's inputs (shader_debug_setup.ts),
 // stepped by source line (shader_debugger.ts) with breakpoints, the values each line computed,
 // the locals, the call stack, the inputs, outputs and resources, and at the end how the outputs
 // compare with what the GPU produced (the replay's vertex outputs, the render target's pixel).
+//
+// Everything here goes through DebugProgram and DebugInvocation (debug/program.ts), so the tab
+// itself knows nothing about either language.
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Select } from "./widget/select.js";
@@ -14,14 +18,15 @@ import { escapeHtml, highlightLines } from "./code_editor.js";
 import { drawState } from "./draw_state.js";
 import type { MeshOutput } from "./mesh_output.js";
 import type { OverdrawPassKey } from "./overdraw.js";
-import { DebugController, executableInstructions, hasLineInfo, instructionKey, nonFinite, resultType, scalars, sourceKey, valueText, valueType, type StepKind } from "./shader_debugger.js";
+import { DebugController, sourceKey, type StepKind } from "./shader_debugger.js";
 import { coveredPixel, prepareDebugSession, type DebugContext, type DebugSession, type DebugTarget } from "./shader_debug_setup.js";
 import { resolveSourcesFromHost } from "./shader_source_view.js";
 import type { SessionContext } from "./session_panel.js";
-import { StorageClass, type SpirvModule } from "./spirv/module.js";
-import type { VariableView } from "./spirv/interpreter.js";
-import type { Value } from "./spirv/values.js";
-import { disassemblyInstructions, sourceLanguageOf, sourceLineMap } from "./vulkan/spirv_debug.js";
+import type { DebugProgram, VariableView } from "./debug/program.js";
+import { nonFinite, scalars, type Value } from "./debug/values.js";
+import { SpirvProgram } from "./spirv/program.js";
+import { interpretedMeshOutput, isMetalPipeline, metalRasterState } from "./metal/shader_debug.js";
+import { sourceLineMap } from "./vulkan/spirv_debug.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureCommand, ShaderTextResult } from "../shared/protocol.js";
 
@@ -50,6 +55,8 @@ export interface ShaderDebuggerHost {
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
   /** spirv-dis output for a module without source. */
   disassemble(spirv: Uint8Array): Promise<ShaderTextResult>;
+  /** Fetches an object's payload from the layer: a live Metal capture's library source. */
+  fetchBlob?(objectId: number, index: number): Promise<Uint8Array | null>;
 }
 
 /** Instructions run between UI updates while a step runs. */
@@ -128,14 +135,13 @@ export class ShaderDebuggerView {
     const ctl = this._ctl;
     const inv = ctl?.invocation;
     const loc = ctl ? ctl.location(inv?.current ?? null) : null;
-    const m = this._session?.module;
     return {
       request: this._request, preparing: this._preparing, error: this._error || null,
       description: this._session?.description ?? null, notes: this._session?.notes ?? [],
       mode: ctl?.mode ?? null, status: inv?.status ?? null, invocationError: inv?.error || null, steps: inv?.steps ?? 0,
-      line: loc?.line ?? null, instruction: inv?.current?.index ?? null, depth: inv?.frames.length ?? 0, running: ctl?.running ?? false,
+      line: loc?.line ?? null, instruction: inv?.current?.index ?? null, depth: inv?.depth ?? 0, running: ctl?.running ?? false,
       breakpoints: [...this._breakpoints],
-      outputs: inv && m ? inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, value: scalars(o.value) })) : [],
+      outputs: inv ? inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, value: scalars(o.value) })) : [],
       targetPixel: this._session?.targetPixel ?? null,
       replayedOutputs: this._session?.replayedOutputs ?? null,
       lineValues: ctl?.lastLine.results.length ?? 0,
@@ -169,10 +175,13 @@ export class ShaderDebuggerView {
       if (token !== this._token || !target) return;
       const session = await prepareDebugSession(this._context(), target);
       if (token !== this._token) return;
-      if (this.host.session && session.module.debug) await resolveSourcesFromHost(session.module.debug, this.host.session).catch(() => false);
+      // SPIR-V compiled with only file names can have its source found under the host's source
+      // roots; MSL is the capture's own text, so there is nothing to look for.
+      const debug = session.program instanceof SpirvProgram ? session.program.module.debug : null;
+      if (this.host.session && debug) await resolveSourcesFromHost(debug, this.host.session).catch(() => false);
       if (token !== this._token) return;
       this._session = session;
-      const ctl = new DebugController(session, hasSourceText(session.module) ? "source" : "instruction");
+      const ctl = new DebugController(session, session.program.hasSourceText() ? "source" : "instruction");
       for (const b of this._breakpoints) ctl.breakpoints.add(b);
       this._ctl = ctl;
       this._request = requestOf(session.target);
@@ -199,7 +208,11 @@ export class ShaderDebuggerView {
   }
 
   private _context(): DebugContext {
-    return { data: this.host.data, db: this.host.db, meshOutput: (command) => this.host.meshOutput(command), inputNames: this._inputNames };
+    return {
+      data: this.host.data, db: this.host.db, inputNames: this._inputNames,
+      meshOutput: (command) => this.host.meshOutput(command),
+      fetchBlob: this.host.fetchBlob ? (id, index) => this.host.fetchBlob!(id, index) : undefined,
+    };
   }
 
   /** The request with its choices made: a pixel the draw covers, a VS Out row's vertex and instance. */
@@ -208,20 +221,27 @@ export class ShaderDebuggerView {
     const cmd = this.host.data.commands[r.command];
     if (!cmd) throw new Error(`the capture has no command ${r.command}`);
     if (r.stage === "compute") return { stage: "compute", command: r.command, invocation: r.invocation ?? [0, 0, 0] };
+    const state = drawState(this.host.data, this.host.db, cmd);
+    // Where the draw's vertex outputs come from: a Vulkan replay, or the interpreter itself.
+    const metal = isMetalPipeline(state.pipeline);
+    const vertexOutputs = async (): Promise<MeshOutput> =>
+      (metal ? interpretedMeshOutput(this._context(), cmd, state) : this.host.meshOutput(r.command));
     if (r.stage === "vertex") {
       if (r.record === undefined) return { stage: "vertex", command: r.command, vertex: r.vertex ?? 0, instance: r.instance ?? 0 };
       const first = await prepareDebugSession(this._context(), { stage: "vertex", command: r.command, vertex: 0, instance: 0 });
       const n = Math.max(1, first.limits.vertices ?? 1);
-      const topology = await this.host.meshOutput(r.command).then((m) => m.topology, () => "");
+      const topology = await vertexOutputs().then((m) => m.topology, () => "");
       const { vertex, instance } = recordVertex(r.record, n, topology);
       return { stage: "vertex", command: r.command, vertex, instance };
     }
     if (r.x !== undefined && r.y !== undefined) return { stage: "fragment", command: r.command, x: r.x, y: r.y };
-    this._setStatus("Replaying the capture for the draw's vertex shader outputs, to find a pixel it covers...");
-    const mesh = await this.host.meshOutput(r.command);
+    this._setStatus(metal
+      ? "Running the draw's vertex shader, to find a pixel it covers..."
+      : "Replaying the capture for the draw's vertex shader outputs, to find a pixel it covers...");
+    const mesh = await vertexOutputs();
     if (token !== this._token) return null;
     if (!mesh.measured) throw new Error(`the draw's vertex shader outputs could not be captured: ${mesh.note ?? "the replay did not reach the draw"}`);
-    const pixel = coveredPixel(drawState(this.host.data, this.host.db, cmd), mesh);
+    const pixel = coveredPixel(state, mesh, metal ? metalRasterState(this._context(), cmd, state) : undefined);
     if (!pixel) throw new Error("no triangle of the draw is visible in its viewport: enter a pixel to debug");
     return { stage: "fragment", command: r.command, x: pixel.x, y: pixel.y };
   }
@@ -253,18 +273,23 @@ export class ShaderDebuggerView {
     button("out", "Step Out", "Run until the function returns (Shift+F11)", () => this._step("out"));
     button("restart", "Restart", "Start the invocation again, keeping the breakpoints (Ctrl+Shift+F5)", () => this._restart());
     sep();
-    const modes = ["Source", "Disassembly"];
+    // A program with only source (MSL) offers one mode; SPIR-V offers its disassembly beside it.
+    const modes = this._ctl ? [...this._ctl.program.modes] : (["source", "instruction"] as const).slice();
     this._modeSelect = new Select(bar, {
-      options: modes,
-      index: this._ctl?.mode === "source" ? 0 : 1,
+      options: modes.map((m) => (m === "source" ? "Source" : "Disassembly")),
+      index: Math.max(0, modes.indexOf(this._ctl?.mode ?? "source")),
       onChange: (_v: string, index: number) => {
         if (!this._ctl) return;
-        this._ctl.mode = index === 0 ? "source" : "instruction";
+        this._ctl.mode = modes[index] ?? "source";
         void this._renderCode(this._token).then(() => this._refresh());
       },
     });
-    this._modeSelect.tooltip = "Step by source line, or by SPIR-V instruction in the disassembly";
-    if (this._ctl && !hasSourceText(this._ctl.module)) (this._modeSelect.element as HTMLSelectElement).disabled = true;
+    this._modeSelect.tooltip = modes.length > 1
+      ? "Step by source line, or by SPIR-V instruction in the disassembly"
+      : "This shader is stepped by source line";
+    if (modes.length < 2 || (this._ctl && !this._ctl.program.hasSourceText())) {
+      (this._modeSelect.element as HTMLSelectElement).disabled = true;
+    }
     new Button(bar, { label: "Go to Command", class: "btn btn-sm", tooltip: "Select the command in the capture's tab", callback: () => this.host.selectCommand(this._request.command) });
     this._status = new Span(bar, { class: "text-muted shader-debugger-status" });
     this._notes = new Div(this.root, { class: "mesh-view-notes text-muted" });
@@ -347,35 +372,36 @@ export class ShaderDebuggerView {
     const ctl = this._ctl;
     const code = this._code;
     if (!ctl || !code || !this._fileBar) return;
-    const m = ctl.module;
+    const program = ctl.program;
     this._fileBar.html = "";
     let lines: CodeLine[];
     if (ctl.mode === "source") {
-      const info = m.debug!;
+      const files = program.files;
       const current = ctl.location(ctl.invocation.current);
-      if (current && info.files[current.file]?.text != null) this._file = current.file;
-      if (this._file < 0 || info.files[this._file]?.text == null) {
-        this._file = info.mainFile >= 0 && info.files[info.mainFile]?.text != null ? info.mainFile : info.files.findIndex((f) => f.text != null);
+      if (current && files[current.file]?.text != null) this._file = current.file;
+      if (this._file < 0 || files[this._file]?.text == null) {
+        this._file = program.mainFile >= 0 && files[program.mainFile]?.text != null ? program.mainFile : files.findIndex((f) => f.text != null);
       }
-      const withText = info.files.map((f, i) => ({ f, i })).filter((x) => x.f.text != null);
+      const withText = files.map((f, i) => ({ f, i })).filter((x) => x.f.text != null);
       if (withText.length > 1) {
         for (const { f, i } of withText) {
           const b = new Button(this._fileBar, { label: f.name, class: `btn btn-sm${i === this._file ? " active" : ""}`, callback: () => { this._file = i; void this._renderCode(this._token).then(() => this._refresh(false)); } });
           b.element.dataset.file = String(i);
         }
       }
-      lines = this._sourceLines(m, this._file);
+      lines = this._sourceLines(program, this._file);
     } else {
+      const disassembly = program.disassembly;
+      if (!disassembly) return;
       if (this._disassembly === null) {
-        const bytes = new Uint8Array(m.words.buffer, m.words.byteOffset, m.words.byteLength);
         this._setStatus("Disassembling...");
-        const r = await this.host.disassemble(bytes).catch((e: unknown) => ({ ok: false, text: String(e) }));
+        const r = await this.host.disassemble(disassembly.bytes()).catch((e: unknown) => ({ ok: false, text: String(e) }));
         if (token !== this._token) return;
         this._disassembly = r.ok ? r.text : "";
       }
-      lines = this._disassemblyLines(m, this._disassembly);
+      lines = this._disassemblyLines(program, this._disassembly);
     }
-    const stoppable = this._stoppableKeys();
+    const stoppable = program.stopKeys(ctl.mode);
     let html = "";
     const width = Math.max(1, ...lines.map((l) => l.number.length));
     for (const l of lines) {
@@ -385,11 +411,11 @@ export class ShaderDebuggerView {
     code.html = html;
   }
 
-  private _sourceLines(m: SpirvModule, fileIndex: number): CodeLine[] {
-    const file = m.debug?.files[fileIndex];
+  private _sourceLines(program: DebugProgram, fileIndex: number): CodeLine[] {
+    const file = program.files[fileIndex];
     if (!file || file.text == null) return [{ html: "No source text.", number: "", key: null }];
     const map = sourceLineMap(file.text);
-    const language = sourceLanguageOf(m.debug);
+    const language = program.language;
     const html = language ? highlightLines(file.text, language) : file.text.split("\n").map(escapeHtml);
     return map.lines.map((_, i) => ({
       html: html[i] ?? "",
@@ -398,36 +424,17 @@ export class ShaderDebuggerView {
     }));
   }
 
-  private _disassemblyLines(m: SpirvModule, text: string): CodeLine[] {
+  private _disassemblyLines(program: DebugProgram, text: string): CodeLine[] {
+    const disassembly = program.disassembly;
+    if (!disassembly) return [{ html: "No disassembly.", number: "", key: null }];
     if (!text) {
-      // No spirv-dis: a listing of the executable instructions.
-      return executableInstructions(m).map((i) => {
-        const inst = m.instructions[i];
-        return { html: escapeHtml(`${inst.result ? `${m.nameOf(inst.result)} = ` : ""}Op${inst.op}`), number: String(i), key: instructionKey(i) };
-      });
+      // No spirv-dis: the program's own listing of the instructions that execute.
+      return disassembly.listing().map((l) => ({ html: escapeHtml(l.text), number: l.number, key: l.key }));
     }
     const textLines = text.split("\n");
     const html = highlightLines(text, "spirv-asm");
-    const keys = new Array<string | null>(textLines.length).fill(null);
-    const numbers = new Array<string>(textLines.length).fill("");
-    const instructions = disassemblyInstructions(textLines);
-    if (instructions.length === m.instructions.length) {
-      instructions.forEach((ls, k) => {
-        keys[ls[0]] = instructionKey(k);
-        numbers[ls[0]] = String(k);
-      });
-    }
+    const { keys, numbers } = disassembly.mapDisassembly(textLines);
     return textLines.map((_, i) => ({ html: html[i] ?? "", number: numbers[i], key: keys[i] }));
-  }
-
-  private _stoppableKeys(): Set<string> {
-    const ctl = this._ctl!;
-    const keys = new Set<string>();
-    for (const i of executableInstructions(ctl.module)) {
-      const k = ctl.keyOf(ctl.module.instructions[i]);
-      if (k) keys.add(k);
-    }
-    return keys;
   }
 
   private _codeClick(e: MouseEvent): void {
@@ -452,17 +459,16 @@ export class ShaderDebuggerView {
     let title = "";
     if (word) {
       const inv = ctl.invocation;
-      const m = ctl.module;
-      const ids = word.startsWith("%") && /^%\d+$/.test(word) ? [Number(word.slice(1))] : idsNamed(m, word.replace(/^%/, ""));
-      const depth = Math.min(this._frame, Math.max(0, inv.frames.length - 1));
-      const frame = inv.frames[inv.frames.length - 1 - depth];
+      const program = ctl.program;
+      const ids = word.startsWith("%") && /^%\d+$/.test(word) ? [Number(word.slice(1))] : program.idsNamed(word.replace(/^%/, ""));
+      const depth = Math.min(this._frame, Math.max(0, inv.depth - 1));
       // Locals of the frame first, then anything else with the name.
-      const ordered = frame ? [...ids.filter((id) => frame.values.has(id) || frame.locals.some((l) => l.id === id)), ...ids] : ids;
+      const ordered = [...ids.filter((id) => inv.frameOwns(depth, id)), ...ids];
       for (const id of ordered) {
         const value = inv.valueOf(id, depth);
         if (value === undefined) continue;
-        const type = valueType(m, id);
-        title = `${m.nameOf(id)}: ${m.typeName(type)} = ${valueText(m, type, value, 32)}`;
+        const type = program.typeOfId(id);
+        title = `${program.nameOf(id)}: ${program.typeName(type)} = ${program.valueText(type, value, 32)}`;
         break;
       }
     }
@@ -556,12 +562,12 @@ export class ShaderDebuggerView {
     const ctl = this._ctl;
     if (!ctl) return;
     const inv = ctl.invocation;
-    const m = ctl.module;
+    const program = ctl.program;
     this._updateButtons();
 
     // The file of the line stopped at.
     const current = ctl.mode === "source" ? ctl.location(inv.current) : null;
-    if (scroll && current && current.file !== this._file && m.debug?.files[current.file]?.text != null) {
+    if (scroll && current && current.file !== this._file && program.files[current.file]?.text != null) {
       this._file = current.file;
       void this._renderCode(this._token).then(() => this._refresh());
       return;
@@ -570,7 +576,7 @@ export class ShaderDebuggerView {
     const where = (): string => {
       if (ctl.mode === "source") {
         const loc = ctl.location(inv.current);
-        return loc ? `line ${loc.line}${(m.debug?.files.length ?? 0) > 1 ? ` of ${m.debug!.files[loc.file]?.name}` : ""}` : "an instruction without a line";
+        return loc ? `line ${loc.line}${program.files.length > 1 ? ` of ${program.files[loc.file]?.name}` : ""}` : "an instruction without a line";
       }
       return `instruction ${inv.current?.index ?? "?"}`;
     };
@@ -580,7 +586,7 @@ export class ShaderDebuggerView {
       case "returned": this._setStatus(`Returned after ${steps}${warn}`); break;
       case "discarded": this._setStatus(`Discarded after ${steps}: the fragment writes nothing${warn}`); break;
       case "error": this._setStatus(`Stopped: ${inv.error}${warn}`); break;
-      default: this._setStatus(`Paused at ${where()} in ${m.nameOf(inv.frames[inv.frames.length - 1]?.fn.id ?? 0)}, after ${steps}${warn}`);
+      default: this._setStatus(`Paused at ${where()} in ${inv.callStack()[0]?.name ?? ""}, after ${steps}${warn}`);
     }
 
     const code = this._code?.element;
@@ -590,8 +596,8 @@ export class ShaderDebuggerView {
       const el = key ? code.querySelector(`[data-key="${key}"]`) : null;
       el?.classList.add("dbg-current");
       if (this._frame > 0) {
-        const frame = inv.frames[inv.frames.length - 1 - this._frame];
-        const fk = frame ? ctl.keyOf(m.instructions[frame.pc] ?? null) : null;
+        const frame = inv.callStack()[this._frame];
+        const fk = frame ? ctl.keyOf(frame.step) : null;
         const fel = fk ? code.querySelector(`[data-key="${fk}"]`) : null;
         fel?.classList.add("dbg-frame");
         if (scroll) scrollIntoViewIfNeeded(fel as HTMLElement | null, this._code!.element);
@@ -610,7 +616,7 @@ export class ShaderDebuggerView {
     const scrollTop = side.element.scrollTop;
     side.html = "";
     const inv = ctl.invocation;
-    const m = ctl.module;
+    const program = ctl.program;
 
     if (inv.finished) this._renderResult(this._section(side, "Result"), session);
 
@@ -626,43 +632,40 @@ export class ShaderDebuggerView {
     if (!last.results.length) new Div(values, { text: "Nothing yet: step to see the values each line computes.", class: "text-muted" });
     const table = variableTable(values);
     for (const r of last.results.slice(-MAX_ROWS)) {
-      const type = resultType(m, r);
-      addVariable(table, m, m.nameOf(r.id), type, r.value, !m.names.has(r.id) && !m.debugVariableNames.has(r.id));
+      addVariable(table, program, program.nameOf(r.id), program.resultType(r), r.value, program.resultTemporary(r));
     }
 
-    const depth = Math.min(this._frame, Math.max(0, inv.frames.length - 1));
-    if (!inv.finished || inv.frames.length) {
-      const frame = inv.frames[inv.frames.length - 1 - depth];
-      const locals = this._section(side, `Locals${frame ? ` of ${m.nameOf(frame.fn.id)}` : ""}`);
-      this._variables(locals, m, inv.locals(depth), "No local variables.");
+    const stack = inv.callStack();
+    const depth = Math.min(this._frame, Math.max(0, stack.length - 1));
+    if (!inv.finished || stack.length) {
+      const locals = this._section(side, `Locals${stack[depth] ? ` of ${stack[depth].name}` : ""}`);
+      this._variables(locals, program, inv.locals(depth), "No local variables.");
 
-      const stack = this._section(side, "Call Stack");
-      for (let d = 0; d < inv.frames.length; d++) {
-        const f = inv.frames[inv.frames.length - 1 - d];
-        const inst = d === 0 ? inv.current : m.instructions[f.pc] ?? null;
-        const loc = ctl.location(inst);
-        const row = new Div(stack, { class: `shader-debugger-frame${d === depth ? " selected" : ""}`, text: `${m.nameOf(f.fn.id)}${loc ? `  line ${loc.line}` : inst ? `  instruction ${inst.index}` : ""}` });
+      const body = this._section(side, "Call Stack");
+      stack.forEach((f, d) => {
+        const loc = ctl.location(f.step);
+        const row = new Div(body, { class: `shader-debugger-frame${d === depth ? " selected" : ""}`, text: `${f.name}${loc ? `  line ${loc.line}` : f.step ? `  instruction ${f.step.index}` : ""}` });
         row.element.onclick = () => { this._frame = d; this._refresh(); };
-      }
+      });
     }
 
-    this._variables(this._section(side, "Inputs"), m, inv.inputVariables(), "No inputs.");
-    this._variables(this._section(side, "Outputs"), m, inv.outputs(), "No outputs.");
-    this._variables(this._section(side, "Globals"), m, inv.privateVariables(), "No private variables.");
-    this._variables(this._section(side, "Resources"), m, inv.resourceVariables(), "No resources.");
+    this._variables(this._section(side, "Inputs"), program, inv.inputVariables(), "No inputs.");
+    this._variables(this._section(side, "Outputs"), program, inv.outputs(), "No outputs.");
+    this._variables(this._section(side, "Globals"), program, inv.privateVariables(), "No private variables.");
+    this._variables(this._section(side, "Resources"), program, inv.resourceVariables(), "No resources.");
     side.element.scrollTop = scrollTop;
   }
 
   private _renderResult(body: Div, session: DebugSession): void {
     const inv = this._ctl!.invocation;
-    const m = session.module;
+    const program = session.program;
     if (inv.status === "discarded") new Div(body, { text: "The fragment was discarded.", class: "text-muted" });
     if (inv.status === "error") new Div(body, { text: inv.error, class: "shader-debugger-warning" });
     if (inv.status !== "returned") return;
     const outs = inv.outputs();
     if (session.target.stage === "fragment") {
       const colour = outs.find((o) => o.location === 0);
-      if (colour) new Div(body, { text: `Output location 0: ${valueText(m, colour.type, colour.value)}` });
+      if (colour) new Div(body, { text: `Output location 0: ${program.valueText(colour.type, colour.value)}` });
       const t = session.targetPixel;
       if (t) {
         new Div(body, { text: `The render target after the pass: (${t.value.map((v) => +v.toFixed(4)).join(", ")}) ${t.format.replace(/^VK_FORMAT_/, "")}` });
@@ -708,16 +711,13 @@ export class ShaderDebuggerView {
     return body;
   }
 
-  private _variables(body: Div, m: SpirvModule, vars: VariableView[], empty: string): void {
+  private _variables(body: Div, program: DebugProgram, vars: VariableView[], empty: string): void {
     if (!vars.length) {
       new Div(body, { text: empty, class: "text-muted" });
       return;
     }
     const table = variableTable(body);
-    for (const v of vars) {
-      const where = v.builtin !== undefined ? "" : v.location !== undefined ? `location ${v.location}` : v.binding !== undefined ? `set ${v.set ?? 0} binding ${v.binding}` : v.storage === StorageClass.PushConstant ? "push constants" : "";
-      addVariable(table, m, v.name, v.type, v.value, false, where);
-    }
+    for (const v of vars) addVariable(table, program, v.name, v.type, v.value, false, program.variableWhere(v));
   }
 }
 
@@ -750,35 +750,12 @@ function stageName(stage: DebugRequest["stage"]): string {
   return stage === "vertex" ? "Vertex" : stage === "fragment" ? "Fragment" : "Compute";
 }
 
-/** Whether the module's lines have text to show (embedded, or found under the source roots). */
-function hasSourceText(m: SpirvModule): boolean {
-  return hasLineInfo(m) && !!m.debug?.files.some((f) => f.text != null);
-}
-
 function positionOf(outs: VariableView[]): Value | undefined {
   const direct = outs.find((o) => o.builtin === 0);
   if (direct) return direct.value;
   // gl_PerVertex: a block whose first member is the position.
   const block = outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]));
   return block && Array.isArray(block.value) ? block.value[0] : undefined;
-}
-
-const _namesByModule = new WeakMap<SpirvModule, Map<string, number[]>>();
-function idsNamed(m: SpirvModule, name: string): number[] {
-  let names = _namesByModule.get(m);
-  if (!names) {
-    names = new Map();
-    for (const source of [m.names, m.debugVariableNames]) {
-      for (const [id, n] of source) {
-        if (m.types.has(id)) continue;
-        const list = names.get(n) ?? [];
-        list.push(id);
-        names.set(n, list);
-      }
-    }
-    _namesByModule.set(m, names);
-  }
-  return names.get(name) ?? [];
 }
 
 /** The identifier (or %id) under a point of the page. */
@@ -812,7 +789,7 @@ function variableTable(parent: Div): HTMLTableElement {
 }
 
 /** A variable's row: composites open to their elements (built when opened). */
-function addVariable(table: HTMLTableElement, m: SpirvModule, name: string, type: number, value: Value, temporary: boolean, where = "", indent = 0): void {
+function addVariable(table: HTMLTableElement, program: DebugProgram, name: string, type: number, value: Value, temporary: boolean, where = "", indent = 0): void {
   const row = table.insertRow();
   row.dataset.indent = String(indent);
   const nameCell = row.insertCell();
@@ -820,15 +797,14 @@ function addVariable(table: HTMLTableElement, m: SpirvModule, name: string, type
   nameCell.style.paddingLeft = `${4 + indent * 14}px`;
   const typeCell = row.insertCell();
   typeCell.className = "text-muted dbg-var-type";
-  typeCell.textContent = m.typeName(type);
+  typeCell.textContent = program.typeName(type);
   if (where) typeCell.title = where;
   const valueCell = row.insertCell();
   valueCell.className = `dbg-var-value${nonFinite(value) ? " shader-debugger-warning" : ""}`;
-  valueCell.textContent = valueText(m, type, value, 8);
+  valueCell.textContent = program.valueText(type, value, 8);
   if (nonFinite(value)) valueCell.title = "NaN or infinity";
 
-  const t = m.types.get(type);
-  const children = Array.isArray(value) && (t?.kind === "struct" || t?.kind === "array" || t?.kind === "runtimeArray" || t?.kind === "matrix" || value.length > 8) ? value : null;
+  const children = program.children(type, value);
   if (!children) {
     nameCell.textContent = name;
     return;
@@ -854,11 +830,9 @@ function addVariable(table: HTMLTableElement, m: SpirvModule, name: string, type
     }
     // Rows go in after this one: build them in a scratch table, then move them.
     const scratch = document.createElement("table");
-    children.slice(0, MAX_ROWS).forEach((child, i) => {
-      const childType = t?.kind === "struct" ? t.members[i] : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : t?.kind === "vector" ? t.element : 0;
-      const childName = t?.kind === "struct" ? m.memberNames.get(type)?.get(i) ?? `[${i}]` : `[${i}]`;
-      addVariable(scratch, m, childName, childType, child, false, "", indent + 1);
-    });
+    for (const child of children.slice(0, MAX_ROWS)) {
+      addVariable(scratch, program, child.name, child.type, child.value, false, "", indent + 1);
+    }
     let after: Element = row;
     for (const r of Array.from(scratch.rows)) {
       after.after(r);
