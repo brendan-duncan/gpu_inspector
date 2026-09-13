@@ -101,6 +101,8 @@ export class MeshPreview {
   private _highlight: number | null = null;
   private _center = [0, 0, 0];
   private _radius = 1;
+  /** The largest half-extent of the framed box: what the view is fitted to (the radius is its corner). */
+  private _extent = 1;
   private _yaw = 0;
   private _pitch = 0;
   private _distance = 3;
@@ -170,10 +172,11 @@ export class MeshPreview {
 
     if (!keepView) {
       if (this._clip) {
-        // Framed on the view volume, and on the geometry when it strays far outside.
+        // Framed on the view volume, and on the geometry when it strays outside, up to four times the
+        // volume: vertices near w = 0 divide out to enormous coordinates that would shrink it to a dot.
         for (let k = 0; k < 3; k++) {
-          min[k] = Math.min(min[k], -1);
-          max[k] = Math.max(max[k], k === 2 ? 0 : 1);
+          min[k] = Math.max(Math.min(min[k], -1), -4);
+          max[k] = Math.min(Math.max(max[k], k === 2 ? 0 : 1), 4);
         }
       }
       if (min[0] > max[0]) {
@@ -182,6 +185,7 @@ export class MeshPreview {
       }
       this._center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
       this._radius = Math.max(1e-6, Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2);
+      this._extent = Math.max(1e-6, (max[0] - min[0]) / 2, (max[1] - min[1]) / 2, (max[2] - min[2]) / 2);
       this.resetView();
     }
     if (gl && this._program) {
@@ -203,8 +207,8 @@ export class MeshPreview {
     // VS Out faces the render target; VS In is turned a little so its depth shows.
     this._yaw = this._clip ? 0 : 0.6;
     this._pitch = this._clip ? 0 : 0.35;
-    // Far enough for the bounding sphere to fill a 30 degree view: flatter than 45, so the volume reads as a box.
-    this._distance = this._radius / Math.sin(FOV / 2) * 1.05;
+    // Far enough for the mesh to fill most of a 30 degree view: flatter than 45, so the volume reads as a box.
+    this._distance = this._extent * 1.25 / Math.sin(FOV / 2);
     this._schedule();
   }
 

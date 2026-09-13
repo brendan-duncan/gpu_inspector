@@ -104,7 +104,7 @@ capture.
 | `list_textures`, `read_texture` | Read-back images, as PNG plus statistics and texel values |
 | `read_buffer`, `read_vertices` | Buffer ranges as scalars or GLSL structs; a draw's vertices with bounds |
 | `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis |
-| `get_shader_flame_graph` | The frame's shading work by pass, pipeline or draw, stage, function and source line, and its hottest functions and lines |
+| `get_shader_flame_graph` | The frame's shading work by pass, pipeline or draw, stage, function and source line, and its hottest functions and lines (a Vulkan capture's draws are measured by replay on first use) |
 | `set_search_paths` | Where shader sources and unstripped libraries are, for shaders without embedded text and stack frames without symbols |
 | `launch_app`, `attach_app`, `stop_app` | Start an application with the capture library (or connect to one listening), end it |
 | `list_android_devices`, `launch_android_app` | Android devices and packages over adb; start a debuggable package with the Vulkan layer |

@@ -71,7 +71,9 @@ marked `[edited]` in its heading.
 
 GLSL, HLSL and SPIR-V assembly can all be edited; which compiler is needed depends on which one
 you edit (`glslangValidator`, `dxc`, `spirv-as`). A shader with embedded source is edited as that
-source.
+source. `#include` directives in GLSL and HLSL are resolved against the directories in
+**Source roots** ([shader sources](VULKAN.md#shader-sources)), so a shader split across files
+compiles as it did in your build.
 
 This works for Vulkan on the desktop and on [Android](ANDROID.md), where the shader is compiled
 here and sent to the device. It does not apply to [Metal](METAL.md).

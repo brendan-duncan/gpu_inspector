@@ -6,6 +6,10 @@ The **Reports** menu in a capture answers questions about the whole frame instea
 Every report links back into the command list, so a number you want to understand is one click
 from the draw that produced it.
 
+Some answers are about one render target or one draw rather than the whole frame. They open in
+tabs beside the capture's own: the [render target tab](#the-render-target-tab) (overdraw, draw
+overlays and pixel history) and the [mesh view](#mesh-view).
+
 For the order to use them in when a frame is slow, see
 [Finding GPU bottlenecks](PROFILING.md).
 
@@ -43,7 +47,21 @@ discards, loop-invariant work that could be hoisted.
 The frame's GPU work as a flame graph: pass, then pipeline, then shader stage, then function, then
 source line. The pass level is measured time (from **Profile passes**); inside a pass the cost
 model splits it across the draws and the functions they ran. It also lists the hottest functions
-and lines of the frame.
+and lines of the frame. Clicking a frame zooms in; a draw frame selects the draw, and a shader
+frame opens the shader.
+
+![The Shader Flame Graph of a Unity frame: passes, pipelines and the fragment stages inside them, sized by GPU time](images/flame-graph.png)
+
+Inside a pass, the split between draws is modelled until something measures it:
+
+- **Profile passes** counters, where the capture has them, give each pass's fragment shader
+  invocations, and the fragment stages are weighted by those instead of by scissor area.
+- **Measure draws** (Vulkan) replays the capture on this machine's GPU with a timer and a pipeline
+  statistics query around every draw. Each draw then takes its share of the pass by its measured
+  time, and each stage its measured invocation count. The measurements are saved with the capture.
+  They also fill in the depth rejection figure for passes whose draws are recorded into secondary
+  command buffers, which the capture itself cannot measure (see
+  [Finding GPU bottlenecks](PROFILING.md)).
 
 Use it to find which shader function is eating a pass, rather than which pass is eating the frame.
 
@@ -81,7 +99,15 @@ It answers:
 - which passes write something that nothing ever reads
 - the frame's critical path
 
-## Overdraw
+## The render target tab
+
+**Open in Tab** under any of a pass's render targets (in a draw's details, or the pass's) shows the
+target in a tab of its own: the image at any zoom on the left, and the history of whichever pixel
+you click on the right. The **overlay list** in its toolbar draws over the image: **Overdraw**,
+**Highlight Draw**, **Depth Test** or **Wireframe**. **Reports → Overdraw** opens it on the frame's
+first measured pass with the overdraw on.
+
+### Overdraw
 
 How many fragments landed on each pixel, drawn over the pass's render target. Two numbers per
 pass: fragments that passed the depth and stencil tests, and every rasterized fragment. Hovering
@@ -91,9 +117,10 @@ shows the counts under the pointer.
 
 How it is measured depends on the API:
 
-- **Vulkan** — press **Measure Overdraw**. The capture is replayed on this machine's GPU, drawing
-  each pass again with a counting shader. The application does not need to be running, but a GPU
-  that can replay the capture does. See [Capture replay](REPLAY.md#overdraw).
+- **Vulkan** — pick **Overdraw** in the overlay list, or press **Measure Overdraw** in a pass's
+  details. The capture is replayed on this machine's GPU, drawing each pass again with a counting
+  shader. The application does not need to be running, but a GPU that can replay the capture does.
+  See [Capture replay](REPLAY.md#overdraw).
 - **Metal** — tick **Overdraw** in the capture bar before capturing. The measurement happens
   inside the captured frame.
 
@@ -101,11 +128,15 @@ The counting shader does not discard, so fragments the real shader would have th
 still counted and alpha-tested geometry counts as opaque. A multiview pass is counted in its first
 view only.
 
-## Draw-call overlays
+### Draw-call overlays
 
 Where one draw landed, over its pass's render target: pick **Highlight Draw**, **Depth Test** or
 **Wireframe** from the render target tab's overlay list, or press **Highlight Draw** under a draw's
-render targets. The draw list beside it steps through the pass's draws.
+render targets. The draw list beside it (with **‹** and **›**) steps through the pass's draws, and
+**Go to Draw** selects the draw in the command list. Hovering a pixel says what the draw did there,
+and the line under the list counts the pixels it covered, passed and had rejected.
+
+![Highlight Draw on a Unity frame: the menu buttons' draw in magenta, the rest of the frame darkened](images/draw-overlay.png)
 
 - **Highlight Draw** — the draw's pixels in a flat colour, the rest of the image darkened.
 - **Depth Test** — green where the draw's fragments passed the depth and stencil tests, red where
@@ -119,8 +150,13 @@ discards still shows as covered.
 ## Mesh view
 
 A draw's mesh, as RenderDoc's Mesh Viewer shows it: press **View Mesh** in a draw's details. The tab
-has a turnable wireframe over a table of the draw's vertices; clicking a row marks the vertex. The
-draw list steps through the pass's draws and keeps the view, so their meshes line up.
+has a wireframe preview over a table of the draw's vertices:
+
+- drag to turn the mesh, use the wheel to zoom, and double-click (or **Reset View**) to frame it again
+- click a row of the table to mark that vertex in the preview
+- the draw list steps through the pass's draws and keeps the view, so their meshes line up
+
+![The mesh view's VS In: a Unity sky sphere's 5,040 vertices as a wireframe, over the table of its positions](images/mesh-view.png)
 
 - **VS In** — the vertices the draw read, decoded from the captured vertex and index buffers, with
   the attributes named from the vertex shader. The preview draws the attribute that looks like a
@@ -131,11 +167,15 @@ draw list steps through the pass's draws and keeps the view, so their meshes lin
   no area and NaN positions. Vulkan only: the capture is replayed with the vertex shader writing
   its outputs to a buffer (see [Capture replay](REPLAY.md#mesh-output)).
 
-`get_mesh_output` gives Claude the same.
+![The mesh view's VS Out: the test application's cube in normalized device coordinates, inside the outline of the view volume, over its clip-space positions and outputs](images/mesh-output.png)
 
-## Pixel history
+VS Out is the place to look when a draw ran but nothing appeared. A mesh entirely outside the
+volume, or behind the eye, points at the matrices that placed it; triangles with no area at a scale
+of zero; NaN positions at a uniform that was never set. `get_mesh_output` gives Claude the same.
 
-Open a render target in a tab of its own and click a pixel. The **Pixel History** pane beside it
+### Pixel history
+
+Click a pixel in the render target tab. The **Pixel History** pane beside it
 lists every clear and draw that touched that pixel, in order, with what became of the draw's
 fragments — not reached, culled, discarded, failed the depth test, failed the stencil test,
 written — and the pixel's value and depth after each one.
