@@ -19,7 +19,8 @@ import { drawState } from "./draw_state.js";
 import type { MeshOutput } from "./mesh_output.js";
 import type { OverdrawPassKey } from "./overdraw.js";
 import { DebugController, sourceKey, type StepKind } from "./shader_debugger.js";
-import { coveredPixel, prepareDebugSession, type DebugContext, type DebugSession, type DebugTarget } from "./shader_debug_setup.js";
+import { compareWithOriginal, coveredPixel, prepareDebugSession, sameValue, type DebugContext, type DebugSession, type DebugTarget, type Stepper } from "./shader_debug_setup.js";
+import type { StageSource } from "./shader_cache.js";
 import { resolveSourcesFromHost } from "./shader_source_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { DebugProgram, VariableView } from "./debug/program.js";
@@ -28,7 +29,7 @@ import { SpirvProgram } from "./spirv/program.js";
 import { interpretedMeshOutput, isMetalPipeline, metalRasterState } from "./metal/shader_debug.js";
 import { sourceLineMap } from "./vulkan/spirv_debug.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
-import type { CaptureCommand, ShaderTextResult } from "../shared/protocol.js";
+import type { CaptureCommand, DebugTranslationResult, ShaderTextResult } from "../shared/protocol.js";
 
 /** What to debug; the parts left out are chosen (a pixel the draw covers, the first vertex or invocation). */
 export type DebugRequest =
@@ -39,6 +40,8 @@ export type DebugRequest =
 export interface ShaderDebuggerOptions {
   /** Testing aid: steps over this many lines once open (-1 runs to the end). */
   steps?: number;
+  /** Debug GLSL decompiled from the SPIR-V instead of the SPIR-V (the tab's choice when left out). */
+  decompiled?: boolean;
 }
 
 /** What the view needs of the capture tab it belongs to. */
@@ -55,6 +58,8 @@ export interface ShaderDebuggerHost {
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
   /** spirv-dis output for a module without source. */
   disassemble(spirv: Uint8Array): Promise<ShaderTextResult>;
+  /** A module decompiled to GLSL and recompiled with line information; absent where the tools are not. */
+  decompile?(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult>;
   /** Fetches an object's payload from the layer: a live Metal capture's library source. */
   fetchBlob?(objectId: number, index: number): Promise<Uint8Array | null>;
 }
@@ -64,10 +69,27 @@ const STEP_BUDGET = 50_000;
 const MAX_ROWS = 200;
 const STAGE_LABEL = { vertex: "Vertex", fragment: "Pixel", compute: "Compute" } as const;
 
+// Stepping icons (inline SVG in the button's text color), after a debugger's usual toolbar.
+const ICON_CONTINUE = '<svg viewBox="0 0 16 16" aria-label="Continue"><path d="M3 3v10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M6 3l7.5 5L6 13z" fill="currentColor"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 16 16" aria-label="Pause"><rect x="3.5" y="3" width="3" height="10" rx="0.6" fill="currentColor"/><rect x="9.5" y="3" width="3" height="10" rx="0.6" fill="currentColor"/></svg>';
+const ICON_STEP_OVER = '<svg viewBox="0 0 16 16" aria-label="Step Over"><path d="M2.8 9.2a5.2 5 0 0 1 10.4 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10.9 7.2l2.3 2.3 2.3-2.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="13" r="1.6" fill="currentColor"/></svg>';
+const ICON_STEP_INTO = '<svg viewBox="0 0 16 16" aria-label="Step Into"><path d="M8 1.5v7.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="13" r="1.6" fill="currentColor"/></svg>';
+const ICON_STEP_OUT = '<svg viewBox="0 0 16 16" aria-label="Step Out"><path d="M8 9.5V2.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="13" r="1.6" fill="currentColor"/></svg>';
+const ICON_RESTART = '<svg viewBox="0 0 16 16" aria-label="Restart"><path d="M13.2 9.2A5.3 5.3 0 1 1 12 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13.6 1.8v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const TIP_CONTINUE = "Continue (F5): run to the next breakpoint or the end";
+const TIP_PAUSE = "Pause (F5): stop the run where it is";
+
 interface CodeLine {
   html: string;
   number: string;
   key: string | null;
+}
+
+/** The original module's run of a translation's invocation, to check the translation against. */
+interface OriginalRun {
+  stepper: Stepper | null;
+  done: boolean;
+  error: string;
 }
 
 export class ShaderDebuggerView {
@@ -91,6 +113,12 @@ export class ShaderDebuggerView {
   /** Breakpoints outlive a restart and a new invocation of the same shader. */
   private _breakpoints = new Set<string>();
   private _inputNames = new Map<number, string>();
+  /** Stepping GLSL decompiled from the SPIR-V (and compiled back) instead of the SPIR-V itself. */
+  private _decompiled = false;
+  /** Translations by stage module and entry point: picking another invocation reuses them. */
+  private _translations = new Map<string, Promise<Uint8Array>>();
+  /** The same invocation of the original module, run to its end to check a translation against. */
+  private _original: OriginalRun | null = null;
 
   private _status: Span | null = null;
   private _notes: Div | null = null;
@@ -106,6 +134,7 @@ export class ShaderDebuggerView {
     this.host = host;
     this._request = request;
     this._options = options;
+    this._decompiled = options.decompiled ?? false;
     this.root = new Div(null, { class: "shader-debugger" });
     document.addEventListener("keydown", this._onKey);
     void this._open();
@@ -118,9 +147,11 @@ export class ShaderDebuggerView {
   /** Points the view at another invocation. */
   show(request: DebugRequest, options: ShaderDebuggerOptions = {}): void {
     const sameShader = request.command === this._request.command && request.stage === this._request.stage;
-    if (!sameShader) this._breakpoints.clear();
+    const sameCode = options.decompiled === undefined || options.decompiled === this._decompiled;
+    if (!sameShader || !sameCode) this._breakpoints.clear();
     this._request = request;
     this._options = options;
+    if (options.decompiled !== undefined) this._decompiled = options.decompiled;
     void this._open();
   }
 
@@ -138,6 +169,8 @@ export class ShaderDebuggerView {
     return {
       request: this._request, preparing: this._preparing, error: this._error || null,
       description: this._session?.description ?? null, notes: this._session?.notes ?? [],
+      decompiled: this._decompiled,
+      original: this._original ? this._originalState() : null,
       mode: ctl?.mode ?? null, status: inv?.status ?? null, invocationError: inv?.error || null, steps: inv?.steps ?? 0,
       line: loc?.line ?? null, instruction: inv?.current?.index ?? null, depth: inv?.depth ?? 0, running: ctl?.running ?? false,
       breakpoints: [...this._breakpoints],
@@ -147,6 +180,15 @@ export class ShaderDebuggerView {
       lineValues: ctl?.lastLine.results.length ?? 0,
       codeLines: this._code?.element.querySelectorAll(".code-line").length ?? 0,
       warnings: inv ? [...inv.warnings] : [],
+    };
+  }
+
+  private _originalState(): Record<string, unknown> {
+    const c = this._comparison();
+    return {
+      done: this._original?.done ?? false, error: this._original?.error || null,
+      matches: c?.matches ?? null, status: c?.status ?? null,
+      compared: c?.values.map((v) => v.label) ?? [], differences: c?.values.filter((v) => !v.matches).map((v) => v.label) ?? [],
     };
   }
 
@@ -162,6 +204,7 @@ export class ShaderDebuggerView {
     this._frame = 0;
     this._file = -1;
     this._disassembly = null;
+    this._original = null;
     this.root.html = "";
     this._buildChrome();
     this._preparing = true;
@@ -212,7 +255,33 @@ export class ShaderDebuggerView {
       data: this.host.data, db: this.host.db, inputNames: this._inputNames,
       meshOutput: (command) => this.host.meshOutput(command),
       fetchBlob: this.host.fetchBlob ? (id, index) => this.host.fetchBlob!(id, index) : undefined,
+      translate: this._decompiled && this.host.decompile ? (bytes, source) => this._translate(bytes, source) : undefined,
     };
+  }
+
+  private _translate(bytes: Uint8Array, source: StageSource): Promise<Uint8Array> {
+    const key = `${source.object.id}:${source.blobIndex}:${source.stage}:${source.entryPoint}`;
+    let translation = this._translations.get(key);
+    if (!translation) {
+      this._setStatus("Decompiling the SPIR-V to GLSL and compiling it back with line information...");
+      translation = this.host.decompile!(bytes, source.stage, source.entryPoint).then((r) => {
+        if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+        return r.spirv;
+      });
+      // A failure is not kept: the tools may be there on the next try.
+      translation.catch(() => this._translations.delete(key));
+      this._translations.set(key, translation);
+    }
+    return translation;
+  }
+
+  /** Switches between stepping the SPIR-V and the GLSL decompiled from it: the same invocation, restarted. */
+  private _setDecompiled(on: boolean): void {
+    if (on === this._decompiled) return;
+    this._decompiled = on;
+    // A breakpoint is a line of one or the other.
+    this._breakpoints.clear();
+    void this._open();
   }
 
   /** The request with its choices made: a pixel the draw covers, a VS Out row's vertex and instance. */
@@ -264,15 +333,24 @@ export class ShaderDebuggerView {
     this._buildPicker(bar);
     const sep = (): void => void new Span(bar, { class: "shader-debugger-sep" });
     sep();
-    const button = (name: string, label: string, tooltip: string, callback: () => void): void => {
-      this._buttons[name] = new Button(bar, { label, class: "btn btn-sm", tooltip, callback });
+    const button = (name: string, html: string, tooltip: string, callback: () => void): void => {
+      this._buttons[name] = new Button(bar, { html, class: "btn btn-sm btn-icon", tooltip, callback });
     };
-    button("continue", "Continue", "Run to the next breakpoint or the end (F5); pauses a run", () => (this._timer ? this._pauseRun() : this._step("continue")));
-    button("over", "Step Over", "Run to the next line, over function calls (F10)", () => this._step("over"));
-    button("into", "Step Into", "Run to the next line, into function calls (F11)", () => this._step("into"));
-    button("out", "Step Out", "Run until the function returns (Shift+F11)", () => this._step("out"));
-    button("restart", "Restart", "Start the invocation again, keeping the breakpoints (Ctrl+Shift+F5)", () => this._restart());
+    button("continue", ICON_CONTINUE, TIP_CONTINUE, () => (this._timer ? this._pauseRun() : this._step("continue")));
+    button("over", ICON_STEP_OVER, "Step Over (F10): run to the next line, over function calls", () => this._step("over"));
+    button("into", ICON_STEP_INTO, "Step Into (F11): run to the next line, into function calls", () => this._step("into"));
+    button("out", ICON_STEP_OUT, "Step Out (Shift+F11): run until the function returns", () => this._step("out"));
+    button("restart", ICON_RESTART, "Restart (Ctrl+Shift+F5): start the invocation again, keeping the breakpoints", () => this._restart());
     sep();
+    if (this.host.decompile && this.host.data.api !== "metal") {
+      const code = new Select(bar, {
+        options: ["Original SPIR-V", "Decompiled GLSL"],
+        index: this._decompiled ? 1 : 0,
+        onChange: (_v: string, index: number) => this._setDecompiled(index === 1),
+      });
+      code.tooltip = "Debug the capture's SPIR-V, or GLSL that spirv-cross decompiles from it and glslang compiles back with line " +
+        "information: source lines to step for a shader built without debug information, checked against the original at the end";
+    }
     // A program with only source (MSL) offers one mode; SPIR-V offers its disassembly beside it.
     const modes = this._ctl ? [...this._ctl.program.modes] : (["source", "instruction"] as const).slice();
     this._modeSelect = new Select(bar, {
@@ -544,7 +622,12 @@ export class ShaderDebuggerView {
     const c = this._buttons.continue;
     if (c) {
       c.element.disabled = finished && !running;
-      c.text = running ? "Pause" : "Continue";
+      // Only on a change: replacing the icon under the mouse would drop its hover and tooltip.
+      if (c.element.dataset.running !== String(running)) {
+        c.element.dataset.running = String(running);
+        c.html = running ? ICON_PAUSE : ICON_CONTINUE;
+        c.tooltip = running ? TIP_PAUSE : TIP_CONTINUE;
+      }
     }
     const r = this._buttons.restart;
     if (r) r.element.disabled = !ctl || running;
@@ -619,6 +702,7 @@ export class ShaderDebuggerView {
     const program = ctl.program;
 
     if (inv.finished) this._renderResult(this._section(side, "Result"), session);
+    if (inv.finished && session.original) this._renderOriginal(this._section(side, "Original SPIR-V"), session);
 
     if (inv.warnings.size) {
       const body = this._section(side, `Warnings (${inv.warnings.size})`);
@@ -692,6 +776,90 @@ export class ShaderDebuggerView {
       cell.className = same ? "text-muted" : "shader-debugger-warning";
       if (!same) cell.title = "The replay's transform feedback differs: a driver may reorder floating-point operations the interpreter keeps in order.";
     }
+  }
+
+  /** A translation's results beside the original module's, which runs (once per invocation) when first needed. */
+  private _renderOriginal(body: Div, session: DebugSession): void {
+    const run = this._runOriginal(session);
+    if (run.error) {
+      new Div(body, { text: `The original could not be run to compare with: ${run.error}`, class: "shader-debugger-warning" });
+      return;
+    }
+    if (!run.done) {
+      new Div(body, { text: "Running the original to compare with...", class: "text-muted" });
+      return;
+    }
+    const c = this._comparison();
+    if (!c) return;
+    if (c.status.translated !== c.status.original) {
+      new Div(body, { text: `The translation ${c.status.translated}, but the original ${c.status.original}${c.status.error ? ` (${c.status.error})` : ""}: step the original SPIR-V instead.`, class: "shader-debugger-warning" });
+      return;
+    }
+    new Div(body, {
+      text: c.matches ? `The original ${c.status.original} with the same results.` : "The original computes different results: step the original SPIR-V instead.",
+      class: c.matches ? "text-muted" : "shader-debugger-warning",
+    });
+    if (!c.values.length) return;
+    const table = variableTable(body);
+    const number = (x: number | undefined): string => (x === undefined ? "—" : String(+x.toPrecision(6)));
+    const text = (v: number[] | null): string => (v ? `(${v.slice(0, 16).map(number).join(", ")}${v.length > 16 ? ", ..." : ""})` : "—");
+    for (const v of c.values) {
+      const row = table.insertRow();
+      row.insertCell().textContent = v.label;
+      row.insertCell().textContent = text(v.original);
+      const cell = row.insertCell();
+      cell.className = v.matches ? "text-muted" : "shader-debugger-warning";
+      if (v.matches) {
+        cell.textContent = "matches";
+      } else if (!v.translated || !v.original) {
+        cell.textContent = v.translated ? "only in the translation" : "missing from the translation";
+      } else if (v.original.length > 16 || v.translated.length > 16) {
+        // A buffer: where it first differs, which may be past what the row shows.
+        const at = v.original.findIndex((x, i) => !sameValue(x, v.translated![i]));
+        const i = at < 0 ? Math.min(v.original.length, v.translated.length) : at;
+        cell.textContent = `scalar ${i}: translation ${number(v.translated[i])}, original ${number(v.original[i])}`;
+      } else {
+        cell.textContent = `translation ${text(v.translated)}`;
+      }
+    }
+  }
+
+  /** Starts (or returns) the original module's run of the session's invocation, a slice at a time. */
+  private _runOriginal(session: DebugSession): OriginalRun {
+    if (this._original) return this._original;
+    const run: OriginalRun = { stepper: null, done: false, error: "" };
+    this._original = run;
+    try {
+      run.stepper = session.original!();
+    } catch (e) {
+      run.error = e instanceof Error ? e.message : String(e);
+      run.done = true;
+      return run;
+    }
+    const stepper = run.stepper;
+    const token = this._token;
+    const tick = (): void => {
+      if (token !== this._token || this._original !== run) return;
+      const inv = stepper.invocation;
+      for (let n = 0; n < STEP_BUDGET && !inv.finished; n++) stepper.step();
+      inv.takeResults();
+      if (inv.finished) {
+        run.done = true;
+        this._renderSide();
+      } else {
+        window.setTimeout(tick, 0);
+      }
+    };
+    window.setTimeout(tick, 0);
+    return run;
+  }
+
+  /** How the finished translation compares with the finished original, when both are. */
+  private _comparison(): ReturnType<typeof compareWithOriginal> | null {
+    const inv = this._ctl?.invocation;
+    const original = this._original?.stepper?.invocation;
+    if (!inv?.finished || !original?.finished || !this._session) return null;
+    return compareWithOriginal(inv, original, this._session.target.stage);
   }
 
   private _section(parent: Div, label: string): Div {

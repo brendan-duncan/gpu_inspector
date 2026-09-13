@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { CompileShaderResult, ShaderLanguage, ShaderTextMode, ShaderTextResult } from "../shared/protocol.js";
+import type { CompileShaderResult, DebugTranslationResult, ShaderLanguage, ShaderTextMode, ShaderTextResult } from "../shared/protocol.js";
 
 let tempCounter = 0;
 
@@ -23,8 +23,18 @@ export function findTool(name: string): string {
   return exe; // hope it is on PATH
 }
 
+export interface ShaderTextOptions {
+  /** spirv-cross: the entry point to translate, of a module with several ("vertex", "main"). */
+  entry?: { stage: string; name: string };
+  /**
+   * spirv-cross: a variable for every value instead of expressions folded into one statement, so
+   * a debugger stepping the translation by line stops about once per SPIR-V instruction.
+   */
+  forceTemporary?: boolean;
+}
+
 /** SPIR-V as assembly (spirv-dis) or as GLSL, HLSL or MSL (spirv-cross). */
-export function shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult> {
+export function shaderText(spirv: Uint8Array, mode: ShaderTextMode, options: ShaderTextOptions = {}): Promise<ShaderTextResult> {
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
     fs.writeFileSync(tmp, Buffer.from(spirv));
@@ -39,6 +49,8 @@ export function shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<Sha
       if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
       else if (mode === "msl") args.push("--msl");
       else args.push("--vulkan-semantics", "--version", "460");
+      if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
+      if (options.forceTemporary) args.push("--force-temporary");
     }
     execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
@@ -79,6 +91,8 @@ export interface CompileOptions {
    * engine writes them ("common/lighting.glsl"), not relative to the shader's own file.
    */
   includeDirs?: string[];
+  /** GLSL: embed the source text and a line per instruction (glslang `-g`), under this file name. */
+  debugFileName?: string;
 }
 
 /** Whether the source has an `#include` glslang would need the Google include extension for. */
@@ -93,7 +107,11 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
   return new Promise((resolve) => {
     const base = tempBase();
     const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs.existsSync(d));
-    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    // Debug information names the file as the compiler was given it: a file of that name in a
+    // directory of its own, compiled from inside it, so the name carries no temporary path.
+    const debugName = language === "glsl" ? options.debugFileName : undefined;
+    const dir = debugName ? fs.mkdtempSync(`${base}_`) : null;
+    const src = dir ? path.join(dir, debugName!) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
     fs.writeFileSync(src, source);
     const entry = entryPoint || "main";
@@ -110,13 +128,15 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
       tool = findTool("glslangValidator");
       // The decompiled source declares main(); the pipeline expects the original entry point name.
       args = ["-V", "-S", GLSL_STAGES[stage] ?? "frag", "--target-env", targetEnv(spirvVersion, "glslang"),
-        "--source-entrypoint", "main", "-e", entry, "-o", out, src];
+        "--source-entrypoint", "main", "-e", entry, "-o", out];
+      if (debugName) args.push("-g", debugName);
+      else args.push(src);
       for (const dir of includeDirs) args.push(`-I${dir}`);
       // glslang rejects #include unless the source asks for the extension. The preamble goes in
       // after the #version line and is counted separately, so the error lines stay the user's.
       if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
     }
-    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? undefined }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
       let spirv: Uint8Array | undefined;
       try {
@@ -131,6 +151,7 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
           // ignore
         }
       }
+      if (dir) fs.rmSync(dir, { recursive: true, force: true });
       const name = path.basename(tool);
       if (err || !spirv || spirv.byteLength < 20) {
         const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
@@ -140,4 +161,28 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
       }
     });
   });
+}
+
+/** The name the decompiled source has in the recompiled module's debug information. */
+const DECOMPILED_FILE = "decompiled.glsl";
+
+/**
+ * A module without source made steppable by line: spirv-cross decompiles the entry point to GLSL,
+ * one statement per value, and glslang compiles that back with the text and a line per instruction
+ * embedded. The result computes what the original does, but is not the module the GPU ran, so the
+ * debugger checks it against the original. `stage` is the layer's stage name, as for compileShader.
+ */
+export async function decompileForDebugging(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult> {
+  const glsl = await shaderText(spirv, "glsl", { entry: { stage, name: entryPoint || "main" }, forceTemporary: true });
+  if (!glsl.ok) return { ok: false, log: glsl.text, tool: "spirv-cross" };
+  // The recompiled module targets the version the original was built for (header word 1: 0x00010500 is 1.5).
+  const version = spirv.byteLength >= 8 ? new DataView(spirv.buffer, spirv.byteOffset, 8).getUint32(4, true) : 0;
+  const spirvVersion = version ? `${(version >> 16) & 0xff}.${(version >> 8) & 0xff}` : "1.5";
+  const compiled = await compileShader(glsl.text, "glsl", stage, entryPoint, spirvVersion, { debugFileName: DECOMPILED_FILE });
+  if (!compiled.ok) {
+    // glslang prints the file's name before its messages.
+    const log = compiled.log.split(/\r?\n/).filter((l) => l.trim() && l.trim() !== DECOMPILED_FILE).join("\n");
+    return { ok: false, log: `the decompiled GLSL did not compile: ${log}`, tool: compiled.tool, source: glsl.text };
+  }
+  return { ok: true, spirv: compiled.spirv, log: compiled.log, tool: compiled.tool, source: glsl.text };
 }

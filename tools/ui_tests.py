@@ -349,6 +349,21 @@ def triangle_debug_compute(state, log):
         expect(d.get("mode") == "source", f"wave.comp's source was not found under the source root: {d.get('mode')}")
 
 
+def triangle_debug_decompiled(state, log):
+    d = debugger_tab(state)
+    original = d.get("original") or {}
+    # wave.comp without its source roots: no text, so GLSL decompiled from its SPIR-V (spirv-cross,
+    # compiled back by glslang) is stepped by line, and the original module run beside it agrees.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:compute::end:decompiled opened no debugger tab") + \
+        expect(d.get("decompiled") is True, "the debugger is not stepping the decompiled GLSL") + \
+        expect(not d.get("error"), f"the SPIR-V could not be decompiled: {d.get('error')}") + \
+        expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 10, f"the decompiled source is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(original.get("done") is True and not original.get("error"), f"the original did not run to compare with: {original}") + \
+        expect(original.get("matches") is True, f"the translation's results differ from the original's: {original}")
+
+
 # --------------------------------------------------------------------------------------------
 # Metal (test/metal_triangle, captured through metal/): the shader debugger on a Metal capture,
 # whose shaders are Metal Shading Language rather than SPIR-V. There is no replay on this path: a
@@ -513,6 +528,8 @@ def triangle_cases(triangle):
         Case("mesh-in", launch + ["--debug-capture", "--debug-view=mesh:in"], triangle_mesh_input, delay_ms=16000),
         Case("debug-compute", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-view=debugger:compute::end"],
              triangle_debug_compute, delay_ms=16000),
+        Case("debug-decompiled", launch + ["--debug-capture", "--debug-view=debugger:compute::end:decompiled", "--debug-settle=4000"],
+             triangle_debug_decompiled, delay_ms=18000),
     ]
     # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
     # one only runs where vkinsp_replay is built (replay/, docs/REPLAY.md). The click lands on the

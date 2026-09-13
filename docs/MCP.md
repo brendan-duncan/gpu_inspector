@@ -62,7 +62,8 @@ about a capture takes a moment while its replay starts; the replay is kept for t
 - `debug_shader` — one vertex, pixel or compute invocation run in the shader debugger: its outputs,
   the values every line computed in order, and the first NaN or infinity. A Vulkan capture's SPIR-V
   or a Metal capture's Metal Shading Language. A vertex or compute invocation needs no replay; a
-  Vulkan pixel does, and a Metal one does not.
+  Vulkan pixel does, and a Metal one does not. `decompiled` steps SPIR-V without debug information
+  by line, through GLSL decompiled from it, and says whether that agrees with the original.
 - `get_shader_flame_graph` — measures every draw the first time it is asked
 
 They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout

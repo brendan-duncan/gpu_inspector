@@ -747,6 +747,12 @@ export interface CompileShaderResult {
   tool: string;
 }
 
+/** A SPIR-V module decompiled to GLSL and recompiled with line information, for the shader debugger. */
+export interface DebugTranslationResult extends CompileShaderResult {
+  /** spirv-cross's GLSL, when it got that far. */
+  source?: string;
+}
+
 /** The implicit registration of the capture layer for this user (inspector:implicitLayer). */
 export interface ImplicitLayerStatus {
   registered: boolean;

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("inspector", {
   getConfig: () => ipcRenderer.invoke("inspector:getConfig"),
   setTheme: (theme: string) => ipcRenderer.invoke("inspector:setTheme", theme),
   onTheme: (cb: (theme: string) => void) => ipcRenderer.on("inspector:theme", (_e, t) => cb(t)),
+  openDocs: (page?: string) => ipcRenderer.invoke("inspector:openDocs", page),
   // Self-update (installed builds)
   checkForUpdates: () => ipcRenderer.invoke("inspector:checkForUpdates"),
   downloadUpdate: () => ipcRenderer.invoke("inspector:downloadUpdate"),
@@ -55,4 +56,6 @@ contextBridge.exposeInMainWorld("inspector", {
   shaderText: (spirv: Uint8Array, mode: string) => ipcRenderer.invoke("inspector:shaderText", spirv, mode),
   compileShader: (source: string, language: string, stage: string, entryPoint: string, spirvVersion: string) =>
     ipcRenderer.invoke("inspector:compileShader", source, language, stage, entryPoint, spirvVersion),
+  decompileForDebugging: (spirv: Uint8Array, stage: string, entryPoint: string) =>
+    ipcRenderer.invoke("inspector:decompileForDebugging", spirv, stage, entryPoint),
 });

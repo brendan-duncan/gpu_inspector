@@ -162,7 +162,9 @@ each step.
      capture's Metal Shading Language. Read the `trace` for the line where a value goes wrong, and
      `firstNonFinite` for a NaN. For a pixel, `compare` has the render target after the whole pass;
      later draws and blending come between. A Vulkan pixel needs the replay; a Metal one does not,
-     but a Metal library the application loaded precompiled has no source to step.
+     but a Metal library the application loaded precompiled has no source to step. SPIR-V without
+     debug information traces by instruction; `decompiled: true` traces GLSL decompiled from it
+     by line instead. Trust that trace only when `original.matches` is true.
 5. **Compare with a draw that works**: `get_command` on both, and diff the state.
 
 ## Live applications

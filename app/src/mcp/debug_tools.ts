@@ -5,10 +5,11 @@
 // ran, the first NaN or infinity, the outputs, and how they compare with what the GPU produced.
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { findShaderSources } from "../main/shader_sources.js";
+import { decompileForDebugging } from "../main/shader_tools.js";
 import { drawState } from "../renderer/draw_state.js";
 import { parseMeshFile, type MeshOutput } from "../renderer/mesh_output.js";
 import { DebugController } from "../renderer/shader_debugger.js";
-import { coveredPixel, prepareDebugSession, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
+import { compareWithOriginal, coveredPixel, prepareDebugSession, sameValue, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
 import { interpretedMeshOutput, metalRasterState } from "../renderer/metal/shader_debug.js";
 import { nonFinite, Pointer, scalars } from "../renderer/debug/values.js";
 import { SpirvProgram } from "../renderer/spirv/program.js";
@@ -63,6 +64,9 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
         trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
+        decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back " +
+          "with line information, for a shader built without debug information (lines instead of instructions). It is not the module the " +
+          "GPU ran, so the original runs too and `original` says whether they agree. Needs the Vulkan SDK's spirv-cross and glslangValidator. Default false." },
       }, ["command"]),
       readOnly: true,
       handler: async (args) => {
@@ -79,9 +83,15 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         // A Metal capture needs no replay: its fragment inputs come from interpreting the draw's
         // own vertex shader, so the replay is only wired up for a Vulkan one.
         const metal = c.data.api === "metal";
+        const decompiled = !metal && boolArg(args, "decompiled", false);
         const ctx: DebugContext = {
           data: c.data, db: c.db, inputNames,
           meshOutput: metal ? undefined : meshOutputs(c),
+          translate: decompiled ? async (bytes, source) => {
+            const r = await decompileForDebugging(bytes, source.stage, source.entryPoint);
+            if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+            return r.spirv;
+          } : undefined,
         };
 
         let target: DebugTarget;
@@ -177,6 +187,27 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         }
 
         const inv = ctl.invocation;
+        let original: Record<string, unknown> | undefined;
+        if (session.original) {
+          try {
+            const run = session.original();
+            run.run();
+            const c = compareWithOriginal(inv, run.invocation, stage);
+            original = {
+              matches: c.matches, status: c.status.original, error: c.status.error,
+              differences: c.values.filter((v) => !v.matches).map((v) => {
+                if ((v.translated?.length ?? 0) <= 16 && (v.original?.length ?? 0) <= 16) return { name: v.label, translated: v.translated?.map(tidy), original: v.original?.map(tidy) };
+                // A buffer: just where it first differs.
+                const at = (v.original ?? []).findIndex((x, i) => !sameValue(x, v.translated?.[i]));
+                const i = at < 0 ? Math.min(v.original?.length ?? 0, v.translated?.length ?? 0) : at;
+                return { name: v.label, firstDifference: i, translated: v.translated?.[i], original: v.original?.[i] };
+              }),
+            };
+            if (!c.matches) original.note = "The translation does not compute what the original does: debug without `decompiled`.";
+          } catch (e) {
+            original = { error: `the original could not be run to compare with: ${(e as Error).message}` };
+          }
+        }
         const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
         let compare: Record<string, unknown> | undefined;
         if (inv.status === "returned" && session.targetPixel) {
@@ -201,8 +232,9 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           capture: c.id, command, method: cmd.method, stage, entryPoint: session.stage.entryPoint,
           invocation: session.description, notes: session.notes.length ? session.notes : undefined,
           status: inv.status, error: inv.error || undefined, instructions: inv.steps,
-          steppedBy: ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
-          outputs, compare, firstNonFinite,
+          steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)"
+            : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
+          outputs, compare, original, firstNonFinite,
           warnings: inv.warnings.size ? [...inv.warnings] : undefined,
           trace: wantTrace ? trace : undefined, traceTruncated: traceTruncated || undefined,
         });

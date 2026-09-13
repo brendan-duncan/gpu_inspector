@@ -8270,6 +8270,171 @@ ${stamp}`;
 };
 var replayServers = new ReplayServerPool();
 
+// src/main/shader_tools.ts
+import { execFile as execFile2 } from "node:child_process";
+import fs6 from "node:fs";
+import os4 from "node:os";
+import path5 from "node:path";
+var tempCounter = 0;
+function tempBase() {
+  return path5.join(os4.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+}
+function findTool(name) {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  const candidates = [];
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path5.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path5.join(process.env.VULKAN_SDK, "Bin", exe), path5.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs6.existsSync(c2)) return c2;
+  return exe;
+}
+function shaderText(spirv, mode, options = {}) {
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs6.writeFileSync(tmp, Buffer.from(spirv));
+    let tool;
+    let args;
+    if (mode === "dis") {
+      tool = findTool("spirv-dis");
+      args = ["--comment", "--no-color", tmp];
+    } else {
+      tool = findTool("spirv-cross");
+      args = [tmp];
+      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
+      else if (mode === "msl") args.push("--msl");
+      else args.push("--vulkan-semantics", "--version", "460");
+      if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
+      if (options.forceTemporary) args.push("--force-temporary");
+    }
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs6.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) resolve({ ok: false, text: `${path5.basename(tool)} failed: ${stderr || err.message}` });
+      else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+var GLSL_STAGES = {
+  vertex: "vert",
+  tess_control: "tesc",
+  tess_eval: "tese",
+  geometry: "geom",
+  fragment: "frag",
+  compute: "comp",
+  task: "task",
+  mesh: "mesh",
+  raygen: "rgen",
+  intersection: "rint",
+  any_hit: "rahit",
+  closest_hit: "rchit",
+  miss: "rmiss",
+  callable: "rcall"
+};
+var HLSL_PROFILES = {
+  vertex: "vs_6_0",
+  tess_control: "hs_6_0",
+  tess_eval: "ds_6_0",
+  geometry: "gs_6_0",
+  fragment: "ps_6_0",
+  compute: "cs_6_0",
+  task: "as_6_5",
+  mesh: "ms_6_5",
+  raygen: "lib_6_3",
+  intersection: "lib_6_3",
+  any_hit: "lib_6_3",
+  closest_hit: "lib_6_3",
+  miss: "lib_6_3",
+  callable: "lib_6_3"
+};
+function targetEnv(spirvVersion, tool) {
+  const v = spirvVersion || "1.5";
+  if (tool === "spirv-as") return `spv${v}`;
+  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
+  const env = glslang[v] ?? "vulkan1.2";
+  return tool === "dxc" ? env : env.replace("spirv", "spv");
+}
+function needsIncludeExtension(source) {
+  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
+}
+function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs6.existsSync(d));
+    const debugName = language === "glsl" ? options.debugFileName : void 0;
+    const dir = debugName ? fs6.mkdtempSync(`${base}_`) : null;
+    const src = dir ? path5.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const out = base + ".spv";
+    fs6.writeFileSync(src, source);
+    const entry = entryPoint || "main";
+    let tool;
+    let args;
+    if (language === "spirv-asm") {
+      tool = findTool("spirv-as");
+      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
+    } else if (language === "hlsl") {
+      tool = findTool("dxc");
+      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      for (const dir2 of includeDirs) args.push("-I", dir2);
+    } else {
+      tool = findTool("glslangValidator");
+      args = [
+        "-V",
+        "-S",
+        GLSL_STAGES[stage] ?? "frag",
+        "--target-env",
+        targetEnv(spirvVersion, "glslang"),
+        "--source-entrypoint",
+        "main",
+        "-e",
+        entry,
+        "-o",
+        out
+      ];
+      if (debugName) args.push("-g", debugName);
+      else args.push(src);
+      for (const dir2 of includeDirs) args.push(`-I${dir2}`);
+      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
+    }
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let spirv;
+      try {
+        if (fs6.existsSync(out)) spirv = new Uint8Array(fs6.readFileSync(out));
+      } catch {
+        spirv = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs6.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (dir) fs6.rmSync(dir, { recursive: true, force: true });
+      const name = path5.basename(tool);
+      if (err || !spirv || spirv.byteLength < 20) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
+        resolve({ ok: false, log: reason, tool: name });
+      } else {
+        resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
+var DECOMPILED_FILE = "decompiled.glsl";
+async function decompileForDebugging(spirv, stage, entryPoint) {
+  const glsl = await shaderText(spirv, "glsl", { entry: { stage, name: entryPoint || "main" }, forceTemporary: true });
+  if (!glsl.ok) return { ok: false, log: glsl.text, tool: "spirv-cross" };
+  const version = spirv.byteLength >= 8 ? new DataView(spirv.buffer, spirv.byteOffset, 8).getUint32(4, true) : 0;
+  const spirvVersion = version ? `${version >> 16 & 255}.${version >> 8 & 255}` : "1.5";
+  const compiled = await compileShader(glsl.text, "glsl", stage, entryPoint, spirvVersion, { debugFileName: DECOMPILED_FILE });
+  if (!compiled.ok) {
+    const log = compiled.log.split(/\r?\n/).filter((l) => l.trim() && l.trim() !== DECOMPILED_FILE).join("\n");
+    return { ok: false, log: `the decompiled GLSL did not compile: ${log}`, tool: compiled.tool, source: glsl.text };
+  }
+  return { ok: true, spirv: compiled.spirv, log: compiled.log, tool: compiled.tool, source: glsl.text };
+}
+
 // src/renderer/mesh_output.ts
 var MESH_MAGIC = "MESH 1\n";
 function parseMeshFile(bytes) {
@@ -21161,6 +21326,7 @@ function unpackHalf(p) {
 }
 
 // src/renderer/shader_debug_setup.ts
+var TRANSLATION_NOTE = "This steps GLSL that spirv-cross decompiled from the SPIR-V and glslang compiled back: it should compute the same values, but it is not the module the GPU ran, so the result is checked against the original.";
 var STAGE_MODEL = { vertex: 0 /* Vertex */, fragment: 4 /* Fragment */, compute: 5 /* GLCompute */ };
 function bytesOf(v) {
   if (!isObject(v) || typeof v.base64 !== "string") return null;
@@ -21177,7 +21343,42 @@ function stageOf(ctx, state, stage) {
   if (!source) throw new Error(`the pipeline has no ${stage} stage`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
   if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
-  return { source, module: new SpirvModule(bytes) };
+  return { source, bytes, module: new SpirvModule(bytes) };
+}
+function sameValue(x, y) {
+  if (x === void 0 || y === void 0) return false;
+  if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) && Number.isNaN(y);
+  return x === y || Math.abs(x - y) <= 1e-5 * Math.max(1, Math.abs(x), Math.abs(y));
+}
+function sameScalars(a, b) {
+  return !!a && !!b && a.length === b.length && a.every((x, i) => sameValue(x, b[i]));
+}
+function compareWithOriginal(translated, original, stage) {
+  const keyed = (inv) => {
+    const out = /* @__PURE__ */ new Map();
+    const vars = stage === "compute" ? inv.resourceVariables().filter((v) => v.set !== void 0 && v.binding !== void 0) : inv.outputs();
+    for (const v of vars) {
+      if (stage === "compute") {
+        out.set(`b${v.set}/${v.binding}`, { label: `set ${v.set} binding ${v.binding} (${v.name})`, value: scalars(v.value) });
+      } else if (v.location !== void 0) {
+        out.set(`l${v.location}`, { label: `location ${v.location} (${v.name})`, value: scalars(v.value) });
+      } else if (v.builtin !== void 0) {
+        out.set(`b${v.builtin}`, { label: v.builtin === 0 /* Position */ ? "position" : `${v.name} (built-in ${v.builtin})`, value: scalars(v.value) });
+      } else if (Array.isArray(v.value) && Array.isArray(v.value[0])) {
+        out.set(`b${0 /* Position */}`, { label: "position", value: scalars(v.value[0]) });
+      }
+    }
+    return out;
+  };
+  const a = keyed(translated), b = keyed(original);
+  const values = [];
+  for (const key of /* @__PURE__ */ new Set([...b.keys(), ...a.keys()])) {
+    const t = a.get(key), o = b.get(key);
+    values.push({ label: (o ?? t).label, translated: t?.value ?? null, original: o?.value ?? null, matches: sameScalars(t?.value ?? null, o?.value ?? null) });
+  }
+  const status = { translated: translated.status, original: original.status, error: original.error || void 0 };
+  const ended = translated.status === "returned" && original.status === "returned";
+  return { matches: translated.status === original.status && (!ended || values.every((v) => v.matches)), status, values: ended ? values : [] };
 }
 function specialization(state, source) {
   const out = /* @__PURE__ */ new Map();
@@ -21521,19 +21722,27 @@ async function prepareDebugSession(ctx, target) {
   }
   const state = drawState(data, db, cmd);
   if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
-  const { source, module } = stageOf(ctx, state, target.stage);
+  const { source, bytes, module: captured } = stageOf(ctx, state, target.stage);
   const bindings = commandBindings(ctx, state, source);
   const model = STAGE_MODEL[target.stage];
   const notes = [];
   const entryPoint = source.entryPoint;
   const a = cmd.args ?? {};
+  const translated = ctx.translate ? new SpirvModule(await ctx.translate(bytes, source)) : null;
+  const module = translated ?? captured;
+  if (translated) notes.push(TRANSLATION_NOTE);
+  const program = SpirvProgram.of(module);
+  const both = (start) => ({
+    start: () => start(module),
+    original: translated ? () => start(captured) : void 0
+  });
   if (target.stage === "compute") {
-    const entry = module.entryPoint(entryPoint, model);
+    const entry = captured.entryPoint(entryPoint, model);
     let localSize = [1, 1, 1];
     const literal = entry?.modes.get(17);
     const ids = entry?.modes.get(38);
     if (literal) localSize = [literal[0] ?? 1, literal[1] ?? 1, literal[2] ?? 1];
-    else if (ids) localSize = ids.map((id) => Number(module.constants.get(id) ?? 1));
+    else if (ids) localSize = ids.map((id) => Number(captured.constants.get(id) ?? 1));
     const groups = cmd.method.includes("Indirect") ? [1, 1, 1] : [Math.max(1, num(a.groupCountX)), Math.max(1, num(a.groupCountY)), Math.max(1, num(a.groupCountZ))];
     if (cmd.method.includes("Indirect")) notes.push("An indirect dispatch's group counts are in a buffer: gl_NumWorkGroups reads (1, 1, 1).");
     const g = target.invocation;
@@ -21550,13 +21759,13 @@ async function prepareDebugSession(ctx, target) {
     };
     return {
       target,
-      program: SpirvProgram.of(module),
+      program,
       stage: source,
       bindings,
       notes,
       description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with local size ${localSize.join(" x ")}`,
       limits: { groups, localSize },
-      start: () => new Invocation(module, { entryPoint, model, bindings, inputs })
+      ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs }))
     };
   }
   if (target.stage === "vertex") {
@@ -21607,14 +21816,14 @@ async function prepareDebugSession(ctx, target) {
     }
     return {
       target,
-      program: SpirvProgram.of(module),
+      program,
       stage: source,
       bindings,
       notes,
       replayedOutputs,
       description: `vertex ${order} of the draw (gl_VertexIndex ${vertexId}), instance ${target.instance}`,
       limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
-      start: () => new Invocation(module, { entryPoint, model, bindings, inputs })
+      ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs }))
     };
   }
   if (!ctx.meshOutput) throw new Error("a fragment's inputs come from replaying the draw's vertex shader, and no replay is available here");
@@ -21639,20 +21848,20 @@ async function prepareDebugSession(ctx, target) {
   }
   return {
     target,
-    program: SpirvProgram.of(module),
+    program,
     stage: source,
     bindings,
     notes,
     targetPixel,
     description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing)`,
     limits: { width: viewport ? Math.abs(viewport.width) : void 0, height: viewport ? Math.abs(viewport.height) : void 0 },
-    start: () => new PixelQuad((dx, dy, derivatives) => new Invocation(module, {
+    ...both((m) => new PixelQuad((dx, dy, derivatives) => new Invocation(m, {
       entryPoint,
       model,
       bindings,
-      inputs: fragmentInputs2(module, hit, x0 + dx, y0 + dy),
+      inputs: fragmentInputs2(m, hit, x0 + dx, y0 + dy),
       derivatives
-    }), lane)
+    }), lane))
   };
 }
 function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
@@ -21684,18 +21893,18 @@ function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
 
 // src/mcp/live_session.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs9 from "node:fs";
+import fs10 from "node:fs";
 import net2 from "node:net";
-import os6 from "node:os";
-import path8 from "node:path";
+import os7 from "node:os";
+import path9 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/main/android.ts
-import { execFile as execFile2, execFileSync, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile3, execFileSync, spawn as spawn2 } from "node:child_process";
 import crypto from "node:crypto";
-import fs6 from "node:fs";
-import os4 from "node:os";
-import path5 from "node:path";
+import fs7 from "node:fs";
+import os5 from "node:os";
+import path6 from "node:path";
 var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
 var LAYER_LIB = "libVkLayer_inspector_capture.so";
 var LAYER_APK = "gpu_inspector_layer.apk";
@@ -21713,18 +21922,18 @@ function findAdb() {
   const candidates = [];
   if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
   for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path5.join(process.env[v], "platform-tools", exe));
+    if (process.env[v]) candidates.push(path6.join(process.env[v], "platform-tools", exe));
   }
   if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path5.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+    if (process.env.LOCALAPPDATA) candidates.push(path6.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
   } else if (process.platform === "darwin") {
-    candidates.push(path5.join(os4.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+    candidates.push(path6.join(os5.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
   } else {
-    candidates.push(path5.join(os4.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+    candidates.push(path6.join(os5.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
   }
-  for (const c2 of candidates) if (fs6.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path5.delimiter)) {
-    if (dir && fs6.existsSync(path5.join(dir, exe))) return path5.join(dir, exe);
+  for (const c2 of candidates) if (fs7.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path6.delimiter)) {
+    if (dir && fs7.existsSync(path6.join(dir, exe))) return path6.join(dir, exe);
   }
   return null;
 }
@@ -21733,7 +21942,7 @@ function adbArgs(serial, args) {
 }
 function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile3(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
         reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
@@ -21792,19 +22001,19 @@ async function resolveActivity(adbPath, serial, pkg) {
 }
 function findAndroidLayer(candidates) {
   for (const dir of candidates) {
-    const libRoot = path5.join(dir, "lib");
-    if (!fs6.existsSync(libRoot)) continue;
+    const libRoot = path6.join(dir, "lib");
+    if (!fs7.existsSync(libRoot)) continue;
     const libs = {};
-    for (const abi of fs6.readdirSync(libRoot)) {
-      const lib = path5.join(libRoot, abi, LAYER_LIB);
-      if (fs6.existsSync(lib)) libs[abi] = lib;
+    for (const abi of fs7.readdirSync(libRoot)) {
+      const lib = path6.join(libRoot, abi, LAYER_LIB);
+      if (fs7.existsSync(lib)) libs[abi] = lib;
     }
     if (!Object.keys(libs).length) continue;
-    const apk = path5.join(dir, LAYER_APK);
+    const apk = path6.join(dir, LAYER_APK);
     let apkInfo = null;
-    if (fs6.existsSync(apk)) {
+    if (fs7.existsSync(apk)) {
       try {
-        apkInfo = JSON.parse(fs6.readFileSync(`${apk}.json`, "utf8"));
+        apkInfo = JSON.parse(fs7.readFileSync(`${apk}.json`, "utf8"));
       } catch {
         apkInfo = null;
       }
@@ -21971,7 +22180,7 @@ var AndroidTarget = class {
       throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
     }
     const lib = layer.libs[abi];
-    const local = crypto.createHash("md5").update(fs6.readFileSync(lib)).digest("hex");
+    const local = crypto.createHash("md5").update(fs7.readFileSync(lib)).digest("hex");
     let remote = "";
     try {
       remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
@@ -22122,11 +22331,11 @@ var FrameReader = class {
 };
 
 // src/main/launch_env.ts
-import { execFile as execFile3 } from "node:child_process";
-import fs7 from "node:fs";
+import { execFile as execFile4 } from "node:child_process";
+import fs8 from "node:fs";
 import net from "node:net";
-import os5 from "node:os";
-import path6 from "node:path";
+import os6 from "node:os";
+import path7 from "node:path";
 var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
 var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
 var DEFAULT_PORT = 47531;
@@ -22134,12 +22343,12 @@ function findLayerDir(roots, packaged = []) {
   if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
   const candidates = [];
   for (const root of roots) {
-    const bin = path6.join(root, "build", "bin");
-    candidates.push(path6.join(bin, "Release"), path6.join(bin, "RelWithDebInfo"), path6.join(bin, "Debug"), bin);
+    const bin = path7.join(root, "build", "bin");
+    candidates.push(path7.join(bin, "Release"), path7.join(bin, "RelWithDebInfo"), path7.join(bin, "Debug"), bin);
   }
   candidates.push(...packaged);
   for (const dir of candidates) {
-    if (fs7.existsSync(path6.join(dir, `${LAYER_NAME2}.json`))) return dir;
+    if (fs8.existsSync(path7.join(dir, `${LAYER_NAME2}.json`))) return dir;
   }
   return null;
 }
@@ -22147,12 +22356,12 @@ function findValidationLayerDir() {
   const manifest = "VkLayer_khronos_validation.json";
   const candidates = [];
   const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path6.join(sdk, "Bin"), path6.join(sdk, "share", "vulkan", "explicit_layer.d"), path6.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (sdk) candidates.push(path7.join(sdk, "Bin"), path7.join(sdk, "share", "vulkan", "explicit_layer.d"), path7.join(sdk, "etc", "vulkan", "explicit_layer.d"));
   if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path6.join(os5.homedir(), "VulkanSDK")]) {
+    for (const root of ["C:\\VulkanSDK", path7.join(os6.homedir(), "VulkanSDK")]) {
       try {
-        const versions = fs7.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path6.join(root, v, "Bin"));
+        const versions = fs8.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path7.join(root, v, "Bin"));
       } catch {
       }
     }
@@ -22161,21 +22370,21 @@ function findValidationLayerDir() {
       "/usr/share/vulkan/explicit_layer.d",
       "/usr/local/share/vulkan/explicit_layer.d",
       "/etc/vulkan/explicit_layer.d",
-      path6.join(os5.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+      path7.join(os6.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
     );
   }
-  for (const c2 of candidates) if (fs7.existsSync(path6.join(c2, manifest))) return c2;
+  for (const c2 of candidates) if (fs8.existsSync(path7.join(c2, manifest))) return c2;
   return null;
 }
 function vulkanLayerEnvironment(o) {
   const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
   const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
   return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path6.delimiter),
+    VK_ADD_LAYER_PATH: layerPaths.join(path7.delimiter),
     VK_LOADER_LAYERS_ENABLE: layers.join(","),
     // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path6.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path6.delimiter),
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path7.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path7.delimiter),
     VKINSP_PORT: String(o.port),
     VKINSP_LOG: o.log ? "1" : "0",
     ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
@@ -22212,7 +22421,7 @@ async function findFreePort(start, taken = () => false) {
 }
 function terminate(proc) {
   if (process.platform === "win32" && proc.pid) {
-    execFile3("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+    execFile4("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
       try {
         proc.kill();
       } catch {
@@ -22225,43 +22434,43 @@ function terminate(proc) {
 
 // src/main/metal.ts
 import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
-import fs8 from "node:fs";
-import path7 from "node:path";
+import fs9 from "node:fs";
+import path8 from "node:path";
 import { fileURLToPath } from "node:url";
-var moduleDir = path7.dirname(fileURLToPath(import.meta.url));
+var moduleDir = path8.dirname(fileURLToPath(import.meta.url));
 var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path7.resolve(moduleDir, "..", "..", "..")], packaged = [path7.join(process.resourcesPath ?? "", "layer")]) {
+function findCaptureLibrary(roots = [path8.resolve(moduleDir, "..", "..", "..")], packaged = [path8.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
     for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path7.join(root, dir, CAPTURE_LIBRARY));
+      candidates.push(path8.join(root, dir, CAPTURE_LIBRARY));
     }
   }
-  for (const dir of packaged) candidates.push(path7.join(dir, CAPTURE_LIBRARY));
-  return candidates.find((p) => fs8.existsSync(p)) ?? null;
+  for (const dir of packaged) candidates.push(path8.join(dir, CAPTURE_LIBRARY));
+  return candidates.find((p) => fs9.existsSync(p)) ?? null;
 }
 function resolveExecutable(exe) {
   if (!exe.endsWith(".app")) return exe;
-  const macOS = path7.join(exe, "Contents", "MacOS");
-  const plist = path7.join(exe, "Contents", "Info.plist");
-  if (fs8.existsSync(plist)) {
+  const macOS = path8.join(exe, "Contents", "MacOS");
+  const plist = path8.join(exe, "Contents", "Info.plist");
+  if (fs9.existsSync(plist)) {
     try {
       const name = execFileSync2(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
       ).trim();
-      const candidate = path7.join(macOS, name);
-      if (name && fs8.existsSync(candidate)) return candidate;
+      const candidate = path8.join(macOS, name);
+      if (name && fs9.existsSync(candidate)) return candidate;
     } catch {
     }
   }
-  const byBundleName = path7.join(macOS, path7.basename(exe, ".app"));
-  if (fs8.existsSync(byBundleName)) return byBundleName;
+  const byBundleName = path8.join(macOS, path8.basename(exe, ".app"));
+  if (fs9.existsSync(byBundleName)) return byBundleName;
   try {
-    const entries = fs8.readdirSync(macOS);
-    if (entries.length === 1) return path7.join(macOS, entries[0]);
+    const entries = fs9.readdirSync(macOS);
+    if (entries.length === 1) return path8.join(macOS, entries[0]);
   } catch {
   }
   return exe;
@@ -22277,7 +22486,7 @@ function injectionBlockedReason(exe) {
   const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
   const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
   if (hasDyld && hasLibrary) return null;
-  return `${path7.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+  return `${path8.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
 
   /usr/bin/codesign --force --deep --sign - --options runtime \\
     --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
@@ -22558,34 +22767,34 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path8.join(os6.tmpdir(), "gpu-inspector-captures");
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path9.join(os7.tmpdir(), "gpu-inspector-captures");
 }
 function checkoutRoots() {
   const roots = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path8.resolve(path8.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  roots.push(path9.resolve(path9.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
   return roots;
 }
 function installedLayerDirs() {
-  const home = os6.homedir();
+  const home = os7.homedir();
   if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path8.join(home, "AppData", "Local");
-    const apps = [path8.join(local, "Programs", "gpu-inspector"), path8.join(local, "Programs", "GPU Inspector")];
+    const local = process.env.LOCALAPPDATA ?? path9.join(home, "AppData", "Local");
+    const apps = [path9.join(local, "Programs", "gpu-inspector"), path9.join(local, "Programs", "GPU Inspector")];
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path8.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(path9.join(programFiles, "GPU Inspector"));
     }
-    return apps.map((dir) => path8.join(dir, "resources", "layer"));
+    return apps.map((dir) => path9.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path8.join(home, "Applications")].map((dir) => path8.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    return ["/Applications", path9.join(home, "Applications")].map((dir) => path9.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
   }
   return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 function androidLayer() {
   const candidates = [
     process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path8.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path8.join(dir, "android"))
+    ...checkoutRoots().map((root) => path9.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path9.join(dir, "android"))
   ].filter((d) => !!d);
   return findAndroidLayer(candidates);
 }
@@ -22884,16 +23093,16 @@ var LiveSession = class {
     });
     let target;
     if (file) {
-      target = path8.resolve(file);
-      fs9.mkdirSync(path8.dirname(target), { recursive: true });
+      target = path9.resolve(file);
+      fs10.mkdirSync(path9.dirname(target), { recursive: true });
     } else {
       const dir = capturesDir();
-      fs9.mkdirSync(dir, { recursive: true });
+      fs10.mkdirSync(dir, { recursive: true });
       const name = captureFileName(this.name, data.frame, data.frames);
-      target = path8.join(dir, name);
-      for (let n = 2; fs9.existsSync(target); n++) target = path8.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+      target = path9.join(dir, name);
+      for (let n = 2; fs10.existsSync(target); n++) target = path9.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }
-    fs9.writeFileSync(target, bytes);
+    fs10.writeFileSync(target, bytes);
     return target;
   }
   /**
@@ -22971,8 +23180,8 @@ var SessionManager = class {
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
   async launch(o, waitMs) {
-    const requested = path8.resolve(o.exe);
-    if (!fs9.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const requested = path9.resolve(o.exe);
+    if (!fs10.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
     const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
@@ -23009,12 +23218,12 @@ var SessionManager = class {
       };
       note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
     }
-    const session = new LiveSession(`app-${++this._counter}`, `${path8.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    const session = new LiveSession(`app-${++this._counter}`, `${path9.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${args.join(" ")}`);
     session.appendLog(note);
     this._sessions.set(session.id, session);
     this._latest = session;
-    session.startProcess(exe, args, o.cwd && fs9.existsSync(o.cwd) ? o.cwd : path8.dirname(exe), env);
+    session.startProcess(exe, args, o.cwd && fs10.existsSync(o.cwd) ? o.cwd : path9.dirname(exe), env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
     return session;
   }
@@ -23147,7 +23356,8 @@ function debugTools(store) {
         y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
         invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
-        trace: { type: "boolean", description: "Include the line-by-line values (default true)." }
+        trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
+        decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back with line information, for a shader built without debug information (lines instead of instructions). It is not the module the GPU ran, so the original runs too and `original` says whether they agree. Needs the Vulkan SDK's spirv-cross and glslangValidator. Default false." }
       }, ["command"]),
       readOnly: true,
       handler: async (args) => {
@@ -23162,11 +23372,17 @@ function debugTools(store) {
         const inputNames = /* @__PURE__ */ new Map();
         for (const v of vertexInputs(c2, state.pipeline)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
         const metal = c2.data.api === "metal";
+        const decompiled = !metal && boolArg(args, "decompiled", false);
         const ctx = {
           data: c2.data,
           db: c2.db,
           inputNames,
-          meshOutput: metal ? void 0 : meshOutputs(c2)
+          meshOutput: metal ? void 0 : meshOutputs(c2),
+          translate: decompiled ? async (bytes, source) => {
+            const r = await decompileForDebugging(bytes, source.stage, source.entryPoint);
+            if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+            return r.spirv;
+          } : void 0
         };
         let target;
         if (stage === "compute") {
@@ -23252,6 +23468,28 @@ function debugTools(store) {
           ctl.lastLine.results.length = 0;
         }
         const inv = ctl.invocation;
+        let original;
+        if (session.original) {
+          try {
+            const run2 = session.original();
+            run2.run();
+            const c3 = compareWithOriginal(inv, run2.invocation, stage);
+            original = {
+              matches: c3.matches,
+              status: c3.status.original,
+              error: c3.status.error,
+              differences: c3.values.filter((v) => !v.matches).map((v) => {
+                if ((v.translated?.length ?? 0) <= 16 && (v.original?.length ?? 0) <= 16) return { name: v.label, translated: v.translated?.map(tidy), original: v.original?.map(tidy) };
+                const at = (v.original ?? []).findIndex((x, i2) => !sameValue(x, v.translated?.[i2]));
+                const i = at < 0 ? Math.min(v.original?.length ?? 0, v.translated?.length ?? 0) : at;
+                return { name: v.label, firstDifference: i, translated: v.translated?.[i], original: v.original?.[i] };
+              })
+            };
+            if (!c3.matches) original.note = "The translation does not compute what the original does: debug without `decompiled`.";
+          } catch (e) {
+            original = { error: `the original could not be run to compare with: ${e.message}` };
+          }
+        }
         const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
         let compare2;
         if (inv.status === "returned" && session.targetPixel) {
@@ -23282,9 +23520,10 @@ function debugTools(store) {
           status: inv.status,
           error: inv.error || void 0,
           instructions: inv.steps,
-          steppedBy: ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
+          steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)" : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
           outputs,
           compare: compare2,
+          original,
           firstNonFinite,
           warnings: inv.warnings.size ? [...inv.warnings] : void 0,
           trace: wantTrace ? trace : void 0,
@@ -23293,152 +23532,6 @@ function debugTools(store) {
       }
     }
   ];
-}
-
-// src/main/shader_tools.ts
-import { execFile as execFile4 } from "node:child_process";
-import fs10 from "node:fs";
-import os7 from "node:os";
-import path9 from "node:path";
-var tempCounter = 0;
-function tempBase() {
-  return path9.join(os7.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
-}
-function findTool(name) {
-  const exe = process.platform === "win32" ? `${name}.exe` : name;
-  const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path9.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path9.join(process.env.VULKAN_SDK, "Bin", exe), path9.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs10.existsSync(c2)) return c2;
-  return exe;
-}
-function shaderText(spirv, mode) {
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.spv`;
-    fs10.writeFileSync(tmp, Buffer.from(spirv));
-    let tool;
-    let args;
-    if (mode === "dis") {
-      tool = findTool("spirv-dis");
-      args = ["--comment", "--no-color", tmp];
-    } else {
-      tool = findTool("spirv-cross");
-      args = [tmp];
-      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
-      else if (mode === "msl") args.push("--msl");
-      else args.push("--vulkan-semantics", "--version", "460");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs10.unlinkSync(tmp);
-      } catch {
-      }
-      if (err) resolve({ ok: false, text: `${path9.basename(tool)} failed: ${stderr || err.message}` });
-      else resolve({ ok: true, text: stdout });
-    });
-  });
-}
-var GLSL_STAGES = {
-  vertex: "vert",
-  tess_control: "tesc",
-  tess_eval: "tese",
-  geometry: "geom",
-  fragment: "frag",
-  compute: "comp",
-  task: "task",
-  mesh: "mesh",
-  raygen: "rgen",
-  intersection: "rint",
-  any_hit: "rahit",
-  closest_hit: "rchit",
-  miss: "rmiss",
-  callable: "rcall"
-};
-var HLSL_PROFILES = {
-  vertex: "vs_6_0",
-  tess_control: "hs_6_0",
-  tess_eval: "ds_6_0",
-  geometry: "gs_6_0",
-  fragment: "ps_6_0",
-  compute: "cs_6_0",
-  task: "as_6_5",
-  mesh: "ms_6_5",
-  raygen: "lib_6_3",
-  intersection: "lib_6_3",
-  any_hit: "lib_6_3",
-  closest_hit: "lib_6_3",
-  miss: "lib_6_3",
-  callable: "lib_6_3"
-};
-function targetEnv(spirvVersion, tool) {
-  const v = spirvVersion || "1.5";
-  if (tool === "spirv-as") return `spv${v}`;
-  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
-  const env = glslang[v] ?? "vulkan1.2";
-  return tool === "dxc" ? env : env.replace("spirv", "spv");
-}
-function needsIncludeExtension(source) {
-  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
-}
-function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
-  return new Promise((resolve) => {
-    const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs10.existsSync(d));
-    const src = base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
-    const out = base + ".spv";
-    fs10.writeFileSync(src, source);
-    const entry = entryPoint || "main";
-    let tool;
-    let args;
-    if (language === "spirv-asm") {
-      tool = findTool("spirv-as");
-      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
-    } else if (language === "hlsl") {
-      tool = findTool("dxc");
-      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
-      for (const dir of includeDirs) args.push("-I", dir);
-    } else {
-      tool = findTool("glslangValidator");
-      args = [
-        "-V",
-        "-S",
-        GLSL_STAGES[stage] ?? "frag",
-        "--target-env",
-        targetEnv(spirvVersion, "glslang"),
-        "--source-entrypoint",
-        "main",
-        "-e",
-        entry,
-        "-o",
-        out,
-        src
-      ];
-      for (const dir of includeDirs) args.push(`-I${dir}`);
-      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-      let spirv;
-      try {
-        if (fs10.existsSync(out)) spirv = new Uint8Array(fs10.readFileSync(out));
-      } catch {
-        spirv = void 0;
-      }
-      for (const f of [src, out]) {
-        try {
-          fs10.unlinkSync(f);
-        } catch {
-        }
-      }
-      const name = path9.basename(tool);
-      if (err || !spirv || spirv.byteLength < 20) {
-        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
-        resolve({ ok: false, log: reason, tool: name });
-      } else {
-        resolve({ ok: true, spirv, log, tool: name });
-      }
-    });
-  });
 }
 
 // src/renderer/frame_cost_tree.ts

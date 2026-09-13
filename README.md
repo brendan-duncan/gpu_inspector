@@ -1,57 +1,21 @@
 <p align="center"><img src="docs/images/title.png" alt="GPU Inspector" width="800"></p>
 
-**GPU Inspector** is a cross-platform (Windows, Linux, macOS) graphics inspector for native applications, the native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) (the web
-version). Vulkan is the first supported API: every Vulkan call is intercepted through a layer, so
-any application works without instrumentation, and Unity Vulkan players are the primary target.
-The UI and protocol are API-neutral, and a second backend is now being written against them:
-`metal/` captures Metal applications on macOS, injected with `DYLD_INSERT_LIBRARIES` rather than
-registered as a layer. It inspects objects and captures frames today, but it is younger than the
-Vulkan layer and does less — [macOS](#macos) has what works and what does not. Direct3D can
-follow the same way. The feature list below describes the Vulkan layer.
+**GPU Inspector** captures and inspects frames from native graphics applications. It is the
+native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector).
 
-* **Live object inspection** — every Vulkan object with its creation arguments, dependencies,
-  labels, memory bindings and shader code (SPIR-V disassembly, GLSL, HLSL).
-* **Validation messages** — enable the Khronos validation layer from the launch dialog and the
-  errors and warnings it reports are listed in the Inspect tab, linked to the objects they name.
-* **Shader editing** — edit a pipeline's shader as GLSL, HLSL or SPIR-V assembly, compile it with
-  the Vulkan SDK's compilers and see the running application use it; restore the original at any
-  time. Shaders compiled with debug information (`-g`, `-fspv-debug=vulkan-with-source`) show
-  their embedded source, linked line by line to the SPIR-V, and are edited as that source.
-* **Profiling** — GPU timestamps around every render pass and every run of compute dispatches
-  of a capture: pass durations, a pass timeline, and a Frame Bound card comparing GPU and CPU
-  submit time with the frame interval.
-* **Frame capture** — the frame's command stream grouped by submit, command buffer, render pass
-  and debug label. Each draw shows its pipeline state and shaders, every bound descriptor set
-  with the parsed contents of its uniform and storage buffers and the images it sampled, the
-  decoded vertex and index buffers, push constants and the pass's read-back render targets. Captures save to `.gpucap`
-  files that reopen anywhere without the application, for bug reports and comparisons.
-* **GPU bottlenecks** — every pass measured in the terms a bottleneck is described in: how many
-  times each pixel is shaded, how large its triangles are, which stage it waits on and whether the
-  depth test is rejecting work, each with what usually causes it. Both APIs; the counters come
-  from a pipeline statistics query on Vulkan and Metal's counter sets on macOS.
-  [docs/PROFILING.md](docs/PROFILING.md) is the walkthrough.
-* **Replay** — a saved Vulkan capture is replayed on this machine's GPU, without the application,
-  to answer what the capture alone cannot:
-  - how many times each pixel was shaded (overdraw)
-  - every draw that touched a pixel, and what became of its fragments (pixel history)
-  - where one draw landed: highlighted, its depth test, its wireframe (draw overlays)
-  - what the vertex shader wrote, as a wireframe and a table beside the vertices it read (mesh view)
-  - a vertex, pixel or compute invocation stepped through line by line, with its values (shader debugger)
-  - each draw's GPU time and counters, for the Shader Flame Graph
+Supports **Vulkan**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
 
-  [docs/REPORTS.md](docs/REPORTS.md) shows each.
-* **Render graph** — the same frame as a dependency graph: which pass produced what each pass
-  reads, drawn as a resource lifetime chart with the selected pass's producers and consumers
-  beside it, its GPU time and the frame's critical path, what it reads from before the capture,
-  and which passes write something nothing reads.
-* **Claude Code** — a plugin gives Claude the saved captures, read with the same analyses. Ask
-  why a frame is slow or why an object is missing, and it follows a methodical path:
-  - which pass is the bottleneck, and what bounds it
-  - the draw involved, and the state it read
-  - the render targets, returned as images
-  - the uniforms, vertices and shaders
-
-  See [Claude Code](#claude-code).
+* **Object inspection**: every GPU object, with how it was created and what it uses.
+* **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
+* **Saved captures**: reopen them later, anywhere, without the application.
+* **Validation**: validation layer errors, linked to the objects and commands they name.
+* **Shader editing**: change a shader and see the running application use it.
+* **Shader debugger**: step through a vertex, pixel or compute shader line by line.
+* **Profiling**: GPU time for each pass, and what bounds the frame.
+* **GPU bottlenecks**: overdraw, triangle size and wasted work, with likely causes.
+* **Pixel history**: every draw that touched a pixel, and what happened to it.
+* **Render graph**: the frame's passes and the resources between them.
+* **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
 
 ## Documentation
 
@@ -66,8 +30,7 @@ The user documentation is in [docs/](docs/README.md):
 | [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) · [Building from source](docs/BUILDING.md) | when something does not work, and building it yourself |
 
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the design and the current state of the project,
-[TODO.md](TODO.md) is what is planned, and third-party code and licenses are listed in
+Third-party code and licenses are listed in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Install

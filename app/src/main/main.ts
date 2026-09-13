@@ -17,7 +17,7 @@ import {
   NO_REPLAY_TOOL, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
-import { compileShader, shaderText } from "./shader_tools.js";
+import { compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
 import {
   DEFAULT_PORT, findFreePort as findFreePortFrom, findLayerDir as findLayerDirIn, findValidationLayerDir, parseEnvLines, splitArgs, terminate,
@@ -34,7 +34,7 @@ import {
   type UpdateStatus, type StackFrame, type ImplicitLayerStatus,
 } from "../shared/protocol.js";
 
-const { app, BrowserWindow, ipcMain, dialog, nativeImage } = electron;
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } = electron;
 const { autoUpdater } = updater;
 type BrowserWindow = electron.BrowserWindow;
 type WebContents = electron.WebContents;
@@ -974,6 +974,9 @@ ipcMain.handle("inspector:compileShader", (_e, source: string, language: ShaderL
   // the files a module's debug information names from.
   compileShader(source, language, stage, entryPoint, spirvVersion, { includeDirs: sourceRootDirs() }));
 
+ipcMain.handle("inspector:decompileForDebugging", (_e, spirv: Uint8Array, stage: string, entryPoint: string) =>
+  decompileForDebugging(spirv, stage, entryPoint));
+
 ipcMain.handle("inspector:getConfig", (e): AppConfig => {
   const win = windowOf(e.sender);
   return {
@@ -1007,6 +1010,14 @@ ipcMain.handle("inspector:setTheme", (_e, theme: ThemeName) => {
   return true;
 });
 ipcMain.handle("inspector:checkForUpdates", () => checkForUpdates());
+
+// The user documentation (docs/) on GitHub, opened in the browser. The renderer names a page and
+// an anchor, never a URL, so nothing else can be opened through this.
+const DOCS_URL = "https://github.com/brendan-duncan/gpu_inspector/blob/main/docs/";
+ipcMain.handle("inspector:openDocs", (_e, page?: string) => {
+  const target = typeof page === "string" && /^[A-Z_]+\.md(#[a-z0-9-]+)?$/.test(page) ? page : "README.md";
+  return shell.openExternal(DOCS_URL + target).then(() => true, () => false);
+});
 ipcMain.handle("inspector:downloadUpdate", () => downloadUpdate());
 ipcMain.handle("inspector:installUpdate", () => installUpdate());
 ipcMain.handle("inspector:getRecents", () => loadRecents());
