@@ -399,6 +399,18 @@ instruction with breakpoints and per-line values, without a UI. The capture's de
 (`renderer/shader_debugger_view.ts`) and the MCP server's `debug_shader` (`mcp/debug_tools.ts`) are
 both built on it.
 
+SPIR-V built without line information can be debugged through a translation. `DebugContext.translate`
+swaps the stage's module for one `main/shader_tools.ts` `decompileForDebugging` makes:
+`spirv-cross --force-temporary` decompiles the entry point, one statement per value rather than
+folded expressions, and `glslangValidator -g` compiles it back under the name `decompiled.glsl`
+with the text and an `OpLine` per instruction. The source maps above then give it lines like any
+other module. The translation keeps the original's sets, bindings, locations, interpolation
+decorations and spec constant ids, so the same bindings and inputs drive it. Compilers do not
+guarantee it computes what the original does, so the session's `original` starts the same
+invocation of the capture's module, and `compareWithOriginal` checks the two once both finish. The
+tab runs the original a slice at a time, off the stepping. The capture's module still decides the
+invocation's shape (a compute shader's local size).
+
 ### replay/ — capture replay
 
 `vkinsp_replay` re-executes a `.gpucap` on this machine's GPU without the application, and is
@@ -1019,7 +1031,7 @@ validation, stacks), the reports (render graph, bottlenecks, and the render targ
 overdraw, following a clicked pixel, and drawing `--occluded`'s hidden draw with the depth test
 overlay via `--debug-view=overlay:depth:last`; the mesh tab's VS In and VS Out via
 `--debug-view=mesh:in` and `mesh:out`; the shader debugger via
-`--debug-view=debugger:pixel|vertex|compute[:<command>[:<lines>|end]]`), and saved captures with expected findings, each a UI run
+`--debug-view=debugger:pixel|vertex|compute[:<command>[:<lines>|end[:decompiled]]]`), and saved captures with expected findings, each a UI run
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 

@@ -1,6 +1,6 @@
 import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus,
+  CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus,
 } from "../shared/protocol.js";
 
 export interface InspectorApi {
@@ -8,6 +8,8 @@ export interface InspectorApi {
   /** Persists the theme and applies it to every window. */
   setTheme(theme: ThemeName): Promise<boolean>;
   onTheme(cb: (theme: ThemeName) => void): void;
+  /** Opens a page of the user documentation in the browser: "REPORTS.md#shader-debugger"; the index when left out. */
+  openDocs(page?: string): Promise<boolean>;
   /** Self-update: progress arrives through onUpdate. Installed builds only (AppConfig.canUpdate). */
   checkForUpdates(): Promise<boolean>;
   downloadUpdate(): Promise<boolean>;
@@ -87,6 +89,8 @@ export interface InspectorApi {
   shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult>;
   /** Compiles shader source to SPIR-V with the Vulkan SDK's compilers (shader editor). */
   compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult>;
+  /** A SPIR-V module decompiled to GLSL and recompiled with line information, for the shader debugger. */
+  decompileForDebugging(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult>;
 }
 
 declare global {

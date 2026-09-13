@@ -26,7 +26,8 @@ import { Invocation, type InvocationInputs, type ShaderBindings } from "./spirv/
 import { BuiltIn, Decoration, ExecutionModel, SpirvModule, StorageClass } from "./spirv/module.js";
 import { SpirvProgram } from "./spirv/program.js";
 import { PixelQuad, type DerivativeSource } from "./debug/quad.js";
-import type { DebugProgram, Stepper } from "./debug/program.js";
+import type { DebugInvocation, DebugProgram, Stepper } from "./debug/program.js";
+import { scalars } from "./debug/values.js";
 import type { DebugSampler, DebugTexture, Value } from "./spirv/values.js";
 import { decodeBase64 } from "./utils/base64.js";
 import { decodeTexels, sliceBytes } from "./vulkan/texture_decode.js";
@@ -58,6 +59,11 @@ export interface DebugSession {
   targetPixel?: { image: number; attachment: number; value: number[]; format: string };
   /** Vertex: what the replay's transform feedback captured for the vertex, for comparison. */
   replayedOutputs?: { name: string; location?: number; builtin?: string; value: number[] }[];
+  /**
+   * When the program is a translation of the capture's module (DebugContext.translate): starts the
+   * same invocation of the original, to check the translation computes what it does.
+   */
+  original?: () => Stepper;
 }
 
 export interface DebugContext {
@@ -73,7 +79,17 @@ export interface DebugContext {
    * every payload already, so this is optional.
    */
   fetchBlob?: (objectId: number, index: number) => Promise<Uint8Array | null>;
+  /**
+   * A Vulkan stage's SPIR-V is stepped as what this returns instead: the module decompiled to GLSL
+   * and recompiled with line information, for a module without source. Throws with the reason it
+   * could not translate. The session's `original` runs the capture's own module to compare with.
+   */
+  translate?: (spirv: Uint8Array, source: StageSource) => Promise<Uint8Array>;
 }
+
+/** What a session built with DebugContext.translate says about the code it steps. */
+export const TRANSLATION_NOTE = "This steps GLSL that spirv-cross decompiled from the SPIR-V and glslang compiled back: " +
+  "it should compute the same values, but it is not the module the GPU ran, so the result is checked against the original.";
 
 const STAGE_MODEL = { vertex: ExecutionModel.Vertex, fragment: ExecutionModel.Fragment, compute: ExecutionModel.GLCompute } as const;
 
@@ -87,14 +103,75 @@ function bytesOf(v: ArgValue | undefined): Uint8Array | null {
 }
 
 /** The pipeline stage a target debugs, with its SPIR-V. */
-function stageOf(ctx: DebugContext, state: DrawState, stage: "vertex" | "fragment" | "compute"): { source: StageSource; module: SpirvModule } {
+function stageOf(ctx: DebugContext, state: DrawState, stage: "vertex" | "fragment" | "compute"): { source: StageSource; bytes: Uint8Array; module: SpirvModule } {
   const pipeline = state.pipeline;
   if (!pipeline) throw new Error("no pipeline is bound at the command");
   const source = pipelineStages(pipeline, ctx.db).find((s) => s.stage === stage);
   if (!source) throw new Error(`the pipeline has no ${stage} stage`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
   if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
-  return { source, module: new SpirvModule(bytes) };
+  return { source, bytes, module: new SpirvModule(bytes) };
+}
+
+/** One output (or, for compute, one buffer) of a translation's invocation beside the original's. */
+export interface ComparedValue {
+  label: string;
+  translated: number[] | null;
+  original: number[] | null;
+  matches: boolean;
+}
+
+export interface OriginalComparison {
+  /** Whether the two ran to the same end with the same results. */
+  matches: boolean;
+  status: { translated: string; original: string; error?: string };
+  values: ComparedValue[];
+}
+
+/** Whether a translation's scalar is the original's: equal to a few parts in a million, NaN to NaN. */
+export function sameValue(x: number | undefined, y: number | undefined): boolean {
+  if (x === undefined || y === undefined) return false;
+  if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) && Number.isNaN(y);
+  return x === y || Math.abs(x - y) <= 1e-5 * Math.max(1, Math.abs(x), Math.abs(y));
+}
+
+function sameScalars(a: number[] | null, b: number[] | null): boolean {
+  return !!a && !!b && a.length === b.length && a.every((x, i) => sameValue(x, b[i]));
+}
+
+/**
+ * The results of a translation's finished invocation against the original's: the stage outputs by
+ * location and built-in (gl_Position whether it is a variable or gl_PerVertex's first member), and
+ * for a compute shader, which writes nothing else, its buffers by set and binding.
+ */
+export function compareWithOriginal(translated: DebugInvocation, original: DebugInvocation, stage: DebugTarget["stage"]): OriginalComparison {
+  const keyed = (inv: DebugInvocation): Map<string, { label: string; value: number[] }> => {
+    const out = new Map<string, { label: string; value: number[] }>();
+    const vars = stage === "compute" ? inv.resourceVariables().filter((v) => v.set !== undefined && v.binding !== undefined) : inv.outputs();
+    for (const v of vars) {
+      if (stage === "compute") {
+        out.set(`b${v.set}/${v.binding}`, { label: `set ${v.set} binding ${v.binding} (${v.name})`, value: scalars(v.value) });
+      } else if (v.location !== undefined) {
+        out.set(`l${v.location}`, { label: `location ${v.location} (${v.name})`, value: scalars(v.value) });
+      } else if (v.builtin !== undefined) {
+        out.set(`b${v.builtin}`, { label: v.builtin === BuiltIn.Position ? "position" : `${v.name} (built-in ${v.builtin})`, value: scalars(v.value) });
+      } else if (Array.isArray(v.value) && Array.isArray(v.value[0])) {
+        // gl_PerVertex: a block whose first member is the position.
+        out.set(`b${BuiltIn.Position}`, { label: "position", value: scalars(v.value[0]) });
+      }
+    }
+    return out;
+  };
+  const a = keyed(translated), b = keyed(original);
+  const values: ComparedValue[] = [];
+  for (const key of new Set([...b.keys(), ...a.keys()])) {
+    const t = a.get(key), o = b.get(key);
+    values.push({ label: (o ?? t)!.label, translated: t?.value ?? null, original: o?.value ?? null, matches: sameScalars(t?.value ?? null, o?.value ?? null) });
+  }
+  const status = { translated: translated.status, original: original.status, error: original.error || undefined };
+  // A discarded fragment or an error has no results worth comparing: the ends must agree.
+  const ended = translated.status === "returned" && original.status === "returned";
+  return { matches: translated.status === original.status && (!ended || values.every((v) => v.matches)), status, values: ended ? values : [] };
 }
 
 /** Specialization constant bytes by SpecId, from the pipeline's create info for the stage. */
@@ -522,20 +599,30 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
   const state = drawState(data, db, cmd);
   // A Metal pipeline's shaders are Metal Shading Language, run by a different interpreter.
   if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
-  const { source, module } = stageOf(ctx, state, target.stage);
+  const { source, bytes, module: captured } = stageOf(ctx, state, target.stage);
   const bindings = commandBindings(ctx, state, source);
   const model = STAGE_MODEL[target.stage];
   const notes: string[] = [];
   const entryPoint = source.entryPoint;
   const a = cmd.args ?? {};
+  // A translation is what the tab steps; the capture's module still decides the invocation's
+  // shape (the local size) and is what it is checked against.
+  const translated = ctx.translate ? new SpirvModule(await ctx.translate(bytes, source)) : null;
+  const module = translated ?? captured;
+  if (translated) notes.push(TRANSLATION_NOTE);
+  const program = SpirvProgram.of(module);
+  const both = (start: (m: SpirvModule) => Stepper): Pick<DebugSession, "start" | "original"> => ({
+    start: () => start(module),
+    original: translated ? () => start(captured) : undefined,
+  });
 
   if (target.stage === "compute") {
-    const entry = module.entryPoint(entryPoint, model);
+    const entry = captured.entryPoint(entryPoint, model);
     let localSize: [number, number, number] = [1, 1, 1];
     const literal = entry?.modes.get(17);
     const ids = entry?.modes.get(38);
     if (literal) localSize = [literal[0] ?? 1, literal[1] ?? 1, literal[2] ?? 1];
-    else if (ids) localSize = ids.map((id) => Number(module.constants.get(id) ?? 1)) as [number, number, number];
+    else if (ids) localSize = ids.map((id) => Number(captured.constants.get(id) ?? 1)) as [number, number, number];
     const groups: [number, number, number] = cmd.method.includes("Indirect") ? [1, 1, 1] : [Math.max(1, num(a.groupCountX)), Math.max(1, num(a.groupCountY)), Math.max(1, num(a.groupCountZ))];
     if (cmd.method.includes("Indirect")) notes.push("An indirect dispatch's group counts are in a buffer: gl_NumWorkGroups reads (1, 1, 1).");
     const g = target.invocation;
@@ -551,10 +638,10 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
       ]),
     };
     return {
-      target, program: SpirvProgram.of(module), stage: source, bindings, notes,
+      target, program, stage: source, bindings, notes,
       description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with local size ${localSize.join(" x ")}`,
       limits: { groups, localSize },
-      start: () => new Invocation(module, { entryPoint, model, bindings, inputs }),
+      ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs })),
     };
   }
 
@@ -600,10 +687,10 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
       }
     }
     return {
-      target, program: SpirvProgram.of(module), stage: source, bindings, notes, replayedOutputs,
+      target, program, stage: source, bindings, notes, replayedOutputs,
       description: `vertex ${order} of the draw (gl_VertexIndex ${vertexId}), instance ${target.instance}`,
       limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
-      start: () => new Invocation(module, { entryPoint, model, bindings, inputs }),
+      ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs })),
     };
   }
 
@@ -632,12 +719,12 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
     }
   }
   return {
-    target, program: SpirvProgram.of(module), stage: source, bindings, notes, targetPixel,
+    target, program, stage: source, bindings, notes, targetPixel,
     description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing)`,
     limits: { width: viewport ? Math.abs(viewport.width) : undefined, height: viewport ? Math.abs(viewport.height) : undefined },
-    start: () => new PixelQuad((dx, dy, derivatives: DerivativeSource) => new Invocation(module, {
-      entryPoint, model, bindings, inputs: fragmentInputs(module, hit, x0 + dx, y0 + dy), derivatives,
-    }), lane),
+    ...both((m) => new PixelQuad((dx, dy, derivatives: DerivativeSource) => new Invocation(m, {
+      entryPoint, model, bindings, inputs: fragmentInputs(m, hit, x0 + dx, y0 + dy), derivatives,
+    }), lane)),
   };
 }
 

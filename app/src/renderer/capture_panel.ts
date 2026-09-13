@@ -444,6 +444,7 @@ export class CapturePanel {
       meshOutput: (command) => view.meshOutput(command),
       inputNames: (cmd) => view.vertexInputNames(cmd),
       disassemble: (spirv) => window.inspector.shaderText(spirv, "dis"),
+      decompile: (spirv, stage, entryPoint) => window.inspector.decompileForDebugging(spirv, stage, entryPoint),
       fetchBlob: (objectId, index) => view.fetchShaderBlob(objectId, index),
     }, request, options);
     const entry = this._addSubTab(view, "debugger", tab, `${tab.label}: ${view.label}`);
@@ -1417,13 +1418,15 @@ export class CaptureView implements CaptureHost {
       else this._setStatus("this capture has no draws");
     }
     else if (name.startsWith("debugger")) {
-      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end]]]): the shader debugger on the
-      // first draw (or dispatch), or the one named, stepped over that many lines or run to the end.
-      const [, kind = "pixel", at, steps] = name.split(":");
+      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end[:decompiled]]]]): the shader
+      // debugger on the first draw (or dispatch), or the one named, stepped over that many lines or run to the end, on the
+      // SPIR-V or on GLSL decompiled from it.
+      const [, kind = "pixel", at, steps, code] = name.split(":");
       const compute = kind === "compute";
       const commands = this.data.commands.filter((c) => (compute ? this.data.sets.DISPATCH : this.data.sets.DRAW).has(c.method));
       const cmd = at === "last" ? commands[commands.length - 1] : at !== undefined && at !== "" ? this.data.commands[Number(at)] : commands[0];
-      const options: ShaderDebuggerOptions = steps === "end" ? { steps: -1 } : steps !== undefined ? { steps: Number(steps) } : {};
+      const options: ShaderDebuggerOptions = steps === "end" ? { steps: -1 } : steps !== undefined && steps !== "" ? { steps: Number(steps) } : {};
+      if (code === "decompiled") options.decompiled = true;
       if (!cmd) this._setStatus(`this capture has no ${compute ? "dispatches" : "draws"}`);
       else this.debugShader(compute ? { stage: "compute", command: cmd.index } : kind === "vertex" ? { stage: "vertex", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
     }

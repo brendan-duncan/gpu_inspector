@@ -25,7 +25,9 @@ const THEME_ICONS: Record<ThemeName, string> = {
 };
 
 // Toolbar icon (inline SVG in the button's text color): a clock face for the recent launches.
-const ICON_RECENT = '<svg viewBox="0 0 16 16" aria-label="Recent"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.6 1.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 13.4l1.8 0.6-0.6-1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// A book, for the documentation.
+const ICON_DOCS = '<svg viewBox="0 0 16 16" aria-label="Documentation"><path d="M8 3.6C6.6 2.6 4.6 2.3 2 2.5v10c2.6-.2 4.6.1 6 1.1 1.4-1 3.4-1.3 6-1.1v-10c-2.6-.2-4.6.1-6 1.1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 3.6v10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+const ICON_RECENT ='<svg viewBox="0 0 16 16" aria-label="Recent"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.6 1.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 13.4l1.8 0.6-0.6-1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export class InspectorWindow extends Window {
   private _mode: "main" | "session" = "main";
@@ -76,9 +78,22 @@ export class InspectorWindow extends Window {
     this._tabs.onTabClosed.addListener((panel) => this._tabClosed(panel));
 
     this._placeholder = new Div(this, { class: "main-placeholder" });
-    new Div(this._placeholder, { text: this._mode === "main"
+    const intro = new Div(this._placeholder);
+    new Div(intro, { text: this._mode === "main"
       ? "No application is being inspected. Use Launch... to start one, Recent to relaunch a previous one, or Connect to attach to a running application with the layer enabled."
       : "No sessions in this window.", class: "text-muted" });
+    if (this._mode === "main") {
+      const docs = new Div(intro, { class: "main-placeholder-docs" });
+      const link = (label: string, page: string): void => {
+        const a = document.createElement("a");
+        a.href = "#";
+        a.textContent = label;
+        a.onclick = (e) => { e.preventDefault(); void window.inspector.openDocs(page); };
+        docs.element.appendChild(a);
+      };
+      link("Getting started", "GETTING_STARTED.md");
+      link("Documentation", "README.md");
+    }
 
     // Capture files can be dropped onto the window.
     document.addEventListener("dragover", (e) => e.preventDefault());
@@ -319,6 +334,8 @@ export class InspectorWindow extends Window {
     document.addEventListener("mousedown", (e) => {
       if (!themeMenu.element.contains(e.target as Node)) this._themeMenu?.classList.remove("open");
     });
+
+    new Button(row, { html: ICON_DOCS, class: "btn btn-icon", tooltip: "Documentation: open the user guide in the browser", callback: () => void window.inspector.openDocs() });
 
     // Version label; clicking it checks for updates (installed builds).
     this._versionLabel = new Button(row, { label: "", class: "btn version-label", callback: () => {

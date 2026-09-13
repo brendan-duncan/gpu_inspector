@@ -209,8 +209,8 @@ values each line computed. Open it from:
 
 ![The shader debugger, paused on the second line of the test application's fragment shader: the source with the current line, the values the first line computed, the locals, call stack, inputs and outputs](images/shader-debugger.png)
 
-- **Continue** (F5), **Step Over** (F10), **Step Into** (F11), **Step Out** (Shift+F11) and
-  **Restart** (Ctrl+Shift+F5).
+- The toolbar icons are **Continue** (F5; **Pause** while running), **Step Over** (F10),
+  **Step Into** (F11), **Step Out** (Shift+F11) and **Restart** (Ctrl+Shift+F5).
 - Click a line number to set a breakpoint. Breakpoints are kept when you restart or pick another
   invocation of the same shader.
 - The fields at the top pick the invocation: a vertex and instance, a pixel, or a compute
@@ -234,6 +234,16 @@ capture holds the text the application compiled), and SPIR-V does when it was co
 information and its source is embedded (`-g`) or found under the launch dialog's Source roots.
 SPIR-V without it steps by instruction through the disassembly instead; **Source** /
 **Disassembly** switches between the two.
+
+For SPIR-V without source, pick **Decompiled GLSL** instead of **Original SPIR-V** to step by
+line anyway. `spirv-cross` decompiles the shader to GLSL with a variable for every value, named
+after its SPIR-V id (`_42`), and `glslangValidator` compiles that back with line information. Both
+come with the Vulkan SDK. The debugger then steps the recompiled module. It should compute the same
+values, but it is not the module the GPU ran. So when it finishes, the original SPIR-V runs the same
+invocation and **Original SPIR-V** in the side pane compares the two: every output by location and
+built-in, or a compute shader's buffers by set and binding. If they differ, step the original.
+Switching restarts the invocation and clears the breakpoints, since a line of one is not a line of
+the other.
 
 What it runs on:
 
@@ -266,7 +276,8 @@ Current limits:
 - A GPU driver may reorder floating-point operations the debugger performs in source order, so a
   value can differ in the last digits, or more where a shader cancels large numbers.
 
-`debug_shader` gives Claude the same run, with every line's values in order.
+`debug_shader` gives Claude the same run, with every line's values in order, and `decompiled`
+steps the decompiled GLSL with the same check against the original.
 
 ---
 

@@ -55,6 +55,9 @@ html, body {
   text-align: center;
   font-size: 11pt;
 }
+.main-placeholder-docs { margin-top: 14px; display: flex; gap: 18px; justify-content: center; }
+.main-placeholder-docs a { color: var(--link-color); text-decoration: none; }
+.main-placeholder-docs a:hover { text-decoration: underline; }
 
 /* Session (one inspected application) */
 .session-panel {

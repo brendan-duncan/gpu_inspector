@@ -9,6 +9,11 @@
   compiled rather than SPIR-V. A fragment needs no replay: the draw's own vertex shader is run in
   the interpreter and its result rasterized, so a pixel can be debugged with nothing else built.
   A library loaded as a precompiled `metallib` has no source, and the debugger says so.
+- The shader debugger can step SPIR-V built without debug information by line, through GLSL that
+  `spirv-cross` decompiles and `glslangValidator` compiles back with line information (**Decompiled
+  GLSL**, or `decompiled` in `debug_shader`). The original SPIR-V runs the same invocation, and
+  the debugger says whether the two agree.
+- The shader debugger's stepping buttons are icons.
 - Metal captures read back the textures a draw or dispatch sampled, not only its render targets, so
   a debugged fragment samples what the GPU sampled. Deduplicated per capture and capped by
   `maxSampledTextureTotal`.
