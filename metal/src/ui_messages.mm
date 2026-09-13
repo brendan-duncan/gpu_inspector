@@ -51,6 +51,9 @@ void HandleMessage(const std::string &text) {
             options.maxBufferTotal = (uint64_t)message.GetNumber("maxBufferTotal", (double)options.maxBufferTotal);
             options.maxTextureSize = (uint64_t)message.GetNumber("maxTextureSize", (double)options.maxTextureSize);
             options.captureTextures = message.GetBool("captureTextures", true);
+            options.captureSampledTextures = message.GetBool("captureSampledTextures", true);
+            options.maxSampledTextureTotal =
+                (uint64_t)message.GetNumber("maxSampledTextureTotal", (double)options.maxSampledTextureTotal);
             options.captureBuffers = message.GetBool("captureBuffers", true);
             options.profilePasses = message.GetBool("profilePasses", true);
             options.stacktraces = message.GetBool("stacktraces", false);

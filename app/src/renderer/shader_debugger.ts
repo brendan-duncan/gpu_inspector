@@ -2,16 +2,20 @@
 // into and out of source lines (or SPIR-V instructions, for a module without line information), with
 // the values each line produced. Shared by the debugger tab (shader_debugger_view.ts) and the MCP
 // server's debug_shader.
-import type { DebugSession, Stepper } from "./shader_debug_setup.js";
-import type { Invocation, StepResult } from "./spirv/interpreter.js";
-import { Op, type Instruction, type SpirvModule } from "./spirv/module.js";
-import { ImageValue, Pointer, SampledImageValue, SamplerValue, type Value } from "./spirv/values.js";
-import type { DebugLocation } from "./vulkan/spirv_debug.js";
+//
+// Nothing here knows which language the shader was written in: it steps a DebugInvocation and asks
+// its DebugProgram (debug/program.ts) which line an instruction is on, so a Vulkan capture's SPIR-V
+// and a Metal capture's MSL step identically.
+import type { DebugSession } from "./shader_debug_setup.js";
+import {
+  instructionKey, sourceKey,
+  type DebugInvocation, type DebugLocation, type DebugProgram, type DebugStep, type LineMode, type StepResult, type Stepper,
+} from "./debug/program.js";
+
+export type { LineMode, StepResult };
+export { instructionKey, sourceKey };
 
 export type StepKind = "over" | "into" | "out" | "continue" | "instruction";
-
-/** What a stop is keyed by: source lines ("f:line" keys) or instructions ("i:ordinal" keys). */
-export type LineMode = "source" | "instruction";
 
 /** A line's values: the results of the instructions that ran on it, the last time it ran. */
 export interface LineValues {
@@ -28,45 +32,6 @@ interface PendingStep {
   key: string | null;
   /** The last line key the step passed through. */
   lastKey: string | null;
-}
-
-export function sourceKey(file: number, line: number): string {
-  return `f:${file}:${line}`;
-}
-
-export function instructionKey(ordinal: number): string {
-  return `i:${ordinal}`;
-}
-
-/** Whether a module's instructions map to lines of source text it (or the host) has. */
-export function hasLineInfo(module: SpirvModule): boolean {
-  const info = module.debug;
-  return !!info && info.form !== "none" && info.locations.some((l) => l !== null);
-}
-
-/** The instructions of the module's function bodies that execute (what a breakpoint can be put on). */
-export function executableInstructions(module: SpirvModule): number[] {
-  const out: number[] = [];
-  for (const fn of module.functions.values()) {
-    for (const block of fn.blocks) {
-      for (let i = block.start + 1; i <= block.end; i++) {
-        const inst = module.instructions[i];
-        if (inst && !isNoop(module, inst)) out.push(i);
-      }
-    }
-  }
-  return out.sort((a, b) => a - b);
-}
-
-function isNoop(module: SpirvModule, inst: Instruction): boolean {
-  switch (inst.op) {
-    case Op.Nop: case Op.Line: case Op.NoLine: case Op.SelectionMerge: case Op.LoopMerge: case Op.Label:
-      return true;
-    case Op.ExtInst:
-      return module.extSets.get(inst.words[2])?.startsWith("NonSemantic.") ?? false;
-    default:
-      return false;
-  }
 }
 
 export class DebugController {
@@ -86,16 +51,17 @@ export class DebugController {
 
   constructor(session: DebugSession, mode?: LineMode) {
     this.session = session;
-    this._mode = mode ?? (hasLineInfo(session.module) ? "source" : "instruction");
+    const modes = session.program.modes;
+    this._mode = mode && modes.includes(mode) ? mode : modes.includes("source") ? "source" : "instruction";
     this.stepper = session.start();
     this._settle();
   }
 
-  get module(): SpirvModule {
-    return this.session.module;
+  get program(): DebugProgram {
+    return this.session.program;
   }
 
-  get invocation(): Invocation {
+  get invocation(): DebugInvocation {
     return this.stepper.invocation;
   }
 
@@ -114,21 +80,21 @@ export class DebugController {
 
   /** Switches between source lines and instructions; the invocation stays where it is. */
   set mode(mode: LineMode) {
-    if (mode === "source" && !hasLineInfo(this.module)) return;
+    if (!this.program.modes.includes(mode)) return;
     this._mode = mode;
     if (!this.running) this._settle();
   }
 
-  /** The source location of an instruction, when the module's debug information has one. */
-  location(inst: Instruction | null): DebugLocation | null {
-    return inst ? this.module.debug?.locations[inst.index] ?? null : null;
+  /** The source location of an instruction, when the program's debug information has one. */
+  location(step: DebugStep | null): DebugLocation | null {
+    return this.program.locationOf(step);
   }
 
   /** The key a stop at an instruction has in the current mode; null where one cannot stop. */
-  keyOf(inst: Instruction | null): string | null {
-    if (!inst) return null;
-    if (this._mode === "instruction") return instructionKey(inst.index);
-    const loc = this.location(inst);
+  keyOf(step: DebugStep | null): string | null {
+    if (!step) return null;
+    if (this._mode === "instruction") return instructionKey(step.index);
+    const loc = this.location(step);
     return loc ? sourceKey(loc.file, loc.line) : null;
   }
 
@@ -139,7 +105,7 @@ export class DebugController {
 
   /** The values of the line that ran last (at the current depth, or the call it stepped into from). */
   get lastLine(): LineValues {
-    const depth = Math.min(this._lastDepth, this.invocation.frames.length || this._lastDepth);
+    const depth = Math.min(this._lastDepth, this.invocation.depth || this._lastDepth);
     const line = this._lines[depth - 1];
     if (line?.results.length) return line;
     return this._previous[depth - 1] ?? line ?? { key: null, results: [] };
@@ -167,7 +133,7 @@ export class DebugController {
   /** Begins a step; proceed() runs it. */
   begin(kind: StepKind): void {
     if (this.finished) return;
-    this._pending = { kind, depth: this.invocation.frames.length, key: this.currentKey, lastKey: this.currentKey };
+    this._pending = { kind, depth: this.invocation.depth, key: this.currentKey, lastKey: this.currentKey };
     this.stepSteps = 0;
   }
 
@@ -186,7 +152,7 @@ export class DebugController {
       const entered = key !== p.lastKey;
       p.lastKey = key;
       // A breakpoint stops when its line is entered, not on each of its instructions.
-      if ((entered && this.breakpoints.has(key)) || this._reached(p, key, inv.frames.length)) {
+      if ((entered && this.breakpoints.has(key)) || this._reached(p, key, inv.depth)) {
         stopped = true;
         break;
       }
@@ -221,7 +187,7 @@ export class DebugController {
   private _stepOnce(): void {
     const inv = this.invocation;
     const key = this.currentKey;
-    const depth = inv.frames.length;
+    const depth = inv.depth;
     this.stepper.step();
     const results = inv.takeResults();
     if (key !== null || !this._lines[depth - 1]) {
@@ -243,78 +209,4 @@ export class DebugController {
     let guard = 0;
     while (!this.finished && this.currentKey === null && guard++ < 1_000_000) this._stepOnce();
   }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Values as text
-
-/** The type of the value an id has: a variable's pointee, else its result type. */
-export function valueType(m: SpirvModule, id: number): number {
-  const type = m.idTypes.get(id) ?? m.globals.get(id)?.type ?? 0;
-  const t = m.types.get(type);
-  return t?.kind === "pointer" ? t.pointee : type;
-}
-
-/** A step result's type: the instruction's result type, or for a store the stored variable's. */
-export function resultType(m: SpirvModule, r: StepResult): number {
-  return r.inst.resultType || valueType(m, r.id);
-}
-
-function scalarText(v: Value): string {
-  if (typeof v === "number") {
-    if (Number.isInteger(v)) return String(v);
-    if (Number.isNaN(v)) return "NaN";
-    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
-  }
-  if (typeof v === "bigint") return String(v);
-  if (typeof v === "boolean") return v ? "true" : "false";
-  return "?";
-}
-
-/** One line of text for a value: scalars and vectors in full, composites shortened past `limit` elements. */
-export function valueText(module: SpirvModule, type: number, value: Value | undefined, limit = 16): string {
-  if (value === undefined || value === null) return "undefined";
-  if (value instanceof Pointer) return `→ ${module.nameOf(value.variable)}${value.path.length ? `[${value.path.join("][")}]` : ""}`;
-  if (value instanceof SampledImageValue) return `${imageText(value.image)}, ${samplerText(value.sampler)}`;
-  if (value instanceof ImageValue) return imageText(value);
-  if (value instanceof SamplerValue) return samplerText(value);
-  if (!Array.isArray(value)) return scalarText(value);
-  const t = module.types.get(type);
-  const inner = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : 0;
-  const parts: string[] = [];
-  for (let i = 0; i < Math.min(value.length, limit); i++) {
-    const memberType = t?.kind === "struct" ? t.members[i] : inner;
-    const text = valueText(module, memberType, value[i], limit);
-    const name = t?.kind === "struct" ? module.memberNames.get(type)?.get(i) : undefined;
-    parts.push(name ? `${name}: ${text}` : text);
-  }
-  if (value.length > limit) parts.push(`… ${value.length - limit} more`);
-  return t?.kind === "struct" ? `{ ${parts.join(", ")} }` : t?.kind === "array" || t?.kind === "runtimeArray" ? `[${parts.join(", ")}]` : `(${parts.join(", ")})`;
-}
-
-function imageText(image: ImageValue): string {
-  const t = image.texture;
-  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
-}
-
-function samplerText(sampler: SamplerValue): string {
-  const s = sampler.sampler;
-  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
-}
-
-/** Whether a value holds a NaN or an infinity. */
-export function nonFinite(value: Value | undefined): boolean {
-  if (typeof value === "number") return !Number.isFinite(value);
-  return Array.isArray(value) && value.some(nonFinite);
-}
-
-/** Flattens a value's scalars to numbers (booleans 0 / 1), for comparisons. */
-export function scalars(value: Value | undefined): number[] {
-  if (Array.isArray(value)) return value.flatMap(scalars);
-  if (typeof value === "number") return [value];
-  if (typeof value === "bigint") return [Number(value)];
-  if (typeof value === "boolean") return [value ? 1 : 0];
-  return [];
 }

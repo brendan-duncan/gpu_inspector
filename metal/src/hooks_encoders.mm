@@ -317,8 +317,11 @@ void R_setVertexBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger *
 void R_setVertexTexture(id self, SEL _cmd, id texture, NSUInteger index) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setVertexTexture:atIndex:", self,
-                      Args().ref("texture", texture, "MTLTexture").u("index", index).str());
+        // The texels the shader will sample are read back with the capture, and the command
+        // carries the id so the UI can find them (capture.h, QueueTextureCapture).
+        RecordCommandWithTextures("setVertexTexture:atIndex:", self,
+                                  Args().ref("texture", texture, "MTLTexture").u("index", index).str(),
+                                  { QueueTextureCapture(self, texture) });
     }
     if (Measuring(reentry)) LogObject(self, _cmd, texture, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);
@@ -327,8 +330,12 @@ void R_setVertexTexture(id self, SEL _cmd, id texture, NSUInteger index) {
 void R_setVertexTextures(id self, SEL _cmd, const id *textures, NSRange range) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setVertexTextures:withRange:", self,
-                      Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str());
+        std::vector<uint64_t> data;
+        data.reserve(range.length);
+        for (NSUInteger i = 0; i < range.length; i++) data.push_back(QueueTextureCapture(self, textures[i]));
+        RecordCommandWithTextures("setVertexTextures:withRange:", self,
+                                  Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str(),
+                                  std::move(data));
     }
     if (Measuring(reentry)) LogObjects(self, _cmd, textures, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, textures, range);
@@ -656,8 +663,11 @@ void R_setFragmentBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger
 void R_setFragmentTexture(id self, SEL _cmd, id texture, NSUInteger index) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setFragmentTexture:atIndex:", self,
-                      Args().ref("texture", texture, "MTLTexture").u("index", index).str());
+        // The texels the shader will sample are read back with the capture, and the command
+        // carries the id so the UI can find them (capture.h, QueueTextureCapture).
+        RecordCommandWithTextures("setFragmentTexture:atIndex:", self,
+                                  Args().ref("texture", texture, "MTLTexture").u("index", index).str(),
+                                  { QueueTextureCapture(self, texture) });
     }
     if (Measuring(reentry)) LogObject(self, _cmd, texture, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);
@@ -666,8 +676,12 @@ void R_setFragmentTexture(id self, SEL _cmd, id texture, NSUInteger index) {
 void R_setFragmentTextures(id self, SEL _cmd, const id *textures, NSRange range) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setFragmentTextures:withRange:", self,
-                      Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str());
+        std::vector<uint64_t> data;
+        data.reserve(range.length);
+        for (NSUInteger i = 0; i < range.length; i++) data.push_back(QueueTextureCapture(self, textures[i]));
+        RecordCommandWithTextures("setFragmentTextures:withRange:", self,
+                                  Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str(),
+                                  std::move(data));
     }
     if (Measuring(reentry)) LogObjects(self, _cmd, textures, range);
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, textures, range);
@@ -1419,7 +1433,9 @@ void C_setBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger *offset
 void C_setTexture(id self, SEL _cmd, id texture, NSUInteger index) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setTexture:atIndex:", self, Args().ref("texture", texture, "MTLTexture").u("index", index).str());
+        RecordCommandWithTextures("setTexture:atIndex:", self,
+                                  Args().ref("texture", texture, "MTLTexture").u("index", index).str(),
+                                  { QueueTextureCapture(self, texture) });
     }
     ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, texture, index);
 }
@@ -1427,8 +1443,12 @@ void C_setTexture(id self, SEL _cmd, id texture, NSUInteger index) {
 void C_setTextures(id self, SEL _cmd, const id *textures, NSRange range) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setTextures:withRange:", self,
-                      Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str());
+        std::vector<uint64_t> data;
+        data.reserve(range.length);
+        for (NSUInteger i = 0; i < range.length; i++) data.push_back(QueueTextureCapture(self, textures[i]));
+        RecordCommandWithTextures("setTextures:withRange:", self,
+                                  Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str(),
+                                  std::move(data));
     }
     ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, textures, range);
 }

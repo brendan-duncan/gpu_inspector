@@ -214,39 +214,50 @@ values each line computed. Open it from:
 - Click a line number to set a breakpoint. Breakpoints are kept when you restart or pick another
   invocation of the same shader.
 - The fields at the top pick the invocation: a vertex and instance, a pixel, or a compute
-  invocation's `gl_GlobalInvocationID`.
+  invocation's `gl_GlobalInvocationID` (Metal: `thread_position_in_grid`).
 - Hover over a name in the source to see its value.
 - The side pane shows:
   - **Values computed**: every value the last line produced
   - **Locals** and **Call Stack**: click a frame to see its locals
   - **Inputs**, **Outputs**, **Globals** and **Resources** (uniform and storage blocks, push
-    constants, textures and samplers)
+    constants or bound buffers, textures and samplers)
   - **Warnings**: anything the debugger could not reproduce exactly
 - When the shader returns, **Result** compares its outputs with what the GPU produced:
-  - a vertex with the replay's outputs for that vertex
+  - a vertex with the replay's outputs for that vertex (Vulkan)
   - a pixel with the render target's value after the pass
 
-The debugger steps by source line when the shader has line information and its source (embedded
-with `-g`, or found under the launch dialog's Source roots). Otherwise it steps by SPIR-V
-instruction through the disassembly; **Source** / **Disassembly** switches between the two.
+A Vulkan capture's shaders are SPIR-V, a Metal capture's are Metal Shading Language, and the tab is
+the same for both.
+
+The debugger steps by source line when the shader has its source: a Metal library always does (the
+capture holds the text the application compiled), and SPIR-V does when it was compiled with line
+information and its source is embedded (`-g`) or found under the launch dialog's Source roots.
+SPIR-V without it steps by instruction through the disassembly instead; **Source** /
+**Disassembly** switches between the two.
 
 What it runs on:
 
 - **A vertex**: the attributes decoded from the captured vertex buffers.
-- **A pixel**: the vertex shader's outputs, replayed and interpolated at the pixel's centre from the
-  front-most triangle covering it. The four pixels of its 2x2 quad run together, so derivatives and
-  mip selection match a GPU.
-- **All three**: the descriptor sets, push constants and specialization constants the command had
-  bound, and textures sampled from their read-backs.
+- **A pixel**: the vertex shader's outputs, interpolated at the pixel's centre from the front-most
+  triangle covering it. The four pixels of its 2x2 quad run together, so derivatives and mip
+  selection match a GPU. Where those outputs come from differs by API: a Vulkan draw is replayed
+  (`vkinsp_replay`), and a Metal draw's vertex shader is run in the interpreter itself, which needs
+  nothing built.
+- **All three**: what the command had bound — a Vulkan draw's descriptor sets, push constants and
+  specialization constants, a Metal draw's buffers, textures and samplers by index — with textures
+  sampled from their read-backs.
 
 Enable **Buffers** and **Images** before capturing. A buffer or image that was not captured reads as
 zeros, and the Warnings section lists it.
 
 Current limits:
 
-- Vulkan captures only.
-- A pixel needs `vkinsp_replay`.
-- Tessellation and geometry stages are not supported.
+- A Vulkan pixel needs `vkinsp_replay`.
+- A Metal library the application loaded as a precompiled `metallib` has no source to step; one it
+  compiled from source does. Function constants read as their defaults.
+- A Metal fragment runs the draw's vertex shader once per vertex to find its triangle, so a draw
+  with very many vertices is capped, and the notes say so.
+- Tessellation and geometry stages (Metal: object, mesh and tile stages) are not supported.
 - Multisampled pixels are shaded at the centre.
 - An indirect dispatch's group counts read (1, 1, 1).
 - A GPU driver may reorder floating-point operations the debugger performs in source order, so a

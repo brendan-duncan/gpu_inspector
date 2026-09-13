@@ -195,18 +195,19 @@ export class CommandInfoView {
           const row = new Div(container, { class: "capture-mesh-row" });
           new Button(row, { label: "View Mesh", class: "btn btn-sm", callback: () => this.panel.openMesh(cmd),
             tooltip: "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table" });
-          if (this.panel.data.api !== "metal") {
-            new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
-              tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
-            new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
-              tooltip: "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
-          }
+          const metal = this.panel.data.api === "metal";
+          new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
+            tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
+          new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
+            tooltip: metal
+              ? "Step through the draw's fragment shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel"
+              : "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
         }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
       }
       this._renderStageBuffers(container, state, [...state.stageBuffers.values()].filter((sb) => graphics ? sb.stage !== "compute" : sb.stage === "compute"));
-      if (!graphics && cmdSets.DISPATCH.has(method) && this.panel.data.api !== "metal") {
+      if (!graphics && cmdSets.DISPATCH.has(method)) {
         const row = new Div(container, { class: "capture-mesh-row" });
         new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
           tooltip: "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });

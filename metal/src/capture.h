@@ -41,7 +41,11 @@ struct CaptureOptions {
     uint64_t maxBufferSize = 64 * 1024;       // per captured buffer range (longer ranges are truncated)
     uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets larger than this
+    /** Stop reading sampled textures back past this many bytes per capture. */
+    uint64_t maxSampledTextureTotal = 256ull << 20;
     bool captureTextures = true;
+    /** Read back the textures a draw or dispatch sampled, not only its render targets. */
+    bool captureSampledTextures = true;
     bool captureBuffers = true;
     bool profilePasses = true;
     /** The call stack of every recorded command, symbolized by the UI on demand. */
@@ -114,6 +118,10 @@ void RecordCommand(const char *method, id object, const std::string &argsJson);
 void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
                               std::vector<uint64_t> bufferData);
 
+/** As RecordCommand, with the read-back ids of the textures the command bound (QueueTextureCapture). */
+void RecordCommandWithTextures(const char *method, id object, const std::string &argsJson,
+                               std::vector<uint64_t> textureData);
+
 /**
  * Queues a bound buffer range to be read back with the capture, and returns the id the command
  * should carry in `bufferData` so the UI can find the contents (0 when it cannot be read).
@@ -130,6 +138,22 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
 
 /** Queues inline bytes (`setVertexBytes:` and friends) as a CaptureBuffers entry with no buffer. */
 uint64_t QueueBytesCapture(const void *bytes, uint64_t size);
+
+/**
+ * Queues a texture bound for sampling to be read back with the capture, and returns the id the
+ * binding command should carry in `textureData` so the UI can find its texels (0 when it cannot
+ * be read).
+ *
+ * The whole texture is read — every mip level, each with all its slices, back to back — because a
+ * shader's sampling picks its own level, and the debugger has to be able to follow it. The same
+ * texture bound again in the same capture is read once, and the total is capped
+ * (`maxSampledTextureTotal`) so a frame full of atlases does not turn a capture into a gigabyte.
+ *
+ * `encoder` is the encoder the bind was made on, whose end is where the blit goes — the same place
+ * the render targets' and the private buffers' go, since a command buffer allows one encoder at a
+ * time.
+ */
+uint64_t QueueTextureCapture(id encoder, id texture);
 
 // --------------------------------------------------------------------------------------------
 // Passes

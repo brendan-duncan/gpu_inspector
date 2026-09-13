@@ -175,6 +175,7 @@ export interface CaptureChildCommand {
   children?: CaptureChildBuffer[];
   descriptors?: CaptureDescriptorSets;
   bufferData?: number[];
+  textureData?: number[];
   /** Position in the secondary command buffer's recording. */
   slot?: number;
   stack?: string[];
@@ -201,6 +202,12 @@ export interface CaptureCommand {
   descriptors?: CaptureDescriptorSets;
   /** vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / indirect draws: CaptureBuffers ids per bound buffer (0 = none). */
   bufferData?: number[];
+  /**
+   * Metal texture binds (`setFragmentTexture:atIndex:` and the rest): the CaptureTextureFrames
+   * `capture` id of each bound texture's read-back contents, 0 where it was not read (the same
+   * shape as `bufferData`). Vulkan reaches a sampled image through its descriptor instead.
+   */
+  textureData?: number[];
   /** Position in its command buffer's recording (what a ValidationMessage's `command` refers to). */
   slot?: number;
   /** Return addresses ("0x...", innermost first) of the call that recorded it (the "Stack traces" capture option). */

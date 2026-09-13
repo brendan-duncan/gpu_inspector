@@ -351,6 +351,15 @@ does. A pass of up to 16 draws has all its draws captured in one replay. One suc
 
 ### The shader debugger
 
+Two languages, one debugger. `renderer/debug/program.ts` is the seam: a `DebugProgram` is a shader
+(its source, where each instruction came from in it, how to name and print a value) and a
+`DebugInvocation` is one run of it. The stepping, the tab and `debug_shader` are written against
+those two and import neither back end. What is genuinely language-neutral lives beside them —
+`debug/values.ts` (scalars, composites, pointers, the buffer-backed cells a block is read through),
+`debug/sampling.ts` (filters, wrap modes, mips, comparison and cube maps, over a captured Vulkan
+image or Metal texture alike) and `debug/quad.ts` (a fragment's 2x2 pixel quad in lockstep, for
+derivatives and implicit LOD).
+
 `renderer/spirv/` is a SPIR-V interpreter, after RenderDoc's (`spirv_debug.cpp`):
 
 - `module.ts` parses a module into instructions in module order, so the ordinals match the source
@@ -359,18 +368,34 @@ does. A pass of up to 16 draws has all its draws captured in one replay. One suc
   JavaScript recursion, so it can stop anywhere.
 - `values.ts` reads uniform and storage blocks lazily from their bytes (std140 / std430 offsets from
   the decorations), with stores laid over them.
-- `sampling.ts` samples captured textures: filters, wrap modes, mips, comparison and cube maps.
-- `quad.ts` runs a fragment's 2x2 pixel quad in lockstep for derivatives and implicit LOD.
+- `program.ts` is its `DebugProgram`.
 
-`renderer/shader_debug_setup.ts` builds a session from a capture: the stage's SPIR-V, the bindings
-of the command (dynamic offsets, image view component mappings, sRGB decoded to linear), and the
-inputs. A vertex's inputs are decoded by `mesh_input.ts`. A fragment's are rasterized from the
-replay's transform feedback (`mesh_output.ts`): near-plane clipping, the pipeline's culling and
-depth compare to pick the covering triangle, and perspective-correct, flat or noperspective
-interpolation from the fragment inputs' decorations. `renderer/shader_debugger.ts` steps a session
-by source line or instruction with breakpoints and per-line values, without a UI. The capture's
-debugger tab (`renderer/shader_debugger_view.ts`) and the MCP server's `debug_shader`
-(`mcp/debug_tools.ts`) are both built on it.
+`renderer/msl/` is a Metal Shading Language interpreter, which a Metal capture needs because its
+shaders arrive as the source the application compiled rather than as an IR:
+
+- `lexer.ts` tokenizes, with the preprocessor a generated shader needs; a token produced by
+  expanding a macro keeps the line of the *use*, so a breakpoint lands where the reader sees it.
+- `parser.ts` builds a syntax tree of the C++ subset shaders are written in.
+- `types.ts` is MSL's type system and its C layout rules — where `float3` is sixteen bytes and
+  `bool` is one, which is what makes a Metal uniform block read differently from a SPIR-V one.
+- `lower.ts` flattens the tree to a linear instruction list with explicit jumps (`ir.ts`), applying
+  MSL's arithmetic conversions once so the interpreter is component-wise. There is no SSA and there
+  are no basic blocks: a debugger needs to stop anywhere, not to be optimized.
+- `interpreter.ts` runs that list with a program counter and explicit frames, the same shape as the
+  SPIR-V one; `stdlib.ts` is the `metal::` library, `program.ts` its `DebugProgram`.
+
+`renderer/shader_debug_setup.ts` builds a session from a capture and holds the rasterizer both APIs
+share; `renderer/metal/shader_debug.ts` holds the Metal half. A vertex's inputs are decoded by
+`mesh_input.ts`. A fragment's are rasterized from the draw's vertex shader outputs — near-plane
+clipping, the draw's culling and depth compare to pick the covering triangle, and
+perspective-correct, flat or noperspective interpolation — which a Vulkan draw gets from the
+replay's transform feedback (`mesh_output.ts`) and a Metal draw by running its own vertex shader in
+the interpreter, since Metal has no replay. The rasterizer state comes from the pipeline on Vulkan
+and from commands on the encoder on Metal, and their clip-space Y points opposite ways, which is
+why `RasterState` names both. `renderer/shader_debugger.ts` steps a session by source line or
+instruction with breakpoints and per-line values, without a UI. The capture's debugger tab
+(`renderer/shader_debugger_view.ts`) and the MCP server's `debug_shader` (`mcp/debug_tools.ts`) are
+both built on it.
 
 ### replay/ — capture replay
 

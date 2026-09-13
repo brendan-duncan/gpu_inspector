@@ -4,9 +4,21 @@
 // point it waits, the others are run to the same point, and each gets the differences of its row
 // and column. An invocation that finishes before reaching the point (it branched differently)
 // lends it the debugged pixel's value, as a GPU's result there is undefined anyway.
-import type { Instruction } from "./module.js";
-import { Invocation, type DerivativeSource, type InvocationStatus } from "./interpreter.js";
+//
+// Nothing here knows which language the invocations are of: SPIR-V's OpDPdx and MSL's dfdx block
+// the same way, so a Vulkan and a Metal fragment share this.
 import { zipScalars, type Value } from "./values.js";
+import type { DebugInvocation, DebugStep, InvocationStatus, Stepper } from "./program.js";
+
+/** An invocation that can be blocked at a derivative point: what PixelQuad drives. */
+export interface DerivativeInvocation extends DebugInvocation {
+  step(): InvocationStatus;
+}
+
+export interface DerivativeSource {
+  /** The screen-space derivatives of a value at a derivative point; "blocked" while the other invocations catch up. */
+  derivative(invocation: DerivativeInvocation, inst: DebugStep, operand: Value): { dx: Value; dy: Value } | "blocked";
+}
 
 interface LaneState {
   /** The value at the derivative point it waits at, until the results are in. */
@@ -18,18 +30,18 @@ interface LaneState {
 
 const MAX_CATCH_UP = 10_000_000;
 
-export class PixelQuad implements DerivativeSource {
+export class PixelQuad implements DerivativeSource, Stepper {
   /** Top-left, top-right, bottom-left, bottom-right. */
-  readonly lanes: Invocation[];
+  readonly lanes: DerivativeInvocation[];
   /** The lane of the pixel being debugged. */
   readonly target: number;
-  private readonly _state = new Map<Invocation, LaneState>();
+  private readonly _state = new Map<DerivativeInvocation, LaneState>();
 
   /**
    * `create(dx, dy)` makes the invocation of the pixel at that offset from the quad's top-left
    * corner; `target` is the debugged pixel's position in the quad (0 to 3).
    */
-  constructor(create: (dx: number, dy: number, source: DerivativeSource) => Invocation, target: number) {
+  constructor(create: (dx: number, dy: number, source: DerivativeSource) => DerivativeInvocation, target: number) {
     this.lanes = [create(0, 0, this), create(1, 0, this), create(0, 1, this), create(1, 1, this)];
     this.target = target;
     for (const lane of this.lanes) this._state.set(lane, { operand: undefined, result: undefined, points: 0 });
@@ -42,11 +54,11 @@ export class PixelQuad implements DerivativeSource {
     return { x0, y0, target: (y & 1) * 2 + (x & 1) };
   }
 
-  get invocation(): Invocation {
+  get invocation(): DerivativeInvocation {
     return this.lanes[this.target];
   }
 
-  derivative(invocation: Invocation, _inst: Instruction, operand: Value): { dx: Value; dy: Value } | "blocked" {
+  derivative(invocation: DerivativeInvocation, _inst: DebugStep, operand: Value): { dx: Value; dy: Value } | "blocked" {
     const state = this._state.get(invocation);
     if (!state) return { dx: zipScalars(operand, operand, () => 0), dy: zipScalars(operand, operand, () => 0) };
     if (state.result) {

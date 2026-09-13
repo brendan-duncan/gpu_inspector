@@ -27,6 +27,20 @@ namespace {
 
 // A colour or depth attachment blitted into a staging buffer at the end of its pass. The bytes
 // are read out in the command buffer's completion handler, once the GPU has produced them.
+// One 2D image inside a read-back: an attachment has a single region, a sampled texture one per
+// mip level and slice, laid out level by level with each level's slices back to back — which is
+// the order the UI's decoder walks.
+struct TextureRegion {
+    uint32_t level = 0;
+    uint32_t slice = 0;
+    uint32_t depthPlane = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t offset = 0;
+    uint64_t bytesPerRow = 0;
+    uint64_t size = 0;
+};
+
 struct PendingTexture {
     uint64_t textureId = 0;
     uint32_t frame = 0;
@@ -34,8 +48,13 @@ struct PendingTexture {
     uint32_t passIndex = 0;
     uint32_t attachment = 0;
     const char *aspect = "color";
+    const char *kind = "attachment";
+    /** Sampled textures: the id the binding command carries in `textureData`. */
+    uint64_t captureId = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t mips = 1;
+    uint32_t layers = 1;
     std::string format;
     size_t size = 0;
     uint64_t bytesPerRow = 0;
@@ -47,6 +66,7 @@ struct PendingTexture {
     uint32_t depthPlane = 0;
     MTLBlitOption options = MTLBlitOptionNone;
     id<MTLBuffer> staging = nil;
+    std::vector<TextureRegion> regions;
 };
 
 // A bound buffer range read back with the capture. `data` is filled at once for a buffer in
@@ -97,6 +117,7 @@ struct RecordedCommand {
     const char *encoderType = nullptr;
     std::string args;
     std::vector<uint64_t> bufferData;  // CapturedBuffer ids, in the order the UI expects
+    std::vector<uint64_t> textureData; // sampled read-back ids, one per texture the command bound
     StackTrace stack;                  // where the application issued it, when asked for
 };
 
@@ -131,6 +152,11 @@ std::vector<PassTiming> g_passTimings;
 std::unordered_map<const void *, EncoderInfo> g_encoders;   // encoder -> owner
 std::unordered_map<const void *, OpenPass> g_openPasses;    // encoder -> its pass
 std::unordered_map<const void *, uint32_t> g_passCounters;  // command buffer -> passes begun
+
+// Sampled textures already read back in this capture, by tracked texture id: a texture bound at
+// every draw of a pass is copied once, and what it cost counts against the per-capture budget.
+std::unordered_map<uint64_t, uint64_t> g_sampledTextures;
+uint64_t g_sampledBytes = 0;
 
 // Command buffers committed during the capture that have not completed yet. The read-back blits
 // are in them, so the staging holds nothing until the count reaches zero.
@@ -459,6 +485,11 @@ void WriteCommand(vkinsp::JsonWriter &w, const RecordedCommand &c, uint32_t inde
         w.EndObject();
     }
     w.Key("args"); if (c.args.empty()) w.Null(); else w.Raw(c.args);
+    if (!c.textureData.empty()) {
+        w.Key("textureData"); w.BeginArray();
+        for (uint64_t id : c.textureData) w.Uint(id);
+        w.EndArray();
+    }
     if (!c.bufferData.empty()) {
         w.Key("bufferData"); w.BeginArray();
         for (uint64_t id : c.bufferData) w.Uint(id);
@@ -547,9 +578,15 @@ void SendTextures(std::vector<PendingTexture> &textures) {
         w.Key("width"); w.Uint(t.width);
         w.Key("height"); w.Uint(t.height);
         w.Key("depth"); w.Uint(1);
-        w.Key("layers"); w.Uint(1);
+        w.Key("layers"); w.Uint(t.layers);
         w.Key("mip"); w.Uint(t.level);
         w.Key("size"); w.Uint(t.size);
+        // A sampled texture holds every level, and the binding command names it by `capture`.
+        if (t.captureId != 0) {
+            w.Key("kind"); w.String("sampled");
+            w.Key("capture"); w.Uint(t.captureId);
+            w.Key("mips"); w.Uint(t.mips);
+        }
         if (!t.error.empty()) { w.Key("error"); w.String(t.error); }
         w.EndObject();
     }
@@ -567,6 +604,9 @@ void SendTextures(std::vector<PendingTexture> &textures) {
             h.Key("commandBuffer"); h.Uint(t.commandBufferId);
             h.Key("passIndex"); h.Uint(t.passIndex);
             h.Key("attachment"); h.Uint(t.attachment);
+            // A sampled texture is matched by its own id: several may share one pass, where an
+            // attachment is told apart by its index.
+            if (t.captureId != 0) { h.Key("capture"); h.Uint(t.captureId); }
             h.Key("size"); h.Uint(t.size);
             h.EndObject();
             Transport::Get().SendBinary(std::move(h.str()), t.staging.contents, t.size);
@@ -686,6 +726,8 @@ void AdvanceFrame() {
             g_passTimings.clear();
             g_openPasses.clear();
             g_passCounters.clear();
+            g_sampledTextures.clear();
+            g_sampledBytes = 0;
             g_nextBufferId = 1;
             g_bufferBytes = 0;
             g_outstanding = 0;
@@ -826,13 +868,28 @@ void RecordCommand(const char *method, id object, const std::string &argsJson) {
     RecordCommandWithBuffers(method, object, argsJson, {});
 }
 
+// What the three public spellings share: a command with the read-back ids of whatever it bound.
+static void RecordCommandWith(const char *method, id object, const std::string &argsJson,
+                              std::vector<uint64_t> bufferData, std::vector<uint64_t> textureData);
+
+void RecordCommandWithTextures(const char *method, id object, const std::string &argsJson,
+                               std::vector<uint64_t> textureData) {
+    RecordCommandWith(method, object, argsJson, {}, std::move(textureData));
+}
+
 void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
                               std::vector<uint64_t> bufferData) {
+    RecordCommandWith(method, object, argsJson, std::move(bufferData), {});
+}
+
+static void RecordCommandWith(const char *method, id object, const std::string &argsJson,
+                              std::vector<uint64_t> bufferData, std::vector<uint64_t> textureData) {
     if (!g_recording) return;
     RecordedCommand command;
     command.method = method;
     command.args = argsJson;
     command.bufferData = std::move(bufferData);
+    command.textureData = std::move(textureData);
     // Two frames above: RecordCommand and the hook; the application's call follows Metal's
     // own frames, which the symbolizer marks internal.
     if (g_options.stacktraces) command.stack = CaptureStack(2);
@@ -951,6 +1008,115 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
     }
     g_bufferRanges[key] = id;
     g_buffers.push_back(std::move(captured));
+    return id;
+}
+
+uint64_t QueueTextureCapture(id encoder, id texture) {
+    if (!g_recording || texture == nil || !g_options.captureTextures || !g_options.captureSampledTextures) return 0;
+    const uint64_t textureId = IdOf(texture);
+    if (textureId == 0) return 0;
+    {
+        // Bound again in the same capture: the copy already queued answers for it.
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto known = g_sampledTextures.find(textureId);
+        if (known != g_sampledTextures.end()) return known->second;
+    }
+
+    id<MTLTexture> source = (id<MTLTexture>)texture;
+    PendingTexture pending;
+    pending.kind = "sampled";
+    pending.textureId = textureId;
+    pending.width = (uint32_t)std::max<NSUInteger>(1, source.width);
+    pending.height = (uint32_t)std::max<NSUInteger>(1, source.height);
+    pending.mips = (uint32_t)std::max<NSUInteger>(1, source.mipmapLevelCount);
+    // A cube's faces and an array's layers are slices; a 3D texture's depth planes stand in for them.
+    const bool cube = source.textureType == MTLTextureTypeCube || source.textureType == MTLTextureTypeCubeArray;
+    const bool volume = source.textureType == MTLTextureType3D;
+    pending.layers = (uint32_t)std::max<NSUInteger>(1, source.arrayLength) * (cube ? 6 : 1);
+
+    if (source.sampleCount > 1) pending.error = "a multisampled texture cannot be copied to a buffer";
+    else if (source.framebufferOnly) pending.error = "texture is framebufferOnly and cannot be a copy source";
+    else if (source.storageMode == MTLStorageModeMemoryless) pending.error = "memoryless texture has no contents";
+
+    MTLBlitOption options = MTLBlitOptionNone;
+    PixelFormatInfo info = PixelFormatDetails(source.pixelFormat);
+    if (pending.error.empty() && (info.name == nullptr || info.name[0] == '\0')) {
+        const char *enumName = PixelFormatEnumName(source.pixelFormat);
+        pending.error = std::string("unsupported pixel format ")
+            + (enumName[0] != '\0' ? enumName : std::to_string((int)source.pixelFormat));
+    }
+    if (pending.error.empty() && PixelFormatHasDepth(source.pixelFormat)) {
+        info = DepthReadbackDetails(source.pixelFormat, &options);
+        pending.aspect = "depth";
+    }
+    pending.options = options;
+
+    // Every level, each with all of its slices: a shader picks its own level of detail, so the
+    // debugger cannot know in advance which one it will read.
+    uint64_t at = 0;
+    if (pending.error.empty()) {
+        pending.format = info.name;
+        for (uint32_t level = 0; level < pending.mips; level++) {
+            const uint32_t width = (uint32_t)std::max<NSUInteger>(1, source.width >> level);
+            const uint32_t height = (uint32_t)std::max<NSUInteger>(1, source.height >> level);
+            const uint32_t slices = volume
+                ? (uint32_t)std::max<NSUInteger>(1, source.depth >> level) : pending.layers;
+            for (uint32_t slice = 0; slice < slices; slice++) {
+                TextureRegion region;
+                region.level = level;
+                region.slice = volume ? 0 : slice;
+                region.depthPlane = volume ? slice : 0;
+                region.width = width;
+                region.height = height;
+                uint64_t bytesPerRow = 0;
+                region.size = PixelFormatImageSize(info, width, height, &bytesPerRow);
+                region.bytesPerRow = bytesPerRow;
+                region.offset = at;
+                at += region.size;
+                pending.regions.push_back(region);
+            }
+        }
+        pending.size = (size_t)at;
+        pending.bytesPerRow = pending.regions.empty() ? 0 : pending.regions[0].bytesPerRow;
+        if (pending.size > g_options.maxTextureSize) pending.error = "exceeds max texture size";
+    }
+    if (!pending.error.empty()) {
+        Log("sampled texture: %s, not read back", pending.error.c_str());
+        const char *enumName = PixelFormatEnumName(source.pixelFormat);
+        if (pending.format.empty()) pending.format = enumName;
+        pending.size = 0;
+        pending.regions.clear();
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return 0;
+    auto known = g_sampledTextures.find(textureId);
+    if (known != g_sampledTextures.end()) return known->second;
+    // The pass the bind was made on is where the blit goes; a parallel encoder's is its parent's.
+    auto pass = g_openPasses.find((__bridge const void *)encoder);
+    if (pass == g_openPasses.end()) {
+        auto owner = g_encoders.find((__bridge const void *)encoder);
+        if (owner != g_encoders.end() && owner->second.parent != nil) {
+            pass = g_openPasses.find((__bridge const void *)owner->second.parent);
+        }
+    }
+    if (pass == g_openPasses.end()) return 0;
+    if (pending.error.empty() && g_sampledBytes + pending.size > g_options.maxSampledTextureTotal) {
+        pending.error = "sampled texture capture budget exceeded";
+        pending.size = 0;
+        pending.regions.clear();
+    }
+    if (pending.error.empty()) {
+        g_sampledBytes += pending.size;
+        pending.source = [source retain];
+    }
+    pending.captureId = AllocateId();
+    pending.frame = g_frameIndex;
+    pending.commandBufferId = pass->second.commandBufferId;
+    pending.passIndex = pass->second.passIndex;
+    g_sampledTextures[textureId] = pending.captureId;
+    const uint64_t id = pending.captureId;
+    pass->second.attachments.push_back(std::move(pending));
     return id;
 }
 
@@ -1203,6 +1369,15 @@ void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_
             pending.size = 0;
         } else {
             pending.source = [source retain];
+            TextureRegion region;
+            region.level = pending.level;
+            region.slice = pending.slice;
+            region.depthPlane = pending.depthPlane;
+            region.width = pending.width;
+            region.height = pending.height;
+            region.bytesPerRow = pending.bytesPerRow;
+            region.size = pending.size;
+            pending.regions.push_back(region);
         }
     }
     if (!pending.error.empty()) {
@@ -1303,22 +1478,26 @@ void AfterEndEncoding(id encoder) {
     }
     blit.label = @"gpu-inspector readback";
     for (PendingTexture &t : pass.attachments) {
-        if (!t.error.empty() || t.size == 0 || t.source == nil) continue;
+        if (!t.error.empty() || t.size == 0 || t.source == nil || t.regions.empty()) continue;
         t.staging = [device newBufferWithLength:t.size options:MTLResourceStorageModeShared];
         if (t.staging == nil) {
             t.error = "could not allocate a staging buffer";
             continue;
         }
-        [blit copyFromTexture:t.source
-                  sourceSlice:t.slice
-                  sourceLevel:t.level
-                 sourceOrigin:MTLOriginMake(0, 0, t.depthPlane)
-                   sourceSize:MTLSizeMake(t.width, t.height, 1)
-                     toBuffer:t.staging
-            destinationOffset:0
-       destinationBytesPerRow:(NSUInteger)t.bytesPerRow
-     destinationBytesPerImage:t.size
-                      options:t.options];
+        // One copy per region: an attachment has a single one, a sampled texture one per level
+        // and slice, laid out in the order the UI's decoder walks them.
+        for (const TextureRegion &r : t.regions) {
+            [blit copyFromTexture:t.source
+                      sourceSlice:r.slice
+                      sourceLevel:r.level
+                     sourceOrigin:MTLOriginMake(0, 0, r.depthPlane)
+                       sourceSize:MTLSizeMake(r.width, r.height, 1)
+                         toBuffer:t.staging
+                destinationOffset:(NSUInteger)r.offset
+           destinationBytesPerRow:(NSUInteger)r.bytesPerRow
+         destinationBytesPerImage:(NSUInteger)r.size
+                          options:t.options];
+        }
     }
     {
         std::lock_guard<std::mutex> lock(g_mutex);

@@ -9,10 +9,10 @@ import os from "node:os";
 import path from "node:path";
 
 // src/renderer/utils/float.ts
-function float16ToFloat32(float162) {
-  const s = (float162 & 32768) >> 15;
-  const e = (float162 & 31744) >> 10;
-  const f = float162 & 1023;
+function float16ToFloat32(float163) {
+  const s = (float163 & 32768) >> 15;
+  const e = (float163 & 31744) >> 10;
+  const f = float163 & 1023;
   if (e == 0) {
     return (s ? -1 : 1) * Math.pow(2, -14) * (f / Math.pow(2, 10));
   } else if (e == 31) {
@@ -479,6 +479,42 @@ var STAGE_BUFFER_METHODS = {
   "setTileBytes:length:atIndex:": { stage: "tile", kind: "bytes" }
 };
 var BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
+var STAGE_TEXTURE_METHODS = {
+  "setVertexTexture:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexTextures:withRange:": { stage: "vertex", kind: "many" },
+  "setFragmentTexture:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentTextures:withRange:": { stage: "fragment", kind: "many" },
+  "setTexture:atIndex:": { stage: "compute", kind: "one" },
+  "setTextures:withRange:": { stage: "compute", kind: "many" },
+  "setObjectTexture:atIndex:": { stage: "object", kind: "one" },
+  "setObjectTextures:withRange:": { stage: "object", kind: "many" },
+  "setMeshTexture:atIndex:": { stage: "mesh", kind: "one" },
+  "setMeshTextures:withRange:": { stage: "mesh", kind: "many" },
+  "setTileTexture:atIndex:": { stage: "tile", kind: "one" },
+  "setTileTextures:withRange:": { stage: "tile", kind: "many" }
+};
+var BIND_STAGE_TEXTURE = new Set(Object.keys(STAGE_TEXTURE_METHODS));
+var STAGE_SAMPLER_METHODS = {
+  "setVertexSamplerState:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "vertex", kind: "one" },
+  "setVertexSamplerStates:withRange:": { stage: "vertex", kind: "many" },
+  "setVertexSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "vertex", kind: "many" },
+  "setFragmentSamplerState:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "fragment", kind: "one" },
+  "setFragmentSamplerStates:withRange:": { stage: "fragment", kind: "many" },
+  "setFragmentSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "fragment", kind: "many" },
+  "setSamplerState:atIndex:": { stage: "compute", kind: "one" },
+  "setSamplerState:lodMinClamp:lodMaxClamp:atIndex:": { stage: "compute", kind: "one" },
+  "setSamplerStates:withRange:": { stage: "compute", kind: "many" },
+  "setSamplerStates:lodMinClamps:lodMaxClamps:withRange:": { stage: "compute", kind: "many" },
+  "setObjectSamplerState:atIndex:": { stage: "object", kind: "one" },
+  "setObjectSamplerStates:withRange:": { stage: "object", kind: "many" },
+  "setMeshSamplerState:atIndex:": { stage: "mesh", kind: "one" },
+  "setMeshSamplerStates:withRange:": { stage: "mesh", kind: "many" },
+  "setTileSamplerState:atIndex:": { stage: "tile", kind: "one" },
+  "setTileSamplerStates:withRange:": { stage: "tile", kind: "many" }
+};
+var BIND_STAGE_SAMPLER = new Set(Object.keys(STAGE_SAMPLER_METHODS));
 function enumShort(key, v) {
   if (typeof v !== "string") return v === void 0 || v === null ? "" : String(v);
   const prefix = `MTL${key.charAt(0).toUpperCase()}${key.slice(1)}`;
@@ -670,6 +706,44 @@ var METAL_SETS = {
       dataId: cmd.bufferData?.[i] ?? 0,
       inline: false
     }));
+  },
+  BIND_STAGE_TEXTURE,
+  stageTexturesOf(cmd) {
+    const entry = STAGE_TEXTURE_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    if (entry.kind === "one") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), texture: a.texture ?? null, dataId: cmd.textureData?.[0] ?? 0 }];
+    }
+    if (!Array.isArray(a.textures)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return a.textures.map((texture, i) => ({
+      cmd,
+      stage: entry.stage,
+      index: first + i,
+      texture,
+      dataId: cmd.textureData?.[i] ?? 0
+    }));
+  },
+  BIND_STAGE_SAMPLER,
+  stageSamplersOf(cmd) {
+    const entry = STAGE_SAMPLER_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    const clamps = (i) => {
+      const min = Array.isArray(a.lodMinClamps) ? a.lodMinClamps[i] : a.lodMinClamp;
+      const max = Array.isArray(a.lodMaxClamps) ? a.lodMaxClamps[i] : a.lodMaxClamp;
+      return {
+        ...min === void 0 ? {} : { lodMinClamp: num(min) },
+        ...max === void 0 ? {} : { lodMaxClamp: num(max) }
+      };
+    };
+    if (entry.kind === "one") {
+      return [{ cmd, stage: entry.stage, index: num(a.index), sampler: a.sampler ?? null, ...clamps(0) }];
+    }
+    if (!Array.isArray(a.samplers)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return a.samplers.map((sampler, i) => ({ cmd, stage: entry.stage, index: first + i, sampler, ...clamps(i) }));
   },
   indexBufferOf(cmd) {
     const a = cmd.args;
@@ -1081,6 +1155,7 @@ function flattenSecondaries(commands) {
           children: cc.children,
           descriptors: cc.descriptors,
           bufferData: cc.bufferData,
+          textureData: cc.textureData,
           slot: cc.slot,
           stack: cc.stack
         });
@@ -1344,9 +1419,9 @@ function parseCaptureFile(bytes) {
   if (manifest.version > CAPTURE_VERSION) throw new Error(`The capture was saved by a newer GPU Inspector (format version ${manifest.version}); this build reads version ${CAPTURE_VERSION}.`);
   const payload = (p) => {
     if (!p) return null;
-    const [offset, length] = p;
-    if (offset < 0 || length < 0 || base + offset + length > bytes.byteLength) throw new Error("The capture file is truncated (payload out of range).");
-    return bytes.subarray(base + offset, base + offset + length);
+    const [offset, length2] = p;
+    if (offset < 0 || length2 < 0 || base + offset + length2 > bytes.byteLength) throw new Error("The capture file is truncated (payload out of range).");
+    return bytes.subarray(base + offset, base + offset + length2);
   };
   const blobs = /* @__PURE__ */ new Map();
   for (const o of manifest.objects ?? []) {
@@ -2837,24 +2912,24 @@ function parseDrawStats(input) {
     throw new Error(`The draw measurements are not valid JSON: ${e.message}`);
   }
   if (json.format !== "gpu-inspector-draw-stats") throw new Error("Not draw measurements from vkinsp_replay.");
-  const num3 = (v) => typeof v === "number" ? v : 0;
+  const num4 = (v) => typeof v === "number" ? v : 0;
   const draws = (Array.isArray(json.draws) ? json.draws : []).map((raw) => {
     const d = raw;
-    const pass = num3(d.passIndex);
+    const pass = num4(d.passIndex);
     return {
-      command: num3(d.command),
-      frame: num3(d.frame),
-      commandBuffer: num3(d.commandBuffer),
+      command: num4(d.command),
+      frame: num4(d.frame),
+      commandBuffer: num4(d.commandBuffer),
       ...pass === NO_PASS ? {} : { passIndex: pass },
       timed: d.timed === true,
-      ms: num3(d.ms),
+      ms: num4(d.ms),
       counted: d.counted === true,
-      vertexInvocations: num3(d.vertexInvocations),
-      primitives: num3(d.primitives),
-      fragmentInvocations: num3(d.fragmentInvocations),
-      computeInvocations: num3(d.computeInvocations),
+      vertexInvocations: num4(d.vertexInvocations),
+      primitives: num4(d.primitives),
+      fragmentInvocations: num4(d.fragmentInvocations),
+      computeInvocations: num4(d.computeInvocations),
       sampled: d.sampled === true,
-      samplesPassed: num3(d.samplesPassed)
+      samplesPassed: num4(d.samplesPassed)
     };
   });
   return {
@@ -3448,6 +3523,12 @@ function sourceLineMap(text) {
 function hasEmbeddedSource(info) {
   return !!info && info.files.some((f) => f.text !== null);
 }
+function sourceLanguageOf(info) {
+  if (!info) return null;
+  if (info.language === "GLSL" || info.language === "ESSL") return "glsl";
+  if (info.language === "HLSL") return "hlsl";
+  return null;
+}
 function describeDebugInfo(info) {
   if (!info) return "";
   const parts2 = [];
@@ -3466,6 +3547,36 @@ function describeDebugInfo(info) {
   parts2.push([lang, info.generator, lines].filter(Boolean).join(", "));
   if (info.processed.length) parts2.push(`processed by ${info.processed.join("; ")}`);
   return parts2.join(" | ");
+}
+function disassemblyInstructions(lines) {
+  const result = [];
+  let open = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (open) {
+      open.push(i);
+      if (quoteToggles(line)) {
+        result.push(open);
+        open = null;
+      }
+      continue;
+    }
+    const t = line.trim();
+    if (!t || t.startsWith(";")) continue;
+    if (quoteToggles(line)) open = [i];
+    else result.push([i]);
+  }
+  if (open) result.push(open);
+  return result;
+}
+function quoteToggles(line) {
+  let n = 0;
+  for (let i = 0; i < line.length; i++) {
+    const c2 = line[i];
+    if (c2 === "\\") i++;
+    else if (c2 === '"') n++;
+  }
+  return (n & 1) === 1;
 }
 
 // src/renderer/vulkan/spirv_analysis.ts
@@ -5446,15 +5557,15 @@ var ObjectDatabase = class {
       frameBoundary: this.frameBoundary
     });
   }
-  _accountMemory(o, sign) {
+  _accountMemory(o, sign2) {
     const bytes = objectMemoryBytes(o, this);
     if (o.type === "VkDeviceMemory" || o.type === "MTLHeap") {
-      this.memory.device += sign * bytes;
-      this.memory.allocations += sign;
+      this.memory.device += sign2 * bytes;
+      this.memory.allocations += sign2;
     } else if (o.type === "VkBuffer" || o.type === "MTLBuffer") {
-      this.memory.buffers += sign * bytes;
+      this.memory.buffers += sign2 * bytes;
     } else if (o.type === "VkImage" || o.type === "MTLTexture") {
-      this.memory.images += sign * bytes;
+      this.memory.images += sign2 * bytes;
     }
   }
   getObject(id) {
@@ -6392,11 +6503,16 @@ function emptyDrawState(bindPoint) {
     sets: /* @__PURE__ */ new Map(),
     vertexBuffers: /* @__PURE__ */ new Map(),
     stageBuffers: /* @__PURE__ */ new Map(),
+    stageTextures: /* @__PURE__ */ new Map(),
+    stageSamplers: /* @__PURE__ */ new Map(),
     indexBuffer: null,
     vertexInput: null,
     viewports: null,
     scissors: null,
-    pushConstants: []
+    pushConstants: [],
+    cullMode: null,
+    frontFace: null,
+    depthStencil: null
   };
 }
 function pushConstantOf(c2) {
@@ -6433,6 +6549,18 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
         if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
       }
     }
+    if (cmdSets.BIND_STAGE_TEXTURE?.has(c2.method) && cmdSets.stageTexturesOf) {
+      for (const st of cmdSets.stageTexturesOf(c2)) {
+        const key = `${st.stage}:${st.index}`;
+        if (!state.stageTextures.has(key)) state.stageTextures.set(key, st);
+      }
+    }
+    if (cmdSets.BIND_STAGE_SAMPLER?.has(c2.method) && cmdSets.stageSamplersOf) {
+      for (const ss of cmdSets.stageSamplersOf(c2)) {
+        const key = `${ss.stage}:${ss.index}`;
+        if (!state.stageSamplers.has(key)) state.stageSamplers.set(key, ss);
+      }
+    }
     if (cmdSets.BIND_VERTEX.has(c2.method)) {
       for (const vb of cmdSets.vertexBuffersOf(c2)) {
         if (!state.vertexBuffers.has(vb.binding)) state.vertexBuffers.set(vb.binding, vb);
@@ -6456,6 +6584,28 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
       case "vkCmdSetScissorWithCount":
       case "vkCmdSetScissorWithCountEXT":
         if (!state.scissors) state.scissors = a.pScissors ?? null;
+        break;
+      // Metal sets the rasterizer's state with commands on the encoder.
+      case "setViewport:":
+        if (!state.viewports) state.viewports = a.viewport ?? null;
+        break;
+      case "setViewports:count:":
+        if (!state.viewports) state.viewports = a.viewports ?? null;
+        break;
+      case "setScissorRect:":
+        if (!state.scissors) state.scissors = a.rect ?? null;
+        break;
+      case "setScissorRects:count:":
+        if (!state.scissors) state.scissors = a.rects ?? null;
+        break;
+      case "setCullMode:":
+        if (!state.cullMode) state.cullMode = a.cullMode ?? null;
+        break;
+      case "setFrontFacingWinding:":
+        if (!state.frontFace) state.frontFace = a.frontFacingWinding ?? a.winding ?? null;
+        break;
+      case "setDepthStencilState:":
+        if (!state.depthStencil) state.depthStencil = db.getObject(refId(a.depthStencilState));
         break;
       case "vkCmdPushConstants":
       case "vkCmdPushConstants2":
@@ -6561,8 +6711,8 @@ var HandleIndex = class {
       const address = o.args.gpuAddress;
       if (typeof address === "string" && address.startsWith("0x")) {
         const start = BigInt(address);
-        const length = BigInt(Math.max(0, num(o.args.length)));
-        this._buffers.push({ start, end: start + length, object: o });
+        const length2 = BigInt(Math.max(0, num(o.args.length)));
+        this._buffers.push({ start, end: start + length2, object: o });
       }
       const id = o.args.gpuResourceID;
       if (typeof id === "string" && id.startsWith("0x")) this._byResourceId.set(id.toLowerCase(), o);
@@ -8125,9 +8275,9 @@ var MESH_MAGIC = "MESH 1\n";
 function parseMeshFile(bytes) {
   const magic = new TextEncoder().encode(MESH_MAGIC);
   if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not a mesh output file from vkinsp_replay.");
-  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
   const start = magic.byteLength + 4;
-  const base = start + length;
+  const base = start + length2;
   if (base > bytes.byteLength) throw new Error("The mesh output file is truncated.");
   const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
   const draws = (manifest.draws ?? []).map(({ payload, ...info }) => {
@@ -8242,649 +8392,16 @@ function meshSummary(m) {
   return parts2.join(", ");
 }
 
-// src/renderer/spirv/module.ts
-var BUILTIN_NAMES = {
-  0: "gl_Position",
-  1: "gl_PointSize",
-  3: "gl_ClipDistance",
-  4: "gl_CullDistance",
-  5: "gl_VertexID",
-  6: "gl_InstanceID",
-  7: "gl_PrimitiveID",
-  9: "gl_Layer",
-  15: "gl_FragCoord",
-  16: "gl_PointCoord",
-  17: "gl_FrontFacing",
-  18: "gl_SampleID",
-  19: "gl_SamplePosition",
-  20: "gl_SampleMask",
-  22: "gl_FragDepth",
-  23: "gl_HelperInvocation",
-  24: "gl_NumWorkGroups",
-  25: "gl_WorkGroupSize",
-  26: "gl_WorkGroupID",
-  27: "gl_LocalInvocationID",
-  28: "gl_GlobalInvocationID",
-  29: "gl_LocalInvocationIndex",
-  42: "gl_VertexIndex",
-  43: "gl_InstanceIndex",
-  4424: "gl_BaseVertex",
-  4425: "gl_BaseInstance",
-  4426: "gl_DrawID",
-  4440: "gl_ViewIndex"
-};
-function literalString(words2, start) {
-  const bytes = [];
-  for (let i = start; i < words2.length; i++) {
-    const w = words2[i];
-    for (let b = 0; b < 4; b++) {
-      const c2 = w >>> b * 8 & 255;
-      if (c2 === 0) return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: i - start + 1 };
-      bytes.push(c2);
-    }
-  }
-  return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: words2.length - start };
-}
-function hasResultTypeAndId(op) {
-  if (op === 1 /* Undef */ || op === 12 /* ExtInst */ || op === 55 /* FunctionParameter */ || op === 57 /* FunctionCall */ || op === 59 /* Variable */) return true;
-  if (op === 54 /* Function */) return true;
-  if (op >= 41 /* ConstantTrue */ && op <= 52 /* SpecConstantOp */ && op !== 47) return true;
-  if (op >= 60 /* ImageTexelPointer */ && op <= 70 /* InBoundsPtrAccessChain */ && op !== 62 /* Store */ && op !== 63 /* CopyMemory */ && op !== 64 /* CopyMemorySized */) return true;
-  if (op >= 77 /* VectorExtractDynamic */ && op <= 84 /* Transpose */) return true;
-  if (op >= 86 /* SampledImage */ && op <= 107 /* ImageQuerySamples */ && op !== 99 /* ImageWrite */) return true;
-  if (op >= 109 /* ConvertFToU */ && op <= 124 /* Bitcast */) return true;
-  if (op >= 126 /* SNegate */ && op <= 152 /* SMulExtended */) return true;
-  if (op >= 154 /* Any */ && op <= 191 /* FUnordGreaterThanEqual */) return true;
-  if (op >= 194 /* ShiftRightLogical */ && op <= 205 /* BitCount */) return true;
-  if (op >= 207 /* DPdx */ && op <= 215 /* FwidthCoarse */) return true;
-  if (op === 245 /* Phi */ || op === 400 /* CopyLogical */ || op === 5381 /* IsHelperInvocation */) return true;
-  return false;
-}
-function hasResultIdOnly(op) {
-  return op === 7 /* String */ || op === 11 /* ExtInstImport */ || op === 248 /* Label */ || op === 73 /* DecorationGroup */ || op >= 19 /* TypeVoid */ && op <= 33 /* TypeFunction */ || op === 39 /* TypeForwardPointer */;
-}
-var SpirvModule = class {
-  words;
-  instructions = [];
-  types = /* @__PURE__ */ new Map();
-  /** Constant values (spec constants at their defaults), by id. */
-  constants = /* @__PURE__ */ new Map();
-  /** The spec constants: id to SpecId, for a pipeline's specialization. */
-  specIds = /* @__PURE__ */ new Map();
-  names = /* @__PURE__ */ new Map();
-  memberNames = /* @__PURE__ */ new Map();
-  decorations = /* @__PURE__ */ new Map();
-  memberDecorations = /* @__PURE__ */ new Map();
-  /** Global variables: id to pointer type and storage class, with their initializer when they have one. */
-  globals = /* @__PURE__ */ new Map();
-  functions = /* @__PURE__ */ new Map();
-  entryPoints = [];
-  /** Extended instruction sets imported, by id: "GLSL.std.450", "NonSemantic.Shader.DebugInfo.100", ... */
-  extSets = /* @__PURE__ */ new Map();
-  /** OpString contents by id. */
-  strings = /* @__PURE__ */ new Map();
-  /** Source locations per instruction ordinal, from the module's debug information. */
-  debug;
-  /** NonSemantic debug info: a local variable's name, by the OpVariable its DebugDeclare names. */
-  debugVariableNames = /* @__PURE__ */ new Map();
-  /** The result type of every id that has one (instructions, parameters, variables). */
-  idTypes = /* @__PURE__ */ new Map();
-  constructor(data) {
-    if (data.byteLength < 20 || data.byteLength % 4 !== 0) throw new Error("not a SPIR-V module");
-    const words2 = new Uint32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-    if (words2[0] !== 119734787) throw new Error("not a SPIR-V module (bad magic number)");
-    this.words = words2;
-    this.debug = parseSpirvDebugInfo(data);
-    let fn = null;
-    let block = null;
-    const groups = /* @__PURE__ */ new Map();
-    const debugLocals = /* @__PURE__ */ new Map();
-    for (let at = 5, index = 0; at < words2.length; index++) {
-      const count2 = words2[at] >>> 16;
-      const op = words2[at] & 65535;
-      if (count2 === 0 || at + count2 > words2.length) throw new Error(`malformed SPIR-V at word ${at}`);
-      const operands = words2.subarray(at + 1, at + count2);
-      let resultType2 = 0;
-      let result = 0;
-      if (hasResultTypeAndId(op)) {
-        resultType2 = operands[0];
-        result = operands[1];
-      } else if (hasResultIdOnly(op)) {
-        result = operands[0];
-      }
-      const inst = { op, words: operands, index, resultType: resultType2, result };
-      this.instructions.push(inst);
-      if (result && resultType2) this.idTypes.set(result, resultType2);
-      at += count2;
-      switch (op) {
-        case 5 /* Name */:
-          this.names.set(operands[0], literalString(operands, 1).text);
-          break;
-        case 6 /* MemberName */: {
-          let m = this.memberNames.get(operands[0]);
-          if (!m) this.memberNames.set(operands[0], m = /* @__PURE__ */ new Map());
-          m.set(operands[1], literalString(operands, 2).text);
-          break;
-        }
-        case 7 /* String */:
-          this.strings.set(operands[0], literalString(operands, 1).text);
-          break;
-        case 11 /* ExtInstImport */:
-          this.extSets.set(operands[0], literalString(operands, 1).text);
-          break;
-        case 15 /* EntryPoint */: {
-          const name = literalString(operands, 2);
-          this.entryPoints.push({ model: operands[0], function: operands[1], name: name.text, interface: Array.from(operands.subarray(2 + name.words)), modes: /* @__PURE__ */ new Map() });
-          break;
-        }
-        case 16 /* ExecutionMode */:
-        case 331 /* ExecutionModeId */:
-          for (const e of this.entryPoints) if (e.function === operands[0]) e.modes.set(operands[1], Array.from(operands.subarray(2)));
-          break;
-        case 71 /* Decorate */:
-        case 332 /* DecorateId */:
-        case 5632 /* DecorateString */:
-          this._decorate(this.decorations, operands[0], operands[1], Array.from(operands.subarray(2)));
-          break;
-        case 72 /* MemberDecorate */:
-        case 5633 /* MemberDecorateString */: {
-          let m = this.memberDecorations.get(operands[0]);
-          if (!m) this.memberDecorations.set(operands[0], m = /* @__PURE__ */ new Map());
-          this._decorate(m, operands[1], operands[2], Array.from(operands.subarray(3)));
-          break;
-        }
-        case 73 /* DecorationGroup */:
-          groups.set(operands[0], this.decorations.get(operands[0]) ?? /* @__PURE__ */ new Map());
-          break;
-        case 74 /* GroupDecorate */: {
-          const g = this.decorations.get(operands[0]);
-          for (const target of operands.subarray(1)) for (const [d, v] of g ?? []) this._decorate(this.decorations, target, d, v);
-          break;
-        }
-        case 75 /* GroupMemberDecorate */: {
-          const g = this.decorations.get(operands[0]);
-          for (let i = 1; i + 1 < operands.length; i += 2) {
-            let m = this.memberDecorations.get(operands[i]);
-            if (!m) this.memberDecorations.set(operands[i], m = /* @__PURE__ */ new Map());
-            for (const [d, v] of g ?? []) this._decorate(m, operands[i + 1], d, v);
-          }
-          break;
-        }
-        case 19 /* TypeVoid */:
-          this.types.set(result, { kind: "void" });
-          break;
-        case 20 /* TypeBool */:
-          this.types.set(result, { kind: "bool" });
-          break;
-        case 21 /* TypeInt */:
-          this.types.set(result, { kind: "int", width: operands[1], signed: operands[2] !== 0 });
-          break;
-        case 22 /* TypeFloat */:
-          this.types.set(result, { kind: "float", width: operands[1] });
-          break;
-        case 23 /* TypeVector */:
-          this.types.set(result, { kind: "vector", element: operands[1], count: operands[2] });
-          break;
-        case 24 /* TypeMatrix */:
-          this.types.set(result, { kind: "matrix", column: operands[1], count: operands[2] });
-          break;
-        case 25 /* TypeImage */:
-          this.types.set(result, { kind: "image", sampled: operands[1], dim: operands[2], depth: operands[3], arrayed: operands[4] !== 0, ms: operands[5] !== 0, usage: operands[6], format: operands[7] });
-          break;
-        case 26 /* TypeSampler */:
-          this.types.set(result, { kind: "sampler" });
-          break;
-        case 27 /* TypeSampledImage */:
-          this.types.set(result, { kind: "sampledImage", image: operands[1] });
-          break;
-        case 28 /* TypeArray */:
-          this.types.set(result, { kind: "array", element: operands[1], lengthId: operands[2], length: Number(this.constants.get(operands[2]) ?? 0) });
-          break;
-        case 29 /* TypeRuntimeArray */:
-          this.types.set(result, { kind: "runtimeArray", element: operands[1] });
-          break;
-        case 30 /* TypeStruct */:
-          this.types.set(result, { kind: "struct", members: Array.from(operands.subarray(1)) });
-          break;
-        case 31 /* TypeOpaque */:
-          this.types.set(result, { kind: "opaque", name: literalString(operands, 1).text });
-          break;
-        case 32 /* TypePointer */:
-          this.types.set(result, { kind: "pointer", storage: operands[1], pointee: operands[2] });
-          break;
-        case 33 /* TypeFunction */:
-          this.types.set(result, { kind: "function", returnType: operands[1], params: Array.from(operands.subarray(2)) });
-          break;
-        case 41 /* ConstantTrue */:
-        case 48 /* SpecConstantTrue */:
-          this.constants.set(result, true);
-          break;
-        case 42 /* ConstantFalse */:
-        case 49 /* SpecConstantFalse */:
-          this.constants.set(result, false);
-          break;
-        case 43 /* Constant */:
-        case 50 /* SpecConstant */:
-          this.constants.set(result, this.scalarFromWords(resultType2, operands.subarray(2)));
-          break;
-        case 44 /* ConstantComposite */:
-        case 51 /* SpecConstantComposite */:
-          this.constants.set(result, Array.from(operands.subarray(2)).map((id) => this.constants.get(id)));
-          break;
-        case 46 /* ConstantNull */:
-          this.constants.set(result, this.zero(resultType2));
-          break;
-        case 59 /* Variable */:
-          if (!fn) this.globals.set(result, { type: resultType2, storage: operands[2], initializer: operands[3] ?? 0 });
-          break;
-        case 54 /* Function */:
-          fn = { id: result, returnType: resultType2, start: index, params: [], blocks: [], blockByLabel: /* @__PURE__ */ new Map() };
-          this.functions.set(result, fn);
-          break;
-        case 55 /* FunctionParameter */:
-          fn?.params.push({ id: result, type: resultType2 });
-          break;
-        case 248 /* Label */:
-          if (fn) {
-            block = { label: result, start: index, end: index };
-            fn.blocks.push(block);
-            fn.blockByLabel.set(result, block);
-          }
-          break;
-        case 249 /* Branch */:
-        case 250 /* BranchConditional */:
-        case 251 /* Switch */:
-        case 252 /* Kill */:
-        case 253 /* Return */:
-        case 254 /* ReturnValue */:
-        case 255 /* Unreachable */:
-        case 4416 /* TerminateInvocation */:
-          if (block) block.end = index;
-          block = null;
-          break;
-        case 56 /* FunctionEnd */:
-          fn = null;
-          break;
-        case 12 /* ExtInst */: {
-          const set = this.extSets.get(operands[2]);
-          if (set === "NonSemantic.Shader.DebugInfo.100") {
-            const instruction = operands[3];
-            if (instruction === 26) debugLocals.set(result, this.strings.get(operands[4]) ?? "");
-            if (instruction === 28) {
-              const name = debugLocals.get(operands[4]);
-              if (name) this.debugVariableNames.set(operands[5], name);
-            }
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    }
-    for (const [id, decorations] of this.decorations) {
-      const spec = decorations.get(1 /* SpecId */);
-      if (spec) this.specIds.set(id, spec[0]);
-    }
-    void groups;
-  }
-  _decorate(into, target, decoration, operands) {
-    let d = into.get(target);
-    if (!d) into.set(target, d = /* @__PURE__ */ new Map());
-    d.set(decoration, operands);
-  }
-  /** A scalar constant's value from its literal words: a number for 32-bit and float values, a bigint for 64-bit integers. */
-  scalarFromWords(typeId, literal) {
-    const t = this.types.get(typeId);
-    if (!t) return 0;
-    if (t.kind === "bool") return literal[0] !== 0;
-    if (t.kind === "float") {
-      const buf = new ArrayBuffer(8);
-      const view = new DataView(buf);
-      if (t.width === 64) {
-        view.setUint32(0, literal[0], true);
-        view.setUint32(4, literal[1] ?? 0, true);
-        return view.getFloat64(0, true);
-      }
-      if (t.width === 16) {
-        return float16(literal[0] & 65535);
-      }
-      view.setUint32(0, literal[0], true);
-      return view.getFloat32(0, true);
-    }
-    if (t.kind === "int") {
-      if (t.width === 64) {
-        const v = BigInt(literal[1] ?? 0) << 32n | BigInt(literal[0]);
-        return t.signed ? BigInt.asIntN(64, v) : v;
-      }
-      const bits = literal[0];
-      if (t.width < 32) {
-        const mask = (1 << t.width) - 1;
-        const v = bits & mask;
-        return t.signed && v & 1 << t.width - 1 ? v - (1 << t.width) : v;
-      }
-      return t.signed ? bits | 0 : bits >>> 0;
-    }
-    return 0;
-  }
-  /** The zero value of a type (OpConstantNull, OpUndef, uninitialized variables). */
-  zero(typeId) {
-    const t = this.types.get(typeId);
-    if (!t) return 0;
-    switch (t.kind) {
-      case "bool":
-        return false;
-      case "int":
-        return t.width === 64 ? 0n : 0;
-      case "float":
-        return 0;
-      case "vector":
-        return Array.from({ length: t.count }, () => this.zero(t.element));
-      case "matrix":
-        return Array.from({ length: t.count }, () => this.zero(t.column));
-      case "array":
-        return Array.from({ length: t.length }, () => this.zero(t.element));
-      case "runtimeArray":
-        return [];
-      case "struct":
-        return t.members.map((m) => this.zero(m));
-      default:
-        return null;
-    }
-  }
-  decoration(id, decoration) {
-    return this.decorations.get(id)?.get(decoration);
-  }
-  memberDecoration(struct, member, decoration) {
-    return this.memberDecorations.get(struct)?.get(member)?.get(decoration);
-  }
-  /** A readable name for an id: its OpName, its debug info name, else "%id". */
-  nameOf(id) {
-    return this.names.get(id) || this.debugVariableNames.get(id) || `%${id}`;
-  }
-  /** The type's name as GLSL writes it. */
-  typeName(typeId) {
-    const t = this.types.get(typeId);
-    if (!t) return `%${typeId}`;
-    switch (t.kind) {
-      case "void":
-        return "void";
-      case "bool":
-        return "bool";
-      case "int":
-        return t.width === 32 ? t.signed ? "int" : "uint" : `${t.signed ? "int" : "uint"}${t.width}_t`;
-      case "float":
-        return t.width === 32 ? "float" : t.width === 64 ? "double" : `float${t.width}_t`;
-      case "vector": {
-        const e = this.types.get(t.element);
-        const prefix = e?.kind === "bool" ? "b" : e?.kind === "int" ? e.signed ? "i" : "u" : e?.kind === "float" && e.width === 64 ? "d" : "";
-        return `${prefix}vec${t.count}`;
-      }
-      case "matrix": {
-        const c2 = this.types.get(t.column);
-        const rows = c2?.kind === "vector" ? c2.count : 0;
-        return rows === t.count ? `mat${t.count}` : `mat${t.count}x${rows}`;
-      }
-      case "array":
-        return `${this.typeName(t.element)}[${t.length}]`;
-      case "runtimeArray":
-        return `${this.typeName(t.element)}[]`;
-      case "struct":
-        return this.names.get(typeId) || "struct";
-      case "pointer":
-        return this.typeName(t.pointee);
-      case "image":
-        return "image";
-      case "sampler":
-        return "sampler";
-      case "sampledImage":
-        return "sampler2D";
-      default:
-        return t.kind;
-    }
-  }
-  entryPoint(name, model) {
-    return this.entryPoints.find((e) => (name === void 0 || e.name === name) && (model === void 0 || e.model === model)) ?? this.entryPoints.find((e) => model === void 0 || e.model === model) ?? null;
-  }
-};
-function float16(h) {
-  const sign = h & 32768 ? -1 : 1;
-  const exponent = h >> 10 & 31;
-  const mantissa = h & 1023;
-  if (exponent === 0) return sign * Math.pow(2, -14) * (mantissa / 1024);
-  if (exponent === 31) return mantissa ? NaN : sign * Infinity;
-  return sign * Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
-}
-
-// src/renderer/spirv/values.ts
-var Pointer = class {
-  constructor(cell, path11, type, storage, variable) {
-    this.cell = cell;
-    this.path = path11;
-    this.type = type;
-    this.storage = storage;
-    this.variable = variable;
-  }
-};
-var ImageValue = class {
-  constructor(texture, binding) {
-    this.texture = texture;
-    this.binding = binding;
-  }
-};
-var SamplerValue = class {
-  constructor(sampler, binding) {
-    this.sampler = sampler;
-    this.binding = binding;
-  }
-};
-var SampledImageValue = class {
-  constructor(image, sampler) {
-    this.image = image;
-    this.sampler = sampler;
-  }
-};
-function cloneValue(v) {
-  return Array.isArray(v) ? v.map(cloneValue) : v;
-}
-function scalarOf(m, typeId) {
-  const t = m.types.get(typeId);
-  if (!t) return null;
-  switch (t.kind) {
-    case "bool":
-      return { base: "bool", width: 1 };
-    case "int":
-      return { base: t.signed ? "int" : "uint", width: t.width };
-    case "float":
-      return { base: "float", width: t.width };
-    case "vector":
-      return scalarOf(m, t.element);
-    case "matrix":
-      return scalarOf(m, t.column);
-    default:
-      return null;
-  }
-}
-function normalize(v, s) {
-  if (s.base === "bool") return Boolean(v);
-  if (s.base === "float") {
-    const n2 = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? v ? 1 : 0 : v;
-    return s.width === 32 ? Math.fround(n2) : s.width === 16 ? Math.fround(n2) : n2;
-  }
-  if (s.width === 64) {
-    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? v ? 1 : 0 : v));
-    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
-  }
-  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? v ? 1 : 0 : Math.trunc(v);
-  if (s.width < 32) {
-    const mod = 2 ** s.width;
-    n = (n % mod + mod) % mod;
-    return s.base === "int" && n >= mod / 2 ? n - mod : n;
-  }
-  return s.base === "int" ? n | 0 : n >>> 0;
-}
-function mapScalars(v, f) {
-  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
-}
-function zipScalars(a, b, f) {
-  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
-  return f(a, b);
-}
-function layoutSize(m, typeId, bytes = 0, offset = 0) {
-  const t = m.types.get(typeId);
-  if (!t) return 0;
-  switch (t.kind) {
-    case "bool":
-      return 4;
-    case "int":
-    case "float":
-      return t.width / 8;
-    case "vector":
-      return layoutSize(m, t.element) * t.count;
-    case "matrix":
-      return layoutSize(m, t.column) * t.count;
-    case "array": {
-      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
-      return stride * t.length;
-    }
-    case "runtimeArray": {
-      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
-      return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) * stride : 0;
-    }
-    case "struct": {
-      let end = 0;
-      t.members.forEach((member, i) => {
-        const at = m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? end;
-        end = Math.max(end, at + layoutSize(m, member, bytes, offset + at));
-      });
-      return end;
-    }
-    default:
-      return 0;
-  }
-}
-function runtimeArrayLength(m, typeId, bytes, offset) {
-  const t = m.types.get(typeId);
-  if (t?.kind !== "runtimeArray") return 0;
-  const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
-  return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) : 0;
-}
-function readScalar2(view, at, m, typeId) {
-  const t = m.types.get(typeId);
-  if (!t || at < 0) return 0;
-  const size2 = t.kind === "bool" ? 4 : t.kind === "int" || t.kind === "float" ? t.width / 8 : 0;
-  if (at + size2 > view.byteLength) return t.kind === "bool" ? false : t.kind === "int" && t.width === 64 ? 0n : 0;
-  if (t.kind === "bool") return view.getUint32(at, true) !== 0;
-  if (t.kind === "float") {
-    if (t.width === 64) return view.getFloat64(at, true);
-    if (t.width === 16) {
-      const h = view.getUint16(at, true);
-      const sign = h & 32768 ? -1 : 1;
-      const e = h >> 10 & 31;
-      const f = h & 1023;
-      return e === 0 ? sign * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign * Infinity : sign * 2 ** (e - 15) * (1 + f / 1024);
-    }
-    return view.getFloat32(at, true);
-  }
-  if (t.kind === "int") {
-    if (t.width === 64) return t.signed ? view.getBigInt64(at, true) : view.getBigUint64(at, true);
-    if (t.width === 16) return t.signed ? view.getInt16(at, true) : view.getUint16(at, true);
-    if (t.width === 8) return t.signed ? view.getInt8(at) : view.getUint8(at);
-    return t.signed ? view.getInt32(at, true) : view.getUint32(at, true);
-  }
-  return 0;
-}
-function readBuffer(m, view, at, typeId, matrix, limit = Infinity) {
-  const t = m.types.get(typeId);
-  if (!t) return 0;
-  switch (t.kind) {
-    case "bool":
-    case "int":
-    case "float":
-      return readScalar2(view, at, m, typeId);
-    case "vector": {
-      const size2 = layoutSize(m, t.element);
-      return Array.from({ length: t.count }, (_, i) => readScalar2(view, at + i * size2, m, t.element));
-    }
-    case "matrix": {
-      const column = m.types.get(t.column);
-      const rows = column?.kind === "vector" ? column.count : 1;
-      const element = column?.kind === "vector" ? column.element : t.column;
-      const scalar = layoutSize(m, element);
-      const stride = matrix?.stride ?? rows * scalar;
-      return Array.from({ length: t.count }, (_, c2) => Array.from({ length: rows }, (_2, r) => readScalar2(view, matrix?.rowMajor ? at + r * stride + c2 * scalar : at + c2 * stride + r * scalar, m, element)));
-    }
-    case "array":
-    case "runtimeArray": {
-      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
-      const length = t.kind === "array" ? t.length : runtimeArrayLength(m, typeId, view.byteLength, at);
-      return Array.from({ length: Math.min(length, limit) }, (_, i) => readBuffer(m, view, at + i * stride, t.element, matrix, limit));
-    }
-    case "struct":
-      return t.members.map((member, i) => readBuffer(
-        m,
-        view,
-        at + (m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? 0),
-        member,
-        memberMatrix(m, typeId, i),
-        limit
-      ));
-    default:
-      return null;
-  }
-}
-function memberMatrix(m, struct, member) {
-  const stride = m.memberDecoration(struct, member, 7 /* MatrixStride */)?.[0];
-  if (stride === void 0) return void 0;
-  return { stride, rowMajor: m.memberDecoration(struct, member, 4 /* RowMajor */) !== void 0 };
-}
-function bufferLocation(m, blockType, path11, bytes) {
-  let at = 0;
-  let type = blockType;
-  let matrix;
-  for (const index of path11) {
-    const t = m.types.get(type);
-    if (!t) return null;
-    if (t.kind === "struct") {
-      at += m.memberDecoration(type, index, 35 /* Offset */)?.[0] ?? 0;
-      matrix = memberMatrix(m, type, index) ?? matrix;
-      type = t.members[index];
-    } else if (t.kind === "array" || t.kind === "runtimeArray") {
-      const stride = m.decoration(type, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element, bytes, at);
-      at += index * stride;
-      type = t.element;
-    } else if (t.kind === "matrix") {
-      const column = m.types.get(t.column);
-      const rows = column?.kind === "vector" ? column.count : 1;
-      const element = column?.kind === "vector" ? column.element : t.column;
-      const stride = matrix?.stride ?? rows * layoutSize(m, element);
-      if (matrix?.rowMajor) {
-        return null;
-      }
-      at += index * stride;
-      type = t.column;
-      matrix = void 0;
-    } else if (t.kind === "vector") {
-      at += index * layoutSize(m, t.element);
-      type = t.element;
-    } else {
-      return null;
-    }
-  }
-  return { at, type, matrix };
-}
-
-// src/renderer/shader_debugger.ts
-var MAX_LINE_RESULTS = 2e3;
+// src/renderer/debug/program.ts
 function sourceKey(file, line) {
   return `f:${file}:${line}`;
 }
 function instructionKey(ordinal) {
   return `i:${ordinal}`;
 }
-function hasLineInfo(module) {
-  const info = module.debug;
-  return !!info && info.form !== "none" && info.locations.some((l) => l !== null);
-}
+
+// src/renderer/shader_debugger.ts
+var MAX_LINE_RESULTS = 2e3;
 var DebugController = class {
   session;
   stepper;
@@ -8901,12 +8418,13 @@ var DebugController = class {
   stepSteps = 0;
   constructor(session, mode) {
     this.session = session;
-    this._mode = mode ?? (hasLineInfo(session.module) ? "source" : "instruction");
+    const modes = session.program.modes;
+    this._mode = mode && modes.includes(mode) ? mode : modes.includes("source") ? "source" : "instruction";
     this.stepper = session.start();
     this._settle();
   }
-  get module() {
-    return this.session.module;
+  get program() {
+    return this.session.program;
   }
   get invocation() {
     return this.stepper.invocation;
@@ -8923,19 +8441,19 @@ var DebugController = class {
   }
   /** Switches between source lines and instructions; the invocation stays where it is. */
   set mode(mode) {
-    if (mode === "source" && !hasLineInfo(this.module)) return;
+    if (!this.program.modes.includes(mode)) return;
     this._mode = mode;
     if (!this.running) this._settle();
   }
-  /** The source location of an instruction, when the module's debug information has one. */
-  location(inst) {
-    return inst ? this.module.debug?.locations[inst.index] ?? null : null;
+  /** The source location of an instruction, when the program's debug information has one. */
+  location(step2) {
+    return this.program.locationOf(step2);
   }
   /** The key a stop at an instruction has in the current mode; null where one cannot stop. */
-  keyOf(inst) {
-    if (!inst) return null;
-    if (this._mode === "instruction") return instructionKey(inst.index);
-    const loc = this.location(inst);
+  keyOf(step2) {
+    if (!step2) return null;
+    if (this._mode === "instruction") return instructionKey(step2.index);
+    const loc = this.location(step2);
     return loc ? sourceKey(loc.file, loc.line) : null;
   }
   /** The key of where the invocation is stopped. */
@@ -8944,7 +8462,7 @@ var DebugController = class {
   }
   /** The values of the line that ran last (at the current depth, or the call it stepped into from). */
   get lastLine() {
-    const depth = Math.min(this._lastDepth, this.invocation.frames.length || this._lastDepth);
+    const depth = Math.min(this._lastDepth, this.invocation.depth || this._lastDepth);
     const line = this._lines[depth - 1];
     if (line?.results.length) return line;
     return this._previous[depth - 1] ?? line ?? { key: null, results: [] };
@@ -8969,7 +8487,7 @@ var DebugController = class {
   /** Begins a step; proceed() runs it. */
   begin(kind) {
     if (this.finished) return;
-    this._pending = { kind, depth: this.invocation.frames.length, key: this.currentKey, lastKey: this.currentKey };
+    this._pending = { kind, depth: this.invocation.depth, key: this.currentKey, lastKey: this.currentKey };
     this.stepSteps = 0;
   }
   /** Runs up to `budget` instructions of the step begun; true when it has stopped (or the invocation finished). */
@@ -8986,7 +8504,7 @@ var DebugController = class {
       if (key === null) continue;
       const entered = key !== p.lastKey;
       p.lastKey = key;
-      if (entered && this.breakpoints.has(key) || this._reached(p, key, inv.frames.length)) {
+      if (entered && this.breakpoints.has(key) || this._reached(p, key, inv.depth)) {
         stopped = true;
         break;
       }
@@ -9022,7 +8540,7 @@ var DebugController = class {
   _stepOnce() {
     const inv = this.invocation;
     const key = this.currentKey;
-    const depth = inv.frames.length;
+    const depth = inv.depth;
     this.stepper.step();
     const results = inv.takeResults();
     if (key !== null || !this._lines[depth - 1]) {
@@ -9044,164 +8562,8 @@ var DebugController = class {
     while (!this.finished && this.currentKey === null && guard++ < 1e6) this._stepOnce();
   }
 };
-function valueType(m, id) {
-  const type = m.idTypes.get(id) ?? m.globals.get(id)?.type ?? 0;
-  const t = m.types.get(type);
-  return t?.kind === "pointer" ? t.pointee : type;
-}
-function resultType(m, r) {
-  return r.inst.resultType || valueType(m, r.id);
-}
-function scalarText(v) {
-  if (typeof v === "number") {
-    if (Number.isInteger(v)) return String(v);
-    if (Number.isNaN(v)) return "NaN";
-    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
-  }
-  if (typeof v === "bigint") return String(v);
-  if (typeof v === "boolean") return v ? "true" : "false";
-  return "?";
-}
-function valueText(module, type, value, limit = 16) {
-  if (value === void 0 || value === null) return "undefined";
-  if (value instanceof Pointer) return `\u2192 ${module.nameOf(value.variable)}${value.path.length ? `[${value.path.join("][")}]` : ""}`;
-  if (value instanceof SampledImageValue) return `${imageText(value.image)}, ${samplerText(value.sampler)}`;
-  if (value instanceof ImageValue) return imageText(value);
-  if (value instanceof SamplerValue) return samplerText(value);
-  if (!Array.isArray(value)) return scalarText(value);
-  const t = module.types.get(type);
-  const inner = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : 0;
-  const parts2 = [];
-  for (let i = 0; i < Math.min(value.length, limit); i++) {
-    const memberType = t?.kind === "struct" ? t.members[i] : inner;
-    const text = valueText(module, memberType, value[i], limit);
-    const name = t?.kind === "struct" ? module.memberNames.get(type)?.get(i) : void 0;
-    parts2.push(name ? `${name}: ${text}` : text);
-  }
-  if (value.length > limit) parts2.push(`\u2026 ${value.length - limit} more`);
-  return t?.kind === "struct" ? `{ ${parts2.join(", ")} }` : t?.kind === "array" || t?.kind === "runtimeArray" ? `[${parts2.join(", ")}]` : `(${parts2.join(", ")})`;
-}
-function imageText(image) {
-  const t = image.texture;
-  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
-}
-function samplerText(sampler) {
-  const s = sampler.sampler;
-  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
-}
-function nonFinite(value) {
-  if (typeof value === "number") return !Number.isFinite(value);
-  return Array.isArray(value) && value.some(nonFinite);
-}
-function scalars(value) {
-  if (Array.isArray(value)) return value.flatMap(scalars);
-  if (typeof value === "number") return [value];
-  if (typeof value === "bigint") return [Number(value)];
-  if (typeof value === "boolean") return [value ? 1 : 0];
-  return [];
-}
 
-// src/renderer/mesh_input.ts
-var MESH_INPUT_LIMIT = 1e6;
-var INDIRECT_FIELDS2 = {
-  vkCmdDrawIndirect: ["vertexCount", "instanceCount", "firstVertex", "firstInstance"],
-  vkCmdDrawIndexedIndirect: ["indexCount", "instanceCount", "firstIndex", "vertexOffset", "firstInstance"]
-};
-function indexBytes(indexType) {
-  if (/UINT8/i.test(indexType)) return 1;
-  if (/16/.test(indexType)) return 2;
-  if (/32/.test(indexType)) return 4;
-  return 0;
-}
-function drawArgs(data, cmd, notes) {
-  const a = cmd.args ?? {};
-  const fields = INDIRECT_FIELDS2[cmd.method];
-  if (!fields) {
-    return { vertexCount: num(a.vertexCount), indexCount: num(a.indexCount), firstVertex: num(a.firstVertex), firstIndex: num(a.firstIndex), vertexOffset: num(a.vertexOffset) };
-  }
-  const b = data.buffer(cmd.bufferData?.[0]);
-  if (!b?.data || b.data.byteLength < fields.length * 4) {
-    notes.push("An indirect draw's counts are in a buffer the capture did not read back.");
-    return {};
-  }
-  const view = new DataView(b.data.buffer, b.data.byteOffset, b.data.byteLength);
-  const out = {};
-  fields.forEach((f, k) => {
-    out[f] = f === "vertexOffset" ? view.getInt32(k * 4, true) : view.getUint32(k * 4, true);
-  });
-  if (num(a.drawCount) > 1) notes.push(`The first of the indirect draw's ${num(a.drawCount)} draws.`);
-  return out;
-}
-function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
-  const state = drawState(data, db, cmd);
-  const notes = [];
-  const d = state.pipeline?.descriptor;
-  const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
-  const topology = assembly ? str(assembly.topology) : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
-  const args = drawArgs(data, cmd, notes);
-  let ids = [];
-  let indices = null;
-  const indexed = /Indexed/.test(cmd.method);
-  if (indexed) {
-    const ib = state.indexBuffer;
-    const captured = ib ? data.buffer(ib.dataId) : null;
-    const size2 = ib ? indexBytes(ib.indexType) : 0;
-    if (!captured?.data || !size2) {
-      notes.push("The index buffer was not captured.");
-    } else {
-      const view = new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength);
-      const count2 = Math.min(args.indexCount ?? 0, MESH_INPUT_LIMIT);
-      const first = args.firstIndex ?? 0;
-      indices = [];
-      for (let i = first; i < first + count2 && (i + 1) * size2 <= captured.data.byteLength; i++) {
-        indices.push(size2 === 1 ? view.getUint8(i * size2) : size2 === 2 ? view.getUint16(i * size2, true) : view.getUint32(i * size2, true));
-      }
-      if (indices.length < count2) notes.push(`The captured index buffer holds ${indices.length.toLocaleString()} of the draw's ${count2.toLocaleString()} indices.`);
-      ids = indices.map((v) => v + (args.vertexOffset ?? 0));
-    }
-  } else {
-    const count2 = Math.min(args.vertexCount ?? 0, MESH_INPUT_LIMIT);
-    ids = Array.from({ length: count2 }, (_, i) => (args.firstVertex ?? 0) + i);
-  }
-  const attributes = [];
-  const readers = [];
-  for (const vb of [...state.vertexBuffers.values()].sort((x, y) => x.binding - y.binding)) {
-    const layout = vertexLayout(state, vb.binding, vb);
-    if (!layout?.stride) continue;
-    const captured = data.buffer(vb.dataId);
-    if (!captured?.data) notes.push(`Vertex buffer binding ${vb.binding} was not captured.`);
-    const view = captured?.data ? new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength) : null;
-    for (const a of layout.attributes) {
-      const format = vertexFormat(a.format);
-      if (!format) continue;
-      const perInstance = layout.rate.includes("INSTANCE");
-      attributes.push({ name: names.get(a.location) || `location${a.location}`, location: a.location, binding: vb.binding, format: a.format, components: format.channels.length, perInstance });
-      readers.push({ layout, format, offset: a.offset, view, available: view ? Math.floor(view.byteLength / layout.stride) : 0 });
-    }
-  }
-  if (!state.vertexBuffers.size) notes.push("No vertex buffers are bound: the vertex shader makes its vertices (from gl_VertexIndex, or a storage buffer).");
-  let position = attributes.findIndex((a) => /pos/i.test(a.name) && a.components >= 2 && !vertexFormat(a.format)?.integer);
-  if (position < 0) position = attributes.findIndex((a) => a.location === 0 && a.components >= 3 && !vertexFormat(a.format)?.integer);
-  return {
-    topology,
-    attributes,
-    ids,
-    indices,
-    position,
-    notes,
-    values: (order, attribute, instance = 0) => {
-      const r = readers[attribute];
-      if (!r?.view) return null;
-      const id = attributes[attribute].perInstance ? instance : ids[order];
-      if (id === void 0 || id >= r.available) return null;
-      return r.format.read(r.view, id * r.layout.stride + r.offset);
-    }
-  };
-}
-
-// src/renderer/spirv/sampling.ts
+// src/renderer/debug/sampling.ts
 var DEFAULT_SAMPLER = {
   magFilter: "linear",
   minFilter: "linear",
@@ -9380,1533 +8742,5128 @@ function gather(texture, sampler, coord, component, dref) {
   return [pick2(x0, y0 + 1), pick2(x0 + 1, y0 + 1), pick2(x0 + 1, y0), pick2(x0, y0)];
 }
 
-// src/renderer/spirv/interpreter.ts
-var GLSL_STD_450 = "GLSL.std.450";
-var MAX_STEPS = 5e7;
+// src/renderer/msl/types.ts
+var SCALAR_BYTES = {
+  bool: 1,
+  char: 1,
+  uchar: 1,
+  short: 2,
+  ushort: 2,
+  int: 4,
+  uint: 4,
+  long: 8,
+  ulong: 8,
+  half: 2,
+  float: 4
+};
+var SCALAR_KIND = {
+  bool: { base: "bool", width: 1 },
+  char: { base: "int", width: 8 },
+  uchar: { base: "uint", width: 8 },
+  short: { base: "int", width: 16 },
+  ushort: { base: "uint", width: 16 },
+  int: { base: "int", width: 32 },
+  uint: { base: "uint", width: 32 },
+  long: { base: "int", width: 64 },
+  ulong: { base: "uint", width: 64 },
+  half: { base: "float", width: 16 },
+  float: { base: "float", width: 32 }
+};
+var SCALAR_ALIASES = {
+  bool: "bool",
+  char: "char",
+  uchar: "uchar",
+  short: "short",
+  ushort: "ushort",
+  int: "int",
+  uint: "uint",
+  long: "long",
+  ulong: "ulong",
+  half: "half",
+  float: "float",
+  int8_t: "char",
+  uint8_t: "uchar",
+  int16_t: "short",
+  uint16_t: "ushort",
+  int32_t: "int",
+  uint32_t: "uint",
+  int64_t: "long",
+  uint64_t: "ulong",
+  size_t: "ulong",
+  ptrdiff_t: "long",
+  uintptr_t: "ulong",
+  signed: "int",
+  unsigned: "uint",
+  "unsigned int": "uint",
+  double: "float"
+};
+var TEXTURE_SHAPES = {
+  texture1d: { dim: 0 /* D1 */, arrayed: false, depth: false, multisampled: false },
+  texture1d_array: { dim: 0 /* D1 */, arrayed: true, depth: false, multisampled: false },
+  texture2d: { dim: 1 /* D2 */, arrayed: false, depth: false, multisampled: false },
+  texture2d_array: { dim: 1 /* D2 */, arrayed: true, depth: false, multisampled: false },
+  texture2d_ms: { dim: 1 /* D2 */, arrayed: false, depth: false, multisampled: true },
+  texture2d_ms_array: { dim: 1 /* D2 */, arrayed: true, depth: false, multisampled: true },
+  texture3d: { dim: 2 /* D3 */, arrayed: false, depth: false, multisampled: false },
+  texturecube: { dim: 3 /* Cube */, arrayed: false, depth: false, multisampled: false },
+  texturecube_array: { dim: 3 /* Cube */, arrayed: true, depth: false, multisampled: false },
+  texture_buffer: { dim: 5 /* Buffer */, arrayed: false, depth: false, multisampled: false },
+  depth2d: { dim: 1 /* D2 */, arrayed: false, depth: true, multisampled: false },
+  depth2d_array: { dim: 1 /* D2 */, arrayed: true, depth: true, multisampled: false },
+  depth2d_ms: { dim: 1 /* D2 */, arrayed: false, depth: true, multisampled: true },
+  depth2d_ms_array: { dim: 1 /* D2 */, arrayed: true, depth: true, multisampled: true },
+  depthcube: { dim: 3 /* Cube */, arrayed: false, depth: true, multisampled: false },
+  depthcube_array: { dim: 3 /* Cube */, arrayed: true, depth: true, multisampled: false }
+};
+function isTextureName(name) {
+  return name in TEXTURE_SHAPES;
+}
+var TypeTable = class {
+  types = [];
+  _byKey = /* @__PURE__ */ new Map();
+  _structsByName = /* @__PURE__ */ new Map();
+  void_;
+  bool;
+  int;
+  uint;
+  float;
+  sampler;
+  constructor() {
+    this.void_ = this.intern({ kind: "void" });
+    this.bool = this.scalar("bool");
+    this.int = this.scalar("int");
+    this.uint = this.scalar("uint");
+    this.float = this.scalar("float");
+    this.sampler = this.intern({ kind: "sampler" });
+  }
+  get(ref) {
+    return this.types[ref];
+  }
+  intern(type) {
+    const key = keyOf(type);
+    const hit = this._byKey.get(key);
+    if (hit !== void 0) return hit;
+    const ref = this.types.length;
+    this.types.push(type);
+    this._byKey.set(key, ref);
+    if (type.kind === "struct" && type.name) this._structsByName.set(type.name, ref);
+    return ref;
+  }
+  scalar(base) {
+    return this.intern({ kind: "scalar", base });
+  }
+  vector(element, count2, packed = false) {
+    return this.intern({ kind: "vector", element, count: count2, packed });
+  }
+  matrix(column, columns) {
+    return this.intern({ kind: "matrix", column, columns });
+  }
+  array(element, length2) {
+    return this.intern({ kind: "array", element, length: length2 });
+  }
+  pointer(pointee, space, reference = false) {
+    return this.intern({ kind: "pointer", pointee, space, reference });
+  }
+  /** A struct declared in the shader; members are filled in after interning so a self-reference resolves. */
+  declareStruct(name) {
+    const existing = this._structsByName.get(name);
+    if (existing !== void 0) return existing;
+    const ref = this.types.length;
+    this.types.push({ kind: "struct", name, members: [] });
+    this._byKey.set(`struct:${name || ref}`, ref);
+    this._structsByName.set(name, ref);
+    return ref;
+  }
+  structNamed(name) {
+    return this._structsByName.get(name);
+  }
+  /**
+   * A built-in type spelled by name: a scalar, `float4`, `half2x3`, `packed_float3`. Returns
+   * undefined for a name that is not one, so the parser can look it up as a declared type.
+   */
+  builtin(name) {
+    const scalar = SCALAR_ALIASES[name];
+    if (scalar) return this.scalar(scalar);
+    const packed = name.startsWith("packed_");
+    const bare = packed ? name.slice(7) : name;
+    const matrix = /^([a-z0-9_]+?)(\d)x(\d)$/.exec(bare);
+    if (matrix && SCALAR_ALIASES[matrix[1]]) {
+      const element = this.scalar(SCALAR_ALIASES[matrix[1]]);
+      return this.matrix(this.vector(element, Number(matrix[3]), packed), Number(matrix[2]));
+    }
+    const vector = /^([a-z0-9_]+?)(\d)$/.exec(bare);
+    if (vector && SCALAR_ALIASES[vector[1]] && Number(vector[2]) >= 2 && Number(vector[2]) <= 4) {
+      return this.vector(this.scalar(SCALAR_ALIASES[vector[1]]), Number(vector[2]), packed);
+    }
+    if (name === "sampler") return this.sampler;
+    if (name === "void") return this.void_;
+    return void 0;
+  }
+  /** A texture type: `texture2d<float, access::sample>`. */
+  texture(name, sampled, access) {
+    const shape = TEXTURE_SHAPES[name];
+    if (!shape) return void 0;
+    return this.intern({ kind: "texture", ...shape, sampled, access });
+  }
+  // -------------------------------------------------------------------------------------------
+  // Naming
+  name(ref) {
+    const t = this.types[ref];
+    if (!t) return "?";
+    switch (t.kind) {
+      case "void":
+        return "void";
+      case "scalar":
+        return t.base;
+      case "vector":
+        return `${t.packed ? "packed_" : ""}${this.name(t.element)}${t.count}`;
+      case "matrix": {
+        const column = this.types[t.column];
+        const rows = column?.kind === "vector" ? column.count : 1;
+        const element = column?.kind === "vector" ? column.element : t.column;
+        return `${this.name(element)}${t.columns}x${rows}`;
+      }
+      case "array":
+        return `array<${this.name(t.element)}, ${t.length < 0 ? "" : t.length}>`;
+      case "struct":
+        return t.name || "struct";
+      case "pointer":
+        return `${t.space} ${this.name(t.pointee)}${t.reference ? "&" : "*"}`;
+      case "texture": {
+        const base = Object.keys(TEXTURE_SHAPES).find((k) => {
+          const s = TEXTURE_SHAPES[k];
+          return s.dim === t.dim && s.arrayed === t.arrayed && s.depth === t.depth && s.multisampled === t.multisampled;
+        });
+        return `${base ?? "texture"}<${this.name(t.sampled)}>`;
+      }
+      case "sampler":
+        return "sampler";
+      case "atomic":
+        return `atomic<${this.name(t.element)}>`;
+      case "opaque":
+        return t.name;
+    }
+  }
+  // -------------------------------------------------------------------------------------------
+  // Shape
+  /** The scalar a type is made of (a vector's or matrix's element), or null for other types. */
+  scalarOf(ref) {
+    const t = this.types[ref];
+    if (!t) return null;
+    switch (t.kind) {
+      case "scalar":
+        return SCALAR_KIND[t.base];
+      case "vector":
+        return this.scalarOf(t.element);
+      case "matrix":
+        return this.scalarOf(t.column);
+      case "atomic":
+        return this.scalarOf(t.element);
+      default:
+        return null;
+    }
+  }
+  scalarBase(ref) {
+    const t = this.types[ref];
+    if (!t) return null;
+    if (t.kind === "scalar") return t.base;
+    if (t.kind === "vector") return this.scalarBase(t.element);
+    if (t.kind === "matrix") return this.scalarBase(t.column);
+    if (t.kind === "atomic") return this.scalarBase(t.element);
+    return null;
+  }
+  /** How many scalars a value of the type has across its columns (1 for a scalar, 3 for float3). */
+  components(ref) {
+    const t = this.types[ref];
+    if (t?.kind === "vector") return t.count;
+    return 1;
+  }
+  /** The element type of a vector or matrix column, or the type itself when it is a scalar. */
+  elementOf(ref) {
+    const t = this.types[ref];
+    if (t?.kind === "vector") return t.element;
+    if (t?.kind === "matrix") return t.column;
+    return ref;
+  }
+  isFloat(ref) {
+    return this.scalarOf(ref)?.base === "float";
+  }
+  isSigned(ref) {
+    return this.scalarOf(ref)?.base === "int";
+  }
+  isBool(ref) {
+    return this.scalarOf(ref)?.base === "bool";
+  }
+  /** The same shape as `ref` but made of `base`: float3 with "bool" becomes bool3. */
+  withScalar(ref, base) {
+    const t = this.types[ref];
+    const scalar = this.scalar(base);
+    if (t?.kind === "vector") return this.vector(scalar, t.count, t.packed);
+    if (t?.kind === "matrix") {
+      const column = this.types[t.column];
+      const rows = column?.kind === "vector" ? column.count : 1;
+      return this.matrix(this.vector(scalar, rows, false), t.columns);
+    }
+    return scalar;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Layout (C++ rules, which is what MSL uses)
+  /** Bytes a value of the type occupies in a buffer, its size rounded up to its alignment. */
+  sizeOf(ref) {
+    const t = this.types[ref];
+    if (!t) return 0;
+    switch (t.kind) {
+      case "void":
+        return 0;
+      case "scalar":
+        return SCALAR_BYTES[t.base];
+      case "vector": {
+        const element = this.sizeOf(t.element);
+        return t.packed ? element * t.count : element * (t.count === 3 ? 4 : t.count);
+      }
+      case "matrix":
+        return this.sizeOf(t.column) * t.columns;
+      case "array":
+        return t.length < 0 ? 0 : this.sizeOf(t.element) * t.length;
+      case "struct": {
+        let at = 0;
+        for (const m of t.members) {
+          at = align(at, this.alignOf(m.type)) + this.sizeOf(m.type);
+        }
+        return align(at, this.alignOf(ref));
+      }
+      case "pointer":
+        return 8;
+      case "atomic":
+        return this.sizeOf(t.element);
+      default:
+        return 0;
+    }
+  }
+  alignOf(ref) {
+    const t = this.types[ref];
+    if (!t) return 1;
+    switch (t.kind) {
+      case "scalar":
+        return SCALAR_BYTES[t.base];
+      case "vector": {
+        const element = this.alignOf(t.element);
+        return t.packed ? element : element * (t.count === 3 ? 4 : t.count);
+      }
+      case "matrix":
+        return this.alignOf(t.column);
+      case "array":
+        return this.alignOf(t.element);
+      case "struct":
+        return t.members.reduce((a, m) => Math.max(a, this.alignOf(m.type)), 1);
+      case "pointer":
+        return 8;
+      case "atomic":
+        return this.alignOf(t.element);
+      default:
+        return 1;
+    }
+  }
+  /** The byte offset of a struct's member. */
+  memberOffset(ref, index) {
+    const t = this.types[ref];
+    if (t?.kind !== "struct") return 0;
+    let at = 0;
+    for (let i = 0; i < t.members.length; i++) {
+      at = align(at, this.alignOf(t.members[i].type));
+      if (i === index) return at;
+      at += this.sizeOf(t.members[i].type);
+    }
+    return at;
+  }
+  /** The stride between elements of an array or the columns of a matrix. */
+  strideOf(ref) {
+    const t = this.types[ref];
+    if (t?.kind === "array") return this.sizeOf(t.element);
+    if (t?.kind === "matrix") return this.sizeOf(t.column);
+    if (t?.kind === "vector") return this.sizeOf(t.element);
+    return this.sizeOf(ref);
+  }
+  /**
+   * Where an access path lands in a buffer: the byte offset and the type there. Null when the path
+   * leaves the type (an index into a scalar), which the interpreter reports rather than guessing at.
+   */
+  locate(ref, path11) {
+    let at = 0;
+    let type = ref;
+    for (const index of path11) {
+      const t = this.types[type];
+      if (!t) return null;
+      if (t.kind === "struct") {
+        if (index < 0 || index >= t.members.length) return null;
+        at += this.memberOffset(type, index);
+        type = t.members[index].type;
+      } else if (t.kind === "array") {
+        at += index * this.sizeOf(t.element);
+        type = t.element;
+      } else if (t.kind === "matrix") {
+        at += index * this.sizeOf(t.column);
+        type = t.column;
+      } else if (t.kind === "vector") {
+        at += index * this.sizeOf(t.element);
+        type = t.element;
+      } else if (t.kind === "atomic") {
+        type = t.element;
+      } else {
+        return null;
+      }
+    }
+    return { at, type };
+  }
+  /** The length of an unsized array filling `bytes` from `offset` (a `device T*` the shader indexes). */
+  unsizedLength(element, bytes, offset) {
+    const stride = this.sizeOf(element);
+    return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) : 0;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Reading and writing bytes
+  read(view, at, ref, limit = Infinity) {
+    const t = this.types[ref];
+    if (!t) return 0;
+    switch (t.kind) {
+      case "scalar":
+        return readScalar2(view, at, t.base);
+      case "atomic":
+        return this.read(view, at, t.element, limit);
+      case "vector": {
+        const size2 = this.sizeOf(t.element);
+        return Array.from({ length: t.count }, (_, i) => this.read(view, at + i * size2, t.element, limit));
+      }
+      case "matrix": {
+        const size2 = this.sizeOf(t.column);
+        return Array.from({ length: t.columns }, (_, i) => this.read(view, at + i * size2, t.column, limit));
+      }
+      case "array": {
+        const size2 = this.sizeOf(t.element);
+        const length2 = t.length < 0 ? this.unsizedLength(t.element, view.byteLength, at) : t.length;
+        return Array.from({ length: Math.min(length2, limit) }, (_, i) => this.read(view, at + i * size2, t.element, limit));
+      }
+      case "struct":
+        return t.members.map((m, i) => this.read(view, at + this.memberOffset(ref, i), m.type, limit));
+      default:
+        return null;
+    }
+  }
+  write(view, at, ref, value) {
+    const t = this.types[ref];
+    if (!t) return;
+    switch (t.kind) {
+      case "scalar":
+        writeScalar(view, at, t.base, value);
+        return;
+      case "atomic":
+        this.write(view, at, t.element, value);
+        return;
+      case "vector": {
+        const size2 = this.sizeOf(t.element);
+        const values = Array.isArray(value) ? value : [value];
+        for (let i = 0; i < t.count; i++) this.write(view, at + i * size2, t.element, values[i] ?? 0);
+        return;
+      }
+      case "matrix": {
+        const size2 = this.sizeOf(t.column);
+        const values = Array.isArray(value) ? value : [];
+        for (let i = 0; i < t.columns; i++) this.write(view, at + i * size2, t.column, values[i] ?? null);
+        return;
+      }
+      case "array": {
+        const size2 = this.sizeOf(t.element);
+        const values = Array.isArray(value) ? value : [];
+        const length2 = t.length < 0 ? values.length : t.length;
+        for (let i = 0; i < length2; i++) this.write(view, at + i * size2, t.element, values[i] ?? null);
+        return;
+      }
+      case "struct": {
+        const values = Array.isArray(value) ? value : [];
+        t.members.forEach((m, i) => this.write(view, at + this.memberOffset(ref, i), m.type, values[i] ?? null));
+        return;
+      }
+      default:
+        return;
+    }
+  }
+  /** A value of the type with everything zero: what an uninitialized variable holds. */
+  zero(ref) {
+    const t = this.types[ref];
+    if (!t) return 0;
+    switch (t.kind) {
+      case "scalar":
+        return t.base === "bool" ? false : t.base === "long" || t.base === "ulong" ? 0n : 0;
+      case "atomic":
+        return this.zero(t.element);
+      case "vector":
+        return Array.from({ length: t.count }, () => this.zero(t.element));
+      case "matrix":
+        return Array.from({ length: t.columns }, () => this.zero(t.column));
+      case "array":
+        return Array.from({ length: Math.max(0, t.length) }, () => this.zero(t.element));
+      case "struct":
+        return t.members.map((m) => this.zero(m.type));
+      default:
+        return null;
+    }
+  }
+};
+function align(at, to) {
+  return to > 1 ? Math.ceil(at / to) * to : at;
+}
+function keyOf(type) {
+  switch (type.kind) {
+    case "void":
+      return "void";
+    case "scalar":
+      return `s:${type.base}`;
+    case "vector":
+      return `v:${type.element}:${type.count}:${type.packed ? 1 : 0}`;
+    case "matrix":
+      return `m:${type.column}:${type.columns}`;
+    case "array":
+      return `a:${type.element}:${type.length}`;
+    case "struct":
+      return `struct:${type.name}`;
+    case "pointer":
+      return `p:${type.pointee}:${type.space}:${type.reference ? 1 : 0}`;
+    case "texture":
+      return `t:${type.dim}:${type.arrayed ? 1 : 0}:${type.depth ? 1 : 0}:${type.multisampled ? 1 : 0}:${type.sampled}:${type.access}`;
+    case "sampler":
+      return "sampler";
+    case "atomic":
+      return `at:${type.element}`;
+    case "opaque":
+      return `o:${type.name}`;
+  }
+}
+function readScalar2(view, at, base) {
+  const size2 = SCALAR_BYTES[base];
+  if (at < 0 || at + size2 > view.byteLength) return base === "bool" ? false : base === "long" || base === "ulong" ? 0n : 0;
+  switch (base) {
+    case "bool":
+      return view.getUint8(at) !== 0;
+    case "char":
+      return view.getInt8(at);
+    case "uchar":
+      return view.getUint8(at);
+    case "short":
+      return view.getInt16(at, true);
+    case "ushort":
+      return view.getUint16(at, true);
+    case "int":
+      return view.getInt32(at, true);
+    case "uint":
+      return view.getUint32(at, true);
+    case "long":
+      return view.getBigInt64(at, true);
+    case "ulong":
+      return view.getBigUint64(at, true);
+    case "half":
+      return float16(view.getUint16(at, true));
+    case "float":
+      return view.getFloat32(at, true);
+  }
+}
+function writeScalar(view, at, base, value) {
+  const size2 = SCALAR_BYTES[base];
+  if (at < 0 || at + size2 > view.byteLength) return;
+  const n = typeof value === "bigint" ? Number(value) : typeof value === "boolean" ? value ? 1 : 0 : typeof value === "number" ? value : 0;
+  switch (base) {
+    case "bool":
+      view.setUint8(at, value ? 1 : 0);
+      return;
+    case "char":
+      view.setInt8(at, n | 0);
+      return;
+    case "uchar":
+      view.setUint8(at, n & 255);
+      return;
+    case "short":
+      view.setInt16(at, n | 0, true);
+      return;
+    case "ushort":
+      view.setUint16(at, n & 65535, true);
+      return;
+    case "int":
+      view.setInt32(at, n | 0, true);
+      return;
+    case "uint":
+      view.setUint32(at, n >>> 0, true);
+      return;
+    case "long":
+      view.setBigInt64(at, typeof value === "bigint" ? value : BigInt(Math.trunc(n)), true);
+      return;
+    case "ulong":
+      view.setBigUint64(at, BigInt.asUintN(64, typeof value === "bigint" ? value : BigInt(Math.trunc(n))), true);
+      return;
+    case "half":
+      view.setUint16(at, toFloat16(n), true);
+      return;
+    case "float":
+      view.setFloat32(at, n, true);
+      return;
+  }
+}
+function float16(h) {
+  const sign2 = h & 32768 ? -1 : 1;
+  const e = h >> 10 & 31;
+  const f = h & 1023;
+  if (e === 0) return sign2 * 2 ** -14 * (f / 1024);
+  if (e === 31) return f ? NaN : sign2 * Infinity;
+  return sign2 * 2 ** (e - 15) * (1 + f / 1024);
+}
+function toFloat16(value) {
+  if (Number.isNaN(value)) return 32256;
+  const sign2 = value < 0 || Object.is(value, -0) ? 32768 : 0;
+  const a = Math.abs(value);
+  if (a === Infinity) return sign2 | 31744;
+  if (a === 0) return sign2;
+  if (a >= 65520) return sign2 | 31744;
+  if (a < 2 ** -24) return sign2;
+  if (a < 2 ** -14) {
+    return sign2 | Math.round(a / 2 ** -24);
+  }
+  let e = Math.floor(Math.log2(a));
+  let f = a / 2 ** e - 1;
+  let mantissa = Math.round(f * 1024);
+  if (mantissa === 1024) {
+    e++;
+    mantissa = 0;
+  }
+  if (e > 15) return sign2 | 31744;
+  return sign2 | e + 15 << 10 | mantissa;
+}
+
+// src/renderer/msl/lower.ts
+var BUILTIN_ATTRIBUTES = /* @__PURE__ */ new Set([
+  "vertex_id",
+  "instance_id",
+  "base_vertex",
+  "base_instance",
+  "vertex_amplification_id",
+  "vertex_amplification_count",
+  "position",
+  "point_size",
+  "clip_distance",
+  "point_coord",
+  "front_facing",
+  "primitive_id",
+  "sample_id",
+  "sample_mask",
+  "render_target_array_index",
+  "viewport_array_index",
+  "barycentric_coord",
+  "layer",
+  "thread_position_in_grid",
+  "thread_position_in_threadgroup",
+  "threadgroup_position_in_grid",
+  "thread_index_in_threadgroup",
+  "threads_per_threadgroup",
+  "threadgroups_per_grid",
+  "threads_per_grid",
+  "thread_index_in_simdgroup",
+  "simdgroup_index_in_threadgroup",
+  "simdgroups_per_threadgroup",
+  "threads_per_simdgroup",
+  "quad_index_in_threadgroup",
+  "quad_index_in_simdgroup",
+  "depth",
+  "color",
+  "raster_order_group",
+  "amplification_count",
+  "amplification_id"
+]);
+var RANK = {
+  bool: 0,
+  char: 1,
+  uchar: 1,
+  short: 2,
+  ushort: 2,
+  int: 3,
+  uint: 4,
+  long: 5,
+  ulong: 6,
+  half: 7,
+  float: 8
+};
+var COMPONENT_INDEX = {
+  x: 0,
+  y: 1,
+  z: 2,
+  w: 3,
+  r: 0,
+  g: 1,
+  b: 2,
+  a: 3,
+  s: 0,
+  t: 1,
+  p: 2,
+  q: 3
+};
+var Lowering = class {
+  types = new TypeTable();
+  instructions = [];
+  symbols = [];
+  functions = [];
+  globals = [];
+  diagnostics = [];
+  _unit;
+  _aliases = /* @__PURE__ */ new Map();
+  _globalScope = { names: /* @__PURE__ */ new Map() };
+  _scopes = [];
+  _functionsByName = /* @__PURE__ */ new Map();
+  _fn = -1;
+  _loops = [];
+  _currentLocals = [];
+  _returnType = 0;
+  constructor(unit) {
+    this._unit = unit;
+  }
+  run() {
+    for (const alias of this._unit.aliases) this._aliases.set(alias.name, alias.type);
+    for (const s of this._unit.structs) this.types.declareStruct(s.name);
+    for (const s of this._unit.structs) this._fillStruct(s);
+    for (const g of this._unit.globals) this._global(g);
+    this._unit.functions.forEach((f, i) => {
+      if (!f.body) return;
+      const list = this._functionsByName.get(f.name) ?? [];
+      list.push(i);
+      this._functionsByName.set(f.name, list);
+    });
+    const indexOfDecl = /* @__PURE__ */ new Map();
+    this._unit.functions.forEach((f, i) => {
+      if (!f.body) return;
+      indexOfDecl.set(i, this.functions.length);
+      this.functions.push(this._declareFunction(f));
+    });
+    this._unit.functions.forEach((f, i) => {
+      const at = indexOfDecl.get(i);
+      if (at !== void 0) this._lowerFunction(f, at);
+    });
+    for (const inst of this.instructions) {
+      if (inst.op === "call") inst.target = indexOfDecl.get(inst.target) ?? inst.target;
+    }
+    return {
+      types: this.types,
+      instructions: this.instructions,
+      symbols: this.symbols,
+      functions: this.functions,
+      globals: this.globals,
+      diagnostics: this.diagnostics,
+      entryPoints: this.functions.filter((f) => f.qualifier)
+    };
+  }
+  // -------------------------------------------------------------------------------------------
+  // Diagnostics and symbols
+  _warn(span, message) {
+    if (this.diagnostics.length > 200) return;
+    this.diagnostics.push({ line: span.line, message });
+  }
+  _symbol(name, type, kind, temporary, extra) {
+    const symbol = { id: this.symbols.length, name, type, temporary, kind, ...extra };
+    this.symbols.push(symbol);
+    return symbol;
+  }
+  _temp(type) {
+    return this._symbol("", type, "register", true).id;
+  }
+  _emit(body, span) {
+    const full = { ...body, index: this.instructions.length, fn: this._fn, line: span.line, column: span.column };
+    this.instructions.push(full);
+    return full;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Types
+  /** A written type resolved against the table; `void` for one that cannot be. */
+  _type(node2, seen = /* @__PURE__ */ new Set()) {
+    let base = this._baseType(node2, seen);
+    for (let i = 0; i < node2.pointers; i++) base = this.types.pointer(base, node2.addressSpace ?? "thread");
+    if (node2.reference) base = this.types.pointer(base, node2.addressSpace ?? "thread", true);
+    return base;
+  }
+  _baseType(node2, seen) {
+    const name = node2.name;
+    const builtin = this.types.builtin(name);
+    if (builtin !== void 0) return builtin;
+    if (isTextureName(name)) {
+      const first = node2.templateArgs[0];
+      const sampled = typeof first === "object" ? this._type(first, seen) : this.types.float;
+      const access = node2.templateArgs.map((a) => typeof a === "string" ? a : "").find((a) => a);
+      return this.types.texture(name, sampled, access ?? "sample") ?? this.types.void_;
+    }
+    if (name === "array") {
+      const element = node2.templateArgs[0];
+      const length2 = node2.templateArgs[1];
+      return this.types.array(
+        typeof element === "object" ? this._type(element, seen) : this.types.float,
+        typeof length2 === "number" ? length2 : -1
+      );
+    }
+    if (name === "vec") {
+      const element = node2.templateArgs[0];
+      const count2 = node2.templateArgs[1];
+      return this.types.vector(
+        typeof element === "object" ? this._type(element, seen) : this.types.float,
+        typeof count2 === "number" ? count2 : 4
+      );
+    }
+    if (name === "matrix") {
+      const element = node2.templateArgs[0];
+      const columns = node2.templateArgs[1];
+      const rows = node2.templateArgs[2];
+      const scalar = typeof element === "object" ? this._type(element, seen) : this.types.float;
+      return this.types.matrix(this.types.vector(scalar, typeof rows === "number" ? rows : 4), typeof columns === "number" ? columns : 4);
+    }
+    if (name.startsWith("atomic")) {
+      const inner = node2.templateArgs[0];
+      const element = typeof inner === "object" ? this._type(inner, seen) : name === "atomic_uint" ? this.types.uint : name === "atomic_float" ? this.types.float : name === "atomic_bool" ? this.types.bool : this.types.int;
+      return this.types.intern({ kind: "atomic", element });
+    }
+    const struct = this.types.structNamed(name);
+    if (struct !== void 0) return struct;
+    const alias = this._aliases.get(name);
+    if (alias && !seen.has(name)) {
+      seen.add(name);
+      return this._type(alias, seen);
+    }
+    this._warn(node2.span, `unknown type ${name}, which the interpreter treats as void`);
+    return this.types.intern({ kind: "opaque", name });
+  }
+  /** A declarator's `[4][3]` wrapped around its base type, outermost dimension first. */
+  _withArrayDims(base, dims) {
+    let type = base;
+    for (let i = dims.length - 1; i >= 0; i--) {
+      const dim = dims[i];
+      type = this.types.array(type, dim ? this._constantInt(dim) ?? -1 : -1);
+    }
+    return type;
+  }
+  _fillStruct(decl) {
+    const ref = this.types.declareStruct(decl.name);
+    const type = this.types.get(ref);
+    if (type?.kind !== "struct" || type.members.length) return;
+    for (const m of decl.members) {
+      type.members.push({
+        name: m.name,
+        type: this._withArrayDims(this._type(m.type), m.arrayDims),
+        attributes: m.attributes
+      });
+    }
+  }
+  // -------------------------------------------------------------------------------------------
+  // Globals
+  _global(decl) {
+    const type = this._withArrayDims(this._type(decl.type), decl.arrayDims);
+    const symbol = this._symbol(decl.name, type, "global", false, { attribute: decl.attributes[0] });
+    const value = decl.init ? this._constantValue(decl.init, type) : this.types.zero(type);
+    if (decl.init && value === void 0) {
+      this._warn(decl.span, `the initializer of ${decl.name} is not a constant the interpreter can evaluate: it reads as zero`);
+    }
+    this.globals.push({ symbol, value: value ?? this.types.zero(type) });
+    this._globalScope.names.set(decl.name, symbol.id);
+  }
+  /** A constant expression's value, for a global initializer or an array size. Undefined when it is not one. */
+  _constantValue(expr, type) {
+    const t = this.types.get(type);
+    switch (expr.kind) {
+      case "number":
+        return numberOf(expr.text);
+      case "bool":
+        return expr.value;
+      case "unary": {
+        const inner = this._constantValue(expr.operand, type);
+        if (inner === void 0) return void 0;
+        if (expr.op === "-") return typeof inner === "number" ? -inner : typeof inner === "bigint" ? -inner : void 0;
+        if (expr.op === "+") return inner;
+        if (expr.op === "!") return !inner;
+        if (expr.op === "~") return typeof inner === "number" ? ~inner : void 0;
+        return void 0;
+      }
+      case "name": {
+        const id = this._globalScope.names.get(expr.name);
+        const global = id === void 0 ? void 0 : this.globals.find((g) => g.symbol.id === id);
+        return global?.value;
+      }
+      case "initializer":
+      case "construct": {
+        const args = expr.kind === "construct" ? expr.args : expr.values;
+        if (t?.kind === "struct") {
+          return t.members.map((m, i) => args[i] === void 0 ? this.types.zero(m.type) : this._constantValue(args[i], m.type) ?? this.types.zero(m.type));
+        }
+        if (t?.kind === "array") {
+          const length2 = t.length < 0 ? args.length : t.length;
+          return Array.from({ length: length2 }, (_, i) => args[i] === void 0 ? this.types.zero(t.element) : this._constantValue(args[i], t.element) ?? this.types.zero(t.element));
+        }
+        if (t?.kind === "vector") {
+          const flat3 = [];
+          for (const a of args) {
+            const v = this._constantValue(a, t.element);
+            if (v === void 0) return void 0;
+            if (Array.isArray(v)) flat3.push(...v);
+            else flat3.push(v);
+          }
+          if (flat3.length === 1) return Array.from({ length: t.count }, () => flat3[0]);
+          return Array.from({ length: t.count }, (_, i) => flat3[i] ?? 0);
+        }
+        return args.length === 1 ? this._constantValue(args[0], type) : void 0;
+      }
+      case "binary": {
+        const a = this._constantValue(expr.left, type);
+        const b = this._constantValue(expr.right, type);
+        if (typeof a !== "number" || typeof b !== "number") return void 0;
+        switch (expr.op) {
+          case "+":
+            return a + b;
+          case "-":
+            return a - b;
+          case "*":
+            return a * b;
+          case "/":
+            return b === 0 ? void 0 : a / b;
+          case "<<":
+            return a << b;
+          case ">>":
+            return a >> b;
+          case "|":
+            return a | b;
+          case "&":
+            return a & b;
+          case "^":
+            return a ^ b;
+          default:
+            return void 0;
+        }
+      }
+      default:
+        return void 0;
+    }
+  }
+  _constantInt(expr) {
+    const v = this._constantValue(expr, this.types.int);
+    return typeof v === "number" ? Math.trunc(v) : typeof v === "bigint" ? Number(v) : void 0;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Functions
+  _declareFunction(decl) {
+    const returnType = this._type(decl.returnType);
+    const params = decl.params.filter((p) => this.types.get(this._type(p.type))?.kind !== "void" || p.name).map((p) => {
+      const type = this._withArrayDims(this._type(p.type), p.arrayDims);
+      const symbol = this._symbol(p.name, type, "param", false, {
+        attribute: p.attributes[0],
+        binding: decl.qualifier ? bindingOf(p, type, this.types) : void 0
+      });
+      return { id: symbol.id, type, name: p.name };
+    });
+    return {
+      name: decl.name,
+      qualifier: decl.qualifier,
+      returnType,
+      returnAttributes: decl.returnAttributes,
+      params,
+      locals: [],
+      entry: 0,
+      start: 0,
+      end: 0
+    };
+  }
+  _lowerFunction(decl, at) {
+    const fn = this.functions[at];
+    if (!decl.body) return;
+    this._fn = at;
+    this._returnType = fn.returnType;
+    this._currentLocals = [];
+    this._scopes = [{ names: /* @__PURE__ */ new Map() }];
+    fn.params.forEach((p) => this._scopes[0].names.set(p.name, p.id));
+    fn.start = this.instructions.length;
+    fn.entry = this.instructions.length;
+    for (const stmt of decl.body) this._statement(stmt);
+    const span = { line: decl.span.line, column: decl.span.column };
+    this._emit({ op: "return", value: -1, type: fn.returnType }, span);
+    fn.end = this.instructions.length;
+    fn.locals = this._currentLocals;
+    this._fn = -1;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Statements
+  _push() {
+    this._scopes.push({ names: /* @__PURE__ */ new Map() });
+  }
+  _pop() {
+    this._scopes.pop();
+  }
+  _lookup(name) {
+    for (let i = this._scopes.length - 1; i >= 0; i--) {
+      const id = this._scopes[i].names.get(name);
+      if (id !== void 0) return id;
+    }
+    return this._globalScope.names.get(name);
+  }
+  _statement(stmt) {
+    switch (stmt.kind) {
+      case "empty":
+        return;
+      case "block":
+        this._push();
+        for (const s of stmt.body) this._statement(s);
+        this._pop();
+        return;
+      case "decl":
+        for (const d of stmt.declarators) this._declare(stmt.type, d);
+        return;
+      case "expr":
+        this._value(stmt.expr);
+        return;
+      case "return": {
+        const value = stmt.value ? this._convert(this._value(stmt.value), this._returnType, stmt.span) : -1;
+        this._emit({ op: "return", value, type: this._returnType }, stmt.span);
+        return;
+      }
+      case "discard":
+        this._emit({ op: "discard" }, stmt.span);
+        return;
+      case "break": {
+        const loop = this._loops[this._loops.length - 1];
+        const jump = this._emit({ op: "jump", target: -1 }, stmt.span);
+        if (loop) loop.breaks.push(jump.index);
+        else this._warn(stmt.span, "break outside a loop or switch");
+        return;
+      }
+      case "continue": {
+        const loop = this._loops[this._loops.length - 1];
+        const jump = this._emit({ op: "jump", target: -1 }, stmt.span);
+        if (loop) loop.continues.push(jump.index);
+        else this._warn(stmt.span, "continue outside a loop");
+        return;
+      }
+      case "if": {
+        const cond = this._condition(stmt.cond);
+        const branch = this._emit({ op: "branch", cond, then: -1, otherwise: -1 }, stmt.span);
+        if (branch.op === "branch") branch.then = this.instructions.length;
+        this._push();
+        this._statement(stmt.then);
+        this._pop();
+        if (!stmt.otherwise) {
+          if (branch.op === "branch") branch.otherwise = this.instructions.length;
+          return;
+        }
+        const skip = this._emit({ op: "jump", target: -1 }, stmt.span);
+        if (branch.op === "branch") branch.otherwise = this.instructions.length;
+        this._push();
+        this._statement(stmt.otherwise);
+        this._pop();
+        if (skip.op === "jump") skip.target = this.instructions.length;
+        return;
+      }
+      case "while": {
+        const top = this.instructions.length;
+        const cond = this._condition(stmt.cond);
+        const branch = this._emit({ op: "branch", cond, then: -1, otherwise: -1 }, stmt.span);
+        if (branch.op === "branch") branch.then = this.instructions.length;
+        this._loops.push({ breaks: [], continues: [] });
+        this._push();
+        this._statement(stmt.body);
+        this._pop();
+        this._emit({ op: "jump", target: top }, stmt.span);
+        const after = this.instructions.length;
+        if (branch.op === "branch") branch.otherwise = after;
+        this._closeLoop(after, top);
+        return;
+      }
+      case "do": {
+        const top = this.instructions.length;
+        this._loops.push({ breaks: [], continues: [] });
+        this._push();
+        this._statement(stmt.body);
+        this._pop();
+        const test = this.instructions.length;
+        const cond = this._condition(stmt.cond);
+        const branch = this._emit({ op: "branch", cond, then: top, otherwise: -1 }, stmt.span);
+        const after = this.instructions.length;
+        if (branch.op === "branch") branch.otherwise = after;
+        this._closeLoop(after, test);
+        return;
+      }
+      case "for": {
+        this._push();
+        if (stmt.init) this._statement(stmt.init);
+        const top = this.instructions.length;
+        let branch = null;
+        if (stmt.cond) {
+          const cond = this._condition(stmt.cond);
+          branch = this._emit({ op: "branch", cond, then: -1, otherwise: -1 }, stmt.span);
+          if (branch.op === "branch") branch.then = this.instructions.length;
+        }
+        this._loops.push({ breaks: [], continues: [] });
+        this._push();
+        this._statement(stmt.body);
+        this._pop();
+        const step2 = this.instructions.length;
+        if (stmt.step) this._value(stmt.step);
+        this._emit({ op: "jump", target: top }, stmt.span);
+        const after = this.instructions.length;
+        if (branch?.op === "branch") branch.otherwise = after;
+        this._closeLoop(after, step2);
+        this._pop();
+        return;
+      }
+      case "switch": {
+        const value = this._value(stmt.value);
+        this._loops.push({ breaks: [], continues: [] });
+        const tests = [];
+        let defaultCase = -1;
+        stmt.cases.forEach((c2, i) => {
+          if (!c2.value) {
+            defaultCase = i;
+            return;
+          }
+          const label = this._convert(this._value(c2.value), this._typeOf(value), c2.span);
+          const equal = this._temp(this.types.bool);
+          this._emit({ op: "binary", dst: equal, kind: "==", a: value, b: label, type: this.types.bool }, c2.span);
+          const branch = this._emit({ op: "branch", cond: equal, then: -1, otherwise: -1 }, c2.span);
+          if (branch.op === "branch") branch.otherwise = this.instructions.length;
+          tests.push({ branch, case: i });
+        });
+        const toDefault = this._emit({ op: "jump", target: -1 }, stmt.span);
+        const starts = [];
+        stmt.cases.forEach((c2) => {
+          starts.push(this.instructions.length);
+          this._push();
+          for (const s of c2.body) this._statement(s);
+          this._pop();
+        });
+        const after = this.instructions.length;
+        for (const t of tests) if (t.branch.op === "branch") t.branch.then = starts[t.case] ?? after;
+        if (toDefault.op === "jump") toDefault.target = defaultCase >= 0 ? starts[defaultCase] ?? after : after;
+        this._closeLoop(after, after);
+        return;
+      }
+    }
+  }
+  _closeLoop(after, continueTarget) {
+    const loop = this._loops.pop();
+    if (!loop) return;
+    for (const at of loop.breaks) {
+      const instr = this.instructions[at];
+      if (instr.op === "jump") instr.target = after;
+    }
+    for (const at of loop.continues) {
+      const instr = this.instructions[at];
+      if (instr.op === "jump") instr.target = continueTarget;
+    }
+  }
+  _declare(typeNode, declarator) {
+    let type = this._withArrayDims(this._type(typeNode), declarator.arrayDims);
+    const t = this.types.get(type);
+    if (t?.kind === "array" && t.length < 0 && declarator.init?.kind === "initializer") {
+      type = this.types.array(t.element, declarator.init.values.length);
+    }
+    const symbol = this._symbol(declarator.name, type, "local", false);
+    this._currentLocals.push({ id: symbol.id, type, name: declarator.name });
+    const init = declarator.init ? this._initialize(declarator.init, type, declarator.span) : -1;
+    this._scopes[this._scopes.length - 1].names.set(declarator.name, symbol.id);
+    if (init < 0) return;
+    const ptr = this._temp(this.types.pointer(type, "thread"));
+    this._emit({ op: "addr", dst: ptr, variable: symbol.id, type: this.types.pointer(type, "thread") }, declarator.span);
+    this._emit({ op: "store", ptr, value: init, type }, declarator.span);
+  }
+  /** An initializer in a context whose type is known: `{1, 2}` builds the type, anything else converts. */
+  _initialize(expr, type, span) {
+    if (expr.kind === "initializer") return this._constructFrom(expr.values, type, span);
+    return this._convert(this._value(expr), type, span);
+  }
+  // -------------------------------------------------------------------------------------------
+  // Expressions: addresses
+  /** The type a register holds. */
+  _typeOf(reg) {
+    return this.symbols[reg]?.type ?? this.types.void_;
+  }
+  /**
+   * A register holding a pointer to what the expression names, with the type pointed at. Null for
+   * an expression that has no address (a call's result, a swizzle — the caller handles those).
+   */
+  _address(expr) {
+    switch (expr.kind) {
+      case "name": {
+        const id = this._lookup(expr.name);
+        if (id === void 0) return null;
+        const symbol = this.symbols[id];
+        const t = this.types.get(symbol.type);
+        if (t?.kind === "pointer" && t.reference) {
+          const ptr2 = this._temp(symbol.type);
+          this._emit({ op: "move", dst: ptr2, src: id, type: symbol.type }, expr.span);
+          return { ptr: ptr2, type: t.pointee };
+        }
+        if (symbol.kind === "param" && (t?.kind === "pointer" || t?.kind === "texture" || t?.kind === "sampler")) return null;
+        const pointer = this.types.pointer(symbol.type, symbol.kind === "global" ? "constant" : "thread");
+        const ptr = this._temp(pointer);
+        this._emit({ op: "addr", dst: ptr, variable: id, type: pointer }, expr.span);
+        return { ptr, type: symbol.type };
+      }
+      case "member": {
+        const target = this._memberTarget(expr);
+        if (!target) return null;
+        const t = this.types.get(target.type);
+        if (t?.kind !== "struct") return null;
+        const index = t.members.findIndex((m) => m.name === expr.name);
+        if (index < 0) {
+          this._warn(expr.span, `${this.types.name(target.type)} has no member ${expr.name}`);
+          return null;
+        }
+        const memberType = t.members[index].type;
+        const pointer = this.types.pointer(memberType, this._spaceOf(target.ptr));
+        const dst = this._temp(pointer);
+        this._emit({ op: "member", dst, ptr: target.ptr, member: index, type: pointer }, expr.span);
+        return { ptr: dst, type: memberType };
+      }
+      case "index": {
+        const base = this._indexTarget(expr);
+        if (!base) return null;
+        const t = this.types.get(base.type);
+        const element = t?.kind === "array" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "vector" ? t.element : null;
+        if (element === null) return null;
+        const at = this._value(expr.index);
+        const pointer = this.types.pointer(element, this._spaceOf(base.ptr));
+        const dst = this._temp(pointer);
+        this._emit({ op: "index", dst, ptr: base.ptr, at, type: pointer }, expr.span);
+        return { ptr: dst, type: element };
+      }
+      case "unary": {
+        if (expr.op !== "*") return null;
+        const ptr = this._value(expr.operand);
+        const t = this.types.get(this._typeOf(ptr));
+        if (t?.kind !== "pointer") return null;
+        return { ptr, type: t.pointee };
+      }
+      default:
+        return null;
+    }
+  }
+  _spaceOf(ptr) {
+    const t = this.types.get(this._typeOf(ptr));
+    return t?.kind === "pointer" ? t.space : "thread";
+  }
+  /** The struct a `.` or `->` reads from: the object's address, dereferenced for a pointer. */
+  _memberTarget(expr) {
+    const direct = expr.arrow ? null : this._address(expr.object);
+    if (direct) {
+      const t2 = this.types.get(direct.type);
+      if (t2?.kind === "pointer") {
+        const loaded = this._temp(direct.type);
+        this._emit({ op: "load", dst: loaded, ptr: direct.ptr, type: direct.type }, expr.span);
+        return { ptr: loaded, type: t2.pointee };
+      }
+      return direct;
+    }
+    const value = this._value(expr.object);
+    const t = this.types.get(this._typeOf(value));
+    if (t?.kind === "pointer") return { ptr: value, type: t.pointee };
+    return null;
+  }
+  _indexTarget(expr) {
+    const direct = this._address(expr.object);
+    if (direct) {
+      const t2 = this.types.get(direct.type);
+      if (t2?.kind === "pointer") {
+        const loaded = this._temp(direct.type);
+        this._emit({ op: "load", dst: loaded, ptr: direct.ptr, type: direct.type }, expr.span);
+        return { ptr: loaded, type: this.types.array(t2.pointee, -1) };
+      }
+      return direct;
+    }
+    const value = this._value(expr.object);
+    const t = this.types.get(this._typeOf(value));
+    if (t?.kind === "pointer") return { ptr: value, type: this.types.array(t.pointee, -1) };
+    return null;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Expressions: values
+  /** Lowers an expression and returns the register holding its value. */
+  _value(expr) {
+    switch (expr.kind) {
+      case "number": {
+        const text = expr.text;
+        const value = numberOf(text);
+        const type = /[fF]$/.test(text) || /[.eE]/.test(text) ? this.types.float : /[hH]$/.test(text) ? this.types.scalar("half") : /[uU]/.test(text) ? this.types.uint : this.types.int;
+        const dst = this._temp(type);
+        this._emit({ op: "const", dst, value, type }, expr.span);
+        return dst;
+      }
+      case "bool": {
+        const dst = this._temp(this.types.bool);
+        this._emit({ op: "const", dst, value: expr.value, type: this.types.bool }, expr.span);
+        return dst;
+      }
+      case "name":
+        return this._nameValue(expr);
+      case "member":
+        return this._memberValue(expr);
+      case "index":
+        return this._indexValue(expr);
+      case "call":
+        return this._call(expr);
+      case "construct": {
+        const type = this._type(expr.type);
+        return this._constructFrom(expr.args, type, expr.span);
+      }
+      case "initializer":
+        return this._constructFrom(expr.values, this.types.array(this.types.float, expr.values.length), expr.span);
+      case "cast": {
+        const type = this._type(expr.type);
+        return this._convert(this._value(expr.operand), type, expr.span);
+      }
+      case "typeCall":
+        return this._typeCall(expr);
+      case "unary":
+        return this._unary(expr);
+      case "binary":
+        return this._binary(expr);
+      case "assign":
+        return this._assign(expr);
+      case "conditional":
+        return this._conditional(expr);
+    }
+  }
+  _nameValue(expr) {
+    const id = this._lookup(expr.name);
+    if (id === void 0) {
+      this._warn(expr.span, `${expr.name} is not declared in this shader: it reads as zero`);
+      const dst2 = this._temp(this.types.int);
+      this._emit({ op: "const", dst: dst2, value: 0, type: this.types.int }, expr.span);
+      return dst2;
+    }
+    const symbol = this.symbols[id];
+    const t = this.types.get(symbol.type);
+    if (t?.kind === "texture" || t?.kind === "sampler") {
+      const dst2 = this._temp(symbol.type);
+      this._emit({ op: "move", dst: dst2, src: id, type: symbol.type }, expr.span);
+      return dst2;
+    }
+    if (t?.kind === "pointer" && !t.reference) {
+      const dst2 = this._temp(symbol.type);
+      this._emit({ op: "move", dst: dst2, src: id, type: symbol.type }, expr.span);
+      return dst2;
+    }
+    const address = this._address(expr);
+    if (!address) {
+      const dst2 = this._temp(symbol.type);
+      this._emit({ op: "move", dst: dst2, src: id, type: symbol.type }, expr.span);
+      return dst2;
+    }
+    const dst = this._temp(address.type);
+    this._emit({ op: "load", dst, ptr: address.ptr, type: address.type }, expr.span);
+    return dst;
+  }
+  _memberValue(expr) {
+    const objectType = this._peekType(expr.object);
+    const swizzle2 = this._swizzleOf(objectType, expr.name);
+    if (swizzle2) {
+      const value2 = this._value(expr.object);
+      const type = swizzle2.indices.length === 1 ? this.types.elementOf(objectType) : this.types.vector(this.types.elementOf(objectType), swizzle2.indices.length);
+      const dst = this._temp(type);
+      this._emit({ op: "extract", dst, value: value2, indices: swizzle2.indices, type }, expr.span);
+      return dst;
+    }
+    const address = this._address(expr);
+    if (address) {
+      const dst = this._temp(address.type);
+      this._emit({ op: "load", dst, ptr: address.ptr, type: address.type }, expr.span);
+      return dst;
+    }
+    const value = this._value(expr.object);
+    const t = this.types.get(this._typeOf(value));
+    if (t?.kind === "struct") {
+      const index = t.members.findIndex((m) => m.name === expr.name);
+      if (index >= 0) {
+        const type = t.members[index].type;
+        const dst = this._temp(type);
+        this._emit({ op: "extract", dst, value, indices: [index], type }, expr.span);
+        return dst;
+      }
+    }
+    this._warn(expr.span, `${this.types.name(this._typeOf(value))} has no member ${expr.name}`);
+    return value;
+  }
+  _indexValue(expr) {
+    const address = this._address(expr);
+    if (address) {
+      const dst2 = this._temp(address.type);
+      this._emit({ op: "load", dst: dst2, ptr: address.ptr, type: address.type }, expr.span);
+      return dst2;
+    }
+    const value = this._value(expr.object);
+    const t = this.types.get(this._typeOf(value));
+    const element = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" ? t.element : null;
+    if (element === null) {
+      this._warn(expr.span, `${this.types.name(this._typeOf(value))} cannot be indexed`);
+      return value;
+    }
+    const at = this._value(expr.index);
+    const dst = this._temp(element);
+    this._emit({ op: "extractAt", dst, value, at, type: element }, expr.span);
+    return dst;
+  }
+  /** The components a swizzle names, or null when the name is not one. */
+  _swizzleOf(type, name) {
+    const t = this.types.get(type);
+    if (t?.kind !== "vector") return null;
+    if (!name.length || name.length > 4) return null;
+    const indices = [];
+    const family = /^[xyzw]+$/.test(name) ? 1 : /^[rgba]+$/.test(name) ? 2 : /^[stpq]+$/.test(name) ? 3 : 0;
+    if (!family) return null;
+    for (const c2 of name) {
+      const index = COMPONENT_INDEX[c2];
+      if (index === void 0 || index >= t.count) return null;
+      indices.push(index);
+    }
+    return { indices };
+  }
+  /**
+   * The type an expression will have, without emitting anything. Only the cases a swizzle or an
+   * overload needs are exact; anything else falls back to lowering it (which is why this is only
+   * called where that is harmless).
+   */
+  _peekType(expr) {
+    switch (expr.kind) {
+      case "name": {
+        const id = this._lookup(expr.name);
+        if (id === void 0) return this.types.void_;
+        const symbol = this.symbols[id];
+        const t = this.types.get(symbol.type);
+        return t?.kind === "pointer" && t.reference ? t.pointee : symbol.type;
+      }
+      case "member": {
+        const objectType = this._peekType(expr.object);
+        const swizzle2 = this._swizzleOf(objectType, expr.name);
+        if (swizzle2) {
+          return swizzle2.indices.length === 1 ? this.types.elementOf(objectType) : this.types.vector(this.types.elementOf(objectType), swizzle2.indices.length);
+        }
+        const base = this.types.get(objectType);
+        const struct = base?.kind === "pointer" ? this.types.get(base.pointee) : base;
+        if (struct?.kind === "struct") return struct.members.find((m) => m.name === expr.name)?.type ?? this.types.void_;
+        return this.types.void_;
+      }
+      case "index": {
+        const t = this.types.get(this._peekType(expr.object));
+        if (t?.kind === "vector") return t.element;
+        if (t?.kind === "matrix") return t.column;
+        if (t?.kind === "array") return t.element;
+        if (t?.kind === "pointer") return t.pointee;
+        return this.types.void_;
+      }
+      case "construct":
+        return this._type(expr.type);
+      case "cast":
+      case "typeCall":
+        return this._type(expr.type);
+      case "number":
+        return /[fF]$/.test(expr.text) || /[.eE]/.test(expr.text) ? this.types.float : this.types.int;
+      case "bool":
+        return this.types.bool;
+      case "unary":
+        return expr.op === "!" ? this.types.bool : this._peekType(expr.operand);
+      case "binary":
+        return this._peekType(expr.left);
+      case "assign":
+        return this._peekType(expr.target);
+      case "conditional":
+        return this._peekType(expr.then);
+      default:
+        return this.types.void_;
+    }
+  }
+  // -------------------------------------------------------------------------------------------
+  // Operators
+  _unary(expr) {
+    if (expr.op === "++" || expr.op === "--") return this._incrementOrDecrement(expr);
+    if (expr.op === "&") {
+      const address = this._address(expr.operand);
+      if (address) return address.ptr;
+      this._warn(expr.span, "the address of a value that has none was taken");
+      return this._value(expr.operand);
+    }
+    if (expr.op === "*") {
+      const address = this._address(expr);
+      if (address) {
+        const dst2 = this._temp(address.type);
+        this._emit({ op: "load", dst: dst2, ptr: address.ptr, type: address.type }, expr.span);
+        return dst2;
+      }
+      return this._value(expr.operand);
+    }
+    if (expr.op === "sizeof" || expr.op === "alignof") {
+      const type2 = this._peekType(expr.operand);
+      const dst2 = this._temp(this.types.uint);
+      const size2 = expr.op === "sizeof" ? this.types.sizeOf(type2) : this.types.alignOf(type2);
+      this._emit({ op: "const", dst: dst2, value: size2, type: this.types.uint }, expr.span);
+      return dst2;
+    }
+    const a = this._value(expr.operand);
+    if (expr.op === "+") return a;
+    const operandType = this._typeOf(a);
+    const type = expr.op === "!" ? this.types.withScalar(operandType, "bool") : operandType;
+    const dst = this._temp(type);
+    this._emit({ op: "unary", dst, kind: expr.op, a, type }, expr.span);
+    return dst;
+  }
+  _incrementOrDecrement(expr) {
+    const address = this._address(expr.operand);
+    if (!address) {
+      this._warn(expr.span, `${expr.op} needs a variable`);
+      return this._value(expr.operand);
+    }
+    const before = this._temp(address.type);
+    this._emit({ op: "load", dst: before, ptr: address.ptr, type: address.type }, expr.span);
+    const one = this._temp(address.type);
+    this._emit({ op: "const", dst: one, value: this._oneOf(address.type), type: address.type }, expr.span);
+    const after = this._temp(address.type);
+    this._emit({ op: "binary", dst: after, kind: expr.op === "++" ? "+" : "-", a: before, b: one, type: address.type }, expr.span);
+    this._emit({ op: "store", ptr: address.ptr, value: after, type: address.type }, expr.span);
+    return expr.prefix ? after : before;
+  }
+  _oneOf(type) {
+    const scalar = this.types.scalarOf(type);
+    const one = scalar?.width === 64 && scalar.base !== "float" ? 1n : 1;
+    const t = this.types.get(type);
+    if (t?.kind === "vector") return Array.from({ length: t.count }, () => one);
+    return one;
+  }
+  _binary(expr) {
+    if (expr.op === ",") {
+      this._value(expr.left);
+      return this._value(expr.right);
+    }
+    if (expr.op === "&&" || expr.op === "||") return this._shortCircuit(expr);
+    let a = this._value(expr.left);
+    let b = this._value(expr.right);
+    const aType = this._typeOf(a);
+    const bType = this._typeOf(b);
+    const product = this._matrixProduct(expr, a, b, aType, bType);
+    if (product >= 0) return product;
+    const scalar = this._commonScalar(aType, bType);
+    const shift = expr.op === "<<" || expr.op === ">>";
+    const shape = this._commonShape(aType, bType);
+    const operandType = shape < 0 ? aType : this._shapeWith(shape, scalar);
+    a = this._convert(a, shift ? this._shapeWith(shape, this.types.scalarBase(aType) ?? scalar) : operandType, expr.span);
+    b = this._convert(b, shift ? this._shapeWith(shape, this.types.scalarBase(bType) ?? scalar) : operandType, expr.span);
+    const comparison = ["==", "!=", "<", ">", "<=", ">="].includes(expr.op);
+    const type = comparison ? this.types.withScalar(this._typeOf(a), "bool") : this._typeOf(shift ? a : a);
+    const dst = this._temp(type);
+    this._emit({ op: "binary", dst, kind: expr.op, a, b, type }, expr.span);
+    return dst;
+  }
+  /** `m * v`, `v * m`, `m * m`: named operations, since they are not component-wise. */
+  _matrixProduct(expr, a, b, aType, bType) {
+    if (expr.op !== "*") return -1;
+    const ta = this.types.get(aType);
+    const tb = this.types.get(bType);
+    const matrixA = ta?.kind === "matrix";
+    const matrixB = tb?.kind === "matrix";
+    if (!matrixA && !matrixB) return -1;
+    if (matrixA && tb?.kind === "scalar") return -1;
+    if (matrixB && ta?.kind === "scalar") return -1;
+    let type;
+    let name;
+    if (matrixA && matrixB) {
+      type = this.types.matrix(ta.column, tb.columns);
+      name = "matrix.multiply";
+    } else if (matrixA) {
+      type = ta.column;
+      name = "matrix.times.vector";
+    } else {
+      const column = this.types.get(tb.kind === "matrix" ? tb.column : 0);
+      type = this.types.vector(column?.kind === "vector" ? column.element : this.types.float, tb.kind === "matrix" ? tb.columns : 4);
+      name = "vector.times.matrix";
+    }
+    const dst = this._temp(type);
+    this._emit({ op: "builtin", dst, name, args: [a, b], type }, expr.span);
+    return dst;
+  }
+  _shortCircuit(expr) {
+    const result = this._symbol("", this.types.bool, "register", true).id;
+    const a = this._condition(expr.left);
+    this._emit({ op: "move", dst: result, src: a, type: this.types.bool }, expr.span);
+    const branch = this._emit({ op: "branch", cond: a, then: -1, otherwise: -1 }, expr.span);
+    const evaluate2 = this.instructions.length;
+    const b = this._condition(expr.right);
+    this._emit({ op: "move", dst: result, src: b, type: this.types.bool }, expr.span);
+    const after = this.instructions.length;
+    if (branch.op === "branch") {
+      branch.then = expr.op === "&&" ? evaluate2 : after;
+      branch.otherwise = expr.op === "&&" ? after : evaluate2;
+    }
+    return result;
+  }
+  /** An expression as a single bool, for an `if`, a loop or a short circuit. */
+  _condition(expr) {
+    const value = this._value(expr);
+    const type = this._typeOf(value);
+    if (this.types.isBool(type) && this.types.get(type)?.kind === "scalar") return value;
+    const t = this.types.get(type);
+    if (t?.kind === "vector") {
+      const dst = this._temp(this.types.bool);
+      this._emit({ op: "builtin", dst, name: "all", args: [value], type: this.types.bool }, expr.span);
+      return dst;
+    }
+    return this._convert(value, this.types.bool, expr.span);
+  }
+  _assign(expr) {
+    if (expr.target.kind === "member") {
+      const objectType = this._peekType(expr.target.object);
+      const swizzle2 = this._swizzleOf(objectType, expr.target.name);
+      if (swizzle2) return this._assignSwizzle(expr, expr.target, swizzle2.indices, objectType);
+    }
+    const address = this._address(expr.target);
+    if (!address) {
+      this._warn(expr.span, "the left side of an assignment is not something that can be assigned to");
+      return this._value(expr.value);
+    }
+    let value;
+    if (expr.op === "=") {
+      value = this._initialize(expr.value, address.type, expr.span);
+    } else {
+      const before = this._temp(address.type);
+      this._emit({ op: "load", dst: before, ptr: address.ptr, type: address.type }, expr.span);
+      value = this._compound(expr.op, before, expr.value, address.type, expr.span);
+    }
+    this._emit({ op: "store", ptr: address.ptr, value, type: address.type }, expr.span);
+    return value;
+  }
+  _assignSwizzle(expr, target, indices, objectType) {
+    const address = this._address(target.object);
+    if (!address) {
+      this._warn(expr.span, `${target.name} cannot be assigned to`);
+      return this._value(expr.value);
+    }
+    const element = this.types.elementOf(objectType);
+    const partType = indices.length === 1 ? element : this.types.vector(element, indices.length);
+    const before = this._temp(address.type);
+    this._emit({ op: "load", dst: before, ptr: address.ptr, type: address.type }, expr.span);
+    let value;
+    if (expr.op === "=") {
+      value = this._convert(this._value(expr.value), partType, expr.span);
+    } else {
+      const part = this._temp(partType);
+      this._emit({ op: "extract", dst: part, value: before, indices, type: partType }, expr.span);
+      value = this._compound(expr.op, part, expr.value, partType, expr.span);
+    }
+    const after = this._temp(address.type);
+    this._emit({ op: "insert", dst: after, value: before, element: value, indices, type: address.type }, expr.span);
+    this._emit({ op: "store", ptr: address.ptr, value: after, type: address.type }, expr.span);
+    return value;
+  }
+  /** The right side of a compound assignment applied to the value already there. */
+  _compound(op, before, rightExpr, type, span) {
+    const right = this._value(rightExpr);
+    const kind = op.slice(0, -1);
+    const shift = kind === "<<" || kind === ">>";
+    const operand = shift ? right : this._convert(right, type, span);
+    const dst = this._temp(type);
+    this._emit({ op: "binary", dst, kind, a: before, b: operand, type }, span);
+    return dst;
+  }
+  _conditional(expr) {
+    const thenType = this._peekType(expr.then);
+    const otherwiseType = this._peekType(expr.otherwise);
+    const scalar = this._commonScalar(thenType, otherwiseType);
+    const shape = this._commonShape(thenType, otherwiseType);
+    const type = shape < 0 ? thenType : this._shapeWith(shape, scalar);
+    const result = this._symbol("", type, "register", true).id;
+    const cond = this._condition(expr.cond);
+    const branch = this._emit({ op: "branch", cond, then: -1, otherwise: -1 }, expr.span);
+    if (branch.op === "branch") branch.then = this.instructions.length;
+    const a = this._convert(this._value(expr.then), type, expr.span);
+    this._emit({ op: "move", dst: result, src: a, type }, expr.span);
+    const skip = this._emit({ op: "jump", target: -1 }, expr.span);
+    if (branch.op === "branch") branch.otherwise = this.instructions.length;
+    const b = this._convert(this._value(expr.otherwise), type, expr.span);
+    this._emit({ op: "move", dst: result, src: b, type }, expr.span);
+    if (skip.op === "jump") skip.target = this.instructions.length;
+    return result;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Conversions and construction
+  _commonScalar(a, b) {
+    const sa = this.types.scalarBase(a);
+    const sb = this.types.scalarBase(b);
+    if (!sa) return sb ?? "float";
+    if (!sb) return sa;
+    return RANK[sa] >= RANK[sb] ? sa : sb;
+  }
+  /** The type whose shape both operands take: the vector or matrix among them, -1 when neither is. */
+  _commonShape(a, b) {
+    const ta = this.types.get(a);
+    const tb = this.types.get(b);
+    if (ta?.kind === "matrix") return a;
+    if (tb?.kind === "matrix") return b;
+    if (ta?.kind === "vector") return a;
+    if (tb?.kind === "vector") return b;
+    return -1;
+  }
+  _shapeWith(shape, scalar) {
+    return this.types.withScalar(shape, scalar);
+  }
+  /** A register converted to a type: a scalar conversion, a broadcast, or both. */
+  _convert(value, type, span) {
+    if (value < 0) return value;
+    const from = this._typeOf(value);
+    if (from === type) return value;
+    const tf = this.types.get(from);
+    const tt = this.types.get(type);
+    if (!tf || !tt) return value;
+    if (tt.kind === "pointer" || tt.kind === "texture" || tt.kind === "sampler" || tt.kind === "opaque") return value;
+    if (tt.kind === "struct" || tt.kind === "array") {
+      if (tf.kind === tt.kind) return value;
+      return this._constructValues([value], type, span);
+    }
+    if ((tt.kind === "vector" || tt.kind === "matrix") && tf.kind === "scalar") {
+      const scalar = this._convertScalar(value, this.types.elementOf(this.types.elementOf(type)), span);
+      const dst = this._temp(type);
+      this._emit({ op: "construct", dst, args: [scalar], type }, span);
+      return dst;
+    }
+    if (tt.kind === "vector" && tf.kind === "vector" && tf.count !== tt.count) {
+      return this._constructValues([value], type, span);
+    }
+    return this._convertScalar(value, type, span);
+  }
+  _convertScalar(value, type, span) {
+    if (this._typeOf(value) === type) return value;
+    const dst = this._temp(type);
+    this._emit({ op: "convert", dst, a: value, type }, span);
+    return dst;
+  }
+  /** `float4(a, b)`, `S{...}`, `array<float,3>{...}`: the arguments lowered, then built into the type. */
+  _constructFrom(args, type, span) {
+    const t = this.types.get(type);
+    if (args.length === 1 && args[0].kind !== "initializer") {
+      const only = this._value(args[0]);
+      const from = this.types.get(this._typeOf(only));
+      if (t?.kind === "vector" && from?.kind === "vector" && from.count === t.count) return this._convertScalar(only, type, span);
+      if (t?.kind === "scalar" || t?.kind === "vector" || t?.kind === "matrix") return this._convert(only, type, span);
+      if (from && t && from.kind === t.kind) return only;
+      return this._constructValues([only], type, span);
+    }
+    const registers = [];
+    if (t?.kind === "struct") {
+      args.forEach((a, i) => {
+        const member = t.members[i];
+        registers.push(member ? this._initialize(a, member.type, span) : this._value(a));
+      });
+    } else if (t?.kind === "array") {
+      for (const a of args) registers.push(this._initialize(a, t.element, span));
+    } else if (t?.kind === "matrix") {
+      for (const a of args) registers.push(this._value(a));
+    } else {
+      for (const a of args) registers.push(this._value(a));
+    }
+    return this._constructValues(registers, type, span);
+  }
+  _constructValues(args, type, span) {
+    const dst = this._temp(type);
+    this._emit({ op: "construct", dst, args, type }, span);
+    return dst;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Calls
+  _typeCall(expr) {
+    const type = this._type(expr.type);
+    if (expr.name === "sizeof") {
+      const dst = this._temp(this.types.uint);
+      this._emit({ op: "const", dst, value: this.types.sizeOf(type), type: this.types.uint }, expr.span);
+      return dst;
+    }
+    if (expr.name === "alignof") {
+      const dst = this._temp(this.types.uint);
+      this._emit({ op: "const", dst, value: this.types.alignOf(type), type: this.types.uint }, expr.span);
+      return dst;
+    }
+    const a = expr.args.length ? this._value(expr.args[0]) : -1;
+    if (a < 0) return this._constructValues([], type, expr.span);
+    if (expr.name === "as_type") {
+      const dst = this._temp(type);
+      this._emit({ op: "bitcast", dst, a, type }, expr.span);
+      return dst;
+    }
+    return this._convert(a, type, expr.span);
+  }
+  _call(expr) {
+    if (expr.callee.kind === "member") {
+      const objectType = this._peekType(expr.callee.object);
+      const t = this.types.get(objectType);
+      if (t?.kind === "texture" || t?.kind === "sampler" || t?.kind === "atomic") {
+        const object = this._value(expr.callee.object);
+        const args2 = [object, ...expr.args.map((a) => this._value(a))];
+        const type2 = this._textureResultType(t.kind === "texture" ? objectType : objectType, expr.callee.name);
+        const dst2 = this._temp(type2);
+        this._emit({ op: "builtin", dst: dst2, name: `texture.${expr.callee.name}`, args: args2, type: type2 }, expr.span);
+        return dst2;
+      }
+    }
+    if (expr.callee.kind !== "name") {
+      this._warn(expr.span, "a call through something other than a name is not supported");
+      return this._value(expr.callee);
+    }
+    const name = expr.callee.name;
+    const overloads = this._functionsByName.get(name);
+    const args = expr.args.map((a) => this._value(a));
+    if (overloads?.length) {
+      const target = this._pickOverload(overloads, args);
+      const decl = this._unit.functions[target];
+      const converted = args.map((a, i) => {
+        const param = decl.params[i];
+        if (!param) return a;
+        const type3 = this._withArrayDims(this._type(param.type), param.arrayDims);
+        const t = this.types.get(type3);
+        if (t?.kind === "pointer" && t.reference) {
+          const address = this._address(expr.args[i]);
+          return address ? address.ptr : a;
+        }
+        return this._convert(a, type3, expr.span);
+      });
+      const type2 = this._type(decl.returnType);
+      const dst2 = this._temp(type2);
+      this._emit({ op: "call", dst: dst2, target, args: converted, type: type2 }, expr.span);
+      return dst2;
+    }
+    const type = this._builtinResultType(name, args, expr.span);
+    const dst = this._temp(type);
+    this._emit({ op: "builtin", dst, name, args, type }, expr.span);
+    return dst;
+  }
+  _pickOverload(overloads, args) {
+    let best = overloads[0];
+    let bestScore = -1;
+    for (const index of overloads) {
+      const decl = this._unit.functions[index];
+      if (decl.params.length !== args.length) continue;
+      let score = 1;
+      decl.params.forEach((p, i) => {
+        const want = this._withArrayDims(this._type(p.type), p.arrayDims);
+        const have = this._typeOf(args[i]);
+        if (want === have) score += 4;
+        else if (this.types.scalarBase(want) === this.types.scalarBase(have)) score += 2;
+        else if (this.types.components(want) === this.types.components(have)) score += 1;
+      });
+      if (score > bestScore) {
+        bestScore = score;
+        best = index;
+      }
+    }
+    return best;
+  }
+  _textureResultType(textureType, method) {
+    const t = this.types.get(textureType);
+    if (t?.kind === "atomic") return t.element;
+    if (t?.kind !== "texture") return this.types.float;
+    switch (method) {
+      case "sample":
+      case "read":
+      case "gather":
+        return t.depth && method !== "gather" ? t.sampled : this.types.vector(t.sampled, 4);
+      case "sample_compare":
+      case "gather_compare":
+        return method === "gather_compare" ? this.types.vector(this.types.float, 4) : this.types.float;
+      case "write":
+        return this.types.void_;
+      case "get_width":
+      case "get_height":
+      case "get_depth":
+      case "get_num_mip_levels":
+      case "get_array_size":
+      case "get_num_samples":
+        return this.types.uint;
+      default:
+        return this.types.vector(t.sampled, 4);
+    }
+  }
+  /**
+   * The type a standard library call gives. The rules cover the shapes the library actually has:
+   * most functions give what their first argument is, the comparisons give bools, the ones that
+   * reduce a vector give its element, and a handful are fixed.
+   */
+  _builtinResultType(name, args, span) {
+    const first = args.length ? this._typeOf(args[0]) : this.types.float;
+    switch (name) {
+      case "all":
+      case "any":
+      case "is_null_texture":
+        return this.types.bool;
+      case "isnan":
+      case "isinf":
+      case "isfinite":
+      case "isnormal":
+      case "signbit":
+        return this.types.withScalar(first, "bool");
+      case "length":
+      case "distance":
+      case "length_squared":
+      case "distance_squared":
+      case "dot":
+      case "determinant":
+        return this.types.elementOf(this.types.elementOf(first));
+      case "cross":
+        return first;
+      case "transpose": {
+        const t = this.types.get(first);
+        if (t?.kind !== "matrix") return first;
+        const column = this.types.get(t.column);
+        const rows = column?.kind === "vector" ? column.count : 1;
+        const element = column?.kind === "vector" ? column.element : t.column;
+        return this.types.matrix(this.types.vector(element, t.columns), rows);
+      }
+      case "select":
+        return args.length > 1 ? this._typeOf(args[1]) : first;
+      case "mix":
+      case "clamp":
+      case "smoothstep":
+      case "fma":
+      case "mad":
+        return args.reduce((wide, a) => this.types.components(this._typeOf(a)) > this.types.components(wide) ? this._typeOf(a) : wide, first);
+      case "step":
+        return args.length > 1 ? this._typeOf(args[1]) : first;
+      case "min":
+      case "max":
+      case "pow":
+      case "atan2":
+      case "fmod":
+      case "copysign":
+      case "ldexp":
+      case "powr":
+        return args.reduce((wide, a) => this.types.components(this._typeOf(a)) > this.types.components(wide) ? this._typeOf(a) : wide, first);
+      case "popcount":
+      case "clz":
+      case "ctz":
+      case "absdiff":
+        return first;
+      case "float4":
+      case "float3":
+      case "float2":
+        return this.types.builtin(name) ?? first;
+      case "atomic_load_explicit":
+      case "atomic_fetch_add_explicit":
+      case "atomic_fetch_sub_explicit":
+      case "atomic_fetch_min_explicit":
+      case "atomic_fetch_max_explicit":
+      case "atomic_fetch_and_explicit":
+      case "atomic_fetch_or_explicit":
+      case "atomic_fetch_xor_explicit":
+      case "atomic_exchange_explicit": {
+        const t = this.types.get(first);
+        const pointee = t?.kind === "pointer" ? this.types.get(t.pointee) : void 0;
+        return pointee?.kind === "atomic" ? pointee.element : t?.kind === "pointer" ? t.pointee : this.types.uint;
+      }
+      case "atomic_store_explicit":
+      case "threadgroup_barrier":
+      case "simdgroup_barrier":
+      case "atomic_compare_exchange_weak_explicit":
+        return name === "atomic_compare_exchange_weak_explicit" ? this.types.bool : this.types.void_;
+      case "abs": {
+        const base = this.types.scalarBase(first);
+        if (base === "int") return this.types.withScalar(first, "uint");
+        if (base === "short") return this.types.withScalar(first, "ushort");
+        if (base === "char") return this.types.withScalar(first, "uchar");
+        return first;
+      }
+      default: {
+        const t = this.types.get(first);
+        if (t?.kind === "pointer") return t.pointee;
+        if (first === this.types.void_) this._warn(span, `${name} is not a function this shader declares or the interpreter knows`);
+        return first;
+      }
+    }
+  }
+};
+function numberOf(text) {
+  const clean = text.replace(/'/g, "");
+  const suffix = /[uUlLfFhH]*$/.exec(clean)?.[0] ?? "";
+  const digits = clean.slice(0, clean.length - suffix.length);
+  const long = /[lL]{1,2}/.test(suffix) && !/[fFhH]/.test(suffix);
+  if (/^0[xX]/.test(digits) && !/[.pP]/.test(digits)) {
+    const big3 = BigInt(digits);
+    return long ? BigInt.asIntN(64, big3) : Number(BigInt.asUintN(32, big3)) | 0;
+  }
+  if (/^0[bB]/.test(digits)) return Number(BigInt(digits));
+  if (long) return BigInt(digits.split(".")[0] || "0");
+  const value = Number(digits);
+  return Number.isFinite(value) ? value : 0;
+}
+function bindingOf(param, type, types) {
+  const t = types.get(type);
+  for (const a of param.attributes) {
+    if (a.name === "buffer") return { kind: "buffer", index: a.args[0] ?? 0 };
+    if (a.name === "texture") return { kind: "texture", index: a.args[0] ?? 0 };
+    if (a.name === "sampler") return { kind: "sampler", index: a.args[0] ?? 0 };
+    if (a.name === "stage_in") return { kind: "stage_in" };
+    if (a.name === "threadgroup") return { kind: "threadgroup", index: a.args[0] ?? 0 };
+    if (BUILTIN_ATTRIBUTES.has(a.name)) return { kind: "builtin", name: a.name };
+  }
+  if (t?.kind === "texture") return { kind: "texture", index: -1 };
+  if (t?.kind === "sampler") return { kind: "sampler", index: -1 };
+  if (t?.kind === "pointer") return { kind: "buffer", index: -1 };
+  return void 0;
+}
+function lowerMsl(unit) {
+  return new Lowering(unit).run();
+}
+
+// src/renderer/msl/lexer.ts
+var PUNCTUATORS = [
+  ">>=",
+  "<<=",
+  "...",
+  "->*",
+  "++",
+  "--",
+  "->",
+  "::",
+  "<<",
+  ">>",
+  "<=",
+  ">=",
+  "==",
+  "!=",
+  "&&",
+  "||",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "&=",
+  "|=",
+  "^=",
+  ".*",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "=",
+  "<",
+  ">",
+  "!",
+  "~",
+  "&",
+  "|",
+  "^",
+  "?",
+  ":",
+  ";",
+  ",",
+  ".",
+  "(",
+  ")",
+  "[",
+  "]",
+  "{",
+  "}"
+];
+function isIdentStart(c2) {
+  return /[A-Za-z_$]/.test(c2);
+}
+function isIdent(c2) {
+  return /[A-Za-z0-9_$]/.test(c2);
+}
+function isDigit(c2) {
+  return c2 >= "0" && c2 <= "9";
+}
+var Scanner = class {
+  _text;
+  _at = 0;
+  _line = 1;
+  _lineStart = 0;
+  constructor(text) {
+    this._text = text;
+  }
+  get line() {
+    return this._line;
+  }
+  get done() {
+    return this._at >= this._text.length;
+  }
+  /** Skips whitespace and comments; returns true if a newline was crossed. */
+  skipTrivia(stopAtNewline) {
+    let newline = false;
+    for (; ; ) {
+      const c2 = this._text[this._at];
+      if (c2 === void 0) return newline;
+      if (c2 === "\n") {
+        if (stopAtNewline) return true;
+        newline = true;
+        this._advance();
+        continue;
+      }
+      if (c2 === " " || c2 === "	" || c2 === "\r" || c2 === "\v" || c2 === "\f") {
+        this._advance();
+        continue;
+      }
+      if (c2 === "\\" && (this._text[this._at + 1] === "\n" || this._text.slice(this._at + 1, this._at + 3) === "\r\n")) {
+        this._advance();
+        while (this._text[this._at] === "\r") this._advance();
+        this._advance();
+        continue;
+      }
+      if (c2 === "/" && this._text[this._at + 1] === "/") {
+        while (this._at < this._text.length && this._text[this._at] !== "\n") this._advance();
+        continue;
+      }
+      if (c2 === "/" && this._text[this._at + 1] === "*") {
+        this._advance();
+        this._advance();
+        while (this._at < this._text.length && !(this._text[this._at] === "*" && this._text[this._at + 1] === "/")) this._advance();
+        this._advance();
+        this._advance();
+        if (stopAtNewline) continue;
+        continue;
+      }
+      return newline;
+    }
+  }
+  /** The next token, or null at the end (or at a newline when `stopAtNewline`). */
+  next(stopAtNewline = false) {
+    const crossed = this.skipTrivia(stopAtNewline);
+    if (stopAtNewline && (crossed || this._text[this._at] === "\n")) return null;
+    if (this._at >= this._text.length) return null;
+    const line = this._line;
+    const column = this._at - this._lineStart + 1;
+    let first = true;
+    for (let i = this._at - 1; i >= this._lineStart; i--) {
+      if (!/[ \t]/.test(this._text[i])) {
+        first = false;
+        break;
+      }
+    }
+    const c2 = this._text[this._at];
+    if (isIdentStart(c2)) {
+      const start = this._at;
+      while (this._at < this._text.length && isIdent(this._text[this._at])) this._advance();
+      return { kind: "identifier", text: this._text.slice(start, this._at), line, column, first };
+    }
+    if (isDigit(c2) || c2 === "." && isDigit(this._text[this._at + 1] ?? "")) {
+      return { kind: "number", text: this._number(), line, column, first };
+    }
+    if (c2 === '"' || c2 === "'") {
+      const start = this._at;
+      this._advance();
+      while (this._at < this._text.length && this._text[this._at] !== c2) {
+        if (this._text[this._at] === "\\") this._advance();
+        this._advance();
+      }
+      this._advance();
+      return { kind: c2 === '"' ? "string" : "char", text: this._text.slice(start, this._at), line, column, first };
+    }
+    if (c2 === "#") {
+      this._advance();
+      return { kind: "punct", text: "#", line, column, first };
+    }
+    for (const p of PUNCTUATORS) {
+      if (this._text.startsWith(p, this._at)) {
+        for (let i = 0; i < p.length; i++) this._advance();
+        return { kind: "punct", text: p, line, column, first };
+      }
+    }
+    this._advance();
+    return { kind: "punct", text: c2, line, column, first };
+  }
+  _number() {
+    const start = this._at;
+    const hex = this._text[this._at] === "0" && /[xX]/.test(this._text[this._at + 1] ?? "");
+    if (hex) {
+      this._advance();
+      this._advance();
+    }
+    const digits = hex ? /[0-9a-fA-F]/ : /[0-9]/;
+    for (; ; ) {
+      const c2 = this._text[this._at];
+      if (c2 === void 0) break;
+      if (digits.test(c2) || c2 === "." || c2 === "'") {
+        this._advance();
+        continue;
+      }
+      if (!hex && /[eE]/.test(c2) || hex && /[pP]/.test(c2)) {
+        this._advance();
+        if (/[+-]/.test(this._text[this._at] ?? "")) this._advance();
+        continue;
+      }
+      if (/[uUlLfFhH]/.test(c2)) {
+        this._advance();
+        continue;
+      }
+      break;
+    }
+    return this._text.slice(start, this._at);
+  }
+  _advance() {
+    if (this._text[this._at] === "\n") {
+      this._line++;
+      this._lineStart = this._at + 1;
+    }
+    this._at++;
+  }
+};
+function tokenize(text, defines = /* @__PURE__ */ new Map()) {
+  const scanner = new Scanner(text);
+  const out = [];
+  const diagnostics = [];
+  const macros = /* @__PURE__ */ new Map();
+  for (const [name, body] of defines) {
+    macros.set(name, { name, params: null, variadic: false, body: tokensOf(body) });
+  }
+  const conditionals = [];
+  const active = () => conditionals.every((c2) => c2.taking && c2.parent);
+  for (; ; ) {
+    const token = scanner.next();
+    if (!token) break;
+    if (token.kind === "punct" && token.text === "#" && token.first) {
+      directive(scanner, token, macros, conditionals, diagnostics, active);
+      continue;
+    }
+    if (!active()) continue;
+    if (token.kind === "identifier" && macros.has(token.text)) {
+      expand(token, scanner, macros, out, diagnostics);
+      continue;
+    }
+    out.push(token);
+  }
+  if (conditionals.length) diagnostics.push({ line: scanner.line, message: `${conditionals.length} unterminated #if` });
+  out.push({ kind: "end", text: "", line: scanner.line, column: 1 });
+  return { tokens: out, diagnostics };
+}
+function tokensOf(text) {
+  const scanner = new Scanner(text);
+  const out = [];
+  for (; ; ) {
+    const t = scanner.next();
+    if (!t) break;
+    out.push(t);
+  }
+  return out;
+}
+function restOfLine(scanner) {
+  const out = [];
+  for (; ; ) {
+    const t = scanner.next(true);
+    if (!t) break;
+    out.push(t);
+  }
+  return out;
+}
+function directive(scanner, hash, macros, conditionals, diagnostics, active) {
+  const name = scanner.next(true);
+  if (!name) return;
+  const parentActive = conditionals.every((c2) => c2.taking && c2.parent);
+  switch (name.text) {
+    case "define": {
+      const rest = restOfLine(scanner);
+      if (!active() || !rest.length) return;
+      define(rest, macros, hash.line, diagnostics);
+      return;
+    }
+    case "undef": {
+      const rest = restOfLine(scanner);
+      if (active() && rest.length) macros.delete(rest[0].text);
+      return;
+    }
+    case "ifdef":
+    case "ifndef": {
+      const rest = restOfLine(scanner);
+      const has = rest.length ? macros.has(rest[0].text) : false;
+      const taking = name.text === "ifdef" ? has : !has;
+      conditionals.push({ taking, taken: taking, parent: parentActive });
+      return;
+    }
+    case "if": {
+      const rest = restOfLine(scanner);
+      const taking = evaluate(rest, macros, hash.line, diagnostics, parentActive);
+      conditionals.push({ taking, taken: taking, parent: parentActive });
+      return;
+    }
+    case "elif": {
+      const rest = restOfLine(scanner);
+      const c2 = conditionals[conditionals.length - 1];
+      if (!c2) {
+        diagnostics.push({ line: hash.line, message: "#elif without #if" });
+        return;
+      }
+      const taking = !c2.taken && evaluate(rest, macros, hash.line, diagnostics, c2.parent);
+      c2.taking = taking;
+      c2.taken = c2.taken || taking;
+      return;
+    }
+    case "else": {
+      restOfLine(scanner);
+      const c2 = conditionals[conditionals.length - 1];
+      if (!c2) {
+        diagnostics.push({ line: hash.line, message: "#else without #if" });
+        return;
+      }
+      c2.taking = !c2.taken;
+      c2.taken = true;
+      return;
+    }
+    case "endif":
+      restOfLine(scanner);
+      if (!conditionals.pop()) diagnostics.push({ line: hash.line, message: "#endif without #if" });
+      return;
+    case "include":
+    case "pragma":
+    case "line":
+      restOfLine(scanner);
+      return;
+    case "error": {
+      const rest = restOfLine(scanner);
+      if (active()) diagnostics.push({ line: hash.line, message: `#error ${rest.map((t) => t.text).join(" ")}` });
+      return;
+    }
+    default:
+      restOfLine(scanner);
+      if (active()) diagnostics.push({ line: hash.line, message: `unknown directive #${name.text}` });
+  }
+}
+function define(rest, macros, line, diagnostics) {
+  const name = rest[0];
+  if (name.kind !== "identifier") {
+    diagnostics.push({ line, message: `#define of ${name.text}, which is not a name` });
+    return;
+  }
+  const open = rest[1];
+  if (open && open.kind === "punct" && open.text === "(" && open.line === name.line && open.column === name.column + name.text.length) {
+    const params = [];
+    let variadic = false;
+    let i = 2;
+    for (; i < rest.length && rest[i].text !== ")"; i++) {
+      if (rest[i].text === ",") continue;
+      if (rest[i].text === "...") {
+        variadic = true;
+        params.push("__VA_ARGS__");
+        continue;
+      }
+      params.push(rest[i].text);
+    }
+    macros.set(name.text, { name: name.text, params, variadic, body: rest.slice(i + 1) });
+    return;
+  }
+  macros.set(name.text, { name: name.text, params: null, variadic: false, body: rest.slice(1) });
+}
+var MAX_EXPANSIONS = 4e3;
+function expand(token, scanner, macros, out, diagnostics) {
+  const pending = [token];
+  let guard = 0;
+  while (pending.length) {
+    if (guard++ > MAX_EXPANSIONS) {
+      diagnostics.push({ line: token.line, message: `macro ${token.text} expands without end` });
+      break;
+    }
+    const t = pending.shift();
+    const macro = t.kind === "identifier" ? macros.get(t.text) : void 0;
+    if (!macro) {
+      out.push(t === token ? t : { ...t, line: token.line, column: token.column, expanded: true });
+      continue;
+    }
+    if (!macro.params) {
+      pending.unshift(...macro.body);
+      continue;
+    }
+    const args = macroArguments(pending, scanner);
+    if (!args) {
+      out.push({ ...t, line: token.line, column: token.column, expanded: true });
+      continue;
+    }
+    pending.unshift(...substitute(macro, args));
+  }
+}
+function macroArguments(pending, scanner) {
+  const take = () => pending.shift() ?? scanner.next();
+  const open = take();
+  if (!open || open.text !== "(") {
+    if (open) pending.unshift(open);
+    return null;
+  }
+  const args = [[]];
+  let depth = 1;
+  for (; ; ) {
+    const t = take();
+    if (!t || t.kind === "end") break;
+    if (t.text === "(") depth++;
+    if (t.text === ")") {
+      depth--;
+      if (depth === 0) break;
+    }
+    if (t.text === "," && depth === 1) {
+      args.push([]);
+      continue;
+    }
+    args[args.length - 1].push(t);
+  }
+  return args;
+}
+function substitute(macro, args) {
+  const params = macro.params ?? [];
+  const byName = /* @__PURE__ */ new Map();
+  params.forEach((p, i) => {
+    if (macro.variadic && p === "__VA_ARGS__") {
+      const rest = [];
+      for (let k = i; k < args.length; k++) {
+        if (k > i) rest.push({ kind: "punct", text: ",", line: 0, column: 0 });
+        rest.push(...args[k]);
+      }
+      byName.set(p, rest);
+      return;
+    }
+    byName.set(p, args[i] ?? []);
+  });
+  const out = [];
+  for (let i = 0; i < macro.body.length; i++) {
+    const t = macro.body[i];
+    if (t.text === "#" && t.kind === "punct") {
+      const next = macro.body[i + 1];
+      const arg2 = next ? byName.get(next.text) : void 0;
+      if (arg2) {
+        out.push({ kind: "string", text: JSON.stringify(arg2.map((a) => a.text).join(" ")), line: t.line, column: t.column });
+        i++;
+        continue;
+      }
+    }
+    if (macro.body[i + 1]?.text === "##" && macro.body[i + 2]) {
+      const left = byName.get(t.text) ?? [t];
+      const rightToken = macro.body[i + 2];
+      const right = byName.get(rightToken.text) ?? [rightToken];
+      const a = left[left.length - 1], b = right[0];
+      out.push(...left.slice(0, -1));
+      if (a && b) out.push({ kind: a.kind, text: `${a.text}${b.text}`, line: t.line, column: t.column });
+      else if (a) out.push(a);
+      else if (b) out.push(b);
+      out.push(...right.slice(1));
+      i += 2;
+      continue;
+    }
+    const arg = byName.get(t.text);
+    if (arg) {
+      out.push(...arg);
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+function evaluate(tokens, macros, line, diagnostics, report) {
+  const flat3 = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.kind === "identifier" && t.text === "defined") {
+      let k = i + 1;
+      const paren = tokens[k]?.text === "(";
+      if (paren) k++;
+      const name = tokens[k];
+      flat3.push({ kind: "number", text: name && macros.has(name.text) ? "1" : "0", line: t.line, column: t.column });
+      i = paren ? k + 1 : k;
+      continue;
+    }
+    if (t.kind === "identifier" && macros.has(t.text)) {
+      const macro = macros.get(t.text);
+      if (!macro.params) {
+        flat3.push(...macro.body);
+        continue;
+      }
+    }
+    flat3.push(t);
+  }
+  let at = 0;
+  const peek = () => flat3[at];
+  const eat = (text) => {
+    if (flat3[at]?.text === text) {
+      at++;
+      return true;
+    }
+    return false;
+  };
+  const primary = () => {
+    const t = flat3[at];
+    if (!t) return 0;
+    if (eat("(")) {
+      const v = ternary();
+      eat(")");
+      return v;
+    }
+    if (eat("!")) return primary() ? 0 : 1;
+    if (eat("-")) return -primary();
+    if (eat("+")) return primary();
+    if (eat("~")) return ~primary();
+    at++;
+    if (t.kind === "number") return Number(t.text.replace(/[uUlL']/g, "")) || 0;
+    if (t.kind === "identifier") {
+      if (report && !macros.has(t.text)) {
+        diagnostics.push({ line, message: `#if uses ${t.text}, which the capture does not record a value for: it is taken as 0` });
+      }
+      return 0;
+    }
+    return 0;
+  };
+  const binary = (level) => {
+    const levels = [["||"], ["&&"], ["|"], ["^"], ["&"], ["==", "!="], ["<", ">", "<=", ">="], ["<<", ">>"], ["+", "-"], ["*", "/", "%"]];
+    if (level >= levels.length) return primary();
+    let left = binary(level + 1);
+    for (; ; ) {
+      const op = peek()?.text;
+      if (!op || !levels[level].includes(op)) return left;
+      at++;
+      const right = binary(level + 1);
+      switch (op) {
+        case "||":
+          left = left || right ? 1 : 0;
+          break;
+        case "&&":
+          left = left && right ? 1 : 0;
+          break;
+        case "|":
+          left = left | right;
+          break;
+        case "^":
+          left = left ^ right;
+          break;
+        case "&":
+          left = left & right;
+          break;
+        case "==":
+          left = left === right ? 1 : 0;
+          break;
+        case "!=":
+          left = left !== right ? 1 : 0;
+          break;
+        case "<":
+          left = left < right ? 1 : 0;
+          break;
+        case ">":
+          left = left > right ? 1 : 0;
+          break;
+        case "<=":
+          left = left <= right ? 1 : 0;
+          break;
+        case ">=":
+          left = left >= right ? 1 : 0;
+          break;
+        case "<<":
+          left = left << right;
+          break;
+        case ">>":
+          left = left >> right;
+          break;
+        case "+":
+          left += right;
+          break;
+        case "-":
+          left -= right;
+          break;
+        case "*":
+          left *= right;
+          break;
+        case "/":
+          left = right ? Math.trunc(left / right) : 0;
+          break;
+        case "%":
+          left = right ? left % right : 0;
+          break;
+        default:
+          return left;
+      }
+    }
+  };
+  const ternary = () => {
+    const cond = binary(0);
+    if (!eat("?")) return cond;
+    const a = ternary();
+    eat(":");
+    const b = ternary();
+    return cond ? a : b;
+  };
+  return ternary() !== 0;
+}
+
+// src/renderer/msl/parser.ts
+var ADDRESS_SPACES = /* @__PURE__ */ new Set(["device", "constant", "threadgroup", "thread", "threadgroup_imageblock", "ray_data", "object_data"]);
+var FUNCTION_QUALIFIERS = /* @__PURE__ */ new Set(["vertex", "fragment", "kernel", "visible", "extern", "static", "inline", "__attribute__"]);
+var IGNORED_SPECIFIERS = /* @__PURE__ */ new Set(["const", "constexpr", "static", "inline", "extern", "volatile", "restrict", "__restrict", "thread_local", "typename"]);
+var BUILTIN_TYPE_NAMES = /* @__PURE__ */ new Set([
+  "void",
+  "bool",
+  "char",
+  "uchar",
+  "short",
+  "ushort",
+  "int",
+  "uint",
+  "long",
+  "ulong",
+  "half",
+  "float",
+  "double",
+  "signed",
+  "unsigned",
+  "size_t",
+  "ptrdiff_t",
+  "uintptr_t",
+  "int8_t",
+  "uint8_t",
+  "int16_t",
+  "uint16_t",
+  "int32_t",
+  "uint32_t",
+  "int64_t",
+  "uint64_t",
+  "sampler",
+  "array",
+  "atomic",
+  "atomic_int",
+  "atomic_uint",
+  "atomic_bool",
+  "atomic_float",
+  "sampler_array",
+  "texture_array",
+  "vec",
+  "matrix",
+  "ray",
+  "intersector"
+]);
+function isBuiltinTypeName(name) {
+  if (BUILTIN_TYPE_NAMES.has(name) || isTextureName(name)) return true;
+  return /^(packed_)?(bool|char|uchar|short|ushort|int|uint|long|ulong|half|float|double)\d(x\d)?$/.test(name);
+}
+var Parser2 = class _Parser {
+  _tokens;
+  _at = 0;
+  diagnostics = [];
+  /** Names that are types: the built-ins, plus every struct, typedef and using as it is declared. */
+  _typeNames = /* @__PURE__ */ new Set();
+  unit = { structs: [], functions: [], globals: [], aliases: [] };
+  constructor(tokens) {
+    this._tokens = tokens;
+  }
+  // -------------------------------------------------------------------------------------------
+  // Tokens
+  get _t() {
+    return this._tokens[this._at] ?? this._tokens[this._tokens.length - 1];
+  }
+  _peek(n = 0) {
+    return this._tokens[Math.min(this._at + n, this._tokens.length - 1)];
+  }
+  get _done() {
+    return this._t.kind === "end";
+  }
+  _span() {
+    return { line: this._t.line, column: this._t.column };
+  }
+  _take() {
+    const t = this._t;
+    if (!this._done) this._at++;
+    return t;
+  }
+  _is(text, n = 0) {
+    const t = this._peek(n);
+    return t.kind === "punct" ? t.text === text : t.kind === "identifier" && t.text === text;
+  }
+  _eat(text) {
+    if (this._is(text)) {
+      this._at++;
+      return true;
+    }
+    return false;
+  }
+  _expect(text, what) {
+    if (this._eat(text)) return true;
+    this._error(`expected ${text} ${what}, found ${this._t.text || "the end of the shader"}`);
+    return false;
+  }
+  _error(message) {
+    if (this.diagnostics[this.diagnostics.length - 1]?.line === this._t.line) return;
+    this.diagnostics.push({ line: this._t.line, message });
+  }
+  /** Skips to after the next `;` or the end of the current braces, to keep parsing after an error. */
+  _recover() {
+    let depth = 0;
+    while (!this._done) {
+      if (this._is("{")) depth++;
+      if (this._is("}")) {
+        if (depth === 0) return;
+        depth--;
+        this._at++;
+        if (depth === 0) return;
+        continue;
+      }
+      if (this._is(";") && depth === 0) {
+        this._at++;
+        return;
+      }
+      this._at++;
+    }
+  }
+  // -------------------------------------------------------------------------------------------
+  // Declarations
+  parseUnit() {
+    let guard = 0;
+    while (!this._done) {
+      const before = this._at;
+      this._declaration();
+      if (this._at === before) {
+        this._at++;
+        if (guard++ > 1e4) break;
+      }
+    }
+  }
+  _declaration() {
+    if (this._eat(";")) return;
+    if (this._is("using")) {
+      this._using();
+      return;
+    }
+    if (this._is("namespace")) {
+      this._take();
+      if (this._t.kind === "identifier") this._take();
+      if (this._eat("{")) {
+        while (!this._done && !this._is("}")) this._declaration();
+        this._eat("}");
+      }
+      return;
+    }
+    if (this._is("typedef")) {
+      this._typedef();
+      return;
+    }
+    if (this._is("struct") || this._is("class") || this._is("union")) {
+      const struct = this._struct();
+      if (struct && !this._is(";")) this._afterType(this._typeRefOf(struct.name), []);
+      this._eat(";");
+      return;
+    }
+    this._afterSpecifiers();
+  }
+  /** A function or a global, after its qualifiers and attributes. */
+  _afterSpecifiers() {
+    const span = this._span();
+    const attributes = this._attributes();
+    let qualifier = "";
+    for (; ; ) {
+      const t = this._t;
+      if (t.kind !== "identifier") break;
+      if (FUNCTION_QUALIFIERS.has(t.text)) {
+        if (t.text === "vertex" || t.text === "fragment" || t.text === "kernel") qualifier = t.text;
+        this._take();
+        if (t.text === "__attribute__" && this._is("(")) this._skipBalanced("(", ")");
+        continue;
+      }
+      if (IGNORED_SPECIFIERS.has(t.text)) {
+        this._take();
+        continue;
+      }
+      break;
+    }
+    attributes.push(...this._attributes());
+    if (this._is("struct") || this._is("class")) {
+      const struct = this._struct();
+      if (struct && !this._is(";")) this._afterType(this._typeRefOf(struct.name), attributes, qualifier, span);
+      this._eat(";");
+      return;
+    }
+    if (this._done) return;
+    const type = this._typeRef();
+    if (!type) {
+      this._error(`expected a declaration, found ${this._t.text}`);
+      this._recover();
+      return;
+    }
+    this._afterType(type, attributes, qualifier, span);
+  }
+  /** After a declaration's type: a function when a `(` follows the name, else one or more globals. */
+  _afterType(type, attributes, qualifier = "", span = this._span()) {
+    if (this._eat(";")) return;
+    const nameToken = this._t;
+    if (nameToken.kind !== "identifier") {
+      this._error(`expected a name in a declaration, found ${nameToken.text || "the end of the shader"}`);
+      this._recover();
+      return;
+    }
+    this._take();
+    if (this._is("(")) {
+      this._function(type, nameToken.text, qualifier, attributes, span);
+      return;
+    }
+    for (; ; ) {
+      const dims = this._arrayDims();
+      const global = { name: nameToken.text, type, attributes: [...attributes, ...this._attributes()], arrayDims: dims, span };
+      if (this._eat("=")) global.init = this._assignment();
+      this.unit.globals.push(global);
+      if (!this._eat(",")) break;
+      const next = this._t;
+      if (next.kind !== "identifier") break;
+      this._take();
+      nameToken.text = next.text;
+    }
+    this._expect(";", "after a declaration");
+  }
+  _function(returnType, name, qualifier, attributes, span) {
+    const params = [];
+    this._expect("(", "before a parameter list");
+    while (!this._done && !this._is(")")) {
+      const param = this._parameter();
+      if (param) params.push(param);
+      else break;
+      if (!this._eat(",")) break;
+    }
+    this._expect(")", "after a parameter list");
+    while (this._t.kind === "identifier" && IGNORED_SPECIFIERS.has(this._t.text)) this._take();
+    const returnAttributes = [...attributes, ...this._attributes()];
+    let body = null;
+    if (this._is("{")) {
+      body = this._blockBody();
+    } else {
+      this._expect(";", "after a function declaration");
+    }
+    this.unit.functions.push({ name, qualifier, returnType, returnAttributes, params, body, span });
+  }
+  _parameter() {
+    const span = this._span();
+    const attributes = this._attributes();
+    while (this._t.kind === "identifier" && IGNORED_SPECIFIERS.has(this._t.text)) this._take();
+    const type = this._typeRef();
+    if (!type) {
+      this._error(`expected a parameter type, found ${this._t.text}`);
+      return null;
+    }
+    let name = "";
+    if (this._t.kind === "identifier" && !this._is("[")) name = this._take().text;
+    const arrayDims = this._arrayDims();
+    attributes.push(...this._attributes());
+    const param = { name, type, attributes, arrayDims, span };
+    if (this._eat("=")) param.init = this._assignment();
+    return param;
+  }
+  _struct() {
+    const span = this._span();
+    this._take();
+    let name = "";
+    if (this._t.kind === "identifier") name = this._take().text;
+    if (name) this._typeNames.add(name);
+    if (!this._is("{")) {
+      return name ? { name, members: [], span } : null;
+    }
+    this._take();
+    const members = [];
+    while (!this._done && !this._is("}")) {
+      if (this._eat(";")) continue;
+      if (this._is("struct") || this._is("class") || this._is("union")) {
+        this._struct();
+        this._eat(";");
+        continue;
+      }
+      if (this._is("typedef") || this._is("using")) {
+        this._declaration();
+        continue;
+      }
+      const memberSpan = this._span();
+      const attributes = this._attributes();
+      while (this._t.kind === "identifier" && IGNORED_SPECIFIERS.has(this._t.text)) this._take();
+      const type = this._typeRef();
+      if (!type) {
+        this._error(`expected a member type in struct ${name}, found ${this._t.text}`);
+        this._recover();
+        continue;
+      }
+      for (; ; ) {
+        if (this._t.kind !== "identifier") {
+          this._error(`expected a member name in struct ${name}, found ${this._t.text}`);
+          break;
+        }
+        const memberName = this._take().text;
+        if (this._is("(")) {
+          this._skipBalanced("(", ")");
+          while (this._t.kind === "identifier" && IGNORED_SPECIFIERS.has(this._t.text)) this._take();
+          if (this._is("{")) this._skipBalanced("{", "}");
+          else this._eat(";");
+          break;
+        }
+        const arrayDims = this._arrayDims();
+        members.push({ name: memberName, type, attributes: [...attributes, ...this._attributes()], arrayDims, span: memberSpan });
+        if (!this._eat(",")) break;
+      }
+      this._eat(";");
+    }
+    this._expect("}", `after the members of struct ${name}`);
+    const struct = { name, members, span };
+    if (name) this.unit.structs.push(struct);
+    return struct;
+  }
+  _typedef() {
+    const span = this._span();
+    this._take();
+    if (this._is("struct") || this._is("class")) {
+      const struct = this._struct();
+      if (this._t.kind === "identifier" && struct) {
+        const alias = this._take().text;
+        this._typeNames.add(alias);
+        this.unit.aliases.push({ name: alias, type: this._typeRefOf(struct.name), span });
+      }
+      this._eat(";");
+      return;
+    }
+    const type = this._typeRef();
+    if (!type) {
+      this._recover();
+      return;
+    }
+    if (this._t.kind === "identifier") {
+      const alias = this._take().text;
+      this._typeNames.add(alias);
+      const dims = this._arrayDims();
+      this.unit.aliases.push({ name: alias, type: dims.length ? { ...type, name: type.name } : type, span });
+    }
+    this._expect(";", "after a typedef");
+  }
+  _using() {
+    const span = this._span();
+    this._take();
+    if (this._eat("namespace")) {
+      while (!this._done && !this._is(";")) this._take();
+      this._eat(";");
+      return;
+    }
+    if (this._t.kind !== "identifier") {
+      this._recover();
+      return;
+    }
+    const alias = this._take().text;
+    if (!this._eat("=")) {
+      this._eat(";");
+      return;
+    }
+    const type = this._typeRef();
+    if (type) {
+      this._typeNames.add(alias);
+      this.unit.aliases.push({ name: alias, type, span });
+    }
+    this._expect(";", "after a using declaration");
+  }
+  // -------------------------------------------------------------------------------------------
+  // Types and attributes
+  _typeRefOf(name) {
+    return { name, templateArgs: [], pointers: 0, reference: false, const_: false, span: this._span() };
+  }
+  /** Whether the tokens at `n` begin a type name. */
+  _looksLikeType(n = 0) {
+    const t = this._peek(n);
+    if (t.kind !== "identifier") return false;
+    if (ADDRESS_SPACES.has(t.text) || IGNORED_SPECIFIERS.has(t.text)) return true;
+    if (t.text === "struct" || t.text === "class") return true;
+    if (this._peek(n + 1).text === "::") return this._looksLikeType(n + 2);
+    return isBuiltinTypeName(t.text) || this._typeNames.has(t.text);
+  }
+  _typeRef() {
+    const span = this._span();
+    let addressSpace;
+    let const_ = false;
+    for (; ; ) {
+      const t = this._t;
+      if (t.kind !== "identifier") break;
+      if (ADDRESS_SPACES.has(t.text)) {
+        addressSpace = t.text;
+        this._take();
+        continue;
+      }
+      if (t.text === "const") {
+        const_ = true;
+        this._take();
+        continue;
+      }
+      if (IGNORED_SPECIFIERS.has(t.text) || t.text === "struct" || t.text === "class" || t.text === "union") {
+        this._take();
+        continue;
+      }
+      break;
+    }
+    if (this._t.kind !== "identifier") return null;
+    let name = this._take().text;
+    while (this._eat("::")) {
+      if (this._t.kind !== "identifier") break;
+      name = this._take().text;
+    }
+    while (this._t.kind === "identifier" && (name === "unsigned" || name === "signed" || name === "long") && ["int", "char", "short", "long"].includes(this._t.text)) {
+      const second = this._take().text;
+      name = name === "unsigned" ? second === "char" ? "uchar" : second === "short" ? "ushort" : second === "long" ? "ulong" : "uint" : name === "signed" ? second === "char" ? "char" : second === "short" ? "short" : second === "long" ? "long" : "int" : "long";
+    }
+    const templateArgs = [];
+    if (this._is("<")) {
+      this._take();
+      while (!this._done && !this._is(">")) {
+        const arg0 = this._t;
+        if (arg0.kind === "number") {
+          templateArgs.push(Number(this._take().text.replace(/[uUlL']/g, "")));
+        } else if (this._looksLikeType()) {
+          const arg = this._typeRef();
+          if (arg) templateArgs.push(arg);
+          else break;
+        } else {
+          let text = this._take().text;
+          while (this._eat("::")) text = this._t.kind === "identifier" ? this._take().text : text;
+          templateArgs.push(text);
+        }
+        if (!this._eat(",")) break;
+      }
+      this._expect(">", "after template arguments");
+    }
+    let pointers = 0;
+    let reference = false;
+    for (; ; ) {
+      if (this._eat("*")) {
+        pointers++;
+        continue;
+      }
+      if (this._is("&") && !this._is("&&")) {
+        this._take();
+        reference = true;
+        continue;
+      }
+      if (this._t.kind === "identifier" && (this._t.text === "const" || ADDRESS_SPACES.has(this._t.text)) && pointers > 0) {
+        if (ADDRESS_SPACES.has(this._t.text)) addressSpace = this._t.text;
+        this._take();
+        continue;
+      }
+      break;
+    }
+    return { name, templateArgs, addressSpace, pointers, reference, const_, span };
+  }
+  /** `[[attribute(0)]] [[flat]]`, however many follow each other. */
+  _attributes() {
+    const out = [];
+    while (this._is("[") && this._peek(1).text === "[") {
+      this._take();
+      this._take();
+      while (!this._done && !this._is("]")) {
+        if (this._eat(",")) continue;
+        if (this._t.kind !== "identifier") {
+          this._take();
+          continue;
+        }
+        let name = this._take().text;
+        while (this._eat("::")) {
+          if (this._t.kind === "identifier") name = this._take().text;
+        }
+        const args = [];
+        let text;
+        if (this._eat("(")) {
+          while (!this._done && !this._is(")")) {
+            const t = this._take();
+            if (t.kind === "number") args.push(Number(t.text.replace(/[uUlL']/g, "")));
+            else if (t.kind === "identifier") text = text === void 0 ? t.text : `${text} ${t.text}`;
+            else if (t.text !== ",") text = text === void 0 ? t.text : `${text}${t.text}`;
+          }
+          this._expect(")", "after an attribute's arguments");
+        }
+        out.push(text === void 0 ? { name, args } : { name, args, text });
+      }
+      this._expect("]", "after an attribute");
+      this._expect("]", "after an attribute");
+    }
+    return out;
+  }
+  _arrayDims() {
+    const dims = [];
+    while (this._is("[") && this._peek(1).text !== "[") {
+      this._take();
+      dims.push(this._is("]") ? null : this._expression());
+      this._expect("]", "after an array size");
+    }
+    return dims;
+  }
+  _skipBalanced(open, close) {
+    if (!this._eat(open)) return;
+    let depth = 1;
+    while (!this._done && depth > 0) {
+      if (this._is(open)) depth++;
+      else if (this._is(close)) depth--;
+      this._take();
+    }
+  }
+  // -------------------------------------------------------------------------------------------
+  // Statements
+  _blockBody() {
+    const body = [];
+    this._expect("{", "at the start of a block");
+    while (!this._done && !this._is("}")) {
+      const before = this._at;
+      const stmt = this._statement();
+      if (stmt) body.push(stmt);
+      if (this._at === before) this._at++;
+    }
+    this._expect("}", "at the end of a block");
+    return body;
+  }
+  _statement() {
+    const span = this._span();
+    if (this._is("{")) return { kind: "block", span, body: this._blockBody() };
+    if (this._eat(";")) return { kind: "empty", span };
+    const t = this._t;
+    if (t.kind === "identifier") {
+      switch (t.text) {
+        case "if":
+          return this._if();
+        case "for":
+          return this._for();
+        case "while":
+          return this._while();
+        case "do":
+          return this._do();
+        case "switch":
+          return this._switch();
+        case "return": {
+          this._take();
+          const value = this._is(";") ? void 0 : this._expression();
+          this._expect(";", "after return");
+          return { kind: "return", span, value };
+        }
+        case "break":
+          this._take();
+          this._expect(";", "after break");
+          return { kind: "break", span };
+        case "continue":
+          this._take();
+          this._expect(";", "after continue");
+          return { kind: "continue", span };
+        case "discard_fragment":
+          this._take();
+          this._skipBalanced("(", ")");
+          this._expect(";", "after discard_fragment()");
+          return { kind: "discard", span };
+        case "typedef":
+        case "using":
+          this._declaration();
+          return null;
+        case "struct":
+        case "class": {
+          const struct = this._struct();
+          if (struct && !this._is(";")) {
+            const decl = this._declarationStatement(this._typeRefOf(struct.name), span);
+            return decl;
+          }
+          this._eat(";");
+          return null;
+        }
+        default:
+          break;
+      }
+      if (this._peek(1).text === ":" && !isBuiltinTypeName(t.text) && !this._typeNames.has(t.text)) {
+        this._take();
+        this._take();
+        return this._statement();
+      }
+      if (this._looksLikeType() && this._startsDeclaration()) {
+        const type = this._typeRef();
+        if (!type) {
+          this._recover();
+          return null;
+        }
+        return this._declarationStatement(type, span);
+      }
+    }
+    const expr = this._expression();
+    this._expect(";", "after an expression statement");
+    return { kind: "expr", span, expr };
+  }
+  /**
+   * Whether what follows is a declaration rather than an expression. `float4 x = ...` is;
+   * `float4(1)` (a constructor call) is not, and neither is `x * y` when `x` happens to be a type
+   * name — which cannot happen in a shader, so a type name followed by a name is enough.
+   */
+  _startsDeclaration() {
+    let n = 0;
+    for (; ; ) {
+      const t = this._peek(n);
+      if (t.kind === "identifier" && (ADDRESS_SPACES.has(t.text) || IGNORED_SPECIFIERS.has(t.text) || t.text === "struct")) {
+        n++;
+        continue;
+      }
+      break;
+    }
+    if (this._peek(n).kind !== "identifier") return false;
+    n++;
+    while (this._peek(n).text === "::") n += 2;
+    if (this._peek(n).text === "<") {
+      let depth = 0;
+      for (; this._peek(n).kind !== "end"; n++) {
+        if (this._peek(n).text === "<") depth++;
+        else if (this._peek(n).text === ">") {
+          depth--;
+          if (depth === 0) {
+            n++;
+            break;
+          }
+        }
+      }
+    }
+    while (this._peek(n).text === "*" || this._peek(n).text === "&" || this._peek(n).kind === "identifier" && (this._peek(n).text === "const" || ADDRESS_SPACES.has(this._peek(n).text))) n++;
+    return this._peek(n).kind === "identifier";
+  }
+  _declarationStatement(type, span) {
+    const declarators = [];
+    for (; ; ) {
+      if (this._t.kind !== "identifier") {
+        this._error(`expected a variable name, found ${this._t.text}`);
+        break;
+      }
+      const nameSpan = this._span();
+      const name = this._take().text;
+      const arrayDims = this._arrayDims();
+      this._attributes();
+      const declarator = { name, arrayDims, span: nameSpan };
+      if (this._eat("=")) declarator.init = this._is("{") ? this._initializer() : this._assignment();
+      else if (this._is("(")) {
+        this._take();
+        const args = [];
+        while (!this._done && !this._is(")")) {
+          args.push(this._assignment());
+          if (!this._eat(",")) break;
+        }
+        this._expect(")", "after a constructor's arguments");
+        declarator.init = { kind: "construct", span: nameSpan, type, args };
+      } else if (this._is("{")) {
+        declarator.init = this._initializer();
+      }
+      declarators.push(declarator);
+      if (!this._eat(",")) break;
+    }
+    this._expect(";", "after a declaration");
+    return { kind: "decl", span, type, declarators };
+  }
+  _if() {
+    const span = this._span();
+    this._take();
+    this._expect("(", "after if");
+    const cond = this._expression();
+    this._expect(")", "after an if condition");
+    const then = this._statement() ?? { kind: "empty", span };
+    let otherwise;
+    if (this._eat("else")) otherwise = this._statement() ?? { kind: "empty", span };
+    return { kind: "if", span, cond, then, otherwise };
+  }
+  _for() {
+    const span = this._span();
+    this._take();
+    this._expect("(", "after for");
+    let init;
+    if (!this._is(";")) {
+      const initSpan = this._span();
+      if (this._looksLikeType() && this._startsDeclaration()) {
+        const type = this._typeRef();
+        init = type ? this._declarationStatement(type, initSpan) : void 0;
+      } else {
+        init = { kind: "expr", span: initSpan, expr: this._expression() };
+        this._expect(";", "after a for initializer");
+      }
+    } else {
+      this._take();
+    }
+    const cond = this._is(";") ? void 0 : this._expression();
+    this._expect(";", "after a for condition");
+    const step2 = this._is(")") ? void 0 : this._expression();
+    this._expect(")", "after a for clause");
+    const body = this._statement() ?? { kind: "empty", span };
+    return { kind: "for", span, init, cond, step: step2, body };
+  }
+  _while() {
+    const span = this._span();
+    this._take();
+    this._expect("(", "after while");
+    const cond = this._expression();
+    this._expect(")", "after a while condition");
+    const body = this._statement() ?? { kind: "empty", span };
+    return { kind: "while", span, cond, body };
+  }
+  _do() {
+    const span = this._span();
+    this._take();
+    const body = this._statement() ?? { kind: "empty", span };
+    this._expect("while", "after a do body");
+    this._expect("(", "after do ... while");
+    const cond = this._expression();
+    this._expect(")", "after a do ... while condition");
+    this._expect(";", "after do ... while");
+    return { kind: "do", span, body, cond };
+  }
+  _switch() {
+    const span = this._span();
+    this._take();
+    this._expect("(", "after switch");
+    const value = this._expression();
+    this._expect(")", "after a switch value");
+    this._expect("{", "at the start of a switch");
+    const cases = [];
+    while (!this._done && !this._is("}")) {
+      const caseSpan = this._span();
+      if (this._eat("case")) {
+        const label = this._conditional();
+        this._expect(":", "after a case label");
+        cases.push({ value: label, span: caseSpan, body: [] });
+        continue;
+      }
+      if (this._eat("default")) {
+        this._expect(":", "after default");
+        cases.push({ value: null, span: caseSpan, body: [] });
+        continue;
+      }
+      const stmt = this._statement();
+      if (!cases.length) {
+        if (stmt) cases.push({ value: null, span: caseSpan, body: [stmt] });
+        continue;
+      }
+      if (stmt) cases[cases.length - 1].body.push(stmt);
+    }
+    this._expect("}", "at the end of a switch");
+    return { kind: "switch", span, value, cases };
+  }
+  // -------------------------------------------------------------------------------------------
+  // Expressions
+  _expression() {
+    let left = this._assignment();
+    while (this._is(",")) {
+      const span = this._span();
+      this._take();
+      const right = this._assignment();
+      left = { kind: "binary", span, op: ",", left, right };
+    }
+    return left;
+  }
+  _initializer() {
+    const span = this._span();
+    this._expect("{", "at the start of an initializer");
+    const values = [];
+    while (!this._done && !this._is("}")) {
+      values.push(this._is("{") ? this._initializer() : this._assignment());
+      if (!this._eat(",")) break;
+    }
+    this._expect("}", "at the end of an initializer");
+    return { kind: "initializer", span, values };
+  }
+  _assignment() {
+    const span = this._span();
+    const target = this._conditional();
+    const op = this._t.text;
+    if (this._t.kind === "punct" && ["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="].includes(op)) {
+      this._take();
+      const value = this._is("{") ? this._initializer() : this._assignment();
+      return { kind: "assign", span, op, target, value };
+    }
+    return target;
+  }
+  _conditional() {
+    const span = this._span();
+    const cond = this._binary(0);
+    if (!this._eat("?")) return cond;
+    const then = this._assignment();
+    this._expect(":", "in a conditional expression");
+    const otherwise = this._assignment();
+    return { kind: "conditional", span, cond, then, otherwise };
+  }
+  static LEVELS = [
+    ["||"],
+    ["&&"],
+    ["|"],
+    ["^"],
+    ["&"],
+    ["==", "!="],
+    ["<", ">", "<=", ">="],
+    ["<<", ">>"],
+    ["+", "-"],
+    ["*", "/", "%"]
+  ];
+  _binary(level) {
+    if (level >= _Parser.LEVELS.length) return this._unary();
+    let left = this._binary(level + 1);
+    for (; ; ) {
+      const t = this._t;
+      if (t.kind !== "punct" || !_Parser.LEVELS[level].includes(t.text)) return left;
+      const span = this._span();
+      this._take();
+      const right = this._binary(level + 1);
+      left = { kind: "binary", span, op: t.text, left, right };
+    }
+  }
+  _unary() {
+    const span = this._span();
+    const t = this._t;
+    if (t.kind === "punct" && ["-", "+", "!", "~", "*", "&", "++", "--"].includes(t.text)) {
+      this._take();
+      return { kind: "unary", span, op: t.text, operand: this._unary(), prefix: true };
+    }
+    if (t.kind === "identifier" && (t.text === "sizeof" || t.text === "alignof")) {
+      this._take();
+      if (this._is("(") && this._looksLikeType(1)) {
+        this._take();
+        const type = this._typeRef();
+        this._expect(")", "after sizeof");
+        if (type) return { kind: "typeCall", span, name: t.text, type, args: [] };
+      }
+      return { kind: "unary", span, op: t.text, operand: this._unary(), prefix: true };
+    }
+    if (t.kind === "punct" && t.text === "(" && this._looksLikeType(1)) {
+      const save = this._at;
+      this._take();
+      const type = this._typeRef();
+      if (type && this._is(")")) {
+        this._take();
+        if (this._canStartExpression()) return { kind: "cast", span, type, operand: this._unary() };
+      }
+      this._at = save;
+    }
+    return this._postfix(this._primary());
+  }
+  _canStartExpression() {
+    const t = this._t;
+    if (t.kind === "identifier" || t.kind === "number" || t.kind === "string" || t.kind === "char") return true;
+    return t.kind === "punct" && ["(", "-", "+", "!", "~", "*", "&", "++", "--"].includes(t.text);
+  }
+  _postfix(expr) {
+    for (; ; ) {
+      const span = this._span();
+      if (this._is(".") || this._is("->")) {
+        const arrow = this._t.text === "->";
+        this._take();
+        if (this._t.kind !== "identifier") {
+          this._error("expected a member name after .");
+          return expr;
+        }
+        expr = { kind: "member", span, object: expr, name: this._take().text, arrow };
+        continue;
+      }
+      if (this._is("[")) {
+        this._take();
+        const index = this._expression();
+        this._expect("]", "after an index");
+        expr = { kind: "index", span, object: expr, index };
+        continue;
+      }
+      if (this._is("(")) {
+        this._take();
+        const args = [];
+        while (!this._done && !this._is(")")) {
+          args.push(this._is("{") ? this._initializer() : this._assignment());
+          if (!this._eat(",")) break;
+        }
+        this._expect(")", "after a call's arguments");
+        expr = { kind: "call", span, callee: expr, args };
+        continue;
+      }
+      if (this._is("++") || this._is("--")) {
+        const op = this._take().text;
+        expr = { kind: "unary", span, op, operand: expr, prefix: false };
+        continue;
+      }
+      return expr;
+    }
+  }
+  _primary() {
+    const span = this._span();
+    const t = this._t;
+    if (t.kind === "number") {
+      this._take();
+      return { kind: "number", span, text: t.text };
+    }
+    if (t.kind === "punct" && t.text === "(") {
+      this._take();
+      const inner = this._expression();
+      this._expect(")", "after a parenthesized expression");
+      return inner;
+    }
+    if (t.kind === "punct" && t.text === "{") return this._initializer();
+    if (t.kind === "identifier") {
+      if (t.text === "true" || t.text === "false") {
+        this._take();
+        return { kind: "bool", span, value: t.text === "true" };
+      }
+      if (this._peek(1).text === "<" && (t.text === "as_type" || t.text === "static_cast" || t.text === "reinterpret_cast")) {
+        this._take();
+        this._take();
+        const type = this._typeRef();
+        this._expect(">", "after a template argument");
+        const args = [];
+        if (this._eat("(")) {
+          while (!this._done && !this._is(")")) {
+            args.push(this._assignment());
+            if (!this._eat(",")) break;
+          }
+          this._expect(")", "after a call's arguments");
+        }
+        if (type) return { kind: "typeCall", span, name: t.text, type, args };
+        return { kind: "number", span, text: "0" };
+      }
+      if (this._looksLikeType() && this._isConstructorCall()) {
+        const type = this._typeRef();
+        if (type) {
+          const args = [];
+          if (this._eat("(")) {
+            while (!this._done && !this._is(")")) {
+              args.push(this._is("{") ? this._initializer() : this._assignment());
+              if (!this._eat(",")) break;
+            }
+            this._expect(")", "after a constructor's arguments");
+          } else if (this._is("{")) {
+            const init = this._initializer();
+            if (init.kind === "initializer") args.push(...init.values);
+          }
+          return { kind: "construct", span, type, args };
+        }
+      }
+      let name = this._take().text;
+      while (this._eat("::")) {
+        if (this._t.kind === "identifier") name = this._take().text;
+      }
+      return { kind: "name", span, name };
+    }
+    if (t.kind === "string" || t.kind === "char") {
+      this._take();
+      return { kind: "number", span, text: t.kind === "char" ? String(t.text.charCodeAt(1) || 0) : "0" };
+    }
+    this._error(`expected an expression, found ${t.text || "the end of the shader"}`);
+    this._take();
+    return { kind: "number", span, text: "0" };
+  }
+  /** Whether the type name at the cursor is being used as a constructor (`float4(...)` or `S{...}`). */
+  _isConstructorCall() {
+    let n = 1;
+    while (this._peek(n).text === "::") n += 2;
+    if (this._peek(n).text === "<") {
+      let depth = 0;
+      for (; this._peek(n).kind !== "end"; n++) {
+        if (this._peek(n).text === "<") depth++;
+        else if (this._peek(n).text === ">") {
+          depth--;
+          if (depth === 0) {
+            n++;
+            break;
+          }
+        }
+      }
+    }
+    return this._peek(n).text === "(" || this._peek(n).text === "{";
+  }
+};
+function parseMsl(source, defines) {
+  const { tokens, diagnostics: lexDiagnostics } = tokenize(source, defines);
+  const parser = new Parser2(tokens);
+  parser.parseUnit();
+  return { unit: parser.unit, diagnostics: parser.diagnostics, lexDiagnostics };
+}
+
+// src/renderer/debug/values.ts
+var OpaqueValue = class {
+  constructor(kind, values) {
+    this.kind = kind;
+    this.values = values;
+  }
+};
+var Pointer = class {
+  constructor(cell, path11, type, storage, variable) {
+    this.cell = cell;
+    this.path = path11;
+    this.type = type;
+    this.storage = storage;
+    this.variable = variable;
+  }
+};
+var ImageValue = class {
+  constructor(texture, binding) {
+    this.texture = texture;
+    this.binding = binding;
+  }
+};
+var SamplerValue = class {
+  constructor(sampler, binding) {
+    this.sampler = sampler;
+    this.binding = binding;
+  }
+};
+var SampledImageValue = class {
+  constructor(image, sampler) {
+    this.image = image;
+    this.sampler = sampler;
+  }
+};
+function cloneValue(v) {
+  return Array.isArray(v) ? v.map(cloneValue) : v;
+}
+function normalize(v, s) {
+  if (s.base === "bool") return Boolean(v);
+  if (s.base === "float") {
+    const n2 = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? v ? 1 : 0 : v;
+    return s.width === 32 ? Math.fround(n2) : s.width === 16 ? Math.fround(n2) : n2;
+  }
+  if (s.width === 64) {
+    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? v ? 1 : 0 : v));
+    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
+  }
+  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? v ? 1 : 0 : Math.trunc(v);
+  if (s.width < 32) {
+    const mod = 2 ** s.width;
+    n = (n % mod + mod) % mod;
+    return s.base === "int" && n >= mod / 2 ? n - mod : n;
+  }
+  return s.base === "int" ? n | 0 : n >>> 0;
+}
+function mapScalars(v, f) {
+  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
+}
+function zipScalars(a, b, f) {
+  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
+  return f(a, b);
+}
+function nonFinite(value) {
+  if (typeof value === "number") return !Number.isFinite(value);
+  return Array.isArray(value) && value.some(nonFinite);
+}
+function scalars(value) {
+  if (Array.isArray(value)) return value.flatMap(scalars);
+  if (typeof value === "number") return [value];
+  if (typeof value === "bigint") return [Number(value)];
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  return [];
+}
+function scalarText(v) {
+  if (typeof v === "number") {
+    if (Number.isInteger(v)) return String(v);
+    if (Number.isNaN(v)) return "NaN";
+    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
+    const a = Math.abs(v);
+    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
+  }
+  if (typeof v === "bigint") return String(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return "?";
+}
+function imageText(image) {
+  const t = image.texture;
+  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
+}
+function samplerText(sampler) {
+  const s = sampler.sampler;
+  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
+}
+
+// src/renderer/msl/program.ts
+var OPEN_ABOVE = 8;
+var _programs = /* @__PURE__ */ new Map();
+var MslProgram = class _MslProgram {
+  kind = "msl";
+  modes = ["source"];
+  mainFile = 0;
+  language = "msl";
+  languageName = "Metal Shading Language";
+  files;
+  ir;
+  /** What the parser and the lowering could not make sense of, shown as the session's notes. */
+  diagnostics;
+  _byName = null;
+  /**
+   * The program for a library's source. Parsing a large generated shader is not free and the same
+   * library backs every pipeline that came out of it, so the result is kept under the source text.
+   */
+  static of(source, name = "shader.metal") {
+    const key = `${name}\0${source}`;
+    let program = _programs.get(key);
+    if (!program) {
+      program = new _MslProgram(source, name);
+      if (_programs.size > 8) _programs.clear();
+      _programs.set(key, program);
+    }
+    return program;
+  }
+  constructor(source, name = "shader.metal") {
+    const parsed = parseMsl(source);
+    this.ir = lowerMsl(parsed.unit);
+    this.files = [{ name, text: source }];
+    this.diagnostics = [...parsed.lexDiagnostics, ...parsed.diagnostics, ...this.ir.diagnostics].sort((a, b) => a.line - b.line);
+  }
+  /** The entry points the library declares, for a caller that has to choose one. */
+  get entryPoints() {
+    return this.ir.entryPoints;
+  }
+  /** An entry point by name, or the only one of a stage ("vertex", "fragment", "kernel"). */
+  entryPoint(name, stage) {
+    if (name) {
+      const named = this.ir.entryPoints.find((f) => f.name === name);
+      if (named) return named;
+    }
+    if (stage) {
+      const wanted = stage === "compute" ? "kernel" : stage;
+      const ofStage = this.ir.entryPoints.filter((f) => f.qualifier === wanted);
+      if (ofStage.length) return ofStage[0];
+    }
+    return void 0;
+  }
+  hasSourceText() {
+    return !!this.files[0]?.text;
+  }
+  locationOf(step2) {
+    if (!step2) return null;
+    const instr = this.ir.instructions[step2.index];
+    return instr ? { file: 0, line: instr.line, column: instr.column } : null;
+  }
+  /** Every line an instruction came from: the lines a breakpoint can go on. */
+  stopKeys(_mode) {
+    const keys = /* @__PURE__ */ new Set();
+    for (const instr of this.ir.instructions) keys.add(sourceKey(0, instr.line));
+    return keys;
+  }
+  nameOf(id) {
+    const symbol = this.ir.symbols[id];
+    if (!symbol) return id < 0 ? "return" : `%${id}`;
+    return symbol.name || `%${id}`;
+  }
+  typeName(type) {
+    return this.ir.types.name(type);
+  }
+  typeOfId(id) {
+    return this.ir.symbols[id]?.type ?? 0;
+  }
+  valueText(type, value, limit = 16) {
+    return valueText(this, type, value, limit);
+  }
+  children(type, value) {
+    const t = this.ir.types.get(type);
+    if (!Array.isArray(value)) return null;
+    const opens = t?.kind === "struct" || t?.kind === "array" || t?.kind === "matrix" || value.length > OPEN_ABOVE;
+    if (!opens) return null;
+    return value.map((child, i) => ({
+      name: t?.kind === "struct" ? t.members[i]?.name ?? `[${i}]` : `[${i}]`,
+      type: t?.kind === "struct" ? t.members[i]?.type ?? 0 : t?.kind === "array" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "vector" ? t.element : 0,
+      value: child
+    }));
+  }
+  idsNamed(name) {
+    if (!this._byName) {
+      const names = /* @__PURE__ */ new Map();
+      for (const symbol of this.ir.symbols) {
+        if (!symbol.name) continue;
+        const list = names.get(symbol.name) ?? [];
+        list.push(symbol.id);
+        names.set(symbol.name, list);
+      }
+      for (const list of names.values()) list.reverse();
+      this._byName = names;
+    }
+    return this._byName.get(name) ?? [];
+  }
+  resultType(r) {
+    return this.ir.symbols[r.id]?.type ?? 0;
+  }
+  resultTemporary(r) {
+    return this.ir.symbols[r.id]?.temporary ?? true;
+  }
+  variableWhere(v) {
+    if (v.binding === void 0) return "";
+    const kind = v.set === 1 ? "texture" : v.set === 2 ? "sampler" : "buffer";
+    return v.binding < 0 ? `an unnumbered ${kind}` : `${kind}(${v.binding})`;
+  }
+};
+function valueText(program, type, value, limit = 16) {
+  if (value === void 0 || value === null) return "undefined";
+  if (value instanceof Pointer) {
+    const name = program.nameOf(value.variable);
+    return `\u2192 ${name}${value.path.length ? `[${value.path.join("][")}]` : ""}`;
+  }
+  if (value instanceof SampledImageValue) return `${imageText(value.image)}, ${samplerText(value.sampler)}`;
+  if (value instanceof ImageValue) return imageText(value);
+  if (value instanceof SamplerValue) return samplerText(value);
+  if (!Array.isArray(value)) return scalarText(value);
+  const types = program.ir.types;
+  const t = types.get(type);
+  const inner = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" ? t.element : 0;
+  const parts2 = [];
+  for (let i = 0; i < Math.min(value.length, limit); i++) {
+    const memberType = t?.kind === "struct" ? t.members[i]?.type ?? 0 : inner;
+    const text = valueText(program, memberType, value[i], limit);
+    const name = t?.kind === "struct" ? t.members[i]?.name : void 0;
+    parts2.push(name ? `${name}: ${text}` : text);
+  }
+  if (value.length > limit) parts2.push(`\u2026 ${value.length - limit} more`);
+  return t?.kind === "struct" ? `{ ${parts2.join(", ")} }` : t?.kind === "array" ? `[${parts2.join(", ")}]` : `(${parts2.join(", ")})`;
+}
+
+// src/renderer/msl/stdlib.ts
+var BLOCKED = Symbol("blocked");
 function num2(v) {
   return typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0;
-}
-function big(v) {
-  return typeof v === "bigint" ? v : BigInt(Math.trunc(num2(v)));
-}
-function signed(v, width) {
-  if (width === 64) return BigInt.asIntN(64, big(v));
-  const n = num2(v);
-  if (width === 32) return n | 0;
-  const mod = 2 ** width;
-  const u = (n % mod + mod) % mod;
-  return u >= mod / 2 ? u - mod : u;
-}
-function unsigned(v, width) {
-  if (width === 64) return BigInt.asUintN(64, big(v));
-  const n = num2(v);
-  if (width === 32) return n >>> 0;
-  const mod = 2 ** width;
-  return (n % mod + mod) % mod;
 }
 function flat(v) {
   if (Array.isArray(v)) return v.flatMap(flat);
   return [num2(v)];
 }
-var Invocation = class {
-  module;
+function map1(a, f) {
+  return mapScalars(a, (x) => f(num2(x)));
+}
+function map2(a, b, f) {
+  if (Array.isArray(a) && !Array.isArray(b)) return a.map((x) => map2(x, b, f));
+  if (!Array.isArray(a) && Array.isArray(b)) return b.map((y) => map2(a, y, f));
+  return zipScalars(a, b, (x, y) => f(num2(x), num2(y)));
+}
+function map3(a, b, c2, f) {
+  const shape = Array.isArray(a) ? a : Array.isArray(b) ? b : c2;
+  if (!Array.isArray(shape)) return f(num2(a), num2(b), num2(c2));
+  const at = (v, i) => Array.isArray(v) ? v[i] ?? 0 : v;
+  return shape.map((_, i) => map3(at(a, i), at(b, i), at(c2, i), f));
+}
+function dot(a, b) {
+  const x = flat(a), y = flat(b);
+  let sum = 0;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) sum += x[i] * y[i];
+  return sum;
+}
+function length(a) {
+  return Math.sqrt(dot(a, a));
+}
+function normalize2(a) {
+  const l = length(a);
+  return l === 0 ? a : map1(a, (x) => x / l);
+}
+function clamp(x, lo, hi) {
+  return x < lo ? lo : x > hi ? hi : x;
+}
+function step(edge2, x) {
+  return x < edge2 ? 0 : 1;
+}
+function smoothstep(e0, e1, x) {
+  const t = clamp(e1 === e0 ? 0 : (x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function sign(x) {
+  return x > 0 ? 1 : x < 0 ? -1 : Number.isNaN(x) ? 0 : x;
+}
+function fract(x) {
+  return x - Math.floor(x);
+}
+function fmod(x, y) {
+  return y === 0 ? NaN : x - y * Math.trunc(x / y);
+}
+var MATH1 = {
+  sqrt: Math.sqrt,
+  rsqrt: (x) => 1 / Math.sqrt(x),
+  fast_sqrt: Math.sqrt,
+  sin: Math.sin,
+  cos: Math.cos,
+  tan: Math.tan,
+  asin: Math.asin,
+  acos: Math.acos,
+  atan: Math.atan,
+  sinh: Math.sinh,
+  cosh: Math.cosh,
+  tanh: Math.tanh,
+  asinh: Math.asinh,
+  acosh: Math.acosh,
+  atanh: Math.atanh,
+  sinpi: (x) => Math.sin(x * Math.PI),
+  cospi: (x) => Math.cos(x * Math.PI),
+  tanpi: (x) => Math.tan(x * Math.PI),
+  exp: Math.exp,
+  exp2: (x) => 2 ** x,
+  exp10: (x) => 10 ** x,
+  log: Math.log,
+  log2: Math.log2,
+  log10: Math.log10,
+  log1p: Math.log1p,
+  expm1: Math.expm1,
+  floor: Math.floor,
+  ceil: Math.ceil,
+  trunc: Math.trunc,
+  rint: Math.round,
+  nearbyint: Math.round,
+  round: (x) => Math.sign(x) * Math.round(Math.abs(x)),
+  fract,
+  sign,
+  saturate: (x) => clamp(x, 0, 1),
+  abs: Math.abs,
+  fabs: Math.abs,
+  cbrt: Math.cbrt,
+  erf,
+  erfc: (x) => 1 - erf(x),
+  degrees: (x) => x * 180 / Math.PI,
+  radians: (x) => x * Math.PI / 180,
+  recip: (x) => 1 / x
+};
+var MATH2 = {
+  pow: (x, y) => x ** y,
+  powr: (x, y) => x ** y,
+  atan2: Math.atan2,
+  fmod,
+  fdim: (x, y) => x > y ? x - y : 0,
+  copysign: (x, y) => y < 0 || Object.is(y, -0) ? -Math.abs(x) : Math.abs(x),
+  ldexp: (x, y) => x * 2 ** y,
+  hypot: Math.hypot,
+  nextafter: (x, y) => x === y ? y : x + Math.sign(y - x) * Number.EPSILON * Math.abs(x || 1),
+  step,
+  powr_fast: (x, y) => x ** y
+};
+function erf(x) {
+  const s = Math.sign(x);
+  const a = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * a);
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-a * a);
+  return s * y;
+}
+function callBuiltin(name, args, ctx) {
+  const a = args[0], b = args[1], c2 = args[2];
+  const types = ctx.types;
+  if (name.startsWith("texture.")) return textureCall(name.slice(8), args, ctx);
+  const math1 = MATH1[name];
+  if (math1 && args.length >= 1) {
+    if (name === "abs" && !types.isFloat(ctx.argTypes[0] ?? 0)) return mapScalars(a, (x) => typeof x === "bigint" ? x < 0n ? -x : x : Math.abs(num2(x)));
+    return map1(a, math1);
+  }
+  const math2 = MATH2[name];
+  if (math2 && args.length >= 2) return map2(a, b, math2);
+  switch (name) {
+    case "min":
+      return args.slice(1).reduce((acc, x) => map2(acc, x, (p, q2) => Number.isNaN(p) ? q2 : Number.isNaN(q2) ? p : Math.min(p, q2)), a);
+    case "max":
+      return args.slice(1).reduce((acc, x) => map2(acc, x, (p, q2) => Number.isNaN(p) ? q2 : Number.isNaN(q2) ? p : Math.max(p, q2)), a);
+    case "fmin":
+      return map2(a, b, Math.min);
+    case "fmax":
+      return map2(a, b, Math.max);
+    case "clamp":
+      return map3(a, b, c2, clamp);
+    case "mix":
+      return map3(a, b, c2, (x, y, t) => x + (y - x) * t);
+    case "lerp":
+      return map3(a, b, c2, (x, y, t) => x + (y - x) * t);
+    case "smoothstep":
+      return map3(a, b, c2, smoothstep);
+    case "fma":
+    case "mad":
+      return map3(a, b, c2, (x, y, z) => x * y + z);
+    case "select":
+      return map3(a, b, c2, (x, y, t) => t ? y : x);
+    case "absdiff":
+      return map2(a, b, (x, y) => Math.abs(x - y));
+    case "dot":
+      return dot(a, b);
+    case "length":
+    case "fast_length":
+      return length(a);
+    case "length_squared":
+      return dot(a, a);
+    case "distance":
+    case "fast_distance":
+      return length(map2(a, b, (x, y) => x - y));
+    case "distance_squared": {
+      const d = map2(a, b, (x, y) => x - y);
+      return dot(d, d);
+    }
+    case "normalize":
+    case "fast_normalize":
+      return normalize2(a);
+    case "cross": {
+      const x = flat(a), y = flat(b);
+      return [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    }
+    case "reflect": {
+      const d = 2 * dot(a, b);
+      return map2(a, b, (i, n) => i - d * n);
+    }
+    case "refract": {
+      const eta = num2(c2);
+      const cosi = dot(b, a);
+      const k = 1 - eta * eta * (1 - cosi * cosi);
+      if (k < 0) return map1(a, () => 0);
+      const scale = eta * cosi + Math.sqrt(k);
+      return map2(a, b, (i, n) => eta * i - scale * n);
+    }
+    case "faceforward":
+      return dot(c2, b) < 0 ? a : map1(a, (x) => -x);
+    case "all":
+      return flat(a).every((x) => x !== 0);
+    case "any":
+      return flat(a).some((x) => x !== 0);
+    case "isnan":
+      return mapScalars(a, (x) => Number.isNaN(num2(x)));
+    case "isinf":
+      return mapScalars(a, (x) => !Number.isFinite(num2(x)) && !Number.isNaN(num2(x)));
+    case "isfinite":
+      return mapScalars(a, (x) => Number.isFinite(num2(x)));
+    case "isnormal":
+      return mapScalars(a, (x) => Number.isFinite(num2(x)) && num2(x) !== 0);
+    case "signbit":
+      return mapScalars(a, (x) => num2(x) < 0 || Object.is(num2(x), -0));
+    case "transpose": {
+      const m = Array.isArray(a) ? a : [];
+      const rows = Array.isArray(m[0]) ? m[0].length : 0;
+      return Array.from({ length: rows }, (_, r) => m.map((col) => Array.isArray(col) ? col[r] ?? 0 : 0));
+    }
+    case "determinant":
+      return determinant(a);
+    case "matrix.multiply": {
+      const bm = Array.isArray(b) ? b : [];
+      return bm.map((col) => matrixTimesVector(a, col));
+    }
+    case "matrix.times.vector":
+      return matrixTimesVector(a, b);
+    case "vector.times.matrix": {
+      const bm = Array.isArray(b) ? b : [];
+      return bm.map((col) => dot(a, col));
+    }
+    case "outer_product": {
+      const y = flat(b);
+      return y.map((s) => map1(a, (x) => x * s));
+    }
+    case "popcount":
+      return mapScalars(a, (x) => bitCount(num2(x) >>> 0));
+    case "clz":
+      return mapScalars(a, (x) => Math.clz32(num2(x) >>> 0));
+    case "ctz":
+      return mapScalars(a, (x) => {
+        const v = num2(x) >>> 0;
+        return v === 0 ? 32 : 31 - Math.clz32(v & -v);
+      });
+    case "reverse_bits":
+      return mapScalars(a, (x) => reverseBits(num2(x) >>> 0));
+    case "rotate":
+      return map2(a, b, (x, y) => {
+        const n = y & 31;
+        return (x >>> 0 << n | x >>> 0 >>> (32 - n || 32)) >>> 0;
+      });
+    case "extract_bits":
+      return map3(a, b, c2, (x, offset, count2) => {
+        if (count2 <= 0) return 0;
+        const mask = count2 >= 32 ? 4294967295 : (1 << count2) - 1 >>> 0;
+        return (x >>> offset & mask) >>> 0;
+      });
+    case "insert_bits": {
+      const offset = num2(args[2]), count2 = num2(args[3]);
+      return map2(a, b, (x, y) => {
+        if (count2 <= 0) return x;
+        const mask = (count2 >= 32 ? 4294967295 : (1 << count2) - 1 >>> 0) << offset;
+        return (x >>> 0 & ~mask | y >>> 0 << offset & mask) >>> 0;
+      });
+    }
+    // Packing: the conversions an engine uses to squeeze varyings and buffers.
+    case "pack_float_to_unorm4x8":
+    case "pack_half_to_unorm4x8": {
+      const v = flat(a);
+      let out = 0;
+      for (let i = 0; i < 4; i++) out |= (Math.round(clamp(v[i] ?? 0, 0, 1) * 255) & 255) << i * 8;
+      return out >>> 0;
+    }
+    case "pack_float_to_snorm4x8": {
+      const v = flat(a);
+      let out = 0;
+      for (let i = 0; i < 4; i++) out |= (Math.round(clamp(v[i] ?? 0, -1, 1) * 127) & 255) << i * 8;
+      return out >>> 0;
+    }
+    case "unpack_unorm4x8_to_float": {
+      const v = num2(a) >>> 0;
+      return [0, 1, 2, 3].map((i) => (v >>> i * 8 & 255) / 255);
+    }
+    case "unpack_snorm4x8_to_float": {
+      const v = num2(a) >>> 0;
+      return [0, 1, 2, 3].map((i) => Math.max(-1, ((v >>> i * 8 & 255) << 24 >> 24) / 127));
+    }
+    // Derivatives: the pixel quad's other invocations have to reach the same point first.
+    case "dfdx":
+    case "dpdx":
+    case "ddx": {
+      const d = ctx.derivative(a);
+      return d === BLOCKED ? BLOCKED : d.dx;
+    }
+    case "dfdy":
+    case "dpdy":
+    case "ddy": {
+      const d = ctx.derivative(a);
+      return d === BLOCKED ? BLOCKED : d.dy;
+    }
+    case "fwidth": {
+      const d = ctx.derivative(a);
+      if (d === BLOCKED) return BLOCKED;
+      return map2(map1(d.dx, Math.abs), map1(d.dy, Math.abs), (x, y) => x + y);
+    }
+    // Atomics: one invocation, so the operation is simply read-modify-write.
+    case "atomic_load_explicit":
+      return ctx.load(a);
+    case "atomic_store_explicit":
+      ctx.store(a, b);
+      return null;
+    case "atomic_exchange_explicit": {
+      const before = ctx.load(a);
+      ctx.store(a, b);
+      return before;
+    }
+    case "atomic_compare_exchange_weak_explicit": {
+      const before = ctx.load(a);
+      const expected = ctx.load(b);
+      if (num2(before) === num2(expected)) {
+        ctx.store(a, c2);
+        return true;
+      }
+      ctx.store(b, before);
+      return false;
+    }
+    case "atomic_fetch_add_explicit":
+    case "atomic_fetch_sub_explicit":
+    case "atomic_fetch_and_explicit":
+    case "atomic_fetch_or_explicit":
+    case "atomic_fetch_xor_explicit":
+    case "atomic_fetch_min_explicit":
+    case "atomic_fetch_max_explicit": {
+      const before = ctx.load(a);
+      const x = num2(before), y = num2(b);
+      const after = name === "atomic_fetch_add_explicit" ? x + y : name === "atomic_fetch_sub_explicit" ? x - y : name === "atomic_fetch_and_explicit" ? x & y : name === "atomic_fetch_or_explicit" ? x | y : name === "atomic_fetch_xor_explicit" ? x ^ y : name === "atomic_fetch_min_explicit" ? Math.min(x, y) : Math.max(x, y);
+      ctx.store(a, after);
+      return before;
+    }
+    // One invocation is its own threadgroup and its own simdgroup here.
+    case "threadgroup_barrier":
+    case "simdgroup_barrier":
+    case "threadgroup_imageblock_barrier":
+      return null;
+    case "simd_is_first":
+    case "quad_is_first":
+      return true;
+    case "simd_broadcast":
+    case "simd_broadcast_first":
+    case "simd_shuffle":
+    case "simd_shuffle_up":
+    case "simd_shuffle_down":
+    case "simd_shuffle_xor":
+    case "simd_shuffle_rotate_down":
+    case "quad_broadcast":
+    case "quad_shuffle":
+    case "quad_shuffle_up":
+    case "quad_shuffle_down":
+    case "quad_shuffle_xor":
+      ctx.warn(`${name} reads another thread's value, which a single debugged invocation does not have: its own is used`);
+      return a;
+    case "simd_sum":
+    case "quad_sum":
+    case "simd_product":
+    case "quad_product":
+    case "simd_min":
+    case "simd_max":
+    case "quad_min":
+    case "quad_max":
+      ctx.warn(`${name} reduces across threads, which a single debugged invocation cannot do: its own value is used`);
+      return a;
+    case "simd_all":
+    case "quad_all":
+      return flat(a).every((x) => x !== 0);
+    case "simd_any":
+    case "quad_any":
+      return flat(a).some((x) => x !== 0);
+    case "simd_ballot":
+      return flat(a).some((x) => x !== 0) ? 1 : 0;
+    case "simd_active_threads_mask":
+      return 1;
+    case "is_null_texture":
+      return args[0] === null || a instanceof ImageValue && !a.texture;
+    case "modf": {
+      const whole = map1(a, Math.trunc);
+      ctx.store(b, whole);
+      return map2(a, whole, (x, w) => x - w);
+    }
+    case "frexp":
+    case "sincos": {
+      ctx.warn(`${name} is not implemented by the interpreter`);
+      return a;
+    }
+    default:
+      return sampleOption(name, args);
+  }
+}
+function bitCount(v) {
+  let x = v >>> 0;
+  x = x - (x >>> 1 & 1431655765);
+  x = (x & 858993459) + (x >>> 2 & 858993459);
+  return (x + (x >>> 4) & 252645135) * 16843009 >>> 24;
+}
+function reverseBits(v) {
+  let x = v >>> 0;
+  x = (x & 1431655765) << 1 | x >>> 1 & 1431655765;
+  x = (x & 858993459) << 2 | x >>> 2 & 858993459;
+  x = (x & 252645135) << 4 | x >>> 4 & 252645135;
+  x = (x & 16711935) << 8 | x >>> 8 & 16711935;
+  return (x << 16 | x >>> 16) >>> 0;
+}
+function matrixTimesVector(m, v) {
+  const columns = Array.isArray(m) ? m : [];
+  const x = flat(v);
+  if (!columns.length) return v;
+  const rows = Array.isArray(columns[0]) ? columns[0].length : 1;
+  const out = new Array(rows).fill(0);
+  columns.forEach((col, j) => {
+    const c2 = flat(col);
+    for (let r = 0; r < rows; r++) out[r] += c2[r] * (x[j] ?? 0);
+  });
+  return out;
+}
+function determinant(m) {
+  const columns = (Array.isArray(m) ? m : []).map(flat);
+  const n = columns.length;
+  if (n === 2) return columns[0][0] * columns[1][1] - columns[1][0] * columns[0][1];
+  if (n === 3) {
+    const [a, b, c2] = columns;
+    return a[0] * (b[1] * c2[2] - c2[1] * b[2]) - b[0] * (a[1] * c2[2] - c2[1] * a[2]) + c2[0] * (a[1] * b[2] - b[1] * a[2]);
+  }
+  if (n === 4) {
+    let sum = 0;
+    for (let i = 0; i < 4; i++) {
+      const minor = columns.filter((_, j) => j !== 0).map((col) => col.filter((_, r) => r !== i));
+      sum += (i % 2 ? -1 : 1) * columns[0][i] * determinant(minor);
+    }
+    return sum;
+  }
+  return n === 1 ? columns[0][0] : 0;
+}
+function textureOf(v) {
+  if (v instanceof ImageValue) return { texture: v.texture, binding: v.binding };
+  if (v instanceof SampledImageValue) return { texture: v.image.texture, binding: v.image.binding };
+  return null;
+}
+function samplerOf(v) {
+  if (v instanceof SamplerValue) return v.sampler;
+  if (v instanceof SampledImageValue) return v.sampler.sampler;
+  return null;
+}
+function textureCall(method, args, ctx) {
+  const image = textureOf(args[0]);
+  const types = ctx.types;
+  const type = types.get(ctx.argTypes[0] ?? 0);
+  const shape = type?.kind === "texture" ? type : null;
+  if (!image) {
+    ctx.warn(`${method} was called on something that is not a texture`);
+    return null;
+  }
+  const texture = image.texture;
+  if (!texture && method.startsWith("get_")) return 0;
+  if (!texture) ctx.warn(`${image.binding} was not captured, so reading it gives zero`);
+  const dim = shape?.dim ?? 1 /* D2 */;
+  const arrayed = shape?.arrayed ?? false;
+  const depth = shape?.depth ?? false;
+  const coordinates = shape ? coordinateCount(dim, false) : 2;
+  switch (method) {
+    case "get_width":
+      return texture ? Math.max(1, texture.width >> mipArg(args, 1)) : 0;
+    case "get_height":
+      return texture ? Math.max(1, texture.height >> mipArg(args, 1)) : 0;
+    case "get_depth":
+      return texture ? Math.max(1, texture.depth >> mipArg(args, 1)) : 0;
+    case "get_num_mip_levels":
+      return texture ? texture.mips : 0;
+    case "get_array_size":
+      return texture ? texture.layers : 0;
+    case "get_num_samples":
+      return 1;
+    case "write": {
+      if (!texture) return null;
+      const value = flat(args[1]);
+      const coord = flat(args[2]);
+      const mip = args.length > 3 ? num2(args[3]) : 0;
+      const layer = arrayed ? num2(args[3] ?? 0) : 0;
+      texture.writes = texture.writes ?? /* @__PURE__ */ new Map();
+      texture.writes.set(`${mip}/${layer}/${Math.floor(coord[0] ?? 0)}/${Math.floor(coord[1] ?? 0)}`, value);
+      return null;
+    }
+    case "read": {
+      const coord = flat(args[1]);
+      const layer = arrayed ? num2(args[2]) : 0;
+      const mip = arrayed ? num2(args[3] ?? 0) : num2(args[2] ?? 0);
+      const texel3 = fetch(texture, [...coord, layer], mip, dim, arrayed);
+      return depth ? texel3[0] : texel3;
+    }
+    case "sample":
+    case "sample_compare": {
+      const sampler = samplerOf(args[1]);
+      const coord = flat(args[2]);
+      const compare2 = method === "sample_compare" ? num2(args[3]) : void 0;
+      let rest = method === "sample_compare" ? 4 : 3;
+      const layer = arrayed ? num2(args[rest++]) : 0;
+      const options = readSampleOptions(args, rest);
+      let lod = options.lod;
+      if (lod === void 0 && texture) {
+        if (options.gradient) {
+          lod = implicitLod(texture, options.gradient.dx, options.gradient.dy);
+        } else {
+          const d = ctx.derivative(args[2]);
+          if (d === BLOCKED) return BLOCKED;
+          lod = implicitLod(texture, flat(d.dx), flat(d.dy));
+        }
+      }
+      const full = arrayed ? [...coord.slice(0, coordinateCount(dim, false)), layer] : coord;
+      const texel3 = sample(texture, sampler, {
+        coord: full,
+        dim,
+        arrayed,
+        lod: (lod ?? 0) + (options.bias ?? 0),
+        dref: compare2,
+        offset: options.offset
+      });
+      return depth || compare2 !== void 0 ? texel3[0] : texel3;
+    }
+    case "gather":
+    case "gather_compare": {
+      const sampler = samplerOf(args[1]);
+      const coord = flat(args[2]);
+      const compare2 = method === "gather_compare" ? num2(args[3]) : void 0;
+      const component = method === "gather" ? componentArg(args) : 0;
+      return gather(texture, sampler, [...coord.slice(0, coordinates), arrayed ? num2(args[3]) : 0], component, compare2);
+    }
+    default:
+      ctx.warn(`texture.${method} is not implemented by the interpreter`);
+      return null;
+  }
+}
+function mipArg(args, at) {
+  const v = args[at];
+  return typeof v === "number" ? Math.max(0, Math.trunc(v)) : 0;
+}
+function componentArg(args) {
+  const last = args[args.length - 1];
+  if (typeof last === "number") return Math.max(0, Math.min(3, Math.trunc(last)));
+  return 0;
+}
+function coordinateCount(dim, arrayed) {
+  const base = dim === 0 /* D1 */ ? 1 : dim === 2 /* D3 */ || dim === 3 /* Cube */ ? 3 : 2;
+  return base + (arrayed ? 1 : 0);
+}
+function readSampleOptions(args, from) {
+  const out = {};
+  for (let i = from; i < args.length; i++) {
+    const v = args[i];
+    if (v instanceof OpaqueValue) {
+      if (v.kind === "level") out.lod = num2(v.values[0]);
+      else if (v.kind === "bias") out.bias = num2(v.values[0]);
+      else if (v.kind === "gradient") out.gradient = { dx: flat(v.values[0]), dy: flat(v.values[1]) };
+      continue;
+    }
+    if (Array.isArray(v)) out.offset = flat(v);
+  }
+  return out;
+}
+function sampleOption(name, args) {
+  switch (name) {
+    case "level":
+    case "bias":
+    case "min_lod_clamp":
+      return new OpaqueValue(name, args);
+    case "gradient2d":
+    case "gradient3d":
+    case "gradientcube":
+      return new OpaqueValue("gradient", args);
+    default:
+      return void 0;
+  }
+}
+
+// src/renderer/msl/interpreter.ts
+var MAX_STEPS = 2e7;
+var MslInvocation = class {
+  program;
   entry;
   bindings;
   inputs;
   derivatives;
   status = "running";
   error = "";
-  /** Things the interpreter could not do faithfully: uncaptured resources, unsupported operations. */
   warnings = /* @__PURE__ */ new Set();
   frames = [];
-  /** Global variables: their pointers, by id. */
+  /** Globals: their cells, by symbol id. */
   globals = /* @__PURE__ */ new Map();
-  constants;
-  /** Demoted to a helper invocation (its outputs are discarded, execution goes on). */
-  helper = false;
+  /** Entry-point parameters as the debugger shows them, with what bound each. */
+  boundParams = [];
+  /** What the entry point returned, once it has. */
+  returned = null;
   steps = 0;
-  /** Results of the instructions executed since takeResults(). */
   _results = [];
-  /** Called with every value an instruction produces (the MCP tool's trace). */
   onResult = null;
-  constructor(module, options) {
-    this.module = module;
-    const entry = module.entryPoint(options.entryPoint, options.model);
-    if (!entry) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
+  /** A builtin that blocked: the same instruction runs again next step. */
+  _blocked = false;
+  constructor(program, options) {
+    this.program = program;
+    const entry = program.entryPoint(options.entryPoint, options.stage);
+    if (!entry) throw new Error(`the library has no ${options.entryPoint ?? options.stage ?? ""} entry point`);
     this.entry = entry;
     this.bindings = options.bindings;
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
-    this.constants = new Map(module.constants);
-    this._specialize();
-    this._createGlobals();
-    const fn = module.functions.get(entry.function);
-    if (!fn || !fn.blocks.length) throw new Error(`the entry point ${entry.name} has no body`);
-    this.frames.push(this._frame(fn, 0));
-    this._skipNoops();
+    for (const g of program.ir.globals) this.globals.set(g.symbol.id, { value: cloneValue(g.value) });
+    this.frames.push(this._frame(entry, -1));
+    this._bindEntry(this.frames[0]);
   }
-  get stage() {
-    const m = this.entry.model;
-    return m === 0 /* Vertex */ ? "vertex" : m === 4 /* Fragment */ ? "fragment" : m === 5 /* GLCompute */ ? "compute" : "other";
+  get _types() {
+    return this.program.ir.types;
   }
-  /** Itself: an invocation steps itself (a PixelQuad steps one of four). */
+  get _instructions() {
+    return this.program.ir.instructions;
+  }
+  _symbol(id) {
+    return this.program.ir.symbols[id];
+  }
+  // ---------------------------------------------------------------------------------------
+  // DebugInvocation
   get invocation() {
     return this;
   }
   get finished() {
     return this.status === "returned" || this.status === "discarded" || this.status === "error";
   }
+  get depth() {
+    return this.frames.length;
+  }
   /** The instruction about to execute, null when finished. */
   get current() {
     const frame = this.frames[this.frames.length - 1];
-    return frame && !this.finished ? this.module.instructions[frame.pc] ?? null : null;
+    return frame && !this.finished ? this._instructions[frame.pc] ?? null : null;
   }
-  /** The results produced since the last call, and forgets them. */
   takeResults() {
     const r = this._results;
     this._results = [];
     return r;
   }
-  /** Executes one instruction (instructions that do nothing, like OpLine, are passed over with it). */
+  callStack() {
+    const out = [];
+    for (let d = 0; d < this.frames.length; d++) {
+      const frame = this.frames[this.frames.length - 1 - d];
+      out.push({ name: frame.fn.name, step: d === 0 ? this.current : this._instructions[frame.pc] ?? null });
+    }
+    return out;
+  }
+  valueOf(id, depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    const cell = frame?.cells.get(id) ?? this.globals.get(id);
+    if (cell) return cloneValue(cell.value);
+    return frame?.values.get(id);
+  }
+  frameOwns(depth, id) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    return !!frame && (frame.cells.has(id) || frame.values.has(id));
+  }
+  locals(depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    if (!frame) return [];
+    const out = [];
+    for (const p of frame.fn.params) {
+      const cell = frame.cells.get(p.id);
+      const value = cell ? cloneValue(cell.value) : frame.values.get(p.id) ?? null;
+      out.push({ id: p.id, name: p.name, type: p.type, value, storage: 0 });
+    }
+    for (const l of frame.locals) {
+      out.push({ id: l.id, name: this._symbol(l.id)?.name ?? "", type: l.type, value: cloneValue(l.cell.value), storage: 0 });
+    }
+    return out;
+  }
+  /** The entry point's arguments: the stage-in struct, the built-ins and the bound resources. */
+  inputVariables() {
+    return this.boundParams.filter((v) => v.binding === void 0);
+  }
+  /** The bound buffers, textures and samplers. */
+  resourceVariables() {
+    return this.boundParams.filter((v) => v.binding !== void 0);
+  }
+  /** File-scope `constant` variables, which is the nearest MSL has to a private global. */
+  privateVariables() {
+    const out = [];
+    for (const [id, cell] of this.globals) {
+      const symbol = this._symbol(id);
+      if (!symbol) continue;
+      out.push({ id, name: symbol.name, type: symbol.type, value: cloneValue(cell.value), storage: 1 });
+    }
+    return out;
+  }
+  /**
+   * What the entry point wrote: the members of the struct it returned, with `[[position]]` reported
+   * as built-in 0 (which is what the debugger's comparison with the GPU looks for) and
+   * `[[color(n)]]` or a plain varying as location n.
+   */
+  outputs() {
+    if (this.status !== "returned") return [];
+    const type = this.entry.returnType;
+    const t = this._types.get(type);
+    if (t?.kind === "struct") {
+      return t.members.map((m, i) => {
+        const attribute2 = m.attributes.find((a) => OUTPUT_ATTRIBUTES.has(a.name)) ?? m.attributes[0];
+        const value = Array.isArray(this.returned) ? this.returned[i] ?? null : null;
+        return {
+          id: -1 - i,
+          name: m.name,
+          type: m.type,
+          value,
+          storage: 3,
+          ...outputWhere(attribute2?.name, attribute2?.args[0], i)
+        };
+      });
+    }
+    if (t?.kind === "void") return [];
+    const attribute = this.entry.returnAttributes[0];
+    return [{
+      id: -1,
+      name: "return",
+      type,
+      value: this.returned,
+      storage: 3,
+      ...outputWhere(attribute?.name, attribute?.args[0], 0)
+    }];
+  }
+  // ---------------------------------------------------------------------------------------
+  // Setup
+  _frame(fn, resultId) {
+    const frame = { fn, pc: fn.entry, values: /* @__PURE__ */ new Map(), cells: /* @__PURE__ */ new Map(), locals: [], resultId };
+    for (const l of fn.locals) {
+      const cell = { value: this._types.zero(l.type) };
+      frame.cells.set(l.id, cell);
+      frame.locals.push({ id: l.id, cell, type: l.type });
+    }
+    return frame;
+  }
+  /** Fills the entry point's parameters from the capture. */
+  _bindEntry(frame) {
+    for (const p of this.entry.params) {
+      const symbol = this._symbol(p.id);
+      const binding = symbol?.binding;
+      const t = this._types.get(p.type);
+      let value = this._types.zero(p.type);
+      let where = {};
+      if (binding?.kind === "buffer") {
+        const index = binding.index;
+        const bytes = index >= 0 ? this.bindings.buffer(index) : null;
+        const pointee = t?.kind === "pointer" ? t.pointee : p.type;
+        if (!bytes) {
+          this.warn(`${this.label("buffer", index)} (${p.name}) was not captured, so it reads as zero`);
+        }
+        const storage = {
+          bytes: bytes ? new Uint8Array(bytes) : new Uint8Array(Math.max(4, this._types.sizeOf(pointee))),
+          type: pointee,
+          overrides: /* @__PURE__ */ new Map()
+        };
+        const cell = { value: null, buffer: storage };
+        if (t?.kind === "pointer" && !t.reference) storage.type = this._types.array(pointee, -1);
+        const pointer = new Pointer(cell, [], storage.type, 0, p.id);
+        frame.values.set(p.id, pointer);
+        value = pointer;
+        where = { binding: index, set: 0 };
+      } else if (binding?.kind === "texture") {
+        const texture = binding.index >= 0 ? this.bindings.texture(binding.index) : null;
+        if (!texture) this.warn(`${this.label("texture", binding.index)} (${p.name}) was not captured, so sampling it gives zero`);
+        value = new ImageValue(texture, this.label("texture", binding.index));
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 1 };
+      } else if (binding?.kind === "sampler") {
+        const sampler = binding.index >= 0 ? this.bindings.sampler(binding.index) : null;
+        value = new SamplerValue(sampler, this.label("sampler", binding.index));
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 2 };
+      } else if (binding?.kind === "stage_in") {
+        value = this._stageIn(p.type, p.name);
+        this._cell(frame, p.id, p.type, value);
+      } else if (binding?.kind === "builtin") {
+        value = this._builtinInput(binding.name, p.type, p.name);
+        this._cell(frame, p.id, p.type, value);
+        where = { builtin: 0 };
+      } else if (binding?.kind === "threadgroup") {
+        this.warn(`${p.name} is threadgroup memory, which one debugged invocation sees as zeroed`);
+        this._cell(frame, p.id, p.type, value);
+      } else {
+        this._cell(frame, p.id, p.type, value);
+      }
+      this.boundParams.push({ id: p.id, name: p.name, type: p.type, value, storage: binding ? 2 : 0, ...where });
+    }
+  }
+  _cell(frame, id, type, value) {
+    const cell = { value };
+    frame.cells.set(id, cell);
+    frame.locals.push({ id, cell, type });
+  }
+  label(kind, index) {
+    if (this.bindings.label) return this.bindings.label(kind, index);
+    return index < 0 ? `an unnumbered ${kind}` : `${kind}(${index})`;
+  }
+  /** The `[[stage_in]]` struct, member by member, from the invocation's inputs. */
+  _stageIn(type, name) {
+    const t = this._types.get(type);
+    if (t?.kind !== "struct") {
+      this.warn(`${name} is marked [[stage_in]] but is not a struct`);
+      return this._types.zero(type);
+    }
+    return t.members.map((m) => {
+      const attribute = m.attributes.find((a) => a.name === "attribute");
+      const builtin = m.attributes.find((a) => BUILTIN_INPUT_NAMES.has(a.name));
+      const user = m.attributes.find((a) => a.name === "user");
+      let scalars2;
+      if (attribute) scalars2 = this.inputs.attributes.get(attribute.args[0] ?? 0);
+      else if (builtin) {
+        const value = this.inputs.builtins.get(builtin.name);
+        if (value !== void 0) return this._fit(value, m.type);
+      }
+      if (!scalars2) scalars2 = this.inputs.varyings.get(m.name) ?? (user?.text ? this.inputs.varyings.get(user.text) : void 0);
+      if (!scalars2 && user?.text) {
+        const locn = /locn(\d+)/.exec(user.text);
+        if (locn) scalars2 = this.inputs.attributes.get(Number(locn[1]));
+      }
+      if (!scalars2) {
+        this.warn(`the capture has no input for ${name}.${m.name}, so it reads as zero`);
+        return this._types.zero(m.type);
+      }
+      return this._fromScalars(scalars2, m.type);
+    });
+  }
+  _builtinInput(attribute, type, name) {
+    const value = this.inputs.builtins.get(attribute);
+    if (value === void 0) {
+      this.warn(`the capture does not say what [[${attribute}]] was for ${name}, so it reads as zero`);
+      return this._types.zero(type);
+    }
+    return this._fit(value, type);
+  }
+  /** A value brought to a type's shape: a scalar into a vector, a vector truncated or extended. */
+  _fit(value, type) {
+    const t = this._types.get(type);
+    if (t?.kind === "vector") {
+      const source = Array.isArray(value) ? value : [value];
+      return Array.from({ length: t.count }, (_, i) => this._normalize(source[i] ?? 0, t.element));
+    }
+    if (t?.kind === "scalar") return this._normalize(Array.isArray(value) ? value[0] ?? 0 : value, type);
+    return value;
+  }
+  _fromScalars(scalars2, type) {
+    const t = this._types.get(type);
+    if (t?.kind === "vector") return Array.from({ length: t.count }, (_, i) => this._normalize(scalars2[i] ?? 0, t.element));
+    if (t?.kind === "matrix") {
+      const column = this._types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._normalize(scalars2[c2 * rows + r] ?? 0, t.column)));
+    }
+    return this._normalize(scalars2[0] ?? 0, type);
+  }
+  _normalize(value, type) {
+    const scalar = this._types.scalarOf(type);
+    return scalar ? normalize(value, scalar) : value;
+  }
+  warn(message) {
+    if (this.warnings.size < 64) this.warnings.add(message);
+  }
+  // ---------------------------------------------------------------------------------------
+  // Stepping
   step() {
     if (this.finished) return this.status;
     if (++this.steps > MAX_STEPS) return this._fail(`stopped after ${MAX_STEPS.toLocaleString()} instructions: an endless loop?`);
+    const frame = this.frames[this.frames.length - 1];
+    const instr = this._instructions[frame.pc];
+    if (!instr) return this._fail("ran off the end of a function");
     try {
-      let guard = 0;
-      while (!this.finished) {
-        const frame = this.frames[this.frames.length - 1];
-        const inst = this.module.instructions[frame.pc];
-        if (!inst) return this._fail("ran off the end of a function");
-        if (this._isNoop(inst)) {
-          frame.pc++;
-          if (++guard > 1e5) return this._fail("too many instructions without effect");
-          continue;
-        }
-        const r = this._execute(frame, inst);
-        this.status = r === "blocked" ? "blocked" : this.finished ? this.status : "running";
-        if (r !== "blocked") this._skipNoops();
-        return this.status;
-      }
+      this._blocked = false;
+      this._execute(frame, instr);
     } catch (e) {
       return this._fail(e instanceof Error ? e.message : String(e));
     }
+    if (this._blocked) {
+      this.status = "blocked";
+      return this.status;
+    }
+    if (!this.finished) this.status = "running";
     return this.status;
   }
-  _skipNoops() {
-    const frame = this.frames[this.frames.length - 1];
-    if (!frame || this.finished) return;
-    while (frame.pc < this.module.instructions.length && this._isNoop(this.module.instructions[frame.pc])) frame.pc++;
-  }
-  /** Runs to the end (or a block on derivatives); for tests and the trace. */
   run() {
     while (!this.finished) {
       if (this.step() === "blocked") return "blocked";
     }
     return this.status;
   }
-  // ---------------------------------------------------------------------------------------
-  // What a debugger shows
-  /** The outputs the invocation wrote: by location and built-in. */
-  outputs() {
-    return this._interfaceVariables(3 /* Output */);
-  }
-  inputVariables() {
-    return this._interfaceVariables(1 /* Input */);
-  }
-  /** Uniform, storage and push constant blocks, images and samplers. */
-  resourceVariables() {
-    const out = [];
-    for (const [id, ptr] of this.globals) {
-      if (ptr.storage === 1 /* Input */ || ptr.storage === 3 /* Output */) continue;
-      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) continue;
-      out.push(this._view(id, ptr));
-    }
-    return out;
-  }
-  /** Private and workgroup variables. */
-  privateVariables() {
-    const out = [];
-    for (const [id, ptr] of this.globals) {
-      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) out.push(this._view(id, ptr));
-    }
-    return out;
-  }
-  /** A frame's local variables and parameters (depth 0 is the innermost frame). */
-  locals(depth = 0) {
-    const frame = this.frames[this.frames.length - 1 - depth];
-    if (!frame) return [];
-    const out = [];
-    for (const p of frame.fn.params) {
-      const v = frame.values.get(p.id);
-      const value = v instanceof Pointer ? this._load(v) : v ?? null;
-      out.push({ id: p.id, name: this.module.nameOf(p.id), type: v instanceof Pointer ? v.type : p.type, value, storage: 7 /* Function */ });
-    }
-    for (const l of frame.locals) {
-      out.push({ id: l.id, name: this.module.nameOf(l.id), type: l.type, value: cloneValue(l.cell.value), storage: 7 /* Function */ });
-    }
-    return out;
-  }
-  /** A value an id has in a frame, for hovering over a name: SSA values and variables. */
-  valueOf(id, depth = 0) {
-    const frame = this.frames[this.frames.length - 1 - depth];
-    const v = frame?.values.get(id) ?? this.globals.get(id);
-    if (v === void 0) return this.constants.get(id);
-    return v instanceof Pointer ? this._load(v) : v;
-  }
-  // ---------------------------------------------------------------------------------------
-  // Setup
-  _specialize() {
-    const m = this.module;
-    if (this.bindings.specialization.size) {
-      for (const [id, specId] of m.specIds) {
-        const bytes = this.bindings.specialization.get(specId);
-        if (!bytes) continue;
-        const inst = m.instructions.find((i) => i.result === id && (i.op === 50 /* SpecConstant */ || i.op === 48 /* SpecConstantTrue */ || i.op === 49 /* SpecConstantFalse */));
-        if (!inst) continue;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        if (inst.op === 48 /* SpecConstantTrue */ || inst.op === 49 /* SpecConstantFalse */) {
-          this.constants.set(id, bytes.byteLength >= 4 ? view.getUint32(0, true) !== 0 : bytes[0] !== 0);
-        } else if (inst.op === 50 /* SpecConstant */) {
-          const words2 = new Uint32Array(Math.max(1, Math.ceil(bytes.byteLength / 4)));
-          for (let i = 0; i < words2.length && (i + 1) * 4 <= bytes.byteLength; i++) words2[i] = view.getUint32(i * 4, true);
-          this.constants.set(id, m.scalarFromWords(inst.resultType, words2));
-        }
-      }
-    }
-    for (const inst of m.instructions) {
-      if (inst.op === 51 /* SpecConstantComposite */) {
-        this.constants.set(inst.result, Array.from(inst.words.subarray(2)).map((id) => this.constants.get(id)));
-      } else if (inst.op === 52 /* SpecConstantOp */) {
-        const opcode = inst.words[2];
-        const operands = inst.words.subarray(3);
-        const fake = { op: opcode, words: new Uint32Array([inst.resultType, inst.result, ...operands]), index: inst.index, resultType: inst.resultType, result: inst.result };
-        const frame = { values: /* @__PURE__ */ new Map() };
-        try {
-          const value = this._compute(frame, fake);
-          if (value !== void 0) this.constants.set(inst.result, value);
-        } catch {
-          this.warnings.add(`specialization constant operation ${opcode} is not evaluated`);
-        }
-      }
-    }
-    for (const t of m.types.values()) if (t.kind === "array") t.length = Number(this.constants.get(t.lengthId) ?? t.length);
-  }
-  _createGlobals() {
-    const m = this.module;
-    for (const [id, g] of m.globals) {
-      const ptrType = m.types.get(g.type);
-      if (ptrType?.kind !== "pointer") continue;
-      const pointee = ptrType.pointee;
-      const cell = { value: null };
-      const set = m.decoration(id, 34 /* DescriptorSet */)?.[0] ?? 0;
-      const binding = m.decoration(id, 33 /* Binding */)?.[0] ?? 0;
-      switch (g.storage) {
-        case 2 /* Uniform */:
-        case 12 /* StorageBuffer */:
-        case 9 /* PushConstant */: {
-          const t = m.types.get(pointee);
-          if (g.storage !== 9 /* PushConstant */ && (t?.kind === "array" || t?.kind === "runtimeArray")) {
-            const element = t.kind === "array" || t.kind === "runtimeArray" ? t.element : pointee;
-            const count2 = t.kind === "array" ? t.length : 1;
-            cell.value = Array.from({ length: count2 }, (_, i) => {
-              const bytes = this.bindings.buffer(set, binding, i);
-              if (!bytes) this.warnings.add(`set ${set} binding ${binding}[${i}] (${m.nameOf(id)}) was not captured: it reads as zeros`);
-              return { buffer: { bytes: bytes ?? new Uint8Array(0), type: element, overrides: /* @__PURE__ */ new Map() } };
-            });
-            cell.bufferArray = true;
-          } else {
-            const bytes = g.storage === 9 /* PushConstant */ ? this.bindings.pushConstants : this.bindings.buffer(set, binding, 0);
-            if (!bytes) {
-              this.warnings.add(g.storage === 9 /* PushConstant */ ? "the push constants were not captured: they read as zeros" : `set ${set} binding ${binding} (${m.nameOf(id)}) was not captured: it reads as zeros`);
-            }
-            cell.buffer = { bytes: bytes ?? new Uint8Array(0), type: pointee, overrides: /* @__PURE__ */ new Map() };
-          }
-          break;
-        }
-        case 0 /* UniformConstant */:
-          cell.value = this._resource(id, pointee, set, binding, 0);
-          break;
-        case 1 /* Input */:
-          cell.value = this._input(id, pointee);
-          break;
-        case 3 /* Output */:
-        case 6 /* Private */:
-        case 4 /* Workgroup */:
-        default:
-          cell.value = g.initializer ? cloneValue(this.constants.get(g.initializer)) : m.zero(pointee);
-          break;
-      }
-      this.globals.set(id, new Pointer(cell, [], pointee, g.storage, id));
-    }
-  }
-  _resource(id, type, set, binding, element) {
-    const m = this.module;
-    const t = m.types.get(type);
-    const label = `set ${set} binding ${binding}${element ? `[${element}]` : ""} (${m.nameOf(id)})`;
-    if (t?.kind === "array" || t?.kind === "runtimeArray") {
-      const count2 = t.kind === "array" ? t.length : 1;
-      return Array.from({ length: count2 }, (_, i) => this._resource(id, t.element, set, binding, i));
-    }
-    const texture = () => {
-      const tex = this.bindings.texture(set, binding, element);
-      if (!tex) this.warnings.add(`${label}: its image was not captured, so it reads as black`);
-      return tex;
-    };
-    if (t?.kind === "image") return new ImageValue(texture(), label);
-    if (t?.kind === "sampler") return new SamplerValue(this.bindings.sampler(set, binding, element), label);
-    if (t?.kind === "sampledImage") return new SampledImageValue(new ImageValue(texture(), label), new SamplerValue(this.bindings.sampler(set, binding, element), label));
-    return null;
-  }
-  /** An input variable's value: a built-in, or the scalars at its location shaped into its type. */
-  _input(id, type) {
-    const m = this.module;
-    const builtin = m.decoration(id, 11 /* BuiltIn */)?.[0];
-    if (builtin !== void 0) {
-      const v = this.inputs.builtins.get(builtin);
-      if (v === void 0) {
-        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`} has no value here: it reads as zero`);
-        return m.zero(type);
-      }
-      return this._shape(type, flat(v), { at: 0 });
-    }
-    const t = m.types.get(type);
-    if (t?.kind === "struct") {
-      const base = m.decoration(id, 30 /* Location */)?.[0] ?? 0;
-      return t.members.map((member, i) => {
-        const location2 = m.memberDecoration(type, i, 30 /* Location */)?.[0] ?? base + i;
-        return this._shape(member, this.inputs.locations.get(location2) ?? [], { at: 0 });
-      });
-    }
-    const location = m.decoration(id, 30 /* Location */)?.[0];
-    if (location === void 0) return m.zero(type);
-    const scalars2 = this.inputs.locations.get(location);
-    if (!scalars2) {
-      this.warnings.add(`input ${m.nameOf(id)} (location ${location}) has no value here: it reads as zero`);
-      return m.zero(type);
-    }
-    if (t?.kind === "array" || t?.kind === "matrix") {
-      const count2 = t.kind === "array" ? t.length : t.count;
-      const element = t.kind === "array" ? t.element : t.column;
-      return Array.from({ length: count2 }, (_, i) => this._shape(element, this.inputs.locations.get(location + i) ?? [], { at: 0 }));
-    }
-    return this._shape(type, scalars2, { at: 0 });
-  }
-  /** Scalars poured into a type in order (missing ones zero, a missing alpha one). */
-  _shape(type, scalars2, cursor) {
-    const m = this.module;
-    const t = m.types.get(type);
-    if (!t) return 0;
-    const s = scalarOf(m, type);
-    switch (t.kind) {
-      case "bool":
-      case "int":
-      case "float": {
-        const v = scalars2[cursor.at++] ?? 0;
-        return s ? normalize(v, s) : v;
-      }
-      case "vector":
-        return Array.from({ length: t.count }, () => this._shape(t.element, scalars2, cursor));
-      case "matrix":
-        return Array.from({ length: t.count }, () => this._shape(t.column, scalars2, cursor));
-      case "array":
-        return Array.from({ length: t.length }, () => this._shape(t.element, scalars2, cursor));
-      case "struct":
-        return t.members.map((member) => this._shape(member, scalars2, cursor));
-      default:
-        return null;
-    }
-  }
-  _frame(fn, resultId) {
-    const first = fn.blocks[0];
-    return { fn, pc: first.start + 1, block: first.label, previousBlock: 0, values: /* @__PURE__ */ new Map(), locals: [], resultId };
-  }
-  _interfaceVariables(storage) {
-    const out = [];
-    for (const id of this.entry.interface) {
-      const ptr = this.globals.get(id);
-      if (!ptr || ptr.storage !== storage) continue;
-      out.push(this._view(id, ptr));
-    }
-    return out;
-  }
-  _view(id, ptr) {
-    const m = this.module;
-    const name = m.names.get(id) || BUILTIN_NAMES[m.decoration(id, 11 /* BuiltIn */)?.[0] ?? -1] || m.names.get(ptr.type) || m.nameOf(id);
-    return {
-      id,
-      name,
-      type: ptr.type,
-      value: this._load(ptr, 256),
-      storage: ptr.storage,
-      location: m.decoration(id, 30 /* Location */)?.[0],
-      builtin: m.decoration(id, 11 /* BuiltIn */)?.[0],
-      set: m.decoration(id, 34 /* DescriptorSet */)?.[0],
-      binding: m.decoration(id, 33 /* Binding */)?.[0]
-    };
-  }
-  // ---------------------------------------------------------------------------------------
-  // Execution
   _fail(message) {
-    const inst = this.current;
-    const loc = inst ? this.module.debug?.locations[inst.index] : null;
-    this.error = loc ? `${message} (line ${loc.line})` : message;
+    this.error = message;
     this.status = "error";
     return this.status;
   }
-  _isNoop(inst) {
-    switch (inst.op) {
-      case 0 /* Nop */:
-      case 8 /* Line */:
-      case 317 /* NoLine */:
-      case 247 /* SelectionMerge */:
-      case 246 /* LoopMerge */:
-      case 248 /* Label */:
-        return true;
-      case 12 /* ExtInst */:
-        return this.module.extSets.get(inst.words[2])?.startsWith("NonSemantic.") ?? false;
-      default:
-        return false;
-    }
+  _record(instr, id, value) {
+    const result = { inst: instr, id, value: cloneValue(value) };
+    this._results.push(result);
+    this.onResult?.(result);
   }
-  value(frame, id) {
-    const v = frame.values.get(id);
-    if (v !== void 0) return v;
-    const g = this.globals.get(id);
-    if (g) return g;
-    if (this.constants.has(id)) return cloneValue(this.constants.get(id));
-    return 0;
+  _set(frame, instr, id, value) {
+    frame.values.set(id, value);
+    this._record(instr, id, value);
   }
-  _record(frame, inst, value) {
-    frame.values.set(inst.result, value);
-    const r = { inst, id: inst.result, value };
-    this._results.push(r);
-    if (this._results.length > 4096) this._results.splice(0, 2048);
-    this.onResult?.(r);
+  _get(frame, id) {
+    if (id < 0) return null;
+    const value = frame.values.get(id);
+    if (value !== void 0) return value;
+    const cell = frame.cells.get(id) ?? this.globals.get(id);
+    return cell ? cell.value : null;
   }
-  _branch(frame, label) {
-    const block = frame.fn.blockByLabel.get(label);
-    if (!block) throw new Error(`branch to a missing block %${label}`);
-    frame.previousBlock = frame.block;
-    frame.block = label;
-    frame.pc = block.start + 1;
-  }
-  _execute(frame, inst) {
-    const w = inst.words;
-    switch (inst.op) {
-      case 249 /* Branch */:
-        this._branch(frame, w[0]);
-        return "ok";
-      case 250 /* BranchConditional */:
-        this._branch(frame, this.value(frame, w[0]) ? w[1] : w[2]);
-        return "ok";
-      case 251 /* Switch */: {
-        const selector = this.value(frame, w[0]);
-        const selectorType = this._typeOfId(frame, w[0]);
-        const wide = selectorType ? (scalarOf(this.module, selectorType)?.width ?? 32) > 32 : false;
-        let target = w[1];
-        for (let i = 2; i < w.length; i += wide ? 3 : 2) {
-          const literal = wide ? BigInt(w[i + 1]) << 32n | BigInt(w[i]) : w[i];
-          const matches = wide ? big(selector) === BigInt.asIntN(64, literal) || big(selector) === literal : num2(selector) >>> 0 === literal >>> 0;
-          if (matches) {
-            target = w[i + (wide ? 2 : 1)];
-            break;
+  _execute(frame, instr) {
+    const types = this._types;
+    switch (instr.op) {
+      case "const":
+        frame.pc++;
+        this._set(frame, instr, instr.dst, instr.value);
+        return;
+      case "move":
+        frame.pc++;
+        this._set(frame, instr, instr.dst, cloneValue(this._get(frame, instr.src)));
+        return;
+      case "addr": {
+        frame.pc++;
+        const cell = frame.cells.get(instr.variable) ?? this.globals.get(instr.variable);
+        if (!cell) {
+          this._fail(`${this._symbol(instr.variable)?.name ?? "a variable"} has no storage`);
+          return;
+        }
+        const t = types.get(instr.type);
+        const pointee = t?.kind === "pointer" ? t.pointee : instr.type;
+        frame.values.set(instr.dst, new Pointer(cell, [], pointee, 0, instr.variable));
+        return;
+      }
+      case "member":
+      case "index": {
+        frame.pc++;
+        const base = this._get(frame, instr.ptr);
+        if (!(base instanceof Pointer)) {
+          this._fail("a member or element was read through something that is not a pointer");
+          return;
+        }
+        const at = instr.op === "member" ? instr.member : Math.trunc(numberOf2(this._get(frame, instr.at)));
+        const t = types.get(instr.type);
+        const pointee = t?.kind === "pointer" ? t.pointee : instr.type;
+        frame.values.set(instr.dst, new Pointer(base.cell, [...base.path, at], pointee, base.storage, base.variable));
+        return;
+      }
+      case "load": {
+        frame.pc++;
+        const ptr = this._get(frame, instr.ptr);
+        this._set(frame, instr, instr.dst, this._load(ptr, instr.type));
+        return;
+      }
+      case "store": {
+        frame.pc++;
+        const ptr = this._get(frame, instr.ptr);
+        const value = this._get(frame, instr.value);
+        this._store(ptr, value);
+        if (ptr instanceof Pointer) this._record(instr, ptr.variable, value);
+        return;
+      }
+      case "extract": {
+        frame.pc++;
+        const value = this._get(frame, instr.value);
+        this._set(frame, instr, instr.dst, extract(value, instr.indices));
+        return;
+      }
+      case "extractAt": {
+        frame.pc++;
+        const value = this._get(frame, instr.value);
+        const at = Math.trunc(numberOf2(this._get(frame, instr.at)));
+        this._set(frame, instr, instr.dst, Array.isArray(value) ? cloneValue(value[at] ?? types.zero(instr.type)) : value);
+        return;
+      }
+      case "insert": {
+        frame.pc++;
+        const value = cloneValue(this._get(frame, instr.value));
+        const element = this._get(frame, instr.element);
+        this._set(frame, instr, instr.dst, insert(value, element, instr.indices));
+        return;
+      }
+      case "insertAt": {
+        frame.pc++;
+        const value = cloneValue(this._get(frame, instr.value));
+        const element = this._get(frame, instr.element);
+        const at = Math.trunc(numberOf2(this._get(frame, instr.at)));
+        if (Array.isArray(value) && at >= 0 && at < value.length) value[at] = element;
+        this._set(frame, instr, instr.dst, value);
+        return;
+      }
+      case "unary": {
+        frame.pc++;
+        const a = this._get(frame, instr.a);
+        const scalar = types.scalarOf(instr.type);
+        const value = mapScalars(a, (x) => {
+          switch (instr.kind) {
+            case "-":
+              return typeof x === "bigint" ? -x : -numberOf2(x);
+            case "+":
+              return x;
+            case "!":
+              return !truthy(x);
+            case "~":
+              return typeof x === "bigint" ? ~x : ~numberOf2(x);
           }
-        }
-        this._branch(frame, target);
-        return "ok";
+        });
+        this._set(frame, instr, instr.dst, scalar ? mapScalars(value, (x) => normalize(x, scalar)) : value);
+        return;
       }
-      case 253 /* Return */:
-      case 254 /* ReturnValue */: {
-        const value = inst.op === 254 /* ReturnValue */ ? cloneValue(this.value(frame, w[0])) : null;
-        this.frames.pop();
-        const caller = this.frames[this.frames.length - 1];
-        if (!caller) {
-          this.status = "returned";
-          return "ok";
-        }
-        if (frame.resultId) this._record(caller, { ...this.module.instructions[caller.pc], result: frame.resultId }, value);
-        caller.pc++;
-        return "ok";
-      }
-      case 252 /* Kill */:
-      case 4416 /* TerminateInvocation */:
-        this.status = "discarded";
-        return "ok";
-      case 5380 /* DemoteToHelperInvocation */:
-        this.helper = true;
+      case "binary": {
         frame.pc++;
-        return "ok";
-      case 255 /* Unreachable */:
-        this._fail("reached OpUnreachable");
-        return "ok";
-      case 57 /* FunctionCall */: {
-        const fn = this.module.functions.get(w[2]);
-        if (!fn) throw new Error(`call to a missing function %${w[2]}`);
-        const callee = this._frame(fn, inst.result);
-        fn.params.forEach((p, i) => callee.values.set(p.id, this.value(frame, w[3 + i])));
-        this.frames.push(callee);
-        return "ok";
+        const a = this._get(frame, instr.a);
+        const b = this._get(frame, instr.b);
+        this._set(frame, instr, instr.dst, this._binary(instr.kind, a, b, instr.type));
+        return;
       }
-      case 62 /* Store */: {
-        const ptr = this.value(frame, w[0]);
-        if (!(ptr instanceof Pointer)) throw new Error("OpStore through something that is not a pointer");
-        this._store(ptr, cloneValue(this.value(frame, w[1])));
+      case "convert": {
         frame.pc++;
-        this._results.push({ inst, id: ptr.variable, value: this._load(ptr) });
-        return "ok";
+        const a = this._get(frame, instr.a);
+        this._set(frame, instr, instr.dst, this._convert(a, instr.type));
+        return;
       }
-      case 63 /* CopyMemory */: {
-        const target = this.value(frame, w[0]);
-        const source = this.value(frame, w[1]);
-        if (target instanceof Pointer && source instanceof Pointer) this._store(target, this._load(source));
+      case "bitcast": {
         frame.pc++;
-        return "ok";
+        const a = this._get(frame, instr.a);
+        this._set(frame, instr, instr.dst, this._bitcast(a, instr.a, instr.type));
+        return;
       }
-      case 99 /* ImageWrite */: {
-        const image = this.value(frame, w[0]);
-        const coord = flat(this.value(frame, w[1]));
-        const texel3 = flat(this.value(frame, w[2]));
-        if (image instanceof ImageValue && image.texture) {
-          image.texture.writes ??= /* @__PURE__ */ new Map();
-          image.texture.writes.set(`0/${coord[2] ?? 0}/${coord[0]}/${coord[1] ?? 0}`, [...texel3, 0, 0, 0, 1].slice(0, 4));
+      case "construct": {
+        frame.pc++;
+        const args = instr.args.map((r) => this._get(frame, r));
+        this._set(frame, instr, instr.dst, this._construct(args, instr.type));
+        return;
+      }
+      case "builtin": {
+        const args = instr.args.map((r) => this._get(frame, r));
+        const context = {
+          types,
+          resultType: instr.type,
+          argTypes: instr.args.map((r) => this._symbol(r)?.type ?? 0),
+          warn: (m) => this.warn(m),
+          derivative: (operand) => {
+            if (!this.derivatives) return { dx: mapScalars(operand, () => 0), dy: mapScalars(operand, () => 0) };
+            const d = this.derivatives.derivative(this, instr, operand);
+            return d === "blocked" ? BLOCKED : d;
+          },
+          load: (ptr) => this._load(ptr, 0),
+          store: (ptr, value) => this._store(ptr, value)
+        };
+        const result = callBuiltin(instr.name, args, context);
+        if (result === BLOCKED) {
+          this._blocked = true;
+          return;
         }
         frame.pc++;
-        return "ok";
-      }
-      case 59 /* Variable */: {
-        const ptrType = this.module.types.get(inst.resultType);
-        const pointee = ptrType?.kind === "pointer" ? ptrType.pointee : 0;
-        const cell = { value: w[3] ? cloneValue(this.value(frame, w[3])) : this.module.zero(pointee) };
-        frame.locals.push({ id: inst.result, cell, type: pointee });
-        this._record(frame, inst, new Pointer(cell, [], pointee, 7 /* Function */, inst.result));
-        frame.pc++;
-        return "ok";
-      }
-      case 245 /* Phi */: {
-        let value = 0;
-        for (let i = 2; i + 1 < w.length; i += 2) {
-          if (w[i + 1] === frame.previousBlock) {
-            value = cloneValue(this.value(frame, w[i]));
-            break;
-          }
+        if (result === void 0) {
+          this.warn(`${instr.name} is not a function this shader declares or the interpreter knows: it gives its first argument`);
+          this._set(frame, instr, instr.dst, args[0] ?? null);
+          return;
         }
-        this._record(frame, inst, value);
-        frame.pc++;
-        return "ok";
+        const scalar = result instanceof OpaqueValue ? null : types.scalarOf(instr.type);
+        this._set(frame, instr, instr.dst, scalar ? mapScalars(result, (x) => normalize(x, scalar)) : result);
+        return;
       }
-      default: {
-        if (!inst.result) {
+      case "call": {
+        const fn = this.program.ir.functions[instr.target];
+        if (!fn) {
           frame.pc++;
-          return "ok";
+          this._fail("a call to a function that is not in the shader");
+          return;
         }
-        const value = this._compute(frame, inst);
-        if (value === "blocked") return "blocked";
-        this._record(frame, inst, value);
-        if (this.status === "running" || this.status === "blocked") frame.pc++;
-        return "ok";
-      }
-    }
-  }
-  _typeOfId(_frame, id) {
-    return this.module.idTypes.get(id) ?? 0;
-  }
-  /** The value an instruction with a result computes. May return "blocked" for derivative points. */
-  _compute(frame, inst) {
-    const m = this.module;
-    const w = inst.words;
-    const v = (i) => this.value(frame, w[i]);
-    const rt = inst.resultType;
-    const s = scalarOf(m, rt);
-    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
-    const opWidth = (i) => {
-      const t = this._typeOfId(frame, w[i]);
-      return scalarOf(m, t)?.width ?? 32;
-    };
-    switch (inst.op) {
-      case 1 /* Undef */:
-      case 46 /* ConstantNull */:
-        return m.zero(rt);
-      case 61 /* Load */: {
-        const ptr = v(2);
-        if (!(ptr instanceof Pointer)) throw new Error("OpLoad of something that is not a pointer");
-        return this._load(ptr);
-      }
-      case 65 /* AccessChain */:
-      case 66 /* InBoundsAccessChain */:
-      case 67 /* PtrAccessChain */:
-      case 70 /* InBoundsPtrAccessChain */: {
-        const base = v(2);
-        if (!(base instanceof Pointer)) throw new Error("access chain on something that is not a pointer");
-        const first = inst.op === 67 /* PtrAccessChain */ || inst.op === 70 /* InBoundsPtrAccessChain */ ? 4 : 3;
-        const indices = Array.from(w.subarray(first)).map((id) => num2(this.value(frame, id)));
-        const ptrType = m.types.get(rt);
-        return new Pointer(base.cell, [...base.path, ...indices], ptrType?.kind === "pointer" ? ptrType.pointee : 0, base.storage, base.variable);
-      }
-      case 68 /* ArrayLength */: {
-        const ptr = v(2);
-        const member = w[3];
-        if (!(ptr instanceof Pointer)) return 0;
-        const storage = this._bufferOf(ptr);
-        if (!storage) {
-          const value = this._load(ptr);
-          return Array.isArray(value) && Array.isArray(value[member]) ? value[member].length : 0;
-        }
-        const struct = m.types.get(ptr.type);
-        if (struct?.kind !== "struct") return 0;
-        const loc = bufferLocation(m, storage.buffer.type, [...storage.path, member], storage.buffer.bytes.byteLength);
-        return loc ? runtimeArrayLength(m, struct.members[member], storage.buffer.bytes.byteLength, loc.at) : 0;
-      }
-      case 83 /* CopyObject */:
-      case 400 /* CopyLogical */:
-        return cloneValue(v(2));
-      case 80 /* CompositeConstruct */: {
-        const parts2 = Array.from(w.subarray(2)).map((id) => cloneValue(this.value(frame, id)));
-        const t = m.types.get(rt);
-        if (t?.kind === "vector") return norm(parts2.flatMap((p) => Array.isArray(p) ? p : [p]));
-        return parts2;
-      }
-      case 81 /* CompositeExtract */: {
-        let value = v(2);
-        for (const index of w.subarray(3)) value = Array.isArray(value) ? value[index] : 0;
-        return cloneValue(value);
-      }
-      case 82 /* CompositeInsert */: {
-        const composite = cloneValue(v(3));
-        const indices = Array.from(w.subarray(4));
-        let at = composite;
-        for (let i = 0; i < indices.length - 1; i++) at = at[indices[i]];
-        at[indices[indices.length - 1]] = cloneValue(v(2));
-        return composite;
-      }
-      case 77 /* VectorExtractDynamic */: {
-        const vec = v(2);
-        const index = num2(v(3));
-        return cloneValue(vec[index] ?? 0);
-      }
-      case 78 /* VectorInsertDynamic */: {
-        const vec = cloneValue(v(2));
-        const index = num2(v(4));
-        if (index >= 0 && index < vec.length) vec[index] = v(3);
-        return vec;
-      }
-      case 79 /* VectorShuffle */: {
-        const a = v(2);
-        const b = v(3);
-        return Array.from(w.subarray(4)).map((c2) => c2 === 4294967295 ? 0 : c2 < a.length ? a[c2] : b[c2 - a.length]);
-      }
-      case 84 /* Transpose */: {
-        const mat = v(2);
-        const rows = mat[0]?.length ?? 0;
-        return Array.from({ length: rows }, (_, r) => mat.map((col) => col[r]));
-      }
-      case 86 /* SampledImage */: {
-        const image = v(2);
-        const sampler = v(3);
-        return new SampledImageValue(image instanceof ImageValue ? image : new ImageValue(null, "?"), sampler instanceof SamplerValue ? sampler : new SamplerValue(null, "?"));
-      }
-      case 100 /* Image */: {
-        const si = v(2);
-        return si instanceof SampledImageValue ? si.image : si;
-      }
-      // Conversions
-      case 109 /* ConvertFToU */:
-      case 110 /* ConvertFToS */:
-        return norm(mapScalars(v(2), (x) => {
-          const n = num2(x);
-          return Number.isFinite(n) ? Math.trunc(n) : 0;
-        }));
-      case 111 /* ConvertSToF */: {
-        const width = opWidth(2);
-        return norm(mapScalars(v(2), (x) => Number(signed(x, width))));
-      }
-      case 112 /* ConvertUToF */: {
-        const width = opWidth(2);
-        return norm(mapScalars(v(2), (x) => Number(unsigned(x, width))));
-      }
-      case 113 /* UConvert */: {
-        const width = opWidth(2);
-        return norm(mapScalars(v(2), (x) => unsigned(x, width)));
-      }
-      case 114 /* SConvert */: {
-        const width = opWidth(2);
-        return norm(mapScalars(v(2), (x) => signed(x, width)));
-      }
-      case 115 /* FConvert */:
-        return norm(v(2));
-      case 116 /* QuantizeToF16 */:
-        return norm(mapScalars(v(2), (x) => {
-          const n = num2(x);
-          if (Math.abs(n) > 65504) return n > 0 ? Infinity : -Infinity;
-          return Math.abs(n) < 2 ** -14 ? 0 : n;
-        }));
-      case 118 /* SatConvertSToU */:
-        return norm(mapScalars(v(2), (x) => Math.max(0, num2(x))));
-      case 119 /* SatConvertUToS */:
-        return norm(v(2));
-      case 124 /* Bitcast */:
-        return this._bitcast(v(2), this._typeOfId(frame, w[2]), rt);
-      // Arithmetic
-      case 126 /* SNegate */:
-        return norm(mapScalars(v(2), (x) => typeof x === "bigint" ? -x : -num2(x)));
-      case 127 /* FNegate */:
-        return norm(mapScalars(v(2), (x) => -num2(x)));
-      case 128 /* IAdd */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) + big(b) : num2(a) + num2(b)));
-      case 130 /* ISub */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) - big(b) : num2(a) - num2(b)));
-      case 132 /* IMul */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) * big(b) : Math.imul(num2(a), num2(b))));
-      case 134 /* UDiv */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          const x = unsigned(a, width), y = unsigned(b, width);
-          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
-          return y === 0 ? 0 : Math.floor(x / y);
-        }));
-      case 135 /* SDiv */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          const x = signed(a, width), y = signed(b, width);
-          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
-          return y === 0 ? 0 : Math.trunc(x / y);
-        }));
-      case 137 /* UMod */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          const x = unsigned(a, width), y = unsigned(b, width);
-          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
-          return y === 0 ? 0 : x % y;
-        }));
-      case 138 /* SRem */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          const x = signed(a, width), y = signed(b, width);
-          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
-          return y === 0 ? 0 : x % y;
-        }));
-      case 139 /* SMod */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          const x = signed(a, width), y = signed(b, width);
-          if (typeof x === "bigint") {
-            if (y === 0n) return 0n;
-            const r2 = x % y;
-            return r2 !== 0n && r2 < 0n !== y < 0n ? r2 + y : r2;
+        frame.pc++;
+        const args = instr.args.map((r) => this._get(frame, r));
+        const next = this._frame(fn, instr.dst);
+        fn.params.forEach((p, i) => {
+          const value = args[i] === void 0 ? this._types.zero(p.type) : cloneValue(args[i]);
+          const t = types.get(p.type);
+          if (t?.kind === "pointer" || t?.kind === "texture" || t?.kind === "sampler") next.values.set(p.id, value);
+          else {
+            const cell = { value };
+            next.cells.set(p.id, cell);
+            next.locals.unshift({ id: p.id, cell, type: p.type });
           }
-          if (y === 0) return 0;
-          const r = x % y;
-          return r !== 0 && r < 0 !== y < 0 ? r + y : r;
-        }));
-      case 129 /* FAdd */:
-        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) + num2(b)));
-      case 131 /* FSub */:
-        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) - num2(b)));
-      case 133 /* FMul */:
-        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) * num2(b)));
-      case 136 /* FDiv */:
-        return norm(zipScalars(v(2), v(3), (a, b) => num2(a) / num2(b)));
-      case 140 /* FRem */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const x = num2(a), y = num2(b);
-          return x - y * Math.trunc(x / y);
-        }));
-      case 141 /* FMod */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const x = num2(a), y = num2(b);
-          return x - y * Math.floor(x / y);
-        }));
-      case 142 /* VectorTimesScalar */:
-      case 143 /* MatrixTimesScalar */: {
-        const k = num2(v(3));
-        return norm(mapScalars(v(2), (x) => num2(x) * k));
-      }
-      case 144 /* VectorTimesMatrix */: {
-        const vec = flat(v(2));
-        const mat = v(3);
-        return norm(mat.map((col) => col.reduce((sum, c2, r) => sum + num2(c2) * vec[r], 0)));
-      }
-      case 145 /* MatrixTimesVector */: {
-        const mat = v(2);
-        const vec = flat(v(3));
-        const rows = mat[0]?.length ?? 0;
-        return norm(Array.from({ length: rows }, (_, r) => mat.reduce((sum, col, c2) => sum + num2(col[r]) * vec[c2], 0)));
-      }
-      case 146 /* MatrixTimesMatrix */: {
-        const a = v(2);
-        const b = v(3);
-        const rows = a[0]?.length ?? 0;
-        return norm(b.map((bcol) => Array.from({ length: rows }, (_, r) => a.reduce((sum, acol, k) => sum + num2(acol[r]) * num2(bcol[k]), 0))));
-      }
-      case 147 /* OuterProduct */: {
-        const a = flat(v(2));
-        const b = flat(v(3));
-        return norm(b.map((bc) => a.map((ar) => ar * bc)));
-      }
-      case 148 /* Dot */: {
-        const a = flat(v(2));
-        const b = flat(v(3));
-        return norm(a.reduce((sum, x, i) => sum + x * b[i], 0));
-      }
-      case 149 /* IAddCarry */:
-      case 150 /* ISubBorrow */:
-      case 151 /* UMulExtended */:
-      case 152 /* SMulExtended */:
-        return this._extendedArithmetic(inst.op, v(2), v(3), rt);
-      // Logic and comparison
-      case 154 /* Any */:
-        return flat(v(2)).some((x) => x !== 0);
-      case 155 /* All */:
-        return flat(v(2)).every((x) => x !== 0);
-      case 156 /* IsNan */:
-        return mapScalars(v(2), (x) => Number.isNaN(num2(x)));
-      case 157 /* IsInf */:
-        return mapScalars(v(2), (x) => !Number.isFinite(num2(x)) && !Number.isNaN(num2(x)));
-      case 158 /* IsFinite */:
-        return mapScalars(v(2), (x) => Number.isFinite(num2(x)));
-      case 159 /* IsNormal */:
-        return mapScalars(v(2), (x) => Number.isFinite(num2(x)) && num2(x) !== 0);
-      case 160 /* SignBitSet */:
-        return mapScalars(v(2), (x) => num2(x) < 0 || Object.is(num2(x), -0));
-      case 164 /* LogicalEqual */:
-        return zipScalars(v(2), v(3), (a, b) => Boolean(a) === Boolean(b));
-      case 165 /* LogicalNotEqual */:
-        return zipScalars(v(2), v(3), (a, b) => Boolean(a) !== Boolean(b));
-      case 166 /* LogicalOr */:
-        return zipScalars(v(2), v(3), (a, b) => Boolean(a) || Boolean(b));
-      case 167 /* LogicalAnd */:
-        return zipScalars(v(2), v(3), (a, b) => Boolean(a) && Boolean(b));
-      case 168 /* LogicalNot */:
-        return mapScalars(v(2), (a) => !a);
-      case 169 /* Select */: {
-        const c2 = v(2);
-        const a = v(3);
-        const b = v(4);
-        if (Array.isArray(c2)) return a.map((x, i) => c2[i] ? x : b[i]);
-        return cloneValue(c2 ? a : b);
-      }
-      case 170 /* IEqual */:
-        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big(a)) === BigInt.asUintN(64, big(b)) : num2(a) >>> 0 === num2(b) >>> 0 || num2(a) === num2(b));
-      case 171 /* INotEqual */:
-        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big(a)) !== BigInt.asUintN(64, big(b)) : !(num2(a) >>> 0 === num2(b) >>> 0 || num2(a) === num2(b)));
-      case 172 /* UGreaterThan */:
-      case 174 /* UGreaterThanEqual */:
-      case 176 /* ULessThan */:
-      case 178 /* ULessThanEqual */: {
-        const width = opWidth(2);
-        return zipScalars(v(2), v(3), (a, b) => {
-          const x = unsigned(a, width), y = unsigned(b, width);
-          return inst.op === 172 /* UGreaterThan */ ? x > y : inst.op === 174 /* UGreaterThanEqual */ ? x >= y : inst.op === 176 /* ULessThan */ ? x < y : x <= y;
         });
+        this.frames.push(next);
+        return;
       }
-      case 173 /* SGreaterThan */:
-      case 175 /* SGreaterThanEqual */:
-      case 177 /* SLessThan */:
-      case 179 /* SLessThanEqual */: {
-        const width = opWidth(2);
-        return zipScalars(v(2), v(3), (a, b) => {
-          const x = signed(a, width), y = signed(b, width);
-          return inst.op === 173 /* SGreaterThan */ ? x > y : inst.op === 175 /* SGreaterThanEqual */ ? x >= y : inst.op === 177 /* SLessThan */ ? x < y : x <= y;
-        });
-      }
-      case 180 /* FOrdEqual */:
-      case 181 /* FUnordEqual */:
-      case 182 /* FOrdNotEqual */:
-      case 183 /* FUnordNotEqual */:
-      case 184 /* FOrdLessThan */:
-      case 185 /* FUnordLessThan */:
-      case 186 /* FOrdGreaterThan */:
-      case 187 /* FUnordGreaterThan */:
-      case 188 /* FOrdLessThanEqual */:
-      case 189 /* FUnordLessThanEqual */:
-      case 190 /* FOrdGreaterThanEqual */:
-      case 191 /* FUnordGreaterThanEqual */:
-      case 161 /* LessOrGreater */:
-      case 162 /* Ordered */:
-      case 163 /* Unordered */:
-        return zipScalars(v(2), v(3), (a, b) => floatCompare(inst.op, num2(a), num2(b)));
-      // Bits
-      case 194 /* ShiftRightLogical */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          if (width === 64) return BigInt.asUintN(64, big(a)) >> big(b);
-          return unsigned(a, width) >>> num2(b);
-        }));
-      case 195 /* ShiftRightArithmetic */:
-        return norm(zipScalars(v(2), v(3), (a, b) => {
-          const width = s?.width ?? 32;
-          if (width === 64) return BigInt.asIntN(64, big(a)) >> big(b);
-          return signed(a, width) >> num2(b);
-        }));
-      case 196 /* ShiftLeftLogical */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) << big(b) : num2(a) << num2(b)));
-      case 197 /* BitwiseOr */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) | big(b) : num2(a) | num2(b)));
-      case 198 /* BitwiseXor */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) ^ big(b) : num2(a) ^ num2(b)));
-      case 199 /* BitwiseAnd */:
-        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big(a) & big(b) : num2(a) & num2(b)));
-      case 200 /* Not */:
-        return norm(mapScalars(v(2), (a) => s?.width === 64 ? ~big(a) : ~num2(a)));
-      case 201 /* BitFieldInsert */: {
-        const offset = num2(v(4)), count2 = num2(v(5));
-        return norm(zipScalars(v(2), v(3), (base, insert) => {
-          const mask = count2 >= 32 ? 4294967295 : (1 << count2) - 1 << offset;
-          return num2(base) & ~mask | num2(insert) << offset & mask;
-        }));
-      }
-      case 202 /* BitFieldSExtract */:
-      case 203 /* BitFieldUExtract */: {
-        const offset = num2(v(3)), count2 = num2(v(4));
-        return norm(mapScalars(v(2), (base) => {
-          if (count2 === 0) return 0;
-          const shifted = num2(base) >>> offset & (count2 >= 32 ? 4294967295 : (1 << count2) - 1);
-          if (inst.op === 203 /* BitFieldUExtract */) return shifted;
-          return count2 < 32 && shifted & 1 << count2 - 1 ? shifted - (1 << count2) : shifted | 0;
-        }));
-      }
-      case 204 /* BitReverse */:
-        return norm(mapScalars(v(2), (a) => {
-          let x = num2(a) >>> 0, r = 0;
-          for (let i = 0; i < 32; i++) {
-            r = r << 1 | x & 1;
-            x >>>= 1;
-          }
-          return r >>> 0;
-        }));
-      case 205 /* BitCount */:
-        return norm(mapScalars(v(2), (a) => {
-          let x = num2(a) >>> 0, c2 = 0;
-          while (x) {
-            c2 += x & 1;
-            x >>>= 1;
-          }
-          return c2;
-        }));
-      // Derivatives
-      case 207 /* DPdx */:
-      case 208 /* DPdy */:
-      case 209 /* Fwidth */:
-      case 210 /* DPdxFine */:
-      case 211 /* DPdyFine */:
-      case 212 /* FwidthFine */:
-      case 213 /* DPdxCoarse */:
-      case 214 /* DPdyCoarse */:
-      case 215 /* FwidthCoarse */: {
-        const operand = v(2);
-        const d = this._derivative(inst, operand);
-        if (d === "blocked") return "blocked";
-        const x = inst.op === 207 /* DPdx */ || inst.op === 210 /* DPdxFine */ || inst.op === 213 /* DPdxCoarse */;
-        const y = inst.op === 208 /* DPdy */ || inst.op === 211 /* DPdyFine */ || inst.op === 214 /* DPdyCoarse */;
-        if (x) return norm(d.dx);
-        if (y) return norm(d.dy);
-        return norm(zipScalars(d.dx, d.dy, (a, b) => Math.abs(num2(a)) + Math.abs(num2(b))));
-      }
-      case 5381 /* IsHelperInvocation */:
-        return this.helper;
-      // Images
-      case 87 /* ImageSampleImplicitLod */:
-      case 88 /* ImageSampleExplicitLod */:
-      case 89 /* ImageSampleDrefImplicitLod */:
-      case 90 /* ImageSampleDrefExplicitLod */:
-      case 91 /* ImageSampleProjImplicitLod */:
-      case 92 /* ImageSampleProjExplicitLod */:
-      case 93 /* ImageSampleProjDrefImplicitLod */:
-      case 94 /* ImageSampleProjDrefExplicitLod */:
-        return this._sample(frame, inst, s);
-      case 95 /* ImageFetch */:
-      case 98 /* ImageRead */: {
-        const image = v(2);
-        const img = image instanceof SampledImageValue ? image.image : image;
-        const type = img instanceof ImageValue ? this._imageType(frame, w[2]) : null;
-        const coord = flat(v(3)).map(Math.trunc);
-        let lod = 0;
-        if (inst.op === 95 /* ImageFetch */ && w.length > 4) {
-          const mask = w[4];
-          if (mask & 2 /* Lod */) lod = num2(this.value(frame, w[5]));
+      case "return": {
+        const value = instr.value >= 0 ? cloneValue(this._get(frame, instr.value)) : this._types.zero(instr.type);
+        this.frames.pop();
+        if (!this.frames.length) {
+          this.returned = value;
+          this.status = "returned";
+          return;
         }
-        const texel3 = fetch(img instanceof ImageValue ? img.texture : null, coord, lod, type?.dim ?? 1 /* D2 */, type?.arrayed ?? false);
-        return this._texelResult(texel3, rt, s, img instanceof ImageValue ? img.texture : null);
+        const caller = this.frames[this.frames.length - 1];
+        if (frame.resultId >= 0) this._set(caller, instr, frame.resultId, value);
+        return;
       }
-      case 96 /* ImageGather */:
-      case 97 /* ImageDrefGather */: {
-        const si = v(2);
-        const coord = flat(v(3));
-        const dref = inst.op === 97 /* ImageDrefGather */ ? num2(v(4)) : void 0;
-        const component = inst.op === 96 /* ImageGather */ ? num2(v(4)) : 0;
-        const tex = si instanceof SampledImageValue ? si.image.texture : null;
-        const smp = si instanceof SampledImageValue ? si.sampler.sampler : null;
-        return norm(gather(tex, smp, coord, component, dref));
+      case "jump":
+        frame.pc = instr.target;
+        return;
+      case "branch": {
+        const cond = truthy(this._get(frame, instr.cond));
+        frame.pc = cond ? instr.then : instr.otherwise;
+        return;
       }
-      case 104 /* ImageQuerySize */:
-      case 103 /* ImageQuerySizeLod */: {
-        const image = v(2);
-        const img = image instanceof SampledImageValue ? image.image : image;
-        const tex = img instanceof ImageValue ? img.texture : null;
-        const lod = inst.op === 103 /* ImageQuerySizeLod */ ? num2(v(3)) : 0;
-        const type = this._imageType(frame, w[2]);
-        const size2 = tex ? [Math.max(1, tex.width >> lod), Math.max(1, tex.height >> lod), Math.max(1, tex.depth >> lod)] : [0, 0, 0];
-        const dims = type?.dim === 0 /* D1 */ ? 1 : type?.dim === 2 /* D3 */ ? 3 : 2;
-        const out = size2.slice(0, dims);
-        if (type?.arrayed) out.push(tex ? type.dim === 3 /* Cube */ ? tex.layers / 6 : tex.layers : 0);
-        const t = m.types.get(rt);
-        return norm(t?.kind === "vector" ? out.slice(0, t.count) : out[0]);
-      }
-      case 106 /* ImageQueryLevels */: {
-        const image = v(2);
-        const img = image instanceof SampledImageValue ? image.image : image;
-        return norm(img instanceof ImageValue && img.texture ? img.texture.baseMip + img.texture.mips : 0);
-      }
-      case 107 /* ImageQuerySamples */:
-        return norm(1);
-      case 105 /* ImageQueryLod */: {
-        const si = v(2);
-        const coord = v(3);
-        const d = this._derivative(inst, coord);
-        if (d === "blocked") return "blocked";
-        const tex = si instanceof SampledImageValue ? si.image.texture : null;
-        const lod = tex ? implicitLod(tex, flat(d.dx), flat(d.dy)) : 0;
-        return norm([Math.max(0, lod), lod]);
-      }
-      case 60 /* ImageTexelPointer */:
-        this.warnings.add("pointers to storage image texels (imageAtomic operations) are not followed");
-        return null;
-      case 12 /* ExtInst */: {
-        const set = m.extSets.get(w[2]);
-        if (set !== GLSL_STD_450) throw new Error(`the extended instruction set ${set ?? `%${w[2]}`} is not interpreted`);
-        return this._glsl(frame, inst, w[3], Array.from(w.subarray(4)), s);
-      }
-      default:
-        throw new Error(`the interpreter does not handle opcode ${inst.op} yet`);
+      case "discard":
+        frame.pc++;
+        this.status = "discarded";
+        return;
     }
   }
   // ---------------------------------------------------------------------------------------
   // Memory
-  _bufferOf(ptr) {
-    if (ptr.cell.buffer) return { buffer: ptr.cell.buffer, path: ptr.path };
-    if (ptr.cell.bufferArray) {
-      const element = ptr.cell.value[ptr.path[0] ?? 0];
-      return element ? { buffer: element.buffer, path: ptr.path.slice(1) } : null;
+  /** Reads through a pointer: out of a buffer's bytes, or out of a cell's value. */
+  _load(ptr, type) {
+    if (!(ptr instanceof Pointer)) return ptr;
+    const cell = ptr.cell;
+    if (cell.buffer) {
+      const located = this._types.locate(cell.buffer.type, ptr.path);
+      if (!located) {
+        this.warn("a buffer was read outside the type it was bound as");
+        return this._types.zero(type || ptr.type);
+      }
+      const view = new DataView(cell.buffer.bytes.buffer, cell.buffer.bytes.byteOffset, cell.buffer.bytes.byteLength);
+      return this._types.read(view, located.at, located.type);
     }
-    return null;
-  }
-  /** The value a pointer points at (`limit` caps runtime arrays read for display). */
-  _load(ptr, limit = Infinity) {
-    const storage = this._bufferOf(ptr);
-    if (storage) return this._loadBuffer(storage.buffer, storage.path, limit);
-    if (ptr.cell.bufferArray) {
-      return ptr.cell.value.map((e) => this._loadBuffer(e.buffer, [], limit));
+    let value = cell.value;
+    for (const index of ptr.path) {
+      if (!Array.isArray(value)) return value;
+      value = value[index] ?? null;
     }
-    let value = ptr.cell.value;
-    for (const index of ptr.path) value = Array.isArray(value) ? value[index] : 0;
-    return value instanceof ImageValue || value instanceof SamplerValue || value instanceof SampledImageValue ? value : cloneValue(value ?? 0);
+    return cloneValue(value);
   }
   _store(ptr, value) {
-    const storage = this._bufferOf(ptr);
-    if (storage) {
-      const key = storage.path.join("/");
-      for (const k of [...storage.buffer.overrides.keys()]) if (k.startsWith(key ? `${key}/` : "")) storage.buffer.overrides.delete(k);
-      storage.buffer.overrides.set(key, value);
+    if (!(ptr instanceof Pointer)) return;
+    const cell = ptr.cell;
+    if (cell.buffer) {
+      const located = this._types.locate(cell.buffer.type, ptr.path);
+      if (!located) {
+        this.warn("a buffer was written outside the type it was bound as");
+        return;
+      }
+      const view = new DataView(cell.buffer.bytes.buffer, cell.buffer.bytes.byteOffset, cell.buffer.bytes.byteLength);
+      this._types.write(view, located.at, located.type, value);
       return;
     }
     if (!ptr.path.length) {
-      ptr.cell.value = value;
+      cell.value = cloneValue(value);
       return;
     }
-    let parent = ptr.cell.value;
-    for (let i = 0; i < ptr.path.length - 1; i++) parent = parent[ptr.path[i]];
-    parent[ptr.path[ptr.path.length - 1]] = value;
-  }
-  _loadBuffer(buffer, path11, limit = Infinity) {
-    const m = this.module;
-    const key = path11.join("/");
-    for (let n = path11.length; n >= 0; n--) {
-      const k = path11.slice(0, n).join("/");
-      const stored = buffer.overrides.get(k);
-      if (stored === void 0) continue;
-      let value2 = stored;
-      for (const index of path11.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
-      return cloneValue(value2);
+    let target = cell.value;
+    for (let i = 0; i < ptr.path.length - 1; i++) {
+      if (!Array.isArray(target)) return;
+      target = target[ptr.path[i]] ?? null;
     }
-    const view = new DataView(buffer.bytes.buffer, buffer.bytes.byteOffset, buffer.bytes.byteLength);
-    let value;
-    const loc = bufferLocation(m, buffer.type, path11, buffer.bytes.byteLength);
-    if (loc) {
-      value = readBuffer(m, view, loc.at, loc.type, loc.matrix, limit);
-      if (loc.at >= buffer.bytes.byteLength && buffer.bytes.byteLength) this.warnings.add("a read past the captured end of a buffer reads zeros (the capture's Max KB truncated it?)");
-    } else {
-      value = readBuffer(m, view, 0, buffer.type, void 0, limit);
-      for (const index of path11) value = Array.isArray(value) ? value[index] : 0;
-    }
-    for (const [k, stored] of buffer.overrides) {
-      if (!k.startsWith(key ? `${key}/` : "") || k === key) continue;
-      const rest = (key ? k.slice(key.length + 1) : k).split("/").map(Number);
-      let at = value;
-      for (let i = 0; i < rest.length - 1 && Array.isArray(at); i++) at = at[rest[i]];
-      if (Array.isArray(at)) at[rest[rest.length - 1]] = cloneValue(stored);
-    }
-    return value;
+    if (Array.isArray(target)) target[ptr.path[ptr.path.length - 1]] = cloneValue(value);
   }
   // ---------------------------------------------------------------------------------------
-  // Helpers
-  _derivative(inst, operand) {
-    if (!this.derivatives) {
-      this.warnings.add("derivatives are zero outside a fragment shader's pixel quad");
-      const zero = mapScalars(operand, () => 0);
-      return { dx: zero, dy: zero };
-    }
-    return this.derivatives.derivative(this, inst, operand);
-  }
-  _imageType(frame, id) {
-    let type = this._typeOfId(frame, id);
-    if (!type) {
-      const g = this.globals.get(id);
-      if (g) type = g.type;
-    }
-    let t = this.module.types.get(type);
-    if (t?.kind === "sampledImage") t = this.module.types.get(t.image);
-    if (t?.kind === "image") return { dim: t.dim, arrayed: t.arrayed, ms: t.ms };
-    return null;
-  }
-  _texelResult(texel3, rt, s, texture) {
-    const t = this.module.types.get(rt);
-    const values = t?.kind === "vector" ? texel3.slice(0, t.count) : texel3[0];
-    void texture;
-    return s ? mapScalars(values, (x) => normalize(x, s)) : values;
-  }
-  _sample(frame, inst, s) {
-    const w = inst.words;
-    const op = inst.op;
-    const si = this.value(frame, w[2]);
-    if (!(si instanceof SampledImageValue)) throw new Error("sampling something that is not a sampled image");
-    const dref = op === 89 /* ImageSampleDrefImplicitLod */ || op === 90 /* ImageSampleDrefExplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */ || op === 94 /* ImageSampleProjDrefExplicitLod */;
-    const proj = op >= 91 /* ImageSampleProjImplicitLod */ && op <= 94 /* ImageSampleProjDrefExplicitLod */;
-    const implicit = op === 87 /* ImageSampleImplicitLod */ || op === 89 /* ImageSampleDrefImplicitLod */ || op === 91 /* ImageSampleProjImplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */;
-    let coord = flat(this.value(frame, w[3]));
-    let next = 4;
-    let reference = dref ? num2(this.value(frame, w[next++])) : void 0;
-    if (proj) {
-      const q2 = coord[coord.length - 1] || 1;
-      coord = coord.slice(0, -1).map((c2) => c2 / q2);
-      if (reference !== void 0) reference /= q2;
-    }
-    const imageTypeInst = this.module.types.get(this._typeOfId(frame, w[2]));
-    const imageType = imageTypeInst?.kind === "sampledImage" ? this.module.types.get(imageTypeInst.image) : null;
-    const dim = imageType?.kind === "image" ? imageType.dim : 1 /* D2 */;
-    const arrayed = imageType?.kind === "image" ? imageType.arrayed : false;
-    let bias = 0;
-    let lod = null;
-    let grad = null;
-    let offset;
-    if (next < w.length) {
-      const mask = w[next++];
-      if (mask & 1 /* Bias */) bias = num2(this.value(frame, w[next++]));
-      if (mask & 2 /* Lod */) lod = num2(this.value(frame, w[next++]));
-      if (mask & 4 /* Grad */) {
-        grad = { dx: flat(this.value(frame, w[next])), dy: flat(this.value(frame, w[next + 1])) };
-        next += 2;
+  // Operations
+  _binary(kind, a, b, type) {
+    const scalar = this._types.scalarOf(type);
+    const signed2 = scalar?.base !== "uint";
+    const float = scalar?.base === "float";
+    const comparison = ["==", "!=", "<", ">", "<=", ">="].includes(kind);
+    const apply = (x, y) => {
+      if (typeof x === "bigint" || typeof y === "bigint") return bigintOp(kind, big(x), big(y));
+      const p = numberOf2(x), q2 = numberOf2(y);
+      switch (kind) {
+        case "+":
+          return p + q2;
+        case "-":
+          return p - q2;
+        case "*":
+          return p * q2;
+        case "/":
+          return float ? p / q2 : q2 === 0 ? 0 : Math.trunc(p / q2);
+        case "%":
+          return float ? p - q2 * Math.trunc(p / q2) : q2 === 0 ? 0 : p % q2;
+        case "==":
+          return p === q2;
+        case "!=":
+          return p !== q2;
+        case "<":
+          return p < q2;
+        case ">":
+          return p > q2;
+        case "<=":
+          return p <= q2;
+        case ">=":
+          return p >= q2;
+        case "&":
+          return signed2 ? p & q2 : (p & q2) >>> 0;
+        case "|":
+          return signed2 ? p | q2 : (p | q2) >>> 0;
+        case "^":
+          return signed2 ? p ^ q2 : (p ^ q2) >>> 0;
+        case "<<":
+          return signed2 ? p << q2 : p << q2 >>> 0;
+        case ">>":
+          return signed2 ? p >> q2 : p >>> q2;
+        case "&&":
+          return truthy(x) && truthy(y);
+        case "||":
+          return truthy(x) || truthy(y);
+        default:
+          return 0;
       }
-      if (mask & 8 /* ConstOffset */) offset = flat(this.value(frame, w[next++]));
-      if (mask & 16 /* Offset */) offset = flat(this.value(frame, w[next++]));
-      if (mask & 32 /* ConstOffsets */) next++;
-      if (mask & 128 /* MinLod */) next++;
-    }
-    const texture = si.image.texture;
-    if (implicit) {
-      const d = this._derivative(inst, coord.slice(0, dim === 3 /* Cube */ ? 3 : dim === 0 /* D1 */ ? 1 : 2));
-      if (d === "blocked") return "blocked";
-      lod = (texture ? implicitLod(texture, flat(d.dx), flat(d.dy)) : 0) + bias;
-    } else if (grad && texture) {
-      lod = implicitLod(texture, grad.dx, grad.dy);
-    }
-    const rgba = sample(texture, si.sampler.sampler, { dim, arrayed, coord, lod: lod ?? 0, dref: reference, offset });
-    if (dref) return s ? normalize(rgba[0], s) : rgba[0];
-    const t = this.module.types.get(inst.resultType);
-    const out = t?.kind === "vector" ? rgba.slice(0, t.count) : rgba[0];
-    return s ? mapScalars(out, (x) => normalize(x, s)) : out;
-  }
-  _bitcast(value, fromType, toType) {
-    const from = scalarOf(this.module, fromType);
-    const to = scalarOf(this.module, toType);
-    if (!to) return value;
-    const buf = new DataView(new ArrayBuffer(8));
-    return mapScalars(value, (x) => {
-      if (from?.base === "float" && from.width === 32) buf.setFloat32(0, num2(x), true);
-      else if (from?.base === "float" && from.width === 64) buf.setFloat64(0, num2(x), true);
-      else if (from?.width === 64) buf.setBigUint64(0, BigInt.asUintN(64, big(x)), true);
-      else buf.setUint32(0, num2(x) >>> 0, true);
-      if (to.base === "float") return to.width === 64 ? buf.getFloat64(0, true) : buf.getFloat32(0, true);
-      if (to.width === 64) return to.base === "int" ? buf.getBigInt64(0, true) : buf.getBigUint64(0, true);
-      return to.base === "int" ? buf.getInt32(0, true) : buf.getUint32(0, true);
-    });
-  }
-  _extendedArithmetic(op, a, b, rt) {
-    const t = this.module.types.get(rt);
-    const member = t?.kind === "struct" ? t.members[0] : 0;
-    const s = scalarOf(this.module, member) ?? { base: "uint", width: 32 };
-    const lo = zipScalars(a, b, (x, y) => {
-      const X = BigInt.asUintN(32, big(x)), Y = BigInt.asUintN(32, big(y));
-      const r = op === 149 /* IAddCarry */ ? X + Y : op === 150 /* ISubBorrow */ ? X - Y : op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
-      return normalize(Number(BigInt.asUintN(32, r)), s);
-    });
-    const hi = zipScalars(a, b, (x, y) => {
-      const X = BigInt.asUintN(32, big(x)), Y = BigInt.asUintN(32, big(y));
-      if (op === 149 /* IAddCarry */) return X + Y > 0xffffffffn ? 1 : 0;
-      if (op === 150 /* ISubBorrow */) return Y > X ? 1 : 0;
-      const r = op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
-      return normalize(Number(BigInt.asUintN(32, r >> 32n)), s);
-    });
-    return [lo, hi];
-  }
-  // ---------------------------------------------------------------------------------------
-  // GLSL.std.450
-  _glsl(frame, inst, number, args, s) {
-    const a = (i) => this.value(frame, args[i]);
-    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
-    const unary = (f) => norm(mapScalars(a(0), (x) => f(num2(x))));
-    const binary = (f) => norm(zipScalars(a(0), a(1), (x, y) => f(num2(x), num2(y))));
-    const ternary = (f) => {
-      const x0 = a(0), y0 = a(1), z0 = a(2);
-      const at = (value, i) => Array.isArray(value) ? num2(value[i]) : num2(value);
-      if (Array.isArray(x0)) return norm(x0.map((_, i) => f(at(x0, i), at(y0, i), at(z0, i))));
-      return norm(f(num2(x0), num2(y0), num2(z0)));
     };
-    const vec = (i) => flat(a(i));
-    const width = s?.width ?? 32;
-    switch (number) {
-      case 1:
-        return unary((x) => x < 0 ? -Math.round(-x) : Math.round(x));
-      case 2:
-        return unary((x) => {
-          const r = Math.round(x);
-          return Math.abs(x % 1) === 0.5 ? 2 * Math.round(x / 2) : r;
-        });
-      case 3:
-        return unary(Math.trunc);
-      case 4:
-        return unary(Math.abs);
-      case 5:
-        return norm(mapScalars(a(0), (x) => Math.abs(Number(signed(x, width)))));
-      case 6:
-        return unary((x) => x > 0 ? 1 : x < 0 ? -1 : 0);
-      case 7:
-        return norm(mapScalars(a(0), (x) => Math.sign(Number(signed(x, width)))));
-      case 8:
-        return unary(Math.floor);
-      case 9:
-        return unary(Math.ceil);
-      case 10:
-        return unary((x) => x - Math.floor(x));
-      case 11:
-        return unary((x) => x * Math.PI / 180);
-      case 12:
-        return unary((x) => x * 180 / Math.PI);
-      case 13:
-        return unary(Math.sin);
-      case 14:
-        return unary(Math.cos);
-      case 15:
-        return unary(Math.tan);
-      case 16:
-        return unary(Math.asin);
-      case 17:
-        return unary(Math.acos);
-      case 18:
-        return unary(Math.atan);
-      case 19:
-        return unary(Math.sinh);
-      case 20:
-        return unary(Math.cosh);
-      case 21:
-        return unary(Math.tanh);
-      case 22:
-        return unary(Math.asinh);
-      case 23:
-        return unary(Math.acosh);
-      case 24:
-        return unary(Math.atanh);
-      case 25:
-        return binary(Math.atan2);
-      case 26:
-        return binary(Math.pow);
-      case 27:
-        return unary(Math.exp);
-      case 28:
-        return unary(Math.log);
-      case 29:
-        return unary((x) => 2 ** x);
-      case 30:
-        return unary(Math.log2);
-      case 31:
-        return unary(Math.sqrt);
-      case 32:
-        return unary((x) => 1 / Math.sqrt(x));
-      case 33:
-        return norm(determinant(a(0)));
-      case 34:
-        return norm(inverse(a(0)));
-      case 35: {
-        const x = a(0);
-        const whole = mapScalars(x, (e) => Math.trunc(num2(e)));
-        const ptr = a(1);
-        if (ptr instanceof Pointer) this._store(ptr, norm(whole));
-        return norm(zipScalars(x, whole, (e, w) => num2(e) - num2(w)));
-      }
-      case 36: {
-        const x = a(0);
-        const whole = mapScalars(x, (e) => Math.trunc(num2(e)));
-        const member = this.module.types.get(inst.resultType);
-        const fs12 = member?.kind === "struct" ? scalarOf(this.module, member.members[0]) : s;
-        const n = (value) => fs12 ? mapScalars(value, (e) => normalize(e, fs12)) : value;
-        return [n(zipScalars(x, whole, (e, w) => num2(e) - num2(w))), n(whole)];
-      }
-      case 37:
-        return binary((x, y) => y < x ? y : x);
-      case 38:
-        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(y, width) < unsigned(x, width) ? y : x));
-      case 39:
-        return norm(zipScalars(a(0), a(1), (x, y) => signed(y, width) < signed(x, width) ? y : x));
-      case 40:
-        return binary((x, y) => x < y ? y : x);
-      case 41:
-        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(x, width) < unsigned(y, width) ? y : x));
-      case 42:
-        return norm(zipScalars(a(0), a(1), (x, y) => signed(x, width) < signed(y, width) ? y : x));
-      case 43:
-        return ternary((x, lo, hi) => Math.min(Math.max(x, lo), hi));
-      case 44:
-        return ternary((x, lo, hi) => Math.min(Math.max(x >>> 0, lo >>> 0), hi >>> 0));
-      case 45:
-        return ternary((x, lo, hi) => Math.min(Math.max(x | 0, lo | 0), hi | 0));
-      case 46:
-        return ternary((x, y, t) => x * (1 - t) + y * t);
-      case 47:
-        return ternary((x, y, t) => t ? y : x);
-      case 48:
-        return binary((edge2, x) => x < edge2 ? 0 : 1);
-      case 49:
-        return ternary((e0, e1, x) => {
-          const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
-          return t * t * (3 - 2 * t);
-        });
-      case 50:
-        return ternary((x, y, z) => x * y + z);
-      case 51: {
-        const x = a(0);
-        const exps = mapScalars(x, (e) => frexp(num2(e))[1]);
-        const ptr = a(1);
-        if (ptr instanceof Pointer) this._store(ptr, exps);
-        return norm(mapScalars(x, (e) => frexp(num2(e))[0]));
-      }
-      case 52: {
-        const x = a(0);
-        return [norm(mapScalars(x, (e) => frexp(num2(e))[0])), mapScalars(x, (e) => frexp(num2(e))[1])];
-      }
-      case 53:
-        return norm(zipScalars(a(0), a(1), (x, e) => num2(x) * 2 ** num2(e)));
-      case 54:
-        return packNorm(vec(0), 8, true);
-      case 55:
-        return packNorm(vec(0), 8, false);
-      case 56:
-        return packNorm(vec(0), 16, true);
-      case 57:
-        return packNorm(vec(0), 16, false);
-      case 58:
-        return packHalf(vec(0));
-      case 60:
-        return unpackNorm(num2(a(0)), 16, true, 2);
-      case 61:
-        return unpackNorm(num2(a(0)), 16, false, 2);
-      case 62:
-        return unpackHalf(num2(a(0)));
-      case 63:
-        return unpackNorm(num2(a(0)), 8, true, 4);
-      case 64:
-        return unpackNorm(num2(a(0)), 8, false, 4);
-      case 66:
-        return norm(Math.hypot(...vec(0)));
-      case 67: {
-        const p = vec(0), q2 = vec(1);
-        return norm(Math.hypot(...p.map((x, i) => x - q2[i])));
-      }
-      case 68: {
-        const [x1, y1, z1] = vec(0), [x2, y2, z2] = vec(1);
-        return norm([y1 * z2 - z1 * y2, z1 * x2 - x1 * z2, x1 * y2 - y1 * x2]);
-      }
-      case 69: {
-        const x = a(0);
-        if (!Array.isArray(x)) return norm(Math.sign(num2(x)));
-        const len = Math.hypot(...flat(x));
-        return norm(x.map((e) => num2(e) / len));
-      }
-      case 70: {
-        const n = vec(0), i = vec(1), nref = vec(2);
-        const d = nref.reduce((sum, x, k) => sum + x * i[k], 0);
-        return norm(d < 0 ? n : n.map((x) => -x));
-      }
-      case 71: {
-        const i = vec(0), n = vec(1);
-        const d = n.reduce((sum, x, k) => sum + x * i[k], 0);
-        return norm(i.map((x, k) => x - 2 * d * n[k]));
-      }
-      case 72: {
-        const i = vec(0), n = vec(1), eta = num2(a(2));
-        const d = n.reduce((sum, x, k2) => sum + x * i[k2], 0);
-        const k = 1 - eta * eta * (1 - d * d);
-        return norm(k < 0 ? i.map(() => 0) : i.map((x, j) => eta * x - (eta * d + Math.sqrt(k)) * n[j]));
-      }
-      case 73:
-        return norm(mapScalars(a(0), (x) => {
-          const n = num2(x) >>> 0;
-          return n === 0 ? -1 : 31 - Math.clz32(n & -n);
-        }));
-      case 74:
-        return norm(mapScalars(a(0), (x) => {
-          const n = num2(x) | 0;
-          const m = n < 0 ? ~n : n;
-          return m === 0 ? -1 : 31 - Math.clz32(m);
-        }));
-      case 75:
-        return norm(mapScalars(a(0), (x) => {
-          const n = num2(x) >>> 0;
-          return n === 0 ? -1 : 31 - Math.clz32(n);
-        }));
-      case 76:
-      case 77:
-      case 78: {
-        const ptr = a(0);
-        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel centre");
-        return ptr instanceof Pointer ? this._load(ptr) : ptr;
-      }
-      case 79:
-        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.min(x, y));
-      case 80:
-        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.max(x, y));
-      case 81:
-        return ternary((x, lo, hi) => Number.isNaN(x) ? lo : Math.min(Math.max(x, lo), hi));
-      default:
-        throw new Error(`GLSL.std.450 instruction ${number} is not interpreted`);
+    const value = Array.isArray(a) && !Array.isArray(b) ? a.map((x) => this._binary(kind, x, b, type)) : !Array.isArray(a) && Array.isArray(b) ? b.map((y) => this._binary(kind, a, y, type)) : zipScalars(a, b, apply);
+    if (comparison || !scalar) return value;
+    return mapScalars(value, (x) => normalize(x, scalar));
+  }
+  _convert(a, type) {
+    const t = this._types.get(type);
+    if (t?.kind === "vector" && !Array.isArray(a)) {
+      return Array.from({ length: t.count }, () => this._convertScalar(a, t.element));
     }
+    if (t?.kind === "vector" && Array.isArray(a)) {
+      return Array.from({ length: t.count }, (_, i) => this._convertScalar(a[i] ?? 0, t.element));
+    }
+    if (t?.kind === "matrix" && Array.isArray(a)) {
+      return a.map((col) => this._convert(col, t.column));
+    }
+    if (t?.kind === "struct" || t?.kind === "array") return a;
+    return this._convertScalar(a, type);
+  }
+  _convertScalar(a, type) {
+    const scalar = this._types.scalarOf(type);
+    if (!scalar) return a;
+    const value = Array.isArray(a) ? a[0] ?? 0 : a;
+    if (scalar.base !== "float" && scalar.base !== "bool" && typeof value === "number") {
+      return normalize(Math.trunc(value), scalar);
+    }
+    return normalize(value, scalar);
+  }
+  /** `as_type<T>(x)`: the same bits read as another type. */
+  _bitcast(a, sourceRegister, type) {
+    const from = this._symbol(sourceRegister)?.type ?? type;
+    const size2 = Math.max(this._types.sizeOf(from), this._types.sizeOf(type), 4);
+    const bytes = new Uint8Array(size2);
+    const view = new DataView(bytes.buffer);
+    this._types.write(view, 0, from, a);
+    return this._types.read(view, 0, type);
+  }
+  /** MSL's construction rules: a vector fills from the arguments' scalars, a matrix by columns. */
+  _construct(args, type) {
+    const types = this._types;
+    const t = types.get(type);
+    if (!t) return null;
+    if (t.kind === "vector") {
+      const scalars2 = [];
+      for (const a of args) {
+        if (Array.isArray(a)) scalars2.push(...a.flat(2));
+        else scalars2.push(a);
+      }
+      const element = t.element;
+      if (scalars2.length === 1) return Array.from({ length: t.count }, () => this._convertScalar(scalars2[0], element));
+      return Array.from({ length: t.count }, (_, i) => this._convertScalar(scalars2[i] ?? 0, element));
+    }
+    if (t.kind === "matrix") {
+      const column = types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      if (args.length === 1 && !Array.isArray(args[0])) {
+        const d = args[0];
+        return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => r === c2 ? this._convertScalar(d, types.elementOf(t.column)) : 0));
+      }
+      if (args.every((a) => Array.isArray(a)) && args.length === t.columns) {
+        return args.map((col) => this._convert(col, t.column));
+      }
+      const scalars2 = [];
+      for (const a of args) {
+        if (Array.isArray(a)) scalars2.push(...a.flat(2));
+        else scalars2.push(a);
+      }
+      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._convertScalar(scalars2[c2 * rows + r] ?? 0, types.elementOf(t.column))));
+    }
+    if (t.kind === "array") {
+      const length2 = t.length < 0 ? args.length : t.length;
+      return Array.from({ length: length2 }, (_, i) => args[i] === void 0 ? types.zero(t.element) : this._convert(args[i], t.element));
+    }
+    if (t.kind === "struct") {
+      return t.members.map((m, i) => args[i] === void 0 ? types.zero(m.type) : this._convert(args[i], m.type));
+    }
+    return args.length ? this._convert(args[0], type) : types.zero(type);
   }
 };
-function floatCompare(op, a, b) {
-  const unordered = Number.isNaN(a) || Number.isNaN(b);
-  switch (op) {
-    case 180 /* FOrdEqual */:
-      return !unordered && a === b;
-    case 181 /* FUnordEqual */:
-      return unordered || a === b;
-    case 182 /* FOrdNotEqual */:
-      return !unordered && a !== b;
-    case 183 /* FUnordNotEqual */:
-      return unordered || a !== b;
-    case 184 /* FOrdLessThan */:
-      return !unordered && a < b;
-    case 185 /* FUnordLessThan */:
-      return unordered || a < b;
-    case 186 /* FOrdGreaterThan */:
-      return !unordered && a > b;
-    case 187 /* FUnordGreaterThan */:
-      return unordered || a > b;
-    case 188 /* FOrdLessThanEqual */:
-      return !unordered && a <= b;
-    case 189 /* FUnordLessThanEqual */:
-      return unordered || a <= b;
-    case 190 /* FOrdGreaterThanEqual */:
-      return !unordered && a >= b;
-    case 191 /* FUnordGreaterThanEqual */:
-      return unordered || a >= b;
-    case 161 /* LessOrGreater */:
-      return !unordered && a !== b;
-    case 162 /* Ordered */:
-      return !unordered;
-    case 163 /* Unordered */:
-      return unordered;
+var BUILTIN_INPUT_NAMES = /* @__PURE__ */ new Set([
+  "position",
+  "point_coord",
+  "front_facing",
+  "primitive_id",
+  "sample_id",
+  "sample_mask",
+  "barycentric_coord",
+  "render_target_array_index",
+  "viewport_array_index",
+  "layer"
+]);
+var OUTPUT_ATTRIBUTES = /* @__PURE__ */ new Set(["position", "point_size", "depth", "color", "user", "sample_mask", "stencil"]);
+function outputWhere(attribute, arg, index) {
+  if (attribute === "position") return { builtin: 0 };
+  if (attribute === "point_size") return { builtin: 1 };
+  if (attribute === "depth") return { builtin: 3 };
+  if (attribute === "color") return { location: arg ?? 0 };
+  if (attribute === "user") return { location: index };
+  return { location: index };
+}
+function numberOf2(v) {
+  return typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0;
+}
+function big(v) {
+  return typeof v === "bigint" ? v : BigInt(Math.trunc(numberOf2(v)));
+}
+function truthy(v) {
+  if (Array.isArray(v)) return v.length > 0 && truthy(v[0]);
+  return typeof v === "bigint" ? v !== 0n : typeof v === "boolean" ? v : numberOf2(v) !== 0;
+}
+function bigintOp(kind, x, y) {
+  switch (kind) {
+    case "+":
+      return x + y;
+    case "-":
+      return x - y;
+    case "*":
+      return x * y;
+    case "/":
+      return y === 0n ? 0n : x / y;
+    case "%":
+      return y === 0n ? 0n : x % y;
+    case "==":
+      return x === y;
+    case "!=":
+      return x !== y;
+    case "<":
+      return x < y;
+    case ">":
+      return x > y;
+    case "<=":
+      return x <= y;
+    case ">=":
+      return x >= y;
+    case "&":
+      return x & y;
+    case "|":
+      return x | y;
+    case "^":
+      return x ^ y;
+    case "<<":
+      return x << y;
+    case ">>":
+      return x >> y;
     default:
-      return false;
+      return 0n;
   }
 }
-function frexp(x) {
-  if (x === 0 || !Number.isFinite(x)) return [x, 0];
-  const e = Math.floor(Math.log2(Math.abs(x))) + 1;
-  let m = x / 2 ** e;
-  if (Math.abs(m) >= 1) return [m / 2, e + 1];
-  if (Math.abs(m) < 0.5) m *= 2;
-  return Math.abs(x / 2 ** e) < 0.5 ? [m, e - 1] : [m, e];
-}
-function determinant(m) {
-  const n = m.length;
-  if (n === 2) return m[0][0] * m[1][1] - m[1][0] * m[0][1];
-  if (n === 3) {
-    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2]) + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+function extract(value, indices) {
+  if (indices.length === 1) {
+    if (!Array.isArray(value)) return value;
+    return cloneValue(value[indices[0]] ?? null);
   }
-  let det = 0;
-  for (let c2 = 0; c2 < n; c2++) {
-    const minor = m.filter((_, i) => i !== c2).map((col) => col.slice(1));
-    det += (c2 % 2 ? -1 : 1) * m[c2][0] * determinant(minor);
-  }
-  return det;
+  if (!Array.isArray(value)) return Array.from({ length: indices.length }, () => value);
+  return indices.map((i) => cloneValue(value[i] ?? null));
 }
-function inverse(m) {
-  const n = m.length;
-  const a = Array.from({ length: n }, (_, r) => [...Array.from({ length: n }, (_2, c2) => m[c2][r]), ...Array.from({ length: n }, (_2, c2) => c2 === r ? 1 : 0)]);
-  for (let col = 0; col < n; col++) {
-    let pivot = col;
-    for (let r = col + 1; r < n; r++) if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
-    [a[col], a[pivot]] = [a[pivot], a[col]];
-    const p = a[col][col];
-    if (p === 0) return m.map((c2) => c2.map(() => NaN));
-    for (let c2 = 0; c2 < 2 * n; c2++) a[col][c2] /= p;
-    for (let r = 0; r < n; r++) {
-      if (r === col) continue;
-      const f = a[r][col];
-      for (let c2 = 0; c2 < 2 * n; c2++) a[r][c2] -= f * a[col][c2];
-    }
+function insert(value, element, indices) {
+  if (!Array.isArray(value)) return element;
+  if (indices.length === 1) {
+    value[indices[0]] = Array.isArray(element) ? element[0] ?? null : element;
+    return value;
   }
-  return Array.from({ length: n }, (_, c2) => Array.from({ length: n }, (_2, r) => a[r][n + c2]));
-}
-function packNorm(v, bits, isSigned) {
-  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
-  let out = 0;
-  v.forEach((x, i) => {
-    const clamped = isSigned ? Math.min(Math.max(x, -1), 1) : Math.min(Math.max(x, 0), 1);
-    const q2 = Math.round(clamped * max) & 2 ** bits - 1;
-    out += q2 * 2 ** (bits * i);
+  indices.forEach((at, i) => {
+    value[at] = Array.isArray(element) ? element[i] ?? null : element;
   });
-  return out >>> 0;
-}
-function unpackNorm(p, bits, isSigned, count2) {
-  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
-  return Array.from({ length: count2 }, (_, i) => {
-    let q2 = Math.floor((p >>> 0) / 2 ** (bits * i)) % 2 ** bits;
-    if (isSigned && q2 >= 2 ** (bits - 1)) q2 -= 2 ** bits;
-    return Math.fround(isSigned ? Math.max(q2 / max, -1) : q2 / max);
-  });
-}
-function toHalf(x) {
-  const f = new Float32Array([x]);
-  const bits = new Uint32Array(f.buffer)[0];
-  const sign = bits >>> 16 & 32768;
-  const exponent = (bits >>> 23 & 255) - 127 + 15;
-  const mantissa = bits & 8388607;
-  if (exponent <= 0) return sign;
-  if (exponent >= 31) return sign | 31744 | ((bits >>> 23 & 255) === 255 && mantissa ? 512 : 0);
-  return sign | exponent << 10 | mantissa >>> 13;
-}
-function packHalf(v) {
-  return (toHalf(v[1] ?? 0) << 16 | toHalf(v[0] ?? 0)) >>> 0;
-}
-function unpackHalf(p) {
-  const half = (h) => {
-    const sign = h & 32768 ? -1 : 1;
-    const e = h >> 10 & 31;
-    const f = h & 1023;
-    return e === 0 ? sign * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign * Infinity : sign * 2 ** (e - 15) * (1 + f / 1024);
-  };
-  return [Math.fround(half(p & 65535)), Math.fround(half(p >>> 16 & 65535))];
+  return value;
 }
 
-// src/renderer/spirv/quad.ts
+// src/renderer/msl/ir.ts
+function attributeNamed(attributes, name) {
+  return attributes?.find((a) => a.name === name);
+}
+
+// src/renderer/debug/quad.ts
 var MAX_CATCH_UP = 1e7;
 var PixelQuad = class {
   /** Top-left, top-right, bottom-left, bottom-right. */
@@ -10984,6 +13941,104 @@ var PixelQuad = class {
     }
   }
 };
+
+// src/renderer/mesh_input.ts
+var MESH_INPUT_LIMIT = 1e6;
+var INDIRECT_FIELDS2 = {
+  vkCmdDrawIndirect: ["vertexCount", "instanceCount", "firstVertex", "firstInstance"],
+  vkCmdDrawIndexedIndirect: ["indexCount", "instanceCount", "firstIndex", "vertexOffset", "firstInstance"]
+};
+function indexBytes(indexType) {
+  if (/UINT8/i.test(indexType)) return 1;
+  if (/16/.test(indexType)) return 2;
+  if (/32/.test(indexType)) return 4;
+  return 0;
+}
+function drawArgs(data, cmd, notes) {
+  const a = cmd.args ?? {};
+  const fields = INDIRECT_FIELDS2[cmd.method];
+  if (!fields) {
+    return { vertexCount: num(a.vertexCount), indexCount: num(a.indexCount), firstVertex: num(a.firstVertex), firstIndex: num(a.firstIndex), vertexOffset: num(a.vertexOffset) };
+  }
+  const b = data.buffer(cmd.bufferData?.[0]);
+  if (!b?.data || b.data.byteLength < fields.length * 4) {
+    notes.push("An indirect draw's counts are in a buffer the capture did not read back.");
+    return {};
+  }
+  const view = new DataView(b.data.buffer, b.data.byteOffset, b.data.byteLength);
+  const out = {};
+  fields.forEach((f, k) => {
+    out[f] = f === "vertexOffset" ? view.getInt32(k * 4, true) : view.getUint32(k * 4, true);
+  });
+  if (num(a.drawCount) > 1) notes.push(`The first of the indirect draw's ${num(a.drawCount)} draws.`);
+  return out;
+}
+function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
+  const state = drawState(data, db, cmd);
+  const notes = [];
+  const d = state.pipeline?.descriptor;
+  const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
+  const topology = assembly ? str(assembly.topology) : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  const args = drawArgs(data, cmd, notes);
+  let ids = [];
+  let indices = null;
+  const indexed = /Indexed/.test(cmd.method);
+  if (indexed) {
+    const ib = state.indexBuffer;
+    const captured = ib ? data.buffer(ib.dataId) : null;
+    const size2 = ib ? indexBytes(ib.indexType) : 0;
+    if (!captured?.data || !size2) {
+      notes.push("The index buffer was not captured.");
+    } else {
+      const view = new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength);
+      const count2 = Math.min(args.indexCount ?? 0, MESH_INPUT_LIMIT);
+      const first = args.firstIndex ?? 0;
+      indices = [];
+      for (let i = first; i < first + count2 && (i + 1) * size2 <= captured.data.byteLength; i++) {
+        indices.push(size2 === 1 ? view.getUint8(i * size2) : size2 === 2 ? view.getUint16(i * size2, true) : view.getUint32(i * size2, true));
+      }
+      if (indices.length < count2) notes.push(`The captured index buffer holds ${indices.length.toLocaleString()} of the draw's ${count2.toLocaleString()} indices.`);
+      ids = indices.map((v) => v + (args.vertexOffset ?? 0));
+    }
+  } else {
+    const count2 = Math.min(args.vertexCount ?? 0, MESH_INPUT_LIMIT);
+    ids = Array.from({ length: count2 }, (_, i) => (args.firstVertex ?? 0) + i);
+  }
+  const attributes = [];
+  const readers = [];
+  for (const vb of [...state.vertexBuffers.values()].sort((x, y) => x.binding - y.binding)) {
+    const layout = vertexLayout(state, vb.binding, vb);
+    if (!layout?.stride) continue;
+    const captured = data.buffer(vb.dataId);
+    if (!captured?.data) notes.push(`Vertex buffer binding ${vb.binding} was not captured.`);
+    const view = captured?.data ? new DataView(captured.data.buffer, captured.data.byteOffset, captured.data.byteLength) : null;
+    for (const a of layout.attributes) {
+      const format = vertexFormat(a.format);
+      if (!format) continue;
+      const perInstance = layout.rate.includes("INSTANCE");
+      attributes.push({ name: names.get(a.location) || `location${a.location}`, location: a.location, binding: vb.binding, format: a.format, components: format.channels.length, perInstance });
+      readers.push({ layout, format, offset: a.offset, view, available: view ? Math.floor(view.byteLength / layout.stride) : 0 });
+    }
+  }
+  if (!state.vertexBuffers.size) notes.push("No vertex buffers are bound: the vertex shader makes its vertices (from gl_VertexIndex, or a storage buffer).");
+  let position = attributes.findIndex((a) => /pos/i.test(a.name) && a.components >= 2 && !vertexFormat(a.format)?.integer);
+  if (position < 0) position = attributes.findIndex((a) => a.location === 0 && a.components >= 3 && !vertexFormat(a.format)?.integer);
+  return {
+    topology,
+    attributes,
+    ids,
+    indices,
+    position,
+    notes,
+    values: (order, attribute, instance = 0) => {
+      const r = readers[attribute];
+      if (!r?.view) return null;
+      const id = attributes[attribute].perInstance ? instance : ids[order];
+      if (id === void 0 || id >= r.available) return null;
+      return r.format.read(r.view, id * r.layout.stride + r.offset);
+    }
+  };
+}
 
 // src/renderer/vulkan/astc_decode.ts
 var q = (levels, bits, trits = false, quints = false) => ({ levels, bits, trits, quints });
@@ -14269,12 +17324,12 @@ function finishBc6(v, signed2) {
   return v * 31 >> 6;
 }
 function halfBitsToFloat(h) {
-  const sign = h & 32768 ? -1 : 1;
+  const sign2 = h & 32768 ? -1 : 1;
   const exp = h >> 10 & 31;
   const frac = h & 1023;
-  if (exp === 0) return sign * Math.pow(2, -14) * (frac / 1024);
-  if (exp === 31) return frac ? NaN : sign * Infinity;
-  return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+  if (exp === 0) return sign2 * Math.pow(2, -14) * (frac / 1024);
+  if (exp === 31) return frac ? NaN : sign2 * Infinity;
+  return sign2 * Math.pow(2, exp - 15) * (1 + frac / 1024);
 }
 function decodeBc6hBlock(s, block, px, signed2) {
   const bits = new Bits(s, block);
@@ -15227,6 +18282,2754 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
   return out;
 }
 
+// src/renderer/metal/shader_debug.ts
+var MAX_INTERPRETED_VERTICES = 2e4;
+var FUNCTION_KEY = { vertex: "vertexFunction", fragment: "fragmentFunction", compute: "function" };
+var QUALIFIER = { vertex: "vertex", fragment: "fragment", compute: "kernel" };
+function isMetalPipeline(pipeline) {
+  return !!pipeline?.type.startsWith("MTL");
+}
+async function metalStage(ctx, state, stage) {
+  const pipeline = state.pipeline;
+  if (!pipeline) throw new Error("no pipeline is bound at the command");
+  const ref = pipeline.descriptor?.[FUNCTION_KEY[stage]] ?? (stage === "compute" ? pipeline.descriptor?.computeFunction : void 0);
+  const fn = ctx.db.getObject(refId(ref));
+  if (!fn) {
+    throw new Error(`the capture does not record which function this pipeline's ${stage} stage was built from`);
+  }
+  const entryPoint = str(fn.args?.name) || "main0";
+  const library = ctx.db.getObject(fn.parentId);
+  if (!library || library.type !== "MTLLibrary") throw new Error(`${entryPoint} has no library in the capture`);
+  const blobIndex = library.blobs.findIndex((b) => b.name === "Metal Shading Language");
+  if (blobIndex < 0) {
+    throw new Error(library.blobs.some((b) => b.name === "metallib") ? "the library was loaded precompiled, so the capture holds no Metal Shading Language to step through" : "the capture holds no source for the library this shader came from");
+  }
+  const key = `${library.id}:${blobIndex}`;
+  const bytes = ctx.db.blobData.get(key) ?? await ctx.fetchBlob?.(library.id, blobIndex) ?? null;
+  if (!bytes) throw new Error("the library's source is not in the capture file, and the application is no longer connected");
+  const program = MslProgram.of(new TextDecoder().decode(bytes), library.label || "shader.metal");
+  const entry = program.entryPoint(entryPoint, QUALIFIER[stage]);
+  if (!entry) {
+    throw new Error(`the library's source has no ${QUALIFIER[stage]} function ${entryPoint}${program.diagnostics.length ? `; the source did not parse cleanly (line ${program.diagnostics[0].line}: ${program.diagnostics[0].message})` : ""}`);
+  }
+  const source = {
+    stage,
+    stageFlag: stage,
+    entryPoint: entry.name,
+    object: library,
+    blobIndex,
+    module: library
+  };
+  return { source, program, entry };
+}
+var FILTER = ["nearest", "linear"];
+var ADDRESS = ["clamp", "mirrorClamp", "repeat", "mirror", "clamp", "border"];
+var BORDERS = [[0, 0, 0, 0], [0, 0, 0, 1], [1, 1, 1, 1]];
+var COMPARE = ["Never", "Less", "Equal", "LessEqual", "Greater", "NotEqual", "GreaterEqual", "Always"];
+function metalSampler(object, clamps) {
+  const d = object?.descriptor;
+  if (!d) return null;
+  const compare2 = num(d.compareFunction);
+  return {
+    magFilter: FILTER[num(d.magFilter)] ?? "nearest",
+    minFilter: FILTER[num(d.minFilter)] ?? "nearest",
+    // MTLSamplerMipFilter: 0 is not mipmapped, 1 nearest, 2 linear.
+    mipmapMode: num(d.mipFilter) === 2 ? "linear" : "nearest",
+    address: [ADDRESS[num(d.sAddressMode)] ?? "clamp", ADDRESS[num(d.tAddressMode)] ?? "clamp", ADDRESS[num(d.rAddressMode)] ?? "clamp"],
+    border: BORDERS[num(d.borderColor)] ?? [0, 0, 0, 0],
+    compareOp: compare2 > 0 && compare2 < COMPARE.length ? COMPARE[compare2] : null,
+    minLod: clamps?.lodMinClamp ?? num(d.lodMinClamp),
+    maxLod: clamps?.lodMaxClamp ?? (d.lodMaxClamp === void 0 ? 1e3 : num(d.lodMaxClamp)),
+    lodBias: 0,
+    unnormalized: d.normalizedCoordinates === false
+  };
+}
+function metalBindings(ctx, state, stage) {
+  const textures = /* @__PURE__ */ new Map();
+  return {
+    buffer: (index) => {
+      const bound = state.stageBuffers.get(`${stage}:${index}`);
+      if (!bound) return null;
+      const captured = ctx.data.buffer(bound.dataId);
+      return captured?.data ?? null;
+    },
+    texture: (index) => {
+      if (textures.has(index)) return textures.get(index) ?? null;
+      const bound = state.stageTextures.get(`${stage}:${index}`);
+      let tex = null;
+      if (bound) {
+        const captured = ctx.data.capturedImage(bound.dataId) ?? ctx.data.imageContents(refId(bound.texture) ?? 0);
+        tex = captured ? debugTexture(captured) : null;
+      }
+      textures.set(index, tex);
+      return tex;
+    },
+    sampler: (index) => {
+      const bound = state.stageSamplers.get(`${stage}:${index}`);
+      if (!bound) return null;
+      return metalSampler(ctx.db.getObject(refId(bound.sampler)), bound);
+    },
+    label: (kind, index) => `${kind}(${index})`
+  };
+}
+function stageInType(program, entry) {
+  for (const p of entry.params) {
+    const symbol = program.ir.symbols[p.id];
+    if (symbol?.binding?.kind === "stage_in") return p.type;
+  }
+  return null;
+}
+function topologyOf(cmd) {
+  const name = str(cmd.args?.primitiveType);
+  if (name) {
+    if (name.endsWith("Point")) return "VK_PRIMITIVE_TOPOLOGY_POINT_LIST";
+    if (name.endsWith("LineStrip")) return "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP";
+    if (name.endsWith("Line")) return "VK_PRIMITIVE_TOPOLOGY_LINE_LIST";
+    if (name.endsWith("TriangleStrip")) return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP";
+    return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  }
+  switch (num(cmd.args?.primitiveType)) {
+    case 0:
+      return "VK_PRIMITIVE_TOPOLOGY_POINT_LIST";
+    case 1:
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_LIST";
+    case 2:
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP";
+    case 4:
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP";
+    default:
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  }
+}
+async function interpretedMeshOutput(ctx, cmd, state) {
+  const { program, entry } = await metalStage(ctx, state, "vertex");
+  const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
+  const bindings = metalBindings(ctx, state, "vertex");
+  const a = cmd.args ?? {};
+  const firstInstance = num(a.baseInstance);
+  const topology = topologyOf(cmd);
+  const types = program.ir.types;
+  const returnType = types.get(entry.returnType);
+  const outputs = [];
+  let stride = 0;
+  const members = returnType?.kind === "struct" ? returnType.members : [];
+  const flatten = (name, type, attributes) => {
+    const t = types.get(type);
+    const components = t?.kind === "vector" ? t.count : t?.kind === "scalar" ? 1 : 0;
+    if (!components) return;
+    const base = types.isFloat(type) ? "float" : types.isSigned(type) ? "int" : "uint";
+    outputs.push({
+      name,
+      offset: stride,
+      components,
+      base,
+      ...attributeNamed(attributes, "position") ? { builtin: "Position" } : {}
+    });
+    stride += components * 4;
+  };
+  if (members.length) for (const m of members) flatten(m.name, m.type, m.attributes);
+  else flatten("return", entry.returnType, entry.returnAttributes);
+  const instances = Math.max(1, num(a.instanceCount) || 1);
+  const perInstance = Math.min(input.ids.length, Math.max(3, Math.floor(MAX_INTERPRETED_VERTICES / instances)));
+  const instanceCount = Math.min(instances, Math.max(1, Math.floor(MAX_INTERPRETED_VERTICES / Math.max(1, perInstance))));
+  const records = [];
+  const notes = [...input.notes];
+  const warnings = /* @__PURE__ */ new Set();
+  for (let instance = 0; instance < instanceCount; instance++) {
+    for (let order2 = 0; order2 < perInstance; order2++) {
+      const attributes = /* @__PURE__ */ new Map();
+      input.attributes.forEach((attr, k) => {
+        const values = input.values(order2, k, instance);
+        if (values) attributes.set(attr.location, values);
+      });
+      const vertexId = input.ids[order2];
+      const inputs = {
+        builtins: /* @__PURE__ */ new Map([
+          ["vertex_id", vertexId],
+          ["instance_id", firstInstance + instance],
+          ["base_vertex", num(a.baseVertex)],
+          ["base_instance", firstInstance],
+          ["vertex_amplification_id", 0],
+          ["vertex_amplification_count", 1]
+        ]),
+        attributes,
+        varyings: /* @__PURE__ */ new Map()
+      };
+      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs });
+      invocation.run();
+      for (const w of invocation.warnings) warnings.add(w);
+      const written = invocation.outputs();
+      records.push(outputs.map((o) => {
+        const value = members.length ? written.find((v) => v.name === o.name)?.value : written[0]?.value;
+        return scalarsOf(value, o.components);
+      }).flat());
+    }
+  }
+  const truncated = perInstance < input.ids.length || instanceCount < instances;
+  if (truncated) {
+    notes.push(`The draw's vertex shader was run for ${perInstance.toLocaleString()} of its ${input.ids.length.toLocaleString()} vertices in ${instanceCount.toLocaleString()} of its ${instances.toLocaleString()} instances.`);
+  }
+  for (const w of warnings) notes.push(`Running the vertex shader: ${w}`);
+  const order = [];
+  for (let instance = 0; instance < instanceCount; instance++) {
+    const base = instance * perInstance;
+    for (const at of expandTopology(topology, perInstance)) order.push(base + at);
+  }
+  const data = new Uint8Array(order.length * stride);
+  const view = new DataView(data.buffer);
+  order.forEach((from, to) => {
+    const record = records[from] ?? [];
+    for (let i = 0; i < stride / 4; i++) {
+      const o = outputs.find((x) => i * 4 >= x.offset && i * 4 < x.offset + x.components * 4);
+      const value = record[i] ?? 0;
+      if (o?.base === "float") view.setFloat32(to * stride + i * 4, value, true);
+      else if (o?.base === "int") view.setInt32(to * stride + i * 4, value | 0, true);
+      else view.setUint32(to * stride + i * 4, value >>> 0, true);
+    }
+  });
+  return {
+    command: cmd.index,
+    method: cmd.method,
+    frame: cmd.frame,
+    commandBuffer: cmd.object?.__id ?? 0,
+    passIndex: 0,
+    measured: true,
+    topology: /LINE/.test(topology) ? "VK_PRIMITIVE_TOPOLOGY_LINE_LIST" : /POINT/.test(topology) ? topology : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST",
+    stride,
+    vertices: order.length,
+    truncated,
+    outputs,
+    data,
+    note: notes.length ? notes.join(" ") : void 0
+  };
+}
+function scalarsOf(value, components) {
+  const flat3 = [];
+  const walk = (v) => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    flat3.push(typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0);
+  };
+  walk(value);
+  return Array.from({ length: components }, (_, i) => flat3[i] ?? 0);
+}
+function expandTopology(topology, vertices) {
+  if (/TRIANGLE_STRIP/.test(topology)) {
+    const out = [];
+    for (let i = 0; i + 2 < vertices; i++) out.push(i, i + 1 + i % 2, i + 2 - i % 2);
+    return out;
+  }
+  if (/TRIANGLE_FAN/.test(topology)) {
+    const out = [];
+    for (let i = 0; i + 2 < vertices; i++) out.push(0, i + 1, i + 2);
+    return out;
+  }
+  if (/LINE_STRIP/.test(topology)) {
+    const out = [];
+    for (let i = 0; i + 1 < vertices; i++) out.push(i, i + 1);
+    return out;
+  }
+  return Array.from({ length: vertices }, (_, i) => i);
+}
+function metalRasterState(ctx, cmd, state) {
+  const pass = findMetalPass(ctx, cmd);
+  const target = pass ? ctx.data.texturesForPass(cmd.frame, pass.commandBuffer, pass.passIndex).find((t) => t.info.aspect === "color") : void 0;
+  const whole = target ? { x: 0, y: 0, width: target.info.width, height: target.info.height, minDepth: 0, maxDepth: 1 } : null;
+  return rasterStateOf(state, whole);
+}
+async function prepareMetalSession(ctx, target, state, cmd) {
+  const stage = target.stage;
+  const { source, program, entry } = await metalStage(ctx, state, stage);
+  const bindings = metalBindings(ctx, state, stage);
+  const notes = [];
+  if (program.diagnostics.length) {
+    const first = program.diagnostics[0];
+    notes.push(`The source has ${program.diagnostics.length} thing${program.diagnostics.length === 1 ? "" : "s"} the interpreter could not read, the first on line ${first.line}: ${first.message}`);
+  }
+  const a = cmd.args ?? {};
+  if (stage === "compute") {
+    const size2 = (v) => isObject(v) ? [Math.max(1, num(v.width)), Math.max(1, num(v.height)), Math.max(1, num(v.depth))] : [1, 1, 1];
+    const localSize = size2(a.threadsPerThreadgroup);
+    const indirect = cmd.method.includes("Indirect");
+    const threadsPerGrid = a.threadsPerGrid !== void 0 ? size2(a.threadsPerGrid) : null;
+    const groups = threadsPerGrid ? threadsPerGrid.map((n, i) => Math.ceil(n / localSize[i])) : indirect ? [1, 1, 1] : size2(a.threadgroupsPerGrid);
+    if (indirect) notes.push("An indirect dispatch's threadgroup counts are in a buffer: they read as (1, 1, 1).");
+    const g = target.stage === "compute" ? target.invocation : [0, 0, 0];
+    const inputs = computeInputs(g, localSize, groups, threadsPerGrid);
+    return {
+      target,
+      program,
+      stage: source,
+      bindings,
+      notes,
+      description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with threadgroups of ${localSize.join(" x ")}`,
+      limits: { groups, localSize },
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs })
+    };
+  }
+  if (stage === "vertex") {
+    const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
+    notes.push(...input.notes);
+    const order = target.stage === "vertex" ? target.vertex : 0;
+    const instance = target.stage === "vertex" ? target.instance : 0;
+    if (order < 0 || order >= input.ids.length) throw new Error(`the draw reads ${input.ids.length.toLocaleString()} vertices: there is no vertex ${order}`);
+    const attributes = /* @__PURE__ */ new Map();
+    input.attributes.forEach((attr, k) => {
+      const values = input.values(order, k, instance);
+      if (values) attributes.set(attr.location, values);
+    });
+    const firstInstance = num(a.baseInstance);
+    const vertexId = input.ids[order];
+    const inputs = {
+      builtins: /* @__PURE__ */ new Map([
+        ["vertex_id", vertexId],
+        ["instance_id", firstInstance + instance],
+        ["base_vertex", num(a.baseVertex)],
+        ["base_instance", firstInstance],
+        ["vertex_amplification_id", 0],
+        ["vertex_amplification_count", 1]
+      ]),
+      attributes,
+      varyings: /* @__PURE__ */ new Map()
+    };
+    return {
+      target,
+      program,
+      stage: source,
+      bindings,
+      notes,
+      description: `vertex ${order} of the draw (vertex_id ${vertexId}), instance ${instance}`,
+      limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
+      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs })
+    };
+  }
+  const mesh = await interpretedMeshOutput(ctx, cmd, state);
+  if (mesh.note) notes.push(mesh.note);
+  const raster = metalRasterState(ctx, cmd, state);
+  const x = target.stage === "fragment" ? target.x : 0;
+  const y = target.stage === "fragment" ? target.y : 0;
+  const { hit, triangles, reason } = coveringTriangle(raster, mesh, x, y, (o) => o.builtin === "Position" ? null : o.name);
+  if (!hit) throw new Error(reason);
+  const { x0, y0, target: lane } = PixelQuad.place(x, y);
+  const stageIn = stageInType(program, entry);
+  const interpolationOf = interpolationsOf(program, stageIn);
+  const targetPixel = passPixel(ctx, cmd, x, y);
+  return {
+    target,
+    program,
+    stage: source,
+    bindings,
+    notes,
+    targetPixel,
+    description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing), whose vertices the interpreter ran the vertex shader for`,
+    limits: { width: raster.viewport ? Math.abs(raster.viewport.width) : void 0, height: raster.viewport ? Math.abs(raster.viewport.height) : void 0 },
+    start: () => new PixelQuad((dx, dy, derivatives) => new MslInvocation(program, {
+      entryPoint: entry.name,
+      stage: "fragment",
+      bindings,
+      derivatives,
+      inputs: fragmentInputs(hit, x0 + dx, y0 + dy, interpolationOf)
+    }), lane)
+  };
+}
+function computeInputs(g, localSize, groups, threadsPerGrid) {
+  const inGroup = g.map((v, i) => v % localSize[i]);
+  const grid = threadsPerGrid ?? groups.map((n, i) => n * localSize[i]);
+  return {
+    builtins: /* @__PURE__ */ new Map([
+      ["thread_position_in_grid", g],
+      ["thread_position_in_threadgroup", inGroup],
+      ["threadgroup_position_in_grid", g.map((v, i) => Math.floor(v / localSize[i]))],
+      ["thread_index_in_threadgroup", inGroup[2] * localSize[0] * localSize[1] + inGroup[1] * localSize[0] + inGroup[0]],
+      ["threads_per_threadgroup", localSize],
+      ["threadgroups_per_grid", groups],
+      ["threads_per_grid", grid],
+      ["threads_per_simdgroup", 32],
+      ["thread_index_in_simdgroup", 0],
+      ["simdgroup_index_in_threadgroup", 0],
+      ["simdgroups_per_threadgroup", 1],
+      ["quad_index_in_threadgroup", 0],
+      ["quad_index_in_simdgroup", 0]
+    ]),
+    attributes: /* @__PURE__ */ new Map(),
+    varyings: /* @__PURE__ */ new Map()
+  };
+}
+function interpolationsOf(program, stageIn) {
+  const how = /* @__PURE__ */ new Map();
+  const t = stageIn === null ? void 0 : program.ir.types.get(stageIn);
+  if (t?.kind === "struct") {
+    for (const m of t.members) {
+      const names = m.attributes.map((x) => x.name);
+      how.set(m.name, names.includes("flat") ? "flat" : names.some((n) => n.endsWith("no_perspective")) ? "noperspective" : "smooth");
+    }
+  }
+  return (key) => how.get(key) ?? "smooth";
+}
+function fragmentInputs(hit, px, py, interpolationOf) {
+  const { values, fragCoord } = interpolate(hit, px, py, interpolationOf);
+  return {
+    builtins: /* @__PURE__ */ new Map([
+      ["position", fragCoord],
+      ["front_facing", hit.front],
+      ["primitive_id", hit.primitive],
+      ["point_coord", [0.5, 0.5]],
+      ["sample_id", 0],
+      ["sample_mask", 4294967295],
+      ["barycentric_coord", [1 / 3, 1 / 3, 1 / 3]],
+      ["render_target_array_index", 0],
+      ["viewport_array_index", 0],
+      ["layer", 0]
+    ]),
+    attributes: /* @__PURE__ */ new Map(),
+    varyings: values
+  };
+}
+function passPixel(ctx, cmd, x, y) {
+  const passInfo = findMetalPass(ctx, cmd);
+  if (!passInfo) return void 0;
+  const colour = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
+  if (!colour?.data || x >= colour.info.width || y >= colour.info.height) return void 0;
+  const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  if (!texels) return void 0;
+  const o = (y * texels.width + x) * 4;
+  return {
+    image: colour.info.id,
+    attachment: colour.info.attachment,
+    value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))),
+    format: colour.info.format
+  };
+}
+function findMetalPass(ctx, cmd) {
+  const sets = ctx.data.sets;
+  const commandBuffer = cmd.object?.__id ?? 0;
+  let passIndex = -1;
+  for (let i = 0; i <= cmd.index; i++) {
+    const c2 = ctx.data.commands[i];
+    if (!c2 || (c2.object?.__id ?? 0) !== commandBuffer) continue;
+    if (sets.PASS_BEGIN.has(c2.method)) passIndex++;
+  }
+  return passIndex < 0 ? null : { commandBuffer, passIndex };
+}
+
+// src/renderer/spirv/module.ts
+var BUILTIN_NAMES = {
+  0: "gl_Position",
+  1: "gl_PointSize",
+  3: "gl_ClipDistance",
+  4: "gl_CullDistance",
+  5: "gl_VertexID",
+  6: "gl_InstanceID",
+  7: "gl_PrimitiveID",
+  9: "gl_Layer",
+  15: "gl_FragCoord",
+  16: "gl_PointCoord",
+  17: "gl_FrontFacing",
+  18: "gl_SampleID",
+  19: "gl_SamplePosition",
+  20: "gl_SampleMask",
+  22: "gl_FragDepth",
+  23: "gl_HelperInvocation",
+  24: "gl_NumWorkGroups",
+  25: "gl_WorkGroupSize",
+  26: "gl_WorkGroupID",
+  27: "gl_LocalInvocationID",
+  28: "gl_GlobalInvocationID",
+  29: "gl_LocalInvocationIndex",
+  42: "gl_VertexIndex",
+  43: "gl_InstanceIndex",
+  4424: "gl_BaseVertex",
+  4425: "gl_BaseInstance",
+  4426: "gl_DrawID",
+  4440: "gl_ViewIndex"
+};
+function literalString(words2, start) {
+  const bytes = [];
+  for (let i = start; i < words2.length; i++) {
+    const w = words2[i];
+    for (let b = 0; b < 4; b++) {
+      const c2 = w >>> b * 8 & 255;
+      if (c2 === 0) return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: i - start + 1 };
+      bytes.push(c2);
+    }
+  }
+  return { text: new TextDecoder().decode(new Uint8Array(bytes)), words: words2.length - start };
+}
+function hasResultTypeAndId(op) {
+  if (op === 1 /* Undef */ || op === 12 /* ExtInst */ || op === 55 /* FunctionParameter */ || op === 57 /* FunctionCall */ || op === 59 /* Variable */) return true;
+  if (op === 54 /* Function */) return true;
+  if (op >= 41 /* ConstantTrue */ && op <= 52 /* SpecConstantOp */ && op !== 47) return true;
+  if (op >= 60 /* ImageTexelPointer */ && op <= 70 /* InBoundsPtrAccessChain */ && op !== 62 /* Store */ && op !== 63 /* CopyMemory */ && op !== 64 /* CopyMemorySized */) return true;
+  if (op >= 77 /* VectorExtractDynamic */ && op <= 84 /* Transpose */) return true;
+  if (op >= 86 /* SampledImage */ && op <= 107 /* ImageQuerySamples */ && op !== 99 /* ImageWrite */) return true;
+  if (op >= 109 /* ConvertFToU */ && op <= 124 /* Bitcast */) return true;
+  if (op >= 126 /* SNegate */ && op <= 152 /* SMulExtended */) return true;
+  if (op >= 154 /* Any */ && op <= 191 /* FUnordGreaterThanEqual */) return true;
+  if (op >= 194 /* ShiftRightLogical */ && op <= 205 /* BitCount */) return true;
+  if (op >= 207 /* DPdx */ && op <= 215 /* FwidthCoarse */) return true;
+  if (op === 245 /* Phi */ || op === 400 /* CopyLogical */ || op === 5381 /* IsHelperInvocation */) return true;
+  return false;
+}
+function hasResultIdOnly(op) {
+  return op === 7 /* String */ || op === 11 /* ExtInstImport */ || op === 248 /* Label */ || op === 73 /* DecorationGroup */ || op >= 19 /* TypeVoid */ && op <= 33 /* TypeFunction */ || op === 39 /* TypeForwardPointer */;
+}
+var SpirvModule = class {
+  words;
+  instructions = [];
+  types = /* @__PURE__ */ new Map();
+  /** Constant values (spec constants at their defaults), by id. */
+  constants = /* @__PURE__ */ new Map();
+  /** The spec constants: id to SpecId, for a pipeline's specialization. */
+  specIds = /* @__PURE__ */ new Map();
+  names = /* @__PURE__ */ new Map();
+  memberNames = /* @__PURE__ */ new Map();
+  decorations = /* @__PURE__ */ new Map();
+  memberDecorations = /* @__PURE__ */ new Map();
+  /** Global variables: id to pointer type and storage class, with their initializer when they have one. */
+  globals = /* @__PURE__ */ new Map();
+  functions = /* @__PURE__ */ new Map();
+  entryPoints = [];
+  /** Extended instruction sets imported, by id: "GLSL.std.450", "NonSemantic.Shader.DebugInfo.100", ... */
+  extSets = /* @__PURE__ */ new Map();
+  /** OpString contents by id. */
+  strings = /* @__PURE__ */ new Map();
+  /** Source locations per instruction ordinal, from the module's debug information. */
+  debug;
+  /** NonSemantic debug info: a local variable's name, by the OpVariable its DebugDeclare names. */
+  debugVariableNames = /* @__PURE__ */ new Map();
+  /** The result type of every id that has one (instructions, parameters, variables). */
+  idTypes = /* @__PURE__ */ new Map();
+  constructor(data) {
+    if (data.byteLength < 20 || data.byteLength % 4 !== 0) throw new Error("not a SPIR-V module");
+    const words2 = new Uint32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    if (words2[0] !== 119734787) throw new Error("not a SPIR-V module (bad magic number)");
+    this.words = words2;
+    this.debug = parseSpirvDebugInfo(data);
+    let fn = null;
+    let block = null;
+    const groups = /* @__PURE__ */ new Map();
+    const debugLocals = /* @__PURE__ */ new Map();
+    for (let at = 5, index = 0; at < words2.length; index++) {
+      const count2 = words2[at] >>> 16;
+      const op = words2[at] & 65535;
+      if (count2 === 0 || at + count2 > words2.length) throw new Error(`malformed SPIR-V at word ${at}`);
+      const operands = words2.subarray(at + 1, at + count2);
+      let resultType2 = 0;
+      let result = 0;
+      if (hasResultTypeAndId(op)) {
+        resultType2 = operands[0];
+        result = operands[1];
+      } else if (hasResultIdOnly(op)) {
+        result = operands[0];
+      }
+      const inst = { op, words: operands, index, resultType: resultType2, result };
+      this.instructions.push(inst);
+      if (result && resultType2) this.idTypes.set(result, resultType2);
+      at += count2;
+      switch (op) {
+        case 5 /* Name */:
+          this.names.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 6 /* MemberName */: {
+          let m = this.memberNames.get(operands[0]);
+          if (!m) this.memberNames.set(operands[0], m = /* @__PURE__ */ new Map());
+          m.set(operands[1], literalString(operands, 2).text);
+          break;
+        }
+        case 7 /* String */:
+          this.strings.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 11 /* ExtInstImport */:
+          this.extSets.set(operands[0], literalString(operands, 1).text);
+          break;
+        case 15 /* EntryPoint */: {
+          const name = literalString(operands, 2);
+          this.entryPoints.push({ model: operands[0], function: operands[1], name: name.text, interface: Array.from(operands.subarray(2 + name.words)), modes: /* @__PURE__ */ new Map() });
+          break;
+        }
+        case 16 /* ExecutionMode */:
+        case 331 /* ExecutionModeId */:
+          for (const e of this.entryPoints) if (e.function === operands[0]) e.modes.set(operands[1], Array.from(operands.subarray(2)));
+          break;
+        case 71 /* Decorate */:
+        case 332 /* DecorateId */:
+        case 5632 /* DecorateString */:
+          this._decorate(this.decorations, operands[0], operands[1], Array.from(operands.subarray(2)));
+          break;
+        case 72 /* MemberDecorate */:
+        case 5633 /* MemberDecorateString */: {
+          let m = this.memberDecorations.get(operands[0]);
+          if (!m) this.memberDecorations.set(operands[0], m = /* @__PURE__ */ new Map());
+          this._decorate(m, operands[1], operands[2], Array.from(operands.subarray(3)));
+          break;
+        }
+        case 73 /* DecorationGroup */:
+          groups.set(operands[0], this.decorations.get(operands[0]) ?? /* @__PURE__ */ new Map());
+          break;
+        case 74 /* GroupDecorate */: {
+          const g = this.decorations.get(operands[0]);
+          for (const target of operands.subarray(1)) for (const [d, v] of g ?? []) this._decorate(this.decorations, target, d, v);
+          break;
+        }
+        case 75 /* GroupMemberDecorate */: {
+          const g = this.decorations.get(operands[0]);
+          for (let i = 1; i + 1 < operands.length; i += 2) {
+            let m = this.memberDecorations.get(operands[i]);
+            if (!m) this.memberDecorations.set(operands[i], m = /* @__PURE__ */ new Map());
+            for (const [d, v] of g ?? []) this._decorate(m, operands[i + 1], d, v);
+          }
+          break;
+        }
+        case 19 /* TypeVoid */:
+          this.types.set(result, { kind: "void" });
+          break;
+        case 20 /* TypeBool */:
+          this.types.set(result, { kind: "bool" });
+          break;
+        case 21 /* TypeInt */:
+          this.types.set(result, { kind: "int", width: operands[1], signed: operands[2] !== 0 });
+          break;
+        case 22 /* TypeFloat */:
+          this.types.set(result, { kind: "float", width: operands[1] });
+          break;
+        case 23 /* TypeVector */:
+          this.types.set(result, { kind: "vector", element: operands[1], count: operands[2] });
+          break;
+        case 24 /* TypeMatrix */:
+          this.types.set(result, { kind: "matrix", column: operands[1], count: operands[2] });
+          break;
+        case 25 /* TypeImage */:
+          this.types.set(result, { kind: "image", sampled: operands[1], dim: operands[2], depth: operands[3], arrayed: operands[4] !== 0, ms: operands[5] !== 0, usage: operands[6], format: operands[7] });
+          break;
+        case 26 /* TypeSampler */:
+          this.types.set(result, { kind: "sampler" });
+          break;
+        case 27 /* TypeSampledImage */:
+          this.types.set(result, { kind: "sampledImage", image: operands[1] });
+          break;
+        case 28 /* TypeArray */:
+          this.types.set(result, { kind: "array", element: operands[1], lengthId: operands[2], length: Number(this.constants.get(operands[2]) ?? 0) });
+          break;
+        case 29 /* TypeRuntimeArray */:
+          this.types.set(result, { kind: "runtimeArray", element: operands[1] });
+          break;
+        case 30 /* TypeStruct */:
+          this.types.set(result, { kind: "struct", members: Array.from(operands.subarray(1)) });
+          break;
+        case 31 /* TypeOpaque */:
+          this.types.set(result, { kind: "opaque", name: literalString(operands, 1).text });
+          break;
+        case 32 /* TypePointer */:
+          this.types.set(result, { kind: "pointer", storage: operands[1], pointee: operands[2] });
+          break;
+        case 33 /* TypeFunction */:
+          this.types.set(result, { kind: "function", returnType: operands[1], params: Array.from(operands.subarray(2)) });
+          break;
+        case 41 /* ConstantTrue */:
+        case 48 /* SpecConstantTrue */:
+          this.constants.set(result, true);
+          break;
+        case 42 /* ConstantFalse */:
+        case 49 /* SpecConstantFalse */:
+          this.constants.set(result, false);
+          break;
+        case 43 /* Constant */:
+        case 50 /* SpecConstant */:
+          this.constants.set(result, this.scalarFromWords(resultType2, operands.subarray(2)));
+          break;
+        case 44 /* ConstantComposite */:
+        case 51 /* SpecConstantComposite */:
+          this.constants.set(result, Array.from(operands.subarray(2)).map((id) => this.constants.get(id)));
+          break;
+        case 46 /* ConstantNull */:
+          this.constants.set(result, this.zero(resultType2));
+          break;
+        case 59 /* Variable */:
+          if (!fn) this.globals.set(result, { type: resultType2, storage: operands[2], initializer: operands[3] ?? 0 });
+          break;
+        case 54 /* Function */:
+          fn = { id: result, returnType: resultType2, start: index, params: [], blocks: [], blockByLabel: /* @__PURE__ */ new Map() };
+          this.functions.set(result, fn);
+          break;
+        case 55 /* FunctionParameter */:
+          fn?.params.push({ id: result, type: resultType2 });
+          break;
+        case 248 /* Label */:
+          if (fn) {
+            block = { label: result, start: index, end: index };
+            fn.blocks.push(block);
+            fn.blockByLabel.set(result, block);
+          }
+          break;
+        case 249 /* Branch */:
+        case 250 /* BranchConditional */:
+        case 251 /* Switch */:
+        case 252 /* Kill */:
+        case 253 /* Return */:
+        case 254 /* ReturnValue */:
+        case 255 /* Unreachable */:
+        case 4416 /* TerminateInvocation */:
+          if (block) block.end = index;
+          block = null;
+          break;
+        case 56 /* FunctionEnd */:
+          fn = null;
+          break;
+        case 12 /* ExtInst */: {
+          const set = this.extSets.get(operands[2]);
+          if (set === "NonSemantic.Shader.DebugInfo.100") {
+            const instruction = operands[3];
+            if (instruction === 26) debugLocals.set(result, this.strings.get(operands[4]) ?? "");
+            if (instruction === 28) {
+              const name = debugLocals.get(operands[4]);
+              if (name) this.debugVariableNames.set(operands[5], name);
+            }
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    for (const [id, decorations] of this.decorations) {
+      const spec = decorations.get(1 /* SpecId */);
+      if (spec) this.specIds.set(id, spec[0]);
+    }
+    void groups;
+  }
+  _decorate(into, target, decoration, operands) {
+    let d = into.get(target);
+    if (!d) into.set(target, d = /* @__PURE__ */ new Map());
+    d.set(decoration, operands);
+  }
+  /** A scalar constant's value from its literal words: a number for 32-bit and float values, a bigint for 64-bit integers. */
+  scalarFromWords(typeId, literal) {
+    const t = this.types.get(typeId);
+    if (!t) return 0;
+    if (t.kind === "bool") return literal[0] !== 0;
+    if (t.kind === "float") {
+      const buf = new ArrayBuffer(8);
+      const view = new DataView(buf);
+      if (t.width === 64) {
+        view.setUint32(0, literal[0], true);
+        view.setUint32(4, literal[1] ?? 0, true);
+        return view.getFloat64(0, true);
+      }
+      if (t.width === 16) {
+        return float162(literal[0] & 65535);
+      }
+      view.setUint32(0, literal[0], true);
+      return view.getFloat32(0, true);
+    }
+    if (t.kind === "int") {
+      if (t.width === 64) {
+        const v = BigInt(literal[1] ?? 0) << 32n | BigInt(literal[0]);
+        return t.signed ? BigInt.asIntN(64, v) : v;
+      }
+      const bits = literal[0];
+      if (t.width < 32) {
+        const mask = (1 << t.width) - 1;
+        const v = bits & mask;
+        return t.signed && v & 1 << t.width - 1 ? v - (1 << t.width) : v;
+      }
+      return t.signed ? bits | 0 : bits >>> 0;
+    }
+    return 0;
+  }
+  /** The zero value of a type (OpConstantNull, OpUndef, uninitialized variables). */
+  zero(typeId) {
+    const t = this.types.get(typeId);
+    if (!t) return 0;
+    switch (t.kind) {
+      case "bool":
+        return false;
+      case "int":
+        return t.width === 64 ? 0n : 0;
+      case "float":
+        return 0;
+      case "vector":
+        return Array.from({ length: t.count }, () => this.zero(t.element));
+      case "matrix":
+        return Array.from({ length: t.count }, () => this.zero(t.column));
+      case "array":
+        return Array.from({ length: t.length }, () => this.zero(t.element));
+      case "runtimeArray":
+        return [];
+      case "struct":
+        return t.members.map((m) => this.zero(m));
+      default:
+        return null;
+    }
+  }
+  decoration(id, decoration) {
+    return this.decorations.get(id)?.get(decoration);
+  }
+  memberDecoration(struct, member, decoration) {
+    return this.memberDecorations.get(struct)?.get(member)?.get(decoration);
+  }
+  /** A readable name for an id: its OpName, its debug info name, else "%id". */
+  nameOf(id) {
+    return this.names.get(id) || this.debugVariableNames.get(id) || `%${id}`;
+  }
+  /** The type's name as GLSL writes it. */
+  typeName(typeId) {
+    const t = this.types.get(typeId);
+    if (!t) return `%${typeId}`;
+    switch (t.kind) {
+      case "void":
+        return "void";
+      case "bool":
+        return "bool";
+      case "int":
+        return t.width === 32 ? t.signed ? "int" : "uint" : `${t.signed ? "int" : "uint"}${t.width}_t`;
+      case "float":
+        return t.width === 32 ? "float" : t.width === 64 ? "double" : `float${t.width}_t`;
+      case "vector": {
+        const e = this.types.get(t.element);
+        const prefix = e?.kind === "bool" ? "b" : e?.kind === "int" ? e.signed ? "i" : "u" : e?.kind === "float" && e.width === 64 ? "d" : "";
+        return `${prefix}vec${t.count}`;
+      }
+      case "matrix": {
+        const c2 = this.types.get(t.column);
+        const rows = c2?.kind === "vector" ? c2.count : 0;
+        return rows === t.count ? `mat${t.count}` : `mat${t.count}x${rows}`;
+      }
+      case "array":
+        return `${this.typeName(t.element)}[${t.length}]`;
+      case "runtimeArray":
+        return `${this.typeName(t.element)}[]`;
+      case "struct":
+        return this.names.get(typeId) || "struct";
+      case "pointer":
+        return this.typeName(t.pointee);
+      case "image":
+        return "image";
+      case "sampler":
+        return "sampler";
+      case "sampledImage":
+        return "sampler2D";
+      default:
+        return t.kind;
+    }
+  }
+  entryPoint(name, model) {
+    return this.entryPoints.find((e) => (name === void 0 || e.name === name) && (model === void 0 || e.model === model)) ?? this.entryPoints.find((e) => model === void 0 || e.model === model) ?? null;
+  }
+};
+function float162(h) {
+  const sign2 = h & 32768 ? -1 : 1;
+  const exponent = h >> 10 & 31;
+  const mantissa = h & 1023;
+  if (exponent === 0) return sign2 * Math.pow(2, -14) * (mantissa / 1024);
+  if (exponent === 31) return mantissa ? NaN : sign2 * Infinity;
+  return sign2 * Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
+}
+
+// src/renderer/spirv/values.ts
+function scalarOf(m, typeId) {
+  const t = m.types.get(typeId);
+  if (!t) return null;
+  switch (t.kind) {
+    case "bool":
+      return { base: "bool", width: 1 };
+    case "int":
+      return { base: t.signed ? "int" : "uint", width: t.width };
+    case "float":
+      return { base: "float", width: t.width };
+    case "vector":
+      return scalarOf(m, t.element);
+    case "matrix":
+      return scalarOf(m, t.column);
+    default:
+      return null;
+  }
+}
+function layoutSize(m, typeId, bytes = 0, offset = 0) {
+  const t = m.types.get(typeId);
+  if (!t) return 0;
+  switch (t.kind) {
+    case "bool":
+      return 4;
+    case "int":
+    case "float":
+      return t.width / 8;
+    case "vector":
+      return layoutSize(m, t.element) * t.count;
+    case "matrix":
+      return layoutSize(m, t.column) * t.count;
+    case "array": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      return stride * t.length;
+    }
+    case "runtimeArray": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) * stride : 0;
+    }
+    case "struct": {
+      let end = 0;
+      t.members.forEach((member, i) => {
+        const at = m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? end;
+        end = Math.max(end, at + layoutSize(m, member, bytes, offset + at));
+      });
+      return end;
+    }
+    default:
+      return 0;
+  }
+}
+function runtimeArrayLength(m, typeId, bytes, offset) {
+  const t = m.types.get(typeId);
+  if (t?.kind !== "runtimeArray") return 0;
+  const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+  return stride ? Math.max(0, Math.floor((bytes - offset) / stride)) : 0;
+}
+function readScalar3(view, at, m, typeId) {
+  const t = m.types.get(typeId);
+  if (!t || at < 0) return 0;
+  const size2 = t.kind === "bool" ? 4 : t.kind === "int" || t.kind === "float" ? t.width / 8 : 0;
+  if (at + size2 > view.byteLength) return t.kind === "bool" ? false : t.kind === "int" && t.width === 64 ? 0n : 0;
+  if (t.kind === "bool") return view.getUint32(at, true) !== 0;
+  if (t.kind === "float") {
+    if (t.width === 64) return view.getFloat64(at, true);
+    if (t.width === 16) {
+      const h = view.getUint16(at, true);
+      const sign2 = h & 32768 ? -1 : 1;
+      const e = h >> 10 & 31;
+      const f = h & 1023;
+      return e === 0 ? sign2 * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign2 * Infinity : sign2 * 2 ** (e - 15) * (1 + f / 1024);
+    }
+    return view.getFloat32(at, true);
+  }
+  if (t.kind === "int") {
+    if (t.width === 64) return t.signed ? view.getBigInt64(at, true) : view.getBigUint64(at, true);
+    if (t.width === 16) return t.signed ? view.getInt16(at, true) : view.getUint16(at, true);
+    if (t.width === 8) return t.signed ? view.getInt8(at) : view.getUint8(at);
+    return t.signed ? view.getInt32(at, true) : view.getUint32(at, true);
+  }
+  return 0;
+}
+function readBuffer(m, view, at, typeId, matrix, limit = Infinity) {
+  const t = m.types.get(typeId);
+  if (!t) return 0;
+  switch (t.kind) {
+    case "bool":
+    case "int":
+    case "float":
+      return readScalar3(view, at, m, typeId);
+    case "vector": {
+      const size2 = layoutSize(m, t.element);
+      return Array.from({ length: t.count }, (_, i) => readScalar3(view, at + i * size2, m, t.element));
+    }
+    case "matrix": {
+      const column = m.types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      const element = column?.kind === "vector" ? column.element : t.column;
+      const scalar = layoutSize(m, element);
+      const stride = matrix?.stride ?? rows * scalar;
+      return Array.from({ length: t.count }, (_, c2) => Array.from({ length: rows }, (_2, r) => readScalar3(view, matrix?.rowMajor ? at + r * stride + c2 * scalar : at + c2 * stride + r * scalar, m, element)));
+    }
+    case "array":
+    case "runtimeArray": {
+      const stride = m.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element);
+      const length2 = t.kind === "array" ? t.length : runtimeArrayLength(m, typeId, view.byteLength, at);
+      return Array.from({ length: Math.min(length2, limit) }, (_, i) => readBuffer(m, view, at + i * stride, t.element, matrix, limit));
+    }
+    case "struct":
+      return t.members.map((member, i) => readBuffer(
+        m,
+        view,
+        at + (m.memberDecoration(typeId, i, 35 /* Offset */)?.[0] ?? 0),
+        member,
+        memberMatrix(m, typeId, i),
+        limit
+      ));
+    default:
+      return null;
+  }
+}
+function memberMatrix(m, struct, member) {
+  const stride = m.memberDecoration(struct, member, 7 /* MatrixStride */)?.[0];
+  if (stride === void 0) return void 0;
+  return { stride, rowMajor: m.memberDecoration(struct, member, 4 /* RowMajor */) !== void 0 };
+}
+function bufferLocation(m, blockType, path11, bytes) {
+  let at = 0;
+  let type = blockType;
+  let matrix;
+  for (const index of path11) {
+    const t = m.types.get(type);
+    if (!t) return null;
+    if (t.kind === "struct") {
+      at += m.memberDecoration(type, index, 35 /* Offset */)?.[0] ?? 0;
+      matrix = memberMatrix(m, type, index) ?? matrix;
+      type = t.members[index];
+    } else if (t.kind === "array" || t.kind === "runtimeArray") {
+      const stride = m.decoration(type, 6 /* ArrayStride */)?.[0] ?? layoutSize(m, t.element, bytes, at);
+      at += index * stride;
+      type = t.element;
+    } else if (t.kind === "matrix") {
+      const column = m.types.get(t.column);
+      const rows = column?.kind === "vector" ? column.count : 1;
+      const element = column?.kind === "vector" ? column.element : t.column;
+      const stride = matrix?.stride ?? rows * layoutSize(m, element);
+      if (matrix?.rowMajor) {
+        return null;
+      }
+      at += index * stride;
+      type = t.column;
+      matrix = void 0;
+    } else if (t.kind === "vector") {
+      at += index * layoutSize(m, t.element);
+      type = t.element;
+    } else {
+      return null;
+    }
+  }
+  return { at, type, matrix };
+}
+
+// src/renderer/spirv/program.ts
+var OPEN_ABOVE2 = 8;
+var _programs2 = /* @__PURE__ */ new WeakMap();
+var SpirvProgram = class _SpirvProgram {
+  kind = "spirv";
+  module;
+  _names = null;
+  /** One program per module: the view holds onto it across steps, and the name index is built once. */
+  static of(module) {
+    let p = _programs2.get(module);
+    if (!p) {
+      p = new _SpirvProgram(module);
+      _programs2.set(module, p);
+    }
+    return p;
+  }
+  constructor(module) {
+    this.module = module;
+  }
+  get modes() {
+    return hasLineInfo(this.module) ? ["source", "instruction"] : ["instruction"];
+  }
+  get files() {
+    return this.module.debug?.files ?? [];
+  }
+  get mainFile() {
+    return this.module.debug?.mainFile ?? -1;
+  }
+  get language() {
+    return sourceLanguageOf(this.module.debug ?? null);
+  }
+  /** What OpSource said the module was compiled from ("GLSL", "HLSL", "Slang", ...). */
+  get languageName() {
+    return this.module.debug?.language || "source";
+  }
+  hasSourceText() {
+    return hasLineInfo(this.module) && this.files.some((f) => f.text != null);
+  }
+  locationOf(step2) {
+    return step2 ? this.module.debug?.locations[step2.index] ?? null : null;
+  }
+  stopKeys(mode) {
+    const keys = /* @__PURE__ */ new Set();
+    for (const i of executableInstructions(this.module)) {
+      if (mode === "instruction") {
+        keys.add(instructionKey(i));
+        continue;
+      }
+      const loc = this.module.debug?.locations[i];
+      if (loc) keys.add(sourceKey(loc.file, loc.line));
+    }
+    return keys;
+  }
+  nameOf(id) {
+    return this.module.nameOf(id);
+  }
+  typeName(type) {
+    return this.module.typeName(type);
+  }
+  typeOfId(id) {
+    return valueType(this.module, id);
+  }
+  valueText(type, value, limit = 16) {
+    return valueText2(this.module, type, value, limit);
+  }
+  children(type, value) {
+    const t = this.module.types.get(type);
+    if (!Array.isArray(value)) return null;
+    const opens = t?.kind === "struct" || t?.kind === "array" || t?.kind === "runtimeArray" || t?.kind === "matrix" || value.length > OPEN_ABOVE2;
+    if (!opens) return null;
+    return value.map((child, i) => ({
+      name: t?.kind === "struct" ? this.module.memberNames.get(type)?.get(i) ?? `[${i}]` : `[${i}]`,
+      type: t?.kind === "struct" ? t.members[i] : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : t?.kind === "vector" ? t.element : 0,
+      value: child
+    }));
+  }
+  idsNamed(name) {
+    if (!this._names) {
+      const names = /* @__PURE__ */ new Map();
+      for (const source of [this.module.names, this.module.debugVariableNames]) {
+        for (const [id, n] of source) {
+          if (this.module.types.has(id)) continue;
+          const list = names.get(n) ?? [];
+          list.push(id);
+          names.set(n, list);
+        }
+      }
+      this._names = names;
+    }
+    return this._names.get(name) ?? [];
+  }
+  resultType(r) {
+    return resultType(this.module, r);
+  }
+  /** A result the shader named nothing: an SSA temporary, which the values table greys out. */
+  resultTemporary(r) {
+    return !this.module.names.has(r.id) && !this.module.debugVariableNames.has(r.id);
+  }
+  variableWhere(v) {
+    if (v.builtin !== void 0) return "";
+    if (v.location !== void 0) return `location ${v.location}`;
+    if (v.binding !== void 0) return `set ${v.set ?? 0} binding ${v.binding}`;
+    return v.storage === 9 /* PushConstant */ ? "push constants" : "";
+  }
+  disassembly = {
+    bytes: () => new Uint8Array(this.module.words.buffer, this.module.words.byteOffset, this.module.words.byteLength),
+    /** No spirv-dis: a listing of the executable instructions. */
+    listing: () => executableInstructions(this.module).map((i) => {
+      const inst = this.module.instructions[i];
+      return {
+        text: `${inst.result ? `${this.module.nameOf(inst.result)} = ` : ""}Op${inst.op}`,
+        number: String(i),
+        key: instructionKey(i)
+      };
+    }),
+    mapDisassembly: (lines) => {
+      const keys = new Array(lines.length).fill(null);
+      const numbers = new Array(lines.length).fill("");
+      const instructions = disassemblyInstructions(lines);
+      if (instructions.length === this.module.instructions.length) {
+        instructions.forEach((ls, k) => {
+          keys[ls[0]] = instructionKey(k);
+          numbers[ls[0]] = String(k);
+        });
+      }
+      return { keys, numbers };
+    }
+  };
+};
+function hasLineInfo(module) {
+  const info = module.debug;
+  return !!info && info.form !== "none" && info.locations.some((l) => l !== null);
+}
+function executableInstructions(module) {
+  const out = [];
+  for (const fn of module.functions.values()) {
+    for (const block of fn.blocks) {
+      for (let i = block.start + 1; i <= block.end; i++) {
+        const inst = module.instructions[i];
+        if (inst && !isNoop(module, inst)) out.push(i);
+      }
+    }
+  }
+  return out.sort((a, b) => a - b);
+}
+function isNoop(module, inst) {
+  switch (inst.op) {
+    case 0 /* Nop */:
+    case 8 /* Line */:
+    case 317 /* NoLine */:
+    case 247 /* SelectionMerge */:
+    case 246 /* LoopMerge */:
+    case 248 /* Label */:
+      return true;
+    case 12 /* ExtInst */:
+      return module.extSets.get(inst.words[2])?.startsWith("NonSemantic.") ?? false;
+    default:
+      return false;
+  }
+}
+function valueType(m, id) {
+  const type = m.idTypes.get(id) ?? m.globals.get(id)?.type ?? 0;
+  const t = m.types.get(type);
+  return t?.kind === "pointer" ? t.pointee : type;
+}
+function resultType(m, r) {
+  return r.inst.resultType || valueType(m, r.id);
+}
+function valueText2(module, type, value, limit = 16) {
+  if (value === void 0 || value === null) return "undefined";
+  if (value instanceof Pointer) return `\u2192 ${module.nameOf(value.variable)}${value.path.length ? `[${value.path.join("][")}]` : ""}`;
+  if (value instanceof SampledImageValue) return `${imageText(value.image)}, ${samplerText(value.sampler)}`;
+  if (value instanceof ImageValue) return imageText(value);
+  if (value instanceof SamplerValue) return samplerText(value);
+  if (!Array.isArray(value)) return scalarText(value);
+  const t = module.types.get(type);
+  const inner = t?.kind === "vector" ? t.element : t?.kind === "matrix" ? t.column : t?.kind === "array" || t?.kind === "runtimeArray" ? t.element : 0;
+  const parts2 = [];
+  for (let i = 0; i < Math.min(value.length, limit); i++) {
+    const memberType = t?.kind === "struct" ? t.members[i] : inner;
+    const text = valueText2(module, memberType, value[i], limit);
+    const name = t?.kind === "struct" ? module.memberNames.get(type)?.get(i) : void 0;
+    parts2.push(name ? `${name}: ${text}` : text);
+  }
+  if (value.length > limit) parts2.push(`\u2026 ${value.length - limit} more`);
+  return t?.kind === "struct" ? `{ ${parts2.join(", ")} }` : t?.kind === "array" || t?.kind === "runtimeArray" ? `[${parts2.join(", ")}]` : `(${parts2.join(", ")})`;
+}
+
+// src/renderer/spirv/interpreter.ts
+var GLSL_STD_450 = "GLSL.std.450";
+var MAX_STEPS2 = 5e7;
+function num3(v) {
+  return typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0;
+}
+function big2(v) {
+  return typeof v === "bigint" ? v : BigInt(Math.trunc(num3(v)));
+}
+function signed(v, width) {
+  if (width === 64) return BigInt.asIntN(64, big2(v));
+  const n = num3(v);
+  if (width === 32) return n | 0;
+  const mod = 2 ** width;
+  const u = (n % mod + mod) % mod;
+  return u >= mod / 2 ? u - mod : u;
+}
+function unsigned(v, width) {
+  if (width === 64) return BigInt.asUintN(64, big2(v));
+  const n = num3(v);
+  if (width === 32) return n >>> 0;
+  const mod = 2 ** width;
+  return (n % mod + mod) % mod;
+}
+function flat2(v) {
+  if (Array.isArray(v)) return v.flatMap(flat2);
+  return [num3(v)];
+}
+var Invocation = class {
+  module;
+  entry;
+  bindings;
+  inputs;
+  derivatives;
+  status = "running";
+  error = "";
+  /** Things the interpreter could not do faithfully: uncaptured resources, unsupported operations. */
+  warnings = /* @__PURE__ */ new Set();
+  frames = [];
+  /** Global variables: their pointers, by id. */
+  globals = /* @__PURE__ */ new Map();
+  constants;
+  /** Demoted to a helper invocation (its outputs are discarded, execution goes on). */
+  helper = false;
+  steps = 0;
+  /** Results of the instructions executed since takeResults(). */
+  _results = [];
+  /** Called with every value an instruction produces (the MCP tool's trace). */
+  onResult = null;
+  constructor(module, options) {
+    this.module = module;
+    const entry = module.entryPoint(options.entryPoint, options.model);
+    if (!entry) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
+    this.entry = entry;
+    this.bindings = options.bindings;
+    this.inputs = options.inputs;
+    this.derivatives = options.derivatives ?? null;
+    this.constants = new Map(module.constants);
+    this._specialize();
+    this._createGlobals();
+    const fn = module.functions.get(entry.function);
+    if (!fn || !fn.blocks.length) throw new Error(`the entry point ${entry.name} has no body`);
+    this.frames.push(this._frame(fn, 0));
+    this._skipNoops();
+  }
+  get stage() {
+    const m = this.entry.model;
+    return m === 0 /* Vertex */ ? "vertex" : m === 4 /* Fragment */ ? "fragment" : m === 5 /* GLCompute */ ? "compute" : "other";
+  }
+  /** Itself: an invocation steps itself (a PixelQuad steps one of four). */
+  get invocation() {
+    return this;
+  }
+  /** The module as the debugger reads it: its source, names and value formatting. */
+  get program() {
+    return SpirvProgram.of(this.module);
+  }
+  get finished() {
+    return this.status === "returned" || this.status === "discarded" || this.status === "error";
+  }
+  /** How deep the call stack is (1 in the entry point). */
+  get depth() {
+    return this.frames.length;
+  }
+  /** The instruction about to execute, null when finished. */
+  get current() {
+    const frame = this.frames[this.frames.length - 1];
+    return frame && !this.finished ? this.module.instructions[frame.pc] ?? null : null;
+  }
+  /** The results produced since the last call, and forgets them. */
+  takeResults() {
+    const r = this._results;
+    this._results = [];
+    return r;
+  }
+  /** Executes one instruction (instructions that do nothing, like OpLine, are passed over with it). */
+  step() {
+    if (this.finished) return this.status;
+    if (++this.steps > MAX_STEPS2) return this._fail(`stopped after ${MAX_STEPS2.toLocaleString()} instructions: an endless loop?`);
+    try {
+      let guard = 0;
+      while (!this.finished) {
+        const frame = this.frames[this.frames.length - 1];
+        const inst = this.module.instructions[frame.pc];
+        if (!inst) return this._fail("ran off the end of a function");
+        if (this._isNoop(inst)) {
+          frame.pc++;
+          if (++guard > 1e5) return this._fail("too many instructions without effect");
+          continue;
+        }
+        const r = this._execute(frame, inst);
+        this.status = r === "blocked" ? "blocked" : this.finished ? this.status : "running";
+        if (r !== "blocked") this._skipNoops();
+        return this.status;
+      }
+    } catch (e) {
+      return this._fail(e instanceof Error ? e.message : String(e));
+    }
+    return this.status;
+  }
+  _skipNoops() {
+    const frame = this.frames[this.frames.length - 1];
+    if (!frame || this.finished) return;
+    while (frame.pc < this.module.instructions.length && this._isNoop(this.module.instructions[frame.pc])) frame.pc++;
+  }
+  /** Runs to the end (or a block on derivatives); for tests and the trace. */
+  run() {
+    while (!this.finished) {
+      if (this.step() === "blocked") return "blocked";
+    }
+    return this.status;
+  }
+  // ---------------------------------------------------------------------------------------
+  // What a debugger shows
+  /** The outputs the invocation wrote: by location and built-in. */
+  outputs() {
+    return this._interfaceVariables(3 /* Output */);
+  }
+  inputVariables() {
+    return this._interfaceVariables(1 /* Input */);
+  }
+  /** Uniform, storage and push constant blocks, images and samplers. */
+  resourceVariables() {
+    const out = [];
+    for (const [id, ptr] of this.globals) {
+      if (ptr.storage === 1 /* Input */ || ptr.storage === 3 /* Output */) continue;
+      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) continue;
+      out.push(this._view(id, ptr));
+    }
+    return out;
+  }
+  /** Private and workgroup variables. */
+  privateVariables() {
+    const out = [];
+    for (const [id, ptr] of this.globals) {
+      if (ptr.storage === 6 /* Private */ || ptr.storage === 4 /* Workgroup */) out.push(this._view(id, ptr));
+    }
+    return out;
+  }
+  /** A frame's local variables and parameters (depth 0 is the innermost frame). */
+  locals(depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    if (!frame) return [];
+    const out = [];
+    for (const p of frame.fn.params) {
+      const v = frame.values.get(p.id);
+      const value = v instanceof Pointer ? this._load(v) : v ?? null;
+      out.push({ id: p.id, name: this.module.nameOf(p.id), type: v instanceof Pointer ? v.type : p.type, value, storage: 7 /* Function */ });
+    }
+    for (const l of frame.locals) {
+      out.push({ id: l.id, name: this.module.nameOf(l.id), type: l.type, value: cloneValue(l.cell.value), storage: 7 /* Function */ });
+    }
+    return out;
+  }
+  /** A value an id has in a frame, for hovering over a name: SSA values and variables. */
+  valueOf(id, depth = 0) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    const v = frame?.values.get(id) ?? this.globals.get(id);
+    if (v === void 0) return this.constants.get(id);
+    return v instanceof Pointer ? this._load(v) : v;
+  }
+  /** The call stack, innermost first: the function of each frame and where it is stopped. */
+  callStack() {
+    const out = [];
+    for (let d = 0; d < this.frames.length; d++) {
+      const frame = this.frames[this.frames.length - 1 - d];
+      out.push({
+        name: this.module.nameOf(frame.fn.id),
+        // The innermost frame is at `current`; an outer one is at the call it is waiting on.
+        step: d === 0 ? this.current : this.module.instructions[frame.pc] ?? null
+      });
+    }
+    return out;
+  }
+  /** Whether a frame is the one an id belongs to, so a hover prefers its value over a global's. */
+  frameOwns(depth, id) {
+    const frame = this.frames[this.frames.length - 1 - depth];
+    return !!frame && (frame.values.has(id) || frame.locals.some((l) => l.id === id));
+  }
+  // ---------------------------------------------------------------------------------------
+  // Setup
+  _specialize() {
+    const m = this.module;
+    if (this.bindings.specialization.size) {
+      for (const [id, specId] of m.specIds) {
+        const bytes = this.bindings.specialization.get(specId);
+        if (!bytes) continue;
+        const inst = m.instructions.find((i) => i.result === id && (i.op === 50 /* SpecConstant */ || i.op === 48 /* SpecConstantTrue */ || i.op === 49 /* SpecConstantFalse */));
+        if (!inst) continue;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (inst.op === 48 /* SpecConstantTrue */ || inst.op === 49 /* SpecConstantFalse */) {
+          this.constants.set(id, bytes.byteLength >= 4 ? view.getUint32(0, true) !== 0 : bytes[0] !== 0);
+        } else if (inst.op === 50 /* SpecConstant */) {
+          const words2 = new Uint32Array(Math.max(1, Math.ceil(bytes.byteLength / 4)));
+          for (let i = 0; i < words2.length && (i + 1) * 4 <= bytes.byteLength; i++) words2[i] = view.getUint32(i * 4, true);
+          this.constants.set(id, m.scalarFromWords(inst.resultType, words2));
+        }
+      }
+    }
+    for (const inst of m.instructions) {
+      if (inst.op === 51 /* SpecConstantComposite */) {
+        this.constants.set(inst.result, Array.from(inst.words.subarray(2)).map((id) => this.constants.get(id)));
+      } else if (inst.op === 52 /* SpecConstantOp */) {
+        const opcode = inst.words[2];
+        const operands = inst.words.subarray(3);
+        const fake = { op: opcode, words: new Uint32Array([inst.resultType, inst.result, ...operands]), index: inst.index, resultType: inst.resultType, result: inst.result };
+        const frame = { values: /* @__PURE__ */ new Map() };
+        try {
+          const value = this._compute(frame, fake);
+          if (value !== void 0) this.constants.set(inst.result, value);
+        } catch {
+          this.warnings.add(`specialization constant operation ${opcode} is not evaluated`);
+        }
+      }
+    }
+    for (const t of m.types.values()) if (t.kind === "array") t.length = Number(this.constants.get(t.lengthId) ?? t.length);
+  }
+  _createGlobals() {
+    const m = this.module;
+    for (const [id, g] of m.globals) {
+      const ptrType = m.types.get(g.type);
+      if (ptrType?.kind !== "pointer") continue;
+      const pointee = ptrType.pointee;
+      const cell = { value: null };
+      const set = m.decoration(id, 34 /* DescriptorSet */)?.[0] ?? 0;
+      const binding = m.decoration(id, 33 /* Binding */)?.[0] ?? 0;
+      switch (g.storage) {
+        case 2 /* Uniform */:
+        case 12 /* StorageBuffer */:
+        case 9 /* PushConstant */: {
+          const t = m.types.get(pointee);
+          if (g.storage !== 9 /* PushConstant */ && (t?.kind === "array" || t?.kind === "runtimeArray")) {
+            const element = t.kind === "array" || t.kind === "runtimeArray" ? t.element : pointee;
+            const count2 = t.kind === "array" ? t.length : 1;
+            cell.value = Array.from({ length: count2 }, (_, i) => {
+              const bytes = this.bindings.buffer(set, binding, i);
+              if (!bytes) this.warnings.add(`set ${set} binding ${binding}[${i}] (${m.nameOf(id)}) was not captured: it reads as zeros`);
+              return { buffer: { bytes: bytes ?? new Uint8Array(0), type: element, overrides: /* @__PURE__ */ new Map() } };
+            });
+            cell.bufferArray = true;
+          } else {
+            const bytes = g.storage === 9 /* PushConstant */ ? this.bindings.pushConstants : this.bindings.buffer(set, binding, 0);
+            if (!bytes) {
+              this.warnings.add(g.storage === 9 /* PushConstant */ ? "the push constants were not captured: they read as zeros" : `set ${set} binding ${binding} (${m.nameOf(id)}) was not captured: it reads as zeros`);
+            }
+            cell.buffer = { bytes: bytes ?? new Uint8Array(0), type: pointee, overrides: /* @__PURE__ */ new Map() };
+          }
+          break;
+        }
+        case 0 /* UniformConstant */:
+          cell.value = this._resource(id, pointee, set, binding, 0);
+          break;
+        case 1 /* Input */:
+          cell.value = this._input(id, pointee);
+          break;
+        case 3 /* Output */:
+        case 6 /* Private */:
+        case 4 /* Workgroup */:
+        default:
+          cell.value = g.initializer ? cloneValue(this.constants.get(g.initializer)) : m.zero(pointee);
+          break;
+      }
+      this.globals.set(id, new Pointer(cell, [], pointee, g.storage, id));
+    }
+  }
+  _resource(id, type, set, binding, element) {
+    const m = this.module;
+    const t = m.types.get(type);
+    const label = `set ${set} binding ${binding}${element ? `[${element}]` : ""} (${m.nameOf(id)})`;
+    if (t?.kind === "array" || t?.kind === "runtimeArray") {
+      const count2 = t.kind === "array" ? t.length : 1;
+      return Array.from({ length: count2 }, (_, i) => this._resource(id, t.element, set, binding, i));
+    }
+    const texture = () => {
+      const tex = this.bindings.texture(set, binding, element);
+      if (!tex) this.warnings.add(`${label}: its image was not captured, so it reads as black`);
+      return tex;
+    };
+    if (t?.kind === "image") return new ImageValue(texture(), label);
+    if (t?.kind === "sampler") return new SamplerValue(this.bindings.sampler(set, binding, element), label);
+    if (t?.kind === "sampledImage") return new SampledImageValue(new ImageValue(texture(), label), new SamplerValue(this.bindings.sampler(set, binding, element), label));
+    return null;
+  }
+  /** An input variable's value: a built-in, or the scalars at its location shaped into its type. */
+  _input(id, type) {
+    const m = this.module;
+    const builtin = m.decoration(id, 11 /* BuiltIn */)?.[0];
+    if (builtin !== void 0) {
+      const v = this.inputs.builtins.get(builtin);
+      if (v === void 0) {
+        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`} has no value here: it reads as zero`);
+        return m.zero(type);
+      }
+      return this._shape(type, flat2(v), { at: 0 });
+    }
+    const t = m.types.get(type);
+    if (t?.kind === "struct") {
+      const base = m.decoration(id, 30 /* Location */)?.[0] ?? 0;
+      return t.members.map((member, i) => {
+        const location2 = m.memberDecoration(type, i, 30 /* Location */)?.[0] ?? base + i;
+        return this._shape(member, this.inputs.locations.get(location2) ?? [], { at: 0 });
+      });
+    }
+    const location = m.decoration(id, 30 /* Location */)?.[0];
+    if (location === void 0) return m.zero(type);
+    const scalars2 = this.inputs.locations.get(location);
+    if (!scalars2) {
+      this.warnings.add(`input ${m.nameOf(id)} (location ${location}) has no value here: it reads as zero`);
+      return m.zero(type);
+    }
+    if (t?.kind === "array" || t?.kind === "matrix") {
+      const count2 = t.kind === "array" ? t.length : t.count;
+      const element = t.kind === "array" ? t.element : t.column;
+      return Array.from({ length: count2 }, (_, i) => this._shape(element, this.inputs.locations.get(location + i) ?? [], { at: 0 }));
+    }
+    return this._shape(type, scalars2, { at: 0 });
+  }
+  /** Scalars poured into a type in order (missing ones zero, a missing alpha one). */
+  _shape(type, scalars2, cursor) {
+    const m = this.module;
+    const t = m.types.get(type);
+    if (!t) return 0;
+    const s = scalarOf(m, type);
+    switch (t.kind) {
+      case "bool":
+      case "int":
+      case "float": {
+        const v = scalars2[cursor.at++] ?? 0;
+        return s ? normalize(v, s) : v;
+      }
+      case "vector":
+        return Array.from({ length: t.count }, () => this._shape(t.element, scalars2, cursor));
+      case "matrix":
+        return Array.from({ length: t.count }, () => this._shape(t.column, scalars2, cursor));
+      case "array":
+        return Array.from({ length: t.length }, () => this._shape(t.element, scalars2, cursor));
+      case "struct":
+        return t.members.map((member) => this._shape(member, scalars2, cursor));
+      default:
+        return null;
+    }
+  }
+  _frame(fn, resultId) {
+    const first = fn.blocks[0];
+    return { fn, pc: first.start + 1, block: first.label, previousBlock: 0, values: /* @__PURE__ */ new Map(), locals: [], resultId };
+  }
+  _interfaceVariables(storage) {
+    const out = [];
+    for (const id of this.entry.interface) {
+      const ptr = this.globals.get(id);
+      if (!ptr || ptr.storage !== storage) continue;
+      out.push(this._view(id, ptr));
+    }
+    return out;
+  }
+  _view(id, ptr) {
+    const m = this.module;
+    const name = m.names.get(id) || BUILTIN_NAMES[m.decoration(id, 11 /* BuiltIn */)?.[0] ?? -1] || m.names.get(ptr.type) || m.nameOf(id);
+    return {
+      id,
+      name,
+      type: ptr.type,
+      value: this._load(ptr, 256),
+      storage: ptr.storage,
+      location: m.decoration(id, 30 /* Location */)?.[0],
+      builtin: m.decoration(id, 11 /* BuiltIn */)?.[0],
+      set: m.decoration(id, 34 /* DescriptorSet */)?.[0],
+      binding: m.decoration(id, 33 /* Binding */)?.[0]
+    };
+  }
+  // ---------------------------------------------------------------------------------------
+  // Execution
+  _fail(message) {
+    const inst = this.current;
+    const loc = inst ? this.module.debug?.locations[inst.index] : null;
+    this.error = loc ? `${message} (line ${loc.line})` : message;
+    this.status = "error";
+    return this.status;
+  }
+  _isNoop(inst) {
+    switch (inst.op) {
+      case 0 /* Nop */:
+      case 8 /* Line */:
+      case 317 /* NoLine */:
+      case 247 /* SelectionMerge */:
+      case 246 /* LoopMerge */:
+      case 248 /* Label */:
+        return true;
+      case 12 /* ExtInst */:
+        return this.module.extSets.get(inst.words[2])?.startsWith("NonSemantic.") ?? false;
+      default:
+        return false;
+    }
+  }
+  value(frame, id) {
+    const v = frame.values.get(id);
+    if (v !== void 0) return v;
+    const g = this.globals.get(id);
+    if (g) return g;
+    if (this.constants.has(id)) return cloneValue(this.constants.get(id));
+    return 0;
+  }
+  _record(frame, inst, value) {
+    frame.values.set(inst.result, value);
+    const r = { inst, id: inst.result, value };
+    this._results.push(r);
+    if (this._results.length > 4096) this._results.splice(0, 2048);
+    this.onResult?.(r);
+  }
+  _branch(frame, label) {
+    const block = frame.fn.blockByLabel.get(label);
+    if (!block) throw new Error(`branch to a missing block %${label}`);
+    frame.previousBlock = frame.block;
+    frame.block = label;
+    frame.pc = block.start + 1;
+  }
+  _execute(frame, inst) {
+    const w = inst.words;
+    switch (inst.op) {
+      case 249 /* Branch */:
+        this._branch(frame, w[0]);
+        return "ok";
+      case 250 /* BranchConditional */:
+        this._branch(frame, this.value(frame, w[0]) ? w[1] : w[2]);
+        return "ok";
+      case 251 /* Switch */: {
+        const selector = this.value(frame, w[0]);
+        const selectorType = this._typeOfId(frame, w[0]);
+        const wide = selectorType ? (scalarOf(this.module, selectorType)?.width ?? 32) > 32 : false;
+        let target = w[1];
+        for (let i = 2; i < w.length; i += wide ? 3 : 2) {
+          const literal = wide ? BigInt(w[i + 1]) << 32n | BigInt(w[i]) : w[i];
+          const matches = wide ? big2(selector) === BigInt.asIntN(64, literal) || big2(selector) === literal : num3(selector) >>> 0 === literal >>> 0;
+          if (matches) {
+            target = w[i + (wide ? 2 : 1)];
+            break;
+          }
+        }
+        this._branch(frame, target);
+        return "ok";
+      }
+      case 253 /* Return */:
+      case 254 /* ReturnValue */: {
+        const value = inst.op === 254 /* ReturnValue */ ? cloneValue(this.value(frame, w[0])) : null;
+        this.frames.pop();
+        const caller = this.frames[this.frames.length - 1];
+        if (!caller) {
+          this.status = "returned";
+          return "ok";
+        }
+        if (frame.resultId) this._record(caller, { ...this.module.instructions[caller.pc], result: frame.resultId }, value);
+        caller.pc++;
+        return "ok";
+      }
+      case 252 /* Kill */:
+      case 4416 /* TerminateInvocation */:
+        this.status = "discarded";
+        return "ok";
+      case 5380 /* DemoteToHelperInvocation */:
+        this.helper = true;
+        frame.pc++;
+        return "ok";
+      case 255 /* Unreachable */:
+        this._fail("reached OpUnreachable");
+        return "ok";
+      case 57 /* FunctionCall */: {
+        const fn = this.module.functions.get(w[2]);
+        if (!fn) throw new Error(`call to a missing function %${w[2]}`);
+        const callee = this._frame(fn, inst.result);
+        fn.params.forEach((p, i) => callee.values.set(p.id, this.value(frame, w[3 + i])));
+        this.frames.push(callee);
+        return "ok";
+      }
+      case 62 /* Store */: {
+        const ptr = this.value(frame, w[0]);
+        if (!(ptr instanceof Pointer)) throw new Error("OpStore through something that is not a pointer");
+        this._store(ptr, cloneValue(this.value(frame, w[1])));
+        frame.pc++;
+        this._results.push({ inst, id: ptr.variable, value: this._load(ptr) });
+        return "ok";
+      }
+      case 63 /* CopyMemory */: {
+        const target = this.value(frame, w[0]);
+        const source = this.value(frame, w[1]);
+        if (target instanceof Pointer && source instanceof Pointer) this._store(target, this._load(source));
+        frame.pc++;
+        return "ok";
+      }
+      case 99 /* ImageWrite */: {
+        const image = this.value(frame, w[0]);
+        const coord = flat2(this.value(frame, w[1]));
+        const texel3 = flat2(this.value(frame, w[2]));
+        if (image instanceof ImageValue && image.texture) {
+          image.texture.writes ??= /* @__PURE__ */ new Map();
+          image.texture.writes.set(`0/${coord[2] ?? 0}/${coord[0]}/${coord[1] ?? 0}`, [...texel3, 0, 0, 0, 1].slice(0, 4));
+        }
+        frame.pc++;
+        return "ok";
+      }
+      case 59 /* Variable */: {
+        const ptrType = this.module.types.get(inst.resultType);
+        const pointee = ptrType?.kind === "pointer" ? ptrType.pointee : 0;
+        const cell = { value: w[3] ? cloneValue(this.value(frame, w[3])) : this.module.zero(pointee) };
+        frame.locals.push({ id: inst.result, cell, type: pointee });
+        this._record(frame, inst, new Pointer(cell, [], pointee, 7 /* Function */, inst.result));
+        frame.pc++;
+        return "ok";
+      }
+      case 245 /* Phi */: {
+        let value = 0;
+        for (let i = 2; i + 1 < w.length; i += 2) {
+          if (w[i + 1] === frame.previousBlock) {
+            value = cloneValue(this.value(frame, w[i]));
+            break;
+          }
+        }
+        this._record(frame, inst, value);
+        frame.pc++;
+        return "ok";
+      }
+      default: {
+        if (!inst.result) {
+          frame.pc++;
+          return "ok";
+        }
+        const value = this._compute(frame, inst);
+        if (value === "blocked") return "blocked";
+        this._record(frame, inst, value);
+        if (this.status === "running" || this.status === "blocked") frame.pc++;
+        return "ok";
+      }
+    }
+  }
+  _typeOfId(_frame, id) {
+    return this.module.idTypes.get(id) ?? 0;
+  }
+  /** The value an instruction with a result computes. May return "blocked" for derivative points. */
+  _compute(frame, inst) {
+    const m = this.module;
+    const w = inst.words;
+    const v = (i) => this.value(frame, w[i]);
+    const rt = inst.resultType;
+    const s = scalarOf(m, rt);
+    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
+    const opWidth = (i) => {
+      const t = this._typeOfId(frame, w[i]);
+      return scalarOf(m, t)?.width ?? 32;
+    };
+    switch (inst.op) {
+      case 1 /* Undef */:
+      case 46 /* ConstantNull */:
+        return m.zero(rt);
+      case 61 /* Load */: {
+        const ptr = v(2);
+        if (!(ptr instanceof Pointer)) throw new Error("OpLoad of something that is not a pointer");
+        return this._load(ptr);
+      }
+      case 65 /* AccessChain */:
+      case 66 /* InBoundsAccessChain */:
+      case 67 /* PtrAccessChain */:
+      case 70 /* InBoundsPtrAccessChain */: {
+        const base = v(2);
+        if (!(base instanceof Pointer)) throw new Error("access chain on something that is not a pointer");
+        const first = inst.op === 67 /* PtrAccessChain */ || inst.op === 70 /* InBoundsPtrAccessChain */ ? 4 : 3;
+        const indices = Array.from(w.subarray(first)).map((id) => num3(this.value(frame, id)));
+        const ptrType = m.types.get(rt);
+        return new Pointer(base.cell, [...base.path, ...indices], ptrType?.kind === "pointer" ? ptrType.pointee : 0, base.storage, base.variable);
+      }
+      case 68 /* ArrayLength */: {
+        const ptr = v(2);
+        const member = w[3];
+        if (!(ptr instanceof Pointer)) return 0;
+        const storage = this._bufferOf(ptr);
+        if (!storage) {
+          const value = this._load(ptr);
+          return Array.isArray(value) && Array.isArray(value[member]) ? value[member].length : 0;
+        }
+        const struct = m.types.get(ptr.type);
+        if (struct?.kind !== "struct") return 0;
+        const loc = bufferLocation(m, storage.buffer.type, [...storage.path, member], storage.buffer.bytes.byteLength);
+        return loc ? runtimeArrayLength(m, struct.members[member], storage.buffer.bytes.byteLength, loc.at) : 0;
+      }
+      case 83 /* CopyObject */:
+      case 400 /* CopyLogical */:
+        return cloneValue(v(2));
+      case 80 /* CompositeConstruct */: {
+        const parts2 = Array.from(w.subarray(2)).map((id) => cloneValue(this.value(frame, id)));
+        const t = m.types.get(rt);
+        if (t?.kind === "vector") return norm(parts2.flatMap((p) => Array.isArray(p) ? p : [p]));
+        return parts2;
+      }
+      case 81 /* CompositeExtract */: {
+        let value = v(2);
+        for (const index of w.subarray(3)) value = Array.isArray(value) ? value[index] : 0;
+        return cloneValue(value);
+      }
+      case 82 /* CompositeInsert */: {
+        const composite = cloneValue(v(3));
+        const indices = Array.from(w.subarray(4));
+        let at = composite;
+        for (let i = 0; i < indices.length - 1; i++) at = at[indices[i]];
+        at[indices[indices.length - 1]] = cloneValue(v(2));
+        return composite;
+      }
+      case 77 /* VectorExtractDynamic */: {
+        const vec = v(2);
+        const index = num3(v(3));
+        return cloneValue(vec[index] ?? 0);
+      }
+      case 78 /* VectorInsertDynamic */: {
+        const vec = cloneValue(v(2));
+        const index = num3(v(4));
+        if (index >= 0 && index < vec.length) vec[index] = v(3);
+        return vec;
+      }
+      case 79 /* VectorShuffle */: {
+        const a = v(2);
+        const b = v(3);
+        return Array.from(w.subarray(4)).map((c2) => c2 === 4294967295 ? 0 : c2 < a.length ? a[c2] : b[c2 - a.length]);
+      }
+      case 84 /* Transpose */: {
+        const mat = v(2);
+        const rows = mat[0]?.length ?? 0;
+        return Array.from({ length: rows }, (_, r) => mat.map((col) => col[r]));
+      }
+      case 86 /* SampledImage */: {
+        const image = v(2);
+        const sampler = v(3);
+        return new SampledImageValue(image instanceof ImageValue ? image : new ImageValue(null, "?"), sampler instanceof SamplerValue ? sampler : new SamplerValue(null, "?"));
+      }
+      case 100 /* Image */: {
+        const si = v(2);
+        return si instanceof SampledImageValue ? si.image : si;
+      }
+      // Conversions
+      case 109 /* ConvertFToU */:
+      case 110 /* ConvertFToS */:
+        return norm(mapScalars(v(2), (x) => {
+          const n = num3(x);
+          return Number.isFinite(n) ? Math.trunc(n) : 0;
+        }));
+      case 111 /* ConvertSToF */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => Number(signed(x, width))));
+      }
+      case 112 /* ConvertUToF */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => Number(unsigned(x, width))));
+      }
+      case 113 /* UConvert */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => unsigned(x, width)));
+      }
+      case 114 /* SConvert */: {
+        const width = opWidth(2);
+        return norm(mapScalars(v(2), (x) => signed(x, width)));
+      }
+      case 115 /* FConvert */:
+        return norm(v(2));
+      case 116 /* QuantizeToF16 */:
+        return norm(mapScalars(v(2), (x) => {
+          const n = num3(x);
+          if (Math.abs(n) > 65504) return n > 0 ? Infinity : -Infinity;
+          return Math.abs(n) < 2 ** -14 ? 0 : n;
+        }));
+      case 118 /* SatConvertSToU */:
+        return norm(mapScalars(v(2), (x) => Math.max(0, num3(x))));
+      case 119 /* SatConvertUToS */:
+        return norm(v(2));
+      case 124 /* Bitcast */:
+        return this._bitcast(v(2), this._typeOfId(frame, w[2]), rt);
+      // Arithmetic
+      case 126 /* SNegate */:
+        return norm(mapScalars(v(2), (x) => typeof x === "bigint" ? -x : -num3(x)));
+      case 127 /* FNegate */:
+        return norm(mapScalars(v(2), (x) => -num3(x)));
+      case 128 /* IAdd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) + big2(b) : num3(a) + num3(b)));
+      case 130 /* ISub */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) - big2(b) : num3(a) - num3(b)));
+      case 132 /* IMul */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) * big2(b) : Math.imul(num3(a), num3(b))));
+      case 134 /* UDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = unsigned(a, width), y = unsigned(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
+          return y === 0 ? 0 : Math.floor(x / y);
+        }));
+      case 135 /* SDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x / y;
+          return y === 0 ? 0 : Math.trunc(x / y);
+        }));
+      case 137 /* UMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = unsigned(a, width), y = unsigned(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
+          return y === 0 ? 0 : x % y;
+        }));
+      case 138 /* SRem */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") return y === 0n ? 0n : x % y;
+          return y === 0 ? 0 : x % y;
+        }));
+      case 139 /* SMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          const x = signed(a, width), y = signed(b, width);
+          if (typeof x === "bigint") {
+            if (y === 0n) return 0n;
+            const r2 = x % y;
+            return r2 !== 0n && r2 < 0n !== y < 0n ? r2 + y : r2;
+          }
+          if (y === 0) return 0;
+          const r = x % y;
+          return r !== 0 && r < 0 !== y < 0 ? r + y : r;
+        }));
+      case 129 /* FAdd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num3(a) + num3(b)));
+      case 131 /* FSub */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num3(a) - num3(b)));
+      case 133 /* FMul */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num3(a) * num3(b)));
+      case 136 /* FDiv */:
+        return norm(zipScalars(v(2), v(3), (a, b) => num3(a) / num3(b)));
+      case 140 /* FRem */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const x = num3(a), y = num3(b);
+          return x - y * Math.trunc(x / y);
+        }));
+      case 141 /* FMod */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const x = num3(a), y = num3(b);
+          return x - y * Math.floor(x / y);
+        }));
+      case 142 /* VectorTimesScalar */:
+      case 143 /* MatrixTimesScalar */: {
+        const k = num3(v(3));
+        return norm(mapScalars(v(2), (x) => num3(x) * k));
+      }
+      case 144 /* VectorTimesMatrix */: {
+        const vec = flat2(v(2));
+        const mat = v(3);
+        return norm(mat.map((col) => col.reduce((sum, c2, r) => sum + num3(c2) * vec[r], 0)));
+      }
+      case 145 /* MatrixTimesVector */: {
+        const mat = v(2);
+        const vec = flat2(v(3));
+        const rows = mat[0]?.length ?? 0;
+        return norm(Array.from({ length: rows }, (_, r) => mat.reduce((sum, col, c2) => sum + num3(col[r]) * vec[c2], 0)));
+      }
+      case 146 /* MatrixTimesMatrix */: {
+        const a = v(2);
+        const b = v(3);
+        const rows = a[0]?.length ?? 0;
+        return norm(b.map((bcol) => Array.from({ length: rows }, (_, r) => a.reduce((sum, acol, k) => sum + num3(acol[r]) * num3(bcol[k]), 0))));
+      }
+      case 147 /* OuterProduct */: {
+        const a = flat2(v(2));
+        const b = flat2(v(3));
+        return norm(b.map((bc) => a.map((ar) => ar * bc)));
+      }
+      case 148 /* Dot */: {
+        const a = flat2(v(2));
+        const b = flat2(v(3));
+        return norm(a.reduce((sum, x, i) => sum + x * b[i], 0));
+      }
+      case 149 /* IAddCarry */:
+      case 150 /* ISubBorrow */:
+      case 151 /* UMulExtended */:
+      case 152 /* SMulExtended */:
+        return this._extendedArithmetic(inst.op, v(2), v(3), rt);
+      // Logic and comparison
+      case 154 /* Any */:
+        return flat2(v(2)).some((x) => x !== 0);
+      case 155 /* All */:
+        return flat2(v(2)).every((x) => x !== 0);
+      case 156 /* IsNan */:
+        return mapScalars(v(2), (x) => Number.isNaN(num3(x)));
+      case 157 /* IsInf */:
+        return mapScalars(v(2), (x) => !Number.isFinite(num3(x)) && !Number.isNaN(num3(x)));
+      case 158 /* IsFinite */:
+        return mapScalars(v(2), (x) => Number.isFinite(num3(x)));
+      case 159 /* IsNormal */:
+        return mapScalars(v(2), (x) => Number.isFinite(num3(x)) && num3(x) !== 0);
+      case 160 /* SignBitSet */:
+        return mapScalars(v(2), (x) => num3(x) < 0 || Object.is(num3(x), -0));
+      case 164 /* LogicalEqual */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) === Boolean(b));
+      case 165 /* LogicalNotEqual */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) !== Boolean(b));
+      case 166 /* LogicalOr */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) || Boolean(b));
+      case 167 /* LogicalAnd */:
+        return zipScalars(v(2), v(3), (a, b) => Boolean(a) && Boolean(b));
+      case 168 /* LogicalNot */:
+        return mapScalars(v(2), (a) => !a);
+      case 169 /* Select */: {
+        const c2 = v(2);
+        const a = v(3);
+        const b = v(4);
+        if (Array.isArray(c2)) return a.map((x, i) => c2[i] ? x : b[i]);
+        return cloneValue(c2 ? a : b);
+      }
+      case 170 /* IEqual */:
+        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big2(a)) === BigInt.asUintN(64, big2(b)) : num3(a) >>> 0 === num3(b) >>> 0 || num3(a) === num3(b));
+      case 171 /* INotEqual */:
+        return zipScalars(v(2), v(3), (a, b) => typeof a === "bigint" || typeof b === "bigint" ? BigInt.asUintN(64, big2(a)) !== BigInt.asUintN(64, big2(b)) : !(num3(a) >>> 0 === num3(b) >>> 0 || num3(a) === num3(b)));
+      case 172 /* UGreaterThan */:
+      case 174 /* UGreaterThanEqual */:
+      case 176 /* ULessThan */:
+      case 178 /* ULessThanEqual */: {
+        const width = opWidth(2);
+        return zipScalars(v(2), v(3), (a, b) => {
+          const x = unsigned(a, width), y = unsigned(b, width);
+          return inst.op === 172 /* UGreaterThan */ ? x > y : inst.op === 174 /* UGreaterThanEqual */ ? x >= y : inst.op === 176 /* ULessThan */ ? x < y : x <= y;
+        });
+      }
+      case 173 /* SGreaterThan */:
+      case 175 /* SGreaterThanEqual */:
+      case 177 /* SLessThan */:
+      case 179 /* SLessThanEqual */: {
+        const width = opWidth(2);
+        return zipScalars(v(2), v(3), (a, b) => {
+          const x = signed(a, width), y = signed(b, width);
+          return inst.op === 173 /* SGreaterThan */ ? x > y : inst.op === 175 /* SGreaterThanEqual */ ? x >= y : inst.op === 177 /* SLessThan */ ? x < y : x <= y;
+        });
+      }
+      case 180 /* FOrdEqual */:
+      case 181 /* FUnordEqual */:
+      case 182 /* FOrdNotEqual */:
+      case 183 /* FUnordNotEqual */:
+      case 184 /* FOrdLessThan */:
+      case 185 /* FUnordLessThan */:
+      case 186 /* FOrdGreaterThan */:
+      case 187 /* FUnordGreaterThan */:
+      case 188 /* FOrdLessThanEqual */:
+      case 189 /* FUnordLessThanEqual */:
+      case 190 /* FOrdGreaterThanEqual */:
+      case 191 /* FUnordGreaterThanEqual */:
+      case 161 /* LessOrGreater */:
+      case 162 /* Ordered */:
+      case 163 /* Unordered */:
+        return zipScalars(v(2), v(3), (a, b) => floatCompare(inst.op, num3(a), num3(b)));
+      // Bits
+      case 194 /* ShiftRightLogical */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          if (width === 64) return BigInt.asUintN(64, big2(a)) >> big2(b);
+          return unsigned(a, width) >>> num3(b);
+        }));
+      case 195 /* ShiftRightArithmetic */:
+        return norm(zipScalars(v(2), v(3), (a, b) => {
+          const width = s?.width ?? 32;
+          if (width === 64) return BigInt.asIntN(64, big2(a)) >> big2(b);
+          return signed(a, width) >> num3(b);
+        }));
+      case 196 /* ShiftLeftLogical */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) << big2(b) : num3(a) << num3(b)));
+      case 197 /* BitwiseOr */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) | big2(b) : num3(a) | num3(b)));
+      case 198 /* BitwiseXor */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) ^ big2(b) : num3(a) ^ num3(b)));
+      case 199 /* BitwiseAnd */:
+        return norm(zipScalars(v(2), v(3), (a, b) => s?.width === 64 ? big2(a) & big2(b) : num3(a) & num3(b)));
+      case 200 /* Not */:
+        return norm(mapScalars(v(2), (a) => s?.width === 64 ? ~big2(a) : ~num3(a)));
+      case 201 /* BitFieldInsert */: {
+        const offset = num3(v(4)), count2 = num3(v(5));
+        return norm(zipScalars(v(2), v(3), (base, insert2) => {
+          const mask = count2 >= 32 ? 4294967295 : (1 << count2) - 1 << offset;
+          return num3(base) & ~mask | num3(insert2) << offset & mask;
+        }));
+      }
+      case 202 /* BitFieldSExtract */:
+      case 203 /* BitFieldUExtract */: {
+        const offset = num3(v(3)), count2 = num3(v(4));
+        return norm(mapScalars(v(2), (base) => {
+          if (count2 === 0) return 0;
+          const shifted = num3(base) >>> offset & (count2 >= 32 ? 4294967295 : (1 << count2) - 1);
+          if (inst.op === 203 /* BitFieldUExtract */) return shifted;
+          return count2 < 32 && shifted & 1 << count2 - 1 ? shifted - (1 << count2) : shifted | 0;
+        }));
+      }
+      case 204 /* BitReverse */:
+        return norm(mapScalars(v(2), (a) => {
+          let x = num3(a) >>> 0, r = 0;
+          for (let i = 0; i < 32; i++) {
+            r = r << 1 | x & 1;
+            x >>>= 1;
+          }
+          return r >>> 0;
+        }));
+      case 205 /* BitCount */:
+        return norm(mapScalars(v(2), (a) => {
+          let x = num3(a) >>> 0, c2 = 0;
+          while (x) {
+            c2 += x & 1;
+            x >>>= 1;
+          }
+          return c2;
+        }));
+      // Derivatives
+      case 207 /* DPdx */:
+      case 208 /* DPdy */:
+      case 209 /* Fwidth */:
+      case 210 /* DPdxFine */:
+      case 211 /* DPdyFine */:
+      case 212 /* FwidthFine */:
+      case 213 /* DPdxCoarse */:
+      case 214 /* DPdyCoarse */:
+      case 215 /* FwidthCoarse */: {
+        const operand = v(2);
+        const d = this._derivative(inst, operand);
+        if (d === "blocked") return "blocked";
+        const x = inst.op === 207 /* DPdx */ || inst.op === 210 /* DPdxFine */ || inst.op === 213 /* DPdxCoarse */;
+        const y = inst.op === 208 /* DPdy */ || inst.op === 211 /* DPdyFine */ || inst.op === 214 /* DPdyCoarse */;
+        if (x) return norm(d.dx);
+        if (y) return norm(d.dy);
+        return norm(zipScalars(d.dx, d.dy, (a, b) => Math.abs(num3(a)) + Math.abs(num3(b))));
+      }
+      case 5381 /* IsHelperInvocation */:
+        return this.helper;
+      // Images
+      case 87 /* ImageSampleImplicitLod */:
+      case 88 /* ImageSampleExplicitLod */:
+      case 89 /* ImageSampleDrefImplicitLod */:
+      case 90 /* ImageSampleDrefExplicitLod */:
+      case 91 /* ImageSampleProjImplicitLod */:
+      case 92 /* ImageSampleProjExplicitLod */:
+      case 93 /* ImageSampleProjDrefImplicitLod */:
+      case 94 /* ImageSampleProjDrefExplicitLod */:
+        return this._sample(frame, inst, s);
+      case 95 /* ImageFetch */:
+      case 98 /* ImageRead */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        const type = img instanceof ImageValue ? this._imageType(frame, w[2]) : null;
+        const coord = flat2(v(3)).map(Math.trunc);
+        let lod = 0;
+        if (inst.op === 95 /* ImageFetch */ && w.length > 4) {
+          const mask = w[4];
+          if (mask & 2 /* Lod */) lod = num3(this.value(frame, w[5]));
+        }
+        const texel3 = fetch(img instanceof ImageValue ? img.texture : null, coord, lod, type?.dim ?? 1 /* D2 */, type?.arrayed ?? false);
+        return this._texelResult(texel3, rt, s, img instanceof ImageValue ? img.texture : null);
+      }
+      case 96 /* ImageGather */:
+      case 97 /* ImageDrefGather */: {
+        const si = v(2);
+        const coord = flat2(v(3));
+        const dref = inst.op === 97 /* ImageDrefGather */ ? num3(v(4)) : void 0;
+        const component = inst.op === 96 /* ImageGather */ ? num3(v(4)) : 0;
+        const tex = si instanceof SampledImageValue ? si.image.texture : null;
+        const smp = si instanceof SampledImageValue ? si.sampler.sampler : null;
+        return norm(gather(tex, smp, coord, component, dref));
+      }
+      case 104 /* ImageQuerySize */:
+      case 103 /* ImageQuerySizeLod */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        const tex = img instanceof ImageValue ? img.texture : null;
+        const lod = inst.op === 103 /* ImageQuerySizeLod */ ? num3(v(3)) : 0;
+        const type = this._imageType(frame, w[2]);
+        const size2 = tex ? [Math.max(1, tex.width >> lod), Math.max(1, tex.height >> lod), Math.max(1, tex.depth >> lod)] : [0, 0, 0];
+        const dims = type?.dim === 0 /* D1 */ ? 1 : type?.dim === 2 /* D3 */ ? 3 : 2;
+        const out = size2.slice(0, dims);
+        if (type?.arrayed) out.push(tex ? type.dim === 3 /* Cube */ ? tex.layers / 6 : tex.layers : 0);
+        const t = m.types.get(rt);
+        return norm(t?.kind === "vector" ? out.slice(0, t.count) : out[0]);
+      }
+      case 106 /* ImageQueryLevels */: {
+        const image = v(2);
+        const img = image instanceof SampledImageValue ? image.image : image;
+        return norm(img instanceof ImageValue && img.texture ? img.texture.baseMip + img.texture.mips : 0);
+      }
+      case 107 /* ImageQuerySamples */:
+        return norm(1);
+      case 105 /* ImageQueryLod */: {
+        const si = v(2);
+        const coord = v(3);
+        const d = this._derivative(inst, coord);
+        if (d === "blocked") return "blocked";
+        const tex = si instanceof SampledImageValue ? si.image.texture : null;
+        const lod = tex ? implicitLod(tex, flat2(d.dx), flat2(d.dy)) : 0;
+        return norm([Math.max(0, lod), lod]);
+      }
+      case 60 /* ImageTexelPointer */:
+        this.warnings.add("pointers to storage image texels (imageAtomic operations) are not followed");
+        return null;
+      case 12 /* ExtInst */: {
+        const set = m.extSets.get(w[2]);
+        if (set !== GLSL_STD_450) throw new Error(`the extended instruction set ${set ?? `%${w[2]}`} is not interpreted`);
+        return this._glsl(frame, inst, w[3], Array.from(w.subarray(4)), s);
+      }
+      default:
+        throw new Error(`the interpreter does not handle opcode ${inst.op} yet`);
+    }
+  }
+  // ---------------------------------------------------------------------------------------
+  // Memory
+  _bufferOf(ptr) {
+    if (ptr.cell.buffer) return { buffer: ptr.cell.buffer, path: ptr.path };
+    if (ptr.cell.bufferArray) {
+      const element = ptr.cell.value[ptr.path[0] ?? 0];
+      return element ? { buffer: element.buffer, path: ptr.path.slice(1) } : null;
+    }
+    return null;
+  }
+  /** The value a pointer points at (`limit` caps runtime arrays read for display). */
+  _load(ptr, limit = Infinity) {
+    const storage = this._bufferOf(ptr);
+    if (storage) return this._loadBuffer(storage.buffer, storage.path, limit);
+    if (ptr.cell.bufferArray) {
+      return ptr.cell.value.map((e) => this._loadBuffer(e.buffer, [], limit));
+    }
+    let value = ptr.cell.value;
+    for (const index of ptr.path) value = Array.isArray(value) ? value[index] : 0;
+    return value instanceof ImageValue || value instanceof SamplerValue || value instanceof SampledImageValue ? value : cloneValue(value ?? 0);
+  }
+  _store(ptr, value) {
+    const storage = this._bufferOf(ptr);
+    if (storage) {
+      const key = storage.path.join("/");
+      for (const k of [...storage.buffer.overrides.keys()]) if (k.startsWith(key ? `${key}/` : "")) storage.buffer.overrides.delete(k);
+      storage.buffer.overrides.set(key, value);
+      return;
+    }
+    if (!ptr.path.length) {
+      ptr.cell.value = value;
+      return;
+    }
+    let parent = ptr.cell.value;
+    for (let i = 0; i < ptr.path.length - 1; i++) parent = parent[ptr.path[i]];
+    parent[ptr.path[ptr.path.length - 1]] = value;
+  }
+  _loadBuffer(buffer, path11, limit = Infinity) {
+    const m = this.module;
+    const key = path11.join("/");
+    for (let n = path11.length; n >= 0; n--) {
+      const k = path11.slice(0, n).join("/");
+      const stored = buffer.overrides.get(k);
+      if (stored === void 0) continue;
+      let value2 = stored;
+      for (const index of path11.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
+      return cloneValue(value2);
+    }
+    const view = new DataView(buffer.bytes.buffer, buffer.bytes.byteOffset, buffer.bytes.byteLength);
+    let value;
+    const loc = bufferLocation(m, buffer.type, path11, buffer.bytes.byteLength);
+    if (loc) {
+      value = readBuffer(m, view, loc.at, loc.type, loc.matrix, limit);
+      if (loc.at >= buffer.bytes.byteLength && buffer.bytes.byteLength) this.warnings.add("a read past the captured end of a buffer reads zeros (the capture's Max KB truncated it?)");
+    } else {
+      value = readBuffer(m, view, 0, buffer.type, void 0, limit);
+      for (const index of path11) value = Array.isArray(value) ? value[index] : 0;
+    }
+    for (const [k, stored] of buffer.overrides) {
+      if (!k.startsWith(key ? `${key}/` : "") || k === key) continue;
+      const rest = (key ? k.slice(key.length + 1) : k).split("/").map(Number);
+      let at = value;
+      for (let i = 0; i < rest.length - 1 && Array.isArray(at); i++) at = at[rest[i]];
+      if (Array.isArray(at)) at[rest[rest.length - 1]] = cloneValue(stored);
+    }
+    return value;
+  }
+  // ---------------------------------------------------------------------------------------
+  // Helpers
+  _derivative(inst, operand) {
+    if (!this.derivatives) {
+      this.warnings.add("derivatives are zero outside a fragment shader's pixel quad");
+      const zero = mapScalars(operand, () => 0);
+      return { dx: zero, dy: zero };
+    }
+    return this.derivatives.derivative(this, inst, operand);
+  }
+  _imageType(frame, id) {
+    let type = this._typeOfId(frame, id);
+    if (!type) {
+      const g = this.globals.get(id);
+      if (g) type = g.type;
+    }
+    let t = this.module.types.get(type);
+    if (t?.kind === "sampledImage") t = this.module.types.get(t.image);
+    if (t?.kind === "image") return { dim: t.dim, arrayed: t.arrayed, ms: t.ms };
+    return null;
+  }
+  _texelResult(texel3, rt, s, texture) {
+    const t = this.module.types.get(rt);
+    const values = t?.kind === "vector" ? texel3.slice(0, t.count) : texel3[0];
+    void texture;
+    return s ? mapScalars(values, (x) => normalize(x, s)) : values;
+  }
+  _sample(frame, inst, s) {
+    const w = inst.words;
+    const op = inst.op;
+    const si = this.value(frame, w[2]);
+    if (!(si instanceof SampledImageValue)) throw new Error("sampling something that is not a sampled image");
+    const dref = op === 89 /* ImageSampleDrefImplicitLod */ || op === 90 /* ImageSampleDrefExplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */ || op === 94 /* ImageSampleProjDrefExplicitLod */;
+    const proj = op >= 91 /* ImageSampleProjImplicitLod */ && op <= 94 /* ImageSampleProjDrefExplicitLod */;
+    const implicit = op === 87 /* ImageSampleImplicitLod */ || op === 89 /* ImageSampleDrefImplicitLod */ || op === 91 /* ImageSampleProjImplicitLod */ || op === 93 /* ImageSampleProjDrefImplicitLod */;
+    let coord = flat2(this.value(frame, w[3]));
+    let next = 4;
+    let reference = dref ? num3(this.value(frame, w[next++])) : void 0;
+    if (proj) {
+      const q2 = coord[coord.length - 1] || 1;
+      coord = coord.slice(0, -1).map((c2) => c2 / q2);
+      if (reference !== void 0) reference /= q2;
+    }
+    const imageTypeInst = this.module.types.get(this._typeOfId(frame, w[2]));
+    const imageType = imageTypeInst?.kind === "sampledImage" ? this.module.types.get(imageTypeInst.image) : null;
+    const dim = imageType?.kind === "image" ? imageType.dim : 1 /* D2 */;
+    const arrayed = imageType?.kind === "image" ? imageType.arrayed : false;
+    let bias = 0;
+    let lod = null;
+    let grad = null;
+    let offset;
+    if (next < w.length) {
+      const mask = w[next++];
+      if (mask & 1 /* Bias */) bias = num3(this.value(frame, w[next++]));
+      if (mask & 2 /* Lod */) lod = num3(this.value(frame, w[next++]));
+      if (mask & 4 /* Grad */) {
+        grad = { dx: flat2(this.value(frame, w[next])), dy: flat2(this.value(frame, w[next + 1])) };
+        next += 2;
+      }
+      if (mask & 8 /* ConstOffset */) offset = flat2(this.value(frame, w[next++]));
+      if (mask & 16 /* Offset */) offset = flat2(this.value(frame, w[next++]));
+      if (mask & 32 /* ConstOffsets */) next++;
+      if (mask & 128 /* MinLod */) next++;
+    }
+    const texture = si.image.texture;
+    if (implicit) {
+      const d = this._derivative(inst, coord.slice(0, dim === 3 /* Cube */ ? 3 : dim === 0 /* D1 */ ? 1 : 2));
+      if (d === "blocked") return "blocked";
+      lod = (texture ? implicitLod(texture, flat2(d.dx), flat2(d.dy)) : 0) + bias;
+    } else if (grad && texture) {
+      lod = implicitLod(texture, grad.dx, grad.dy);
+    }
+    const rgba = sample(texture, si.sampler.sampler, { dim, arrayed, coord, lod: lod ?? 0, dref: reference, offset });
+    if (dref) return s ? normalize(rgba[0], s) : rgba[0];
+    const t = this.module.types.get(inst.resultType);
+    const out = t?.kind === "vector" ? rgba.slice(0, t.count) : rgba[0];
+    return s ? mapScalars(out, (x) => normalize(x, s)) : out;
+  }
+  _bitcast(value, fromType, toType) {
+    const from = scalarOf(this.module, fromType);
+    const to = scalarOf(this.module, toType);
+    if (!to) return value;
+    const buf = new DataView(new ArrayBuffer(8));
+    return mapScalars(value, (x) => {
+      if (from?.base === "float" && from.width === 32) buf.setFloat32(0, num3(x), true);
+      else if (from?.base === "float" && from.width === 64) buf.setFloat64(0, num3(x), true);
+      else if (from?.width === 64) buf.setBigUint64(0, BigInt.asUintN(64, big2(x)), true);
+      else buf.setUint32(0, num3(x) >>> 0, true);
+      if (to.base === "float") return to.width === 64 ? buf.getFloat64(0, true) : buf.getFloat32(0, true);
+      if (to.width === 64) return to.base === "int" ? buf.getBigInt64(0, true) : buf.getBigUint64(0, true);
+      return to.base === "int" ? buf.getInt32(0, true) : buf.getUint32(0, true);
+    });
+  }
+  _extendedArithmetic(op, a, b, rt) {
+    const t = this.module.types.get(rt);
+    const member = t?.kind === "struct" ? t.members[0] : 0;
+    const s = scalarOf(this.module, member) ?? { base: "uint", width: 32 };
+    const lo = zipScalars(a, b, (x, y) => {
+      const X = BigInt.asUintN(32, big2(x)), Y = BigInt.asUintN(32, big2(y));
+      const r = op === 149 /* IAddCarry */ ? X + Y : op === 150 /* ISubBorrow */ ? X - Y : op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
+      return normalize(Number(BigInt.asUintN(32, r)), s);
+    });
+    const hi = zipScalars(a, b, (x, y) => {
+      const X = BigInt.asUintN(32, big2(x)), Y = BigInt.asUintN(32, big2(y));
+      if (op === 149 /* IAddCarry */) return X + Y > 0xffffffffn ? 1 : 0;
+      if (op === 150 /* ISubBorrow */) return Y > X ? 1 : 0;
+      const r = op === 151 /* UMulExtended */ ? X * Y : BigInt.asIntN(32, X) * BigInt.asIntN(32, Y);
+      return normalize(Number(BigInt.asUintN(32, r >> 32n)), s);
+    });
+    return [lo, hi];
+  }
+  // ---------------------------------------------------------------------------------------
+  // GLSL.std.450
+  _glsl(frame, inst, number, args, s) {
+    const a = (i) => this.value(frame, args[i]);
+    const norm = (x) => s ? mapScalars(x, (e) => normalize(e, s)) : x;
+    const unary = (f) => norm(mapScalars(a(0), (x) => f(num3(x))));
+    const binary = (f) => norm(zipScalars(a(0), a(1), (x, y) => f(num3(x), num3(y))));
+    const ternary = (f) => {
+      const x0 = a(0), y0 = a(1), z0 = a(2);
+      const at = (value, i) => Array.isArray(value) ? num3(value[i]) : num3(value);
+      if (Array.isArray(x0)) return norm(x0.map((_, i) => f(at(x0, i), at(y0, i), at(z0, i))));
+      return norm(f(num3(x0), num3(y0), num3(z0)));
+    };
+    const vec = (i) => flat2(a(i));
+    const width = s?.width ?? 32;
+    switch (number) {
+      case 1:
+        return unary((x) => x < 0 ? -Math.round(-x) : Math.round(x));
+      case 2:
+        return unary((x) => {
+          const r = Math.round(x);
+          return Math.abs(x % 1) === 0.5 ? 2 * Math.round(x / 2) : r;
+        });
+      case 3:
+        return unary(Math.trunc);
+      case 4:
+        return unary(Math.abs);
+      case 5:
+        return norm(mapScalars(a(0), (x) => Math.abs(Number(signed(x, width)))));
+      case 6:
+        return unary((x) => x > 0 ? 1 : x < 0 ? -1 : 0);
+      case 7:
+        return norm(mapScalars(a(0), (x) => Math.sign(Number(signed(x, width)))));
+      case 8:
+        return unary(Math.floor);
+      case 9:
+        return unary(Math.ceil);
+      case 10:
+        return unary((x) => x - Math.floor(x));
+      case 11:
+        return unary((x) => x * Math.PI / 180);
+      case 12:
+        return unary((x) => x * 180 / Math.PI);
+      case 13:
+        return unary(Math.sin);
+      case 14:
+        return unary(Math.cos);
+      case 15:
+        return unary(Math.tan);
+      case 16:
+        return unary(Math.asin);
+      case 17:
+        return unary(Math.acos);
+      case 18:
+        return unary(Math.atan);
+      case 19:
+        return unary(Math.sinh);
+      case 20:
+        return unary(Math.cosh);
+      case 21:
+        return unary(Math.tanh);
+      case 22:
+        return unary(Math.asinh);
+      case 23:
+        return unary(Math.acosh);
+      case 24:
+        return unary(Math.atanh);
+      case 25:
+        return binary(Math.atan2);
+      case 26:
+        return binary(Math.pow);
+      case 27:
+        return unary(Math.exp);
+      case 28:
+        return unary(Math.log);
+      case 29:
+        return unary((x) => 2 ** x);
+      case 30:
+        return unary(Math.log2);
+      case 31:
+        return unary(Math.sqrt);
+      case 32:
+        return unary((x) => 1 / Math.sqrt(x));
+      case 33:
+        return norm(determinant2(a(0)));
+      case 34:
+        return norm(inverse(a(0)));
+      case 35: {
+        const x = a(0);
+        const whole = mapScalars(x, (e) => Math.trunc(num3(e)));
+        const ptr = a(1);
+        if (ptr instanceof Pointer) this._store(ptr, norm(whole));
+        return norm(zipScalars(x, whole, (e, w) => num3(e) - num3(w)));
+      }
+      case 36: {
+        const x = a(0);
+        const whole = mapScalars(x, (e) => Math.trunc(num3(e)));
+        const member = this.module.types.get(inst.resultType);
+        const fs12 = member?.kind === "struct" ? scalarOf(this.module, member.members[0]) : s;
+        const n = (value) => fs12 ? mapScalars(value, (e) => normalize(e, fs12)) : value;
+        return [n(zipScalars(x, whole, (e, w) => num3(e) - num3(w))), n(whole)];
+      }
+      case 37:
+        return binary((x, y) => y < x ? y : x);
+      case 38:
+        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(y, width) < unsigned(x, width) ? y : x));
+      case 39:
+        return norm(zipScalars(a(0), a(1), (x, y) => signed(y, width) < signed(x, width) ? y : x));
+      case 40:
+        return binary((x, y) => x < y ? y : x);
+      case 41:
+        return norm(zipScalars(a(0), a(1), (x, y) => unsigned(x, width) < unsigned(y, width) ? y : x));
+      case 42:
+        return norm(zipScalars(a(0), a(1), (x, y) => signed(x, width) < signed(y, width) ? y : x));
+      case 43:
+        return ternary((x, lo, hi) => Math.min(Math.max(x, lo), hi));
+      case 44:
+        return ternary((x, lo, hi) => Math.min(Math.max(x >>> 0, lo >>> 0), hi >>> 0));
+      case 45:
+        return ternary((x, lo, hi) => Math.min(Math.max(x | 0, lo | 0), hi | 0));
+      case 46:
+        return ternary((x, y, t) => x * (1 - t) + y * t);
+      case 47:
+        return ternary((x, y, t) => t ? y : x);
+      case 48:
+        return binary((edge2, x) => x < edge2 ? 0 : 1);
+      case 49:
+        return ternary((e0, e1, x) => {
+          const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+          return t * t * (3 - 2 * t);
+        });
+      case 50:
+        return ternary((x, y, z) => x * y + z);
+      case 51: {
+        const x = a(0);
+        const exps = mapScalars(x, (e) => frexp(num3(e))[1]);
+        const ptr = a(1);
+        if (ptr instanceof Pointer) this._store(ptr, exps);
+        return norm(mapScalars(x, (e) => frexp(num3(e))[0]));
+      }
+      case 52: {
+        const x = a(0);
+        return [norm(mapScalars(x, (e) => frexp(num3(e))[0])), mapScalars(x, (e) => frexp(num3(e))[1])];
+      }
+      case 53:
+        return norm(zipScalars(a(0), a(1), (x, e) => num3(x) * 2 ** num3(e)));
+      case 54:
+        return packNorm(vec(0), 8, true);
+      case 55:
+        return packNorm(vec(0), 8, false);
+      case 56:
+        return packNorm(vec(0), 16, true);
+      case 57:
+        return packNorm(vec(0), 16, false);
+      case 58:
+        return packHalf(vec(0));
+      case 60:
+        return unpackNorm(num3(a(0)), 16, true, 2);
+      case 61:
+        return unpackNorm(num3(a(0)), 16, false, 2);
+      case 62:
+        return unpackHalf(num3(a(0)));
+      case 63:
+        return unpackNorm(num3(a(0)), 8, true, 4);
+      case 64:
+        return unpackNorm(num3(a(0)), 8, false, 4);
+      case 66:
+        return norm(Math.hypot(...vec(0)));
+      case 67: {
+        const p = vec(0), q2 = vec(1);
+        return norm(Math.hypot(...p.map((x, i) => x - q2[i])));
+      }
+      case 68: {
+        const [x1, y1, z1] = vec(0), [x2, y2, z2] = vec(1);
+        return norm([y1 * z2 - z1 * y2, z1 * x2 - x1 * z2, x1 * y2 - y1 * x2]);
+      }
+      case 69: {
+        const x = a(0);
+        if (!Array.isArray(x)) return norm(Math.sign(num3(x)));
+        const len = Math.hypot(...flat2(x));
+        return norm(x.map((e) => num3(e) / len));
+      }
+      case 70: {
+        const n = vec(0), i = vec(1), nref = vec(2);
+        const d = nref.reduce((sum, x, k) => sum + x * i[k], 0);
+        return norm(d < 0 ? n : n.map((x) => -x));
+      }
+      case 71: {
+        const i = vec(0), n = vec(1);
+        const d = n.reduce((sum, x, k) => sum + x * i[k], 0);
+        return norm(i.map((x, k) => x - 2 * d * n[k]));
+      }
+      case 72: {
+        const i = vec(0), n = vec(1), eta = num3(a(2));
+        const d = n.reduce((sum, x, k2) => sum + x * i[k2], 0);
+        const k = 1 - eta * eta * (1 - d * d);
+        return norm(k < 0 ? i.map(() => 0) : i.map((x, j) => eta * x - (eta * d + Math.sqrt(k)) * n[j]));
+      }
+      case 73:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num3(x) >>> 0;
+          return n === 0 ? -1 : 31 - Math.clz32(n & -n);
+        }));
+      case 74:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num3(x) | 0;
+          const m = n < 0 ? ~n : n;
+          return m === 0 ? -1 : 31 - Math.clz32(m);
+        }));
+      case 75:
+        return norm(mapScalars(a(0), (x) => {
+          const n = num3(x) >>> 0;
+          return n === 0 ? -1 : 31 - Math.clz32(n);
+        }));
+      case 76:
+      case 77:
+      case 78: {
+        const ptr = a(0);
+        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel centre");
+        return ptr instanceof Pointer ? this._load(ptr) : ptr;
+      }
+      case 79:
+        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.min(x, y));
+      case 80:
+        return binary((x, y) => Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.max(x, y));
+      case 81:
+        return ternary((x, lo, hi) => Number.isNaN(x) ? lo : Math.min(Math.max(x, lo), hi));
+      default:
+        throw new Error(`GLSL.std.450 instruction ${number} is not interpreted`);
+    }
+  }
+};
+function floatCompare(op, a, b) {
+  const unordered = Number.isNaN(a) || Number.isNaN(b);
+  switch (op) {
+    case 180 /* FOrdEqual */:
+      return !unordered && a === b;
+    case 181 /* FUnordEqual */:
+      return unordered || a === b;
+    case 182 /* FOrdNotEqual */:
+      return !unordered && a !== b;
+    case 183 /* FUnordNotEqual */:
+      return unordered || a !== b;
+    case 184 /* FOrdLessThan */:
+      return !unordered && a < b;
+    case 185 /* FUnordLessThan */:
+      return unordered || a < b;
+    case 186 /* FOrdGreaterThan */:
+      return !unordered && a > b;
+    case 187 /* FUnordGreaterThan */:
+      return unordered || a > b;
+    case 188 /* FOrdLessThanEqual */:
+      return !unordered && a <= b;
+    case 189 /* FUnordLessThanEqual */:
+      return unordered || a <= b;
+    case 190 /* FOrdGreaterThanEqual */:
+      return !unordered && a >= b;
+    case 191 /* FUnordGreaterThanEqual */:
+      return unordered || a >= b;
+    case 161 /* LessOrGreater */:
+      return !unordered && a !== b;
+    case 162 /* Ordered */:
+      return !unordered;
+    case 163 /* Unordered */:
+      return unordered;
+    default:
+      return false;
+  }
+}
+function frexp(x) {
+  if (x === 0 || !Number.isFinite(x)) return [x, 0];
+  const e = Math.floor(Math.log2(Math.abs(x))) + 1;
+  let m = x / 2 ** e;
+  if (Math.abs(m) >= 1) return [m / 2, e + 1];
+  if (Math.abs(m) < 0.5) m *= 2;
+  return Math.abs(x / 2 ** e) < 0.5 ? [m, e - 1] : [m, e];
+}
+function determinant2(m) {
+  const n = m.length;
+  if (n === 2) return m[0][0] * m[1][1] - m[1][0] * m[0][1];
+  if (n === 3) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2]) + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+  }
+  let det = 0;
+  for (let c2 = 0; c2 < n; c2++) {
+    const minor = m.filter((_, i) => i !== c2).map((col) => col.slice(1));
+    det += (c2 % 2 ? -1 : 1) * m[c2][0] * determinant2(minor);
+  }
+  return det;
+}
+function inverse(m) {
+  const n = m.length;
+  const a = Array.from({ length: n }, (_, r) => [...Array.from({ length: n }, (_2, c2) => m[c2][r]), ...Array.from({ length: n }, (_2, c2) => c2 === r ? 1 : 0)]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    const p = a[col][col];
+    if (p === 0) return m.map((c2) => c2.map(() => NaN));
+    for (let c2 = 0; c2 < 2 * n; c2++) a[col][c2] /= p;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = a[r][col];
+      for (let c2 = 0; c2 < 2 * n; c2++) a[r][c2] -= f * a[col][c2];
+    }
+  }
+  return Array.from({ length: n }, (_, c2) => Array.from({ length: n }, (_2, r) => a[r][n + c2]));
+}
+function packNorm(v, bits, isSigned) {
+  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
+  let out = 0;
+  v.forEach((x, i) => {
+    const clamped = isSigned ? Math.min(Math.max(x, -1), 1) : Math.min(Math.max(x, 0), 1);
+    const q2 = Math.round(clamped * max) & 2 ** bits - 1;
+    out += q2 * 2 ** (bits * i);
+  });
+  return out >>> 0;
+}
+function unpackNorm(p, bits, isSigned, count2) {
+  const max = 2 ** (isSigned ? bits - 1 : bits) - 1;
+  return Array.from({ length: count2 }, (_, i) => {
+    let q2 = Math.floor((p >>> 0) / 2 ** (bits * i)) % 2 ** bits;
+    if (isSigned && q2 >= 2 ** (bits - 1)) q2 -= 2 ** bits;
+    return Math.fround(isSigned ? Math.max(q2 / max, -1) : q2 / max);
+  });
+}
+function toHalf(x) {
+  const f = new Float32Array([x]);
+  const bits = new Uint32Array(f.buffer)[0];
+  const sign2 = bits >>> 16 & 32768;
+  const exponent = (bits >>> 23 & 255) - 127 + 15;
+  const mantissa = bits & 8388607;
+  if (exponent <= 0) return sign2;
+  if (exponent >= 31) return sign2 | 31744 | ((bits >>> 23 & 255) === 255 && mantissa ? 512 : 0);
+  return sign2 | exponent << 10 | mantissa >>> 13;
+}
+function packHalf(v) {
+  return (toHalf(v[1] ?? 0) << 16 | toHalf(v[0] ?? 0)) >>> 0;
+}
+function unpackHalf(p) {
+  const half = (h) => {
+    const sign2 = h & 32768 ? -1 : 1;
+    const e = h >> 10 & 31;
+    const f = h & 1023;
+    return e === 0 ? sign2 * 2 ** -14 * (f / 1024) : e === 31 ? f ? NaN : sign2 * Infinity : sign2 * 2 ** (e - 15) * (1 + f / 1024);
+  };
+  return [Math.fround(half(p & 65535)), Math.fround(half(p >>> 16 & 65535))];
+}
+
 // src/renderer/shader_debug_setup.ts
 var STAGE_MODEL = { vertex: 0 /* Vertex */, fragment: 4 /* Fragment */, compute: 5 /* GLCompute */ };
 function bytesOf(v) {
@@ -15240,7 +21043,6 @@ function bytesOf(v) {
 function stageOf(ctx, state, stage) {
   const pipeline = state.pipeline;
   if (!pipeline) throw new Error("no pipeline is bound at the command");
-  if (pipeline.type.startsWith("MTL")) throw new Error("the shader debugger runs SPIR-V: Metal shaders are not debugged yet");
   const source = pipelineStages(pipeline, ctx.db).find((s) => s.stage === stage);
   if (!source) throw new Error(`the pipeline has no ${stage} stage`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
@@ -15331,14 +21133,14 @@ function debugTexture(tex, components) {
     }
   };
 }
-var ADDRESS = {
+var ADDRESS2 = {
   VK_SAMPLER_ADDRESS_MODE_REPEAT: "repeat",
   VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: "mirror",
   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: "clamp",
   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: "border",
   VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE: "mirrorClamp"
 };
-var BORDERS = {
+var BORDERS2 = {
   VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: [0, 0, 0, 0],
   VK_BORDER_COLOR_INT_TRANSPARENT_BLACK: [0, 0, 0, 0],
   VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: [0, 0, 0, 1],
@@ -15353,8 +21155,8 @@ function debugSampler(db, id) {
     magFilter: str(d.magFilter).includes("NEAREST") ? "nearest" : "linear",
     minFilter: str(d.minFilter).includes("NEAREST") ? "nearest" : "linear",
     mipmapMode: str(d.mipmapMode).includes("NEAREST") ? "nearest" : "linear",
-    address: [ADDRESS[str(d.addressModeU)] ?? "repeat", ADDRESS[str(d.addressModeV)] ?? "repeat", ADDRESS[str(d.addressModeW)] ?? "repeat"],
-    border: BORDERS[str(d.borderColor)] ?? [0, 0, 0, 0],
+    address: [ADDRESS2[str(d.addressModeU)] ?? "repeat", ADDRESS2[str(d.addressModeV)] ?? "repeat", ADDRESS2[str(d.addressModeW)] ?? "repeat"],
+    border: BORDERS2[str(d.borderColor)] ?? [0, 0, 0, 0],
     compareOp: d.compareEnable ? str(d.compareOp) : null,
     minLod: num(d.minLod),
     maxLod: d.maxLod === void 0 ? 1e3 : num(d.maxLod),
@@ -15405,7 +21207,49 @@ function viewportOf(state) {
     vp = isObject(vs) ? pick2(vs.pViewports) : null;
   }
   if (!isObject(vp)) return null;
+  if (vp.originX !== void 0 || vp.znear !== void 0) {
+    return {
+      x: num(vp.originX),
+      y: num(vp.originY),
+      width: num(vp.width),
+      height: num(vp.height),
+      minDepth: num(vp.znear),
+      maxDepth: vp.zfar === void 0 ? 1 : num(vp.zfar)
+    };
+  }
   return { x: num(vp.x), y: num(vp.y), width: num(vp.width), height: num(vp.height), minDepth: num(vp.minDepth), maxDepth: vp.maxDepth === void 0 ? 1 : num(vp.maxDepth) };
+}
+var METAL_COMPARE = ["Never", "Less", "Equal", "LessEqual", "Greater", "NotEqual", "GreaterEqual", "Always"];
+function rasterStateOf(state, defaultViewport) {
+  const viewport = viewportOf(state) ?? defaultViewport ?? null;
+  if (state.pipeline?.type.startsWith("MTL") || state.cullMode !== null || state.frontFace !== null) {
+    const cull2 = str(state.cullMode);
+    const winding = str(state.frontFace);
+    const compare3 = state.depthStencil?.descriptor?.depthCompareFunction;
+    const compareName = typeof compare3 === "number" ? METAL_COMPARE[compare3] ?? "" : str(compare3);
+    return {
+      viewport,
+      cullFront: cull2.includes("Front"),
+      cullBack: cull2.includes("Back"),
+      ccwFront: winding.includes("CounterClockwise"),
+      yUp: true,
+      depthPrefers: compareName.includes("Less") ? "less" : compareName.includes("Greater") ? "greater" : "none"
+    };
+  }
+  const d = state.pipeline?.descriptor;
+  const raster = isObject(d?.pRasterizationState) ? d.pRasterizationState : null;
+  const ds = isObject(d?.pDepthStencilState) ? d.pDepthStencilState : null;
+  const cull = str(raster?.cullMode);
+  const face = str(raster?.frontFace);
+  const compare2 = ds?.depthTestEnable ? str(ds.depthCompareOp) : "";
+  return {
+    viewport,
+    cullFront: cull.includes("FRONT"),
+    cullBack: cull.includes("BACK"),
+    ccwFront: !face.includes("CLOCKWISE") || face.includes("COUNTER"),
+    yUp: false,
+    depthPrefers: compare2.includes("LESS") ? "less" : compare2.includes("GREATER") ? "greater" : "none"
+  };
 }
 function clipNear(tri) {
   const eps = 1e-6;
@@ -15418,37 +21262,35 @@ function clipNear(tri) {
       const t = (eps - a.clip[3]) / (b.clip[3] - a.clip[3]);
       const lerp = (x, y) => x.map((v, k) => v + (y[k] - v) * t);
       const outputs = /* @__PURE__ */ new Map();
-      for (const [loc, value] of a.outputs) outputs.set(loc, lerp(value, b.outputs.get(loc) ?? value));
+      for (const [key, value] of a.outputs) outputs.set(key, lerp(value, b.outputs.get(key) ?? value));
       out.push({ clip: lerp(a.clip, b.clip), outputs });
     }
   }
   return out;
 }
+var locationKey = (o) => o.location === void 0 ? null : String(o.location);
 function edge(ax, ay, bx, by, px, py) {
   return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
-function coveringTriangle(state, mesh, px, py) {
-  const viewport = viewportOf(state);
+function coveringTriangle(raster, mesh, px, py, keyOf2 = locationKey) {
+  const viewport = raster.viewport;
   const pos = positionOutput(mesh);
   if (!viewport) return { hit: null, triangles: 0, reason: "the draw has no viewport" };
-  if (!pos || !mesh.data) return { hit: null, triangles: 0, reason: "the replay captured no gl_Position for the draw" };
+  if (!pos || !mesh.data) return { hit: null, triangles: 0, reason: "the draw's vertex shader outputs have no position" };
   if (primitiveKind(mesh.topology) !== "triangles") return { hit: null, triangles: 0, reason: "the draw does not draw triangles" };
   const view = new DataView(mesh.data.buffer, mesh.data.byteOffset, mesh.data.byteLength);
   const vertex = (i) => {
     const base = i * mesh.stride;
     const read = (offset, components, base2) => Array.from({ length: components }, (_, k) => base2 === "float" ? view.getFloat32(base + offset + k * 4, true) : base2 === "int" ? view.getInt32(base + offset + k * 4, true) : view.getUint32(base + offset + k * 4, true));
     const outputs = /* @__PURE__ */ new Map();
-    for (const o of mesh.outputs) if (o.location !== void 0) outputs.set(o.location, read(o.offset, o.components, o.base));
+    for (const o of mesh.outputs) {
+      const key = keyOf2(o);
+      if (key !== null) outputs.set(key, read(o.offset, o.components, o.base));
+    }
     return { clip: read(pos.offset, 4, "float"), outputs };
   };
-  const d = state.pipeline?.descriptor;
-  const raster = isObject(d?.pRasterizationState) ? d.pRasterizationState : null;
-  const ds = isObject(d?.pDepthStencilState) ? d.pDepthStencilState : null;
-  const cull = str(raster?.cullMode);
-  const ccwFront = !str(raster?.frontFace).includes("CLOCKWISE") || str(raster?.frontFace).includes("COUNTER");
-  const compare2 = ds?.depthTestEnable ? str(ds.depthCompareOp) : "";
-  const prefersLess = compare2.includes("LESS");
-  const prefersGreater = compare2.includes("GREATER");
+  const prefersLess = raster.depthPrefers === "less";
+  const prefersGreater = raster.depthPrefers === "greater";
   const cx = px + 0.5, cy = py + 0.5;
   let best = null;
   let bestDepth = 0;
@@ -15461,7 +21303,7 @@ function coveringTriangle(state, mesh, px, py) {
       const w = v.clip[3];
       return {
         x: viewport.x + (v.clip[0] / w + 1) * viewport.width / 2,
-        y: viewport.y + (v.clip[1] / w + 1) * viewport.height / 2,
+        y: viewport.y + (raster.yUp ? 1 - v.clip[1] / w : v.clip[1] / w + 1) * viewport.height / 2,
         z: viewport.minDepth + v.clip[2] / w * (viewport.maxDepth - viewport.minDepth),
         invW: 1 / w,
         v
@@ -15474,8 +21316,8 @@ function coveringTriangle(state, mesh, px, py) {
     }
     area *= -0.5;
     const ccw = area > 0;
-    const front = ccw === ccwFront;
-    if (cull.includes("BACK") && !front || cull.includes("FRONT") && front || cull.includes("FRONT_AND_BACK")) continue;
+    const front = ccw === raster.ccwFront;
+    if (raster.cullBack && !front || raster.cullFront && front) continue;
     for (let f = 1; f + 1 < win.length; f++) {
       const a = win[0], b = win[f], c2 = win[f + 1];
       const total = edge(a.x, a.y, b.x, b.y, c2.x, c2.y);
@@ -15494,7 +21336,7 @@ function coveringTriangle(state, mesh, px, py) {
   }
   return { hit: best, triangles, reason: best ? "" : `none of the draw's ${triangles.toLocaleString()} triangles covers pixel (${px}, ${py})` };
 }
-function fragmentInputs(module, hit, px, py) {
+function interpolate(hit, px, py, interpolationOf) {
   const [a, b, c2] = hit.window;
   const cx = px + 0.5, cy = py + 0.5;
   const total = edge(a.x, a.y, b.x, b.y, c2.x, c2.y);
@@ -15502,26 +21344,32 @@ function fragmentInputs(module, hit, px, py) {
   const invW = l[0] * a.invW + l[1] * b.invW + l[2] * c2.invW;
   const persp = [l[0] * a.invW / invW, l[1] * b.invW / invW, l[2] * c2.invW / invW];
   const z = l[0] * a.z + l[1] * b.z + l[2] * c2.z;
-  const locations = /* @__PURE__ */ new Map();
+  const values = /* @__PURE__ */ new Map();
+  for (const [key, provoking] of hit.provoking.outputs) {
+    const how = interpolationOf(key);
+    if (how === "flat") {
+      values.set(key, provoking);
+      continue;
+    }
+    const weights = how === "noperspective" ? l : persp;
+    const va = a.v.outputs.get(key) ?? provoking, vb = b.v.outputs.get(key) ?? provoking, vc = c2.v.outputs.get(key) ?? provoking;
+    values.set(key, va.map((x, k) => weights[0] * x + weights[1] * vb[k] + weights[2] * vc[k]));
+  }
+  return { values, fragCoord: [cx, cy, z, invW] };
+}
+function fragmentInputs2(module, hit, px, py) {
   const decorations = /* @__PURE__ */ new Map();
   for (const [id, g] of module.globals) {
     if (g.storage !== 1 /* Input */) continue;
     const location = module.decoration(id, 30 /* Location */)?.[0];
     if (location === void 0) continue;
-    decorations.set(location, { flat: module.decoration(id, 14 /* Flat */) !== void 0, noPerspective: module.decoration(id, 13 /* NoPerspective */) !== void 0 });
+    decorations.set(String(location), module.decoration(id, 14 /* Flat */) !== void 0 ? "flat" : module.decoration(id, 13 /* NoPerspective */) !== void 0 ? "noperspective" : "smooth");
   }
-  for (const [location, provoking] of hit.provoking.outputs) {
-    const deco = decorations.get(location);
-    if (deco?.flat) {
-      locations.set(location, provoking);
-      continue;
-    }
-    const weights = deco?.noPerspective ? l : persp;
-    const va = a.v.outputs.get(location) ?? provoking, vb = b.v.outputs.get(location) ?? provoking, vc = c2.v.outputs.get(location) ?? provoking;
-    locations.set(location, va.map((x, k) => weights[0] * x + weights[1] * vb[k] + weights[2] * vc[k]));
-  }
+  const { values, fragCoord } = interpolate(hit, px, py, (key) => decorations.get(key) ?? "smooth");
+  const locations = /* @__PURE__ */ new Map();
+  for (const [key, value] of values) locations.set(Number(key), value);
   const builtins = /* @__PURE__ */ new Map([
-    [15 /* FragCoord */, [cx, cy, z, invW]],
+    [15 /* FragCoord */, fragCoord],
     [17 /* FrontFacing */, hit.front],
     [7 /* PrimitiveId */, hit.primitive],
     [18 /* SampleId */, 0],
@@ -15542,6 +21390,7 @@ async function prepareDebugSession(ctx, target) {
     throw new Error(`command ${target.command} (${cmd.method}) is not a ${target.stage === "compute" ? "dispatch" : "draw"}`);
   }
   const state = drawState(data, db, cmd);
+  if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
   const { source, module } = stageOf(ctx, state, target.stage);
   const bindings = commandBindings(ctx, state, source);
   const model = STAGE_MODEL[target.stage];
@@ -15571,7 +21420,7 @@ async function prepareDebugSession(ctx, target) {
     };
     return {
       target,
-      module,
+      program: SpirvProgram.of(module),
       stage: source,
       bindings,
       notes,
@@ -15628,7 +21477,7 @@ async function prepareDebugSession(ctx, target) {
     }
     return {
       target,
-      module,
+      program: SpirvProgram.of(module),
       stage: source,
       bindings,
       notes,
@@ -15642,10 +21491,11 @@ async function prepareDebugSession(ctx, target) {
   const mesh = await ctx.meshOutput(target.command);
   if (!mesh.measured) throw new Error(`the draw's vertex shader outputs could not be captured: ${mesh.note ?? "the replay did not reach the draw"}`);
   const { x, y } = target;
-  const { hit, triangles, reason } = coveringTriangle(state, mesh, x, y);
+  const raster = rasterStateOf(state);
+  const { hit, triangles, reason } = coveringTriangle(raster, mesh, x, y);
   if (!hit) throw new Error(reason);
   if (triangles !== Math.floor(mesh.vertices / 3)) notes.push("The replay truncated the draw's vertices.");
-  const viewport = viewportOf(state);
+  const viewport = raster.viewport;
   const { x0, y0, target: lane } = PixelQuad.place(x, y);
   let targetPixel;
   const passInfo = findPass(data, cmd);
@@ -15659,7 +21509,7 @@ async function prepareDebugSession(ctx, target) {
   }
   return {
     target,
-    module,
+    program: SpirvProgram.of(module),
     stage: source,
     bindings,
     notes,
@@ -15670,13 +21520,13 @@ async function prepareDebugSession(ctx, target) {
       entryPoint,
       model,
       bindings,
-      inputs: fragmentInputs(module, hit, x0 + dx, y0 + dy),
+      inputs: fragmentInputs2(module, hit, x0 + dx, y0 + dy),
       derivatives
     }), lane)
   };
 }
-function coveredPixel(state, mesh) {
-  const viewport = viewportOf(state);
+function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
+  const viewport = raster.viewport;
   const pos = positionOutput(mesh);
   if (!viewport || !pos || !mesh.data || primitiveKind(mesh.topology) !== "triangles") return null;
   const view = new DataView(mesh.data.buffer, mesh.data.byteOffset, mesh.data.byteLength);
@@ -15689,14 +21539,15 @@ function coveredPixel(state, mesh) {
         ok = false;
         break;
       }
+      const ndcY = view.getFloat32(at + 4, true) / w;
       sx += viewport.x + (view.getFloat32(at, true) / w + 1) * viewport.width / 2;
-      sy += viewport.y + (view.getFloat32(at + 4, true) / w + 1) * viewport.height / 2;
+      sy += viewport.y + (raster.yUp ? 1 - ndcY : ndcY + 1) * viewport.height / 2;
     }
     if (!ok) continue;
     const x = Math.floor(sx / 3), y = Math.floor(sy / 3);
     const minX = Math.min(viewport.x, viewport.x + viewport.width), minY = Math.min(viewport.y, viewport.y + viewport.height);
     if (x < minX || y < minY || x >= minX + Math.abs(viewport.width) || y >= minY + Math.abs(viewport.height)) continue;
-    if (coveringTriangle(state, mesh, x, y).hit) return { x, y };
+    if (coveringTriangle(raster, mesh, x, y).hit) return { x, y };
   }
   return null;
 }
@@ -17155,7 +23006,7 @@ function debugTools(store) {
   return [
     {
       name: "debug_shader",
-      description: "Runs one shader invocation of a Vulkan capture in GPU Inspector's SPIR-V interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel (its inputs rasterized from the replayed vertex shader outputs, so this needs vkinsp_replay), or a dispatch's compute invocation, on the descriptor sets, push constants and specialization the command had. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values.",
+      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V or a Metal capture's Metal Shading Language. A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal fragment's come from running the draw's own vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. A Metal library the application loaded precompiled has no source, and says so.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
@@ -17164,7 +23015,7 @@ function debugTools(store) {
         instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
         x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
         y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
-        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID. Default [0, 0, 0]." },
+        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
         trace: { type: "boolean", description: "Include the line-by-line values (default true)." }
       }, ["command"]),
@@ -17176,13 +23027,17 @@ function debugTools(store) {
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
         const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
-        if (c2.data.api === "metal") return jsonResult({ capture: c2.id, command, note: "The shader debugger runs SPIR-V: Metal shaders are not debugged yet." });
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
-        const meshOutput = meshOutputs(c2);
         const state = drawState(c2.data, c2.db, cmd);
         const inputNames = /* @__PURE__ */ new Map();
         for (const v of vertexInputs(c2, state.pipeline)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
-        const ctx = { data: c2.data, db: c2.db, meshOutput, inputNames };
+        const metal = c2.data.api === "metal";
+        const ctx = {
+          data: c2.data,
+          db: c2.db,
+          inputNames,
+          meshOutput: metal ? void 0 : meshOutputs(c2)
+        };
         let target;
         if (stage === "compute") {
           const inv2 = Array.isArray(args.invocation) ? args.invocation.map((v) => Math.max(0, Math.floor(Number(v) || 0))) : [0, 0, 0];
@@ -17194,11 +23049,11 @@ function debugTools(store) {
           if (x === void 0 || y === void 0) {
             let mesh;
             try {
-              mesh = await meshOutput(command);
+              mesh = metal ? await interpretedMeshOutput(ctx, cmd, state) : await ctx.meshOutput(command);
             } catch (e) {
               return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug the fragment: ${e.message}` });
             }
-            const pixel = mesh.measured ? coveredPixel(state, mesh) : null;
+            const pixel = mesh.measured ? coveredPixel(state, mesh, metal ? metalRasterState(ctx, cmd, state) : void 0) : null;
             if (!pixel) return jsonResult({ capture: c2.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
             x = pixel.x;
             y = pixel.y;
@@ -17211,14 +23066,15 @@ function debugTools(store) {
         } catch (e) {
           return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug: ${e.message}` });
         }
-        const m = session.module;
-        const info = m.debug;
-        const missing = info?.files.filter((f) => f.text === null && f.name) ?? [];
-        if (info && missing.length) {
-          const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
-          for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+        const program = session.program;
+        if (program instanceof SpirvProgram) {
+          const missing = program.files.filter((f) => f.text === null && f.name);
+          if (missing.length) {
+            const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
+            for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+          }
         }
-        const maps = info?.files.map((f) => f.text == null ? null : sourceLineMap(f.text)) ?? [];
+        const maps = program.files.map((f) => f.text == null ? null : sourceLineMap(f.text));
         const sourceOf = (file, line) => {
           const map = maps[file];
           const phys = map?.physicalOf.get(line);
@@ -17239,7 +23095,7 @@ function debugTools(store) {
           for (const r of last.results) {
             if (!firstNonFinite && nonFinite(r.value)) {
               const l = ctl.location(r.inst);
-              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: m.nameOf(r.id), value: valueText(m, resultType(m, r), r.value), source: l ? sourceOf(l.file, l.line) : void 0 };
+              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: program.nameOf(r.id), value: program.valueText(program.resultType(r), r.value), source: l ? sourceOf(l.file, l.line) : void 0 };
             }
           }
           if (!wantTrace || onlyLine !== void 0 && loc?.line !== onlyLine) continue;
@@ -17249,24 +23105,24 @@ function debugTools(store) {
           }
           const values = last.results.filter((r) => !(r.value instanceof Pointer));
           if (!values.length) continue;
-          const named = values.filter((r) => m.names.has(r.id) || m.debugVariableNames.has(r.id));
+          const named = values.filter((r) => !program.resultTemporary(r));
           const shown = (named.length ? named : values).slice(-MAX_VALUES_PER_LINE);
-          const texts = shown.map((r) => `${m.nameOf(r.id)} = ${valueText(m, resultType(m, r), r.value)}`);
+          const texts = shown.map((r) => `${program.nameOf(r.id)} = ${program.valueText(program.resultType(r), r.value)}`);
           if (ctl.mode === "instruction") {
             trace.push(`${inst.index}: ${texts.join("; ")}`);
           } else {
             trace.push({
               line: loc?.line,
-              file: (info?.files.length ?? 0) > 1 && loc ? info.files[loc.file]?.name : void 0,
+              file: program.files.length > 1 && loc ? program.files[loc.file]?.name : void 0,
               source: loc ? sourceOf(loc.file, loc.line) : void 0,
               values: texts,
-              depth: ctl.invocation.frames.length > 1 ? ctl.invocation.frames.length : void 0
+              depth: ctl.invocation.depth > 1 ? ctl.invocation.depth : void 0
             });
           }
           ctl.lastLine.results.length = 0;
         }
         const inv = ctl.invocation;
-        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: m.typeName(o.type), value: valueText(m, o.type, o.value, 64) }));
+        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
         let compare2;
         if (inv.status === "returned" && session.targetPixel) {
           compare2 = {
@@ -17296,7 +23152,7 @@ function debugTools(store) {
           status: inv.status,
           error: inv.error || void 0,
           instructions: inv.steps,
-          steppedBy: ctl.mode === "source" ? `source line (${info?.language ?? "source"})` : "SPIR-V instruction (the shader has no line information)",
+          steppedBy: ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
           outputs,
           compare: compare2,
           firstNonFinite,
@@ -18157,7 +24013,7 @@ var FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split be
 var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
 var CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"];
-var SCALAR_BYTES = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 };
+var SCALAR_BYTES2 = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 };
 var IMAGE_PARAMS = {
   channels: { type: "string", enum: CHANNELS, description: "What the image shows (default rgb)." },
   exposure: { type: "number", description: "Multiplier applied before display (default 1)." },
@@ -18601,7 +24457,7 @@ function resourceTools(store) {
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         data: { type: "integer", minimum: 1, description: "The captured range's data id." },
-        as: { type: "string", enum: [...Object.keys(SCALAR_BYTES), "hex"], description: "Scalar type to read the bytes as when no layout is given (default float32)." },
+        as: { type: "string", enum: [...Object.keys(SCALAR_BYTES2), "hex"], description: "Scalar type to read the bytes as when no layout is given (default float32)." },
         layout: { type: "string", description: 'GLSL struct declarations; the last struct is the type: "struct Light { vec4 position; vec4 color; }; struct Lights { Light lights[8]; uint count; };".' },
         rules: { type: "string", enum: ["std140", "std430"], description: "Layout rules for `layout` (default std430; uniform blocks are std140)." },
         count: { type: "integer", minimum: 1, description: "With a layout: read this many structs one after another. Without: how many scalars (default 256) or bytes of hex." },
@@ -18642,7 +24498,7 @@ function resourceTools(store) {
           }
           return jsonResult({ ...base, offset, hex: lines });
         }
-        const size2 = SCALAR_BYTES[as];
+        const size2 = SCALAR_BYTES2[as];
         const count2 = Math.min(intArg(args, "count", 256, 1, 16384), Math.floor((bytes.byteLength - offset) / size2));
         const values = [];
         for (let i = 0; i < count2; i++) {
@@ -18961,28 +24817,28 @@ function parsePixelHistory(input) {
     json = input;
   }
   if (json?.format !== "gpu-inspector-pixel-history") throw new Error("Not a pixel history.");
-  const num3 = (v) => typeof v === "number" ? v : 0;
+  const num4 = (v) => typeof v === "number" ? v : 0;
   const str3 = (v) => typeof v === "string" ? v : "";
   const events = (Array.isArray(json.events) ? json.events : []).map((raw) => {
     const e = raw;
     const kind = str3(e.kind);
     return {
       kind: kind === "load" || kind === "clear" ? kind : "draw",
-      command: num3(e.command),
+      command: num4(e.command),
       method: str3(e.method),
       detail: str3(e.detail),
-      commandBuffer: num3(e.commandBuffer),
-      frame: num3(e.frame),
-      passIndex: num3(e.passIndex),
-      pipeline: num3(e.pipeline),
+      commandBuffer: num4(e.commandBuffer),
+      frame: num4(e.frame),
+      passIndex: num4(e.passIndex),
+      pipeline: num4(e.pipeline),
       scissored: e.scissored === true,
-      testsMeasured: num3(e.testsMeasured),
-      covered: num3(e.covered),
-      facing: num3(e.facing),
-      shaded: num3(e.shaded),
-      depthPassed: num3(e.depthPassed),
-      stencilPassed: num3(e.stencilPassed),
-      passed: num3(e.passed),
+      testsMeasured: num4(e.testsMeasured),
+      covered: num4(e.covered),
+      facing: num4(e.facing),
+      shaded: num4(e.shaded),
+      depthPassed: num4(e.depthPassed),
+      stencilPassed: num4(e.stencilPassed),
+      passed: num4(e.passed),
       value: hexBytes(e.value),
       depth: hexBytes(e.depth)
     };
@@ -18990,12 +24846,12 @@ function parsePixelHistory(input) {
   const strings = (v) => Array.isArray(v) ? v.filter((s) => typeof s === "string") : [];
   return {
     device: str3(json.device),
-    image: num3(json.image),
-    requestedImage: typeof json.requestedImage === "number" ? json.requestedImage : num3(json.image),
-    x: num3(json.x),
-    y: num3(json.y),
-    mip: num3(json.mip),
-    layer: num3(json.layer),
+    image: num4(json.image),
+    requestedImage: typeof json.requestedImage === "number" ? json.requestedImage : num4(json.image),
+    x: num4(json.x),
+    y: num4(json.y),
+    mip: num4(json.mip),
+    layer: num4(json.layer),
     pixelFormat: str3(json.pixelFormat),
     depthFormat: str3(json.depthFormat),
     events,
@@ -19113,9 +24969,9 @@ var OVERDRAW_MAGIC = "OVERDRAW 1\n";
 function parseOverdrawFile(bytes) {
   const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
   if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
-  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
   const start = magic.byteLength + 4;
-  const base = start + length;
+  const base = start + length2;
   if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
   const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
   const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
