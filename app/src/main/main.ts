@@ -13,7 +13,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
-import { NO_REPLAY_TOOL, findReplayTool, measureOverdrawOfBytes, replayBytes, type OverdrawRun, type PixelRequest, type ReplayRun } from "./replay.js";
+import {
+  NO_REPLAY_TOOL, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
+} from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileShader, shaderText } from "./shader_tools.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
@@ -1106,36 +1108,31 @@ ipcMain.handle("inspector:shaderSource", (_e, names: string[], roots: string[]) 
 
 ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
 // Vulkan overdraw: the capture replayed on this machine's GPU (src/main/replay.ts, docs/REPLAY.md).
-ipcMain.handle("inspector:measureOverdraw", async (_e, opts: { data: Uint8Array; name?: string }): Promise<OverdrawRun> => {
+/** What every replay request names: the renderer's key for its capture, and the capture's bytes when the main process asked for them. */
+interface ReplayRequest { key: string; data?: Uint8Array; name?: string }
+
+/** Runs an analysis in the replay kept alive for a renderer's capture (replayKeyed in replay.ts). */
+function replayFor(opts: ReplayRequest, analysis: ReplayAnalysis): Promise<ReplayRun> {
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
-  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
-  return measureOverdrawOfBytes(tool, opts.data, opts.name);
-});
+  if (!tool) return Promise.resolve({ data: null, output: "", error: NO_REPLAY_TOOL });
+  return replayKeyed(tool, opts.key, opts.data, analysis, opts.name);
+}
+
+ipcMain.handle("inspector:measureOverdraw", (_e, opts: ReplayRequest): Promise<OverdrawRun> => replayFor(opts, { kind: "overdraw" }));
+// A capture closed, or changed so that it is serialized again: its replay stops and its file goes.
+ipcMain.handle("inspector:releaseReplay", (_e, key: string) => releaseReplayKey(key));
 // Vulkan per-draw timing and counters: the frame replayed with queries around each draw
 // (replay/src/draw_stats.cpp), for the Shader Flame Graph.
-ipcMain.handle("inspector:measureDraws", async (_e, opts: { data: Uint8Array; name?: string }): Promise<ReplayRun> => {
-  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
-  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
-  return replayBytes(tool, opts.data, { kind: "draws" }, opts.name);
-});
+ipcMain.handle("inspector:measureDraws", (_e, opts: ReplayRequest): Promise<ReplayRun> => replayFor(opts, { kind: "draws" }));
 // Vulkan draw-call overlays: where some draws landed, drawn again on their own (replay/src/overlay.cpp).
-ipcMain.handle("inspector:drawOverlay", async (_e, opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<ReplayRun> => {
-  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
-  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
-  return replayBytes(tool, opts.data, { kind: "overlay", commands: opts.commands }, opts.name);
-});
+ipcMain.handle("inspector:drawOverlay", (_e, opts: ReplayRequest & { commands: number[] }): Promise<ReplayRun> =>
+  replayFor(opts, { kind: "overlay", commands: opts.commands }));
 // Vulkan mesh output: what some draws' vertex shaders wrote, through transform feedback (replay/src/mesh.cpp).
-ipcMain.handle("inspector:meshOutput", async (_e, opts: { data: Uint8Array; name?: string; commands: number[] }): Promise<ReplayRun> => {
-  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
-  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
-  return replayBytes(tool, opts.data, { kind: "mesh", commands: opts.commands }, opts.name);
-});
+ipcMain.handle("inspector:meshOutput", (_e, opts: ReplayRequest & { commands: number[] }): Promise<ReplayRun> =>
+  replayFor(opts, { kind: "mesh", commands: opts.commands }));
 // Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
-ipcMain.handle("inspector:pixelHistory", async (_e, opts: { data: Uint8Array; name?: string; pixel: PixelRequest }): Promise<ReplayRun> => {
-  const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
-  if (!tool) return { data: null, output: "", error: NO_REPLAY_TOOL };
-  return replayBytes(tool, opts.data, { kind: "pixel", ...opts.pixel }, opts.name);
-});
+ipcMain.handle("inspector:pixelHistory", (_e, opts: ReplayRequest & { pixel: PixelRequest }): Promise<ReplayRun> =>
+  replayFor(opts, { kind: "pixel", ...opts.pixel }));
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
   if (!mainWin || mainWin.isDestroyed()) return false;
@@ -1376,6 +1373,7 @@ void app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
+  releaseAllReplays();
   killAllTargets();
   for (const f of tempCaptures) { try { fs.unlinkSync(f); } catch { /* already gone */ } }
 });

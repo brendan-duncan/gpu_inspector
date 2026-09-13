@@ -517,6 +517,7 @@ export class CapturePanel {
     if (!view) return;
     this._views = this._views.filter((v) => v !== view);
     this._handles.delete(view);
+    view.releaseReplay();
     if (this._live === view) this._live = null;
     // The tabs the capture opened go with it.
     for (const t of [...(this._subTabs.get(view)?.values() ?? [])]) this._tabs.closeTabHandle(t.handle);
@@ -601,6 +602,8 @@ export class CaptureView implements CaptureHost {
   readonly onCaptureComplete = new Signal<() => void>();
   /** The capture serialized for vkinsp_replay, kept for the next replay of the same capture. */
   private _replayFile: Promise<Uint8Array> | null = null;
+  /** The key the main process keeps this capture's replay under; null until a replay is asked for. */
+  private _replayKey: string | null = null;
   /** Vulkan: the replay measuring overdraw, while it runs or after it failed. */
   private _overdrawRun: { running: boolean; error?: string } | null = null;
   /** Vulkan: the replay measuring the frame's draws, while it runs or after it failed. */
@@ -802,6 +805,7 @@ export class CaptureView implements CaptureHost {
     this._rows = [];
     this._renderGraph = null;
     this._replayFile = null;
+    this.releaseReplay();
     // The graph is built here rather than lazily: its rules contribute to Frame Issues and to the
     // finding flags on the command rows, which are put on as the rows are built just below.
     this._analysis = analyzeFrame(this.data, this.window.database, this.renderGraph());
@@ -1483,8 +1487,7 @@ export class CaptureView implements CaptureHost {
   private async _runMeshOutputs(commands: number[]): Promise<void> {
     this._setStatus(`mesh output: replaying the capture for ${commands.length === 1 ? `draw #${commands[0]}` : `${commands.length} draws`}...`);
     try {
-      const bytes = await this._replayBytes();
-      const result = await window.inspector.meshOutput({ data: bytes, name: this.label, commands });
+      const result = await this._replay((r) => window.inspector.meshOutput({ ...r, commands }));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no vertex outputs");
       for (const m of parseMeshFile(result.data).draws) this._meshes.set(m.command, m);
     } finally {
@@ -1527,8 +1530,7 @@ export class CaptureView implements CaptureHost {
   private async _runDrawOverlays(commands: number[]): Promise<void> {
     this._setStatus(`draw overlay: replaying the capture for ${commands.length === 1 ? `draw #${commands[0]}` : `${commands.length} draws`}...`);
     try {
-      const bytes = await this._replayBytes();
-      const result = await window.inspector.drawOverlay({ data: bytes, name: this.label, commands });
+      const result = await this._replay((r) => window.inspector.drawOverlay({ ...r, commands }));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no overlay");
       for (const d of parseDrawOverlayFile(result.data).draws) this.data.drawOverlays.set(d.command, d);
       this.data.onDrawOverlays.emit();
@@ -1568,6 +1570,23 @@ export class CaptureView implements CaptureHost {
     return this._replayFile;
   }
 
+  /**
+   * Runs a replay request under the capture's key: the main process keeps a replay alive per key
+   * (main/replay.ts), so the capture is serialized and sent only when it asks for it.
+   */
+  private async _replay<T extends { needData?: boolean }>(call: (request: { key: string; name: string; data?: Uint8Array }) => Promise<T>): Promise<T> {
+    const key = (this._replayKey ??= `${this.label}:${Date.now()}:${Math.random().toString(36).slice(2)}`);
+    const result = await call({ key, name: this.label });
+    if (!result.needData) return result;
+    return call({ key, name: this.label, data: await this._replayBytes() });
+  }
+
+  /** Stops the capture's replay (the tab closed, or the capture was rebuilt). */
+  releaseReplay(): void {
+    if (this._replayKey) void window.inspector.releaseReplay(this._replayKey);
+    this._replayKey = null;
+  }
+
   /** Metal: whether the capture followed this pixel while it was taken (a capture with pixelHistory). */
   hasPixelHistory(request: PixelRequest): boolean {
     const h = this.data.pixelHistory;
@@ -1588,8 +1607,7 @@ export class CaptureView implements CaptureHost {
     }
     this._setStatus(`pixel history: replaying the capture for pixel (${request.x}, ${request.y})...`);
     try {
-      const bytes = await this._replayBytes();
-      const result = await window.inspector.pixelHistory({ data: bytes, name: this.label, pixel: request });
+      const result = await this._replay((r) => window.inspector.pixelHistory({ ...r, pixel: request }));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no pixel history");
       return parsePixelHistory(result.data);
     } finally {
@@ -1637,8 +1655,7 @@ export class CaptureView implements CaptureHost {
     this._refreshSelection();
     this._setStatus("measuring overdraw: replaying the capture on this machine's GPU...");
     try {
-      const bytes = await this._replayBytes();
-      const result = await window.inspector.measureOverdraw({ data: bytes, name: this.label });
+      const result = await this._replay((r) => window.inspector.measureOverdraw(r));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no overdraw data");
       const file = parseOverdrawFile(result.data);
       this._overdrawRun = null;
@@ -1669,8 +1686,7 @@ export class CaptureView implements CaptureHost {
     this._drawRun = { running: true };
     this._setStatus("measuring draws: replaying the capture on this machine's GPU...");
     try {
-      const bytes = await this._replayBytes();
-      const result = await window.inspector.measureDraws({ data: bytes, name: this.label });
+      const result = await this._replay((r) => window.inspector.measureDraws(r));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no draw measurements");
       const file = parseDrawStats(result.data);
       this._drawRun = null;

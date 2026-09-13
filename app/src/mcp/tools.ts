@@ -8,7 +8,7 @@ import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
   frameStageVerdict, passAdvice, type PassMetrics,
 } from "../renderer/pass_metrics.js";
-import { NO_REPLAY_TOOL, findReplayTool, runOverdrawReplay, runReplay } from "../main/replay.js";
+import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel, type PixelHistory } from "../renderer/pixel_history.js";
 import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
@@ -414,7 +414,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           // A Vulkan capture: replayed once, and the measurements kept with the open capture.
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-          const run = await runOverdrawReplay(tool, c.path);
+          const run = await replayServers.run(tool, c.path, { kind: "overdraw" });
           if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not measure overdraw: ${run.error ?? "no data"}` });
           const file = parseOverdrawFile(run.data);
           c.setOverdraw(file.measurements);
@@ -485,7 +485,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       description: "A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one " +
         "pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the " +
         "fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and " +
-        "depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (seconds); a Metal application " +
+        "depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (under a second; later questions about the same capture are quicker); a Metal application " +
         "follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. " +
         "Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for \"why is this pixel " +
         "this colour\": the last draw that wrote it, and the draws that should have but were culled or failed a test.",
@@ -545,7 +545,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         const y = requireInt(args, "y");
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c.id, note: `Pixel history replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run = await runReplay(tool, c.path, { kind: "pixel", image, x, y, mip: mip ?? 0, layer: intArg(args, "layer", 0, 0) });
+        const run = await replayServers.run(tool, c.path, { kind: "pixel", image, x, y, mip: mip ?? 0, layer: intArg(args, "layer", 0, 0) });
         if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not follow the pixel: ${run.error ?? "no data"}` });
         const h = parsePixelHistory(run.data);
         return jsonResult(pixelHistoryAnswer(c, h, boolArg(args, "allDraws", false), {
@@ -559,7 +559,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       name: "get_mesh_output",
       description: "What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for \"why can I not see this " +
         "mesh\": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback " +
-        "(seconds). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices " +
+        "(under a second, quicker for later draws of the same capture). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices " +
         "are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area " +
         "on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the " +
         "draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the " +
@@ -581,7 +581,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run = await runReplay(tool, c.path, { kind: "mesh", commands: [index] });
+        const run = await replayServers.run(tool, c.path, { kind: "mesh", commands: [index] });
         if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not capture the draw's vertices: ${run.error ?? "no data"}` });
         const file = parseMeshFile(run.data);
         const m = file.draws.find((d) => d.command === index);
