@@ -700,6 +700,94 @@ function upstreamParts(m: Module, parts: { results: Set<number>; instructions: I
 
 // ---------------------------------------------------------------------------------------------
 
+/** The variable a sampled image or image operand reads, through loads, OpSampledImage, OpImage and access chains. */
+function textureVariable(m: Module, id: number): number | null {
+  const w = m.words;
+  for (let depth = 0; depth < 16; depth++) {
+    const d = m.defs.get(id);
+    if (!d) return null;
+    if (d.op === Op.Variable) return m.variableClass.get(id) === 0 ? id : null;   // UniformConstant
+    if (d.op === Op.Load) id = m.baseVariable(w[d.start + 3]);
+    else if (d.op === 86 || d.op === 100) id = w[d.start + 3];                    // OpSampledImage, OpImage
+    else return null;
+  }
+  return null;
+}
+
+/** Image reads: the samples, fetches, gathers and reads (not writes). */
+function isImageRead(op: number): boolean {
+  return (op >= 87 && op <= 98 && op !== Op.ImageWrite) || (op >= 305 && op <= 320);
+}
+
+/** How an entry point reads one bound texture. */
+export interface TextureReads {
+  set: number;
+  binding: number;
+  /** Reads per invocation, counting a function's reads once per call to it (loops once). */
+  reads: number;
+  /** Some read runs in a loop, or in a function called from one. */
+  inLoop: boolean;
+}
+
+/**
+ * How an entry point reads each texture it binds: whether a shader reads its input once per
+ * invocation (as an input attachment could stand in for) or filters it. Null when the module
+ * cannot be parsed or has no such entry point.
+ */
+export function textureReads(spirv: Uint8Array, entryPoint: string): TextureReads[] | null {
+  let m: Module;
+  try {
+    m = new Module(spirv);
+  } catch {
+    return null;
+  }
+  const w = m.words;
+  const entry = m.entryPoints.find((e) => e.name === entryPoint) ?? (m.entryPoints.length === 1 ? m.entryPoints[0] : undefined);
+  if (!entry) return null;
+  // Per function: its own reads by texture, and its calls (whether each is in a loop).
+  const own = new Map<number, Map<number, { reads: number; inLoop: boolean }>>();
+  for (const ins of m.instructions) {
+    if (!ins.fn || !isImageRead(ins.op)) continue;
+    const texture = textureVariable(m, w[ins.start + 3]);
+    if (texture === null) continue;
+    let byTexture = own.get(ins.fn);
+    if (!byTexture) own.set(ins.fn, (byTexture = new Map()));
+    const r = byTexture.get(texture) ?? { reads: 0, inLoop: false };
+    r.reads++;
+    if (ins.loops.length) r.inLoop = true;
+    byTexture.set(texture, r);
+  }
+  const memo = new Map<number, Map<number, { reads: number; inLoop: boolean }>>();
+  const total = (fn: number, stack: Set<number>): Map<number, { reads: number; inLoop: boolean }> => {
+    const cached = memo.get(fn);
+    if (cached) return cached;
+    const out = new Map<number, { reads: number; inLoop: boolean }>();
+    for (const [t, r] of own.get(fn) ?? []) out.set(t, { ...r });
+    if (!stack.has(fn)) {
+      stack.add(fn);
+      for (const call of m.calls) {
+        if (call.fn !== fn) continue;
+        for (const [t, r] of total(w[call.start + 3], stack)) {
+          const acc = out.get(t) ?? { reads: 0, inLoop: false };
+          acc.reads += r.reads;
+          acc.inLoop = acc.inLoop || r.inLoop || call.loops.length > 0;
+          out.set(t, acc);
+        }
+      }
+      stack.delete(fn);
+    }
+    memo.set(fn, out);
+    return out;
+  };
+  const result: TextureReads[] = [];
+  for (const [t, r] of total(entry.functionId, new Set())) {
+    const set = m.sets.get(t);
+    const binding = m.bindings.get(t);
+    if (set !== undefined && binding !== undefined) result.push({ set, binding, ...r });
+  }
+  return result;
+}
+
 /**
  * The variants that measure a stage of a module: the stage itself, its costliest functions and its
  * costliest source lines, as the static analysis ranks them. `analysis` is the module's own.
@@ -877,21 +965,10 @@ export function planAblation(spirv: Uint8Array, stage: ShaderStage, entryPoint: 
 
   // Textures: every sample, fetch, gather and read of one bound texture replaced. The texture is the
   // variable the image operand is loaded from, through OpSampledImage, OpImage and access chains.
-  const textureOf = (id: number): number | null => {
-    for (let depth = 0; depth < 16; depth++) {
-      const d = m.defs.get(id);
-      if (!d) return null;
-      if (d.op === Op.Variable) return m.variableClass.get(id) === 0 ? id : null;   // UniformConstant
-      if (d.op === Op.Load) id = m.baseVariable(w[d.start + 3]);
-      else if (d.op === 86 || d.op === 100) id = w[d.start + 3];                    // OpSampledImage, OpImage
-      else return null;
-    }
-    return null;
-  };
   const textures = new Map<number, Instruction[]>();
   for (const ins of m.instructions) {
-    if (!ins.fn || !reachable.has(ins.fn) || !((ins.op >= 87 && ins.op <= 98 && ins.op !== Op.ImageWrite) || (ins.op >= 305 && ins.op <= 320))) continue;
-    const texture = textureOf(w[ins.start + 3]);
+    if (!ins.fn || !reachable.has(ins.fn) || !isImageRead(ins.op)) continue;
+    const texture = textureVariable(m, w[ins.start + 3]);
     if (texture === null) continue;
     let list = textures.get(texture);
     if (!list) textures.set(texture, (list = []));

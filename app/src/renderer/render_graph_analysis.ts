@@ -32,7 +32,7 @@ import type { GraphNode, GraphUse, RenderGraph } from "./render_graph.js";
 export const SUPERSEDED_RULES = new Set(["depth-store", "color-store", "mergeable-passes"]);
 
 /** Sort order of the graph rules within a severity, most actionable first. */
-const RULE_ORDER = ["overwritten-before-read", "mergeable-passes", "unread-store", "transient-candidate", "oversynchronized-barrier"];
+const RULE_ORDER = ["overwritten-before-read", "mergeable-passes", "unread-store", "subpass-candidate", "transient-candidate", "oversynchronized-barrier"];
 
 /** One finding per rule, naming the first case and counting the rest (as the other analyses fold). */
 class Folded {
@@ -70,8 +70,11 @@ class GraphAnalysis {
   /** Which API's spelling of a fix the advice should name. */
   private _metal = false;
 
-  constructor(graph: RenderGraph) {
+  private _options: GraphAnalysisOptions;
+
+  constructor(graph: RenderGraph, options: GraphAnalysisOptions) {
     this._graph = graph;
+    this._options = options;
     this._blind = graph.nodes.some((n) => n.unresolvedReads > 0);
     this._metal = graph.api === "metal";
   }
@@ -79,6 +82,7 @@ class GraphAnalysis {
   analyze(): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
     this._unreadStores();
     const merged = this._mergeablePasses();
+    for (const key of this._subpassCandidates(merged)) merged.add(key);
     this._overwrittenBeforeRead();
     this._transientCandidates(merged);
     this._oversynchronizedBarriers();
@@ -170,6 +174,51 @@ class GraphAnalysis {
     this._add("mergeable-passes", "medium", "medium",
       `${count(folded.count, "pass", "passes")} load exactly what the pass immediately before stored, to the same targets: ${folded.subjectText}. ` +
       `Recorded as one pass (a second subpass, or simply more draws) the attachment stays in tile memory and the store and load both go away.`, folded);
+    return reported;
+  }
+
+  /**
+   * A render pass whose only image inputs are what the render pass right before it rendered, at the
+   * size it renders: the two could be one pass with two subpasses, the second reading the first's
+   * results as input attachments, so they never leave tile memory. Returns the images it named, so
+   * the transient rule does not say the same about them. Not reported where the two passes render
+   * to the same targets (mergeable-passes), and only a hint: a shader that filters its input (a blur
+   * reading neighbouring texels) needs it as a texture.
+   */
+  private _subpassCandidates(merged: Set<string>): Set<string> {
+    const folded = new Folded();
+    const reported = new Set<string>();
+    const nodes = this._graph.nodes;
+    let checked = 0;     // candidates whose shaders were seen to read each input once
+    for (let i = 1; i < nodes.length; i++) {
+      const before = nodes[i - 1];
+      const after = nodes[i];
+      if (before.kind !== "render" || after.kind !== "render" || before.frame !== after.frame || after.unresolvedReads) continue;
+      const inputs = after.reads.filter((r) => r.resource.type === "image" && usageClass(r.usage) !== "attachment");
+      if (!inputs.length || inputs.some((r) => merged.has(r.resource.key))) continue;
+      if (!inputs.every((r) => r.version.producer === before && usageClass(before.writes.find((w) => w.version === r.version)?.usage ?? "") === "attachment")) continue;
+      const targets = after.writes.filter((w) => usageClass(w.usage) === "attachment");
+      if (!targets.length || targets.some((w) => inputs.some((r) => r.resource.key === w.resource.key))) continue;
+      // Subpasses share one framebuffer: the inputs have to be the size the second pass renders at.
+      const sizes = new Set([...inputs, ...targets].map((u) => /^(\d+x\d+)/.exec(u.resource.detail)?.[1] ?? "?"));
+      if (sizes.size !== 1 || sizes.has("?")) continue;
+      // A shader that filters its input (several reads, or reads in a loop) needs it as a texture.
+      const filters = inputs.map((r) => this._options.filtersInput?.(after, r.resource.objectId) ?? null);
+      if (filters.some((f) => f === true)) continue;
+      if (filters.every((f) => f === false)) checked++;
+      for (const r of inputs) reported.add(r.resource.key);
+      folded.add(after, `${after.label} reads ${[...new Set(inputs.map((r) => r.resource.label))].join(", ")}`);
+    }
+    if (!folded.count) return reported;
+    const allChecked = checked === folded.count;
+    this._add("subpass-candidate", "low", allChecked ? "medium" : "low",
+      `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` +
+      (this._metal
+        ? "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. "
+        : "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ") +
+      (allChecked
+        ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position."
+        : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."), folded);
     return reported;
   }
 
@@ -284,7 +333,16 @@ function count(n: number, one: string, many = ""): string {
   return `${n} ${n === 1 ? one : many || `${one}s`}`;
 }
 
+/** What an API's own analysis can tell the graph rules. */
+export interface GraphAnalysisOptions {
+  /**
+   * Whether a pass's shaders filter an image they read (read it more than once per invocation, or in
+   * a loop): true, false, or null when unknown.
+   */
+  filtersInput?: (node: GraphNode, imageId: number) => boolean | null;
+}
+
 /** The graph rules over a capture's render graph. */
-export function analyzeRenderGraph(graph: RenderGraph): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  return new GraphAnalysis(graph).analyze();
+export function analyzeRenderGraph(graph: RenderGraph, options: GraphAnalysisOptions = {}): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
+  return new GraphAnalysis(graph, options).analyze();
 }

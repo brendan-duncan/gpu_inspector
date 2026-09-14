@@ -7,7 +7,8 @@ copyright: Copyright © 2025 Brendan Duncan
 
 directories:
   output: release
-  # Not the CMake build directory at the repository root (app/installer holds nothing today).
+  # Not the CMake build directory at the repository root. app/installer holds installer.nsh, which
+  # registers the capture layer as an implicit layer on Windows.
   buildResources: installer
 
 asar: true

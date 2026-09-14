@@ -1,6 +1,6 @@
 // TCP transport between the capture library and the inspector UI.
 //
-// The wire format is the Vulkan layer's, byte for byte (layer/src/transport.h), because the UI
+// The wire format is the Vulkan layer's, byte for byte (vulkan/src/transport.h), because the UI
 // speaks one protocol regardless of which API produced the messages:
 //   u32 payloadLength (little endian, not counting the kind byte), u8 kind, payload
 //   kind 0: UTF-8 JSON text
@@ -8,7 +8,7 @@
 // One client at a time, on 127.0.0.1:MTLINSP_PORT. Outgoing messages are queued and written by a
 // sender thread, so an intercepted Metal call never blocks on the socket.
 //
-// This duplicates layer/src/transport.cpp, which is the same code with `Log`, `Tracker` and
+// This duplicates vulkan/src/transport.cpp, which is the same code with `Log`, `Tracker` and
 // `ValidationLog` wired in directly. The two should become one shared module — the coupling is
 // three calls, replaced here by the OnConnect/OnDisconnect callbacks below, which is what such a
 // module would need anyway. That refactor is not done here because it changes shipping Vulkan

@@ -32,7 +32,7 @@ one, described in `metal/README.md`; what follows is the Vulkan side.
 |  Target application       |  <---------------------------------------->  |  Inspector app (Electron)|
 |                           |                                              |                          |
 |  vulkan-1 loader          |                                              |  main process:           |
-|    +-- VK_LAYER_INSPECTOR_capture  (layer/)                              |    launches target with  |
+|    +-- VK_LAYER_INSPECTOR_capture  (vulkan/)                              |    launches target with  |
 |    |     dispatch + forwarders (generated)                               |    layer env, owns socket|
 |    |     object tracker                                                  |  renderer:               |
 |    |     frame capture + GPU readback                                    |    object database,      |
@@ -42,7 +42,7 @@ one, described in `metal/README.md`; what follows is the Vulkan side.
                                                                            +--------------------------+
 ```
 
-### layer/ — the Vulkan layer
+### vulkan/ — the Vulkan layer
 
 * `src/layer.cpp` — loader negotiation, `vkCreateInstance`/`vkCreateDevice` chaining, dispatch
   registry, `vkGet*ProcAddr`, frame boundary at `vkQueuePresentKHR`.
@@ -185,7 +185,20 @@ much slower than on the desktop.
    `ReadBackAfterSubmit` copies the attachments of the others when the buffer is submitted
    during the capture: a command buffer of the layer's (the live read-back's pool) with the
    same `RecordImageCopy`, submitted right behind the application's on the same queue and
-   waited for, the layouts taken from the layout tracker after the submission. The captured frame pays for the extra stores (a Quest's
+   waited for, the layouts taken from the layout tracker after the submission.
+   - **Split submissions.** When such a buffer is followed by others in the same submission,
+     the submit pre-hooks (`PreHook_vkQueueSubmit`, `PreHook_vkQueueSubmit2`) split the
+     submission after it, so a later buffer cannot overwrite a target before it is read back.
+     Each part up to such a buffer is submitted with `ReadBackSubmitted` right behind it. The
+     application's own call submits the last part, with its fence.
+   - **Semaphores.** A submit info split across parts waits on its semaphores in its first part
+     and signals them in its last. Timeline semaphore values follow the semaphores.
+   - **Left whole.** A submission whose infos carry any other extension structure is not split.
+   - **What the post-hooks see.** They record the submission as the application made it.
+   - **Limits.** Two passes of one such buffer writing the same image still read back
+     after both, and such buffers have no pass timings.
+
+   The captured frame pays for the extra stores (a Quest's
    stereo pass took 5.1 ms captured against 2.9 ms live), which the pass timings of a capture
    include. Multisampled attachments are resolved (`vkCmdResolveImage`, color only) into
    a temporary single-sampled image owned by the capture before the copy; dynamic rendering's
@@ -820,7 +833,13 @@ versioning to see. `transient-candidate` finds a resource written and then read 
 that immediately follows and never presented or copied: it never has to reach memory at all
 (`TRANSIENT_ATTACHMENT` with `LAZILY_ALLOCATED` memory or an input attachment; `MTLStorageModeMemoryless`).
 `mergeable-passes` is the exact form of that pairing, where the second pass loads precisely what
-the first stored to the same targets. `oversynchronized-barrier` compares what the frame *declares*
+the first stored to the same targets. `subpass-candidate` is the other form: a render pass that
+reads nothing but the previous render pass's attachments, at the size it renders, could be that
+pass's second subpass with input attachments. Whether it could depends on its shaders, which the
+graph does not have. The Vulkan analysis passes it `filtersInput`, which checks each draw's bound
+descriptors against its fragment shader's reads (`textureReads` in `vulkan/spirv_ablate.ts`). A
+shader that reads the input more than once, or in a loop, filters it (a blur, ambient occlusion)
+and needs a texture, so that pass is not reported. `oversynchronized-barrier` compares what the frame *declares*
 it depends on with what it does: a barrier is questioned only when it names resources (a global
 memory barrier says nothing to check), changes no image layout and moves nothing between queue
 families (both required whatever the data does), and every resource it names is untouched on one
@@ -1012,7 +1031,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
@@ -1051,10 +1070,10 @@ overlay via `--debug-view=overlay:depth:last`; the mesh tab's VS In and VS Out v
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 
-Regenerate `layer/gen` (done automatically by CMake when vk.xml or the generator changes):
+Regenerate `vulkan/gen` (done automatically by CMake when vk.xml or the generator changes):
 
 ```
-python tools/gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out layer/gen
+python tools/gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out vulkan/gen
 ```
 
 ---

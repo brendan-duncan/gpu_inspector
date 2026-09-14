@@ -98,9 +98,18 @@ each step.
      memory outside the tile.
    - `msaa-store`: a multisampled attachment stored although it is resolved.
    - `mergeable-passes`: a pass that loads exactly what the previous one stored.
+   - `subpass-candidate`: a pass that reads only what the pass before it rendered, at the same
+     size. Medium confidence when its fragment shaders read each input once per pixel, low when the
+     shaders could not be checked. A blur or ambient occlusion pass, which reads its input many
+     times, is not reported.
+   - `oversized-attachment`: an attachment larger than every render area drawn into it, usually
+     dynamic resolution rendering into a full-size target.
    - `stereo-without-multiview`: one pass per eye.
    - Redundant pipeline, descriptor and buffer binds.
    - Barrier rules: inside a render pass, directly after another barrier, or ALL_COMMANDS.
+   - `redundant-transition`: two cases.
+     - A layout transition that nothing uses before the next transition of the same subresources.
+     - A barrier that changes no layout and waits for no write.
    - `overwritten-before-read`: a result replaced before anything reads it.
    - `unmipped-texture`: large sampled textures without mips.
 

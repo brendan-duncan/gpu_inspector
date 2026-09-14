@@ -148,8 +148,17 @@ public:
     void OnFreeCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
     CommandRecorder* RecorderFor(DeviceData* dev, VkCommandBuffer cb);
 
+    // `readBack`: command buffers of the submission whose attachments ReadBackSubmitted already read.
     void OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args, int64_t result,
-                  const std::vector<VkCommandBuffer>& commandBuffers);
+                  const std::vector<VkCommandBuffer>& commandBuffers, const std::vector<VkCommandBuffer>& readBack = {});
+    /**
+     * A command buffer recorded before the capture began, whose passes hold no read-back copies: its
+     * attachments are read after it runs. The submit hooks split a submission after each such buffer
+     * (hooks.cpp), so a later buffer of the same submission cannot overwrite what it rendered first.
+     */
+    bool NeedsSubmitReadBack(DeviceData* dev, VkCommandBuffer cb);
+    // Reads back such a buffer's attachments, once the part of the submission holding it was submitted.
+    void ReadBackSubmitted(DeviceData* dev, VkQueue queue, VkCommandBuffer cb);
     // A frame ended: after a present (`info`), or without one (info null: the frame-boundary
     // substitutes of layer.cpp).
     void OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result);

@@ -1,6 +1,6 @@
 """
 Emits the replay tool's JSON decoders: the inverse of serialize.py. The layer writes an object's
-creation arguments and a command's arguments as JSON (layer/src/json_writer.h); these read that
+creation arguments and a command's arguments as JSON (vulkan/src/json_writer.h); these read that
 JSON back into Vulkan structs allocated in the replay's arena (replay/src/decode.h has the helpers
 the generated code calls).
 

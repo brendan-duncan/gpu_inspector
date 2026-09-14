@@ -4386,7 +4386,7 @@ function analyzeSpirvCached(data) {
 
 // src/renderer/render_graph_analysis.ts
 var SUPERSEDED_RULES = /* @__PURE__ */ new Set(["depth-store", "color-store", "mergeable-passes"]);
-var RULE_ORDER = ["overwritten-before-read", "mergeable-passes", "unread-store", "transient-candidate", "oversynchronized-barrier"];
+var RULE_ORDER = ["overwritten-before-read", "mergeable-passes", "unread-store", "subpass-candidate", "transient-candidate", "oversynchronized-barrier"];
 var Folded = class {
   first = null;
   count = 0;
@@ -4418,14 +4418,17 @@ var GraphAnalysis = class {
   _blind = false;
   /** Which API's spelling of a fix the advice should name. */
   _metal = false;
-  constructor(graph) {
+  _options;
+  constructor(graph, options) {
     this._graph = graph;
+    this._options = options;
     this._blind = graph.nodes.some((n) => n.unresolvedReads > 0);
     this._metal = graph.api === "metal";
   }
   analyze() {
     this._unreadStores();
     const merged = this._mergeablePasses();
+    for (const key of this._subpassCandidates(merged)) merged.add(key);
     this._overwrittenBeforeRead();
     this._transientCandidates(merged);
     this._oversynchronizedBarriers();
@@ -4515,6 +4518,47 @@ var GraphAnalysis = class {
       "medium",
       "medium",
       `${count(folded.count, "pass", "passes")} load exactly what the pass immediately before stored, to the same targets: ${folded.subjectText}. Recorded as one pass (a second subpass, or simply more draws) the attachment stays in tile memory and the store and load both go away.`,
+      folded
+    );
+    return reported;
+  }
+  /**
+   * A render pass whose only image inputs are what the render pass right before it rendered, at the
+   * size it renders: the two could be one pass with two subpasses, the second reading the first's
+   * results as input attachments, so they never leave tile memory. Returns the images it named, so
+   * the transient rule does not say the same about them. Not reported where the two passes render
+   * to the same targets (mergeable-passes), and only a hint: a shader that filters its input (a blur
+   * reading neighbouring texels) needs it as a texture.
+   */
+  _subpassCandidates(merged) {
+    const folded = new Folded();
+    const reported = /* @__PURE__ */ new Set();
+    const nodes = this._graph.nodes;
+    let checked = 0;
+    for (let i = 1; i < nodes.length; i++) {
+      const before = nodes[i - 1];
+      const after = nodes[i];
+      if (before.kind !== "render" || after.kind !== "render" || before.frame !== after.frame || after.unresolvedReads) continue;
+      const inputs = after.reads.filter((r) => r.resource.type === "image" && usageClass(r.usage) !== "attachment");
+      if (!inputs.length || inputs.some((r) => merged.has(r.resource.key))) continue;
+      if (!inputs.every((r) => r.version.producer === before && usageClass(before.writes.find((w) => w.version === r.version)?.usage ?? "") === "attachment")) continue;
+      const targets = after.writes.filter((w) => usageClass(w.usage) === "attachment");
+      if (!targets.length || targets.some((w) => inputs.some((r) => r.resource.key === w.resource.key))) continue;
+      const sizes = new Set([...inputs, ...targets].map((u) => /^(\d+x\d+)/.exec(u.resource.detail)?.[1] ?? "?"));
+      if (sizes.size !== 1 || sizes.has("?")) continue;
+      const filters = inputs.map((r) => this._options.filtersInput?.(after, r.resource.objectId) ?? null);
+      if (filters.some((f) => f === true)) continue;
+      if (filters.every((f) => f === false)) checked++;
+      for (const r of inputs) reported.add(r.resource.key);
+      folded.add(after, `${after.label} reads ${[...new Set(inputs.map((r) => r.resource.label))].join(", ")}`);
+    }
+    if (!folded.count) return reported;
+    const allChecked = checked === folded.count;
+    this._add(
+      "subpass-candidate",
+      "low",
+      allChecked ? "medium" : "low",
+      `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` + (this._metal ? "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. " : "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ") + (allChecked ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position." : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."),
       folded
     );
     return reported;
@@ -4621,8 +4665,8 @@ function sameTargets(a, b) {
 function count(n, one, many = "") {
   return `${n} ${n === 1 ? one : many || `${one}s`}`;
 }
-function analyzeRenderGraph(graph) {
-  return new GraphAnalysis(graph).analyze();
+function analyzeRenderGraph(graph, options = {}) {
+  return new GraphAnalysis(graph, options).analyze();
 }
 
 // src/renderer/metal/frame_analysis.ts
@@ -5103,9 +5147,1440 @@ function analyzeSampling(data, db) {
   return { findings, byCommand };
 }
 
+// src/renderer/vulkan/spirv_ablate.ts
+function isValueOp(op) {
+  return op >= 77 && op <= 84 || op >= 87 && op <= 98 || op >= 109 && op <= 205 || op >= 207 && op <= 215 || op >= 305 && op <= 320 || op === 12 /* ExtInst */ || op === 61 /* Load */ || op === 57 /* FunctionCall */;
+}
+function definesValue(op) {
+  switch (op) {
+    case 0:
+    case 8:
+    case 62:
+    case 63:
+    case 64:
+    case 99:
+    case 218:
+    case 219:
+    case 220:
+    case 221:
+    case 224:
+    case 225:
+    case 228:
+    case 246:
+    case 247:
+    case 248:
+    case 249:
+    case 250:
+    case 251:
+    case 252:
+    case 253:
+    case 254:
+    case 255:
+    case 256:
+    case 257:
+    case 317:
+    case 4416:
+    case 5378:
+    case 5379:
+    case 5380:
+      return false;
+    default:
+      return true;
+  }
+}
+function isDecoration(op) {
+  return op >= 71 /* Decorate */ && op <= 75 /* GroupMemberDecorate */ || op === 332 /* DecorateId */ || op === 5632 /* DecorateString */ || op === 5633 /* MemberDecorateString */;
+}
+function readString3(words2, start, end) {
+  const bytes = [];
+  for (let i = start; i < end; i++) {
+    for (let b = 0; b < 4; b++) {
+      const ch2 = words2[i] >>> b * 8 & 255;
+      if (ch2 === 0) return new TextDecoder().decode(new Uint8Array(bytes));
+      bytes.push(ch2);
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+var Module = class {
+  words;
+  instructions = [];
+  defs = /* @__PURE__ */ new Map();
+  types = /* @__PURE__ */ new Map();
+  variableClass = /* @__PURE__ */ new Map();
+  builtIns = /* @__PURE__ */ new Map();
+  bufferBlocks = /* @__PURE__ */ new Set();
+  names = /* @__PURE__ */ new Map();
+  sets = /* @__PURE__ */ new Map();
+  bindings = /* @__PURE__ */ new Map();
+  entryPoints = [];
+  parameters = /* @__PURE__ */ new Map();
+  // function id -> parameter ids
+  calls = [];
+  uses = /* @__PURE__ */ new Map();
+  // id -> times it appears as an operand word in functions
+  /** OpConstant ids with their value's low word (array lengths). */
+  constants = /* @__PURE__ */ new Map();
+  /** The stores into each variable, in module order. */
+  storesTo = /* @__PURE__ */ new Map();
+  _reaching = /* @__PURE__ */ new Map();
+  firstFunction = -1;
+  /** Where new decorations go: after the last one, or before the first type. */
+  annotationEnd = -1;
+  constructor(data) {
+    const bytes = data.byteOffset % 4 ? data.slice() : data;
+    this.words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4).slice();
+    const w = this.words;
+    let fn = 0;
+    let ordinal = 0;
+    let firstType = -1;
+    let loops = [];
+    let nest = [];
+    for (let i = 5; i < w.length; ) {
+      const op = w[i] & 65535;
+      const len = w[i] >>> 16;
+      if (!len || i + len > w.length) throw new Error("malformed SPIR-V");
+      if (op === 248 /* Label */) {
+        if (loops.includes(w[i + 1])) loops = loops.slice(0, loops.indexOf(w[i + 1]));
+        if (nest.includes(w[i + 1])) nest = nest.slice(0, nest.indexOf(w[i + 1]));
+      }
+      const ins = { op, start: i, len, ordinal, fn, loops, nest };
+      if (op === 246 /* LoopMerge */) {
+        loops = [...loops, w[i + 1]];
+        nest = [...nest, w[i + 1]];
+      } else if (op === 247 /* SelectionMerge */) {
+        nest = [...nest, w[i + 1]];
+      }
+      const index = this.instructions.length;
+      this.instructions.push(ins);
+      const a = i + 1;
+      if (isDecoration(op)) this.annotationEnd = index + 1;
+      switch (op) {
+        case 15 /* EntryPoint */: {
+          const name = readString3(w, a + 2, i + len);
+          const nameWords = Math.floor(new TextEncoder().encode(name).length / 4) + 1;
+          this.entryPoints.push({ index, stage: w[a], functionId: w[a + 1], name, interface: Array.from(w.subarray(a + 2 + nameWords, i + len)) });
+          break;
+        }
+        case 5 /* Name */:
+          this.names.set(w[a], readString3(w, a + 1, i + len));
+          break;
+        case 71 /* Decorate */:
+          if (w[a + 1] === 11 /* BuiltIn */) this.builtIns.set(w[a], w[a + 2]);
+          else if (w[a + 1] === 3 /* BufferBlock */) this.bufferBlocks.add(w[a]);
+          else if (w[a + 1] === 34 /* DescriptorSet */) this.sets.set(w[a], w[a + 2]);
+          else if (w[a + 1] === 33 /* Binding */) this.bindings.set(w[a], w[a + 2]);
+          break;
+        case 19 /* TypeVoid */:
+        case 20 /* TypeBool */:
+        case 21 /* TypeInt */:
+        case 22 /* TypeFloat */:
+        case 23 /* TypeVector */:
+        case 24 /* TypeMatrix */:
+        case 28 /* TypeArray */:
+        case 30 /* TypeStruct */:
+        case 32 /* TypePointer */:
+        case 25:
+        case 26:
+        case 27:
+        case 29:
+        case 33:
+          if (firstType < 0) firstType = index;
+          this.types.set(w[a], ins);
+          break;
+        case 43 /* Constant */:
+          this.constants.set(w[a + 1], w[a + 2]);
+          break;
+        case 54 /* Function */:
+          if (this.firstFunction < 0) this.firstFunction = index;
+          fn = w[a + 1];
+          ins.fn = fn;
+          this.parameters.set(fn, []);
+          this.defs.set(w[a + 1], ins);
+          break;
+        case 56 /* FunctionEnd */:
+          fn = 0;
+          loops = [];
+          nest = [];
+          break;
+        case 55 /* FunctionParameter */:
+          this.parameters.get(fn)?.push(w[a + 1]);
+          this.defs.set(w[a + 1], ins);
+          break;
+        case 59 /* Variable */: {
+          let cls = w[a + 2];
+          const pointer = this.types.get(w[a]);
+          if (cls === 2 /* Uniform */ && pointer && this.bufferBlocks.has(w[pointer.start + 3])) cls = 12 /* StorageBuffer */;
+          this.variableClass.set(w[a + 1], cls);
+          this.defs.set(w[a + 1], ins);
+          break;
+        }
+        default:
+          if (fn && definesValue(op)) this.defs.set(w[a + 1], ins);
+          if (op === 57 /* FunctionCall */) this.calls.push(ins);
+          break;
+      }
+      ordinal++;
+      i += len;
+    }
+    if (this.annotationEnd < 0) this.annotationEnd = firstType >= 0 ? firstType : this.firstFunction;
+    for (const ins of this.instructions) {
+      if (ins.op !== 62 /* Store */) continue;
+      const v = this.baseVariable(w[ins.start + 1]);
+      let list = this.storesTo.get(v);
+      if (!list) this.storesTo.set(v, list = []);
+      list.push(ins);
+    }
+    for (const ins of this.instructions) {
+      if (!ins.fn || ins.op === 54 /* Function */) continue;
+      for (const o of this.operandWords(ins)) this.uses.set(o, (this.uses.get(o) ?? 0) + 1);
+      if (ins.op === 12 /* ExtInst */ && this.isVoid(w[ins.start + 1])) for (let k = ins.start + 5; k < ins.start + ins.len; k++) this.uses.set(w[k], (this.uses.get(w[k]) ?? 0) + 1);
+    }
+  }
+  /** The id of an existing type declared with exactly these operands after the result id, or undefined. */
+  findType(op, operands) {
+    const w = this.words;
+    for (const [id, t] of this.types) {
+      if (t.op !== op || t.len !== 2 + operands.length) continue;
+      if (operands.every((o, k) => w[t.start + 2 + k] === o)) return id;
+    }
+    return void 0;
+  }
+  /** Whether a value of a type can be built from a scalar: scalars, vectors and matrices. */
+  scalarBuilt(type) {
+    const t = this.types.get(type);
+    if (!t) return false;
+    if (t.op === 20 /* TypeBool */ || t.op === 21 /* TypeInt */ || t.op === 22 /* TypeFloat */) return true;
+    if (t.op === 23 /* TypeVector */ || t.op === 24 /* TypeMatrix */) return this.scalarBuilt(this.words[t.start + 2]);
+    return false;
+  }
+  /** Whether a value of a type can be replaced at all: built from a scalar, or a constant (arrays of a constant length, structs). */
+  replaceable(type, depth = 0) {
+    const t = this.types.get(type);
+    if (!t || depth > 16) return false;
+    const w = this.words;
+    switch (t.op) {
+      case 20 /* TypeBool */:
+      case 21 /* TypeInt */:
+      case 22 /* TypeFloat */:
+      case 23 /* TypeVector */:
+      case 24 /* TypeMatrix */:
+        return true;
+      case 28 /* TypeArray */: {
+        const length2 = this.constants.get(w[t.start + 3]);
+        return length2 !== void 0 && length2 <= 4096 && this.replaceable(w[t.start + 2], depth + 1);
+      }
+      case 30 /* TypeStruct */:
+        for (let k = t.start + 2; k < t.start + t.len; k++) if (!this.replaceable(w[k], depth + 1)) return false;
+        return true;
+      default:
+        return false;
+    }
+  }
+  isVoid(type) {
+    return this.types.get(type)?.op === 19 /* TypeVoid */;
+  }
+  /** The variable a pointer is into, through access chains. */
+  baseVariable(pointer) {
+    for (let depth = 0; depth < 64; depth++) {
+      const d = this.defs.get(pointer);
+      if (!d) return pointer;
+      if (d.op === 65 /* AccessChain */ || d.op === 66 /* InBoundsAccessChain */ || d.op === 67 /* PtrAccessChain */ || d.op === 70 /* InBoundsPtrAccessChain */) {
+        pointer = this.words[d.start + 3];
+        continue;
+      }
+      return pointer;
+    }
+    return pointer;
+  }
+  /**
+   * The value ids an instruction reads: its operands without the literals among them (line numbers,
+   * extended instruction numbers, composite indices, image operand masks), which would otherwise be
+   * taken for ids they happen to equal.
+   */
+  operandWords(ins) {
+    const w = this.words;
+    const s = ins.start;
+    const end = s + ins.len;
+    const from = (k) => Array.from(w.subarray(Math.min(s + k, end), end));
+    switch (ins.op) {
+      case 62 /* Store */:
+        return [w[s + 1], w[s + 2]];
+      case 61 /* Load */:
+        return [w[s + 3]];
+      case 254 /* ReturnValue */:
+      case 250 /* BranchConditional */:
+      case 251 /* Switch */:
+        return [w[s + 1]];
+      case 57 /* FunctionCall */:
+        return from(4);
+      case 12 /* ExtInst */:
+        return this.isVoid(w[s + 1]) ? [] : from(5);
+      // void: debug information
+      case 79:
+        return [w[s + 3], w[s + 4]];
+      // OpVectorShuffle: then component literals
+      case 81 /* CompositeExtract */:
+        return [w[s + 3]];
+      // then index literals
+      case 82:
+        return [w[s + 3], w[s + 4]];
+      // OpCompositeInsert: object, composite, then literals
+      case 245 /* Phi */: {
+        const values = [];
+        for (let k = s + 3; k + 1 < end; k += 2) values.push(w[k]);
+        return values;
+      }
+      default:
+        break;
+    }
+    if (ins.op >= 87 && ins.op <= 98) {
+      const fixed = ins.op === 89 || ins.op === 90 || ins.op === 93 || ins.op === 94 || ins.op === 96 || ins.op === 97 ? 3 : 2;
+      if (ins.op === 99 /* ImageWrite */) return [w[s + 1], w[s + 2], w[s + 3], ...Array.from(w.subarray(Math.min(s + 5, end), end))];
+      return [...Array.from(w.subarray(s + 3, Math.min(s + 3 + fixed, end))), ...Array.from(w.subarray(Math.min(s + 4 + fixed, end), end))];
+    }
+    if (!definesValue(ins.op)) return [];
+    return from(3);
+  }
+  /**
+   * The stores whose values a read of a variable at `at` can see: going back from it in its function,
+   * every store up to and including the first that writes the whole variable outside any branch or loop
+   * the read is not in (it hides the ones before); the stores later in a loop around both (they reach
+   * it through the back edge); and where nothing in the function hides them, what reaches the calls of
+   * a parameter's function, or any store of a variable other functions write. Values an engine's
+   * generated shaders keep in a few reused temporaries stay apart this way.
+   */
+  reachingStores(variable, at, depth = 0) {
+    const w = this.words;
+    const out = [];
+    const stores = this.storesTo.get(variable) ?? [];
+    const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
+    let hidden = false;
+    for (let k = stores.length - 1; k >= 0; k--) {
+      const s = stores[k];
+      if (s.fn !== at.fn || s.start >= at.start) continue;
+      out.push(s);
+      if (w[s.start + 1] === variable && prefix(s.nest, at.nest)) {
+        hidden = true;
+        break;
+      }
+    }
+    for (const s of stores) {
+      if (s.fn === at.fn && s.start > at.start && s.loops.some((l) => at.loops.includes(l))) out.push(s);
+    }
+    if (!hidden && depth < 8) {
+      const def = this.defs.get(variable);
+      if (def?.op === 55 /* FunctionParameter */) {
+        const index = this.parameters.get(def.fn)?.indexOf(variable) ?? -1;
+        for (const call of this.calls) {
+          if (w[call.start + 3] !== def.fn || call.len <= 4 + index || index < 0) continue;
+          out.push(...this.reachingStores(this.baseVariable(w[call.start + 4 + index]), call, depth + 1));
+        }
+      } else {
+        for (const s of stores) if (s.fn !== at.fn) out.push(s);
+      }
+    }
+    return out;
+  }
+  /** The stores a load sees (reachingStores), once per load. */
+  storesSeenBy(load) {
+    let list = this._reaching.get(load);
+    if (!list) this._reaching.set(load, list = this.reachingStores(this.baseVariable(this.words[load.start + 3]), load));
+    return list;
+  }
+  /**
+   * The ids control flow depends on: conditions and selectors, and everything they are computed from,
+   * followed through operands, the stores a load sees, function parameters (the arguments of every
+   * call) and call results (the values the callee returns).
+   */
+  controlSlice() {
+    const w = this.words;
+    const slice = /* @__PURE__ */ new Set();
+    const work = [];
+    const add = (id) => {
+      if (!slice.has(id)) {
+        slice.add(id);
+        work.push(id);
+      }
+    };
+    const returns = /* @__PURE__ */ new Map();
+    const paramIndex = /* @__PURE__ */ new Map();
+    for (const [fn, params] of this.parameters) params.forEach((p, index) => paramIndex.set(p, { fn, index }));
+    for (const ins of this.instructions) {
+      if (!ins.fn) continue;
+      if (ins.op === 250 /* BranchConditional */ || ins.op === 251 /* Switch */) add(w[ins.start + 1]);
+      else if (ins.op === 254 /* ReturnValue */) {
+        let list = returns.get(ins.fn);
+        if (!list) returns.set(ins.fn, list = []);
+        list.push(w[ins.start + 1]);
+      }
+    }
+    while (work.length) {
+      const id = work.pop();
+      const d = this.defs.get(id);
+      if (!d || !d.fn || d.op === 54 /* Function */) continue;
+      if (d.op === 55 /* FunctionParameter */) {
+        const p = paramIndex.get(id);
+        if (p) {
+          for (const call of this.calls) if (w[call.start + 3] === p.fn && call.len > 4 + p.index) add(w[call.start + 4 + p.index]);
+        }
+      } else if (d.op === 57 /* FunctionCall */) {
+        for (const v of returns.get(w[d.start + 3]) ?? []) add(v);
+        for (const o of this.operandWords(d)) add(o);
+      } else {
+        for (const o of this.operandWords(d)) add(o);
+        if (d.op === 61 /* Load */) for (const store of this.storesSeenBy(d)) {
+          add(w[store.start + 2]);
+          add(w[store.start + 1]);
+        }
+      }
+    }
+    return slice;
+  }
+};
+function sourceBuiltIn(stage) {
+  if (stage === "fragment") return { builtIn: 15 /* FragCoord */, kind: "vec4" };
+  if (stage === "vertex") return { builtIn: 42 /* VertexIndex */, kind: "int" };
+  if (stage === "compute") return { builtIn: 28 /* GlobalInvocationId */, kind: "uvec3" };
+  return null;
+}
+function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ */ new Set()) {
+  const w = m.words;
+  let bound = w[3];
+  const annotations = [];
+  const declarations = [];
+  const typeIds = /* @__PURE__ */ new Map();
+  const type = (op, operands) => {
+    const key = `${op}:${operands.join(",")}`;
+    let id = typeIds.get(key) ?? m.findType(op, operands);
+    if (id === void 0) {
+      id = bound++;
+      declarations.push(2 + operands.length << 16 | op, id, ...operands);
+    }
+    typeIds.set(key, id);
+    return id;
+  };
+  const constants = /* @__PURE__ */ new Map();
+  const constantOf = (t) => {
+    const existing = constants.get(t);
+    if (existing !== void 0) return existing;
+    const ti = m.types.get(t);
+    let id;
+    if (ti.op === 20 /* TypeBool */) {
+      id = bound++;
+      declarations.push(3 << 16 | 42 /* ConstantFalse */, t, id);
+    } else if (ti.op === 22 /* TypeFloat */) {
+      const width = w[ti.start + 2];
+      const literal = width === 64 ? [0, 1071644672] : width === 16 ? [14336] : [1056964608];
+      id = bound++;
+      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
+    } else if (ti.op === 21 /* TypeInt */) {
+      const literal = w[ti.start + 2] === 64 ? [1, 0] : [1];
+      id = bound++;
+      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
+    } else {
+      let parts2;
+      if (ti.op === 23 /* TypeVector */ || ti.op === 24 /* TypeMatrix */) parts2 = new Array(w[ti.start + 3]).fill(w[ti.start + 2]);
+      else if (ti.op === 28 /* TypeArray */) parts2 = new Array(m.constants.get(w[ti.start + 3]) ?? 0).fill(w[ti.start + 2]);
+      else parts2 = Array.from(w.subarray(ti.start + 2, ti.start + ti.len));
+      const components = parts2.map(constantOf);
+      id = bound++;
+      declarations.push(3 + components.length << 16 | 44 /* ConstantComposite */, t, id, ...components);
+    }
+    constants.set(t, id);
+    return id;
+  };
+  const source = sourceBuiltIn(stage);
+  let input = 0;
+  let inputType = 0;
+  let addToInterface = false;
+  const float32 = () => type(22 /* TypeFloat */, [32]);
+  if (source && [...replace].some((ins) => m.scalarBuilt(w[ins.start + 1]))) {
+    for (const [id, builtIn] of m.builtIns) {
+      if (builtIn === source.builtIn && m.variableClass.get(id) === 1 /* Input */) input = id;
+    }
+    const valueType2 = source.kind === "vec4" ? type(23 /* TypeVector */, [float32(), 4]) : source.kind === "int" ? type(21 /* TypeInt */, [32, 1]) : type(23 /* TypeVector */, [type(21 /* TypeInt */, [32, 0]), 3]);
+    if (input) {
+      inputType = valueType2;
+    } else {
+      const pointer = type(32 /* TypePointer */, [1 /* Input */, valueType2]);
+      input = bound++;
+      declarations.push(4 << 16 | 59 /* Variable */, pointer, input, 1 /* Input */);
+      annotations.push(4 << 16 | 71 /* Decorate */, input, 11 /* BuiltIn */, source.builtIn);
+      inputType = valueType2;
+    }
+    addToInterface = !m.entryPoints.find((e) => e.index === entryIndex)?.interface.includes(input);
+  }
+  const scalarSource = (out2) => {
+    const loaded = bound++;
+    out2.push(4 << 16 | 61 /* Load */, inputType, loaded, input);
+    const f = float32();
+    const x = bound++;
+    if (source.kind === "vec4") {
+      out2.push(5 << 16 | 81 /* CompositeExtract */, f, x, loaded, 0);
+    } else if (source.kind === "int") {
+      out2.push(4 << 16 | 111 /* ConvertSToF */, f, x, loaded);
+    } else {
+      const u = bound++;
+      out2.push(5 << 16 | 81 /* CompositeExtract */, type(21 /* TypeInt */, [32, 0]), u, loaded, 0);
+      out2.push(4 << 16 | 112 /* ConvertUToF */, f, x, u);
+    }
+    return x;
+  };
+  const build = (out2, t, x, result) => {
+    const ti = m.types.get(t);
+    switch (ti.op) {
+      case 22 /* TypeFloat */:
+        if (w[ti.start + 2] === 32) out2.push(4 << 16 | 83 /* CopyObject */, t, result, x);
+        else out2.push(4 << 16 | 115 /* FConvert */, t, result, x);
+        return;
+      case 21 /* TypeInt */:
+        out2.push(4 << 16 | (w[ti.start + 3] ? 110 /* ConvertFToS */ : 109 /* ConvertFToU */), t, result, x);
+        return;
+      case 20 /* TypeBool */:
+        out2.push(5 << 16 | 184 /* FOrdLessThan */, t, result, x, constantOf(float32()));
+        return;
+      default: {
+        const component = w[ti.start + 2];
+        const count2 = w[ti.start + 3];
+        const part = bound++;
+        build(out2, component, x, part);
+        out2.push(3 + count2 << 16 | 80 /* CompositeConstruct */, t, result, ...new Array(count2).fill(part));
+      }
+    }
+  };
+  const loopScalar = (out2, ins) => {
+    if (!ins.loops.length) return null;
+    const innermost2 = ins.loops[ins.loops.length - 1];
+    for (const o of m.operandWords(ins)) {
+      const d = m.defs.get(o);
+      if (!d || !d.fn || d.op === 59 /* Variable */ || d.op === 55 /* FunctionParameter */ || replace.has(d) || !d.loops.includes(innermost2) || !definesValue(d.op)) continue;
+      if (d.op === 61 /* Load */ && written.has(m.baseVariable(w[d.start + 3]))) continue;
+      const t = w[d.start + 1];
+      const ti = m.types.get(t);
+      const scalarType = ti?.op === 23 /* TypeVector */ ? w[ti.start + 2] : t;
+      const scalar = m.types.get(scalarType);
+      if (!scalar || scalar.op !== 22 /* TypeFloat */ && scalar.op !== 21 /* TypeInt */) continue;
+      let id = o;
+      if (ti?.op === 23 /* TypeVector */) {
+        id = bound++;
+        out2.push(5 << 16 | 81 /* CompositeExtract */, scalarType, id, o, 0);
+      }
+      if (scalar.op === 22 /* TypeFloat */ && w[scalar.start + 2] === 32) return id;
+      const x = bound++;
+      const convert2 = scalar.op === 22 /* TypeFloat */ ? 115 /* FConvert */ : w[scalar.start + 3] ? 111 /* ConvertSToF */ : 112 /* ConvertUToF */;
+      out2.push(4 << 16 | convert2, float32(), x, id);
+      return x;
+    }
+    return null;
+  };
+  const replacement = /* @__PURE__ */ new Map();
+  for (const ins of replace) {
+    const t = w[ins.start + 1];
+    const result = w[ins.start + 2];
+    const out2 = [];
+    const varying = m.scalarBuilt(t) ? loopScalar(out2, ins) : null;
+    if (varying !== null) build(out2, t, varying, result);
+    else if (input && m.scalarBuilt(t)) build(out2, t, scalarSource(out2), result);
+    else out2.push(4 << 16 | 83 /* CopyObject */, t, result, constantOf(t));
+    replacement.set(ins, out2);
+  }
+  const out = Array.from(w.subarray(0, 5));
+  m.instructions.forEach((ins, index) => {
+    if (index === m.annotationEnd) out.push(...annotations);
+    if (index === m.firstFunction) out.push(...declarations);
+    if (remove.has(ins)) return;
+    const replaced = replacement.get(ins);
+    if (replaced) {
+      out.push(...replaced);
+      return;
+    }
+    if (index === entryIndex && addToInterface) {
+      out.push(ins.len + 1 << 16 | 15 /* EntryPoint */, ...w.subarray(ins.start + 1, ins.start + ins.len), input);
+      return;
+    }
+    for (let k = ins.start; k < ins.start + ins.len; k++) out.push(w[k]);
+  });
+  out[3] = bound;
+  return new Uint8Array(new Uint32Array(out).buffer);
+}
+function upstreamParts(m, parts2) {
+  const w = m.words;
+  const taint = /* @__PURE__ */ new Map();
+  const variables = /* @__PURE__ */ new Map();
+  const returns = /* @__PURE__ */ new Map();
+  const get = (map, id) => map.get(id) ?? 0n;
+  const or = (map, id, bits) => {
+    const before = get(map, id);
+    const after = before | bits;
+    if (after === before) return false;
+    map.set(id, after);
+    return true;
+  };
+  parts2.forEach((p, i) => {
+    for (const id of p.results) or(taint, id, 1n << BigInt(i));
+  });
+  const calledFunction = /* @__PURE__ */ new Map();
+  parts2.forEach((p, i) => {
+    if (p.calls !== void 0) calledFunction.set(p.calls, i);
+  });
+  for (let pass = 0; pass < 16; pass++) {
+    let changed = false;
+    for (const ins of m.instructions) {
+      if (!ins.fn || ins.op === 54 /* Function */) continue;
+      let bits = 0n;
+      for (const o of m.operandWords(ins)) bits |= get(taint, o);
+      if (ins.op === 62 /* Store */) {
+        changed = or(variables, m.baseVariable(w[ins.start + 1]), get(taint, w[ins.start + 2])) || changed;
+      } else if (ins.op === 254 /* ReturnValue */) {
+        changed = or(returns, ins.fn, bits) || changed;
+      } else if (definesValue(ins.op) && ins.op !== 55 /* FunctionParameter */) {
+        if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+        if (ins.op === 57 /* FunctionCall */) {
+          bits = get(returns, w[ins.start + 3]);
+          const part = calledFunction.get(w[ins.start + 3]);
+          if (part !== void 0) bits |= 1n << BigInt(part);
+        }
+        changed = or(taint, w[ins.start + 2], bits) || changed;
+      }
+    }
+    if (!changed) break;
+  }
+  return parts2.map((p, i) => {
+    let bits = 0n;
+    for (const ins of p.instructions) {
+      for (const o of m.operandWords(ins)) bits |= get(taint, o);
+      if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+      if (ins.op === 57 /* FunctionCall */) bits |= get(returns, w[ins.start + 3]) | (calledFunction.has(w[ins.start + 3]) ? 1n << BigInt(calledFunction.get(w[ins.start + 3])) : 0n);
+    }
+    bits &= ~(1n << BigInt(i));
+    const out = [];
+    for (let k = 0; k < parts2.length; k++) if (bits & 1n << BigInt(k)) out.push(k);
+    return out;
+  });
+}
+function textureVariable(m, id) {
+  const w = m.words;
+  for (let depth = 0; depth < 16; depth++) {
+    const d = m.defs.get(id);
+    if (!d) return null;
+    if (d.op === 59 /* Variable */) return m.variableClass.get(id) === 0 ? id : null;
+    if (d.op === 61 /* Load */) id = m.baseVariable(w[d.start + 3]);
+    else if (d.op === 86 || d.op === 100) id = w[d.start + 3];
+    else return null;
+  }
+  return null;
+}
+function isImageRead(op) {
+  return op >= 87 && op <= 98 && op !== 99 /* ImageWrite */ || op >= 305 && op <= 320;
+}
+function textureReads(spirv, entryPoint) {
+  let m;
+  try {
+    m = new Module(spirv);
+  } catch {
+    return null;
+  }
+  const w = m.words;
+  const entry = m.entryPoints.find((e) => e.name === entryPoint) ?? (m.entryPoints.length === 1 ? m.entryPoints[0] : void 0);
+  if (!entry) return null;
+  const own = /* @__PURE__ */ new Map();
+  for (const ins of m.instructions) {
+    if (!ins.fn || !isImageRead(ins.op)) continue;
+    const texture = textureVariable(m, w[ins.start + 3]);
+    if (texture === null) continue;
+    let byTexture = own.get(ins.fn);
+    if (!byTexture) own.set(ins.fn, byTexture = /* @__PURE__ */ new Map());
+    const r = byTexture.get(texture) ?? { reads: 0, inLoop: false };
+    r.reads++;
+    if (ins.loops.length) r.inLoop = true;
+    byTexture.set(texture, r);
+  }
+  const memo = /* @__PURE__ */ new Map();
+  const total = (fn, stack) => {
+    const cached = memo.get(fn);
+    if (cached) return cached;
+    const out = /* @__PURE__ */ new Map();
+    for (const [t, r] of own.get(fn) ?? []) out.set(t, { ...r });
+    if (!stack.has(fn)) {
+      stack.add(fn);
+      for (const call of m.calls) {
+        if (call.fn !== fn) continue;
+        for (const [t, r] of total(w[call.start + 3], stack)) {
+          const acc = out.get(t) ?? { reads: 0, inLoop: false };
+          acc.reads += r.reads;
+          acc.inLoop = acc.inLoop || r.inLoop || call.loops.length > 0;
+          out.set(t, acc);
+        }
+      }
+      stack.delete(fn);
+    }
+    memo.set(fn, out);
+    return out;
+  };
+  const result = [];
+  for (const [t, r] of total(entry.functionId, /* @__PURE__ */ new Set())) {
+    const set = m.sets.get(t);
+    const binding = m.bindings.get(t);
+    if (set !== void 0 && binding !== void 0) result.push({ set, binding, ...r });
+  }
+  return result;
+}
+function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
+  const plan = { variants: [], skipped: [] };
+  let m;
+  try {
+    m = new Module(spirv);
+  } catch {
+    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the module could not be parsed" });
+    return plan;
+  }
+  const w = m.words;
+  const entry = analysis.entryPoints.find((e) => e.name === entryPoint && e.stage === stage) ?? analysis.entryPoints.find((e) => e.stage === stage);
+  const moduleEntry = entry ? m.entryPoints.find((e) => e.functionId === entry.functionId) : void 0;
+  if (!entry || !moduleEntry) {
+    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the entry point is not in the module" });
+    return plan;
+  }
+  const reachable = new Set(entry.functions.map((f) => f.id));
+  const slice = m.controlSlice();
+  const why = (ins) => {
+    const t = w[ins.start + 1];
+    if (slice.has(w[ins.start + 2])) return "control flow depends on it";
+    if (m.isVoid(t)) return "void";
+    if (!m.replaceable(t)) return "its type cannot be replaced";
+    return null;
+  };
+  const candidates = [];
+  let stageVariant = null;
+  {
+    const part = { kind: "stage", name: `${stage}: ${entry.name}` };
+    const outputs = /* @__PURE__ */ new Set();
+    for (const v of moduleEntry.interface) {
+      if (m.variableClass.get(v) !== 3 /* Output */) continue;
+      const builtIn = m.builtIns.get(v);
+      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */ || builtIn === 0 /* Position */) continue;
+      outputs.add(v);
+    }
+    const remove = /* @__PURE__ */ new Set();
+    for (const ins of m.instructions) {
+      if (!ins.fn || !reachable.has(ins.fn)) continue;
+      if (ins.op === 62 /* Store */) {
+        const base = m.baseVariable(w[ins.start + 1]);
+        const cls = m.variableClass.get(base);
+        if (outputs.has(base) || stage === "compute" && (cls === 12 /* StorageBuffer */ || cls === 5349 /* PhysicalStorageBuffer */)) remove.add(ins);
+      } else if (ins.op === 99 /* ImageWrite */ && stage === "compute") {
+        remove.add(ins);
+      }
+    }
+    if (stage !== "fragment" && stage !== "compute") plan.skipped.push({ ...part, reason: "only fragment and compute stages are measured whole: a vertex shader's outputs decide what is rasterized" });
+    else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
+    else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, /* @__PURE__ */ new Set(), remove), edits: remove.size, upstream: [] };
+  }
+  for (const f of entry.functions.filter((fn) => fn.id !== entry.functionId).slice(0, limits.functions ?? 16)) {
+    const part = { kind: "function", name: f.name, functionId: f.id, functionName: f.name };
+    const replace = /* @__PURE__ */ new Set();
+    const remove = /* @__PURE__ */ new Set();
+    let reason = null;
+    for (const call of m.calls) {
+      if (w[call.start + 3] !== f.id || !reachable.has(call.fn)) continue;
+      if (m.isVoid(w[call.start + 1])) {
+        if ((m.uses.get(w[call.start + 2]) ?? 0) > 0) reason = "a call's result id is used";
+        else remove.add(call);
+        continue;
+      }
+      const r = why(call);
+      if (r) reason = r === "control flow depends on it" ? "control flow depends on what it returns" : "it returns a value that cannot be replaced";
+      else replace.add(call);
+    }
+    if (reason) plan.skipped.push({ ...part, reason });
+    else if (!replace.size && !remove.size) plan.skipped.push({ ...part, reason: "nothing calls it" });
+    else candidates.push({ part, replace, remove, results: /* @__PURE__ */ new Set(), instructions: [], calls: f.id, written: /* @__PURE__ */ new Set() });
+  }
+  const debug = analysis.hasLines ? parseSpirvDebugInfo(spirv) : null;
+  if (debug) {
+    const baseName = (file) => debug.files[file]?.name.replace(/^.*[\\/]/, "") ?? "";
+    const lineOf = (ins) => {
+      const loc = debug.locations[ins.ordinal];
+      return loc ? `${loc.file}:${loc.line}` : "";
+    };
+    const loopLoads = /* @__PURE__ */ new Map();
+    const users = /* @__PURE__ */ new Map();
+    const backEdges = /* @__PURE__ */ new Map();
+    m.instructions.forEach((ins) => {
+      if (!ins.fn) return;
+      if (ins.op === 61 /* Load */ && ins.loops.length) {
+        const v = m.baseVariable(w[ins.start + 3]);
+        let list = loopLoads.get(v);
+        if (!list) loopLoads.set(v, list = []);
+        list.push(ins);
+      }
+      for (const o of m.operandWords(ins)) {
+        let list = users.get(o);
+        if (!list) users.set(o, list = []);
+        list.push(ins);
+      }
+      if (ins.op === 245 /* Phi */) {
+        for (let k = ins.start + 3; k + 1 < ins.start + ins.len; k += 2) {
+          const def = m.defs.get(w[k]);
+          if (!def || def.start <= ins.start) continue;
+          let list = backEdges.get(w[k]);
+          if (!list) backEdges.set(w[k], list = []);
+          list.push(ins);
+        }
+      }
+    });
+    const recurrence = (instructions, here) => instructions.some((ins) => {
+      if (ins.op === 62 /* Store */ && ins.loops.length) {
+        const loop = ins.loops[ins.loops.length - 1];
+        return (loopLoads.get(m.baseVariable(w[ins.start + 1])) ?? []).some((load) => load.loops.includes(loop) && load.start < ins.start && lineOf(load) !== here);
+      }
+      if (!definesValue(ins.op)) return false;
+      return (backEdges.get(w[ins.start + 2]) ?? []).some((phi) => (users.get(w[phi.start + 2]) ?? []).some((u) => lineOf(u) !== here && lineOf(u) !== ""));
+    });
+    const lines = entry.functions.flatMap((f) => f.lines.map((l) => ({ f, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, limits.lines ?? 32);
+    for (const { f, l } of lines) {
+      const part = { kind: "line", name: `${l.file ? `${l.file}:` : "line "}${l.line}`, functionId: f.id, functionName: f.name, file: l.file, line: l.line };
+      const replace = /* @__PURE__ */ new Set();
+      const remove = /* @__PURE__ */ new Set();
+      const instructions = [];
+      let controlled = 0;
+      for (const ins of m.instructions) {
+        if (ins.fn !== f.id) continue;
+        const loc = debug.locations[ins.ordinal];
+        if (!loc || loc.line !== l.line || baseName(loc.file) !== l.file) continue;
+        instructions.push(ins);
+        if (!isValueOp(ins.op)) continue;
+        if (ins.op === 57 /* FunctionCall */ && m.isVoid(w[ins.start + 1])) {
+          if (!(m.uses.get(w[ins.start + 2]) ?? 0)) remove.add(ins);
+          continue;
+        }
+        const r = why(ins);
+        if (!r) replace.add(ins);
+        else if (r === "control flow depends on it") controlled++;
+      }
+      const replacedOperands = /* @__PURE__ */ new Set();
+      for (const ins of replace) if (ins.op !== 61 /* Load */) for (const o of m.operandWords(ins)) replacedOperands.add(o);
+      for (const ins of [...replace]) if (ins.op === 61 /* Load */ && replacedOperands.has(w[ins.start + 2])) replace.delete(ins);
+      const here = instructions.length ? lineOf(instructions[0]) : "";
+      if (!replace.size && !remove.size) {
+        plan.skipped.push({ ...part, reason: controlled ? "control flow depends on what the line computes" : "the line computes nothing that can be replaced" });
+      } else if (recurrence(instructions, here)) {
+        plan.skipped.push({ ...part, reason: "it updates a value that other lines of its loop read every iteration: taking it out would let the compiler hoist the loop's work, and charge that to the line" });
+      } else {
+        const results = new Set([...replace].map((ins) => w[ins.start + 2]));
+        const written = new Set(instructions.filter((ins) => ins.op === 62 /* Store */).map((ins) => m.baseVariable(w[ins.start + 1])));
+        candidates.push({ part, replace, remove, results, instructions, written });
+      }
+    }
+  } else {
+    plan.skipped.push({ kind: "line", name: "source lines", reason: "the module has no line information" });
+  }
+  const textures = /* @__PURE__ */ new Map();
+  for (const ins of m.instructions) {
+    if (!ins.fn || !reachable.has(ins.fn) || !isImageRead(ins.op)) continue;
+    const texture = textureVariable(m, w[ins.start + 3]);
+    if (texture === null) continue;
+    let list = textures.get(texture);
+    if (!list) textures.set(texture, list = []);
+    list.push(ins);
+  }
+  const rankedTextures = [...textures.entries()].sort((x, y) => y[1].length - x[1].length).slice(0, limits.textures ?? 16);
+  for (const [texture, uses] of rankedTextures) {
+    const set = m.sets.get(texture);
+    const binding = m.bindings.get(texture);
+    const name = m.names.get(texture) || (set !== void 0 && binding !== void 0 ? `set ${set}, binding ${binding}` : `texture ${texture}`);
+    const part = { kind: "texture", name, ...set !== void 0 ? { set } : {}, ...binding !== void 0 ? { binding } : {} };
+    const replace = new Set(uses.filter((ins) => !why(ins)));
+    if (!replace.size) plan.skipped.push({ ...part, reason: "control flow depends on what is read from it" });
+    else candidates.push({ part, replace, remove: /* @__PURE__ */ new Set(), results: /* @__PURE__ */ new Set(), instructions: [], written: /* @__PURE__ */ new Set() });
+  }
+  const upstream = upstreamParts(m, candidates);
+  const offset = stageVariant ? 1 : 0;
+  if (stageVariant) plan.variants.push(stageVariant);
+  candidates.forEach((c2, i) => {
+    plan.variants.push({
+      ...c2.part,
+      spirv: rewrite(m, stage, moduleEntry.index, c2.replace, c2.remove, c2.written),
+      edits: c2.replace.size + c2.remove.size,
+      upstream: upstream[i].map((k) => k + offset)
+    });
+  });
+  return plan;
+}
+
+// src/renderer/vulkan/spirv_reflect.ts
+var ShaderReflection = class {
+  entryPoints = [];
+  resources = [];
+  pushConstants = [];
+  /** SPIR-V version as "1.5". */
+  version = "";
+  findResource(set, binding) {
+    return this.resources.find((r) => r.set === set && r.binding === binding) ?? null;
+  }
+  entryPoint(name) {
+    if (name) {
+      const e = this.entryPoints.find((ep) => ep.name === name);
+      if (e) return e;
+    }
+    return this.entryPoints[0] ?? null;
+  }
+};
+function scalarName(s) {
+  switch (s.base) {
+    case "bool":
+      return "bool";
+    case "float":
+      return s.width === 16 ? "float16_t" : s.width === 64 ? "double" : "float";
+    case "int":
+      return s.width === 32 ? "int" : `int${s.width}_t`;
+    case "uint":
+      return s.width === 32 ? "uint" : `uint${s.width}_t`;
+  }
+}
+function vectorPrefix(s) {
+  switch (s.base) {
+    case "bool":
+      return "bvec";
+    case "float":
+      return s.width === 16 ? "f16vec" : s.width === 64 ? "dvec" : "vec";
+    case "int":
+      return s.width === 32 ? "ivec" : `i${s.width}vec`;
+    case "uint":
+      return s.width === 32 ? "uvec" : `u${s.width}vec`;
+  }
+}
+function typeName(t) {
+  if (!t) return "";
+  switch (t.kind) {
+    case "scalar":
+      return scalarName(t);
+    case "vector":
+      return `${vectorPrefix(t.element)}${t.count}`;
+    case "matrix": {
+      const p = t.element.width === 64 ? "dmat" : t.element.width === 16 ? "f16mat" : "mat";
+      return t.columns === t.rows ? `${p}${t.columns}` : `${p}${t.columns}x${t.rows}`;
+    }
+    case "array":
+      return `${typeName(t.element)}[${t.count || ""}]`;
+    case "struct":
+      return t.name || "struct";
+    case "opaque":
+      return t.name;
+    case "format":
+      return t.format.replace(/^VK_FORMAT_/, "");
+  }
+}
+var STAGES2 = {
+  0: "vertex",
+  1: "tess_control",
+  2: "tess_eval",
+  3: "geometry",
+  4: "fragment",
+  5: "compute",
+  5267: "task",
+  5268: "mesh",
+  5313: "raygen",
+  5314: "intersection",
+  5315: "any_hit",
+  5316: "closest_hit",
+  5317: "miss",
+  5318: "callable",
+  5364: "task",
+  5365: "mesh"
+};
+function readString4(words2, start, end) {
+  const bytes = [];
+  for (let i = start; i < end; i++) {
+    const w = words2[i];
+    for (let b = 0; b < 4; b++) {
+      const c2 = w >>> b * 8 & 255;
+      if (c2 === 0) return { text: new TextDecoder().decode(new Uint8Array(bytes)), next: i + 1 };
+      bytes.push(c2);
+    }
+  }
+  return { text: new TextDecoder().decode(new Uint8Array(bytes)), next: end };
+}
+var Parser = class {
+  names = /* @__PURE__ */ new Map();
+  memberNames = /* @__PURE__ */ new Map();
+  /** OpString text by id: what the debug instructions name things with. */
+  strings = /* @__PURE__ */ new Map();
+  debugSet = 0;
+  /** DebugTypeComposite: its name, and the DebugTypeMember ids of its fields in declaration order. */
+  debugComposites = /* @__PURE__ */ new Map();
+  /** DebugTypeMember id -> the OpString id of its name. */
+  debugMembers = /* @__PURE__ */ new Map();
+  debugGlobals = [];
+  decorations = /* @__PURE__ */ new Map();
+  memberDecorations = /* @__PURE__ */ new Map();
+  types = /* @__PURE__ */ new Map();
+  constants = /* @__PURE__ */ new Map();
+  variables = [];
+  entries = [];
+  localSize = /* @__PURE__ */ new Map();
+  localSizeIds = /* @__PURE__ */ new Map();
+  _cache = /* @__PURE__ */ new Map();
+  parse(words2) {
+    let i = 5;
+    while (i < words2.length) {
+      const w = words2[i];
+      const op = w & 65535;
+      const len = w >>> 16;
+      if (len === 0) break;
+      const end = Math.min(words2.length, i + len);
+      this._instruction(op, words2, i + 1, end);
+      if (op === 54 /* Function */) break;
+      i += len;
+    }
+  }
+  _instruction(op, words2, a, end) {
+    const operands = () => Array.from(words2.subarray(a, end));
+    switch (op) {
+      case 5 /* Name */:
+        this.names.set(words2[a], readString4(words2, a + 1, end).text);
+        break;
+      case 6 /* MemberName */: {
+        let m = this.memberNames.get(words2[a]);
+        if (!m) {
+          m = /* @__PURE__ */ new Map();
+          this.memberNames.set(words2[a], m);
+        }
+        m.set(words2[a + 1], readString4(words2, a + 2, end).text);
+        break;
+      }
+      case 7 /* String */:
+        this.strings.set(words2[a], readString4(words2, a + 1, end).text);
+        break;
+      case 11 /* ExtInstImport */:
+        if (readString4(words2, a + 1, end).text === "NonSemantic.Shader.DebugInfo.100") this.debugSet = words2[a];
+        break;
+      case 12 /* ExtInst */: {
+        if (!this.debugSet || words2[a + 2] !== this.debugSet) break;
+        const o = a + 4;
+        switch (words2[a + 3]) {
+          // Name, Tag, Source, Line, Column, Parent, LinkageName, Size, Flags, then the members.
+          case 10 /* TypeComposite */:
+            if (o + 9 <= end) this.debugComposites.set(words2[a + 1], { name: words2[o], members: Array.from(words2.subarray(o + 9, end)) });
+            break;
+          case 11 /* TypeMember */:
+            this.debugMembers.set(words2[a + 1], words2[o]);
+            break;
+          // Name, Type, Source, Line, Column, Parent, LinkageName, Variable, Flags.
+          case 18 /* GlobalVariable */:
+            if (o + 8 <= end) this.debugGlobals.push({ name: words2[o], type: words2[o + 1], variable: words2[o + 7] });
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+      case 15 /* EntryPoint */: {
+        const s = readString4(words2, a + 2, end);
+        this.entries.push({ model: words2[a], id: words2[a + 1], name: s.text, interfaces: Array.from(words2.subarray(s.next, end)) });
+        break;
+      }
+      case 16 /* ExecutionMode */:
+        if (words2[a + 1] === 17) this.localSize.set(words2[a], [words2[a + 2], words2[a + 3], words2[a + 4]]);
+        break;
+      case 331 /* ExecutionModeId */:
+        if (words2[a + 1] === 38) this.localSizeIds.set(words2[a], [words2[a + 2], words2[a + 3], words2[a + 4]]);
+        break;
+      case 19 /* TypeVoid */:
+      case 20 /* TypeBool */:
+      case 21 /* TypeInt */:
+      case 22 /* TypeFloat */:
+      case 23 /* TypeVector */:
+      case 24 /* TypeMatrix */:
+      case 25 /* TypeImage */:
+      case 26 /* TypeSampler */:
+      case 27 /* TypeSampledImage */:
+      case 28 /* TypeArray */:
+      case 29 /* TypeRuntimeArray */:
+      case 30 /* TypeStruct */:
+      case 32 /* TypePointer */:
+      case 5341 /* TypeAccelerationStructureKHR */:
+        this.types.set(words2[a], { op, operands: operands() });
+        break;
+      case 43 /* Constant */:
+      case 50 /* SpecConstant */:
+        this.constants.set(words2[a + 1], words2[a + 2]);
+        break;
+      case 41 /* ConstantTrue */:
+      case 48 /* SpecConstantTrue */:
+        this.constants.set(words2[a + 1], 1);
+        break;
+      case 42 /* ConstantFalse */:
+      case 49 /* SpecConstantFalse */:
+        this.constants.set(words2[a + 1], 0);
+        break;
+      case 59 /* Variable */:
+        this.variables.push({ typeId: words2[a], id: words2[a + 1], storageClass: words2[a + 2] });
+        break;
+      case 71 /* Decorate */: {
+        let m = this.decorations.get(words2[a]);
+        if (!m) {
+          m = /* @__PURE__ */ new Map();
+          this.decorations.set(words2[a], m);
+        }
+        m.set(words2[a + 1], Array.from(words2.subarray(a + 2, end)));
+        break;
+      }
+      case 72 /* MemberDecorate */: {
+        let s = this.memberDecorations.get(words2[a]);
+        if (!s) {
+          s = /* @__PURE__ */ new Map();
+          this.memberDecorations.set(words2[a], s);
+        }
+        let m = s.get(words2[a + 1]);
+        if (!m) {
+          m = /* @__PURE__ */ new Map();
+          s.set(words2[a + 1], m);
+        }
+        m.set(words2[a + 2], Array.from(words2.subarray(a + 3, end)));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  decoration(id, dec) {
+    return this.decorations.get(id)?.get(dec);
+  }
+  memberDecoration(structId, member, dec) {
+    return this.memberDecorations.get(structId)?.get(member)?.get(dec);
+  }
+  hasMemberDecoration(structId, dec) {
+    const s = this.memberDecorations.get(structId);
+    if (!s) return false;
+    for (const m of s.values()) if (m.has(dec)) return true;
+    return false;
+  }
+  allMembersDecorated(structId, memberCount, dec) {
+    if (memberCount === 0) return false;
+    for (let i = 0; i < memberCount; i++) if (!this.memberDecoration(structId, i, dec)) return false;
+    return true;
+  }
+  /** Follows pointers. */
+  /**
+   * Names from the Vulkan debug information, for what OpName and OpMemberName do not name: a
+   * module stripped of them (spirv-opt --strip-debug, which keeps this set) otherwise shows a
+   * buffer's fields as member0, member1. Only missing names are filled in.
+   */
+  applyDebugNames() {
+    for (const g of this.debugGlobals) {
+      const variableName = this.strings.get(g.name);
+      if (variableName && !this.names.has(g.variable)) this.names.set(g.variable, variableName);
+      const composite = this.debugComposites.get(g.type);
+      const variable = this.variables.find((v) => v.id === g.variable);
+      if (!composite || !variable) continue;
+      const structId = this.unwrapArrays(this.pointee(variable.typeId)).id;
+      if (this.types.get(structId)?.op !== 30 /* TypeStruct */) continue;
+      const structName = this.strings.get(composite.name);
+      if (structName && !this.names.has(structId)) this.names.set(structId, structName);
+      const fields = composite.members.map((id) => this.debugMembers.get(id)).filter((id) => id !== void 0);
+      if (!fields.length) continue;
+      let members = this.memberNames.get(structId);
+      if (!members) {
+        members = /* @__PURE__ */ new Map();
+        this.memberNames.set(structId, members);
+      }
+      fields.forEach((nameId, index) => {
+        const name = this.strings.get(nameId);
+        if (name && !members.has(index)) members.set(index, name);
+      });
+    }
+  }
+  pointee(typeId) {
+    const t = this.types.get(typeId);
+    return t && t.op === 32 /* TypePointer */ ? this.pointee(t.operands[2]) : typeId;
+  }
+  /** Strips array wrappers, returning the element type id and the total element count (0 = runtime). */
+  unwrapArrays(typeId) {
+    let count2 = 1;
+    let id = typeId;
+    for (; ; ) {
+      const t = this.types.get(id);
+      if (!t) break;
+      if (t.op === 28 /* TypeArray */) {
+        count2 *= this.constants.get(t.operands[2]) ?? 0;
+        id = t.operands[1];
+      } else if (t.op === 29 /* TypeRuntimeArray */) {
+        count2 = 0;
+        id = t.operands[1];
+      } else {
+        break;
+      }
+    }
+    return { id, count: count2 };
+  }
+  resolve(typeId, matrixStride = 0, rowMajor = false) {
+    const key = `${typeId}:${matrixStride}:${rowMajor ? 1 : 0}`;
+    const cached = this._cache.get(key);
+    if (cached) return cached;
+    const t = this._resolve(typeId, matrixStride, rowMajor);
+    this._cache.set(key, t);
+    return t;
+  }
+  _resolve(typeId, matrixStride, rowMajor) {
+    const t = this.types.get(typeId);
+    if (!t) return { kind: "opaque", name: "?" };
+    const o = t.operands;
+    switch (t.op) {
+      case 20 /* TypeBool */:
+        return { kind: "scalar", base: "bool", width: 32, size: 4 };
+      case 21 /* TypeInt */:
+        return { kind: "scalar", base: o[2] ? "int" : "uint", width: o[1], size: o[1] / 8 };
+      case 22 /* TypeFloat */:
+        return { kind: "scalar", base: "float", width: o[1], size: o[1] / 8 };
+      case 23 /* TypeVector */: {
+        const e = this.resolve(o[1]);
+        const element = e.kind === "scalar" ? e : { kind: "scalar", base: "float", width: 32, size: 4 };
+        return { kind: "vector", element, count: o[2], size: o[2] * element.size };
+      }
+      case 24 /* TypeMatrix */: {
+        const col = this.resolve(o[1]);
+        const column = col.kind === "vector" ? col : { kind: "vector", element: { kind: "scalar", base: "float", width: 32, size: 4 }, count: 4, size: 16 };
+        const columns = o[2];
+        const rows = column.count;
+        const vecLen = rowMajor ? columns : rows;
+        const stride = matrixStride || (vecLen === 3 ? 4 : vecLen) * column.element.size;
+        return { kind: "matrix", element: column.element, columns, rows, stride, rowMajor, size: (rowMajor ? rows : columns) * stride };
+      }
+      case 28 /* TypeArray */: {
+        const element = this.resolve(o[1], matrixStride, rowMajor);
+        const count2 = this.constants.get(o[2]) ?? 0;
+        const stride = this.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? sizeOf2(element);
+        return { kind: "array", element, count: count2, stride, size: count2 * stride };
+      }
+      case 29 /* TypeRuntimeArray */: {
+        const element = this.resolve(o[1], matrixStride, rowMajor);
+        const stride = this.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? sizeOf2(element);
+        return { kind: "array", element, count: 0, stride, size: 0 };
+      }
+      case 30 /* TypeStruct */: {
+        const members = [];
+        let running = 0;
+        let size2 = 0;
+        for (let i = 1; i < o.length; i++) {
+          const m = i - 1;
+          const ms = this.memberDecoration(typeId, m, 7 /* MatrixStride */)?.[0] ?? 0;
+          const rm = this.memberDecoration(typeId, m, 4 /* RowMajor */) !== void 0;
+          const type = this.resolve(o[i], ms, rm);
+          const offset = this.memberDecoration(typeId, m, 35 /* Offset */)?.[0] ?? running;
+          members.push({ name: this.memberNames.get(typeId)?.get(m) ?? `member${m}`, offset, type });
+          running = offset + sizeOf2(type);
+          if (running > size2) size2 = running;
+        }
+        return { kind: "struct", name: this.names.get(typeId) ?? "", members, size: size2 };
+      }
+      case 25 /* TypeImage */:
+        return { kind: "opaque", name: this.imageName(t, false) };
+      case 26 /* TypeSampler */:
+        return { kind: "opaque", name: "sampler" };
+      case 27 /* TypeSampledImage */: {
+        const img = this.types.get(o[1]);
+        return { kind: "opaque", name: img && img.op === 25 /* TypeImage */ ? this.imageName(img, true) : "sampler" };
+      }
+      case 32 /* TypePointer */:
+        return this.resolve(o[2], matrixStride, rowMajor);
+      case 5341 /* TypeAccelerationStructureKHR */:
+        return { kind: "opaque", name: "accelerationStructureEXT" };
+      default:
+        return { kind: "opaque", name: "?" };
+    }
+  }
+  imageName(t, combined) {
+    const o = t.operands;
+    const sampled = this.resolve(o[1]);
+    const dim = o[2];
+    const depth = o[3] === 1;
+    const arrayed = o[4] === 1;
+    const ms = o[5] === 1;
+    const storage = o[6] === 2;
+    let prefix = "";
+    if (sampled.kind === "scalar" && sampled.base === "int") prefix = "i";
+    else if (sampled.kind === "scalar" && sampled.base === "uint") prefix = "u";
+    if (dim === 6) return `${prefix}subpassInput${ms ? "MS" : ""}`;
+    const base = storage ? "image" : combined ? "sampler" : "texture";
+    const dims = { 0: "1D", 1: "2D", 2: "3D", 3: "Cube", 4: "2DRect", 5: "Buffer" };
+    return `${prefix}${base}${dims[dim] ?? "2D"}${ms ? "MS" : ""}${arrayed ? "Array" : ""}${depth && combined ? "Shadow" : ""}`;
+  }
+};
+function sizeOf2(t) {
+  return t.kind === "opaque" ? 0 : t.size;
+}
+function reflectSpirv(data) {
+  if (data.byteLength < 20) return null;
+  const bytes = new Uint8Array(data.byteLength & ~3);
+  bytes.set(data.subarray(0, bytes.byteLength));
+  const words2 = new Uint32Array(bytes.buffer);
+  if (words2[0] === 50471687) {
+    for (let i = 0; i < words2.length; i++) {
+      const w = words2[i];
+      words2[i] = (w & 255) << 24 | (w & 65280) << 8 | w >>> 8 & 65280 | w >>> 24;
+    }
+  }
+  if (words2[0] !== 119734787) return null;
+  const p = new Parser();
+  p.parse(words2);
+  p.applyDebugNames();
+  const r = new ShaderReflection();
+  r.version = `${words2[1] >>> 16 & 255}.${words2[1] >>> 8 & 255}`;
+  const location = (id) => p.decoration(id, 30 /* Location */)?.[0];
+  const isBuiltIn = (v) => {
+    if (p.decoration(v.id, 11 /* BuiltIn */)) return true;
+    const pointee = p.pointee(v.typeId);
+    const t = p.types.get(pointee);
+    return !!t && t.op === 30 /* TypeStruct */ && p.hasMemberDecoration(pointee, 11 /* BuiltIn */);
+  };
+  const ioVariable = (v) => {
+    if (isBuiltIn(v)) return null;
+    const loc = location(v.id);
+    if (loc === void 0) return null;
+    const type = p.resolve(p.pointee(v.typeId));
+    return { location: loc, name: p.names.get(v.id) ?? "", typeName: typeName(type), type };
+  };
+  for (const e of p.entries) {
+    const inputs = [];
+    const outputs = [];
+    const inInterface = (id) => e.interfaces.length === 0 || e.interfaces.includes(id);
+    for (const v of p.variables) {
+      if (!inInterface(v.id)) continue;
+      if (v.storageClass === 1 /* Input */) {
+        const io = ioVariable(v);
+        if (io) inputs.push(io);
+      } else if (v.storageClass === 3 /* Output */) {
+        const io = ioVariable(v);
+        if (io) outputs.push(io);
+      }
+    }
+    inputs.sort((a, b) => a.location - b.location);
+    outputs.sort((a, b) => a.location - b.location);
+    let workgroupSize = p.localSize.get(e.id) ?? null;
+    const ids = p.localSizeIds.get(e.id);
+    if (!workgroupSize && ids) workgroupSize = [p.constants.get(ids[0]) ?? 1, p.constants.get(ids[1]) ?? 1, p.constants.get(ids[2]) ?? 1];
+    r.entryPoints.push({ name: e.name, stage: STAGES2[e.model] ?? "unknown", inputs, outputs, workgroupSize });
+  }
+  for (const v of p.variables) {
+    const sc = v.storageClass;
+    if (sc !== 2 /* Uniform */ && sc !== 12 /* StorageBuffer */ && sc !== 0 /* UniformConstant */ && sc !== 9 /* PushConstant */) continue;
+    const pointee = p.pointee(v.typeId);
+    const inner = p.unwrapArrays(pointee);
+    const innerType = p.types.get(inner.id);
+    if (!innerType) continue;
+    const type = p.resolve(inner.id);
+    let kind = "unknown";
+    if (sc === 9 /* PushConstant */) kind = "pushConstant";
+    else if (sc === 12 /* StorageBuffer */) kind = "storage";
+    else if (sc === 2 /* Uniform */) kind = p.decoration(inner.id, 3 /* BufferBlock */) ? "storage" : "uniform";
+    else {
+      switch (innerType.op) {
+        case 27 /* TypeSampledImage */:
+          kind = "combinedImageSampler";
+          break;
+        case 26 /* TypeSampler */:
+          kind = "sampler";
+          break;
+        case 5341 /* TypeAccelerationStructureKHR */:
+          kind = "accelerationStructure";
+          break;
+        case 25 /* TypeImage */: {
+          const dim = innerType.operands[2];
+          const storage = innerType.operands[6] === 2;
+          if (dim === 5) kind = storage ? "storageTexelBuffer" : "uniformTexelBuffer";
+          else if (dim === 6) kind = "inputAttachment";
+          else kind = storage ? "storageImage" : "sampledImage";
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    const memberCount = innerType.op === 30 /* TypeStruct */ ? innerType.operands.length - 1 : 0;
+    const readOnly = !!p.decoration(v.id, 24 /* NonWritable */) || memberCount > 0 && p.allMembersDecorated(inner.id, memberCount, 24 /* NonWritable */);
+    const writeOnly = !!p.decoration(v.id, 25 /* NonReadable */) || memberCount > 0 && p.allMembersDecorated(inner.id, memberCount, 25 /* NonReadable */);
+    const structName = type.kind === "struct" ? type.name : "";
+    const name = p.names.get(v.id) || structName || "";
+    const res = {
+      kind,
+      set: p.decoration(v.id, 34 /* DescriptorSet */)?.[0] ?? 0,
+      binding: p.decoration(v.id, 33 /* Binding */)?.[0] ?? 0,
+      name,
+      typeName: structName || typeName(type),
+      type,
+      count: inner.count,
+      readOnly,
+      writeOnly
+    };
+    if (kind === "pushConstant") r.pushConstants.push(res);
+    else r.resources.push(res);
+  }
+  r.resources.sort((a, b) => a.set - b.set || a.binding - b.binding);
+  return r;
+}
+
+// src/renderer/shader_cache.ts
+var STAGE_FLAGS = {
+  VK_SHADER_STAGE_VERTEX_BIT: "vertex",
+  VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: "tess_control",
+  VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: "tess_eval",
+  VK_SHADER_STAGE_GEOMETRY_BIT: "geometry",
+  VK_SHADER_STAGE_FRAGMENT_BIT: "fragment",
+  VK_SHADER_STAGE_COMPUTE_BIT: "compute",
+  VK_SHADER_STAGE_TASK_BIT_EXT: "task",
+  VK_SHADER_STAGE_MESH_BIT_EXT: "mesh",
+  VK_SHADER_STAGE_RAYGEN_BIT_KHR: "raygen",
+  VK_SHADER_STAGE_ANY_HIT_BIT_KHR: "any_hit",
+  VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR: "closest_hit",
+  VK_SHADER_STAGE_MISS_BIT_KHR: "miss",
+  VK_SHADER_STAGE_INTERSECTION_BIT_KHR: "intersection",
+  VK_SHADER_STAGE_CALLABLE_BIT_KHR: "callable"
+};
+function stageFromFlag(flag) {
+  return STAGE_FLAGS[flag] ?? "unknown";
+}
+function pipelineStages(pipeline, db) {
+  const d = pipeline.descriptor;
+  if (!d) return [];
+  const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
+  const out = [];
+  for (const s of stages) {
+    if (!isObject(s)) continue;
+    const stageFlag = str(s.stage);
+    const stage = stageFromFlag(stageFlag);
+    const entryPoint = str(s.pName) || "main";
+    const module = db.getObject(refId(s.module));
+    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
+    if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name.startsWith(`${stage}:`));
+    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
+    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
+  }
+  return out;
+}
+function pipelineUses(data) {
+  const sets = data.sets;
+  const bound = /* @__PURE__ */ new Map();
+  const uses = /* @__PURE__ */ new Map();
+  for (const c2 of data.commands) {
+    if (!c2 || sets.SUBMIT.has(c2.method)) continue;
+    const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
+    if (sets.BIND_PIPELINE.has(c2.method) && c2.args) {
+      const id = refId(c2.args.pipeline);
+      if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c2.method, c2.args)}`, id);
+    } else if (isAction(sets, c2.method)) {
+      const id = bound.get(`${stream}:${sets.bindPointOf(c2.method)}`);
+      if (id !== void 0) uses.set(id, (uses.get(id) ?? 0) + 1);
+    }
+  }
+  return uses;
+}
+
 // src/renderer/vulkan/frame_analysis.ts
 var TINY_DRAW_VERTICES2 = 12;
 var TINY_DRAW_COUNT2 = 32;
+var OVERSIZED_COVERAGE = 0.75;
 var RULE_ORDER3 = [
   "stereo-without-multiview",
   "clear-outside-pass",
@@ -5113,9 +6588,11 @@ var RULE_ORDER3 = [
   "msaa-store",
   "msaa-sampled",
   "barrier-in-render-pass",
+  "oversized-attachment",
   "color-load",
   "tiny-draws",
   "full-pipeline-barrier",
+  "redundant-transition",
   "redundant-pipeline-bind",
   "redundant-descriptor-bind",
   "redundant-buffer-bind",
@@ -5124,6 +6601,34 @@ var RULE_ORDER3 = [
   "single-workgroup-dispatch",
   "depth-transient"
 ];
+function barrierRange(b) {
+  const r = isObject(b.subresourceRange) ? b.subresourceRange : null;
+  const count2 = (v) => num(v) === 4294967295 ? Infinity : num(v);
+  return {
+    aspects: str(r?.aspectMask).split("|").map((s) => s.trim()).filter(Boolean),
+    mip: num(r?.baseMipLevel),
+    mips: count2(r?.levelCount),
+    layer: num(r?.baseArrayLayer),
+    layers: count2(r?.layerCount)
+  };
+}
+function rangesOverlap(a, b) {
+  const aspects = !a.aspects.length || !b.aspects.length || a.aspects.some((x) => b.aspects.includes(x));
+  return aspects && a.mip < b.mip + b.mips && b.mip < a.mip + a.mips && a.layer < b.layer + b.layers && b.layer < a.layer + a.layers;
+}
+function collectImages(v, db, out) {
+  if (Array.isArray(v)) {
+    for (const e of v) collectImages(e, db, out);
+  } else if (isHandleRef(v)) {
+    if (v.__class === "VkImage") out.add(v.__id);
+    else if (v.__class === "VkImageView") {
+      const image = imageOfView(db, v.__id);
+      if (image !== null) out.add(image);
+    }
+  } else if (isObject(v)) {
+    for (const e of Object.values(v)) collectImages(e, db, out);
+  }
+}
 function barrierStageMasks(a) {
   if (isObject(a.pDependencyInfo)) {
     const out = [];
@@ -5217,10 +6722,39 @@ var FrameAnalysis = class {
     const boundBuffers = /* @__PURE__ */ new Map();
     const pushed = /* @__PURE__ */ new Map();
     const previous = /* @__PURE__ */ new Map();
+    const unusedTransitions = /* @__PURE__ */ new Map();
+    const wastedTransitions = new Folded4();
+    const noopBarriers = new Folded4();
+    const boundDescriptors = /* @__PURE__ */ new Map();
+    const actionDescriptors = (cmd, stream) => {
+      const bindPoint = bindPointOf(cmd.method);
+      const sets = boundDescriptors.get(`${stream}|${bindPoint}`);
+      return sets?.size ? { bindPoint, sets: [...sets.values()] } : null;
+    };
     for (const cmd of commands) {
       const method = cmd.method;
       const a = cmd.args;
       const cb = cmd.object?.__id ?? 0;
+      const stream = `${cb}:${cmd.secondary ?? 0}`;
+      if (cmd.descriptors) {
+        const key = `${stream}|${cmd.descriptors.bindPoint}`;
+        let sets = boundDescriptors.get(key);
+        if (!sets) boundDescriptors.set(key, sets = /* @__PURE__ */ new Map());
+        for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      }
+      if (unusedTransitions.size && !BARRIER_METHODS3.has(method)) {
+        const used = /* @__PURE__ */ new Set();
+        collectImages(a, db, used);
+        if (DRAW_METHODS.has(method) || DISPATCH_METHODS.has(method) || TRACE_METHODS.has(method)) {
+          collectImages(actionDescriptors(cmd, stream), db, used);
+        }
+        if (PASS_BEGIN2.has(method)) {
+          const attachments = decodePass(cmd, db)?.attachments ?? [];
+          if (!attachments.length || attachments.some((att) => att.imageId === null)) unusedTransitions.clear();
+          for (const att of attachments) if (att.imageId !== null) used.add(att.imageId);
+        }
+        for (const image of used) unusedTransitions.delete(image);
+      }
       if (cmd.descriptors) {
         const views = /* @__PURE__ */ new Set();
         collectImageViews(cmd.descriptors, views);
@@ -5304,6 +6838,7 @@ var FrameAnalysis = class {
         if (BARRIER_METHODS3.has(previous.get(cb) ?? "")) adjacentBarriers.add(cmd);
         if (open.has(cb)) passBarriers.add(cmd);
         if (a && barrierStageMasks(a).some((m) => m.src.includes("ALL_COMMANDS") && m.dst.includes("ALL_COMMANDS"))) fullBarriers.add(cmd);
+        if (a) this._transitions(cmd, a, unusedTransitions, wastedTransitions, noopBarriers);
       } else if ((method === "vkCmdDispatch" || method === "vkCmdDispatchBase" || method === "vkCmdDispatchBaseKHR") && a) {
         if (num(a.groupCountX) * num(a.groupCountY) * num(a.groupCountZ) === 1) singleDispatches.add(cmd);
       } else if (DRAW_METHODS.has(method)) {
@@ -5314,6 +6849,11 @@ var FrameAnalysis = class {
         if (pass) {
           pass.draws++;
           pass.drawSignature.push(`${pipeline}:${vertices}`);
+          const descriptors = pass.drawStates.size < 256 ? actionDescriptors(cmd, stream) : null;
+          if (descriptors) {
+            const key = `${pipeline}|${argKey2(descriptors)}`;
+            if (!pass.drawStates.has(key)) pass.drawStates.set(key, { pipeline, descriptors });
+          }
         }
         if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES2) tinyDraws.add(cmd);
       } else if (a) {
@@ -5341,10 +6881,88 @@ var FrameAnalysis = class {
     if (fullBarriers.count) this._addFolded("full-pipeline-barrier", "low", "medium", `A barrier waits for every stage and blocks every stage (ALL_COMMANDS to ALL_COMMANDS) ${times(fullBarriers)}: the GPU drains completely before it continues. Naming the stages that produce and consume the data lets the rest overlap.`, fullBarriers);
     if (passBarriers.count) this._addFolded("barrier-in-render-pass", "medium", "medium", `A pipeline barrier is recorded inside a render pass ${times(passBarriers)}. On a tiled GPU a barrier inside a pass forces the tiles to be flushed and reloaded; move the dependency to a subpass dependency or before the pass.`, passBarriers);
     if (singleDispatches.count) this._addFolded("single-workgroup-dispatch", "low", "medium", `vkCmdDispatch launches a single workgroup ${times(singleDispatches)}: most of the GPU idles during it. Larger dispatches, or a dispatch that folds the work of several small ones, use the machine.`, singleDispatches);
+    if (wastedTransitions.count) this._addFolded("redundant-transition", "low", "medium", `A barrier transitions an image to a layout that nothing uses before a later barrier transitions the same subresources again, ${times(wastedTransitions)}. One transition straight to the layout the image is used in does the same work once. Only this capture's commands are seen, so a use on another queue or in a command buffer recorded before the capture looks like none.`, wastedTransitions);
+    if (noopBarriers.count) this._addFolded("redundant-transition", "low", "medium", `A barrier leaves an image in the layout it was in, with no queue family change and no write access to wait for, ${times(noopBarriers)}: it synchronizes nothing, and each barrier still costs the driver a pipeline stall.`, noopBarriers);
     if (tinyDraws.count >= TINY_DRAW_COUNT2) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES2} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
   }
+  /** A barrier command's image transitions, against those nothing has used yet (redundant-transition). */
+  _transitions(cmd, a, unused, wasted, noop) {
+    const groups = isObject(a.pDependencyInfo) ? [a.pDependencyInfo] : [a];
+    let changesNothing = true;
+    let images = 0;
+    for (const g of groups) {
+      if (Array.isArray(g.pBufferMemoryBarriers) && g.pBufferMemoryBarriers.length || Array.isArray(g.pMemoryBarriers) && g.pMemoryBarriers.length) changesNothing = false;
+      for (const b of Array.isArray(g.pImageMemoryBarriers) ? g.pImageMemoryBarriers.filter(isObject) : []) {
+        const image = refId(b.image);
+        if (image === null) continue;
+        images++;
+        const src = str(b.srcQueueFamilyIndex);
+        const dst = str(b.dstQueueFamilyIndex);
+        const queueChange = src !== dst && src !== "" && dst !== "";
+        const oldLayout = str(b.oldLayout);
+        const newLayout = str(b.newLayout);
+        if (oldLayout !== newLayout || queueChange || /WRITE|MEMORY_WRITE/.test(str(b.srcAccessMask))) changesNothing = false;
+        if (oldLayout === newLayout || newLayout.includes("UNDEFINED")) continue;
+        const range = barrierRange(b);
+        const list = unused.get(image) ?? [];
+        const kept = [];
+        for (const t of list) {
+          if (t.cmd !== cmd && rangesOverlap(t.range, range)) {
+            if (!wasted.commands.includes(t.cmd)) wasted.add(t.cmd);
+          } else {
+            kept.push(t);
+          }
+        }
+        kept.push({ cmd, range });
+        unused.set(image, kept);
+      }
+    }
+    if (images && changesNothing) noop.add(cmd);
+  }
   // ---------------------------------------------------------------------------- per-pass rules
+  /**
+   * Attachments larger than every render area the frame draws into them: dynamic resolution
+   * rendering into a full-size target, or a target allocated for another size. The memory, and on
+   * a tiled GPU the load and store of the whole attachment, cost the full size. An atlas drawn a
+   * region at a time is covered by the union of its passes' areas and is not reported.
+   */
+  _oversizedAttachments() {
+    const byTarget = /* @__PURE__ */ new Map();
+    for (const pass of this._passes) {
+      if (!pass.width || !pass.height) continue;
+      for (const att of pass.attachments) {
+        if (att.imageId === null) continue;
+        const image = this._db.getObject(att.imageId);
+        const extent = isObject(image?.descriptor?.extent) ? image.descriptor.extent : null;
+        if (!extent) continue;
+        const width = Math.max(1, num(extent.width) >> att.mipLevel);
+        const height = Math.max(1, num(extent.height) >> att.mipLevel);
+        const key = `${att.imageId}:${att.mipLevel}`;
+        let t = byTarget.get(key);
+        if (!t) byTarget.set(key, t = { imageId: att.imageId, width, height, x0: Infinity, y0: Infinity, x1: 0, y1: 0, passes: [] });
+        t.x0 = Math.min(t.x0, pass.x);
+        t.y0 = Math.min(t.y0, pass.y);
+        t.x1 = Math.max(t.x1, Math.min(width, pass.x + pass.width));
+        t.y1 = Math.max(t.y1, Math.min(height, pass.y + pass.height));
+        if (!t.passes.includes(pass)) t.passes.push(pass);
+      }
+    }
+    const folded = new Folded4();
+    const cases = [];
+    let targets = 0;
+    for (const t of byTarget.values()) {
+      const covered = Math.max(0, t.x1 - t.x0) * Math.max(0, t.y1 - t.y0);
+      if (covered <= 0 || covered > OVERSIZED_COVERAGE * t.width * t.height) continue;
+      targets++;
+      for (const p of t.passes) if (!folded.commands.includes(p.command)) folded.add(p.command);
+      if (cases.length < 3) cases.push(`${this._imageName(t.imageId)} is ${t.width}x${t.height} but drawn only in ${t.x1 - t.x0}x${t.y1 - t.y0}`);
+    }
+    if (!folded.count) return;
+    const more = targets > cases.length ? ` (and ${targets - cases.length} more attachments)` : "";
+    this._addFolded("oversized-attachment", "low", "medium", `${cases.join("; ")}${more}. The frame never renders outside that area, but the image's memory, and on a tiled GPU each load and store, cost the whole attachment. Sized to the area (or, for dynamic resolution, recreated when the scale settles), it costs what is drawn. Passes whose render area moves between frames look the same here.`, folded);
+  }
   _passRules() {
+    this._oversizedAttachments();
     for (const pass of this._passes) {
       const cmd = pass.command;
       for (const [imageId, clear] of pass.clearedBefore) {
@@ -5393,11 +7011,53 @@ var FrameAnalysis = class {
       for (const p of g.slice(1)) this._attach(p.command.index, f);
     }
   }
+  /**
+   * Whether a pass's fragment shaders filter an image they read: some draw binds a view of it where
+   * the shader reads that binding more than once per invocation, or in a loop, as a blur or an
+   * ambient occlusion pass does. False when every read is a single one; null when no shader could
+   * be looked at (no SPIR-V in the capture, or no draw names the image).
+   */
+  filtersInput(passCommand, imageId) {
+    const pass = this._passes.find((p) => p.command.index === passCommand);
+    if (!pass) return null;
+    let known = false;
+    for (const { pipeline, descriptors } of pass.drawStates.values()) {
+      const bindings = [];
+      for (const s of descriptors.sets) {
+        for (const b of s.bindings) {
+          if (b.descriptors.some((d) => d?.imageView && imageOfView(this._db, refId(d.imageView)) === imageId)) bindings.push({ set: s.set, binding: b.binding });
+        }
+      }
+      if (!bindings.length) continue;
+      const reads = this._fragmentReads(pipeline);
+      if (!reads) continue;
+      known = true;
+      for (const { set, binding } of bindings) {
+        const r = reads.find((t) => t.set === set && t.binding === binding);
+        if (r && (r.reads > 1 || r.inLoop)) return true;
+      }
+    }
+    return known ? false : null;
+  }
+  _readsCache = /* @__PURE__ */ new Map();
+  _fragmentReads(pipelineId) {
+    if (this._readsCache.has(pipelineId)) return this._readsCache.get(pipelineId);
+    let result = null;
+    const pipeline = this._db.getObject(pipelineId);
+    const source = pipeline ? pipelineStages(pipeline, this._db).find((s) => s.stage === "fragment") : void 0;
+    const spirv = source ? this._db.blobData?.get(`${source.object.id}:${source.blobIndex}`) : void 0;
+    if (source && spirv) result = textureReads(spirv, source.entryPoint);
+    this._readsCache.set(pipelineId, result);
+    return result;
+  }
   // ---------------------------------------------------------------------------- pass decoding
   _passInfo(cmd, ordinal) {
     const decoded = decodePass(cmd, this._db);
     if (!decoded) return null;
-    return { command: cmd, ordinal, ...decoded, draws: 0, drawSignature: [], clearedBefore: /* @__PURE__ */ new Map() };
+    const a = cmd.args;
+    const info = isObject(a?.pRenderingInfo) ? a.pRenderingInfo : isObject(a?.pRenderPassBegin) ? a.pRenderPassBegin : null;
+    const offset = isObject(info?.renderArea) && isObject(info.renderArea.offset) ? info.renderArea.offset : null;
+    return { command: cmd, ordinal, ...decoded, draws: 0, drawSignature: [], clearedBefore: /* @__PURE__ */ new Map(), x: Math.max(0, num(offset?.x)), y: Math.max(0, num(offset?.y)), drawStates: /* @__PURE__ */ new Map() };
   }
   _imageOfView(viewId) {
     return imageOfView(this._db, viewId);
@@ -5432,9 +7092,10 @@ var FrameAnalysis = class {
   }
 };
 function analyzeFrame(data, db, graph) {
-  const base = data.api === "metal" ? analyzeMetalFrame(data, db) : perCommandAnalysis(data, db);
+  const vulkan = data.api === "metal" ? null : new FrameAnalysis(db);
+  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : analyzeMetalFrame(data, db);
   const sources = [base, analyzeCounters(data, db), analyzeSampling(data, db)];
-  if (graph) sources.push(analyzeRenderGraph(graph));
+  if (graph) sources.push(analyzeRenderGraph(graph, vulkan ? { filtersInput: (node2, imageId) => vulkan.filtersInput(node2.commandIndex, imageId) } : {}));
   const findings = [];
   const byCommand = /* @__PURE__ */ new Map();
   for (const source of sources) {
@@ -5452,11 +7113,6 @@ function analyzeFrame(data, db, graph) {
   }
   findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   return { findings, byCommand };
-}
-function perCommandAnalysis(data, db) {
-  const analysis = new FrameAnalysis(db);
-  const findings = analysis.analyze(data);
-  return { findings, byCommand: analysis.byCommand() };
 }
 
 // src/renderer/vulkan/object_database.ts
@@ -5889,518 +7545,6 @@ var ObjectDatabase = class {
     this.onDeleteObject.emit(o.id, o);
   }
 };
-
-// src/renderer/vulkan/spirv_reflect.ts
-var ShaderReflection = class {
-  entryPoints = [];
-  resources = [];
-  pushConstants = [];
-  /** SPIR-V version as "1.5". */
-  version = "";
-  findResource(set, binding) {
-    return this.resources.find((r) => r.set === set && r.binding === binding) ?? null;
-  }
-  entryPoint(name) {
-    if (name) {
-      const e = this.entryPoints.find((ep) => ep.name === name);
-      if (e) return e;
-    }
-    return this.entryPoints[0] ?? null;
-  }
-};
-function scalarName(s) {
-  switch (s.base) {
-    case "bool":
-      return "bool";
-    case "float":
-      return s.width === 16 ? "float16_t" : s.width === 64 ? "double" : "float";
-    case "int":
-      return s.width === 32 ? "int" : `int${s.width}_t`;
-    case "uint":
-      return s.width === 32 ? "uint" : `uint${s.width}_t`;
-  }
-}
-function vectorPrefix(s) {
-  switch (s.base) {
-    case "bool":
-      return "bvec";
-    case "float":
-      return s.width === 16 ? "f16vec" : s.width === 64 ? "dvec" : "vec";
-    case "int":
-      return s.width === 32 ? "ivec" : `i${s.width}vec`;
-    case "uint":
-      return s.width === 32 ? "uvec" : `u${s.width}vec`;
-  }
-}
-function typeName(t) {
-  if (!t) return "";
-  switch (t.kind) {
-    case "scalar":
-      return scalarName(t);
-    case "vector":
-      return `${vectorPrefix(t.element)}${t.count}`;
-    case "matrix": {
-      const p = t.element.width === 64 ? "dmat" : t.element.width === 16 ? "f16mat" : "mat";
-      return t.columns === t.rows ? `${p}${t.columns}` : `${p}${t.columns}x${t.rows}`;
-    }
-    case "array":
-      return `${typeName(t.element)}[${t.count || ""}]`;
-    case "struct":
-      return t.name || "struct";
-    case "opaque":
-      return t.name;
-    case "format":
-      return t.format.replace(/^VK_FORMAT_/, "");
-  }
-}
-var STAGES2 = {
-  0: "vertex",
-  1: "tess_control",
-  2: "tess_eval",
-  3: "geometry",
-  4: "fragment",
-  5: "compute",
-  5267: "task",
-  5268: "mesh",
-  5313: "raygen",
-  5314: "intersection",
-  5315: "any_hit",
-  5316: "closest_hit",
-  5317: "miss",
-  5318: "callable",
-  5364: "task",
-  5365: "mesh"
-};
-function readString3(words2, start, end) {
-  const bytes = [];
-  for (let i = start; i < end; i++) {
-    const w = words2[i];
-    for (let b = 0; b < 4; b++) {
-      const c2 = w >>> b * 8 & 255;
-      if (c2 === 0) return { text: new TextDecoder().decode(new Uint8Array(bytes)), next: i + 1 };
-      bytes.push(c2);
-    }
-  }
-  return { text: new TextDecoder().decode(new Uint8Array(bytes)), next: end };
-}
-var Parser = class {
-  names = /* @__PURE__ */ new Map();
-  memberNames = /* @__PURE__ */ new Map();
-  /** OpString text by id: what the debug instructions name things with. */
-  strings = /* @__PURE__ */ new Map();
-  debugSet = 0;
-  /** DebugTypeComposite: its name, and the DebugTypeMember ids of its fields in declaration order. */
-  debugComposites = /* @__PURE__ */ new Map();
-  /** DebugTypeMember id -> the OpString id of its name. */
-  debugMembers = /* @__PURE__ */ new Map();
-  debugGlobals = [];
-  decorations = /* @__PURE__ */ new Map();
-  memberDecorations = /* @__PURE__ */ new Map();
-  types = /* @__PURE__ */ new Map();
-  constants = /* @__PURE__ */ new Map();
-  variables = [];
-  entries = [];
-  localSize = /* @__PURE__ */ new Map();
-  localSizeIds = /* @__PURE__ */ new Map();
-  _cache = /* @__PURE__ */ new Map();
-  parse(words2) {
-    let i = 5;
-    while (i < words2.length) {
-      const w = words2[i];
-      const op = w & 65535;
-      const len = w >>> 16;
-      if (len === 0) break;
-      const end = Math.min(words2.length, i + len);
-      this._instruction(op, words2, i + 1, end);
-      if (op === 54 /* Function */) break;
-      i += len;
-    }
-  }
-  _instruction(op, words2, a, end) {
-    const operands = () => Array.from(words2.subarray(a, end));
-    switch (op) {
-      case 5 /* Name */:
-        this.names.set(words2[a], readString3(words2, a + 1, end).text);
-        break;
-      case 6 /* MemberName */: {
-        let m = this.memberNames.get(words2[a]);
-        if (!m) {
-          m = /* @__PURE__ */ new Map();
-          this.memberNames.set(words2[a], m);
-        }
-        m.set(words2[a + 1], readString3(words2, a + 2, end).text);
-        break;
-      }
-      case 7 /* String */:
-        this.strings.set(words2[a], readString3(words2, a + 1, end).text);
-        break;
-      case 11 /* ExtInstImport */:
-        if (readString3(words2, a + 1, end).text === "NonSemantic.Shader.DebugInfo.100") this.debugSet = words2[a];
-        break;
-      case 12 /* ExtInst */: {
-        if (!this.debugSet || words2[a + 2] !== this.debugSet) break;
-        const o = a + 4;
-        switch (words2[a + 3]) {
-          // Name, Tag, Source, Line, Column, Parent, LinkageName, Size, Flags, then the members.
-          case 10 /* TypeComposite */:
-            if (o + 9 <= end) this.debugComposites.set(words2[a + 1], { name: words2[o], members: Array.from(words2.subarray(o + 9, end)) });
-            break;
-          case 11 /* TypeMember */:
-            this.debugMembers.set(words2[a + 1], words2[o]);
-            break;
-          // Name, Type, Source, Line, Column, Parent, LinkageName, Variable, Flags.
-          case 18 /* GlobalVariable */:
-            if (o + 8 <= end) this.debugGlobals.push({ name: words2[o], type: words2[o + 1], variable: words2[o + 7] });
-            break;
-          default:
-            break;
-        }
-        break;
-      }
-      case 15 /* EntryPoint */: {
-        const s = readString3(words2, a + 2, end);
-        this.entries.push({ model: words2[a], id: words2[a + 1], name: s.text, interfaces: Array.from(words2.subarray(s.next, end)) });
-        break;
-      }
-      case 16 /* ExecutionMode */:
-        if (words2[a + 1] === 17) this.localSize.set(words2[a], [words2[a + 2], words2[a + 3], words2[a + 4]]);
-        break;
-      case 331 /* ExecutionModeId */:
-        if (words2[a + 1] === 38) this.localSizeIds.set(words2[a], [words2[a + 2], words2[a + 3], words2[a + 4]]);
-        break;
-      case 19 /* TypeVoid */:
-      case 20 /* TypeBool */:
-      case 21 /* TypeInt */:
-      case 22 /* TypeFloat */:
-      case 23 /* TypeVector */:
-      case 24 /* TypeMatrix */:
-      case 25 /* TypeImage */:
-      case 26 /* TypeSampler */:
-      case 27 /* TypeSampledImage */:
-      case 28 /* TypeArray */:
-      case 29 /* TypeRuntimeArray */:
-      case 30 /* TypeStruct */:
-      case 32 /* TypePointer */:
-      case 5341 /* TypeAccelerationStructureKHR */:
-        this.types.set(words2[a], { op, operands: operands() });
-        break;
-      case 43 /* Constant */:
-      case 50 /* SpecConstant */:
-        this.constants.set(words2[a + 1], words2[a + 2]);
-        break;
-      case 41 /* ConstantTrue */:
-      case 48 /* SpecConstantTrue */:
-        this.constants.set(words2[a + 1], 1);
-        break;
-      case 42 /* ConstantFalse */:
-      case 49 /* SpecConstantFalse */:
-        this.constants.set(words2[a + 1], 0);
-        break;
-      case 59 /* Variable */:
-        this.variables.push({ typeId: words2[a], id: words2[a + 1], storageClass: words2[a + 2] });
-        break;
-      case 71 /* Decorate */: {
-        let m = this.decorations.get(words2[a]);
-        if (!m) {
-          m = /* @__PURE__ */ new Map();
-          this.decorations.set(words2[a], m);
-        }
-        m.set(words2[a + 1], Array.from(words2.subarray(a + 2, end)));
-        break;
-      }
-      case 72 /* MemberDecorate */: {
-        let s = this.memberDecorations.get(words2[a]);
-        if (!s) {
-          s = /* @__PURE__ */ new Map();
-          this.memberDecorations.set(words2[a], s);
-        }
-        let m = s.get(words2[a + 1]);
-        if (!m) {
-          m = /* @__PURE__ */ new Map();
-          s.set(words2[a + 1], m);
-        }
-        m.set(words2[a + 2], Array.from(words2.subarray(a + 3, end)));
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  decoration(id, dec) {
-    return this.decorations.get(id)?.get(dec);
-  }
-  memberDecoration(structId, member, dec) {
-    return this.memberDecorations.get(structId)?.get(member)?.get(dec);
-  }
-  hasMemberDecoration(structId, dec) {
-    const s = this.memberDecorations.get(structId);
-    if (!s) return false;
-    for (const m of s.values()) if (m.has(dec)) return true;
-    return false;
-  }
-  allMembersDecorated(structId, memberCount, dec) {
-    if (memberCount === 0) return false;
-    for (let i = 0; i < memberCount; i++) if (!this.memberDecoration(structId, i, dec)) return false;
-    return true;
-  }
-  /** Follows pointers. */
-  /**
-   * Names from the Vulkan debug information, for what OpName and OpMemberName do not name: a
-   * module stripped of them (spirv-opt --strip-debug, which keeps this set) otherwise shows a
-   * buffer's fields as member0, member1. Only missing names are filled in.
-   */
-  applyDebugNames() {
-    for (const g of this.debugGlobals) {
-      const variableName = this.strings.get(g.name);
-      if (variableName && !this.names.has(g.variable)) this.names.set(g.variable, variableName);
-      const composite = this.debugComposites.get(g.type);
-      const variable = this.variables.find((v) => v.id === g.variable);
-      if (!composite || !variable) continue;
-      const structId = this.unwrapArrays(this.pointee(variable.typeId)).id;
-      if (this.types.get(structId)?.op !== 30 /* TypeStruct */) continue;
-      const structName = this.strings.get(composite.name);
-      if (structName && !this.names.has(structId)) this.names.set(structId, structName);
-      const fields = composite.members.map((id) => this.debugMembers.get(id)).filter((id) => id !== void 0);
-      if (!fields.length) continue;
-      let members = this.memberNames.get(structId);
-      if (!members) {
-        members = /* @__PURE__ */ new Map();
-        this.memberNames.set(structId, members);
-      }
-      fields.forEach((nameId, index) => {
-        const name = this.strings.get(nameId);
-        if (name && !members.has(index)) members.set(index, name);
-      });
-    }
-  }
-  pointee(typeId) {
-    const t = this.types.get(typeId);
-    return t && t.op === 32 /* TypePointer */ ? this.pointee(t.operands[2]) : typeId;
-  }
-  /** Strips array wrappers, returning the element type id and the total element count (0 = runtime). */
-  unwrapArrays(typeId) {
-    let count2 = 1;
-    let id = typeId;
-    for (; ; ) {
-      const t = this.types.get(id);
-      if (!t) break;
-      if (t.op === 28 /* TypeArray */) {
-        count2 *= this.constants.get(t.operands[2]) ?? 0;
-        id = t.operands[1];
-      } else if (t.op === 29 /* TypeRuntimeArray */) {
-        count2 = 0;
-        id = t.operands[1];
-      } else {
-        break;
-      }
-    }
-    return { id, count: count2 };
-  }
-  resolve(typeId, matrixStride = 0, rowMajor = false) {
-    const key = `${typeId}:${matrixStride}:${rowMajor ? 1 : 0}`;
-    const cached = this._cache.get(key);
-    if (cached) return cached;
-    const t = this._resolve(typeId, matrixStride, rowMajor);
-    this._cache.set(key, t);
-    return t;
-  }
-  _resolve(typeId, matrixStride, rowMajor) {
-    const t = this.types.get(typeId);
-    if (!t) return { kind: "opaque", name: "?" };
-    const o = t.operands;
-    switch (t.op) {
-      case 20 /* TypeBool */:
-        return { kind: "scalar", base: "bool", width: 32, size: 4 };
-      case 21 /* TypeInt */:
-        return { kind: "scalar", base: o[2] ? "int" : "uint", width: o[1], size: o[1] / 8 };
-      case 22 /* TypeFloat */:
-        return { kind: "scalar", base: "float", width: o[1], size: o[1] / 8 };
-      case 23 /* TypeVector */: {
-        const e = this.resolve(o[1]);
-        const element = e.kind === "scalar" ? e : { kind: "scalar", base: "float", width: 32, size: 4 };
-        return { kind: "vector", element, count: o[2], size: o[2] * element.size };
-      }
-      case 24 /* TypeMatrix */: {
-        const col = this.resolve(o[1]);
-        const column = col.kind === "vector" ? col : { kind: "vector", element: { kind: "scalar", base: "float", width: 32, size: 4 }, count: 4, size: 16 };
-        const columns = o[2];
-        const rows = column.count;
-        const vecLen = rowMajor ? columns : rows;
-        const stride = matrixStride || (vecLen === 3 ? 4 : vecLen) * column.element.size;
-        return { kind: "matrix", element: column.element, columns, rows, stride, rowMajor, size: (rowMajor ? rows : columns) * stride };
-      }
-      case 28 /* TypeArray */: {
-        const element = this.resolve(o[1], matrixStride, rowMajor);
-        const count2 = this.constants.get(o[2]) ?? 0;
-        const stride = this.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? sizeOf2(element);
-        return { kind: "array", element, count: count2, stride, size: count2 * stride };
-      }
-      case 29 /* TypeRuntimeArray */: {
-        const element = this.resolve(o[1], matrixStride, rowMajor);
-        const stride = this.decoration(typeId, 6 /* ArrayStride */)?.[0] ?? sizeOf2(element);
-        return { kind: "array", element, count: 0, stride, size: 0 };
-      }
-      case 30 /* TypeStruct */: {
-        const members = [];
-        let running = 0;
-        let size2 = 0;
-        for (let i = 1; i < o.length; i++) {
-          const m = i - 1;
-          const ms = this.memberDecoration(typeId, m, 7 /* MatrixStride */)?.[0] ?? 0;
-          const rm = this.memberDecoration(typeId, m, 4 /* RowMajor */) !== void 0;
-          const type = this.resolve(o[i], ms, rm);
-          const offset = this.memberDecoration(typeId, m, 35 /* Offset */)?.[0] ?? running;
-          members.push({ name: this.memberNames.get(typeId)?.get(m) ?? `member${m}`, offset, type });
-          running = offset + sizeOf2(type);
-          if (running > size2) size2 = running;
-        }
-        return { kind: "struct", name: this.names.get(typeId) ?? "", members, size: size2 };
-      }
-      case 25 /* TypeImage */:
-        return { kind: "opaque", name: this.imageName(t, false) };
-      case 26 /* TypeSampler */:
-        return { kind: "opaque", name: "sampler" };
-      case 27 /* TypeSampledImage */: {
-        const img = this.types.get(o[1]);
-        return { kind: "opaque", name: img && img.op === 25 /* TypeImage */ ? this.imageName(img, true) : "sampler" };
-      }
-      case 32 /* TypePointer */:
-        return this.resolve(o[2], matrixStride, rowMajor);
-      case 5341 /* TypeAccelerationStructureKHR */:
-        return { kind: "opaque", name: "accelerationStructureEXT" };
-      default:
-        return { kind: "opaque", name: "?" };
-    }
-  }
-  imageName(t, combined) {
-    const o = t.operands;
-    const sampled = this.resolve(o[1]);
-    const dim = o[2];
-    const depth = o[3] === 1;
-    const arrayed = o[4] === 1;
-    const ms = o[5] === 1;
-    const storage = o[6] === 2;
-    let prefix = "";
-    if (sampled.kind === "scalar" && sampled.base === "int") prefix = "i";
-    else if (sampled.kind === "scalar" && sampled.base === "uint") prefix = "u";
-    if (dim === 6) return `${prefix}subpassInput${ms ? "MS" : ""}`;
-    const base = storage ? "image" : combined ? "sampler" : "texture";
-    const dims = { 0: "1D", 1: "2D", 2: "3D", 3: "Cube", 4: "2DRect", 5: "Buffer" };
-    return `${prefix}${base}${dims[dim] ?? "2D"}${ms ? "MS" : ""}${arrayed ? "Array" : ""}${depth && combined ? "Shadow" : ""}`;
-  }
-};
-function sizeOf2(t) {
-  return t.kind === "opaque" ? 0 : t.size;
-}
-function reflectSpirv(data) {
-  if (data.byteLength < 20) return null;
-  const bytes = new Uint8Array(data.byteLength & ~3);
-  bytes.set(data.subarray(0, bytes.byteLength));
-  const words2 = new Uint32Array(bytes.buffer);
-  if (words2[0] === 50471687) {
-    for (let i = 0; i < words2.length; i++) {
-      const w = words2[i];
-      words2[i] = (w & 255) << 24 | (w & 65280) << 8 | w >>> 8 & 65280 | w >>> 24;
-    }
-  }
-  if (words2[0] !== 119734787) return null;
-  const p = new Parser();
-  p.parse(words2);
-  p.applyDebugNames();
-  const r = new ShaderReflection();
-  r.version = `${words2[1] >>> 16 & 255}.${words2[1] >>> 8 & 255}`;
-  const location = (id) => p.decoration(id, 30 /* Location */)?.[0];
-  const isBuiltIn = (v) => {
-    if (p.decoration(v.id, 11 /* BuiltIn */)) return true;
-    const pointee = p.pointee(v.typeId);
-    const t = p.types.get(pointee);
-    return !!t && t.op === 30 /* TypeStruct */ && p.hasMemberDecoration(pointee, 11 /* BuiltIn */);
-  };
-  const ioVariable = (v) => {
-    if (isBuiltIn(v)) return null;
-    const loc = location(v.id);
-    if (loc === void 0) return null;
-    const type = p.resolve(p.pointee(v.typeId));
-    return { location: loc, name: p.names.get(v.id) ?? "", typeName: typeName(type), type };
-  };
-  for (const e of p.entries) {
-    const inputs = [];
-    const outputs = [];
-    const inInterface = (id) => e.interfaces.length === 0 || e.interfaces.includes(id);
-    for (const v of p.variables) {
-      if (!inInterface(v.id)) continue;
-      if (v.storageClass === 1 /* Input */) {
-        const io = ioVariable(v);
-        if (io) inputs.push(io);
-      } else if (v.storageClass === 3 /* Output */) {
-        const io = ioVariable(v);
-        if (io) outputs.push(io);
-      }
-    }
-    inputs.sort((a, b) => a.location - b.location);
-    outputs.sort((a, b) => a.location - b.location);
-    let workgroupSize = p.localSize.get(e.id) ?? null;
-    const ids = p.localSizeIds.get(e.id);
-    if (!workgroupSize && ids) workgroupSize = [p.constants.get(ids[0]) ?? 1, p.constants.get(ids[1]) ?? 1, p.constants.get(ids[2]) ?? 1];
-    r.entryPoints.push({ name: e.name, stage: STAGES2[e.model] ?? "unknown", inputs, outputs, workgroupSize });
-  }
-  for (const v of p.variables) {
-    const sc = v.storageClass;
-    if (sc !== 2 /* Uniform */ && sc !== 12 /* StorageBuffer */ && sc !== 0 /* UniformConstant */ && sc !== 9 /* PushConstant */) continue;
-    const pointee = p.pointee(v.typeId);
-    const inner = p.unwrapArrays(pointee);
-    const innerType = p.types.get(inner.id);
-    if (!innerType) continue;
-    const type = p.resolve(inner.id);
-    let kind = "unknown";
-    if (sc === 9 /* PushConstant */) kind = "pushConstant";
-    else if (sc === 12 /* StorageBuffer */) kind = "storage";
-    else if (sc === 2 /* Uniform */) kind = p.decoration(inner.id, 3 /* BufferBlock */) ? "storage" : "uniform";
-    else {
-      switch (innerType.op) {
-        case 27 /* TypeSampledImage */:
-          kind = "combinedImageSampler";
-          break;
-        case 26 /* TypeSampler */:
-          kind = "sampler";
-          break;
-        case 5341 /* TypeAccelerationStructureKHR */:
-          kind = "accelerationStructure";
-          break;
-        case 25 /* TypeImage */: {
-          const dim = innerType.operands[2];
-          const storage = innerType.operands[6] === 2;
-          if (dim === 5) kind = storage ? "storageTexelBuffer" : "uniformTexelBuffer";
-          else if (dim === 6) kind = "inputAttachment";
-          else kind = storage ? "storageImage" : "sampledImage";
-          break;
-        }
-        default:
-          break;
-      }
-    }
-    const memberCount = innerType.op === 30 /* TypeStruct */ ? innerType.operands.length - 1 : 0;
-    const readOnly = !!p.decoration(v.id, 24 /* NonWritable */) || memberCount > 0 && p.allMembersDecorated(inner.id, memberCount, 24 /* NonWritable */);
-    const writeOnly = !!p.decoration(v.id, 25 /* NonReadable */) || memberCount > 0 && p.allMembersDecorated(inner.id, memberCount, 25 /* NonReadable */);
-    const structName = type.kind === "struct" ? type.name : "";
-    const name = p.names.get(v.id) || structName || "";
-    const res = {
-      kind,
-      set: p.decoration(v.id, 34 /* DescriptorSet */)?.[0] ?? 0,
-      binding: p.decoration(v.id, 33 /* Binding */)?.[0] ?? 0,
-      name,
-      typeName: structName || typeName(type),
-      type,
-      count: inner.count,
-      readOnly,
-      writeOnly
-    };
-    if (kind === "pushConstant") r.pushConstants.push(res);
-    else r.resources.push(res);
-  }
-  r.resources.sort((a, b) => a.set - b.set || a.binding - b.binding);
-  return r;
-}
 
 // src/mcp/capture_store.ts
 var Capture = class {
@@ -6978,62 +8122,6 @@ function metalBufferResource(pipeline, stage, index) {
     if (s.stage === stage) return s.buffers.get(index) ?? null;
   }
   return null;
-}
-
-// src/renderer/shader_cache.ts
-var STAGE_FLAGS = {
-  VK_SHADER_STAGE_VERTEX_BIT: "vertex",
-  VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: "tess_control",
-  VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: "tess_eval",
-  VK_SHADER_STAGE_GEOMETRY_BIT: "geometry",
-  VK_SHADER_STAGE_FRAGMENT_BIT: "fragment",
-  VK_SHADER_STAGE_COMPUTE_BIT: "compute",
-  VK_SHADER_STAGE_TASK_BIT_EXT: "task",
-  VK_SHADER_STAGE_MESH_BIT_EXT: "mesh",
-  VK_SHADER_STAGE_RAYGEN_BIT_KHR: "raygen",
-  VK_SHADER_STAGE_ANY_HIT_BIT_KHR: "any_hit",
-  VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR: "closest_hit",
-  VK_SHADER_STAGE_MISS_BIT_KHR: "miss",
-  VK_SHADER_STAGE_INTERSECTION_BIT_KHR: "intersection",
-  VK_SHADER_STAGE_CALLABLE_BIT_KHR: "callable"
-};
-function stageFromFlag(flag) {
-  return STAGE_FLAGS[flag] ?? "unknown";
-}
-function pipelineStages(pipeline, db) {
-  const d = pipeline.descriptor;
-  if (!d) return [];
-  const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
-  const out = [];
-  for (const s of stages) {
-    if (!isObject(s)) continue;
-    const stageFlag = str(s.stage);
-    const stage = stageFromFlag(stageFlag);
-    const entryPoint = str(s.pName) || "main";
-    const module = db.getObject(refId(s.module));
-    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
-    if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name.startsWith(`${stage}:`));
-    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
-    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
-  }
-  return out;
-}
-function pipelineUses(data) {
-  const sets = data.sets;
-  const bound = /* @__PURE__ */ new Map();
-  const uses = /* @__PURE__ */ new Map();
-  for (const c2 of data.commands) {
-    if (!c2 || sets.SUBMIT.has(c2.method)) continue;
-    const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
-    if (sets.BIND_PIPELINE.has(c2.method) && c2.args) {
-      const id = refId(c2.args.pipeline);
-      if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c2.method, c2.args)}`, id);
-    } else if (isAction(sets, c2.method)) {
-      const id = bound.get(`${stream}:${sets.bindPointOf(c2.method)}`);
-      if (id !== void 0) uses.set(id, (uses.get(id) ?? 0) + 1);
-    }
-  }
-  return uses;
 }
 
 // src/mcp/describe.ts
@@ -23722,812 +24810,6 @@ function debugTools(store) {
       }
     }
   ];
-}
-
-// src/renderer/vulkan/spirv_ablate.ts
-function isValueOp(op) {
-  return op >= 77 && op <= 84 || op >= 87 && op <= 98 || op >= 109 && op <= 205 || op >= 207 && op <= 215 || op >= 305 && op <= 320 || op === 12 /* ExtInst */ || op === 61 /* Load */ || op === 57 /* FunctionCall */;
-}
-function definesValue(op) {
-  switch (op) {
-    case 0:
-    case 8:
-    case 62:
-    case 63:
-    case 64:
-    case 99:
-    case 218:
-    case 219:
-    case 220:
-    case 221:
-    case 224:
-    case 225:
-    case 228:
-    case 246:
-    case 247:
-    case 248:
-    case 249:
-    case 250:
-    case 251:
-    case 252:
-    case 253:
-    case 254:
-    case 255:
-    case 256:
-    case 257:
-    case 317:
-    case 4416:
-    case 5378:
-    case 5379:
-    case 5380:
-      return false;
-    default:
-      return true;
-  }
-}
-function isDecoration(op) {
-  return op >= 71 /* Decorate */ && op <= 75 /* GroupMemberDecorate */ || op === 332 /* DecorateId */ || op === 5632 /* DecorateString */ || op === 5633 /* MemberDecorateString */;
-}
-function readString4(words2, start, end) {
-  const bytes = [];
-  for (let i = start; i < end; i++) {
-    for (let b = 0; b < 4; b++) {
-      const ch2 = words2[i] >>> b * 8 & 255;
-      if (ch2 === 0) return new TextDecoder().decode(new Uint8Array(bytes));
-      bytes.push(ch2);
-    }
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-var Module = class {
-  words;
-  instructions = [];
-  defs = /* @__PURE__ */ new Map();
-  types = /* @__PURE__ */ new Map();
-  variableClass = /* @__PURE__ */ new Map();
-  builtIns = /* @__PURE__ */ new Map();
-  bufferBlocks = /* @__PURE__ */ new Set();
-  names = /* @__PURE__ */ new Map();
-  sets = /* @__PURE__ */ new Map();
-  bindings = /* @__PURE__ */ new Map();
-  entryPoints = [];
-  parameters = /* @__PURE__ */ new Map();
-  // function id -> parameter ids
-  calls = [];
-  uses = /* @__PURE__ */ new Map();
-  // id -> times it appears as an operand word in functions
-  /** OpConstant ids with their value's low word (array lengths). */
-  constants = /* @__PURE__ */ new Map();
-  /** The stores into each variable, in module order. */
-  storesTo = /* @__PURE__ */ new Map();
-  _reaching = /* @__PURE__ */ new Map();
-  firstFunction = -1;
-  /** Where new decorations go: after the last one, or before the first type. */
-  annotationEnd = -1;
-  constructor(data) {
-    const bytes = data.byteOffset % 4 ? data.slice() : data;
-    this.words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4).slice();
-    const w = this.words;
-    let fn = 0;
-    let ordinal = 0;
-    let firstType = -1;
-    let loops = [];
-    let nest = [];
-    for (let i = 5; i < w.length; ) {
-      const op = w[i] & 65535;
-      const len = w[i] >>> 16;
-      if (!len || i + len > w.length) throw new Error("malformed SPIR-V");
-      if (op === 248 /* Label */) {
-        if (loops.includes(w[i + 1])) loops = loops.slice(0, loops.indexOf(w[i + 1]));
-        if (nest.includes(w[i + 1])) nest = nest.slice(0, nest.indexOf(w[i + 1]));
-      }
-      const ins = { op, start: i, len, ordinal, fn, loops, nest };
-      if (op === 246 /* LoopMerge */) {
-        loops = [...loops, w[i + 1]];
-        nest = [...nest, w[i + 1]];
-      } else if (op === 247 /* SelectionMerge */) {
-        nest = [...nest, w[i + 1]];
-      }
-      const index = this.instructions.length;
-      this.instructions.push(ins);
-      const a = i + 1;
-      if (isDecoration(op)) this.annotationEnd = index + 1;
-      switch (op) {
-        case 15 /* EntryPoint */: {
-          const name = readString4(w, a + 2, i + len);
-          const nameWords = Math.floor(new TextEncoder().encode(name).length / 4) + 1;
-          this.entryPoints.push({ index, stage: w[a], functionId: w[a + 1], name, interface: Array.from(w.subarray(a + 2 + nameWords, i + len)) });
-          break;
-        }
-        case 5 /* Name */:
-          this.names.set(w[a], readString4(w, a + 1, i + len));
-          break;
-        case 71 /* Decorate */:
-          if (w[a + 1] === 11 /* BuiltIn */) this.builtIns.set(w[a], w[a + 2]);
-          else if (w[a + 1] === 3 /* BufferBlock */) this.bufferBlocks.add(w[a]);
-          else if (w[a + 1] === 34 /* DescriptorSet */) this.sets.set(w[a], w[a + 2]);
-          else if (w[a + 1] === 33 /* Binding */) this.bindings.set(w[a], w[a + 2]);
-          break;
-        case 19 /* TypeVoid */:
-        case 20 /* TypeBool */:
-        case 21 /* TypeInt */:
-        case 22 /* TypeFloat */:
-        case 23 /* TypeVector */:
-        case 24 /* TypeMatrix */:
-        case 28 /* TypeArray */:
-        case 30 /* TypeStruct */:
-        case 32 /* TypePointer */:
-        case 25:
-        case 26:
-        case 27:
-        case 29:
-        case 33:
-          if (firstType < 0) firstType = index;
-          this.types.set(w[a], ins);
-          break;
-        case 43 /* Constant */:
-          this.constants.set(w[a + 1], w[a + 2]);
-          break;
-        case 54 /* Function */:
-          if (this.firstFunction < 0) this.firstFunction = index;
-          fn = w[a + 1];
-          ins.fn = fn;
-          this.parameters.set(fn, []);
-          this.defs.set(w[a + 1], ins);
-          break;
-        case 56 /* FunctionEnd */:
-          fn = 0;
-          loops = [];
-          nest = [];
-          break;
-        case 55 /* FunctionParameter */:
-          this.parameters.get(fn)?.push(w[a + 1]);
-          this.defs.set(w[a + 1], ins);
-          break;
-        case 59 /* Variable */: {
-          let cls = w[a + 2];
-          const pointer = this.types.get(w[a]);
-          if (cls === 2 /* Uniform */ && pointer && this.bufferBlocks.has(w[pointer.start + 3])) cls = 12 /* StorageBuffer */;
-          this.variableClass.set(w[a + 1], cls);
-          this.defs.set(w[a + 1], ins);
-          break;
-        }
-        default:
-          if (fn && definesValue(op)) this.defs.set(w[a + 1], ins);
-          if (op === 57 /* FunctionCall */) this.calls.push(ins);
-          break;
-      }
-      ordinal++;
-      i += len;
-    }
-    if (this.annotationEnd < 0) this.annotationEnd = firstType >= 0 ? firstType : this.firstFunction;
-    for (const ins of this.instructions) {
-      if (ins.op !== 62 /* Store */) continue;
-      const v = this.baseVariable(w[ins.start + 1]);
-      let list = this.storesTo.get(v);
-      if (!list) this.storesTo.set(v, list = []);
-      list.push(ins);
-    }
-    for (const ins of this.instructions) {
-      if (!ins.fn || ins.op === 54 /* Function */) continue;
-      for (const o of this.operandWords(ins)) this.uses.set(o, (this.uses.get(o) ?? 0) + 1);
-      if (ins.op === 12 /* ExtInst */ && this.isVoid(w[ins.start + 1])) for (let k = ins.start + 5; k < ins.start + ins.len; k++) this.uses.set(w[k], (this.uses.get(w[k]) ?? 0) + 1);
-    }
-  }
-  /** The id of an existing type declared with exactly these operands after the result id, or undefined. */
-  findType(op, operands) {
-    const w = this.words;
-    for (const [id, t] of this.types) {
-      if (t.op !== op || t.len !== 2 + operands.length) continue;
-      if (operands.every((o, k) => w[t.start + 2 + k] === o)) return id;
-    }
-    return void 0;
-  }
-  /** Whether a value of a type can be built from a scalar: scalars, vectors and matrices. */
-  scalarBuilt(type) {
-    const t = this.types.get(type);
-    if (!t) return false;
-    if (t.op === 20 /* TypeBool */ || t.op === 21 /* TypeInt */ || t.op === 22 /* TypeFloat */) return true;
-    if (t.op === 23 /* TypeVector */ || t.op === 24 /* TypeMatrix */) return this.scalarBuilt(this.words[t.start + 2]);
-    return false;
-  }
-  /** Whether a value of a type can be replaced at all: built from a scalar, or a constant (arrays of a constant length, structs). */
-  replaceable(type, depth = 0) {
-    const t = this.types.get(type);
-    if (!t || depth > 16) return false;
-    const w = this.words;
-    switch (t.op) {
-      case 20 /* TypeBool */:
-      case 21 /* TypeInt */:
-      case 22 /* TypeFloat */:
-      case 23 /* TypeVector */:
-      case 24 /* TypeMatrix */:
-        return true;
-      case 28 /* TypeArray */: {
-        const length2 = this.constants.get(w[t.start + 3]);
-        return length2 !== void 0 && length2 <= 4096 && this.replaceable(w[t.start + 2], depth + 1);
-      }
-      case 30 /* TypeStruct */:
-        for (let k = t.start + 2; k < t.start + t.len; k++) if (!this.replaceable(w[k], depth + 1)) return false;
-        return true;
-      default:
-        return false;
-    }
-  }
-  isVoid(type) {
-    return this.types.get(type)?.op === 19 /* TypeVoid */;
-  }
-  /** The variable a pointer is into, through access chains. */
-  baseVariable(pointer) {
-    for (let depth = 0; depth < 64; depth++) {
-      const d = this.defs.get(pointer);
-      if (!d) return pointer;
-      if (d.op === 65 /* AccessChain */ || d.op === 66 /* InBoundsAccessChain */ || d.op === 67 /* PtrAccessChain */ || d.op === 70 /* InBoundsPtrAccessChain */) {
-        pointer = this.words[d.start + 3];
-        continue;
-      }
-      return pointer;
-    }
-    return pointer;
-  }
-  /**
-   * The value ids an instruction reads: its operands without the literals among them (line numbers,
-   * extended instruction numbers, composite indices, image operand masks), which would otherwise be
-   * taken for ids they happen to equal.
-   */
-  operandWords(ins) {
-    const w = this.words;
-    const s = ins.start;
-    const end = s + ins.len;
-    const from = (k) => Array.from(w.subarray(Math.min(s + k, end), end));
-    switch (ins.op) {
-      case 62 /* Store */:
-        return [w[s + 1], w[s + 2]];
-      case 61 /* Load */:
-        return [w[s + 3]];
-      case 254 /* ReturnValue */:
-      case 250 /* BranchConditional */:
-      case 251 /* Switch */:
-        return [w[s + 1]];
-      case 57 /* FunctionCall */:
-        return from(4);
-      case 12 /* ExtInst */:
-        return this.isVoid(w[s + 1]) ? [] : from(5);
-      // void: debug information
-      case 79:
-        return [w[s + 3], w[s + 4]];
-      // OpVectorShuffle: then component literals
-      case 81 /* CompositeExtract */:
-        return [w[s + 3]];
-      // then index literals
-      case 82:
-        return [w[s + 3], w[s + 4]];
-      // OpCompositeInsert: object, composite, then literals
-      case 245 /* Phi */: {
-        const values = [];
-        for (let k = s + 3; k + 1 < end; k += 2) values.push(w[k]);
-        return values;
-      }
-      default:
-        break;
-    }
-    if (ins.op >= 87 && ins.op <= 98) {
-      const fixed = ins.op === 89 || ins.op === 90 || ins.op === 93 || ins.op === 94 || ins.op === 96 || ins.op === 97 ? 3 : 2;
-      if (ins.op === 99 /* ImageWrite */) return [w[s + 1], w[s + 2], w[s + 3], ...Array.from(w.subarray(Math.min(s + 5, end), end))];
-      return [...Array.from(w.subarray(s + 3, Math.min(s + 3 + fixed, end))), ...Array.from(w.subarray(Math.min(s + 4 + fixed, end), end))];
-    }
-    if (!definesValue(ins.op)) return [];
-    return from(3);
-  }
-  /**
-   * The stores whose values a read of a variable at `at` can see: going back from it in its function,
-   * every store up to and including the first that writes the whole variable outside any branch or loop
-   * the read is not in (it hides the ones before); the stores later in a loop around both (they reach
-   * it through the back edge); and where nothing in the function hides them, what reaches the calls of
-   * a parameter's function, or any store of a variable other functions write. Values an engine's
-   * generated shaders keep in a few reused temporaries stay apart this way.
-   */
-  reachingStores(variable, at, depth = 0) {
-    const w = this.words;
-    const out = [];
-    const stores = this.storesTo.get(variable) ?? [];
-    const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
-    let hidden = false;
-    for (let k = stores.length - 1; k >= 0; k--) {
-      const s = stores[k];
-      if (s.fn !== at.fn || s.start >= at.start) continue;
-      out.push(s);
-      if (w[s.start + 1] === variable && prefix(s.nest, at.nest)) {
-        hidden = true;
-        break;
-      }
-    }
-    for (const s of stores) {
-      if (s.fn === at.fn && s.start > at.start && s.loops.some((l) => at.loops.includes(l))) out.push(s);
-    }
-    if (!hidden && depth < 8) {
-      const def = this.defs.get(variable);
-      if (def?.op === 55 /* FunctionParameter */) {
-        const index = this.parameters.get(def.fn)?.indexOf(variable) ?? -1;
-        for (const call of this.calls) {
-          if (w[call.start + 3] !== def.fn || call.len <= 4 + index || index < 0) continue;
-          out.push(...this.reachingStores(this.baseVariable(w[call.start + 4 + index]), call, depth + 1));
-        }
-      } else {
-        for (const s of stores) if (s.fn !== at.fn) out.push(s);
-      }
-    }
-    return out;
-  }
-  /** The stores a load sees (reachingStores), once per load. */
-  storesSeenBy(load) {
-    let list = this._reaching.get(load);
-    if (!list) this._reaching.set(load, list = this.reachingStores(this.baseVariable(this.words[load.start + 3]), load));
-    return list;
-  }
-  /**
-   * The ids control flow depends on: conditions and selectors, and everything they are computed from,
-   * followed through operands, the stores a load sees, function parameters (the arguments of every
-   * call) and call results (the values the callee returns).
-   */
-  controlSlice() {
-    const w = this.words;
-    const slice = /* @__PURE__ */ new Set();
-    const work = [];
-    const add = (id) => {
-      if (!slice.has(id)) {
-        slice.add(id);
-        work.push(id);
-      }
-    };
-    const returns = /* @__PURE__ */ new Map();
-    const paramIndex = /* @__PURE__ */ new Map();
-    for (const [fn, params] of this.parameters) params.forEach((p, index) => paramIndex.set(p, { fn, index }));
-    for (const ins of this.instructions) {
-      if (!ins.fn) continue;
-      if (ins.op === 250 /* BranchConditional */ || ins.op === 251 /* Switch */) add(w[ins.start + 1]);
-      else if (ins.op === 254 /* ReturnValue */) {
-        let list = returns.get(ins.fn);
-        if (!list) returns.set(ins.fn, list = []);
-        list.push(w[ins.start + 1]);
-      }
-    }
-    while (work.length) {
-      const id = work.pop();
-      const d = this.defs.get(id);
-      if (!d || !d.fn || d.op === 54 /* Function */) continue;
-      if (d.op === 55 /* FunctionParameter */) {
-        const p = paramIndex.get(id);
-        if (p) {
-          for (const call of this.calls) if (w[call.start + 3] === p.fn && call.len > 4 + p.index) add(w[call.start + 4 + p.index]);
-        }
-      } else if (d.op === 57 /* FunctionCall */) {
-        for (const v of returns.get(w[d.start + 3]) ?? []) add(v);
-        for (const o of this.operandWords(d)) add(o);
-      } else {
-        for (const o of this.operandWords(d)) add(o);
-        if (d.op === 61 /* Load */) for (const store of this.storesSeenBy(d)) {
-          add(w[store.start + 2]);
-          add(w[store.start + 1]);
-        }
-      }
-    }
-    return slice;
-  }
-};
-function sourceBuiltIn(stage) {
-  if (stage === "fragment") return { builtIn: 15 /* FragCoord */, kind: "vec4" };
-  if (stage === "vertex") return { builtIn: 42 /* VertexIndex */, kind: "int" };
-  if (stage === "compute") return { builtIn: 28 /* GlobalInvocationId */, kind: "uvec3" };
-  return null;
-}
-function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ */ new Set()) {
-  const w = m.words;
-  let bound = w[3];
-  const annotations = [];
-  const declarations = [];
-  const typeIds = /* @__PURE__ */ new Map();
-  const type = (op, operands) => {
-    const key = `${op}:${operands.join(",")}`;
-    let id = typeIds.get(key) ?? m.findType(op, operands);
-    if (id === void 0) {
-      id = bound++;
-      declarations.push(2 + operands.length << 16 | op, id, ...operands);
-    }
-    typeIds.set(key, id);
-    return id;
-  };
-  const constants = /* @__PURE__ */ new Map();
-  const constantOf = (t) => {
-    const existing = constants.get(t);
-    if (existing !== void 0) return existing;
-    const ti = m.types.get(t);
-    let id;
-    if (ti.op === 20 /* TypeBool */) {
-      id = bound++;
-      declarations.push(3 << 16 | 42 /* ConstantFalse */, t, id);
-    } else if (ti.op === 22 /* TypeFloat */) {
-      const width = w[ti.start + 2];
-      const literal = width === 64 ? [0, 1071644672] : width === 16 ? [14336] : [1056964608];
-      id = bound++;
-      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
-    } else if (ti.op === 21 /* TypeInt */) {
-      const literal = w[ti.start + 2] === 64 ? [1, 0] : [1];
-      id = bound++;
-      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
-    } else {
-      let parts2;
-      if (ti.op === 23 /* TypeVector */ || ti.op === 24 /* TypeMatrix */) parts2 = new Array(w[ti.start + 3]).fill(w[ti.start + 2]);
-      else if (ti.op === 28 /* TypeArray */) parts2 = new Array(m.constants.get(w[ti.start + 3]) ?? 0).fill(w[ti.start + 2]);
-      else parts2 = Array.from(w.subarray(ti.start + 2, ti.start + ti.len));
-      const components = parts2.map(constantOf);
-      id = bound++;
-      declarations.push(3 + components.length << 16 | 44 /* ConstantComposite */, t, id, ...components);
-    }
-    constants.set(t, id);
-    return id;
-  };
-  const source = sourceBuiltIn(stage);
-  let input = 0;
-  let inputType = 0;
-  let addToInterface = false;
-  const float32 = () => type(22 /* TypeFloat */, [32]);
-  if (source && [...replace].some((ins) => m.scalarBuilt(w[ins.start + 1]))) {
-    for (const [id, builtIn] of m.builtIns) {
-      if (builtIn === source.builtIn && m.variableClass.get(id) === 1 /* Input */) input = id;
-    }
-    const valueType2 = source.kind === "vec4" ? type(23 /* TypeVector */, [float32(), 4]) : source.kind === "int" ? type(21 /* TypeInt */, [32, 1]) : type(23 /* TypeVector */, [type(21 /* TypeInt */, [32, 0]), 3]);
-    if (input) {
-      inputType = valueType2;
-    } else {
-      const pointer = type(32 /* TypePointer */, [1 /* Input */, valueType2]);
-      input = bound++;
-      declarations.push(4 << 16 | 59 /* Variable */, pointer, input, 1 /* Input */);
-      annotations.push(4 << 16 | 71 /* Decorate */, input, 11 /* BuiltIn */, source.builtIn);
-      inputType = valueType2;
-    }
-    addToInterface = !m.entryPoints.find((e) => e.index === entryIndex)?.interface.includes(input);
-  }
-  const scalarSource = (out2) => {
-    const loaded = bound++;
-    out2.push(4 << 16 | 61 /* Load */, inputType, loaded, input);
-    const f = float32();
-    const x = bound++;
-    if (source.kind === "vec4") {
-      out2.push(5 << 16 | 81 /* CompositeExtract */, f, x, loaded, 0);
-    } else if (source.kind === "int") {
-      out2.push(4 << 16 | 111 /* ConvertSToF */, f, x, loaded);
-    } else {
-      const u = bound++;
-      out2.push(5 << 16 | 81 /* CompositeExtract */, type(21 /* TypeInt */, [32, 0]), u, loaded, 0);
-      out2.push(4 << 16 | 112 /* ConvertUToF */, f, x, u);
-    }
-    return x;
-  };
-  const build = (out2, t, x, result) => {
-    const ti = m.types.get(t);
-    switch (ti.op) {
-      case 22 /* TypeFloat */:
-        if (w[ti.start + 2] === 32) out2.push(4 << 16 | 83 /* CopyObject */, t, result, x);
-        else out2.push(4 << 16 | 115 /* FConvert */, t, result, x);
-        return;
-      case 21 /* TypeInt */:
-        out2.push(4 << 16 | (w[ti.start + 3] ? 110 /* ConvertFToS */ : 109 /* ConvertFToU */), t, result, x);
-        return;
-      case 20 /* TypeBool */:
-        out2.push(5 << 16 | 184 /* FOrdLessThan */, t, result, x, constantOf(float32()));
-        return;
-      default: {
-        const component = w[ti.start + 2];
-        const count2 = w[ti.start + 3];
-        const part = bound++;
-        build(out2, component, x, part);
-        out2.push(3 + count2 << 16 | 80 /* CompositeConstruct */, t, result, ...new Array(count2).fill(part));
-      }
-    }
-  };
-  const loopScalar = (out2, ins) => {
-    if (!ins.loops.length) return null;
-    const innermost2 = ins.loops[ins.loops.length - 1];
-    for (const o of m.operandWords(ins)) {
-      const d = m.defs.get(o);
-      if (!d || !d.fn || d.op === 59 /* Variable */ || d.op === 55 /* FunctionParameter */ || replace.has(d) || !d.loops.includes(innermost2) || !definesValue(d.op)) continue;
-      if (d.op === 61 /* Load */ && written.has(m.baseVariable(w[d.start + 3]))) continue;
-      const t = w[d.start + 1];
-      const ti = m.types.get(t);
-      const scalarType = ti?.op === 23 /* TypeVector */ ? w[ti.start + 2] : t;
-      const scalar = m.types.get(scalarType);
-      if (!scalar || scalar.op !== 22 /* TypeFloat */ && scalar.op !== 21 /* TypeInt */) continue;
-      let id = o;
-      if (ti?.op === 23 /* TypeVector */) {
-        id = bound++;
-        out2.push(5 << 16 | 81 /* CompositeExtract */, scalarType, id, o, 0);
-      }
-      if (scalar.op === 22 /* TypeFloat */ && w[scalar.start + 2] === 32) return id;
-      const x = bound++;
-      const convert2 = scalar.op === 22 /* TypeFloat */ ? 115 /* FConvert */ : w[scalar.start + 3] ? 111 /* ConvertSToF */ : 112 /* ConvertUToF */;
-      out2.push(4 << 16 | convert2, float32(), x, id);
-      return x;
-    }
-    return null;
-  };
-  const replacement = /* @__PURE__ */ new Map();
-  for (const ins of replace) {
-    const t = w[ins.start + 1];
-    const result = w[ins.start + 2];
-    const out2 = [];
-    const varying = m.scalarBuilt(t) ? loopScalar(out2, ins) : null;
-    if (varying !== null) build(out2, t, varying, result);
-    else if (input && m.scalarBuilt(t)) build(out2, t, scalarSource(out2), result);
-    else out2.push(4 << 16 | 83 /* CopyObject */, t, result, constantOf(t));
-    replacement.set(ins, out2);
-  }
-  const out = Array.from(w.subarray(0, 5));
-  m.instructions.forEach((ins, index) => {
-    if (index === m.annotationEnd) out.push(...annotations);
-    if (index === m.firstFunction) out.push(...declarations);
-    if (remove.has(ins)) return;
-    const replaced = replacement.get(ins);
-    if (replaced) {
-      out.push(...replaced);
-      return;
-    }
-    if (index === entryIndex && addToInterface) {
-      out.push(ins.len + 1 << 16 | 15 /* EntryPoint */, ...w.subarray(ins.start + 1, ins.start + ins.len), input);
-      return;
-    }
-    for (let k = ins.start; k < ins.start + ins.len; k++) out.push(w[k]);
-  });
-  out[3] = bound;
-  return new Uint8Array(new Uint32Array(out).buffer);
-}
-function upstreamParts(m, parts2) {
-  const w = m.words;
-  const taint = /* @__PURE__ */ new Map();
-  const variables = /* @__PURE__ */ new Map();
-  const returns = /* @__PURE__ */ new Map();
-  const get = (map, id) => map.get(id) ?? 0n;
-  const or = (map, id, bits) => {
-    const before = get(map, id);
-    const after = before | bits;
-    if (after === before) return false;
-    map.set(id, after);
-    return true;
-  };
-  parts2.forEach((p, i) => {
-    for (const id of p.results) or(taint, id, 1n << BigInt(i));
-  });
-  const calledFunction = /* @__PURE__ */ new Map();
-  parts2.forEach((p, i) => {
-    if (p.calls !== void 0) calledFunction.set(p.calls, i);
-  });
-  for (let pass = 0; pass < 16; pass++) {
-    let changed = false;
-    for (const ins of m.instructions) {
-      if (!ins.fn || ins.op === 54 /* Function */) continue;
-      let bits = 0n;
-      for (const o of m.operandWords(ins)) bits |= get(taint, o);
-      if (ins.op === 62 /* Store */) {
-        changed = or(variables, m.baseVariable(w[ins.start + 1]), get(taint, w[ins.start + 2])) || changed;
-      } else if (ins.op === 254 /* ReturnValue */) {
-        changed = or(returns, ins.fn, bits) || changed;
-      } else if (definesValue(ins.op) && ins.op !== 55 /* FunctionParameter */) {
-        if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
-        if (ins.op === 57 /* FunctionCall */) {
-          bits = get(returns, w[ins.start + 3]);
-          const part = calledFunction.get(w[ins.start + 3]);
-          if (part !== void 0) bits |= 1n << BigInt(part);
-        }
-        changed = or(taint, w[ins.start + 2], bits) || changed;
-      }
-    }
-    if (!changed) break;
-  }
-  return parts2.map((p, i) => {
-    let bits = 0n;
-    for (const ins of p.instructions) {
-      for (const o of m.operandWords(ins)) bits |= get(taint, o);
-      if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
-      if (ins.op === 57 /* FunctionCall */) bits |= get(returns, w[ins.start + 3]) | (calledFunction.has(w[ins.start + 3]) ? 1n << BigInt(calledFunction.get(w[ins.start + 3])) : 0n);
-    }
-    bits &= ~(1n << BigInt(i));
-    const out = [];
-    for (let k = 0; k < parts2.length; k++) if (bits & 1n << BigInt(k)) out.push(k);
-    return out;
-  });
-}
-function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
-  const plan = { variants: [], skipped: [] };
-  let m;
-  try {
-    m = new Module(spirv);
-  } catch {
-    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the module could not be parsed" });
-    return plan;
-  }
-  const w = m.words;
-  const entry = analysis.entryPoints.find((e) => e.name === entryPoint && e.stage === stage) ?? analysis.entryPoints.find((e) => e.stage === stage);
-  const moduleEntry = entry ? m.entryPoints.find((e) => e.functionId === entry.functionId) : void 0;
-  if (!entry || !moduleEntry) {
-    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the entry point is not in the module" });
-    return plan;
-  }
-  const reachable = new Set(entry.functions.map((f) => f.id));
-  const slice = m.controlSlice();
-  const why = (ins) => {
-    const t = w[ins.start + 1];
-    if (slice.has(w[ins.start + 2])) return "control flow depends on it";
-    if (m.isVoid(t)) return "void";
-    if (!m.replaceable(t)) return "its type cannot be replaced";
-    return null;
-  };
-  const candidates = [];
-  let stageVariant = null;
-  {
-    const part = { kind: "stage", name: `${stage}: ${entry.name}` };
-    const outputs = /* @__PURE__ */ new Set();
-    for (const v of moduleEntry.interface) {
-      if (m.variableClass.get(v) !== 3 /* Output */) continue;
-      const builtIn = m.builtIns.get(v);
-      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */ || builtIn === 0 /* Position */) continue;
-      outputs.add(v);
-    }
-    const remove = /* @__PURE__ */ new Set();
-    for (const ins of m.instructions) {
-      if (!ins.fn || !reachable.has(ins.fn)) continue;
-      if (ins.op === 62 /* Store */) {
-        const base = m.baseVariable(w[ins.start + 1]);
-        const cls = m.variableClass.get(base);
-        if (outputs.has(base) || stage === "compute" && (cls === 12 /* StorageBuffer */ || cls === 5349 /* PhysicalStorageBuffer */)) remove.add(ins);
-      } else if (ins.op === 99 /* ImageWrite */ && stage === "compute") {
-        remove.add(ins);
-      }
-    }
-    if (stage !== "fragment" && stage !== "compute") plan.skipped.push({ ...part, reason: "only fragment and compute stages are measured whole: a vertex shader's outputs decide what is rasterized" });
-    else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
-    else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, /* @__PURE__ */ new Set(), remove), edits: remove.size, upstream: [] };
-  }
-  for (const f of entry.functions.filter((fn) => fn.id !== entry.functionId).slice(0, limits.functions ?? 16)) {
-    const part = { kind: "function", name: f.name, functionId: f.id, functionName: f.name };
-    const replace = /* @__PURE__ */ new Set();
-    const remove = /* @__PURE__ */ new Set();
-    let reason = null;
-    for (const call of m.calls) {
-      if (w[call.start + 3] !== f.id || !reachable.has(call.fn)) continue;
-      if (m.isVoid(w[call.start + 1])) {
-        if ((m.uses.get(w[call.start + 2]) ?? 0) > 0) reason = "a call's result id is used";
-        else remove.add(call);
-        continue;
-      }
-      const r = why(call);
-      if (r) reason = r === "control flow depends on it" ? "control flow depends on what it returns" : "it returns a value that cannot be replaced";
-      else replace.add(call);
-    }
-    if (reason) plan.skipped.push({ ...part, reason });
-    else if (!replace.size && !remove.size) plan.skipped.push({ ...part, reason: "nothing calls it" });
-    else candidates.push({ part, replace, remove, results: /* @__PURE__ */ new Set(), instructions: [], calls: f.id, written: /* @__PURE__ */ new Set() });
-  }
-  const debug = analysis.hasLines ? parseSpirvDebugInfo(spirv) : null;
-  if (debug) {
-    const baseName = (file) => debug.files[file]?.name.replace(/^.*[\\/]/, "") ?? "";
-    const lineOf = (ins) => {
-      const loc = debug.locations[ins.ordinal];
-      return loc ? `${loc.file}:${loc.line}` : "";
-    };
-    const loopLoads = /* @__PURE__ */ new Map();
-    const users = /* @__PURE__ */ new Map();
-    const backEdges = /* @__PURE__ */ new Map();
-    m.instructions.forEach((ins) => {
-      if (!ins.fn) return;
-      if (ins.op === 61 /* Load */ && ins.loops.length) {
-        const v = m.baseVariable(w[ins.start + 3]);
-        let list = loopLoads.get(v);
-        if (!list) loopLoads.set(v, list = []);
-        list.push(ins);
-      }
-      for (const o of m.operandWords(ins)) {
-        let list = users.get(o);
-        if (!list) users.set(o, list = []);
-        list.push(ins);
-      }
-      if (ins.op === 245 /* Phi */) {
-        for (let k = ins.start + 3; k + 1 < ins.start + ins.len; k += 2) {
-          const def = m.defs.get(w[k]);
-          if (!def || def.start <= ins.start) continue;
-          let list = backEdges.get(w[k]);
-          if (!list) backEdges.set(w[k], list = []);
-          list.push(ins);
-        }
-      }
-    });
-    const recurrence = (instructions, here) => instructions.some((ins) => {
-      if (ins.op === 62 /* Store */ && ins.loops.length) {
-        const loop = ins.loops[ins.loops.length - 1];
-        return (loopLoads.get(m.baseVariable(w[ins.start + 1])) ?? []).some((load) => load.loops.includes(loop) && load.start < ins.start && lineOf(load) !== here);
-      }
-      if (!definesValue(ins.op)) return false;
-      return (backEdges.get(w[ins.start + 2]) ?? []).some((phi) => (users.get(w[phi.start + 2]) ?? []).some((u) => lineOf(u) !== here && lineOf(u) !== ""));
-    });
-    const lines = entry.functions.flatMap((f) => f.lines.map((l) => ({ f, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, limits.lines ?? 32);
-    for (const { f, l } of lines) {
-      const part = { kind: "line", name: `${l.file ? `${l.file}:` : "line "}${l.line}`, functionId: f.id, functionName: f.name, file: l.file, line: l.line };
-      const replace = /* @__PURE__ */ new Set();
-      const remove = /* @__PURE__ */ new Set();
-      const instructions = [];
-      let controlled = 0;
-      for (const ins of m.instructions) {
-        if (ins.fn !== f.id) continue;
-        const loc = debug.locations[ins.ordinal];
-        if (!loc || loc.line !== l.line || baseName(loc.file) !== l.file) continue;
-        instructions.push(ins);
-        if (!isValueOp(ins.op)) continue;
-        if (ins.op === 57 /* FunctionCall */ && m.isVoid(w[ins.start + 1])) {
-          if (!(m.uses.get(w[ins.start + 2]) ?? 0)) remove.add(ins);
-          continue;
-        }
-        const r = why(ins);
-        if (!r) replace.add(ins);
-        else if (r === "control flow depends on it") controlled++;
-      }
-      const replacedOperands = /* @__PURE__ */ new Set();
-      for (const ins of replace) if (ins.op !== 61 /* Load */) for (const o of m.operandWords(ins)) replacedOperands.add(o);
-      for (const ins of [...replace]) if (ins.op === 61 /* Load */ && replacedOperands.has(w[ins.start + 2])) replace.delete(ins);
-      const here = instructions.length ? lineOf(instructions[0]) : "";
-      if (!replace.size && !remove.size) {
-        plan.skipped.push({ ...part, reason: controlled ? "control flow depends on what the line computes" : "the line computes nothing that can be replaced" });
-      } else if (recurrence(instructions, here)) {
-        plan.skipped.push({ ...part, reason: "it updates a value that other lines of its loop read every iteration: taking it out would let the compiler hoist the loop's work, and charge that to the line" });
-      } else {
-        const results = new Set([...replace].map((ins) => w[ins.start + 2]));
-        const written = new Set(instructions.filter((ins) => ins.op === 62 /* Store */).map((ins) => m.baseVariable(w[ins.start + 1])));
-        candidates.push({ part, replace, remove, results, instructions, written });
-      }
-    }
-  } else {
-    plan.skipped.push({ kind: "line", name: "source lines", reason: "the module has no line information" });
-  }
-  const textureOf2 = (id) => {
-    for (let depth = 0; depth < 16; depth++) {
-      const d = m.defs.get(id);
-      if (!d) return null;
-      if (d.op === 59 /* Variable */) return m.variableClass.get(id) === 0 ? id : null;
-      if (d.op === 61 /* Load */) id = m.baseVariable(w[d.start + 3]);
-      else if (d.op === 86 || d.op === 100) id = w[d.start + 3];
-      else return null;
-    }
-    return null;
-  };
-  const textures = /* @__PURE__ */ new Map();
-  for (const ins of m.instructions) {
-    if (!ins.fn || !reachable.has(ins.fn) || !(ins.op >= 87 && ins.op <= 98 && ins.op !== 99 /* ImageWrite */ || ins.op >= 305 && ins.op <= 320)) continue;
-    const texture = textureOf2(w[ins.start + 3]);
-    if (texture === null) continue;
-    let list = textures.get(texture);
-    if (!list) textures.set(texture, list = []);
-    list.push(ins);
-  }
-  const rankedTextures = [...textures.entries()].sort((x, y) => y[1].length - x[1].length).slice(0, limits.textures ?? 16);
-  for (const [texture, uses] of rankedTextures) {
-    const set = m.sets.get(texture);
-    const binding = m.bindings.get(texture);
-    const name = m.names.get(texture) || (set !== void 0 && binding !== void 0 ? `set ${set}, binding ${binding}` : `texture ${texture}`);
-    const part = { kind: "texture", name, ...set !== void 0 ? { set } : {}, ...binding !== void 0 ? { binding } : {} };
-    const replace = new Set(uses.filter((ins) => !why(ins)));
-    if (!replace.size) plan.skipped.push({ ...part, reason: "control flow depends on what is read from it" });
-    else candidates.push({ part, replace, remove: /* @__PURE__ */ new Set(), results: /* @__PURE__ */ new Set(), instructions: [], written: /* @__PURE__ */ new Set() });
-  }
-  const upstream = upstreamParts(m, candidates);
-  const offset = stageVariant ? 1 : 0;
-  if (stageVariant) plan.variants.push(stageVariant);
-  candidates.forEach((c2, i) => {
-    plan.variants.push({
-      ...c2.part,
-      spirv: rewrite(m, stage, moduleEntry.index, c2.replace, c2.remove, c2.written),
-      edits: c2.replace.size + c2.remove.size,
-      upstream: upstream[i].map((k) => k + offset)
-    });
-  });
-  return plan;
 }
 
 // src/main/shader_ablation_run.ts

@@ -1,6 +1,6 @@
 // Incoming messages from the inspector UI.
 //
-// The counterpart of HandleUiMessage in layer/src/layer.cpp, answering the same actions with the
+// The counterpart of HandleUiMessage in vulkan/src/layer.cpp, answering the same actions with the
 // same shapes. Only what the Metal side can honour is handled; anything else is logged and
 // ignored, so a UI that asks for something Vulkan-only does not wedge the session.
 #include "ui_messages.h"

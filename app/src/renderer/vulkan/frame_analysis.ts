@@ -19,6 +19,9 @@
 //   msaa-sampled            a multisampled attachment stored without a resolve, for sampling
 //   single-workgroup-dispatch  a dispatch of one workgroup
 //   tiny-draws              many draws of a handful of vertices
+//   oversized-attachment    an attachment larger than every render area the frame draws into it
+//   redundant-transition    a layout transition nothing uses before the next one, or a barrier
+//                           that changes nothing
 //
 // Every finding names the command it is about so the UI can jump to it (findings per command
 // through byCommand()).
@@ -26,7 +29,7 @@
 // analyzeFrame() below also folds in the rules over the capture's render graph
 // (../render_graph_analysis.ts) when the caller has built one. Those answer exactly what a few of
 // the rules here can only approximate from usage flags, and replace them (SUPERSEDED_RULES).
-import { DRAW_METHODS, PASS_BEGIN, PASS_END } from "./command_sets.js";
+import { DISPATCH_METHODS, DRAW_METHODS, PASS_BEGIN, PASS_END, TRACE_METHODS, bindPointOf } from "./command_sets.js";
 import { decodePass, imageOfView, pNextChain, type AttachmentUse, type PassAttachments } from "./pass_info.js";
 import { isHandleRef, isObject, num, refId, str, type VulkanObject } from "./vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./spirv_analysis.js";
@@ -37,7 +40,9 @@ import type { ObjectLookup } from "./vulkan_object.js";
 import { analyzeMetalFrame } from "../metal/frame_analysis.js";
 import { analyzeCounters } from "../counter_rules.js";
 import { analyzeSampling } from "../sampling_rules.js";
-import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.js";
+import { textureReads, type TextureReads } from "./spirv_ablate.js";
+import { pipelineStages } from "../shader_cache.js";
+import type { ArgObject, ArgValue, CaptureCommand, CaptureDescriptorSet, CaptureDescriptorSets } from "../../shared/protocol.js";
 
 export interface FrameFinding {
   rule: string;
@@ -50,9 +55,13 @@ export interface FrameFinding {
   count: number;
 }
 
-/** What the analysis needs of the object database (VulkanObject.allObjects for the device's memory types). */
+/**
+ * What the analysis needs of the object database: VulkanObject.allObjects for the device's memory
+ * types, and the payloads (SPIR-V) it has, for the rules that look at how a shader reads a texture.
+ */
 export interface FrameAnalysisDatabase extends ObjectLookup {
   allObjects: Map<number, VulkanObject>;
+  blobData?: Map<string, Uint8Array>;
 }
 
 interface PassInfo extends PassAttachments {
@@ -63,13 +72,50 @@ interface PassInfo extends PassAttachments {
   drawSignature: string[];
   /** The earlier clear command of an attachment image loaded by this pass, if any. */
   clearedBefore: Map<number, CaptureCommand>;
+  /** The render area's offset (its size is width and height). */
+  x: number;
+  y: number;
+  /** The pipelines and descriptors its draws ran with, each combination once. */
+  drawStates: Map<string, { pipeline: number; descriptors: CaptureDescriptorSets }>;
 }
 
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
+/** An attachment is oversized when the frame's render areas in it cover at most this much of it. */
+const OVERSIZED_COVERAGE = 0.75;
 
-const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "msaa-sampled", "barrier-in-render-pass", "color-load", "tiny-draws",
-  "full-pipeline-barrier", "redundant-pipeline-bind", "redundant-descriptor-bind", "redundant-buffer-bind", "push-constants-unchanged", "barrier-adjacent", "single-workgroup-dispatch", "depth-transient"];
+const RULE_ORDER = ["stereo-without-multiview", "clear-outside-pass", "depth-store", "msaa-store", "msaa-sampled", "barrier-in-render-pass", "oversized-attachment", "color-load", "tiny-draws",
+  "full-pipeline-barrier", "redundant-transition", "redundant-pipeline-bind", "redundant-descriptor-bind", "redundant-buffer-bind", "push-constants-unchanged", "barrier-adjacent", "single-workgroup-dispatch", "depth-transient"];
+
+/** The part of an image a barrier names. */
+interface BarrierRange { aspects: string[]; mip: number; mips: number; layer: number; layers: number }
+
+function barrierRange(b: ArgObject): BarrierRange {
+  const r = isObject(b.subresourceRange) ? b.subresourceRange : null;
+  const count = (v: ArgValue | undefined): number => (num(v) === 0xffffffff ? Infinity : num(v));
+  return { aspects: str(r?.aspectMask).split("|").map((s) => s.trim()).filter(Boolean), mip: num(r?.baseMipLevel), mips: count(r?.levelCount),
+           layer: num(r?.baseArrayLayer), layers: count(r?.layerCount) };
+}
+
+function rangesOverlap(a: BarrierRange, b: BarrierRange): boolean {
+  const aspects = !a.aspects.length || !b.aspects.length || a.aspects.some((x) => b.aspects.includes(x));
+  return aspects && a.mip < b.mip + b.mips && b.mip < a.mip + a.mips && a.layer < b.layer + b.layers && b.layer < a.layer + a.layers;
+}
+
+/** Every VkImage a value names, directly or through a VkImageView. */
+function collectImages(v: ArgValue | undefined, db: ObjectLookup, out: Set<number>): void {
+  if (Array.isArray(v)) {
+    for (const e of v) collectImages(e, db, out);
+  } else if (isHandleRef(v)) {
+    if (v.__class === "VkImage") out.add(v.__id);
+    else if (v.__class === "VkImageView") {
+      const image = imageOfView(db, v.__id);
+      if (image !== null) out.add(image);
+    }
+  } else if (isObject(v)) {
+    for (const e of Object.values(v)) collectImages(e, db, out);
+  }
+}
 
 /** Every stage mask a barrier command carries (the command's own, or its VkDependencyInfo's barriers). */
 function barrierStageMasks(a: ArgObject): { src: string; dst: string }[] {
@@ -175,11 +221,47 @@ export class FrameAnalysis {
     const boundBuffers = new Map<string, string>();      // "cb:v<binding>" / "cb:index" -> buffer, offset (and size, stride, type)
     const pushed = new Map<string, string>();            // "cb:offset:size" -> the bytes last pushed there
     const previous = new Map<number, string>();          // cb -> the method recorded just before
+    // Layout transitions nothing has used yet, per image: a later transition of the same
+    // subresources makes them wasted.
+    const unusedTransitions = new Map<number, { cmd: CaptureCommand; range: BarrierRange }[]>();
+    const wastedTransitions = new Folded();
+    const noopBarriers = new Folded();
+
+    // The descriptor sets bound per stream and bind point, as the capture snapshots them at each bind.
+    const boundDescriptors = new Map<string, Map<number, CaptureDescriptorSet>>();
+    const actionDescriptors = (cmd: CaptureCommand, stream: string): CaptureDescriptorSets | null => {
+      const bindPoint = bindPointOf(cmd.method);
+      const sets = boundDescriptors.get(`${stream}|${bindPoint}`);
+      return sets?.size ? { bindPoint, sets: [...sets.values()] } : null;
+    };
 
     for (const cmd of commands) {
       const method = cmd.method;
       const a = cmd.args;
       const cb = cmd.object?.__id ?? 0;
+      const stream = `${cb}:${cmd.secondary ?? 0}`;
+      if (cmd.descriptors) {
+        const key = `${stream}|${cmd.descriptors.bindPoint}`;
+        let sets = boundDescriptors.get(key);
+        if (!sets) boundDescriptors.set(key, (sets = new Map()));
+        for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      }
+      if (unusedTransitions.size && !BARRIER_METHODS.has(method)) {
+        // Anything else naming an image uses it in the layout it is in: its arguments, the
+        // descriptors a draw or dispatch reads, the attachments a pass begins with.
+        const used = new Set<number>();
+        collectImages(a, db, used);
+        if (DRAW_METHODS.has(method) || DISPATCH_METHODS.has(method) || TRACE_METHODS.has(method)) {
+          collectImages(actionDescriptors(cmd, stream) as unknown as ArgValue, db, used);
+        }
+        if (PASS_BEGIN.has(method)) {
+          const attachments = decodePass(cmd, db)?.attachments ?? [];
+          // A pass whose targets the capture cannot name could be using any of them.
+          if (!attachments.length || attachments.some((att) => att.imageId === null)) unusedTransitions.clear();
+          for (const att of attachments) if (att.imageId !== null) used.add(att.imageId);
+        }
+        for (const image of used) unusedTransitions.delete(image);
+      }
       if (cmd.descriptors) {
         const views = new Set<number>();
         collectImageViews(cmd.descriptors as unknown as ArgValue, views);
@@ -267,6 +349,7 @@ export class FrameAnalysis {
         if (BARRIER_METHODS.has(previous.get(cb) ?? "")) adjacentBarriers.add(cmd);
         if (open.has(cb)) passBarriers.add(cmd);
         if (a && barrierStageMasks(a).some((m) => m.src.includes("ALL_COMMANDS") && m.dst.includes("ALL_COMMANDS"))) fullBarriers.add(cmd);
+        if (a) this._transitions(cmd, a, unusedTransitions, wastedTransitions, noopBarriers);
       } else if ((method === "vkCmdDispatch" || method === "vkCmdDispatchBase" || method === "vkCmdDispatchBaseKHR") && a) {
         if (num(a.groupCountX) * num(a.groupCountY) * num(a.groupCountZ) === 1) singleDispatches.add(cmd);
       } else if (DRAW_METHODS.has(method)) {
@@ -278,6 +361,11 @@ export class FrameAnalysis {
         if (pass) {
           pass.draws++;
           pass.drawSignature.push(`${pipeline}:${vertices}`);
+          const descriptors = pass.drawStates.size < 256 ? actionDescriptors(cmd, stream) : null;
+          if (descriptors) {
+            const key = `${pipeline}|${argKey(descriptors as unknown as ArgValue)}`;
+            if (!pass.drawStates.has(key)) pass.drawStates.set(key, { pipeline, descriptors });
+          }
         }
         if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES) tinyDraws.add(cmd);
       } else if (a) {
@@ -308,12 +396,94 @@ export class FrameAnalysis {
     if (fullBarriers.count) this._addFolded("full-pipeline-barrier", "low", "medium", `A barrier waits for every stage and blocks every stage (ALL_COMMANDS to ALL_COMMANDS) ${times(fullBarriers)}: the GPU drains completely before it continues. Naming the stages that produce and consume the data lets the rest overlap.`, fullBarriers);
     if (passBarriers.count) this._addFolded("barrier-in-render-pass", "medium", "medium", `A pipeline barrier is recorded inside a render pass ${times(passBarriers)}. On a tiled GPU a barrier inside a pass forces the tiles to be flushed and reloaded; move the dependency to a subpass dependency or before the pass.`, passBarriers);
     if (singleDispatches.count) this._addFolded("single-workgroup-dispatch", "low", "medium", `vkCmdDispatch launches a single workgroup ${times(singleDispatches)}: most of the GPU idles during it. Larger dispatches, or a dispatch that folds the work of several small ones, use the machine.`, singleDispatches);
+    if (wastedTransitions.count) this._addFolded("redundant-transition", "low", "medium", `A barrier transitions an image to a layout that nothing uses before a later barrier transitions the same subresources again, ${times(wastedTransitions)}. One transition straight to the layout the image is used in does the same work once. Only this capture's commands are seen, so a use on another queue or in a command buffer recorded before the capture looks like none.`, wastedTransitions);
+    if (noopBarriers.count) this._addFolded("redundant-transition", "low", "medium", `A barrier leaves an image in the layout it was in, with no queue family change and no write access to wait for, ${times(noopBarriers)}: it synchronizes nothing, and each barrier still costs the driver a pipeline stall.`, noopBarriers);
     if (tinyDraws.count >= TINY_DRAW_COUNT) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
+  }
+
+  /** A barrier command's image transitions, against those nothing has used yet (redundant-transition). */
+  private _transitions(cmd: CaptureCommand, a: ArgObject, unused: Map<number, { cmd: CaptureCommand; range: BarrierRange }[]>,
+                       wasted: Folded, noop: Folded): void {
+    const groups = isObject(a.pDependencyInfo) ? [a.pDependencyInfo] : [a];
+    let changesNothing = true;
+    let images = 0;
+    for (const g of groups) {
+      if ((Array.isArray(g.pBufferMemoryBarriers) && g.pBufferMemoryBarriers.length) || (Array.isArray(g.pMemoryBarriers) && g.pMemoryBarriers.length)) changesNothing = false;
+      for (const b of Array.isArray(g.pImageMemoryBarriers) ? g.pImageMemoryBarriers.filter(isObject) : []) {
+        const image = refId(b.image);
+        if (image === null) continue;
+        images++;
+        const src = str(b.srcQueueFamilyIndex);
+        const dst = str(b.dstQueueFamilyIndex);
+        const queueChange = src !== dst && src !== "" && dst !== "";
+        const oldLayout = str(b.oldLayout);
+        const newLayout = str(b.newLayout);
+        if (oldLayout !== newLayout || queueChange || /WRITE|MEMORY_WRITE/.test(str(b.srcAccessMask))) changesNothing = false;
+        if (oldLayout === newLayout || newLayout.includes("UNDEFINED")) continue;
+        const range = barrierRange(b);
+        const list = unused.get(image) ?? [];
+        // An earlier transition of these subresources that nothing used: this one replaces it.
+        const kept: { cmd: CaptureCommand; range: BarrierRange }[] = [];
+        for (const t of list) {
+          if (t.cmd !== cmd && rangesOverlap(t.range, range)) {
+            if (!wasted.commands.includes(t.cmd)) wasted.add(t.cmd);
+          } else {
+            kept.push(t);
+          }
+        }
+        kept.push({ cmd, range });
+        unused.set(image, kept);
+      }
+    }
+    if (images && changesNothing) noop.add(cmd);
   }
 
   // ---------------------------------------------------------------------------- per-pass rules
 
+  /**
+   * Attachments larger than every render area the frame draws into them: dynamic resolution
+   * rendering into a full-size target, or a target allocated for another size. The memory, and on
+   * a tiled GPU the load and store of the whole attachment, cost the full size. An atlas drawn a
+   * region at a time is covered by the union of its passes' areas and is not reported.
+   */
+  private _oversizedAttachments(): void {
+    const byTarget = new Map<string, { imageId: number; width: number; height: number; x0: number; y0: number; x1: number; y1: number; passes: PassInfo[] }>();
+    for (const pass of this._passes) {
+      if (!pass.width || !pass.height) continue;
+      for (const att of pass.attachments) {
+        if (att.imageId === null) continue;
+        const image = this._db.getObject(att.imageId);
+        const extent = isObject(image?.descriptor?.extent) ? image.descriptor.extent : null;
+        if (!extent) continue;       // swapchain images: the swapchain's size is the window's
+        const width = Math.max(1, num(extent.width) >> att.mipLevel);
+        const height = Math.max(1, num(extent.height) >> att.mipLevel);
+        const key = `${att.imageId}:${att.mipLevel}`;
+        let t = byTarget.get(key);
+        if (!t) byTarget.set(key, (t = { imageId: att.imageId, width, height, x0: Infinity, y0: Infinity, x1: 0, y1: 0, passes: [] }));
+        t.x0 = Math.min(t.x0, pass.x);
+        t.y0 = Math.min(t.y0, pass.y);
+        t.x1 = Math.max(t.x1, Math.min(width, pass.x + pass.width));
+        t.y1 = Math.max(t.y1, Math.min(height, pass.y + pass.height));
+        if (!t.passes.includes(pass)) t.passes.push(pass);
+      }
+    }
+    const folded = new Folded();
+    const cases: string[] = [];
+    let targets = 0;
+    for (const t of byTarget.values()) {
+      const covered = Math.max(0, t.x1 - t.x0) * Math.max(0, t.y1 - t.y0);
+      if (covered <= 0 || covered > OVERSIZED_COVERAGE * t.width * t.height) continue;
+      targets++;
+      for (const p of t.passes) if (!folded.commands.includes(p.command)) folded.add(p.command);
+      if (cases.length < 3) cases.push(`${this._imageName(t.imageId)} is ${t.width}x${t.height} but drawn only in ${t.x1 - t.x0}x${t.y1 - t.y0}`);
+    }
+    if (!folded.count) return;
+    const more = targets > cases.length ? ` (and ${targets - cases.length} more attachments)` : "";
+    this._addFolded("oversized-attachment", "low", "medium", `${cases.join("; ")}${more}. The frame never renders outside that area, but the image's memory, and on a tiled GPU each load and store, cost the whole attachment. Sized to the area (or, for dynamic resolution, recreated when the scale settles), it costs what is drawn. Passes whose render area moves between frames look the same here.`, folded);
+  }
+
   private _passRules(): void {
+    this._oversizedAttachments();
     for (const pass of this._passes) {
       const cmd = pass.command;
       for (const [imageId, clear] of pass.clearedBefore) {
@@ -368,12 +538,57 @@ export class FrameAnalysis {
     }
   }
 
+  /**
+   * Whether a pass's fragment shaders filter an image they read: some draw binds a view of it where
+   * the shader reads that binding more than once per invocation, or in a loop, as a blur or an
+   * ambient occlusion pass does. False when every read is a single one; null when no shader could
+   * be looked at (no SPIR-V in the capture, or no draw names the image).
+   */
+  filtersInput(passCommand: number, imageId: number): boolean | null {
+    const pass = this._passes.find((p) => p.command.index === passCommand);
+    if (!pass) return null;
+    let known = false;
+    for (const { pipeline, descriptors } of pass.drawStates.values()) {
+      const bindings: { set: number; binding: number }[] = [];
+      for (const s of descriptors.sets) {
+        for (const b of s.bindings) {
+          if (b.descriptors.some((d) => d?.imageView && imageOfView(this._db, refId(d.imageView)) === imageId)) bindings.push({ set: s.set, binding: b.binding });
+        }
+      }
+      if (!bindings.length) continue;
+      const reads = this._fragmentReads(pipeline);
+      if (!reads) continue;
+      known = true;
+      for (const { set, binding } of bindings) {
+        const r = reads.find((t) => t.set === set && t.binding === binding);
+        if (r && (r.reads > 1 || r.inLoop)) return true;
+      }
+    }
+    return known ? false : null;
+  }
+
+  private _readsCache = new Map<number, TextureReads[] | null>();
+
+  private _fragmentReads(pipelineId: number): TextureReads[] | null {
+    if (this._readsCache.has(pipelineId)) return this._readsCache.get(pipelineId)!;
+    let result: TextureReads[] | null = null;
+    const pipeline = this._db.getObject(pipelineId);
+    const source = pipeline ? pipelineStages(pipeline, this._db).find((s) => s.stage === "fragment") : undefined;
+    const spirv = source ? this._db.blobData?.get(`${source.object.id}:${source.blobIndex}`) : undefined;
+    if (source && spirv) result = textureReads(spirv, source.entryPoint);
+    this._readsCache.set(pipelineId, result);
+    return result;
+  }
+
   // ---------------------------------------------------------------------------- pass decoding
 
   private _passInfo(cmd: CaptureCommand, ordinal: number): PassInfo | null {
     const decoded = decodePass(cmd, this._db);
     if (!decoded) return null;
-    return { command: cmd, ordinal, ...decoded, draws: 0, drawSignature: [], clearedBefore: new Map() };
+    const a = cmd.args;
+    const info = isObject(a?.pRenderingInfo) ? a.pRenderingInfo : isObject(a?.pRenderPassBegin) ? a.pRenderPassBegin : null;
+    const offset = isObject(info?.renderArea) && isObject(info.renderArea.offset) ? info.renderArea.offset : null;
+    return { command: cmd, ordinal, ...decoded, draws: 0, drawSignature: [], clearedBefore: new Map(), x: Math.max(0, num(offset?.x)), y: Math.max(0, num(offset?.y)), drawStates: new Map() };
   }
 
   private _imageOfView(viewId: number | null): number | null {
@@ -424,12 +639,13 @@ export class FrameAnalysis {
  * dropped in its favour rather than reported twice in two wordings.
  */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  const base = data.api === "metal" ? analyzeMetalFrame(data, db) : perCommandAnalysis(data, db);
+  const vulkan = data.api === "metal" ? null : new FrameAnalysis(db);
+  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : analyzeMetalFrame(data, db);
   // The rules over the GPU counters read the same measurements for either API (counter_rules.ts),
   // and say nothing when the capture carries none; the sampling rules read descriptors both APIs
   // record (sampling_rules.ts).
   const sources = [base, analyzeCounters(data, db), analyzeSampling(data, db)];
-  if (graph) sources.push(analyzeRenderGraph(graph));
+  if (graph) sources.push(analyzeRenderGraph(graph, vulkan ? { filtersInput: (node, imageId) => vulkan.filtersInput(node.commandIndex, imageId) } : {}));
 
   const findings: FrameFinding[] = [];
   const byCommand = new Map<number, FrameFinding[]>();
@@ -449,10 +665,4 @@ export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph
   }
   findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   return { findings, byCommand };
-}
-
-function perCommandAnalysis(data: CaptureData, db: FrameAnalysisDatabase): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  const analysis = new FrameAnalysis(db);
-  const findings = analysis.analyze(data);
-  return { findings, byCommand: analysis.byCommand() };
 }

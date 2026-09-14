@@ -1,5 +1,5 @@
 // Frame timing, reported to the UI ten times a second: the counterpart of the Vulkan layer's
-// FrameStats message (layer/src/layer.cpp, EndFrame), which feeds the session bar's frame-time
+// FrameStats message (vulkan/src/layer.cpp, EndFrame), which feeds the session bar's frame-time
 // meter and Frame Stats' Frame Bound card. Same fields, same cadence, so the UI needs nothing.
 //
 // The frame counter here is the one a queued capture names ("capture at frame N"): it advances

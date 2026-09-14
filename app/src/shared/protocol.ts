@@ -773,3 +773,12 @@ export interface ImplicitLayerStatus {
   manifest: string;
   error?: string;
 }
+
+/** VKINSP_ENABLE and VKINSP_PORT set for the user's account (main/implicit_layer.ts). */
+export interface UserEnvironmentStatus {
+  set: boolean;
+  port: number | null;
+  location: string;
+  needsLogin?: boolean;
+  error?: string;
+}

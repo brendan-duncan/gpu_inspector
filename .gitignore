@@ -29,7 +29,7 @@ Thumbs.db
 *.vkcap
 
 # generated from vk.xml by CMake (tools/gen_vulkan.py, tools/gen_replay.py)
-layer/gen/
+vulkan/gen/
 replay/gen/
 __pycache__/
 

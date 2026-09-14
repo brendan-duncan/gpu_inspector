@@ -327,7 +327,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         _fns.CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &_meshTarget->buffer.buffer, &zero, &_meshTarget->buffer.size);
         _fns.CmdBeginTransformFeedbackEXT(cb, 0, 0, nullptr, nullptr);
     }
-    fn(_ctx, *args, cb);
+    IssueCommand(fn, c, *args, cb);
     if (feedback) _fns.CmdEndTransformFeedbackEXT(cb, 0, 1, &_meshTarget->counter.buffer, &zero);
     _ctx.problems.resize(problems);
     _ctx.unresolved = unresolved;

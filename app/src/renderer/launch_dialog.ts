@@ -9,7 +9,7 @@ import { Checkbox } from "./widget/checkbox.js";
 import { Select } from "./widget/select.js";
 import { TextArea } from "./widget/text_area.js";
 import { TextInput } from "./widget/text_input.js";
-import type { AndroidDevice, LaunchConfig, QueuedCapture } from "../shared/protocol.js";
+import type { AndroidDevice, LaunchConfig, QueuedCapture, UserEnvironmentStatus } from "../shared/protocol.js";
 
 const DEFAULT_PORT = 47531;
 
@@ -69,6 +69,9 @@ export class LaunchDialog extends Dialog {
   private _implicitStatus!: Span;
   private _implicitButton!: Button;
   private _implicitRegistered = false;
+  private _envStatus!: Span;
+  private _envButton!: Button;
+  private _envSet = false;
   private _launchButton!: Button;
   private _exe: TextInput;
   private _cwd: TextInput;
@@ -177,8 +180,18 @@ export class LaunchDialog extends Dialog {
       this._implicitStatus = new Span(row, { text: "checking...", class: "launch-dialog-status" });
       this._implicitButton = new Button(row, { label: "Register", class: "btn", callback: () => void this._toggleImplicit() });
     }
+    {
+      const row = new Div(this._implicitRows, { class: "launch-dialog-row" });
+      new Span(row, { text: "Environment", class: "launch-dialog-label" });
+      this._envStatus = new Span(row, { text: "checking...", class: "launch-dialog-status" });
+      this._envButton = new Button(row, {
+        label: "Set for my account", class: "btn",
+        tooltip: "Set VKINSP_ENABLE=1 and VKINSP_PORT to the port below for every application you start, so one started by a launcher loads the layer too. While they are set, every Vulkan application you start connects to the inspector: clear them when you are done.",
+        callback: () => void this._toggleEnvironment(),
+      });
+    }
     new Div(this._implicitRows, {
-      text: "Start the application yourself with these environment variables, then press Wait: VKINSP_ENABLE=1 and VKINSP_PORT set to the port below (VKINSP_LOG_FILE=<path> writes the layer's log to a file, since the inspector cannot read the output of a process it did not start). For an editor started from a launcher, set them for your user account (setx on Windows) and restart the launcher. The registration is per user and stays until you unregister it.",
+      text: "Start the application yourself with these environment variables, then press Wait: VKINSP_ENABLE=1 and VKINSP_PORT set to the port below (VKINSP_LOG_FILE=<path> writes the layer's log to a file, since the inspector cannot read the output of a process it did not start). For an editor started from a launcher, set them for your account with Set for my account and restart the launcher. The registration is per user and stays until you unregister it.",
       class: "launch-dialog-hint",
     });
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
@@ -287,6 +300,26 @@ export class LaunchDialog extends Dialog {
     this._implicitRegistered = status.registered;
     this._implicitStatus.text = status.error ? status.error : status.registered ? `registered: ${status.manifest}` : "not registered";
     this._implicitButton.text = status.registered ? "Unregister" : "Register";
+    this._showEnvironment(await window.inspector.userEnvironment());
+  }
+
+  private _showEnvironment(status: UserEnvironmentStatus): void {
+    this._envSet = status.set;
+    const port = Number(this._port.value) || DEFAULT_PORT;
+    this._envStatus.text = status.error ? status.error
+      : !status.set ? "not set for your account"
+      : `set for your account, port ${status.port ?? "?"}${status.port !== port ? ` (not the port below)` : ""}${status.needsLogin ? ": log in again for applications to see it" : ""}`;
+    this._envButton.text = status.set && status.port === port ? "Clear" : "Set for my account";
+  }
+
+  private async _toggleEnvironment(): Promise<void> {
+    this._envButton.disabled = true;
+    const port = Number(this._port.value) || DEFAULT_PORT;
+    // Set (or re-set to the port below), unless it already holds that port: then clear it.
+    const current = await window.inspector.userEnvironment();
+    const status = await window.inspector.setUserEnvironment(current.set && current.port === port ? null : port);
+    this._envButton.disabled = false;
+    this._showEnvironment(status);
   }
 
   private async _toggleImplicit(): Promise<void> {

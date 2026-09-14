@@ -607,6 +607,17 @@ private:
     void RecordSecondaries(size_t executeIndex, const JValue& execute, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
     void ApplyBufferData(const CommandGroup& group);
     void ApplyDescriptorSnapshot(const JValue* descriptors);
+    /** One snapshot set as writes (to `handle`, or to a pushed set when null), with the storage they point into. */
+    struct DescriptorWrites {
+        std::vector<VkWriteDescriptorSet> writes;
+        std::vector<std::unique_ptr<std::vector<VkDescriptorBufferInfo>>> buffers;
+        std::vector<std::unique_ptr<std::vector<VkDescriptorImageInfo>>> images;
+        std::vector<std::unique_ptr<std::vector<VkBufferView>>> views;
+        std::string key;   // the contents, to skip rewriting a set with what it holds
+    };
+    void BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, DescriptorWrites& out);
+    /** Issues a captured command: a push through an update template is pushed from its snapshot. */
+    void IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb);
     void BeginPass(const JValue& command, uint32_t index, uint64_t commandBuffer);
     void BeginDynamicPass(const JValue& command, uint32_t index, uint64_t commandBuffer, VkCommandBuffer cb);
     /** Copies the pass's captured targets for comparison; with a reason, only reports them as not compared. */

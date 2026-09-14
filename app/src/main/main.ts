@@ -24,7 +24,7 @@ import {
   DEFAULT_PORT, findFreePort as findFreePortFrom, findLayerDir as findLayerDirIn, findValidationLayerDir, parseEnvLines, splitArgs, terminate,
   vulkanLayerEnvironment,
 } from "./launch_env.js";
-import { implicitLayerStatus, setImplicitLayer } from "./implicit_layer.js";
+import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironmentStatus } from "./implicit_layer.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
@@ -1042,6 +1042,9 @@ ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<Im
   const dir = findLayerDir();
   return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: NO_LAYER_ERROR };
 });
+// The implicit layer's variables for the whole account, for applications started by a launcher.
+ipcMain.handle("inspector:userEnvironment", () => userEnvironmentStatus());
+ipcMain.handle("inspector:setUserEnvironment", (_e, port: number | null) => setUserEnvironment(port === null ? null : Number(port)));
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
   const layer = findAndroidLayerFiles() !== null;

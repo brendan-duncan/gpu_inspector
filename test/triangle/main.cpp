@@ -135,8 +135,20 @@ struct App {
     bool occluded = false;
     // --prerecord: record one command buffer per swapchain image up front and resubmit them
     // every frame (the tint and the wave then stand still), like engines with static command
-    // buffers; a capture needs the inspector's "Record all command buffers".
+    // buffers; a capture needs the inspector's "Record all command buffers". A second prerecorded
+    // buffer, submitted with the first, clears the left half of the image in a pass of its own, so
+    // the first buffer's pass has a result the second overwrites within one submission.
     bool prerecord = false;
+    // --push-template: the cube's uniform buffer and texture are pushed through a descriptor update
+    // template (vkCmdPushDescriptorSetWithTemplateKHR) instead of a bound set, whose data the
+    // capture snapshots and the replay pushes again as plain writes.
+    bool pushTemplate = false;
+    VkDescriptorUpdateTemplate pushUpdateTemplate{};
+    PFN_vkCmdPushDescriptorSetWithTemplateKHR pushWithTemplate = nullptr;   // not in every loader's import library
+    struct PushData {
+        VkDescriptorBufferInfo uniform;
+        VkDescriptorImageInfo texture;
+    } pushData{};
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;  // --msaa: 4x, resolved into the swapchain
     // --offscreen: render into an image of our own and never present, like an OpenXR
     // application whose runtime composites (the inspector's frame boundaries without presents).
@@ -231,6 +243,9 @@ struct App {
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
     VkCommandBuffer hazardBuffers[kFramesInFlight]{};   // --hazard: the vertex update, submitted first
     std::vector<VkCommandBuffer> prerecorded;            // --prerecord: one per swapchain image
+    std::vector<VkCommandBuffer> overlays;               // --prerecord: the overlay pass, one per image
+    std::vector<VkFramebuffer> overlayFramebuffers;
+    VkRenderPass overlayPass{};
     VkSemaphore imageAvailable[kFramesInFlight]{};
     VkSemaphore renderFinished[kFramesInFlight]{};
     VkFence inFlight[kFramesInFlight]{};
@@ -441,14 +456,21 @@ struct App {
         qci.queueFamilyIndex = queueFamily;
         qci.queueCount = 1;
         qci.pQueuePriorities = &prio;
-        const char* devExts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        const char* devExts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
-        dci.enabledExtensionCount = 1;
+        dci.enabledExtensionCount = pushTemplate ? 2 : 1;
         dci.ppEnabledExtensionNames = devExts;
         CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
+        if (pushTemplate) {
+            pushWithTemplate = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
+            if (!pushWithTemplate) {
+                fprintf(stderr, "--push-template: the device has no VK_KHR_push_descriptor\n");
+                exit(1);
+            }
+        }
 
         if (debugUtils) {
             beginLabel = (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(instance, "vkCmdBeginDebugUtilsLabelEXT");
@@ -694,7 +716,66 @@ struct App {
             fci.layers = 1;
             CHECK(vkCreateFramebuffer(device, &fci, nullptr, &framebuffers[i]));
         }
+        if (overlayPass) {
+            overlayFramebuffers.resize(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                fci.renderPass = overlayPass;
+                fci.attachmentCount = 1;
+                fci.pAttachments = &swapViews[i];
+                fci.width = width;
+                fci.height = height;
+                fci.layers = 1;
+                CHECK(vkCreateFramebuffer(device, &fci, nullptr, &overlayFramebuffers[i]));
+            }
+        }
         if (prerecord && computePipeline) PrerecordAll();
+    }
+
+    // --prerecord: a pass that loads the presented image and clears its left half.
+    void CreateOverlayPass() {
+        if (offscreen || samples != VK_SAMPLE_COUNT_1_BIT) return;
+        VkAttachmentDescription att{};
+        att.format = colorFormat;
+        att.samples = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        att.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sp{};
+        sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp.colorAttachmentCount = 1;
+        sp.pColorAttachments = &ref;
+        VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpci.attachmentCount = 1;
+        rpci.pAttachments = &att;
+        rpci.subpassCount = 1;
+        rpci.pSubpasses = &sp;
+        CHECK(vkCreateRenderPass(device, &rpci, nullptr, &overlayPass));
+        Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)overlayPass, "Overlay");
+    }
+
+    void RecordOverlay(VkCommandBuffer cb, uint32_t imageIndex) {
+        CHECK(vkResetCommandBuffer(cb, 0));
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        CHECK(vkBeginCommandBuffer(cb, &bi));
+        VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rpbi.renderPass = overlayPass;
+        rpbi.framebuffer = overlayFramebuffers[imageIndex];
+        rpbi.renderArea = {{0, 0}, {width, height}};
+        vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+        VkClearAttachment clear{};
+        clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear.colorAttachment = 0;
+        clear.clearValue.color = {{0.8f, 0.1f, 0.6f, 1.0f}};
+        VkClearRect rect{{{0, 0}, {width / 2, height}}, 0, 1};
+        vkCmdClearAttachments(cb, 1, &clear, 1, &rect);
+        vkCmdEndRenderPass(cb);
+        CHECK(vkEndCommandBuffer(cb));
     }
 
     // --prerecord: one command buffer per swapchain image, recorded now and resubmitted as is.
@@ -710,12 +791,25 @@ struct App {
             CHECK(vkAllocateCommandBuffers(device, &cai, prerecorded.data()));
         }
         for (uint32_t i = 0; i < count; ++i) Record(prerecorded[i], i, 0.0f);
+        if (!overlayPass) return;
+        if (overlays.size() != count) {
+            if (!overlays.empty()) vkFreeCommandBuffers(device, commandPool, (uint32_t)overlays.size(), overlays.data());
+            overlays.assign(count, VK_NULL_HANDLE);
+            VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            cai.commandPool = commandPool;
+            cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cai.commandBufferCount = count;
+            CHECK(vkAllocateCommandBuffers(device, &cai, overlays.data()));
+        }
+        for (uint32_t i = 0; i < count; ++i) RecordOverlay(overlays[i], i);
     }
 
     // Everything sized by the window, except the swapchain itself (see CreateSwapchain).
     void DestroySwapchainResources() {
         for (auto fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         framebuffers.clear();
+        for (auto fb : overlayFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+        overlayFramebuffers.clear();
         vkDestroyImageView(device, depthView, nullptr);
         vkDestroyImage(device, depthImage, nullptr);
         vkFreeMemory(device, depthMemory, nullptr);
@@ -902,6 +996,7 @@ struct App {
         VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         dslci.bindingCount = 2;
         dslci.pBindings = bindings;
+        if (pushTemplate) dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
         CHECK(vkCreateDescriptorSetLayout(device, &dslci, nullptr, &setLayout));
         VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -918,13 +1013,28 @@ struct App {
         dpci.poolSizeCount = 3;
         dpci.pPoolSizes = sizes;
         CHECK(vkCreateDescriptorPool(device, &dpci, nullptr, &descriptorPool));
+        VkDescriptorBufferInfo dbi{uniformBuffer, 0, sizeof(Mat4)};
+        VkDescriptorImageInfo dii{sampler, textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        if (pushTemplate) {
+            pushData.uniform = dbi;
+            pushData.texture = dii;
+            VkDescriptorUpdateTemplateEntry entries[2]{};
+            entries[0] = {0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, offsetof(PushData, uniform), sizeof(VkDescriptorBufferInfo)};
+            entries[1] = {1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, offsetof(PushData, texture), sizeof(VkDescriptorImageInfo)};
+            VkDescriptorUpdateTemplateCreateInfo tci{VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO};
+            tci.descriptorUpdateEntryCount = 2;
+            tci.pDescriptorUpdateEntries = entries;
+            tci.templateType = VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR;
+            tci.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            tci.pipelineLayout = pipelineLayout;
+            tci.set = 0;
+            CHECK(vkCreateDescriptorUpdateTemplate(device, &tci, nullptr, &pushUpdateTemplate));
+        }
         VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         dsai.descriptorPool = descriptorPool;
         dsai.descriptorSetCount = 1;
         dsai.pSetLayouts = &setLayout;
-        CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
-        VkDescriptorBufferInfo dbi{uniformBuffer, 0, sizeof(Mat4)};
-        VkDescriptorImageInfo dii{sampler, textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        if (!pushTemplate) CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptorSet;
@@ -938,7 +1048,7 @@ struct App {
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo = &dii;
-        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        if (!pushTemplate) vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
         // Pipeline
         VkShaderModule vs = LoadShader("cube.vert.spv");
@@ -1249,7 +1359,8 @@ struct App {
         VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
         vkCmdSetViewport(cb, 0, 1, &viewport);
         vkCmdSetScissor(cb, 0, 1, &scissor);
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        if (pushTemplate) pushWithTemplate(cb, pushUpdateTemplate, pipelineLayout, 0, &pushData);
+        else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cb, 0, 1, &vertexBuffer, &offset);
         vkCmdBindIndexBuffer(cb, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
@@ -1288,16 +1399,18 @@ struct App {
         // --prerecord: the frame's command buffer was recorded when the swapchain was created
         // (see CreateFramebuffers), the way engines that record once and resubmit work; the
         // inspector then needs "Record all command buffers" to see its commands.
-        VkCommandBuffer cb = prerecord ? prerecorded[imageIndex] : commandBuffers[frameSlot];
+        VkCommandBuffer cbs[2] = {prerecord ? prerecorded[imageIndex] : commandBuffers[frameSlot], VK_NULL_HANDLE};
+        VkCommandBuffer cb = cbs[0];
         if (!prerecord) Record(cb, imageIndex, t);
+        if (prerecord && !overlays.empty()) cbs[1] = overlays[imageIndex];
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         si.waitSemaphoreCount = offscreen ? 0 : 1;
         si.pWaitSemaphores = &imageAvailable[frameSlot];
         si.pWaitDstStageMask = &waitStage;
-        si.commandBufferCount = 1;
-        si.pCommandBuffers = &cb;
+        si.commandBufferCount = cbs[1] ? 2 : 1;
+        si.pCommandBuffers = cbs;
         si.signalSemaphoreCount = offscreen ? 0 : 1;
         si.pSignalSemaphores = &renderFinished[frameSlot];
         CHECK(vkQueueSubmit(queue, 1, &si, fence));
@@ -1405,6 +1518,8 @@ struct App {
             vkDestroySemaphore(device, renderFinished[i], nullptr);
             vkDestroyFence(device, inFlight[i], nullptr);
         }
+        if (overlayPass) vkDestroyRenderPass(device, overlayPass, nullptr);
+        if (pushUpdateTemplate) vkDestroyDescriptorUpdateTemplate(device, pushUpdateTemplate, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -1433,6 +1548,7 @@ struct App {
         InitVulkan();
         CreateSwapchain();
         CreateRenderPass();
+        if (prerecord) CreateOverlayPass();
         CreateFramebuffers();
         CreateResources();
         CreateCompute();
@@ -1462,6 +1578,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
+        else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--persistent")) app.persistent = true;
         else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;

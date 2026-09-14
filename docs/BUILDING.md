@@ -62,7 +62,7 @@ with your graphics driver.
 | CMake 3.20+ | `brew install cmake` |
 | Node.js LTS | `brew install node` |
 
-`layer/` does not build for Apple targets, so neither `vk.xml`'s Python generator nor `glslc` is
+`vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator nor `glslc` is
 part of the build. `spirv-dis` and `spirv-cross` (`brew install spirv-tools spirv-cross`) are
 still worth having, for the shader text of Vulkan captures taken elsewhere.
 

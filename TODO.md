@@ -77,11 +77,11 @@ interpreter and re-created pipelines.
       bundle differs from a fresh build of its sources.
 
 ### Captures
-- [x] Pipeline statistics queries per pass on Vulkan (`layer/src/pipeline_stats.h`), carrying the
+- [x] Pipeline statistics queries per pass on Vulkan (`vulkan/src/pipeline_stats.h`), carrying the
       same counters Metal's statistic set does, so the GPU Bottlenecks report and its rules work
       for Vulkan captures too.
 - [x] Depth rejection on Vulkan: the layer runs a precise occlusion query around each render pass
-      (`layer/src/capture.cpp`), counting the samples that passed its depth and stencil tests
+      (`vulkan/src/capture.cpp`), counting the samples that passed its depth and stencil tests
       (`fragmentsPassed`, Metal's name for the same figure), so `late-depth-rejection` and the
       report's depth rejection column work for Vulkan captures. A pass whose command buffer has an
       application query open is skipped, and the query ends early (dropping that pass's count) when
@@ -139,7 +139,7 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Swapchain images of a recreated swapchain: a driver hands the new swapchain its
       predecessor's image handles, and the tracker kept them under the old swapchain, so destroying
       it took them and the views over them away. A recycled handle now moves to its new owner
-      (`layer/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
+      (`vulkan/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
       two passes in the replay; it now replays with 0 problems and every target identical.
 - [x] Frame-start contents, RenderDoc's "initial contents" (`vk_initstate.cpp`), the way a layer
       that sees every command can take them: the first read of an image subresource the capture has
@@ -230,30 +230,38 @@ application with injected state. Route (a) is the general one and is the prerequ
     way the shader debugger does.
 
 ## Vulkan-specific
-- [ ] Implicit layer: a "Set for my account" button for the environment variables (setx /
-      the shell profile) next to Register, and registration for the packaged app (the
-      installer could register the layer, the uninstaller remove it).
+- [x] Implicit layer: **Set for my account** for the environment variables (the account's
+      environment on Windows, `~/.config/environment.d` on Linux), and the Windows installer
+      registers the layer and the uninstaller removes it (`app/installer/installer.nsh`).
+- [ ] Implicit layer, the rest: the .deb could register the layer in
+      `/usr/share/vulkan/implicit_layer.d` (a postinst script); the installer script is built but
+      has not been run on a machine.
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
 - [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by
       `tools/build_android_triangle.py`) on a phone: on a Quest it runs as a 2D panel that the
       shell keeps in the background, so it never gets a window; a GLES layer for Unity's GLES
       player; lower default read-back limits for phones.
-- [ ] Read-back after submission (command buffers recorded before the capture) copies each
-      attachment once, after the whole submission: a pass that renders to an image a later pass
-      of the same submission overwrites shows the later contents; such buffers also have no
-      pass timings (the timestamps go in at record time). Stencil store ops are left
-      alone (no stencil read-back yet).
-- [ ] Frame Issues rules to add: attachments larger than the render area, render passes that
-      could be subpasses (a pass whose only input is the previous pass's output), and barriers
-      whose stages a later barrier repeats.
+- [x] Read-back after submission (command buffers recorded before the capture) splits the
+      submission after each such buffer, so a later buffer of the same submission cannot
+      overwrite what it rendered before it is read (`PreHook_vkQueueSubmit`, triangle `--prerecord`).
+- [ ] Read-back after submission, the rest: two passes of one prerecorded buffer that write the
+      same image still read back after both. Such buffers have no pass timings: the timestamps
+      go in at record time, though a split could time each buffer as a whole. Submissions
+      extended with structures other than timeline semaphore values are not split. Stencil store
+      ops are left alone (no stencil read-back yet).
+- [x] Frame Issues rules: `oversized-attachment` (larger than every render area drawn into it),
+      `subpass-candidate` (a pass reading only the previous pass's output, its shaders checked for
+      filtering), `redundant-transition` (a transition nothing uses before the next, or a barrier
+      that changes nothing).
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
       OpenXR layer or the runtime's own properties.
 - [ ] Multiple devices and queues in one process (timestamps are per device; the query pool is
       created on the capturing device only).
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.
-- [ ] Push descriptors with templates in descriptor snapshots.
+- [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
+      replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
 - [ ] Ray tracing pipelines: shader groups in pipeline state, acceleration structure objects.
 
 ## Metal

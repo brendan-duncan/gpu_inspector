@@ -404,7 +404,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (!fn || !args) return;
         const size_t problems = _ctx.problems.size();
         const size_t unresolved = _ctx.unresolved;
-        fn(_ctx, *args, cb);
+        IssueCommand(fn, c, *args, cb);
         _ctx.problems.resize(problems);
         _ctx.unresolved = unresolved;
         _arena.Reset();
