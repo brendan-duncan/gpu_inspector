@@ -352,13 +352,18 @@ bool Replayer::CreateDevice() {
 // ---------------------------------------------------------------------------------------------
 // Memory and one-time submissions
 
-bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track) {
+bool Replayer::AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track,
+                             bool deviceAddress) {
+    // A buffer with SHADER_DEVICE_ADDRESS usage needs memory that has an address.
+    VkMemoryAllocateFlagsInfo addressFlags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    addressFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
     for (int pass = 0; pass < 2; ++pass) {
         for (uint32_t i = 0; i < _memoryProperties.memoryTypeCount; ++i) {
             if (!(requirements.memoryTypeBits & (1u << i))) continue;
             VkMemoryPropertyFlags flags = _memoryProperties.memoryTypes[i].propertyFlags;
             if (pass == 0 && (flags & want) != want) continue;
             VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            if (deviceAddress) info.pNext = &addressFlags;
             info.allocationSize = requirements.size;
             info.memoryTypeIndex = i;
             if (_fns.AllocateMemory(_device, &info, nullptr, &memory) == VK_SUCCESS) {
@@ -550,7 +555,8 @@ uint64_t Replayer::CreateBuffer(uint64_t id, const VkBufferCreateInfo& captured)
     VkMemoryRequirements req{};
     _fns.GetBufferMemoryRequirements(_device, buffer, &req);
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory) || _fns.BindBufferMemory(_device, buffer, memory, 0) != VK_SUCCESS) {
+    const bool deviceAddress = (info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
+    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, true, deviceAddress) || _fns.BindBufferMemory(_device, buffer, memory, 0) != VK_SUCCESS) {
         Problem("buffer " + std::to_string(id) + ": no memory");
         _fns.DestroyBuffer(_device, buffer, nullptr);
         return 0;
@@ -690,7 +696,9 @@ void Replayer::CreateObject(const JValue& o) {
     } else if (type == "VkSurfaceKHR" || type == "VkSwapchainKHR" || type == "VkDeviceMemory" || type == "VkPipelineCache" ||
                type == "VkDebugUtilsMessengerEXT" || type == "VkDebugReportCallbackEXT" ||
                // Sets are written from their snapshots and template pushes pushed as writes (IssueCommand).
-               type == "VkDescriptorUpdateTemplate") {
+               type == "VkDescriptorUpdateTemplate" ||
+               // Ray tracing is not replayed (IssueCommand leaves its commands out).
+               type == "VkAccelerationStructureKHR" || type == "VkAccelerationStructureNV" || type == "VkDeferredOperationKHR") {
         _skipped.insert(id);
         _report->objectsSkipped++;
         return;
@@ -1237,6 +1245,18 @@ void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
 
 void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb) {
     const std::string m = Str(command.Get("method"));
+    // Ray tracing is not replayed: its pipelines and acceleration structures are not made, and
+    // these commands name device addresses of the captured process's buffers, which mean nothing here.
+    static const std::unordered_set<std::string> kRayTracing = {
+        "vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR", "vkCmdTraceRaysNV",
+        "vkCmdBuildAccelerationStructuresKHR", "vkCmdBuildAccelerationStructuresIndirectKHR", "vkCmdBuildAccelerationStructureNV",
+        "vkCmdCopyAccelerationStructureKHR", "vkCmdCopyAccelerationStructureToMemoryKHR", "vkCmdCopyMemoryToAccelerationStructureKHR",
+        "vkCmdCopyAccelerationStructureNV", "vkCmdSetRayTracingPipelineStackSizeKHR",
+    };
+    if (kRayTracing.count(m)) {
+        _ctx.Problem("left out: ray tracing is not replayed yet");
+        return;
+    }
     if (!StartsWith(m, "vkCmdPushDescriptorSetWithTemplate")) {
         fn(_ctx, args, cb);
         return;
@@ -1294,9 +1314,13 @@ void Replayer::BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, 
                 auto buffers = std::make_unique<std::vector<VkDescriptorBufferInfo>>();
                 auto images = std::make_unique<std::vector<VkDescriptorImageInfo>>();
                 auto views = std::make_unique<std::vector<VkBufferView>>();
+                auto structures = std::make_unique<std::vector<VkAccelerationStructureKHR>>();
                 for (; k < list->count && !list->items[k].IsNull(); ++k) {
                     const JValue& desc = list->items[k];
-                    if (desc.Get("buffer")) {
+                    if (desc.Get("accelerationStructure")) {
+                        structures->push_back((VkAccelerationStructureKHR)Handle(IdOf(desc.Get("accelerationStructure"))));
+                        key += "a" + std::to_string(IdOf(desc.Get("accelerationStructure"))) + ";";
+                    } else if (desc.Get("buffer")) {
                         VkDescriptorBufferInfo bi{};
                         bi.buffer = (VkBuffer)Handle(IdOf(desc.Get("buffer")));
                         bi.offset = desc.Get("offset") ? desc.Get("offset")->Uint() : 0;
@@ -1319,6 +1343,17 @@ void Replayer::BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, 
                 if (!buffers->empty()) w.pBufferInfo = buffers->data();
                 if (!images->empty()) w.pImageInfo = images->data();
                 if (!views->empty()) w.pTexelBufferView = views->data();
+                if (!structures->empty()) {
+                    // A structure the replay did not make leaves the binding out rather than writing a null.
+                    if (std::find(structures->begin(), structures->end(), VK_NULL_HANDLE) != structures->end()) continue;
+                    auto info = std::make_unique<VkWriteDescriptorSetAccelerationStructureKHR>();
+                    *info = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+                    info->accelerationStructureCount = (uint32_t)structures->size();
+                    info->pAccelerationStructures = structures->data();
+                    w.pNext = info.get();
+                    out.structureWrites.push_back(std::move(info));
+                    out.structures.push_back(std::move(structures));
+                }
                 bufferInfos.push_back(std::move(buffers));
                 imageInfos.push_back(std::move(images));
                 viewInfos.push_back(std::move(views));

@@ -273,7 +273,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       shaders yet; the replay's overdraw and overlay copies only replace pipelines.
 - [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
       replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
-- [ ] Ray tracing pipelines: shader groups in pipeline state, acceleration structure objects.
+- [x] Ray tracing pipelines: every stage's code (payloads named with their index in pStages), shader
+      groups in the Inspect panel, the command details and `get_command`, a trace command's shader
+      binding table regions, acceleration structures with what their last build held, and
+      acceleration structures in descriptor snapshots (triangle `--ray-tracing`).
+- [ ] Ray tracing, the rest:
+  - The replay makes no ray tracing pipelines or acceleration structures, and leaves their
+    commands out. Building needs the geometry buffers the builds read by device address, and
+    tracing needs the shader binding table copied with its handles made again.
+  - Which group each binding table record holds, which needs the table's contents read back.
+  - Editing a ray tracing stage.
+  - Ray queries in the shader debugger.
 
 ## Metal
 

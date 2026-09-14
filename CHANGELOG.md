@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Added
+- Ray tracing in Vulkan captures:
+  - A ray tracing pipeline shows every one of its stages, and its shader groups in the Inspect
+    panel, a trace command's details and `get_command`.
+  - A trace command shows its shader binding table regions.
+  - An acceleration structure shows its type, storage and what its last build held: geometries,
+    primitive counts, vertex formats.
+  - Descriptor sets show the acceleration structures they bind.
+  - `vkinsp_replay` leaves ray tracing out and reports it, instead of crashing.
+  - The test application's `--ray-tracing` option traces a triangle each frame.
 - Shader editing of graphics pipeline libraries and shader objects:
   - A pipeline linked from libraries shows the stages the libraries hold, and editing one rebuilds
     the libraries and relinks.

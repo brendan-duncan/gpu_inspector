@@ -53,6 +53,11 @@ EXTRA_HOOKS = {
     "vkCreateGraphicsPipelines",
     "vkCreateComputePipelines",
     "vkCreateShadersEXT",
+    "vkCreateRayTracingPipelinesKHR",
+    # acceleration structures: what each build put in the structure
+    "vkCmdBuildAccelerationStructuresKHR",
+    "vkCmdBuildAccelerationStructuresIndirectKHR",
+    "vkBuildAccelerationStructuresKHR",
     "vkBindBufferMemory",
     "vkBindImageMemory",
     "vkBindBufferMemory2",

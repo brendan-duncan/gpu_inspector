@@ -1070,6 +1070,108 @@ void Hook_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCach
     ShaderEditor::Get().OnCreateComputePipelines(device, createInfoCount, pCreateInfos, pPipelines);
 }
 
+// Ray tracing pipelines: every stage's SPIR-V. A ray tracing pipeline usually has several stages of
+// one kind (miss shaders, hit shaders), so each payload carries its index in pStages as well:
+// "<stage>:<entry point>#<index>", which is what the shader groups refer to.
+void Hook_vkCreateRayTracingPipelinesKHR(VkDevice device, VkDeferredOperationKHR deferredOperation, VkPipelineCache pipelineCache,
+                                         uint32_t createInfoCount, const VkRayTracingPipelineCreateInfoKHR* pCreateInfos,
+                                         const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {
+    if (!pCreateInfos || !pPipelines) return;
+    Tracker& t = Tracker::Get();
+    for (uint32_t i = 0; i < createInfoCount; ++i) {
+        if (!pPipelines[i]) continue;
+        const VkRayTracingPipelineCreateInfoKHR& ci = pCreateInfos[i];
+        for (uint32_t s = 0; s < ci.stageCount && ci.pStages; ++s) {
+            const VkPipelineShaderStageCreateInfo& stage = ci.pStages[s];
+            std::shared_ptr<std::vector<uint8_t>> code;
+            if (stage.module) {
+                for (auto& [n, data] : t.GetBlobs(HT_VkShaderModule, (uint64_t)(uintptr_t)stage.module))
+                    if (n == "SPIR-V") code = data;
+            }
+            for (auto* p = static_cast<const VkBaseInStructure*>(stage.pNext); !code && p; p = p->pNext) {
+                if (p->sType != VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO) continue;
+                auto* mci = reinterpret_cast<const VkShaderModuleCreateInfo*>(p);
+                if (mci->pCode && mci->codeSize)
+                    code = std::make_shared<std::vector<uint8_t>>(reinterpret_cast<const uint8_t*>(mci->pCode),
+                                                                 reinterpret_cast<const uint8_t*>(mci->pCode) + mci->codeSize);
+            }
+            if (!code) continue;
+            std::string name = std::string(StageName(stage.stage)) + ":" + (stage.pName ? stage.pName : "main") + "#" + std::to_string(s);
+            t.AddBlob(HT_VkPipeline, (uint64_t)(uintptr_t)pPipelines[i], name, code);
+        }
+    }
+}
+
+// Acceleration structures: what the last build of each put in it (its geometries and primitive
+// counts), as an update on the structure, so the object shows what it holds without its commands.
+static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* infos,
+                                            const VkAccelerationStructureBuildRangeInfoKHR* const* ranges, const uint32_t* const* maxPrimitiveCounts) {
+    if (!infos) return;
+    Tracker& t = Tracker::Get();
+    for (uint32_t i = 0; i < infoCount; ++i) {
+        const VkAccelerationStructureBuildGeometryInfoKHR& info = infos[i];
+        const uint64_t id = t.Resolve(HT_VkAccelerationStructureKHR, (uint64_t)(uintptr_t)info.dstAccelerationStructure);
+        if (!id) continue;
+        JsonWriter w(&t);
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(id);
+        w.Key("build"); w.BeginObject();
+        w.Key("method"); w.String(method);
+        w.Key("type"); w.Enum(ToString_VkAccelerationStructureTypeKHR(info.type), (int64_t)info.type);
+        w.Key("mode"); w.Enum(ToString_VkBuildAccelerationStructureModeKHR(info.mode), (int64_t)info.mode);
+        w.Key("flags"); Flags_VkBuildAccelerationStructureFlagsKHR(w, info.flags);
+        uint64_t primitives = 0;
+        w.Key("geometries"); w.BeginArray();
+        for (uint32_t g = 0; g < info.geometryCount; ++g) {
+            const VkAccelerationStructureGeometryKHR* geometry = info.pGeometries ? &info.pGeometries[g]
+                                                               : info.ppGeometries ? info.ppGeometries[g] : nullptr;
+            if (!geometry) continue;
+            const uint32_t count = ranges && ranges[i] ? ranges[i][g].primitiveCount
+                                 : maxPrimitiveCounts && maxPrimitiveCounts[i] ? maxPrimitiveCounts[i][g] : 0;
+            primitives += count;
+            w.BeginObject();
+            w.Key("geometryType"); w.Enum(ToString_VkGeometryTypeKHR(geometry->geometryType), (int64_t)geometry->geometryType);
+            w.Key("flags"); Flags_VkGeometryFlagsKHR(w, geometry->flags);
+            w.Key("primitiveCount"); w.Uint(count);
+            if (geometry->geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
+                const auto& tri = geometry->geometry.triangles;
+                w.Key("vertexFormat"); w.Enum(ToString_VkFormat(tri.vertexFormat), (int64_t)tri.vertexFormat);
+                w.Key("vertexStride"); w.Uint(tri.vertexStride);
+                w.Key("maxVertex"); w.Uint(tri.maxVertex);
+                w.Key("indexType"); w.Enum(ToString_VkIndexType(tri.indexType), (int64_t)tri.indexType);
+            } else if (geometry->geometryType == VK_GEOMETRY_TYPE_AABBS_KHR) {
+                w.Key("stride"); w.Uint(geometry->geometry.aabbs.stride);
+            } else if (geometry->geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR) {
+                w.Key("arrayOfPointers"); w.Boolean(geometry->geometry.instances.arrayOfPointers == VK_TRUE);
+            }
+            w.EndObject();
+        }
+        w.EndArray();
+        w.Key("primitiveCount"); w.Uint(primitives);
+        w.EndObject();
+        w.EndObject();
+        t.Update(id, "build", w.str());
+    }
+}
+
+void Hook_vkCmdBuildAccelerationStructuresKHR(VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
+                                              const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos) {
+    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr);
+}
+
+void Hook_vkCmdBuildAccelerationStructuresIndirectKHR(VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
+                                                      const VkDeviceAddress* pIndirectDeviceAddresses, const uint32_t* pIndirectStrides,
+                                                      const uint32_t* const* ppMaxPrimitiveCounts) {
+    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresIndirectKHR", infoCount, pInfos, nullptr, ppMaxPrimitiveCounts);
+}
+
+void Hook_vkBuildAccelerationStructuresKHR(VkDevice device, VkDeferredOperationKHR deferredOperation, uint32_t infoCount,
+                                           const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
+                                           const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos) {
+    NoteAccelerationStructureBuilds("vkBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr);
+}
+
 // A shader object's SPIR-V, attached to it as "<stage>:<entry point>" like a pipeline's stages.
 void Hook_vkCreateShadersEXT(VkDevice device, uint32_t createInfoCount, const VkShaderCreateInfoEXT* pCreateInfos,
                              const VkAllocationCallbacks* pAllocator, VkShaderEXT* pShaders) {

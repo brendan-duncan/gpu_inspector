@@ -13,7 +13,7 @@ if(NOT GLSLC)
 endif()
 
 set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
-set(SHADERS cube.vert cube.frag heavy.frag wave.comp)
+set(SHADERS cube.vert cube.frag heavy.frag wave.comp rt.rgen rt.rmiss rt.rchit)
 set(SPV_FILES)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 foreach(s ${SHADERS})
@@ -27,10 +27,15 @@ foreach(s ${SHADERS})
                   "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv" "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
                   --relative-to "${CMAKE_SOURCE_DIR}/test")
     endif()
+    # Ray tracing stages need SPIR-V 1.4 (--ray-tracing).
+    set(env)
+    if(s MATCHES "^rt\\.")
+        set(env --target-env=vulkan1.2)
+    endif()
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
         # -g embeds the GLSL source and line information (the inspector's shader source maps).
-        COMMAND ${GLSLC} -g "${CMAKE_CURRENT_SOURCE_DIR}/${s}" -o "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
+        COMMAND ${GLSLC} -g ${env} "${CMAKE_CURRENT_SOURCE_DIR}/${s}" -o "${CMAKE_CURRENT_BINARY_DIR}/${s}.spv"
         ${strip}
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${s}" "${CMAKE_SOURCE_DIR}/tools/strip_shader_source.py"
         COMMENT "Compiling ${s}"

@@ -615,6 +615,8 @@ private:
         std::vector<std::unique_ptr<std::vector<VkDescriptorBufferInfo>>> buffers;
         std::vector<std::unique_ptr<std::vector<VkDescriptorImageInfo>>> images;
         std::vector<std::unique_ptr<std::vector<VkBufferView>>> views;
+        std::vector<std::unique_ptr<std::vector<VkAccelerationStructureKHR>>> structures;
+        std::vector<std::unique_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> structureWrites;
         std::string key;   // the contents, to skip rewriting a set with what it holds
     };
     void BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, DescriptorWrites& out);
@@ -629,7 +631,8 @@ private:
     bool CreateStaging(VkDeviceSize size, Staging& staging, VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     void DestroyStaging(Staging& staging);
     /** Allocates memory for requirements, preferring `want`; tracked memory is freed with the device, untracked is the caller's. */
-    bool AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track = true);
+    bool AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track = true,
+                       bool deviceAddress = false);
     bool RunOneTime(const std::function<void(VkCommandBuffer)>& record);
     void UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_t* data, size_t size);
     /** Moves each subresource of an image to its target (UNDEFINED: left where it is), from the layouts the record holds. */
