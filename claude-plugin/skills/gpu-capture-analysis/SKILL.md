@@ -1,18 +1,21 @@
 ---
 name: gpu-capture-analysis
 description: >-
-  Interpret GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications — the command
-  stream, passes, the state bound at a draw, render targets, buffers, shaders, validation messages,
-  Frame Issues, GPU Bottlenecks and the render graph — to debug rendering problems and find what
-  limits a frame, including in running applications the tools launch, capture and edit shaders of.
-  Use with the gpu-inspector MCP tools whenever a .gpucap file or a GPU Inspector capture comes up,
-  or a native Vulkan or Metal rendering or GPU performance problem does.
+  Interpret GPU Inspector frame captures (.gpucap) of Vulkan, Metal and Direct3D 12 applications —
+  the command stream, passes, the state bound at a draw, render targets, buffers, shaders,
+  validation messages, Frame Issues, GPU Bottlenecks and the render graph — to debug rendering
+  problems and find what limits a frame, including in running applications the tools launch,
+  capture and edit shaders of. Use with the gpu-inspector MCP tools whenever a .gpucap file or a
+  GPU Inspector capture comes up, or a native Vulkan, Metal or Direct3D 12 (D3D12, DXGI) rendering
+  or GPU performance problem does.
 ---
 
 # GPU Inspector capture analysis
 
 GPU Inspector records frames of native applications: the Vulkan layer intercepts every Vulkan call,
-and on macOS the Metal capture library does the same for Metal. A capture saved as `.gpucap` holds
+on macOS the Metal capture library does the same for Metal, and on Windows the Direct3D 12 library
+hooks the D3D12 and DXGI entry points and the vtables of the objects they hand out. A capture saved
+as `.gpucap` holds
 one or more frames and everything needed to inspect them without the application. The
 `gpu-inspector` MCP tools read those files with the analyses GPU Inspector itself runs, so what you
 report matches what the user sees in its Capture tab.
@@ -23,7 +26,10 @@ report matches what the user sees in its Capture tab.
   where `vkCmdExecuteCommands` ran them. Every command has an index; findings, messages and the
   UI all refer to commands by it.
 - **Passes**: render passes, and on Vulkan the runs of dispatches outside a render pass, which are
-  timed as compute passes. On Metal every encoder is a pass.
+  timed as compute passes. On Metal every encoder is a pass. D3D12 has no render pass object unless
+  the application calls `BeginRenderPass`, so the capture makes the boundaries itself:
+  `OMSetRenderTargets` opens one and a synthetic `EndRenderTargets` closes it — the one command in
+  the stream the application did not make. Runs of dispatches are compute passes as on Vulkan.
 - **Objects** the commands reference, each with the call that created it and its full arguments
   (the create info), later updates (memory bindings, descriptor contents) and dependencies.
 - **Read-backs**: every render pass attachment at the end of its pass, images bound in descriptor
@@ -70,20 +76,20 @@ each step.
    (fewer command buffers and state changes), not the GPU. Vsync bound: nothing to fix.
 2. **Which pass?** `get_bottlenecks` ranks the timed passes. Work on the slowest one first. A 12 ms
    shadow pass matters more than an inelegant 0.3 ms bloom pass.
-3. **Which stage?** On Metal the vertex/fragment split names it (`bound`). On Vulkan infer it from
-   the counters: vertices and draws against fragment work.
+3. **Which stage?** On Metal the vertex/fragment split names it (`bound`). On Vulkan and D3D12
+   infer it from the counters: vertices and draws against fragment work.
 4. **Why?** These are the measured causes. Thresholds are starting points, not laws.
 
    | Measurement | Healthy | Flagged | Usual cause | Fix |
    |---|---|---|---|---|
    | overdraw (fragment runs per pixel) | about 1.2 | above 2 | stacked transparency, repeated full-screen passes, opaque drawn back to front | fewer/larger particles, merge full-screen effects, sort opaque front to back or a depth prepass |
    | fragments per primitive | above 4 | below 4 | dense meshes drawn small (microtriangles) | mesh LOD, culling; not the shader |
-   | depth rejection (Metal) | high | below 25% with overdraw above 1.5 | fragments shaded then replaced | front-to-back sort, depth prepass |
+   | depth rejection | high | below 25% with overdraw above 1.5 | fragments shaded then replaced | front-to-back sort, depth prepass |
    | many tiny draws | | 32+ draws of ≤12 vertices | per-draw overhead | instancing, merged geometry |
 
    `get_overdraw` measures it per pixel: a Metal capture taken with `overdraw` carries it, and a
    Vulkan capture is replayed on this machine's GPU the first time (slow for a large frame, and it
-   needs `vkinsp_replay` built). It ranks the passes, and with `pass` returns the heatmap, which
+   needs `vkinsp_replay` built). Not available for a D3D12 capture, which cannot be replayed. It ranks the passes, and with `pass` returns the heatmap, which
    shows *where* on screen the fragments stack up.
    Compare its two counts. Many more rasterized fragments than fragments passing depth means the
    depth test is rejecting work, which is cheap only when it rejects before the fragment shader
@@ -116,7 +122,12 @@ each step.
    Confirm each finding against the command it names with `get_command`, and against the render
    graph with `get_render_graph` (`node`). Say whether it is real here or a pattern that may be
    intentional.
-6. **Shaders** (Vulkan only):
+6. **Shaders.** The ranking and modelling below read SPIR-V, so they are Vulkan only. A D3D12
+   capture still has every shader through `get_shader`: `reflection` (constant buffer members,
+   resources by register and space, inputs and outputs, read from the DXBC or DXIL at pipeline
+   creation), `disassembly`, and `source` when the shader was compiled with `dxc -Zi
+   -Qembed_debug`. A Metal capture has the MSL of a library built from source. For those two,
+   rank the passes by measured GPU time instead of by modelled shader cost.
    - `analyze_shaders` ranks the stages in use by uses times modeled cost.
    - `get_shader_flame_graph` shows where the frame's shading work goes: each stage's modeled cost
      times its invocations, by pass, pipeline, stage, function and source line, with the hottest
@@ -154,7 +165,8 @@ each step.
    that reached it but were culled, discarded or failed the depth or stencil test. A Vulkan capture
    is replayed for it: the first question takes a moment, later ones about the same capture tens of milliseconds. A Metal capture answers only for the pixel it was taken
    with: capture again with `capture_frames` and `pixelHistory: { texture, x, y }` (a render
-   target's id from `list_textures`), then ask the new capture.
+   target's id from `list_textures`), then ask the new capture. A D3D12 capture has no pixel
+   history: find the draw with `list_commands` and `read_texture` pass by pass instead.
 4. **Check what the draw read** with `get_command`. The usual suspects:
    - **Fixed-function state**: `cullMode` and `frontFace` (winding flipped by a negative scale or
      viewport), depth test, write and compare op (reversed-Z against a LESS compare), blend factors
@@ -167,7 +179,8 @@ each step.
    - **Geometry**: `read_vertices`. Bounds all zero or NaN mean uninitialized data. A huge range
      means a wrong stride or format. Indices out of range, and a first vertex or index past the
      data, are problems too.
-   - **Where the vertex shader put it**: `get_mesh_output` (a Vulkan capture, replayed). A mesh that
+   - **Where the vertex shader put it**: `get_mesh_output` (a Vulkan capture, replayed; not
+     available for Metal or D3D12). A mesh that
      does not show up is usually here: every vertex behind the eye (a view or projection matrix
      transposed, or w of 0), every primitive outside the view volume, triangles with no area (a scale
      of 0), or NaN positions from a bad uniform. `ndcInFront` says where the rest landed on screen.
@@ -175,7 +188,8 @@ each step.
      `reflection` to check the bindings the shader expects against what `get_command` shows bound.
    - **What the shader computed**: `debug_shader` runs one vertex, pixel (`x`, `y`; a pixel the
      draw covers by default) or compute invocation — a Vulkan capture's SPIR-V or a Metal
-     capture's Metal Shading Language. Read the `trace` for the line where a value goes wrong, and
+     capture's Metal Shading Language. There is no DXIL interpreter, so a D3D12 capture cannot be
+     stepped: read its shader with `get_shader` and reason from the bound state instead. Read the `trace` for the line where a value goes wrong, and
      `firstNonFinite` for a NaN. For a pixel, `compare` has the render target after the whole pass;
      later draws and blending come between. A Vulkan pixel needs the replay; a Metal one does not,
      but a Metal library the application loaded precompiled has no source to step. SPIR-V without
@@ -186,7 +200,8 @@ each step.
 ## Live applications
 
 `launch_app` starts an application with the capture library in it; `attach_app` connects to one
-already listening.
+already listening. On Windows it applies both capture libraries — the Vulkan layer and the D3D12
+one — and whichever API the application uses connects, so there is nothing to choose.
 
 On Android:
 - `list_android_devices` finds the device and the package.
@@ -197,6 +212,11 @@ The capture library serves one client, so attaching takes it over from GPU Inspe
 
 - **Before capturing,** `get_live_frame_stats` says whether the frame meets the display refresh or is
   bound by submission. It measures no GPU time.
+  - `frameBoundary` says what ends a frame: `present` normally, `wait` or `submit` for a renderer
+    that never presents. `submit` is expected for an application that renders into textures
+    something else composites (Chrome's WebGPU on D3D12, an OpenXR runtime on Vulkan): a frame is
+    then one submission, and there is no display refresh to compare against, so the Frame Bound
+    verdict falls back to the frame interval. It is not a fault.
 - **`capture_frames`** saves a `.gpucap` and returns its summary. The capture tools take the
   returned `capture` id.
   - Capture while the application shows the problem: ask the user to get it there, or use
@@ -205,6 +225,8 @@ The capture library serves one client, so attaching takes it over from GPU Inspe
     `recordAlways: true`.
   - On Metal, `overdraw: true` measures every pass's overdraw per pixel (`get_overdraw`). It slows
     the captured frame, so take timings from a capture without it.
+  - A D3D12 session's `replace_shader` takes HLSL and compiles it with `dxc`; a Vulkan one takes
+    GLSL, HLSL or SPIR-V assembly.
 - **Object ids are the same** in the live session and in its captures, so a pipeline id from
   `get_command` is what `replace_shader` takes.
 - **A shader experiment:**
@@ -226,19 +248,43 @@ The capture library serves one client, so attaching takes it over from GPU Inspe
   library's own log.
 - **Clean up** with `stop_app` when done.
 
-## Vulkan and Metal differences
+## Differences between the APIs
+
+`get_capture_summary`'s `api` says which one a capture is: `vulkan`, `metal` or `d3d12`. The
+command names, object types and binding model follow from it.
+
+**Metal**
 
 - Metal binds buffers per stage by index (`stageBuffers`), not through descriptor sets. Its
   pipeline reflection names each slot. Vertex buffers are the slots the vertex descriptor lays out.
   An argument buffer's members are resolved (`argumentBuffer`) to the buffer with an offset, the
   texture or the sampler each one holds. A value that no tracked object claims is a stale or wrong
   handle.
-- Metal passes can have the vertex/fragment split, depth rejection and stage utilization.
-  Vulkan pipeline statistics give invocation and primitive counts only.
-- SPIR-V tools (`analyze_shaders`, `get_shader` source, analysis and cross-compilation) are Vulkan
-  only. Metal libraries built from source carry their MSL, which `get_shader` on an `MTLFunction`
-  shows at its definition. For per-line Metal costs, GPU Inspector's Xcode Trace button writes a
+- Metal passes can have the vertex/fragment split and stage utilization; Vulkan and D3D12 pipeline
+  statistics give invocation and primitive counts, and both report depth rejection.
+- Metal libraries built from source carry their MSL, which `get_shader` on an `MTLFunction` shows
+  at its definition. For per-line Metal costs, GPU Inspector's Xcode Trace button writes a
   `.gputrace`.
+
+**Direct3D 12**
+
+- Objects are the interfaces the application sees (`ID3D12Resource`, `ID3D12PipelineState`,
+  `ID3D12DescriptorHeap`, `IDXGISwapChain`), and an object's descriptor is the `pDesc` of the call
+  that created it.
+- Bindings arrive in the same shape as a Vulkan descriptor set, so `get_command` reads the same:
+  a root descriptor table is a "set" whose number is the **root parameter index**, its
+  `descriptorSet` is the descriptor heap and its `layout` the root signature. Each binding adds
+  `register` and `space`, which is what the shader's reflection is keyed by, and its `type` is the
+  range type (`..._RANGE_TYPE_SRV`, `_CBV`, `_UAV`, `_SAMPLER`) or the root parameter type. Root
+  constants appear as push constants. A texture SRV or UAV names its `resource` and the view
+  description rather than a view object, since D3D12 has none.
+- Passes are synthesized (see above), so a pass may end at a synthetic `EndRenderTargets`.
+- Shaders are DXBC or DXIL. `get_shader` gives `reflection`, `disassembly` and, when the shader was
+  built with `dxc -Zi -Qembed_debug`, `source`. The SPIR-V analyses (`analyze_shaders`,
+  `get_shader_flame_graph`, `measure_shader_cost`, `get_shader` view `analysis`) do not apply.
+- Nothing replay-backed is available, because `vkinsp_replay` replays Vulkan only: no
+  `get_overdraw`, `get_pixel_history`, `get_mesh_output` or `debug_shader`. Use the measured pass
+  timings and counters, `read_texture` pass by pass, and `get_command`.
 
 ## Reporting
 

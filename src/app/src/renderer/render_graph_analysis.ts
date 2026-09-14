@@ -13,8 +13,8 @@
 // read it, a resource that never has to leave the pass that produced it, two passes that are one
 // pass, and a barrier synchronizing a resource the frame does not use on both sides of it.
 //
-// These rules are API-neutral, because the graph is. Vulkan and Metal share them; only the advice
-// each finding gives names an API's own spelling of the fix.
+// These rules are API-neutral, because the graph is. Vulkan, Metal and D3D12 share them; only the
+// advice each finding gives names an API's own spelling of the fix.
 import { usageClass } from "./render_graph.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./vulkan/spirv_analysis.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";

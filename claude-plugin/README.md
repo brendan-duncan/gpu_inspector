@@ -1,6 +1,6 @@
 # GPU Inspector — Claude Code plugin
 
-Debug and profile Vulkan and Metal frames with Claude. The plugin gives Claude Code the frame
+Debug and profile Vulkan, Metal and Direct3D 12 frames with Claude. The plugin gives Claude Code the frame
 captures GPU Inspector saves (`.gpucap`), read with GPU Inspector's own analyses:
 - the frame issues rules
 - the GPU bottleneck measurements
@@ -12,9 +12,11 @@ captures GPU Inspector saves (`.gpucap`), read with GPU Inspector's own analyses
 
 What Claude reports matches what the Capture tab shows.
 
-It can also drive a running application itself. The plugin launches a Vulkan application (on macOS a
-Metal one) with GPU Inspector's capture library in it, watches its frame rate, captures its frames,
-and swaps a pipeline's shader while it runs, so a fix can be tried and measured on the spot.
+It can also drive a running application itself. The plugin launches an application with GPU
+Inspector's capture library in it — the Vulkan layer, on macOS the Metal library, and on Windows
+the Vulkan layer and the Direct3D 12 library both, whichever the application turns out to use —
+watches its frame rate, captures its frames, and swaps a pipeline's shader while it runs, so a fix
+can be tried and measured on the spot.
 
 ```
 GPU Inspector ── Save capture ──► frame.gpucap ◄──┐
@@ -44,9 +46,12 @@ places:
 - **A checkout's build:** when the plugin runs from a checkout (`claude --plugin-dir`), or when
   `GPU_INSPECTOR_ROOT` names one.
 - **An installed GPU Inspector.**
-- **`INSPECTOR_LAYER_DIR`** (on macOS, `INSPECTOR_METAL_LIB`).
+- **`INSPECTOR_LAYER_DIR`** (on macOS, `INSPECTOR_METAL_LIB`; on Windows, `INSPECTOR_D3D12_DIR`
+  for the D3D12 library, its launcher and its shader tool).
 
-Replacing shaders also needs the Vulkan SDK's compilers.
+Replacing shaders needs the Vulkan SDK's compilers for a Vulkan pipeline, and `dxc` for a D3D12
+one. A D3D12 capture's shader text and reflection come from `dxinsp_shader.exe`, built beside the
+D3D12 library; DXIL needs `dxcompiler.dll`, which it finds in the Vulkan SDK or the Windows SDK.
 
 Android applications have more requirements:
 - adb (the Android SDK platform-tools).
@@ -93,10 +98,10 @@ capture.
 | `get_capture_summary` | Counts, frame timing and Frame Bound verdict, slowest passes, issues, validation, notes |
 | `get_frame_issues` | Frame Issues rules, each naming its command |
 | `get_bottlenecks` | Per-pass GPU time, overdraw, fragments per primitive, depth rejection, bound stage, problems |
-| `get_overdraw` | Overdraw measured per pixel (Metal captures taken with `overdraw`; Vulkan captures replayed with `vkinsp_replay`): every pass's figures, or one pass's heatmap as PNG |
-| `get_pixel_history` | Every clear and draw that touched one pixel, what each draw's fragments met (culled, discarded, depth, stencil, written) and the value after each (a Vulkan capture replayed; a Metal capture taken with `capture_frames` `pixelHistory`) |
-| `get_mesh_output` | What a draw's vertex shader wrote (VS Out): every output, vertices behind the eye, primitives outside the view volume, triangles with no area, NaN positions (a Vulkan capture replayed) |
-| `debug_shader` | Runs one vertex, pixel or compute invocation in GPU Inspector's interpreter, SPIR-V or Metal Shading Language: outputs, every source line's values in order, the first NaN or infinity, and the GPU's result to compare with (a Vulkan pixel needs the replay, a Metal one does not); `decompiled` steps SPIR-V without debug information by line, through GLSL decompiled from it and checked against the original |
+| `get_overdraw` | Overdraw measured per pixel (Metal captures taken with `overdraw`; Vulkan captures replayed with `vkinsp_replay`; not D3D12): every pass's figures, or one pass's heatmap as PNG |
+| `get_pixel_history` | Every clear and draw that touched one pixel, what each draw's fragments met (culled, discarded, depth, stencil, written) and the value after each (a Vulkan capture replayed; a Metal capture taken with `capture_frames` `pixelHistory`; not D3D12) |
+| `get_mesh_output` | What a draw's vertex shader wrote (VS Out): every output, vertices behind the eye, primitives outside the view volume, triangles with no area, NaN positions (a Vulkan capture replayed; not Metal or D3D12) |
+| `debug_shader` | Runs one vertex, pixel or compute invocation in GPU Inspector's interpreter, SPIR-V or Metal Shading Language: outputs, every source line's values in order, the first NaN or infinity, and the GPU's result to compare with (a Vulkan pixel needs the replay, a Metal one does not); `decompiled` steps SPIR-V without debug information by line, through GLSL decompiled from it and checked against the original; there is no DXIL interpreter, so not D3D12 |
 | `get_render_graph` | Passes and the resources between them, critical path, unread outputs; one node in full |
 | `compare_captures` | Timing, statistics, issues and per-pass changes between two captures |
 | `list_commands`, `get_command` | The command stream; one command with the state bound at it |
@@ -104,11 +109,11 @@ capture.
 | `get_validation` | Validation messages, linked to commands |
 | `list_textures`, `read_texture` | Read-back images, as PNG plus statistics and texel values |
 | `read_buffer`, `read_vertices` | Buffer ranges as scalars or GLSL structs; a draw's vertices with bounds |
-| `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis |
-| `get_shader_flame_graph` | The frame's shading work by pass, pipeline or draw, stage, function and source line, and its hottest functions and lines (a Vulkan capture's draws are measured by replay on first use) |
+| `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis. A D3D12 pipeline gives DXBC/DXIL reflection, disassembly and the HLSL embedded by `dxc -Zi -Qembed_debug`; the SPIR-V cost analysis is Vulkan only |
+| `get_shader_flame_graph` | The frame's shading work by pass, pipeline or draw, stage, function and source line, and its hottest functions and lines (Vulkan; a capture's draws are measured by replay on first use) |
 | `measure_shader_cost` | Vulkan: a draw's shader stage replayed with each function, source line and texture taken out, giving what each costs on this GPU; the flame graph then sizes the stage by it |
 | `set_search_paths` | Where shader sources and unstripped libraries are, for shaders without embedded text and stack frames without symbols |
-| `launch_app`, `attach_app`, `stop_app` | Start an application with the capture library (or connect to one listening), end it |
+| `launch_app`, `attach_app`, `stop_app` | Start an application with the capture library (on Windows the Vulkan and D3D12 libraries both, whichever it uses), or connect to one listening; end it |
 | `list_android_devices`, `launch_android_app` | Android devices and packages over adb; start a debuggable package with the Vulkan layer |
 | `list_sessions`, `get_session_status`, `get_session_log` | Live sessions: state, device, frame reports, objects, validation, output |
 | `get_live_frame_stats` | Frame time, rate, submit time, refresh and dropped frames over a few seconds, with a verdict |
