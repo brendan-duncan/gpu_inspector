@@ -1656,6 +1656,9 @@ var CaptureStatistics = class {
   graphicsPipelinesBound = 0;
   computePipelinesBound = 0;
   uniquePipelines = 0;
+  /** VK_EXT_shader_object: vkCmdBindShadersEXT calls and the distinct shader objects they bound. */
+  bindShaders = 0;
+  uniqueShaderObjects = 0;
   vertexStages = 0;
   fragmentStages = 0;
   computeStages = 0;
@@ -1687,6 +1690,7 @@ var CaptureStatistics = class {
     const cmdSets = data.sets;
     this.frames = data.frames;
     const pipelines = /* @__PURE__ */ new Set();
+    const shaderObjects = /* @__PURE__ */ new Set();
     const sets = /* @__PURE__ */ new Set();
     const commandBuffers = /* @__PURE__ */ new Set();
     const secondaries = /* @__PURE__ */ new Set();
@@ -1752,6 +1756,20 @@ var CaptureStatistics = class {
           else if (stage === "VK_SHADER_STAGE_FRAGMENT_BIT") this.fragmentStages++;
           else if (stage === "VK_SHADER_STAGE_COMPUTE_BIT") this.computeStages++;
         }
+      } else if (method === "vkCmdBindShadersEXT" && a) {
+        this.bindShaders++;
+        const stages = Array.isArray(a.pStages) ? a.pStages : [];
+        const bound = Array.isArray(a.pShaders) ? a.pShaders : [];
+        stages.forEach((flag, k) => {
+          const id = refId(bound[k]);
+          const stage = str(flag);
+          if (stage !== "VK_SHADER_STAGE_COMPUTE_BIT") boundPipeline.set(stream, 0);
+          if (id === null) return;
+          shaderObjects.add(id);
+          if (stage === "VK_SHADER_STAGE_VERTEX_BIT") this.vertexStages++;
+          else if (stage === "VK_SHADER_STAGE_FRAGMENT_BIT") this.fragmentStages++;
+          else if (stage === "VK_SHADER_STAGE_COMPUTE_BIT") this.computeStages++;
+        });
       } else if (method === "vkCmdBindVertexBuffers" || method === "vkCmdBindVertexBuffers2" || method === "vkCmdBindVertexBuffers2EXT") {
         this.bindVertexBuffers++;
       } else if (method === "vkCmdBindIndexBuffer" || method === "vkCmdBindIndexBuffer2" || method === "vkCmdBindIndexBuffer2KHR") {
@@ -1785,6 +1803,7 @@ var CaptureStatistics = class {
     this.commandBuffers = commandBuffers.size;
     this.secondaryCommandBuffers = secondaries.size;
     this.uniquePipelines = pipelines.size;
+    this.uniqueShaderObjects = shaderObjects.size;
     this.uniqueDescriptorSets = sets.size;
     this.renderTargetsCaptured = data.textures.filter((t) => t.info.kind !== "initial" && !t.info.error).length;
     for (const b of data.buffers.values()) {
@@ -1966,6 +1985,8 @@ var CaptureStatistics = class {
         { label: "Graphics pipelines bound", value: this.graphicsPipelinesBound },
         { label: "Compute pipelines bound", value: this.computePipelinesBound },
         { label: "Distinct pipelines", value: this.uniquePipelines },
+        { label: "Bind shader object calls", value: this.bindShaders },
+        { label: "Distinct shader objects", value: this.uniqueShaderObjects },
         { label: "Vertex stages", value: this.vertexStages },
         { label: "Fragment stages", value: this.fragmentStages },
         { label: "Compute stages", value: this.computeStages }
@@ -6589,22 +6610,90 @@ function pipelineStages(pipeline, db) {
   });
   return out;
 }
+var programKeys = /* @__PURE__ */ new WeakMap();
+function shaderProgramKey(data, shaderIds) {
+  let keys = programKeys.get(data);
+  if (!keys) programKeys.set(data, keys = { byIds: /* @__PURE__ */ new Map(), ids: /* @__PURE__ */ new Map() });
+  const ids = [...new Set(shaderIds)].sort((x, y) => x - y);
+  const text = ids.join(",");
+  let key = keys.byIds.get(text);
+  if (key === void 0) {
+    key = -(keys.byIds.size + 1);
+    keys.byIds.set(text, key);
+    keys.ids.set(key, ids);
+  }
+  return key;
+}
+function shaderProgram(data, db, key) {
+  if (key > 0) {
+    const pipeline = db.getObject(key);
+    return pipeline ? { key, pipeline, shaders: [], name: pipeline.name } : null;
+  }
+  const shaders = (programKeys.get(data)?.ids.get(key) ?? []).map((id) => db.getObject(id)).filter((o) => !!o);
+  if (!shaders.length) return null;
+  return { key, pipeline: null, shaders, name: shaders.map((s) => s.name).join(" + ") };
+}
+function programStages(program, db) {
+  if (program.pipeline) return pipelineStages(program.pipeline, db);
+  return program.shaders.flatMap((s) => pipelineStages(s, db));
+}
+var ProgramTracker = class {
+  _data;
+  _bound = /* @__PURE__ */ new Map();
+  // "stream:bindPoint" -> program key
+  _shaders = /* @__PURE__ */ new Map();
+  // "stream:bindPoint" -> stage -> shader id
+  constructor(data) {
+    this._data = data;
+  }
+  /** Follows a binding command; true when it bound a pipeline or shader objects. */
+  note(c2) {
+    const sets = this._data.sets;
+    const a = c2.args;
+    if (!a) return false;
+    const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
+    if (sets.BIND_PIPELINE.has(c2.method)) {
+      const id = refId(a.pipeline);
+      const at = `${stream}:${sets.pipelineBindPointOf(c2.method, a)}`;
+      this._shaders.delete(at);
+      if (id !== null) this._bound.set(at, id);
+      else this._bound.delete(at);
+      return true;
+    }
+    if (c2.method !== "vkCmdBindShadersEXT") return false;
+    const stages = Array.isArray(a.pStages) ? a.pStages : [];
+    const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+    stages.forEach((flag, k) => {
+      const stage = str(flag);
+      const at = `${stream}:${stage.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS"}`;
+      let bound = this._shaders.get(at);
+      if (!bound) this._shaders.set(at, bound = /* @__PURE__ */ new Map());
+      bound.set(stage, refId(shaders[k]));
+      const ids = [...bound.values()].filter((id) => id !== null);
+      if (ids.length) this._bound.set(at, shaderProgramKey(this._data, ids));
+      else this._bound.delete(at);
+    });
+    return true;
+  }
+  /** The program key of a draw or dispatch; undefined when nothing is bound. */
+  at(c2) {
+    return this._bound.get(`${c2.object?.__id ?? 0}:${c2.secondary ?? 0}:${this._data.sets.bindPointOf(c2.method)}`);
+  }
+};
 function pipelineUses(data) {
   const sets = data.sets;
-  const bound = /* @__PURE__ */ new Map();
+  const tracker = new ProgramTracker(data);
   const uses = /* @__PURE__ */ new Map();
   for (const c2 of data.commands) {
     if (!c2 || sets.SUBMIT.has(c2.method)) continue;
-    const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
-    if (sets.BIND_PIPELINE.has(c2.method) && c2.args) {
-      const id = refId(c2.args.pipeline);
-      if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c2.method, c2.args)}`, id);
-    } else if (isAction(sets, c2.method)) {
-      const id = bound.get(`${stream}:${sets.bindPointOf(c2.method)}`);
-      if (id !== void 0) uses.set(id, (uses.get(id) ?? 0) + 1);
-    }
+    if (tracker.note(c2) || !isAction(sets, c2.method)) continue;
+    const key = tracker.at(c2);
+    if (key !== void 0) uses.set(key, (uses.get(key) ?? 0) + 1);
   }
   return uses;
+}
+function stateStages(state, db) {
+  return programStages(state, db);
 }
 
 // src/renderer/vulkan/frame_analysis.ts
@@ -6823,6 +6912,15 @@ var FrameAnalysis = class {
         const id = refId(a.pipeline) ?? 0;
         if (boundPipeline.get(key) === id) redundantBinds.add(cmd);
         boundPipeline.set(key, id);
+      } else if (method === "vkCmdBindShadersEXT" && a) {
+        const stages = Array.isArray(a.pStages) ? a.pStages.map(str) : [];
+        const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+        if (stages.some((st) => st !== "VK_SHADER_STAGE_COMPUTE_BIT")) {
+          const fragment = stages.indexOf("VK_SHADER_STAGE_FRAGMENT_BIT");
+          const key = `${cb}:VK_PIPELINE_BIND_POINT_GRAPHICS`;
+          if (fragment >= 0) boundPipeline.set(key, refId(shaders[fragment]) ?? 0);
+          else if (!this._db.getObject(boundPipeline.get(key))?.type.startsWith("VkShaderEXT")) boundPipeline.set(key, 0);
+        }
       } else if ((method === "vkCmdBindDescriptorSets" || method === "vkCmdBindDescriptorSets2" || method === "vkCmdBindDescriptorSets2KHR") && a) {
         const info = isObject(a.pBindDescriptorSetsInfo) ? a.pBindDescriptorSetsInfo : a;
         const sets = Array.isArray(info.pDescriptorSets) ? info.pDescriptorSets : [];
@@ -7810,6 +7908,21 @@ function decodeBase64(str3) {
 }
 
 // src/renderer/draw_state.ts
+var DYNAMIC_STATES = {
+  cullMode: "VK_DYNAMIC_STATE_CULL_MODE",
+  frontFace: "VK_DYNAMIC_STATE_FRONT_FACE",
+  topology: "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY",
+  depthTest: "VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE",
+  depthCompare: "VK_DYNAMIC_STATE_DEPTH_COMPARE_OP"
+};
+function dynamicValue(state, key, baked) {
+  const value = state.dynamic[key];
+  if (value === null) return baked;
+  if (!state.pipeline) return value;
+  const d = state.pipeline.descriptor;
+  const declared = isObject(d?.pDynamicState) && Array.isArray(d.pDynamicState.pDynamicStates) ? d.pDynamicState.pDynamicStates : [];
+  return declared.some((s) => str(s) === DYNAMIC_STATES[key]) ? value : baked;
+}
 function pushConstantBytes(a) {
   const v = a && isObject(a.pValues) ? a.pValues : null;
   if (!v || typeof v.base64 !== "string") return null;
@@ -7829,6 +7942,9 @@ function emptyDrawState(bindPoint) {
     bindPoint,
     pipelineCmd: null,
     pipeline: null,
+    shaders: [],
+    shadersCmd: null,
+    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null },
     sets: /* @__PURE__ */ new Map(),
     vertexBuffers: /* @__PURE__ */ new Map(),
     stageBuffers: /* @__PURE__ */ new Map(),
@@ -7855,6 +7971,7 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
   const commands = data.commands;
   const state = emptyDrawState(bindPoint);
   state.indexBuffer = cmdSets.indexBufferOf(cmd);
+  const shaderStages = /* @__PURE__ */ new Set();
   for (let i = cmd.index - 1; i >= 0; i--) {
     const c2 = commands[i];
     if (!c2 || !sameStream(cmdSets, cmd, c2)) break;
@@ -7866,10 +7983,25 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
     const a = c2.args;
     if (!a) continue;
     if (cmdSets.BIND_PIPELINE.has(c2.method)) {
-      if (!state.pipelineCmd && cmdSets.pipelineBindPointOf(c2.method, a) === bindPoint) {
+      if (!state.pipelineCmd && !state.shadersCmd && cmdSets.pipelineBindPointOf(c2.method, a) === bindPoint) {
         state.pipelineCmd = c2;
         state.pipeline = db.getObject(refId(a.pipeline));
       }
+      continue;
+    }
+    if (c2.method === "vkCmdBindShadersEXT") {
+      if (state.pipelineCmd) continue;
+      const stages = Array.isArray(a.pStages) ? a.pStages : [];
+      const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+      stages.forEach((flag, k) => {
+        const stage = str(flag);
+        const compute = stage.includes("COMPUTE");
+        if (compute !== (bindPoint === "VK_PIPELINE_BIND_POINT_COMPUTE") || shaderStages.has(stage)) return;
+        shaderStages.add(stage);
+        state.shadersCmd ??= c2;
+        const shader = db.getObject(refId(shaders[k]));
+        if (shader) state.shaders.push(shader);
+      });
       continue;
     }
     if (cmdSets.BIND_STAGE_BUFFER?.has(c2.method) && cmdSets.stageBuffersOf) {
@@ -7903,6 +8035,26 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
     switch (c2.method) {
       case "vkCmdSetVertexInputEXT":
         if (!state.vertexInput) state.vertexInput = a;
+        break;
+      case "vkCmdSetCullMode":
+      case "vkCmdSetCullModeEXT":
+        state.dynamic.cullMode ??= a.cullMode ?? null;
+        break;
+      case "vkCmdSetFrontFace":
+      case "vkCmdSetFrontFaceEXT":
+        state.dynamic.frontFace ??= a.frontFace ?? null;
+        break;
+      case "vkCmdSetPrimitiveTopology":
+      case "vkCmdSetPrimitiveTopologyEXT":
+        state.dynamic.topology ??= a.primitiveTopology ?? null;
+        break;
+      case "vkCmdSetDepthTestEnable":
+      case "vkCmdSetDepthTestEnableEXT":
+        state.dynamic.depthTest ??= a.depthTestEnable ?? null;
+        break;
+      case "vkCmdSetDepthCompareOp":
+      case "vkCmdSetDepthCompareOpEXT":
+        state.dynamic.depthCompare ??= a.depthCompareOp ?? null;
         break;
       case "vkCmdSetViewport":
       case "vkCmdSetViewportWithCount":
@@ -8742,9 +8894,9 @@ function vertexStruct(layout, inputs) {
     }))
   };
 }
-function vertexInputs(c2, pipeline) {
-  if (!pipeline || pipeline.type.startsWith("MTL")) return [];
-  const vs = pipelineStages(pipeline, c2.db).find((s) => s.stage === "vertex");
+function vertexInputs(c2, state) {
+  if (state.pipeline?.type.startsWith("MTL")) return [];
+  const vs = stateStages(state, c2.db).find((s) => s.stage === "vertex");
   return (vs && c2.reflection(vs.object, vs.blobIndex)?.entryPoint(vs.entryPoint)?.inputs) ?? [];
 }
 function indexSize(indexType) {
@@ -8797,7 +8949,7 @@ var StateReader = class {
   get stages() {
     if (!this._stages) {
       const p = this.state.pipeline;
-      this._stages = p && !p.type.startsWith("MTL") ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex })) : [];
+      this._stages = !p?.type.startsWith("MTL") ? stateStages(this.state, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex })) : [];
     }
     return this._stages;
   }
@@ -8823,8 +8975,17 @@ var StateReader = class {
   }
   pipeline() {
     const p = this.state.pipeline;
-    if (!p) return void 0;
     const db = this.c.db;
+    if (!p && this.state.shaders.length) {
+      const dynamic = Object.fromEntries(Object.entries(this.state.dynamic).filter(([, v]) => v !== null));
+      return {
+        shaderObjects: this.state.shaders.map((o) => refText(db, o.id)),
+        boundAt: this.state.shadersCmd?.index,
+        stages: this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
+        dynamicState: Object.keys(dynamic).length ? dynamic : void 0
+      };
+    }
+    if (!p) return void 0;
     const metal = p.type.startsWith("MTL");
     return {
       pipeline: refText(db, p.id),
@@ -9045,6 +9206,13 @@ function commandDetail(c2, cmd, values) {
     const state = emptyDrawState(sets.pipelineBindPointOf(m, cmd.args));
     state.pipelineCmd = cmd;
     state.pipeline = db.getObject(refId(cmd.args?.pipeline));
+    out.pipeline = new StateReader(c2, state, values).pipeline();
+  } else if (m === "vkCmdBindShadersEXT") {
+    const stages = Array.isArray(cmd.args?.pStages) ? cmd.args.pStages : [];
+    const state = emptyDrawState(stages.some((f) => str(f).includes("COMPUTE")) ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
+    state.shadersCmd = cmd;
+    const shaders = Array.isArray(cmd.args?.pShaders) ? cmd.args.pShaders : [];
+    state.shaders = shaders.map((h) => db.getObject(refId(h))).filter((o) => !!o);
     out.pipeline = new StateReader(c2, state, values).pipeline();
   } else if (sets.BIND_DESCRIPTOR.has(m) && cmd.descriptors) {
     const reader = new StateReader(c2, bindingState(d, db, cmd, cmd.descriptors.bindPoint), values);
@@ -15573,7 +15741,7 @@ function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
   const notes = [];
   const d = state.pipeline?.descriptor;
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
-  const topology = assembly ? str(assembly.topology) : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  const topology = str(dynamicValue(state, "topology", assembly?.topology)) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
   const args = drawArgs(data, cmd, notes);
   let ids = [];
   let indices = null;
@@ -22657,10 +22825,9 @@ function bytesOf(v) {
   }
 }
 function stageOf(ctx, state, stage) {
-  const pipeline = state.pipeline;
-  if (!pipeline) throw new Error("no pipeline is bound at the command");
-  const source = pipelineStages(pipeline, ctx.db).find((s) => s.stage === stage);
-  if (!source) throw new Error(`the pipeline has no ${stage} stage`);
+  if (!state.pipeline && !state.shaders.length) throw new Error("no pipeline or shader object is bound at the command");
+  const source = stateStages(state, ctx.db).find((s) => s.stage === stage);
+  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${stage} stage` : `no ${stage} shader object is bound at the command`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
   if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
   return { source, bytes, module: new SpirvModule(bytes) };
@@ -22703,7 +22870,7 @@ function compareWithOriginal(translated, original, stage) {
 function specialization(state, source) {
   const out = /* @__PURE__ */ new Map();
   const stages = state.pipeline?.descriptor?.pStages;
-  const stageInfo = Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
+  const stageInfo = source.object.type === "VkShaderEXT" ? source.object.descriptor : Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
   const spec = isObject(stageInfo) ? stageInfo.pSpecializationInfo : null;
   if (!isObject(spec)) return out;
   const data = bytesOf(spec.pData);
@@ -22890,9 +23057,10 @@ function rasterStateOf(state, defaultViewport) {
   const d = state.pipeline?.descriptor;
   const raster = isObject(d?.pRasterizationState) ? d.pRasterizationState : null;
   const ds = isObject(d?.pDepthStencilState) ? d.pDepthStencilState : null;
-  const cull = str(raster?.cullMode);
-  const face = str(raster?.frontFace);
-  const compare2 = ds?.depthTestEnable ? str(ds.depthCompareOp) : "";
+  const cull = str(dynamicValue(state, "cullMode", raster?.cullMode));
+  const face = str(dynamicValue(state, "frontFace", raster?.frontFace));
+  const testEnabled = dynamicValue(state, "depthTest", ds?.depthTestEnable);
+  const compare2 = testEnabled === true || testEnabled === 1 ? str(dynamicValue(state, "depthCompare", ds?.depthCompareOp)) : "";
   return {
     viewport,
     cullFront: cull.includes("FRONT"),
@@ -24691,7 +24859,7 @@ function debugTools(store) {
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
         const state = drawState(c2.data, c2.db, cmd);
         const inputNames = /* @__PURE__ */ new Map();
-        for (const v of vertexInputs(c2, state.pipeline)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
+        for (const v of vertexInputs(c2, state)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
         const metal = c2.data.api === "metal";
         const decompiled = !metal && boolArg(args, "decompiled", false);
         const ctx = {
@@ -24988,7 +25156,7 @@ function collectPasses2(o) {
     const commands = data.commandsForFrame(frame);
     const passCounters = /* @__PURE__ */ new Map();
     const computeCounters = /* @__PURE__ */ new Map();
-    const bound = /* @__PURE__ */ new Map();
+    const programs = new ProgramTracker(data);
     const scissor = /* @__PURE__ */ new Map();
     let currentCb = -1;
     let currentSecondary = 0;
@@ -25052,11 +25220,7 @@ function collectPasses2(o) {
         continue;
       }
       if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
-      if (sets.BIND_PIPELINE.has(cmd.method) && a) {
-        const id = refId(a.pipeline);
-        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(cmd.method, a)}`, id);
-        continue;
-      }
+      if (programs.note(cmd)) continue;
       if ((cmd.method === "vkCmdSetScissor" || cmd.method === "vkCmdSetScissorWithCount" || cmd.method === "vkCmdSetScissorWithCountEXT") && a) {
         const rects = a.pScissors;
         scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
@@ -25064,7 +25228,7 @@ function collectPasses2(o) {
       }
       if (!isAction(sets, cmd.method)) continue;
       const isDispatch = sets.DISPATCH.has(cmd.method);
-      const pipelineId = bound.get(`${stream}:${sets.bindPointOf(cmd.method)}`);
+      const pipelineId = programs.at(cmd);
       if (pipelineId === void 0) continue;
       let pass;
       if (isDispatch && !renderPass) {
@@ -25319,7 +25483,7 @@ function buildFrameCostTree(o) {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
-        n.pipelineId = bucket.pipelineId;
+        if (bucket.pipelineId > 0) n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root2) {
           const tree = functionTree(root2, byId, s.invocations, /* @__PURE__ */ new Set(), 0);
@@ -25342,13 +25506,14 @@ function buildFrameCostTree(o) {
         stageNodes.push(n);
       }
       const first = bucket.items[0];
-      const pipeline = db.getObject(bucket.pipelineId);
+      const program = shaderProgram(o.data, db, bucket.pipelineId);
       const count2 = bucket.items.length;
       const noun = first.kind === "draw" ? count2 === 1 ? "draw" : "draws" : count2 === 1 ? "dispatch" : "dispatches";
-      const name = o.perDraw ? `${first.command.method.replace(/^vkCmd/, "")} #${first.command.index}${pipeline ? ` (${pipeline.name})` : ""}` : `${pipeline ? pipeline.name : `Pipeline ${bucket.pipelineId}`}: ${count2} ${noun}`;
+      const name = o.perDraw ? `${first.command.method.replace(/^vkCmd/, "")} #${first.command.index}${program ? ` (${program.name})` : ""}` : `${program ? program.name : `Pipeline ${bucket.pipelineId}`}: ${count2} ${noun}`;
       const itemNode = rollup(node("item", name, 0, stageNodes));
       itemNode.command = first.command;
-      itemNode.objectId = bucket.pipelineId;
+      const itemObject = program?.pipeline ?? program?.shaders[0];
+      if (itemObject) itemNode.objectId = itemObject.id;
       if (timedItems) {
         const ms = bucketMs(bucket.items);
         const modeled = itemNode.totalCost;
@@ -25909,9 +26074,9 @@ function stageModels(c2) {
   const models = /* @__PURE__ */ new Map();
   const spirv = /* @__PURE__ */ new Map();
   for (const pipelineId of pipelineUses(c2.data).keys()) {
-    const pipeline = db.getObject(pipelineId);
-    if (!pipeline) continue;
-    models.set(pipelineId, pipelineStages(pipeline, db).map((s) => {
+    const program = shaderProgram(c2.data, db, pipelineId);
+    if (!program) continue;
+    models.set(pipelineId, programStages(program, db).map((s) => {
       const bytes = c2.spirv(s.object, s.blobIndex);
       if (bytes) spirv.set(`${s.object.id}|${s.stage}`, bytes);
       const reflection = s.stage === "compute" ? c2.reflection(s.object, s.blobIndex) : null;
@@ -26178,7 +26343,7 @@ function resourceTools(store) {
         const cmd = d.commands[index];
         if (!cmd || !d.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: read_vertices takes a draw command (list_commands with kind draw).`);
         const state = drawState(d, c2.db, cmd);
-        const inputs = vertexInputs(c2, state.pipeline);
+        const inputs = vertexInputs(c2, state);
         const a = cmd.args ?? {};
         const count2 = intArg(args, "count", 8, 1, 256);
         const first = optionalInt(args, "first");
@@ -26309,9 +26474,9 @@ function resourceTools(store) {
         }
         const rows = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
-          const p2 = db.getObject(pipelineId);
+          const p2 = shaderProgram(d, db, pipelineId);
           if (!p2) continue;
-          for (const s of pipelineStages(p2, db)) {
+          for (const s of programStages(p2, db)) {
             const spirv = c2.spirv(s.object, s.blobIndex);
             const a = spirv ? analyzeSpirvCached(spirv) : null;
             const e = a?.entryPoints.find((x) => x.name === s.entryPoint) ?? a?.entryPoints[0];
@@ -26321,7 +26486,7 @@ function resourceTools(store) {
             rows.push({
               score: uses * (e?.weighted ?? 0),
               row: {
-                pipeline: refText(db, p2.id),
+                pipeline: p2.pipeline ? refText(db, p2.pipeline.id) : void 0,
                 stage: s.stage,
                 entryPoint: s.entryPoint,
                 shader: refText(db, s.object.id),
@@ -26452,7 +26617,7 @@ function resourceTools(store) {
           const tree = buildFrameCostTree({ data: c2.data, db: c2.db, models, perDraw: true, estimateFragments: true });
           let best = null;
           const walk = (n) => {
-            if (n.kind === "stage" && n.command && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
+            if (n.kind === "stage" && n.command && n.pipelineId !== void 0 && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
             for (const ch2 of n.children) walk(ch2);
           };
           walk(tree.root);
@@ -26466,6 +26631,7 @@ function resourceTools(store) {
         const isDispatch = sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
         const state = drawState(c2.data, c2.db, cmd);
+        if (!state.pipeline && state.shaders.length) throw new Error(`Command ${command} runs shader objects (${state.shaders.map((o) => refText(c2.db, o.id)).join(", ")}), and measuring a shader replays the draw with copies of its pipeline, which shader objects have none of. get_shader_flame_graph still weighs their stages by the cost model.`);
         if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
         const stages = models.get(state.pipeline.id) ?? [];
         const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");

@@ -47,6 +47,9 @@ export class CaptureStatistics {
   graphicsPipelinesBound = 0;
   computePipelinesBound = 0;
   uniquePipelines = 0;
+  /** VK_EXT_shader_object: vkCmdBindShadersEXT calls and the distinct shader objects they bound. */
+  bindShaders = 0;
+  uniqueShaderObjects = 0;
   vertexStages = 0;
   fragmentStages = 0;
   computeStages = 0;
@@ -83,6 +86,7 @@ export class CaptureStatistics {
     const cmdSets = data.sets;
     this.frames = data.frames;
     const pipelines = new Set<number>();
+    const shaderObjects = new Set<number>();
     const sets = new Set<number>();
     const commandBuffers = new Set<number>();
     const secondaries = new Set<number>();
@@ -152,6 +156,20 @@ export class CaptureStatistics {
           else if (stage === "VK_SHADER_STAGE_FRAGMENT_BIT") this.fragmentStages++;
           else if (stage === "VK_SHADER_STAGE_COMPUTE_BIT") this.computeStages++;
         }
+      } else if (method === "vkCmdBindShadersEXT" && a) {
+        this.bindShaders++;
+        const stages = Array.isArray(a.pStages) ? a.pStages : [];
+        const bound = Array.isArray(a.pShaders) ? a.pShaders : [];
+        stages.forEach((flag, k) => {
+          const id = refId(bound[k]);
+          const stage = str(flag);
+          if (stage !== "VK_SHADER_STAGE_COMPUTE_BIT") boundPipeline.set(stream, 0);   // the shaders replace the pipeline's
+          if (id === null) return;
+          shaderObjects.add(id);
+          if (stage === "VK_SHADER_STAGE_VERTEX_BIT") this.vertexStages++;
+          else if (stage === "VK_SHADER_STAGE_FRAGMENT_BIT") this.fragmentStages++;
+          else if (stage === "VK_SHADER_STAGE_COMPUTE_BIT") this.computeStages++;
+        });
       } else if (method === "vkCmdBindVertexBuffers" || method === "vkCmdBindVertexBuffers2" || method === "vkCmdBindVertexBuffers2EXT") {
         this.bindVertexBuffers++;
       } else if (method === "vkCmdBindIndexBuffer" || method === "vkCmdBindIndexBuffer2" || method === "vkCmdBindIndexBuffer2KHR") {
@@ -184,6 +202,7 @@ export class CaptureStatistics {
     this.commandBuffers = commandBuffers.size;
     this.secondaryCommandBuffers = secondaries.size;
     this.uniquePipelines = pipelines.size;
+    this.uniqueShaderObjects = shaderObjects.size;
     this.uniqueDescriptorSets = sets.size;
     this.renderTargetsCaptured = data.textures.filter((t) => t.info.kind !== "initial" && !t.info.error).length;
     for (const b of data.buffers.values()) {
@@ -336,6 +355,7 @@ export class CaptureStatistics {
       s("Pipeline", [
         { label: "Bind pipeline calls", value: this.bindPipeline }, { label: "Graphics pipelines bound", value: this.graphicsPipelinesBound },
         { label: "Compute pipelines bound", value: this.computePipelinesBound }, { label: "Distinct pipelines", value: this.uniquePipelines },
+        { label: "Bind shader object calls", value: this.bindShaders }, { label: "Distinct shader objects", value: this.uniqueShaderObjects },
         { label: "Vertex stages", value: this.vertexStages }, { label: "Fragment stages", value: this.fragmentStages }, { label: "Compute stages", value: this.computeStages },
       ]),
       s("Bindings", [

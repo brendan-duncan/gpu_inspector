@@ -551,9 +551,14 @@ private:
     void PrepareOverdraw(VkCommandBuffer cb, PassState& pass);
     void RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending);
     void ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass);
-    /** Issues a pass's state and commands again, secondaries inline, into a render pass and framebuffer of the replay's own. */
+    /**
+     * Issues a pass's state and commands again, secondaries inline, into a render pass and framebuffer of the
+     * replay's own; or, with no render pass, into dynamic rendering to `colour` (which shader objects need).
+     */
     void ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer);
+                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView colour = VK_NULL_HANDLE);
+    /** Whether a draw's vertex stage is a shader object (vkCmdBindShadersEXT) rather than a pipeline's. */
+    bool DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const;
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
 
     // Draw-call overlays (overlay.cpp): one draw of a pass issued on its own into a mask.
@@ -573,6 +578,8 @@ private:
     void CompleteMesh(bool submitted);
     /** The topology a pipeline's create info names, and whether it is dynamic. */
     std::string PipelineTopology(uint64_t pipelineId, bool& dynamic) const;
+    /** A vertex shader object's copy that writes transform feedback (its layout in _xfbLayouts); null when it cannot be made. */
+    VkShaderEXT FeedbackShader(uint64_t shaderId);
     bool PrepareDrawStats();
     void ResetDrawQueries(VkCommandBuffer cb);
     void DestroyDrawStats();
@@ -704,6 +711,15 @@ private:
     ReissueMode _overlayTargetMode = ReissueMode::Count;
     /** The pipeline the reissued commands last bound, which the target draw needs a copy of. */
     uint64_t _overlayPipeline = 0;
+    /**
+     * VK_EXT_shader_object: the vertex shader object the reissued commands last bound in place of a
+     * pipeline, whether a tessellation or geometry shader object is bound beside it, and the topology
+     * the dynamic state last set (and had at the target draw, once it is issued).
+     */
+    uint64_t _overlayVertexShader = 0;
+    bool _overlayShaderGeometry = false;
+    std::string _overlayTopology;
+    std::string _overlayDrawnTopology;
     /** Set once the target draw has been issued: nothing after it is. */
     bool _overlayIssued = false;
     /**
@@ -728,6 +744,8 @@ private:
     bool _xfbAvailable = false;
     /** The edited vertex shader of each pipeline copied for feedback: its record layout, or why it could not be edited. */
     std::map<uint64_t, XfbPatch> _xfbLayouts;
+    /** Vertex shader objects edited for feedback, by captured shader object; null where the edit failed. */
+    std::map<uint64_t, VkShaderEXT> _xfbShaders;
     /** The mesh being recorded, whose buffers the target draw binds. */
     PendingMesh* _meshTarget = nullptr;
     std::vector<PendingMesh> _pendingMeshes;

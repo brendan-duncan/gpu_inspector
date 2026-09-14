@@ -25,6 +25,7 @@ import { passKey } from "./capture_data.js";
 import type { ShaderStage } from "./vulkan/spirv_reflect.js";
 import { dominantDimension, weighCost, type CostDimension, type CostVec, type FunctionAnalysis, type ShaderAnalysis } from "./vulkan/spirv_analysis.js";
 import { isAction } from "./command_sets.js";
+import { ProgramTracker, shaderProgram } from "./shader_cache.js";
 import { drawStatsByCommand } from "./draw_stats.js";
 import { partShare, type MeasuredPart, type ShaderAblation } from "./shader_ablation.js";
 import { isObject, num, refId, str } from "./vulkan/vulkan_object.js";
@@ -62,7 +63,7 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   objectId?: number;
   /** Stage, function and line frames: the stage the code runs in. */
   stage?: ShaderStage;
-  /** Stage frames: the entry point, and the pipeline bound for the draws. */
+  /** Stage frames: the entry point, and the pipeline bound for the draws (none for shader objects). */
   entryPoint?: string;
   pipelineId?: number;
   invocations?: number;
@@ -88,7 +89,7 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
 export interface CostTreeOptions {
   data: CaptureData;
   db: ObjectDatabase;
-  /** Stage models per pipeline object id. */
+  /** Stage models per program key (a pipeline object id, or a negative key for a set of shader objects: see ShaderProgram). */
   models: Map<number, StageModel[]>;
   /** One frame per draw instead of one per pipeline. */
   perDraw?: boolean;
@@ -244,7 +245,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
     const commands = data.commandsForFrame(frame);
     const passCounters = new Map<number, number>();
     const computeCounters = new Map<number, number>();
-    const bound = new Map<string, number>();       // "stream:bindPoint" -> pipeline id
+    const programs = new ProgramTracker(data);      // what each stream and bind point runs
     const scissor = new Map<string, number | null>(); // stream -> scissor area
     let currentCb = -1;
     let currentSecondary = 0;
@@ -289,11 +290,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
       if (sets.PASS_END.has(cmd.method)) { renderPass = null; continue; }
       if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
 
-      if (sets.BIND_PIPELINE.has(cmd.method) && a) {
-        const id = refId(a.pipeline);
-        if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(cmd.method, a)}`, id);
-        continue;
-      }
+      if (programs.note(cmd)) continue;
       if ((cmd.method === "vkCmdSetScissor" || cmd.method === "vkCmdSetScissorWithCount" || cmd.method === "vkCmdSetScissorWithCountEXT") && a) {
         const rects = a.pScissors;
         scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
@@ -302,7 +299,7 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
       if (!isAction(sets, cmd.method)) continue;
 
       const isDispatch = sets.DISPATCH.has(cmd.method);
-      const pipelineId = bound.get(`${stream}:${sets.bindPointOf(cmd.method)}`);
+      const pipelineId = programs.at(cmd);
       if (pipelineId === undefined) continue;
       let pass: Pass | null;
       if (isDispatch && !renderPass) {
@@ -576,7 +573,8 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
-        n.pipelineId = bucket.pipelineId;
+        // Measuring a stage replays the draw with copies of its pipeline, which shader objects have none of.
+        if (bucket.pipelineId > 0) n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root) {
           const tree = functionTree(root, byId, s.invocations, new Set(), 0);
@@ -597,15 +595,16 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         stageNodes.push(n);
       }
       const first = bucket.items[0];
-      const pipeline = db.getObject(bucket.pipelineId);
+      const program = shaderProgram(o.data, db, bucket.pipelineId);
       const count = bucket.items.length;
       const noun = first.kind === "draw" ? (count === 1 ? "draw" : "draws") : (count === 1 ? "dispatch" : "dispatches");
       const name = o.perDraw
-        ? `${first.command.method.replace(/^vkCmd/, "")} #${first.command.index}${pipeline ? ` (${pipeline.name})` : ""}`
-        : `${pipeline ? pipeline.name : `Pipeline ${bucket.pipelineId}`}: ${count} ${noun}`;
+        ? `${first.command.method.replace(/^vkCmd/, "")} #${first.command.index}${program ? ` (${program.name})` : ""}`
+        : `${program ? program.name : `Pipeline ${bucket.pipelineId}`}: ${count} ${noun}`;
       const itemNode = rollup(node("item", name, 0, stageNodes));
       itemNode.command = first.command;
-      itemNode.objectId = bucket.pipelineId;
+      const itemObject = program?.pipeline ?? program?.shaders[0];
+      if (itemObject) itemNode.objectId = itemObject.id;
       if (timedItems) {
         const ms = bucketMs(bucket.items);
         const modeled = itemNode.totalCost;

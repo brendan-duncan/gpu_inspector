@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Added
+- Draws with shader objects (`VK_EXT_shader_object`) in Vulkan captures:
+  - The command details, `get_command` and the frame statistics show the shader objects a draw
+    runs and the dynamic state it set in place of a pipeline's.
+  - **Analyze Shaders**, `analyze_shaders`, the **Shader Flame Graph** and
+    `get_shader_flame_graph` weigh their stages, grouped by the set of shader objects bound.
+  - The shader debugger steps their vertex, fragment and compute shaders. It reads cull mode,
+    front face and depth test from the dynamic state.
+  - The mesh view's VS Out and `get_mesh_output` capture their vertex shader's outputs.
+  - Measuring a shader by ablation still needs a pipeline, and says so.
 - Ray tracing in Vulkan captures:
   - A ray tracing pipeline shows every one of its stages, and its shader groups in the Inspect
     panel, a trace command's details and `get_command`.

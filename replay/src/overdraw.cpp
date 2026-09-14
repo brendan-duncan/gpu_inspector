@@ -266,6 +266,28 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const JValue& c = _capture->Commands()->items[index];
     const std::string m = Str(c.Get("method"));
     const JValue* args = c.Get("args");
+    if (_overlayTarget != UINT32_MAX && _overlayIssued) return;
+    if (args && m == "vkCmdBindShadersEXT") {
+        // Shader objects in place of a pipeline. Only the mesh output draws with them, with its own
+        // copy of the vertex shader at the target draw; every other reissued draw is left out.
+        const JValue* stages = args->Get("pStages");
+        const JValue* shaders = args->Get("pShaders");
+        bool graphics = false;
+        for (uint32_t k = 0; stages && k < stages->count; ++k) {
+            const std::string stage = Str(&stages->items[k]);
+            if (stage == "VK_SHADER_STAGE_COMPUTE_BIT") continue;
+            graphics = true;
+            const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
+            if (stage == "VK_SHADER_STAGE_VERTEX_BIT") _overlayVertexShader = id;
+            else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT") _overlayShaderGeometry = _overlayShaderGeometry || id;
+        }
+        if (graphics) {
+            _overlayPipeline = 0;
+            _overdrawDrawable = false;
+        }
+        return;
+    }
+    if (args && (m == "vkCmdSetPrimitiveTopology" || m == "vkCmdSetPrimitiveTopologyEXT")) _overlayTopology = Str(args->Get("primitiveTopology"));
     if (!args || (!insidePass && !IsStateCommand(m)) || kOverdrawSkipped.count(m)) return;
     if ((!depthTested || depthFormat == VK_FORMAT_UNDEFINED) && kDepthState.count(m)) return;
     const bool overlay = _overlayTarget != UINT32_MAX;
@@ -275,6 +297,8 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         if (overlay) {
             // The draw the overlay is for gets its own copy when it comes; the rest draw depth only, or not at all.
             _overlayPipeline = IdOf(args->Get("pipeline"));
+            _overlayVertexShader = 0;
+            _overlayShaderGeometry = false;
             if (_overlayOnlyTarget) return;
             VkPipeline pipeline = OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, ReissueMode::DepthOnly);
             _overdrawDrawable = pipeline != VK_NULL_HANDLE;
@@ -282,6 +306,8 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
             return;
         }
         VkPipeline pipeline = OverdrawPipeline(IdOf(args->Get("pipeline")), depthTested, depthFormat);
+        _overlayVertexShader = 0;
+        _overlayShaderGeometry = false;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         if (_options.trace) {
@@ -293,7 +319,26 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const bool draw = StartsWith(m, "vkCmdDraw");
     const bool target = overlay && draw && index == _overlayTarget;
     bool feedback = false;
-    if (target) {
+    if (target && !_overlayPipeline && _overlayVertexShader && _overlayTargetMode == ReissueMode::Xfb) {
+        // Shader objects: the vertex shader's feedback copy alone, and nothing rasterized.
+        VkShaderEXT vs = VK_NULL_HANDLE;
+        if (_overlayShaderGeometry) _xfbLayouts[_overlayVertexShader].error = "tessellation or geometry shader objects are bound, and only a vertex shader's outputs are captured";
+        else vs = FeedbackShader(_overlayVertexShader);
+        const auto setDiscard = _fns.CmdSetRasterizerDiscardEnable ? _fns.CmdSetRasterizerDiscardEnable : _fns.CmdSetRasterizerDiscardEnableEXT;
+        _overdrawDrawable = vs && setDiscard;
+        _overlayIssued = true;  // drawn or not, nothing after it matters
+        _overlayDrawnPipeline = _overlayVertexShader;
+        _overlayDrawnTopology = _overlayTopology;
+        if (_overdrawDrawable) {
+            const VkShaderStageFlagBits stages[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+            const VkShaderEXT bound[] = {vs, VK_NULL_HANDLE};
+            _fns.CmdBindShadersEXT(cb, 2, stages, bound);
+            setDiscard(cb, VK_TRUE);
+            feedback = PrepareMeshBuffers();
+            if (!feedback) _overdrawDrawable = false;
+        }
+        _overlayDrawn = _overdrawDrawable;
+    } else if (target) {
         VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -335,23 +380,42 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
 }
 
 void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer) {
+                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView colour) {
     const JValue* commands = _capture->Commands();
     // The state the pass inherited from the command buffer, then the pass's own commands.
     _overdrawDrawable = false;
     _overdrawDraws = 0;
     _overdrawSkippedDraws = 0;
     _overlayPipeline = 0;
+    _overlayVertexShader = 0;
+    _overlayShaderGeometry = false;
+    _overlayTopology.clear();
     for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
         if (!commands->items[i].Get("secondary")) ReissueCommand(cb, i, depthTested, depthFormat, false);
     VkClearValue clear{};
-    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    begin.renderPass = renderPass;
-    begin.framebuffer = framebuffer;
-    begin.renderArea = {{0, 0}, pass.extent};
-    begin.clearValueCount = 1;
-    begin.pClearValues = &clear;
-    _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    const bool dynamicRendering = !renderPass;
+    if (dynamicRendering) {
+        VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        attachment.imageView = colour;
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.clearValue = clear;
+        VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        info.renderArea = {{0, 0}, pass.extent};
+        info.layerCount = 1;
+        info.colorAttachmentCount = 1;
+        info.pColorAttachments = &attachment;
+        _fns.CmdBeginRendering(cb, &info);
+    } else {
+        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        begin.renderPass = renderPass;
+        begin.framebuffer = framebuffer;
+        begin.renderArea = {{0, 0}, pass.extent};
+        begin.clearValueCount = 1;
+        begin.pClearValues = &clear;
+        _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    }
     for (uint32_t i = pass.beginIndex + 1; i < endIndex; ++i) {
         const JValue& c = commands->items[i];
         if (c.Get("secondary")) continue;
@@ -362,6 +426,8 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
                 const uint64_t id = IdOf(&list->items[s]);
                 _overdrawDrawable = false;  // a secondary starts without a pipeline
                 _overlayPipeline = 0;
+                _overlayVertexShader = 0;
+                _overlayShaderGeometry = false;
                 for (uint32_t j = i + 1; j < commands->count && commands->items[j].Get("secondary"); ++j)
                     if (commands->items[j].Get("secondary")->Uint() == id) ReissueCommand(cb, j, depthTested, depthFormat, true);
             }
@@ -369,7 +435,30 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         }
         ReissueCommand(cb, i, depthTested, depthFormat, true);
     }
-    _fns.CmdEndRenderPass(cb);
+    if (dynamicRendering) _fns.CmdEndRendering(cb);
+    else _fns.CmdEndRenderPass(cb);
+}
+
+bool Replayer::DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const {
+    const JValue* commands = _capture->Commands();
+    const auto secondaryOf = [&](uint32_t i) -> uint64_t {
+        const JValue* s = commands->items[i].Get("secondary");
+        return s ? s->Uint() : 0;
+    };
+    const uint64_t secondary = secondaryOf(target);
+    for (uint32_t i = target; i-- > group.first;) {
+        if (secondaryOf(i) != secondary) continue;
+        const JValue& c = commands->items[i];
+        const std::string m = Str(c.Get("method"));
+        const JValue* args = c.Get("args");
+        if (!args) continue;
+        if (m == "vkCmdBindPipeline" && Str(args->Get("pipelineBindPoint")) == "VK_PIPELINE_BIND_POINT_GRAPHICS") return false;
+        if (m != "vkCmdBindShadersEXT") continue;
+        const JValue* stages = args->Get("pStages");
+        for (uint32_t k = 0; stages && k < stages->count; ++k)
+            if (Str(&stages->items[k]) == "VK_SHADER_STAGE_VERTEX_BIT") return true;
+    }
+    return false;
 }
 
 void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending) {

@@ -8,7 +8,7 @@ import { drawStatsSummary, parseDrawStats } from "../renderer/draw_stats.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
 import { buildFrameCostTree, type FlameNode, type StageModel } from "../renderer/frame_cost_tree.js";
 import { metalStages } from "../renderer/metal/reflection.js";
-import { pipelineStages, pipelineUses } from "../renderer/shader_cache.js";
+import { pipelineStages, pipelineUses, programStages, shaderProgram } from "../renderer/shader_cache.js";
 import { layoutText, parseLayout } from "../renderer/vulkan/buffer_layout.js";
 import { SEVERITY_RANK, analyzeSpirvCached, weighCost, type CostVec } from "../renderer/vulkan/spirv_analysis.js";
 import { describeDebugInfo, hasEmbeddedSource } from "../renderer/vulkan/spirv_debug.js";
@@ -275,16 +275,16 @@ function metalShader(c: Capture, o: VulkanObject, view: string, maxChars: number
   };
 }
 
-/** The stages of every pipeline the frame bound, analyzed from the capture's SPIR-V, for the flame graph. */
+/** The stages of every pipeline (or set of shader objects) the frame bound, analyzed from the capture's SPIR-V, for the flame graph. */
 function stageModels(c: Capture): { models: Map<number, StageModel[]>; spirv: Map<string, Uint8Array> } {
   const db = c.db;
   const models = new Map<number, StageModel[]>();
   /** Each stage's SPIR-V by "object|stage", for the code of its lines. */
   const spirv = new Map<string, Uint8Array>();
   for (const pipelineId of pipelineUses(c.data).keys()) {
-    const pipeline = db.getObject(pipelineId);
-    if (!pipeline) continue;
-    models.set(pipelineId, pipelineStages(pipeline, db).map((s) => {
+    const program = shaderProgram(c.data, db, pipelineId);
+    if (!program) continue;
+    models.set(pipelineId, programStages(program, db).map((s) => {
       const bytes = c.spirv(s.object, s.blobIndex);
       if (bytes) spirv.set(`${s.object.id}|${s.stage}`, bytes);
       // Compute invocations are the dispatched groups times the workgroup size, from reflection.
@@ -555,7 +555,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const cmd = d.commands[index];
         if (!cmd || !d.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: read_vertices takes a draw command (list_commands with kind draw).`);
         const state = drawState(d, c.db, cmd);
-        const inputs = vertexInputs(c, state.pipeline);
+        const inputs = vertexInputs(c, state);
         const a = cmd.args ?? {};
         const count = intArg(args, "count", 8, 1, 256);
         const first = optionalInt(args, "first");
@@ -685,9 +685,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         }
         const rows: { score: number; row: Record<string, unknown> }[] = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
-          const p = db.getObject(pipelineId);
+          const p = shaderProgram(d, db, pipelineId);
           if (!p) continue;
-          for (const s of pipelineStages(p, db)) {
+          for (const s of programStages(p, db)) {
             const spirv = c.spirv(s.object, s.blobIndex);
             const a = spirv ? analyzeSpirvCached(spirv) : null;
             const e = a?.entryPoints.find((x) => x.name === s.entryPoint) ?? a?.entryPoints[0];
@@ -697,7 +697,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
             rows.push({
               score: uses * (e?.weighted ?? 0),
               row: {
-                pipeline: refText(db, p.id), stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), uses,
+                pipeline: p.pipeline ? refText(db, p.pipeline.id) : undefined, stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), uses,
                 cost: round(e?.weighted), dominant: e?.dominant,
                 findings: Object.keys(findings).length ? findings : undefined,
                 worst: worst.length ? worst.map((f) => `${f.severity} ${f.rule}${f.line ? ` (${f.file ? `${f.file}:` : "line "}${f.line})` : ""}: ${f.message}`) : undefined,
@@ -826,7 +826,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           const tree = buildFrameCostTree({ data: c.data, db: c.db, models, perDraw: true, estimateFragments: true });
           let best: FlameNode | null = null;
           const walk = (n: FlameNode): void => {
-            if (n.kind === "stage" && n.command && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
+            if (n.kind === "stage" && n.command && n.pipelineId !== undefined && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
             for (const ch of n.children) walk(ch);
           };
           walk(tree.root);
@@ -840,6 +840,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const isDispatch = sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
         const state = drawState(c.data, c.db, cmd);
+        if (!state.pipeline && state.shaders.length) throw new Error(`Command ${command} runs shader objects (${state.shaders.map((o) => refText(c.db, o.id)).join(", ")}), and measuring a shader replays the draw with copies of its pipeline, which shader objects have none of. get_shader_flame_graph still weighs their stages by the cost model.`);
         if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
         const stages = models.get(state.pipeline.id) ?? [];
         const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");

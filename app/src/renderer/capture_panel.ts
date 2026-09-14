@@ -23,7 +23,7 @@ import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_vie
 import { renderFrameFlameGraph } from "./frame_flamegraph.js";
 import type { StageModel } from "./frame_cost_tree.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
-import { pipelineStages, pipelineUses, stageLabel } from "./shader_cache.js";
+import { pipelineUses, programStages, shaderProgram, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, type FrameTimingInfo } from "./frame_stats_view.js";
@@ -1215,13 +1215,13 @@ export class CaptureView implements CaptureHost {
     if (!status) return;
     const db = this.window.database;
     const reports: FrameShaderReport[] = [];
-    for (const [pipelineId, count] of pipelineUses(this.data)) {
-      const pipeline = db.getObject(pipelineId);
-      if (!pipeline) continue;
-      for (const source of pipelineStages(pipeline, db)) {
+    for (const [key, count] of pipelineUses(this.data)) {
+      const program = shaderProgram(this.data, db, key);
+      if (!program) continue;
+      for (const source of programStages(program, db)) {
         const data = await fetchBlob(this.window, source.object, source.blobIndex);
         reports.push({
-          label: `${pipeline.name}: ${stageLabel(source.stage)} ${source.entryPoint}`, objectId: source.object.id, stage: source.stage, uses: count,
+          label: `${program.name}: ${stageLabel(source.stage)} ${source.entryPoint}`, objectId: source.object.id, stage: source.stage, uses: count,
           analysis: data ? analyzeSpirvCached(data) : null,
         });
       }
@@ -1229,7 +1229,7 @@ export class CaptureView implements CaptureHost {
     status.remove();
     if (this._selectedRow) return;   // the user moved on while shaders were fetched
     if (!reports.length) {
-      new Div(this._infoPanel, { text: "No pipelines were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
+      new Div(this._infoPanel, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
     renderFrameReport(this._infoPanel, reports, (id) => this.window.showObject(id));
@@ -1245,10 +1245,10 @@ export class CaptureView implements CaptureHost {
     const db = this.window.database;
     const models = new Map<number, StageModel[]>();
     for (const pipelineId of pipelineUses(this.data).keys()) {
-      const pipeline = db.getObject(pipelineId);
-      if (!pipeline) continue;
+      const program = shaderProgram(this.data, db, pipelineId);
+      if (!program) continue;
       const stages: StageModel[] = [];
-      for (const source of pipelineStages(pipeline, db)) {
+      for (const source of programStages(program, db)) {
         const data = await fetchBlob(this.window, source.object, source.blobIndex);
         // Compute stages need the workgroup size (invocations = groups x size), from reflection.
         const reflection = source.stage === "compute" ? await this.window.shaders.get(source.object, source.blobIndex) : null;
@@ -1263,7 +1263,7 @@ export class CaptureView implements CaptureHost {
     status.remove();
     if (this._selectedRow) return;
     if (!models.size) {
-      new Div(this._infoPanel, { text: "No pipelines were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
+      new Div(this._infoPanel, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
     renderFrameFlameGraph(this._infoPanel, {
@@ -1519,9 +1519,9 @@ export class CaptureView implements CaptureHost {
 
   async vertexInputNames(cmd: CaptureCommand): Promise<Map<number, string>> {
     const names = new Map<number, string>();
-    const pipeline = drawState(this.data, this.window.database, cmd).pipeline;
-    if (!pipeline || pipeline.type.startsWith("MTL")) return names;
-    const stages = await this.window.shaders.stages(pipeline);
+    const state = drawState(this.data, this.window.database, cmd);
+    if ((!state.pipeline && !state.shaders.length) || state.pipeline?.type.startsWith("MTL")) return names;
+    const stages = await this.window.shaders.stagesOf(state);
     const vs = stages.find((s) => s.source.stage === "vertex");
     for (const input of vs?.reflection?.entryPoint(vs.source.entryPoint)?.inputs ?? []) {
       if (input.location !== undefined && input.name) names.set(input.location, input.name);

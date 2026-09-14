@@ -706,6 +706,14 @@ buffers recorded before the edit keep binding the original until they are re-rec
   unlinked, and every member is substituted. The protocol is unchanged: `ReplaceShader` carries
   the shader object's id in `pipeline`. Shaders created from a binary cannot be edited.
 
+  In the app, a draw's state (`renderer/draw_state.ts`) carries the shader objects bound in place of
+  a pipeline and the dynamic state that stands in for a pipeline's (`dynamicValue` reads it where a
+  pipeline declares that state dynamic). Reports that group draws by pipeline id group these by a
+  program key instead (`ShaderProgram` in `renderer/shader_cache.ts`): the pipeline's id, or a
+  negative key per set of shader objects, followed through a frame by `ProgramTracker`.
+  `stateStages` gives a draw's stages from either source, so the command details, the analysis,
+  the flame graph and the shader debugger read one lookup.
+
 The editor (`renderer/code_editor.ts`) is a
 textarea over a highlighted copy of its text with a line-number gutter and a find bar; a failed
 compile marks the offending lines (`parseCompileErrors` reads glslangValidator's

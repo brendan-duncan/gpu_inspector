@@ -2,7 +2,7 @@
 // captured vertex and index buffers through the pipeline's vertex layout (draw_state.ts), in the order
 // the draw reads them. The first instance only; a per-instance attribute takes its first element.
 import type { CaptureData } from "./capture_data.js";
-import { drawState, vertexLayout, type VertexLayout } from "./draw_state.js";
+import { drawState, dynamicValue, vertexLayout, type VertexLayout } from "./draw_state.js";
 import { primitiveKind, verticesPerPrimitive } from "./mesh_output.js";
 import { vertexFormat, type VertexFormat } from "./vulkan/vk_format.js";
 import { isObject, num, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
@@ -71,7 +71,7 @@ export function meshInput(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
   const notes: string[] = [];
   const d = state.pipeline?.descriptor;
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
-  const topology = assembly ? str(assembly.topology) : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  const topology = str(dynamicValue(state, "topology", assembly?.topology)) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
   const args = drawArgs(data, cmd, notes);
 
   // Draw order: the index buffer's values, or the run of vertices from firstVertex.

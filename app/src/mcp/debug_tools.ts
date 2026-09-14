@@ -79,7 +79,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");
         const state = drawState(c.data, c.db, cmd);
         const inputNames = new Map<number, string>();
-        for (const v of vertexInputs(c, state.pipeline)) if (v.location !== undefined && v.name) inputNames.set(v.location, v.name);
+        for (const v of vertexInputs(c, state)) if (v.location !== undefined && v.name) inputNames.set(v.location, v.name);
         // A Metal capture needs no replay: its fragment inputs come from interpreting the draw's
         // own vertex shader, so the replay is only wired up for a Vulkan one.
         const metal = c.data.api === "metal";

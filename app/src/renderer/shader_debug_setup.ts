@@ -16,12 +16,12 @@
 //
 // Shared by the debugger tab (shader_debugger_view.ts) and the MCP server's debug_shader.
 import type { CaptureData, CapturedTexture } from "./capture_data.js";
-import { drawState, findPass, type DrawState } from "./draw_state.js";
+import { drawState, dynamicValue, findPass, type DrawState } from "./draw_state.js";
 import { isMetalPipeline, prepareMetalSession } from "./metal/shader_debug.js";
 import type { MslBindings } from "./msl/interpreter.js";
 import { meshInput } from "./mesh_input.js";
 import { positionOutput, primitiveKind, type MeshOutput, type MeshOutputVariable } from "./mesh_output.js";
-import { pipelineStages, type StageSource } from "./shader_cache.js";
+import { stateStages, type StageSource } from "./shader_cache.js";
 import { Invocation, type InvocationInputs, type ShaderBindings } from "./spirv/interpreter.js";
 import { BuiltIn, Decoration, ExecutionModel, SpirvModule, StorageClass } from "./spirv/module.js";
 import { SpirvProgram } from "./spirv/program.js";
@@ -104,10 +104,9 @@ function bytesOf(v: ArgValue | undefined): Uint8Array | null {
 
 /** The pipeline stage a target debugs, with its SPIR-V. */
 function stageOf(ctx: DebugContext, state: DrawState, stage: "vertex" | "fragment" | "compute"): { source: StageSource; bytes: Uint8Array; module: SpirvModule } {
-  const pipeline = state.pipeline;
-  if (!pipeline) throw new Error("no pipeline is bound at the command");
-  const source = pipelineStages(pipeline, ctx.db).find((s) => s.stage === stage);
-  if (!source) throw new Error(`the pipeline has no ${stage} stage`);
+  if (!state.pipeline && !state.shaders.length) throw new Error("no pipeline or shader object is bound at the command");
+  const source = stateStages(state, ctx.db).find((s) => s.stage === stage);
+  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${stage} stage` : `no ${stage} shader object is bound at the command`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
   if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
   return { source, bytes, module: new SpirvModule(bytes) };
@@ -174,11 +173,13 @@ export function compareWithOriginal(translated: DebugInvocation, original: Debug
   return { matches: translated.status === original.status && (!ended || values.every((v) => v.matches)), status, values: ended ? values : [] };
 }
 
-/** Specialization constant bytes by SpecId, from the pipeline's create info for the stage. */
+/** Specialization constant bytes by SpecId, from the pipeline's (or the shader object's) create info for the stage. */
 function specialization(state: DrawState, source: StageSource): Map<number, Uint8Array> {
   const out = new Map<number, Uint8Array>();
   const stages = state.pipeline?.descriptor?.pStages;
-  const stageInfo = Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
+  const stageInfo = source.object.type === "VkShaderEXT"
+    ? source.object.descriptor
+    : Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
   const spec = isObject(stageInfo) ? stageInfo.pSpecializationInfo : null;
   if (!isObject(spec)) return out;
   const data = bytesOf(spec.pData);
@@ -402,9 +403,10 @@ export function rasterStateOf(state: DrawState, defaultViewport?: RasterState["v
   const d = state.pipeline?.descriptor;
   const raster = isObject(d?.pRasterizationState) ? d!.pRasterizationState : null;
   const ds = isObject(d?.pDepthStencilState) ? d!.pDepthStencilState : null;
-  const cull = str(raster?.cullMode);
-  const face = str(raster?.frontFace);
-  const compare = ds?.depthTestEnable ? str(ds.depthCompareOp) : "";
+  const cull = str(dynamicValue(state, "cullMode", raster?.cullMode));
+  const face = str(dynamicValue(state, "frontFace", raster?.frontFace));
+  const testEnabled = dynamicValue(state, "depthTest", ds?.depthTestEnable);
+  const compare = testEnabled === true || testEnabled === 1 ? str(dynamicValue(state, "depthCompare", ds?.depthCompareOp)) : "";
   return {
     viewport,
     cullFront: cull.includes("FRONT"),
