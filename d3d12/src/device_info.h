@@ -26,6 +26,8 @@ void OnDeviceReleased(ID3D12Device* device);
 
 /** Frame statistics: the frame time of every present, reported every 100 ms (README.md, "Frame boundary"). */
 void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT result);
+/** The same for a device that never presents, whose frames end at a submit (see the capture manager's OnExecuteCommandLists). */
+void OnFrameNoPresent(ID3D12Device* device);
 /** The CPU time inside ExecuteCommandLists, for FrameStats.submitMs. */
 void AddSubmitTime(ID3D12Device* device, double milliseconds);
 

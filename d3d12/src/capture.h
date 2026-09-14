@@ -120,8 +120,15 @@ public:
 
     // --- Queues and frames ---------------------------------------------------------------------
 
-    /** After ExecuteCommandLists was forwarded: freezes the lists' recordings in submission order and notes the queue. */
-    void OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs);
+    /**
+     * After ExecuteCommandLists was forwarded: freezes the lists' recordings in submission order,
+     * notes the queue, and drives the frame boundary for a device that never presents (Dawn's
+     * D3D12 device in Chrome renders into shared textures the compositor presents, so its own
+     * IDXGISwapChain::Present is never called). Returns true when this submission was such a frame
+     * boundary, so the caller runs the per-frame chores a present would (validation, shader edits,
+     * frame timing). See "Frame boundary" in the README.
+     */
+    bool OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs);
     /** A bundle ran inside a list: its recording becomes the ExecuteBundle command's children. */
     void OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle);
     /**
@@ -139,6 +146,13 @@ public:
 private:
     CaptureManager() = default;
     CommandRecorder* LookupRecorder(ID3D12GraphicsCommandList* list);
+    /**
+     * A frame boundary on `device`: a present (its swap chain given) or, for a device that never
+     * presents, an ExecuteCommandLists. Advances that device's frame count and runs the arm /
+     * capture / finish state machine, whose frames are those of the device (and, on the present
+     * path, the swap chain) the capture started on.
+     */
+    void EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain* swapChain, bool present);
     struct Impl;
     Impl* _impl = nullptr;
     Impl& impl();

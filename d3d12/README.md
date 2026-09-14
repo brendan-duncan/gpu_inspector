@@ -72,9 +72,10 @@ the struct serializers are written by hand (`serialize.cpp`), as they are for Me
 `DXINSP_PORT` moves the listener off 47531, `DXINSP_LOG=1` logs the intercepted calls to the
 session's Log tab (`DXINSP_LOG_FILE` appends them to a file, since a GUI application has no
 stderr), `DXINSP_STACKTRACES` takes a stack at every object creation, `DXINSP_RECORD_ALWAYS`
-records every command list whether or not a capture is in progress, and `DXINSP_DEBUG_LAYER=1`
+records every command list whether or not a capture is in progress, `DXINSP_DEBUG_LAYER=1`
 enables the D3D12 debug layer before the device is created (the launch dialog's "Validation
-layer").
+layer"), and `DXINSP_FRAME_BOUNDARY=submit|present` forces the frame boundary (see "Frame
+boundary" below).
 
 `compile_check.cmd <file.cpp>` compiles one source of the library on its own (no link), for
 checking a file against the headers without building the whole library.
@@ -129,6 +130,31 @@ every 100 ms with the frame time, the CPU time inside `ExecuteCommandLists` (`su
 monitor's refresh period (`EnumDisplaySettings` on the monitor of the swap chain's window,
 `refreshSource: "monitor"`), whether the present syncs (`presentMode`), and `frameBoundary:
 "present"`.
+
+Not every D3D12 renderer presents. Chrome's GPU process runs its WebGPU work through Dawn, whose
+D3D12 device renders into textures the compositor presents rather than calling `Present` itself,
+so that device's `IDXGISwapChain::Present` is never seen — the same shape as an OpenXR Vulkan
+application, where the runtime composites and the layer falls back to a submission boundary
+(`vulkan/src/layer.cpp`, `OnSubmitForFrames`). The boundary is therefore decided **per device**
+over its lifetime (`capture.cpp`, `DeviceFrame`): a device that presents is delimited by its
+presents; one that goes `kSubmitsWithoutPresent` (60, the layer's threshold) submissions without
+ever presenting is delimited by every `ExecuteCommandLists` from then on, with `frameBoundary:
+"submit"` and no refresh period. `DXINSP_FRAME_BOUNDARY=submit` forces the submit boundary for
+every device and ignores presents for framing — for the case where the compositor presents on a
+hooked D3D12 device but the work to capture is Dawn's, which does not — and `=present` keeps the
+present-only behavior. A queued "capture frame N" counts the boundaries a device actually has, so
+it lands on the right one either way.
+
+**Several devices.** A process can hold more than one D3D12 device: a game and a background copy
+device, or Dawn's WebGPU device beside the compositor's. Each keeps its own frame boundary and
+frame count. A capture's frames are the home boundary's — the swap chain that started a
+present-delimited capture, or the device that started a submit-delimited one — and any other
+device's presents or submits are recorded but land in the frame the home is on. By default a
+process that presents anywhere has its capture started by a present, so a background device's
+submit boundary does not hijack it (the guard the Vulkan layer applies in `OnFrameEnd`); the
+`submit` override lifts that, to target a device that never presents while another one does. Each
+participating device is waited for at the finish through its own fence, and its passes carry its
+own timestamps.
 
 **The stream.** Each command's `object` is its command list; `ExecuteCommandLists`, `Signal` and
 `Wait` name the queue; `Present` names the swap chain. Per frame the order is the submission
@@ -306,7 +332,10 @@ root constants, a vertex/pixel pipeline compiled with `dxc` at build time (`-Zi 
 the source view has something to show), a compute dispatch into a UAV, and one instanced draw per
 frame, re-recorded every frame. `--frames N`, `--msaa`, `--bundle` (the draw in a bundle),
 `--indirect` (through `ExecuteIndirect`), `--render-pass` (`BeginRenderPass` instead of
-`OMSetRenderTargets`), `--compute` and `--leak` exercise the paths above.
+`OMSetRenderTargets`), `--compute`, `--leak` and `--offscreen` exercise the paths above.
+`--offscreen` creates no swap chain and never presents, rendering into its own targets the way
+Chrome's Dawn WebGPU device does, which is what drives the submit frame boundary; a capture of it
+is a full frame all the same.
 
 ## Not done
 
