@@ -87,10 +87,10 @@ each step.
    | depth rejection | high | below 25% with overdraw above 1.5 | fragments shaded then replaced | front-to-back sort, depth prepass |
    | many tiny draws | | 32+ draws of ≤12 vertices | per-draw overhead | instancing, merged geometry |
 
-   `get_overdraw` measures it per pixel: a Metal capture taken with `overdraw` carries it, and a
-   Vulkan capture is replayed on this machine's GPU the first time (slow for a large frame, and it
-   needs `vkinsp_replay` built). Not available for a D3D12 capture, which cannot be replayed. It ranks the passes, and with `pass` returns the heatmap, which
-   shows *where* on screen the fragments stack up.
+   `get_overdraw` measures it per pixel: a Metal or D3D12 capture taken with `overdraw` carries it,
+   and a Vulkan capture is replayed on this machine's GPU the first time (slow for a large frame,
+   and it needs `vkinsp_replay` built). It ranks the passes, and with `pass` returns the heatmap,
+   which shows *where* on screen the fragments stack up.
    Compare its two counts. Many more rasterized fragments than fragments passing depth means the
    depth test is rejecting work, which is cheap only when it rejects before the fragment shader
    runs. Discarded fragments count in both.
@@ -125,8 +125,9 @@ each step.
 6. **Shaders.** The ranking and modelling below read SPIR-V, so they are Vulkan only. A D3D12
    capture still has every shader through `get_shader`: `reflection` (constant buffer members,
    resources by register and space, inputs and outputs, read from the DXBC or DXIL at pipeline
-   creation), `disassembly`, and `source` when the shader was compiled with `dxc -Zi
-   -Qembed_debug`. A Metal capture has the MSL of a library built from source. For those two,
+   creation), `disassembly`, and `source` when the HLSL can be found — `dxc -Zi` embeds it in the
+   container, `dxc -Zs` writes it to a PDB whose directory `set_search_paths`' `symbolDirs` must
+   name. A Metal capture has the MSL of a library built from source. For those two,
    rank the passes by measured GPU time instead of by modelled shader cost.
    - `analyze_shaders` ranks the stages in use by uses times modeled cost.
    - `get_shader_flame_graph` shows where the frame's shading work goes: each stage's modeled cost
@@ -163,10 +164,10 @@ each step.
 3. **Find the draw.** `list_commands` with `pass` (or `label`, `kind: "draw"`). For one wrong
    pixel, `get_pixel_history` names it directly: the last draw that wrote the pixel, and the draws
    that reached it but were culled, discarded or failed the depth or stencil test. A Vulkan capture
-   is replayed for it: the first question takes a moment, later ones about the same capture tens of milliseconds. A Metal capture answers only for the pixel it was taken
-   with: capture again with `capture_frames` and `pixelHistory: { texture, x, y }` (a render
-   target's id from `list_textures`), then ask the new capture. A D3D12 capture has no pixel
-   history: find the draw with `list_commands` and `read_texture` pass by pass instead.
+   is replayed for it: the first question takes a moment, later ones about the same capture tens of milliseconds. A Metal or D3D12 capture has no replay, so its
+   library follows the pixel while it captures and the capture answers only for the pixel it was
+   taken with: capture again with `capture_frames` and `pixelHistory: { texture, x, y }` (a render
+   target's id from `list_textures`), then ask the new capture.
 4. **Check what the draw read** with `get_command`. The usual suspects:
    - **Fixed-function state**: `cullMode` and `frontFace` (winding flipped by a negative scale or
      viewport), depth test, write and compare op (reversed-Z against a LESS compare), blend factors
@@ -279,8 +280,9 @@ command names, object types and binding model follow from it.
   constants appear as push constants. A texture SRV or UAV names its `resource` and the view
   description rather than a view object, since D3D12 has none.
 - Passes are synthesized (see above), so a pass may end at a synthetic `EndRenderTargets`.
-- Shaders are DXBC or DXIL. `get_shader` gives `reflection`, `disassembly` and, when the shader was
-  built with `dxc -Zi -Qembed_debug`, `source`. The SPIR-V analyses (`analyze_shaders`,
+- Shaders are DXBC or DXIL. `get_shader` gives `reflection`, `disassembly` and `source` when the
+  HLSL can be found (embedded by `dxc -Zi`, or in the PDB `dxc -Zs` wrote, under `set_search_paths`'
+  `symbolDirs`). The SPIR-V analyses (`analyze_shaders`,
   `get_shader_flame_graph`, `measure_shader_cost`, `get_shader` view `analysis`) do not apply.
 - Nothing replay-backed is available, because `vkinsp_replay` replays Vulkan only: no
   `get_overdraw`, `get_pixel_history`, `get_mesh_output` or `debug_shader`. Use the measured pass

@@ -27,6 +27,21 @@
 
 namespace dxinsp {
 
+/**
+ * The Capture message's `pixelHistory`: one pixel of one render target followed through the
+ * captured frame (pixel_history.cpp). `texture` is an ID3D12Resource object id from an earlier
+ * capture; a swap chain's back buffer (or one no longer alive) follows whichever back buffer the
+ * captured frame renders into, the way a Metal capture follows the next drawable.
+ */
+struct PixelHistoryRequest {
+    bool enabled = false;
+    uint64_t texture = 0;
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t mip = 0;
+    uint32_t layer = 0;
+};
+
 struct CaptureOptions {
     uint32_t frameCount = 1;
     /** Frame (the present counter) to start at; UINT64_MAX = the next frame. A frame already passed captures the next one. */
@@ -40,6 +55,10 @@ struct CaptureOptions {
     bool captureImages = true;                // textures bound through SRVs and UAVs
     bool profilePasses = true;                // timestamps, pipeline statistics and occlusion per pass
     bool stacktraces = false;                 // every recorded command carries the stack it was recorded from
+    /** Draw every render pass again with a counting pixel shader, for its overdraw (overdraw.h). */
+    bool overdraw = false;
+    /** Follow one pixel of a render target through the frame (pixel_history.cpp). */
+    PixelHistoryRequest pixelHistory;
 };
 
 class CaptureManager {

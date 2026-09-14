@@ -15,7 +15,7 @@ what follows is the Vulkan side.
 | Topic | Decision |
 |---|---|
 | Capture model | WebGPU Inspector style: commands are recorded in-process during the captured frame and GPU resource contents (render targets, buffers, textures) are read back at capture time. There is no replay. Captures can be saved and reopened for viewing. |
-| Attach model | Launch from the inspector first: the layer is enabled per-process through environment variables, nothing is registered. For applications started elsewhere (an editor, a game behind its launcher) the layer can be registered as an implicit layer for the user (`main/implicit_layer.ts`: the registry under HKCU on Windows, a manifest in `implicit_layer.d` on Linux) and loads into any process started with `VKINSP_ENABLE=1`, which a session then waits for. A Vulkan layer cannot join a process after its instance exists, so "attach" means "start the application with the variables set". |
+| Attach model | Launch from the inspector first: the layer is enabled per-process through environment variables, nothing is registered. For applications started elsewhere (an editor, a game behind its launcher) the layer can be registered as an implicit layer for the user (`main/implicit_layer.ts`: the registry under HKCU on Windows, a manifest in `implicit_layer.d` on Linux) and loads into any process started with `VKINSP_ENABLE=1`, which a session then waits for. A Vulkan layer cannot join a process after its instance exists, so "attach" means "start the application with the variables set". Direct3D 12 has no registration of any kind, so its counterpart is a watch: `dxinsp_launch.exe --watch <image>` polls for the process and injects the capture library as it starts, freezing it until the hooks are in (`src/d3d12/README.md`). Both catch an application at its start; neither joins one that is already running. |
 | Targets | Local processes, and Android devices through adb (see Android below). The layer and UI talk over TCP, so other remote targets can be added without changing the protocol. |
 | Device features the layer adds | Three, each optional and each with a fallback to the application's own create info if the driver refuses: a refresh-period extension (`refresh_rate.h`), dynamic rendering for multisampled depth read-back (`depth_resolve.h`), and `pipelineStatisticsQuery` for the per-pass GPU counters (`pipeline_stats.h`). |
 | Native language | C++20, CMake. MSVC on Windows, GCC/Clang on Linux, Clang on macOS. |
@@ -271,11 +271,12 @@ much slower than on the desktop.
    is frozen at submit so later re-recording does not disturb the capture.
 6. At the next present the layer waits for the frame's work, maps the staging memory, and streams
    `CaptureFrameCommands`, `CaptureTextureFrames` + `CaptureTextureData`, then `CaptureBuffers` +
-   `CaptureBufferData` messages, then `CapturePassTimings`, then (a Metal capture with `overdraw`)
-   `CaptureOverdraw` + `CaptureOverdrawData`, then (a Metal capture with `pixelHistory`)
+   `CaptureBufferData` messages, then `CapturePassTimings`, then (a capture with `overdraw`)
+   `CaptureOverdraw` + `CaptureOverdrawData`, then (a capture with `pixelHistory`)
    `CapturePixelHistory`. `CaptureComplete` comes last, whichever
    sections the capture had, so a client waiting for the capture (the MCP server) knows the stream
-   has ended. The Metal library does the same.
+   has ended. The Metal and D3D12 libraries do the same, and they are the ones that measure the last
+   two, in the application while it captures, since neither can be replayed.
 7. Secondary command buffers arrive as `children` of their `vkCmdExecuteCommands` entry; the UI
    inlines them into the primary's command stream (Unity records every draw in secondaries).
 8. Multi-frame captures: every command and render target carries a frame ordinal (a render target

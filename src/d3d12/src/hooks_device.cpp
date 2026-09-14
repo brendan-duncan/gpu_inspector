@@ -629,9 +629,12 @@ HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(ID3D12Device14* This, const D
     return hr;
 }
 
-// Pipeline libraries: a loaded pipeline is tracked like a created one, under the library's
-// device. It is not handed to the shader editor: a pipeline out of a library has no rebuildable
-// description (README.md, "Live requests").
+// Pipeline libraries: a loaded pipeline is tracked like a created one, under the library's device,
+// and its description is kept the same way. The library only caches the driver's compiled blob
+// under a name -- Load*Pipeline is still given the whole description -- so a pipeline that comes
+// out of one can be rebuilt with a stage replaced (shader_edit.h) and copied for a measurement
+// (overdraw.h) exactly like one the application created outright. Unity's D3D12 player loads every
+// graphics pipeline this way, so it is the path that matters.
 
 HRESULT STDMETHODCALLTYPE Hook_LoadGraphicsPipeline(ID3D12PipelineLibrary1* This, LPCWSTR pName, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return LIB(LoadGraphicsPipeline)(This, pName, pDesc, riid, out);
@@ -639,6 +642,7 @@ HRESULT STDMETHODCALLTYPE Hook_LoadGraphicsPipeline(ID3D12PipelineLibrary1* This
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadGraphicsPipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
+    if (pDesc) ShaderEditor::Get().OnGraphicsPipelineCreated(DeviceOf(This), pipeline, *pDesc);
     return hr;
 }
 
@@ -648,6 +652,7 @@ HRESULT STDMETHODCALLTYPE Hook_LoadComputePipeline(ID3D12PipelineLibrary1* This,
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadComputePipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
+    if (pDesc) ShaderEditor::Get().OnComputePipelineCreated(DeviceOf(This), pipeline, *pDesc);
     return hr;
 }
 
@@ -657,6 +662,7 @@ HRESULT STDMETHODCALLTYPE Hook_LoadPipeline(ID3D12PipelineLibrary1* This, LPCWST
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadPipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
+    if (pDesc) ShaderEditor::Get().OnStreamPipelineCreated(DeviceOf(This), pipeline, *pDesc);
     return hr;
 }
 

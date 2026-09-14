@@ -39,6 +39,8 @@ constexpr uint32_t kPartSHDR = FourCC('S', 'H', 'D', 'R');   // DXBC shader mode
 constexpr uint32_t kPartSHEX = FourCC('S', 'H', 'E', 'X');   // DXBC shader model 5 program
 constexpr uint32_t kPartPSV0 = FourCC('P', 'S', 'V', '0');   // pipeline state validation: stage, entry name
 constexpr uint32_t kPartSTAT = FourCC('S', 'T', 'A', 'T');   // the reflection copy of the program (-Qstrip_reflect keeps it here)
+constexpr uint32_t kPartILDN = FourCC('I', 'L', 'D', 'N');   // the debug name: the file dxc wrote the PDB to (-Zi and -Zs both)
+constexpr uint32_t kPartHASH = FourCC('H', 'A', 'S', 'H');   // u32 flags + the 16-byte shader hash, which is what names the PDB
 
 struct Part {
     uint32_t fourcc = 0;
@@ -79,6 +81,36 @@ const Part* FindPart(const std::vector<Part>& parts, uint32_t fourcc) {
     for (const Part& p : parts)
         if (p.fourcc == fourcc) return &p;
     return nullptr;
+}
+
+std::string HexBytes(const uint8_t* p, size_t n) {
+    static const char* kDigits = "0123456789abcdef";
+    std::string s;
+    s.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i) {
+        s.push_back(kDigits[p[i] >> 4]);
+        s.push_back(kDigits[p[i] & 0xf]);
+    }
+    return s;
+}
+
+// The ILDN part is DxilShaderDebugName: u16 flags, u16 name length (without the terminator), then
+// the name, NUL-terminated and padded to four bytes. dxc writes it for -Zi and for -Zs alike, and
+// it holds exactly the file name -Fd produced, so it is what finds a stripped build's PDB.
+std::string DebugNameOf(const std::vector<Part>& parts) {
+    const Part* ildn = FindPart(parts, kPartILDN);
+    if (!ildn || ildn->size < 5) return std::string();
+    uint32_t length = (uint32_t)ildn->data[2] | ((uint32_t)ildn->data[3] << 8);
+    if (length == 0 || (uint64_t)length + 5 > ildn->size) return std::string();
+    const char* name = reinterpret_cast<const char*>(ildn->data + 4);
+    return std::string(name, strnlen(name, length));
+}
+
+// The shader hash: the HASH part's digest (u32 flags, then 16 bytes), which is what dxc names the
+// PDB by; a container without that part falls back to the 16 bytes in its own header.
+std::string HashHexOf(const void* bytecode, const std::vector<Part>& parts) {
+    if (const Part* hash = FindPart(parts, kPartHASH); hash && hash->size >= 20) return HexBytes(hash->data + 4, 16);
+    return HexBytes(static_cast<const uint8_t*>(bytecode) + 4, 16);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -757,6 +789,131 @@ std::string EntryFromDebugInfo(const void* bytecode, size_t size) {
     return BstrText(name);
 }
 
+// ---------------------------------------------------------------------------------------------
+// PDBs
+//
+// -Zs keeps the source out of the container and writes it to a PDB instead, named after the
+// shader hash when the build used -Fd <dir>\. IDxcPdbUtils loads such a file exactly as it loads
+// a container, so the source of a stripped shader is there for whoever can find the file.
+
+const int kPdbSearchDepth = 5;        // as symbolize.ts searches the symbol directories
+const size_t kMaxScannedPdbs = 512;   // a hash scan loads every one of them: enough for a build tree's shader PDBs
+
+/** The sources of a blob IDxcPdbUtils has loaded: a PDB file, or a container carrying its ILDB part. */
+std::vector<std::pair<std::string, std::string>> LoadedSources(IDxcUtils* utils, IDxcPdbUtils* pdb) {
+    std::vector<std::pair<std::string, std::string>> out;
+    UINT32 count = 0;
+    if (FAILED(pdb->GetSourceCount(&count))) return out;
+    for (UINT32 i = 0; i < count; ++i) {
+        ComPtr<IDxcBlobEncoding> source;
+        if (FAILED(pdb->GetSource(i, source.put())) || !source) continue;
+        BSTR name = nullptr;
+        std::string nameText = SUCCEEDED(pdb->GetSourceName(i, &name)) ? BstrText(name) : std::string();
+        out.emplace_back(std::move(nameText), BlobText(utils, source.get()));
+    }
+    return out;
+}
+
+struct LoadedPdb {
+    std::vector<std::pair<std::string, std::string>> files;
+    /** The shader hash the PDB was written for, lowercase hex; "" when the PDB does not say. */
+    std::string hash;
+    std::string error;
+};
+
+LoadedPdb LoadPdbFile(const std::wstring& path) {
+    LoadedPdb out;
+    DxcLib& lib = Dxc();
+    if (!lib.create) {
+        out.error = lib.error;
+        return out;
+    }
+    ComPtr<IDxcUtils> utils = DxcCreate<IDxcUtils>(CLSID_DxcUtils);
+    ComPtr<IDxcPdbUtils> pdb = DxcCreate<IDxcPdbUtils>(CLSID_DxcPdbUtils);
+    if (!utils || !pdb) {
+        out.error = "dxcompiler.dll: DxcCreateInstance failed";
+        return out;
+    }
+    ComPtr<IDxcBlobEncoding> blob;
+    HRESULT hr = utils->LoadFile(path.c_str(), nullptr, blob.put());
+    if (FAILED(hr) || !blob) {
+        out.error = Narrow(path.c_str()) + ": cannot be read (" + HrText(hr) + ")";
+        return out;
+    }
+    hr = pdb->Load(blob.get());
+    if (FAILED(hr)) {
+        out.error = Narrow(path.c_str()) + ": not a shader PDB (" + HrText(hr) + ")";
+        return out;
+    }
+    ComPtr<IDxcBlob> hash;
+    if (SUCCEEDED(pdb->GetHash(hash.put())) && hash) {
+        // The blob is the container's HASH part as it stands: u32 flags, then the 16-byte digest.
+        const uint8_t* p = static_cast<const uint8_t*>(hash->GetBufferPointer());
+        const size_t n = (size_t)hash->GetBufferSize();
+        if (n >= 20) out.hash = HexBytes(p + 4, 16);
+        else if (n >= 16) out.hash = HexBytes(p, 16);
+    }
+    out.files = LoadedSources(utils.get(), pdb.get());
+    if (out.files.empty()) out.error = Narrow(path.c_str()) + ": carries no source";
+    return out;
+}
+
+/** The file named `name` in `dir` or a few levels below it; "" when it is nowhere there. */
+std::wstring FindFileNamed(const std::wstring& dir, const std::wstring& name, int depth = 0) {
+    std::wstring direct = dir + L"\\" + name;
+    if (FileExists(direct)) return direct;
+    if (depth >= kPdbSearchDepth) return std::wstring();
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return std::wstring();
+    std::vector<std::wstring> children;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.cFileName[0] == L'.') continue;   // ".", "..", and the tool directories nobody builds into
+        children.push_back(dir + L"\\" + fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    for (const std::wstring& child : children) {
+        std::wstring found = FindFileNamed(child, name, depth + 1);
+        if (!found.empty()) return found;
+    }
+    return std::wstring();
+}
+
+/** Every .pdb lying directly in `dir`, for the hash scan a build with its own naming needs. */
+std::vector<std::wstring> PdbsIn(const std::wstring& dir) {
+    std::vector<std::wstring> out;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*.pdb").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        out.push_back(dir + L"\\" + fd.cFileName);
+        if (out.size() >= kMaxScannedPdbs) break;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+
+/** A UTF-8 file name (the PDB's, which dxc spells in hex) as the wide string the file APIs take. */
+std::wstring WidenUtf8(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return std::wstring();
+    std::wstring w((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+std::string JoinPaths(const std::vector<std::wstring>& paths) {
+    std::string s;
+    for (const std::wstring& p : paths) {
+        if (!s.empty()) s += ", ";
+        s += Narrow(p.c_str());
+    }
+    return s;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -843,15 +1000,96 @@ std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* byt
     if (FAILED(utils->CreateBlob(bytecode, (UINT32)size, DXC_CP_ACP, blob.put())) || !blob) return out;
     // Load fails for a container without debug information, which is simply "no sources".
     if (FAILED(pdb->Load(blob.get()))) return out;
-    UINT32 count = 0;
-    if (FAILED(pdb->GetSourceCount(&count))) return out;
-    for (UINT32 i = 0; i < count; ++i) {
-        ComPtr<IDxcBlobEncoding> source;
-        if (FAILED(pdb->GetSource(i, source.put())) || !source) continue;
-        BSTR name = nullptr;
-        std::string nameText = SUCCEEDED(pdb->GetSourceName(i, &name)) ? BstrText(name) : std::string();
-        out.emplace_back(std::move(nameText), BlobText(utils.get(), source.get()));
+    return LoadedSources(utils.get(), pdb.get());
+}
+
+std::string ShaderDebugName(const void* bytecode, size_t size) {
+    std::vector<Part> parts;
+    if (!ParseContainer(bytecode, size, parts)) return std::string();
+    return DebugNameOf(parts);
+}
+
+std::string ShaderHashHex(const void* bytecode, size_t size) {
+    std::vector<Part> parts;
+    if (!ParseContainer(bytecode, size, parts)) return std::string();
+    return HashHexOf(bytecode, parts);
+}
+
+std::vector<std::pair<std::string, std::string>> PdbSources(const std::wstring& path, std::string& error) {
+    LoadedPdb loaded = LoadPdbFile(path);
+    error = loaded.error;
+    return loaded.files;
+}
+
+ShaderSourceFiles FindShaderSources(const void* bytecode, size_t size,
+                                    const std::vector<std::wstring>& pdbFiles,
+                                    const std::vector<std::wstring>& pdbDirs) {
+    ShaderSourceFiles out;
+    out.files = EmbeddedSources(bytecode, size);
+    if (!out.files.empty()) return out;
+
+    const std::string debugName = ShaderDebugName(bytecode, size);
+    const std::string hash = ShaderHashHex(bytecode, size);
+    std::vector<std::string> failures;
+    std::vector<std::wstring> tried;
+
+    // One candidate: its sources are the answer, and anything it has to say about itself is kept
+    // for the note when no candidate works out.
+    auto take = [&](const std::wstring& file) {
+        tried.push_back(file);
+        LoadedPdb loaded = LoadPdbFile(file);
+        if (loaded.files.empty()) {
+            if (!loaded.error.empty()) failures.push_back(loaded.error);
+            return false;
+        }
+        out.files = std::move(loaded.files);
+        out.pdb = Narrow(file.c_str());
+        return true;
+    };
+
+    // A PDB named outright answers whatever the container says about its name.
+    for (const std::wstring& file : pdbFiles)
+        if (take(file)) return out;
+
+    // -Fd <dir>\ names the PDB after the shader hash; -Fd <file> records the path it was given,
+    // so a build still standing where it was made is found by that path, and a build tree that
+    // moved by the file's own name under each directory.
+    std::vector<std::wstring> names;
+    if (!debugName.empty()) {
+        std::wstring wide = WidenUtf8(debugName);
+        size_t slash = wide.find_last_of(L"/\\");
+        if (slash != std::wstring::npos) {
+            if (FileExists(wide) && take(wide)) return out;
+            wide = wide.substr(slash + 1);
+        }
+        if (!wide.empty()) names.push_back(wide);
     }
+    if (!hash.empty() && debugName != hash + ".pdb") names.push_back(WidenUtf8(hash + ".pdb"));
+    for (const std::wstring& dir : pdbDirs) {
+        for (const std::wstring& name : names) {
+            std::wstring found = FindFileNamed(dir, name);
+            if (!found.empty() && take(found)) return out;
+        }
+    }
+
+    // Last, any .pdb lying in a directory that was written for this very shader: a build with a
+    // naming of its own (-Fd <dir>\<name>.pdb) still records the hash inside the file.
+    for (const std::wstring& dir : pdbDirs) {
+        for (const std::wstring& file : PdbsIn(dir)) {
+            if (std::find(tried.begin(), tried.end(), file) != tried.end()) continue;
+            LoadedPdb loaded = LoadPdbFile(file);
+            if (loaded.files.empty() || loaded.hash.empty() || loaded.hash != hash) continue;
+            out.files = std::move(loaded.files);
+            out.pdb = Narrow(file.c_str());
+            return out;
+        }
+    }
+
+    out.note = "the container carries no HLSL (built without -Zi)";
+    if (!debugName.empty()) out.note += "; dxc wrote its source to " + debugName;
+    if (pdbDirs.empty() && pdbFiles.empty()) out.note += "; no PDB directory was given";
+    else out.note += "; not found in " + JoinPaths(pdbDirs.empty() ? pdbFiles : pdbDirs);
+    for (const std::string& f : failures) out.note += "; " + f;
     return out;
 }
 

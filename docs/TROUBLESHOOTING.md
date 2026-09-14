@@ -32,16 +32,24 @@ nothing. Tick **Layer log** to see the library's own output.
 point `INSPECTOR_D3D12_DIR` at the directory holding them. A Vulkan application launched in the
 meantime still works.
 
-**Injection fails on a running application, or from an editor's launcher.** There is no way to
-attach to a process that already exists: the library must be inside the process before its first
-D3D12 call. Start the application through `dxinsp_launch.exe` (see
-[Direct3D 12](D3D12.md#starting-an-application-by-hand)) and press **Connect**.
+**The application is started by something else (a launcher, an editor, Steam).** Use *Run On* ›
+**An application started elsewhere (Direct3D 12)**, give the executable's name, press **Wait**, and
+start the application afterwards: the inspector watches for the process and injects the library as
+it starts (see [Direct3D 12](D3D12.md#waiting-for-an-application-to-start)). The order matters —
+there is no way to attach to a process that already exists, since the library must be inside it
+before its first D3D12 call. A session that says `dxinsp: injected ... into pid N` and then waits
+means the application already had its device (start the wait earlier) or does not use D3D12; an
+`access denied` line means the application runs elevated or as another user, and the inspector has
+to run elevated too.
 
 **Shaders show no text, and constant buffers are bytes.** The shaders are DXIL and
 `dxcompiler.dll` was not found. The library looks beside itself, in `%VULKAN_SDK%\Bin`, in the
 Windows SDK's `bin\<version>\x64` and on `PATH`; install the Vulkan SDK or copy the DLL next to
-`dxinsp_capture.dll`. Text with no **Source** view means the shader carries no embedded source:
-compile it with `dxc -Zi -Qembed_debug`.
+`dxinsp_capture.dll`. Text with no **Source** view means the HLSL was not found: `dxc -Zi` embeds
+it in the container, and `dxc -Zs -Fd <dir>\` writes it to a PDB beside the build, which GPU
+Inspector reads when **Symbol directories** (or the MCP server's `set_search_paths` `symbolDirs`)
+names that directory. Without either, **Edit** opens HLSL generated from the stage's reflection,
+which declares the same resources at the same registers.
 
 **Validation layer ticked, but no messages.** The D3D12 debug layer is part of Windows'
 optional *Graphics Tools* feature (Settings › System › Optional features). Without it
@@ -97,9 +105,9 @@ them, or point `INSPECTOR_TOOLS_DIR` at a directory containing them (`VULKAN_SDK
 too).
 
 **No Source view.** The shader carries no embedded source. Compile it with `glslc -g`,
-`glslangValidator -g` or `dxc -fspv-debug=vulkan-with-source` (for Direct3D 12: `dxc -Zi
--Qembed_debug`), or set **Source roots** in the launch dialog so the inspector can read the files
-the debug information names. See [shader sources](VULKAN.md#shader-sources).
+`glslangValidator -g` or `dxc -fspv-debug=vulkan-with-source` (for Direct3D 12: `dxc -Zi`, or
+`dxc -Zs` with the PDB's directory in **Symbol directories**), or set **Source roots** in the
+launch dialog so the inspector can read the files the debug information names. See [shader sources](VULKAN.md#shader-sources).
 
 ## The app itself
 

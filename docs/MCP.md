@@ -96,7 +96,10 @@ Vulkan SDK's compilers. `/gpu-inspector:live <exe>` walks through it.
 
 On Windows a launch carries both capture libraries: the Vulkan layer's environment and the
 Direct3D 12 library, injected by its launcher (`dxinsp_launch.exe`, from the same directory or
-`INSPECTOR_D3D12_DIR`), and whichever API the application uses connects. A D3D12 session's
+`INSPECTOR_D3D12_DIR`), and whichever API the application uses connects. For a Direct3D 12
+application the plugin does not start itself, `wait_for_app` watches for the executable's name and
+injects the library as the process starts; call it before the application is launched, since one
+that already has a device cannot be caught. A D3D12 session's
 `replace_shader` takes HLSL, compiled to DXIL with `dxc`, and `get_shader` shows a D3D12 pipeline's
 reflection, embedded source and disassembly (through `dxinsp_shader.exe`). The tools that replay a
 capture — overdraw, pixel history, mesh output, the flame graph's measured draws, shader cost by

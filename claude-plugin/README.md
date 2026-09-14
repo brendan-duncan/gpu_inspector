@@ -109,11 +109,12 @@ capture.
 | `get_validation` | Validation messages, linked to commands |
 | `list_textures`, `read_texture` | Read-back images, as PNG plus statistics and texel values |
 | `read_buffer`, `read_vertices` | Buffer ranges as scalars or GLSL structs; a draw's vertices with bounds |
-| `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis. A D3D12 pipeline gives DXBC/DXIL reflection, disassembly and the HLSL embedded by `dxc -Zi -Qembed_debug`; the SPIR-V cost analysis is Vulkan only |
+| `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis. A D3D12 pipeline gives DXBC/DXIL reflection, disassembly and its HLSL (embedded by `dxc -Zi`, or out of the PDB `dxc -Zs` wrote, found under `set_search_paths`' `symbolDirs`); the SPIR-V cost analysis is Vulkan only |
 | `get_shader_flame_graph` | The frame's shading work by pass, pipeline or draw, stage, function and source line, and its hottest functions and lines (Vulkan; a capture's draws are measured by replay on first use) |
 | `measure_shader_cost` | Vulkan: a draw's shader stage replayed with each function, source line and texture taken out, giving what each costs on this GPU; the flame graph then sizes the stage by it |
 | `set_search_paths` | Where shader sources and unstripped libraries are, for shaders without embedded text and stack frames without symbols |
 | `launch_app`, `attach_app`, `stop_app` | Start an application with the capture library (on Windows the Vulkan and D3D12 libraries both, whichever it uses), or connect to one listening; end it |
+| `wait_for_app` | Windows: wait for a Direct3D 12 application someone else starts (a launcher, an editor) and put the capture library into it as it starts, then connect — D3D12's answer to the Vulkan implicit layer. Call it before the application is launched; one already running cannot be caught |
 | `list_android_devices`, `launch_android_app` | Android devices and packages over adb; start a debuggable package with the Vulkan layer |
 | `list_sessions`, `get_session_status`, `get_session_log` | Live sessions: state, device, frame reports, objects, validation, output |
 | `get_live_frame_stats` | Frame time, rate, submit time, refresh and dropped frames over a few seconds, with a verdict |

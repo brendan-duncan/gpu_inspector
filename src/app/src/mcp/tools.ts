@@ -10,7 +10,9 @@ import {
 } from "../renderer/pass_metrics.js";
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel, type PixelHistory } from "../renderer/pixel_history.js";
-import { OVERDRAW_BUCKETS, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile } from "../renderer/overdraw.js";
+import {
+  OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
+} from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
@@ -278,12 +280,13 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         "shader sources, for shaders compiled with line information but no embedded text (dxc -Zi, glslc without -g, " +
         "stripped builds), so get_shader shows their source and the analyses quote their costliest lines. symbolDirs: the " +
         "directories holding the application's unstripped libraries (the build tree), so stack frames named only by module " +
-        "and offset (Android, Linux) resolve to functions, files and lines. A list replaces the previous one for this " +
+        "and offset (Android, Linux) resolve to functions, files and lines, and so a D3D12 shader built with dxc -Zs " +
+        "gives up its HLSL out of the PDB -Fd wrote beside the build. A list replaces the previous one for this " +
         "server; an empty list goes back to GPU_INSPECTOR_SOURCE_ROOTS / GPU_INSPECTOR_SYMBOL_DIRS, else the directories " +
         "GPU Inspector's launch dialog used last. Without arguments it shows what is in effect.",
       inputSchema: schema({
         sourceRoots: { type: "array", items: { type: "string" }, description: "Directories searched (six levels deep) for the shader files debug information names." },
-        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name." },
+        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name and for the PDBs D3D12 shaders name." },
       }),
       handler: (args) => {
         if (args.sourceRoots !== undefined) setSearchPaths("sourceRoots", splitPaths(args.sourceRoots));
@@ -429,11 +432,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         if (!c.data.overdraw.length) {
           return jsonResult({
             capture: c.id,
-            note: c.data.api === "metal"
+            note: measuresWhileCapturing(c.data.api)
               ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true."
-              : c.data.api === "d3d12"
-                ? `Overdraw is measured by replaying a Vulkan capture, or by the Metal library while it captures: ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's fragments per primitive where the pass carried counters.`
-                : `The replay measured no pass. ${replayNote ?? ""}`,
+              : `The replay measured no pass. ${replayNote ?? ""}`,
           });
         }
         const passes = c.metrics.passes;
@@ -510,16 +511,17 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       readOnly: true,
       handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
-        if (c.data.api === "d3d12") {
-          return jsonResult({ capture: c.id, note: `The pixel history replays a Vulkan capture (a Metal application follows the pixel while it captures): ${NO_D3D12_REPLAY}. read_texture shows the render target after the pass, and list_commands with kind draw the draws of the pass.` });
-        }
-        if (c.data.api === "metal") {
+        // Metal and D3D12 have no replay: their libraries follow the pixel in the application while
+        // it captures, so the capture answers only for the pixel it was taken with.
+        if (measuresWhileCapturing(c.data.api)) {
+          const metal = c.data.api === "metal";
           if (!c.data.pixelHistory) {
             return jsonResult({
               capture: c.id,
-              note: "This Metal capture did not follow a pixel. A Metal application follows one while it captures: capture_frames with " +
-                "pixelHistory { texture, x, y } (a render target's texture id from list_textures; a drawable's follows the next frame's " +
-                "drawable), then get_pixel_history on that capture.",
+              note: `This ${metal ? "Metal" : "D3D12"} capture did not follow a pixel. The capture library follows one while it captures: ` +
+                "capture_frames with pixelHistory { texture, x, y } (a render target's id from list_textures; " +
+                `${metal ? "a drawable's follows the next frame's drawable" : "a swap chain's back buffer follows whichever one the next frame renders into"}), ` +
+                "then get_pixel_history on that capture.",
             });
           }
           const h = parsePixelHistory(c.data.pixelHistory);
@@ -529,13 +531,16 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           const other = (askedImage !== undefined && askedImage !== h.image && askedImage !== h.requestedImage)
             || (askedX !== undefined && askedX !== h.x) || (askedY !== undefined && askedY !== h.y);
           return jsonResult(pixelHistoryAnswer(c, h, boolArg(args, "allDraws", false), {
-            followed: other ? `This capture followed pixel (${h.x}, ${h.y}) of ${refText(c.db, h.image)}, not the one asked for: a Metal capture answers for the pixel it was taken with (capture_frames pixelHistory follows another).` : undefined,
-            requestedImage: h.requestedImage !== h.image ? `${refText(c.db, h.requestedImage)} (the frame rendered into its own drawable, which was followed instead)` : undefined,
+            followed: other ? `This capture followed pixel (${h.x}, ${h.y}) of ${refText(c.db, h.image)}, not the one asked for: the capture answers for the pixel it was taken with (capture_frames pixelHistory follows another).` : undefined,
+            requestedImage: h.requestedImage !== h.image
+              ? `${refText(c.db, h.requestedImage)} (${metal ? "the frame rendered into its own drawable" : "the frame rendered into another of the swap chain's back buffers"}, which was followed instead)`
+              : undefined,
             measuredOn: h.device || undefined,
-            method: "While capturing, the Metal library issued each draw again in the application's own command buffer after its pass, " +
-              "under visibility results in counting mode with a one-pixel scissor and pipeline and depth-stencil copies that add one step " +
-              "at a time (coverage, culling, the fragment shader, the depth and stencil tests), against copies of the pass's attachments, " +
-              "with depth and stencil writes off. Counts are samples.",
+            method: `While capturing, the ${metal ? "Metal" : "D3D12"} library issued each draw again in the application's own ` +
+              `${metal ? "command buffer" : "command list"} after its pass, under ` +
+              `${metal ? "visibility results in counting mode" : "occlusion queries"} with a one-pixel scissor and pipeline copies that ` +
+              "add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against copies of the pass's " +
+              "attachments, with depth and stencil writes off. Counts are samples.",
           }));
         }
         let image = optionalInt(args, "image");

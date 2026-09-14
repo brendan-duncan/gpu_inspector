@@ -1,10 +1,20 @@
 // Overdraw measurements: how many fragments landed on each pixel of a render pass, when the pass
-// was drawn again with a counting fragment shader. A Metal capture taken with "Overdraw" carries
-// them (src/metal/src/overdraw.h); vkinsp_replay --overdraw measures the same for a Vulkan capture
-// file (docs/REPLAY.md). Each pass has two: the fragments that passed its depth and stencil tests
-// in draw order, and every fragment its draws rasterized.
+// was drawn again with a counting fragment shader. A Metal or D3D12 capture taken with "Overdraw"
+// carries them (src/metal/src/overdraw.h, src/d3d12/src/overdraw.h); vkinsp_replay --overdraw
+// measures the same for a Vulkan capture file (docs/REPLAY.md). Each pass has two: the fragments
+// that passed its depth and stencil tests in draw order, and every fragment its draws rasterized.
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import type { CapturedOverdraw } from "./capture_data.js";
+
+/**
+ * Whether the capture library of this API measures overdraw and pixel history in the application
+ * while it captures, rather than by replaying the capture afterwards: Metal and D3D12, which have
+ * no replay. Such a capture answers only for what it was asked to measure, so the panels offer to
+ * capture again rather than to measure the capture in hand.
+ */
+export function measuresWhileCapturing(api: string): boolean {
+  return api === "metal" || api === "d3d12";
+}
 
 /** A render pass of a capture: which frame, which command buffer, and its index in that buffer. */
 export interface OverdrawPassKey {

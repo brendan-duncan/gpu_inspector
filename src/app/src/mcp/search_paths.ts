@@ -1,7 +1,8 @@
 // Where the MCP server looks on this machine for what captures only name: the shader source files
 // of modules compiled with line information but no text (under the source roots), and the
-// unstripped libraries that turn a stack frame's module and offset into a function and a line
-// (under the symbol directories). set_search_paths sets them for the server's lifetime; otherwise
+// unstripped libraries that turn a stack frame's module and offset into a function and a line —
+// and, of the same kind, the PDBs a D3D12 shader built with dxc -Zs kept its HLSL in (under the
+// symbol directories). set_search_paths sets them for the server's lifetime; otherwise
 // GPU_INSPECTOR_SOURCE_ROOTS and GPU_INSPECTOR_SYMBOL_DIRS; otherwise the ones GPU Inspector's
 // launch dialog used last, from its settings.
 import fs from "node:fs";
@@ -54,6 +55,7 @@ export function describeSearchPaths(): Record<string, unknown> {
     sourceRoots: describe("sourceRoots"),
     symbolDirs: describe("symbolDirs"),
     symbolizer: symbolizer ? symbolizer.exe : "None found: llvm-symbolizer from the Android NDK (ANDROID_NDK_HOME), or llvm-symbolizer or addr2line on PATH, resolves frames under symbolDirs.",
+    shaderPdbs: "symbolDirs are also searched for the PDB a D3D12 shader built with dxc -Zs kept its HLSL in, by the file name and shader hash the container carries.",
   };
 }
 

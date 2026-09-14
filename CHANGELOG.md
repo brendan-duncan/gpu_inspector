@@ -27,10 +27,16 @@
   - Shaders: DXBC and DXIL reflection at pipeline creation (constant buffer members, resources
     by register and space, inputs and outputs), so a draw's constant buffers render as typed
     blocks and the Shader Flame Graph weighs the stages; `dxinsp_shader.exe` gives the Inspect
-    panel disassembly and the HLSL embedded with `dxc -Zi -Qembed_debug`.
+    panel disassembly and the shader's HLSL: what `dxc -Zi` embedded in the container, or, for a
+    `dxc -Zs` build that kept it out, what it wrote to a PDB beside the build — found by the name
+    and hash the container carries under the session's symbol directories (the launch
+    configuration's, or `set_search_paths`' `symbolDirs`). A stage with no HLSL anywhere opens in
+    the editor as HLSL generated from its reflection: the same constant buffers at the same
+    offsets, the same resources at the same registers and spaces and the same entry signature, so
+    **Compile & Apply** works on a shipped shader with no debug information.
   - Shader editing: an HLSL stage is compiled with `dxc` and the library rebuilds the pipeline
-    state with it. Pipelines from streams are rebuilt from their streams; one loaded from a
-    pipeline library says it cannot be edited.
+    state with it. Pipelines from streams are rebuilt from their streams, and so is one loaded
+    from a pipeline library, which is how Unity's D3D12 player loads every graphics pipeline.
   - A submit frame boundary for a device that never presents (Chrome's Dawn WebGPU device on
     D3D12 renders into textures the compositor presents), the D3D12 form of the Vulkan layer's
     OpenXR fallback: after a run of submissions with no present, frames end at every
@@ -38,6 +44,18 @@
     capturing Dawn when the compositor also presents on a hooked device. The boundary and frame
     count are decided per device, so several D3D12 devices in one process (a game and a background
     device, or Dawn beside the compositor) each keep their own without hijacking a capture.
+  - **Waiting for an application to start**, the D3D12 counterpart of the Vulkan implicit layer,
+    for an application the inspector does not launch (a game behind its launcher, a Unity player
+    started from the editor): the launch dialog's **An application started elsewhere (Direct3D
+    12)** target takes the executable's name, and `dxinsp_launch.exe --watch <image> --dll <dll>`
+    polls the process list every few milliseconds and injects the capture library into the process
+    the moment it appears, freezing it until the library is in so the hooks precede
+    `D3D12CreateDevice`. `--env NAME=VALUE` carries the library's variables into a process that
+    could not inherit them, `--once` then stands in for the application (exit code and all) and
+    `--timeout` gives up with exit code 3. The MCP server has it as `wait_for_app`, and the app
+    as `--wait-for-d3d12=<image>`. It races the application's start: the wait has to be running
+    before the application is launched, and an application that already has a device cannot be
+    caught — the session says so when nothing connects after an injection.
   - `DXINSP_RECORD_ALWAYS` (**Record all command buffers**) for command lists recorded once and
     executed every frame; `DXINSP_LOG`, `DXINSP_LOG_FILE`, `DXINSP_STACKTRACES`,
     `DXINSP_DEBUG_LAYER`, `DXINSP_FRAME_BOUNDARY` and `DXINSP_PORT`.
@@ -46,7 +64,8 @@
     `--offscreen` (no swap chain and no present, the Dawn shape) and `--debug-layer`.
   - Not there yet for D3D12: the shader debugger and the replay-based analyses (overdraw, pixel
     history, draw overlays, mesh output, per-draw measurements, ablation), stencil read-back,
-    32-bit targets, and attaching to an application already running.
+    32-bit targets, and attaching to a process that is already running (one can be caught at its
+    start, above, but a device that already exists cannot be reached).
 - The Windows build needs the Windows SDK 10.0.26100 or newer and the `third_party/minhook`
   submodule (BSD-2-Clause) for the D3D12 library, and `dxc` for its test application.
 
@@ -60,6 +79,24 @@
   stale file that failed the release workflow's freshness check; it now reads the version from
   `claude-plugin/.claude-plugin/plugin.json` at startup and is byte-identical whatever the app
   version says.
+
+### Fixed
+- A Direct3D 12 application could die of a stack overflow a few seconds in, which a Unity player
+  did reliably. Something in the process copies an already patched vtable into heap memory; a call
+  arriving on the copy found no registry entry for it and fell back to reading the slot, which
+  holds our own replacement, so the hook forwarded to itself for ever. Every replacement is now
+  remembered, and a copy holding one is matched back to the vtable it came from and adopts its
+  saved originals; a copy whose source cannot be found refuses the call instead of recursing.
+- Two inspected applications on one machine silently shared port 47531. `SO_REUSEADDR` lets a
+  second listener bind the same address on Windows, so both `bind` calls succeeded and the
+  inspector reached whichever the stack routed to, reporting one application's frame as the
+  other's. The capture library now reads the system's listening sockets before it binds: the
+  default port steps to the next free one and says so, and a port named by `DXINSP_PORT` is
+  refused with an explanation rather than shared. It also stands down when a Vulkan application
+  whose driver creates a D3D12 device has both capture libraries in the one process.
+- Quitting GPU Inspector left the application it had launched running. The kill of the process
+  tree was left to a callback that never ran once Electron was on its way out; it is synchronous
+  on that path now.
 
 ## v0.11.0
 

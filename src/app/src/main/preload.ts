@@ -56,7 +56,7 @@ contextBridge.exposeInMainWorld("inspector", {
   removeRecent: (index: number) => ipcRenderer.invoke("inspector:removeRecent", index),
   clearRecents: () => ipcRenderer.invoke("inspector:clearRecents"),
   onRecents: (cb: (recents: unknown[]) => void) => ipcRenderer.on("inspector:recents", (_e, r) => cb(r)),
-  shaderText: (spirv: Uint8Array, mode: string) => ipcRenderer.invoke("inspector:shaderText", spirv, mode),
+  shaderText: (spirv: Uint8Array, mode: string, pdbDirs?: string[]) => ipcRenderer.invoke("inspector:shaderText", spirv, mode, pdbDirs),
   compileShader: (source: string, language: string, stage: string, entryPoint: string, spirvVersion: string) =>
     ipcRenderer.invoke("inspector:compileShader", source, language, stage, entryPoint, spirvVersion),
   decompileForDebugging: (spirv: Uint8Array, stage: string, entryPoint: string) =>

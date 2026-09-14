@@ -10,6 +10,13 @@
 // target, waits for it and exits with its exit code, so the session's process handling (log
 // capture, taskkill /T, the exit status) sees one process tree.
 //
+// For an application the inspector does not start — a game behind its launcher, a Unity player
+// started from the editor — the same launcher watches instead: `--watch <image name>` polls the
+// process list and injects into a matching process the moment it appears, freezing it meanwhile so
+// the hooks are in before D3D12CreateDevice. That is what D3D12 has in place of the Vulkan implicit
+// layer (waitD3D12 in main.ts), and it races the application's start: it works when the watch is
+// running first, and nothing can be done for a process that already has a device.
+//
 // There is no "which API" field in the launch dialog: every Windows target is started with both
 // the Vulkan layer environment and the D3D12 library, and whichever API the application uses
 // connects to the session's port. A target the library cannot be injected into (32-bit, protected)
@@ -102,6 +109,40 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
  */
 export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string): { exe: string; args: string[] } {
   return { exe: tools.launcher, args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []), "--", exe, ...args] };
+}
+
+export interface D3D12WatchOptions extends D3D12EnvironmentOptions {
+  /** The application's image name ("TestVulkan.exe"), or its full path to match only that build. */
+  image: string;
+  /** Give up after this many seconds with nothing injected (the watcher then exits with WATCH_TIMED_OUT). */
+  timeoutSeconds: number;
+  /**
+   * Inject into the first matching process only, and then stand in for it: the watcher waits for
+   * that process and exits with its exit code, so a session sees it the way it sees a launch.
+   */
+  once: boolean;
+}
+
+/** The watcher's exit code when its timeout passed without a process to inject into (launcher/main.cpp). */
+export const WATCH_TIMED_OUT = 3;
+
+/**
+ * The command line that watches for `image` to start and injects the library into it the moment it
+ * does — D3D12's answer to the Vulkan implicit layer, since there is no loader to insert us and a
+ * device cannot be found after the fact (src/d3d12/README.md, "Getting in").
+ *
+ * The watched process is started by someone else, so it cannot inherit the library's variables
+ * from us: they go in as `--env` arguments, which the launcher writes into the process along with
+ * the library.
+ */
+export function watchLaunch(tools: D3D12Tools, o: D3D12WatchOptions): { exe: string; args: string[] } {
+  const { image, timeoutSeconds, once, ...environment } = o;
+  const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  return {
+    exe: tools.launcher,
+    args: ["--watch", image, "--dll", tools.library, ...(timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : []),
+      ...(once ? ["--once"] : []), ...env],
+  };
 }
 
 export interface WindowsLaunchOptions {

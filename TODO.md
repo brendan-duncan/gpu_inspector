@@ -133,6 +133,17 @@ interpreter and re-created pipelines.
 
 ## Replay-based features **(RenderDoc)**
 
+- [ ] **Broken: every replay-based analysis of a live Vulkan capture hangs in the app.** The
+      `overdraw`, `mesh`, `overlay`, `debug-pixel` and `debug-vertex` cases of `tools/ui_tests.py`
+      all fail with no measurements, the capture's status left at "replaying the capture...". Not
+      the replay: `vkinsp_replay` answers an `overdraw` request over `--serve` in 20 ms and writes
+      its data, and the same request from the command line is correct. It is the app side, between
+      `CaptureView._replay`'s `needData` handshake (`renderer/capture_panel.ts`) and the temporary
+      capture `replayKeyed` writes (`main/replay.ts`): no temporary capture appears at all now, and
+      the ones left from an earlier run are 1109 bytes and have a bad header, so serializing a live
+      capture for replay looks like the place to start. Present at a3b0415, so it is not from the
+      D3D12 work. Opening a saved `.gpucap` and replaying that is worth checking as a comparison.
+
 These need the capture to be re-executed. WebGPU Inspector does it on the DevTools GPU device with
 re-created pipelines plus a CPU WGSL interpreter; for Vulkan the equivalent is RenderDoc's replay
 of a serialized frame. Two routes: (a) an in-app replay engine that re-creates the captured
@@ -406,22 +417,28 @@ library does not read back yet.
       (`renderer/msl/`); DXIL has none. Either a DXIL interpreter behind the `DebugProgram` seam,
       or the HLSL compiled to SPIR-V with `dxc -spirv` and stepped in the SPIR-V one, with the
       D3D12 bindings mapped to sets and bindings.
-- [ ] The replay-based analyses — overdraw, pixel history, draw overlays, mesh output, per-draw
-      timings and counters (**Measure draws**), shader cost by ablation (**Measure shader**) —
-      which `vkinsp_replay` does for Vulkan captures only. Either a D3D12 replayer, or the Metal
-      route: measured while capturing, inside the application.
+- [x] Overdraw and pixel history, by the Metal route: measured while capturing, inside the
+      application (`src/d3d12/src/overdraw.*`, `pixel_history.cpp`, `pass_record.h`). The pass is
+      issued again on the application's own command list with a counting pixel shader, and one
+      pixel is followed draw by draw under occlusion queries.
+- [ ] The rest of the replay-based analyses — draw overlays, mesh output, per-draw timings and
+      counters (**Measure draws**), shader cost by ablation (**Measure shader**) — which
+      `vkinsp_replay` does for Vulkan captures only. The same in-application route fits them.
 - [ ] Stencil read-back, and the contents of sampler feedback, video, work graph and raytracing
       objects; enhanced barriers (`Barrier`) beyond the layouts that map to legacy states.
 - [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded
       without contents (bundles inherit the caller's root signature).
 - [ ] 32-bit targets: only x64 processes are injected.
-- [ ] Attaching to an application already running: injection has to happen at process start and
-      there is no implicit-layer equivalent. A launcher-side hook of `CreateProcess` in the
-      editor, or a registered AppInit-style mechanism, would be the way in.
+- [x] Catching an application started elsewhere: `dxinsp_launch.exe --watch <image>` polls for the
+      process and injects it while it is held suspended, which is what D3D12 has in place of an
+      implicit layer (the "wait for an application" launch target, and `wait_for_app`).
+- [ ] Attaching to a process that already has a device: injection still has to happen at process
+      start, because the hooks go on the entry points and D3D12 cannot enumerate an existing device.
 - [ ] DXIL reflection and disassembly without `dxcompiler.dll` on the machine: ship it beside the
       library, or parse the DXIL container's reflection part in the library.
-- [ ] Automated test: `tools/ui_tests.py` cases over `dxinsp_triangle` (a plain capture, MSAA, a
-      bundle, indirect, render passes, the debug layer), the way the Vulkan cases run.
+- [x] Automated test: `tools/ui_tests.py` runs five D3D12 cases over `dxinsp_triangle` (a plain
+      capture, a render pass, a bundle, an offscreen frame with no swap chain, and opening a saved
+      capture), the way the Vulkan cases run.
 
 ## iOS devices
 

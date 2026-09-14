@@ -14,6 +14,7 @@
 #include "formats.h"
 #include "hooks.h"
 #include "json.h"
+#include "overdraw.h"
 #include "resources.h"
 #include "tracker.h"
 #include "transport.h"
@@ -581,7 +582,9 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
     // DXINSP_RECORD_ALWAYS is read here rather than at the first capture: a bundle an engine
     // records at start-up needs its recorder before anything asks for a capture.
     RecordAlways();
-    if (!list || !ShouldRecord()) return;
+    if (!list) return;
+    OnMeasuredListReset(list);   // nothing kept of the list is still in effect
+    if (!ShouldRecord()) return;
     Impl& i = impl();
     bool stacks;
     {
@@ -603,6 +606,7 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
 }
 
 void CaptureManager::OnListReleased(ID3D12GraphicsCommandList* list) {
+    OnMeasuredListReleased(list);
     if (!_impl) return;
     Impl& i = impl();
     std::unique_lock lock(i.recorderMutex);
@@ -682,6 +686,7 @@ void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
             if (t.device == device) t.frame = UINT32_MAX;
     }
     i.ReleaseCaptureObjects(*dc);
+    OnMeasurementDeviceReleased(device);
     dc.reset();   // the query heaps, the fence and the readback buffer, before the device's last Release runs
     Log("capture: device %p released", (void*)device);
 }
@@ -953,6 +958,10 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
         pending.swap(*deferred);
         for (auto& fn : pending) fn(rec->list());
     }
+    // The measurements the capture asked for, drawn into the same list now that the pass's own
+    // work and its read-back are in it (overdraw.h). A real render pass the application never
+    // ended leaves the list inside its region, where a measurement can bind nothing.
+    EndMeasuredPass(rec, pass.renderPassApi && synthetic);
     if (synthetic) rec->Record("EndRenderTargets", std::string());
     pass.active = false;
 }
@@ -1464,6 +1473,7 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
                 AssignFrame(i.textures, list, s.frame);
                 AssignFrame(i.buffers, list, s.frame);
                 AssignFrame(i.timings, list, s.frame);
+                AssignMeasurementFrame(list, s.frame);
             }
             i.submissions.push_back(std::move(s));
         }
@@ -1570,6 +1580,9 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
 
     bool finish = false;
     bool started = false;
+    bool overdraw = false;
+    PixelHistoryRequest pixelHistory;
+    uint64_t maxTextureSize = 0;
     {
         std::lock_guard lock(i.mutex);
         if (i.state == Impl::State::Armed) {
@@ -1594,6 +1607,9 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 _capturing.store(true, std::memory_order_release);
                 _recordActive.store(true, std::memory_order_relaxed);
                 started = true;
+                overdraw = i.options.overdraw;
+                pixelHistory = i.options.pixelHistory;
+                maxTextureSize = i.options.maxTextureSize;
             }
         } else if (i.state == Impl::State::Capturing) {
             if (present) {
@@ -1618,6 +1634,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
         }
     }
     if (started) {
+        // What the capture measures while it records (overdraw.h), with nothing left from the last one.
+        StartMeasurements(overdraw, pixelHistory, maxTextureSize);
         // The pass counters start over; the heaps themselves stay.
         std::lock_guard lock(i.deviceMutex);
         for (auto& [d, dc] : i.devices) {
@@ -2010,6 +2028,10 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     SendTextures(data.textures);
     SendBuffers(data.buffers);
     SendPassTimings(data.timings, device);
+    // The measurements taken while the frames were recorded, between the timings and
+    // CaptureComplete (docs/ARCHITECTURE.md, "Frame capture").
+    SendOverdraw();
+    SendPixelHistory();
     // Read-backs that failed for a reason other than the capture's own limits are worth a line
     // in the validation view, where the user looks for what went wrong.
     {

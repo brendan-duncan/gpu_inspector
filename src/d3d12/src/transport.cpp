@@ -3,6 +3,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 
 #include "transport.h"
 
@@ -16,6 +17,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace dxinsp {
 
@@ -42,6 +44,8 @@ struct Transport::Impl {
     std::function<void()> onDisconnect;
 
     uint16_t port = kDefaultPort;
+    /** Whether DXINSP_PORT named the port, which means it may not be stepped off. */
+    bool portFromConfig = false;
 
     void Enqueue(std::string frame) {
         std::lock_guard<std::mutex> lock(queueMutex);
@@ -146,7 +150,62 @@ struct Transport::Impl {
         return false;
     }
 
+    /**
+     * Whether something is already listening on this port, which SO_REUSEADDR hides: on Windows
+     * that option lets a second listener bind the same address, so bind() succeeds and the two
+     * servers share the port, with a client reaching whichever the stack happens to route to.
+     * Found for real twice: a Unity player beside a leftover test application, where the inspector
+     * connected to the wrong one and reported its frame; and a Vulkan application whose driver
+     * makes a D3D12 device, where both capture libraries live in the one process.
+     *
+     * The table is read rather than probed with a connect. A connect would be answered by the
+     * server we are looking for, and these servers take one client at a time, so probing would
+     * throw the inspector off its own connection. It also tells a live listener from a closed
+     * connection still in TIME_WAIT, which a bind conflict cannot (that is what BindWithRetry is
+     * for) and which SO_REUSEADDR is there to allow.
+     */
+    static bool PortIsServed(uint16_t p) {
+        ULONG size = 0;
+        if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER) {
+            return false;   // Unreadable: bind anyway, which is what this did before.
+        }
+        std::vector<char> buffer(size);
+        if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) return false;
+        const MIB_TCPTABLE_OWNER_PID* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            const MIB_TCPROW_OWNER_PID& row = table->table[i];
+            // The table holds the port in network order in the low half of the field.
+            if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(p)) continue;
+            // Ours binds the loopback address; a wildcard listener covers it too.
+            if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0) return true;
+        }
+        return false;
+    }
+
     void ListenerLoop() {
+        // A port the user named is used as given: moving off it would leave whoever chose it
+        // waiting on the wrong one. Only the default may step aside, so two applications started
+        // by hand are both inspectable.
+        if (PortIsServed(port)) {
+            if (portFromConfig) {
+                LogAlways("127.0.0.1:%u is already served by another inspected application; "
+                          "set DXINSP_PORT to a free port for this one", port);
+                return;
+            }
+            uint16_t free = 0;
+            for (uint16_t candidate = port + 1; candidate < port + 9 && candidate > port; ++candidate) {
+                if (!PortIsServed(candidate)) { free = candidate; break; }
+            }
+            if (!free) {
+                LogAlways("127.0.0.1:%u and the eight ports above it are all served by other "
+                          "inspected applications; set DXINSP_PORT to a free port", port);
+                return;
+            }
+            LogAlways("127.0.0.1:%u is already served by another inspected application; "
+                      "listening on %u instead (connect the inspector to that port)", port, free);
+            port = free;
+        }
+
         SOCKET listenSock = socket(AF_INET, SOCK_STREAM, 0);
         if (listenSock == INVALID_SOCKET) { LogAlways("socket() failed"); return; }
         int one = 1;
@@ -197,7 +256,7 @@ void Transport::Start() {
     WSAStartup(MAKEWORD(2, 2), &wsa);
     {
         int v = atoi(ConfigValue("DXINSP_PORT").c_str());
-        if (v > 0 && v < 65536) _impl->port = (uint16_t)v;
+        if (v > 0 && v < 65536) { _impl->port = (uint16_t)v; _impl->portFromConfig = true; }
     }
     _impl->sender = std::thread([this] { _impl->SenderLoop(); });
     _impl->listener = std::thread([this] { _impl->ListenerLoop(); });

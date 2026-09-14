@@ -39,6 +39,10 @@ def main():
     ap.add_argument("--save", help="write captured command list JSON to this file")
     ap.add_argument("--record-always", action="store_true", help="enable recording of all command buffers")
     ap.add_argument("--delay", type=float, default=0, help="seconds to wait before requesting the capture")
+    ap.add_argument("--overdraw", action="store_true",
+                    help="with --capture: measure every render pass's overdraw while capturing (Metal and D3D12)")
+    ap.add_argument("--pixel", help="with --capture: follow one pixel through the frame, as texture,x,y[,mip,layer]")
+    ap.add_argument("--frames", type=int, default=1, help="frames to capture")
     args = ap.parse_args()
 
     deadline = time.time() + args.retry
@@ -60,9 +64,18 @@ def main():
     if args.capture:
         if args.delay:
             time.sleep(args.delay)
-        send_json(sock, {"action": "Capture", "frameCount": 1})
+        request = {"action": "Capture", "frameCount": args.frames}
+        if args.overdraw:
+            request["overdraw"] = True
+        if args.pixel:
+            parts = [int(v) for v in args.pixel.split(",")]
+            keys = ["texture", "x", "y", "mip", "layer"]
+            request["pixelHistory"] = dict(zip(keys, parts))
+        send_json(sock, request)
     commands = []
     textures = []
+    overdraw = []
+    history = []
 
     counts = collections.Counter()
     types = collections.Counter()
@@ -95,6 +108,10 @@ def main():
                 commands.extend(msg.get("commands", []))
             elif action == "CaptureTextureFrames":
                 textures = msg.get("textures", [])
+            elif action == "CaptureOverdraw":
+                overdraw.extend(msg.get("passes", []))
+            elif action == "CapturePixelHistory":
+                history.append(msg.get("history", {}))
             if args.dump:
                 print(json.dumps(msg)[:2000])
         else:
@@ -104,6 +121,12 @@ def main():
             if args.dump:
                 print("BINARY", header, len(payload) - 4 - hl, "bytes")
 
+    for m in overdraw:
+        print("  overdraw:", json.dumps(m))
+    for h in history:
+        print("  pixel history: {} event(s), notes {}".format(len(h.get("events", [])), h.get("notes")))
+        for e in h.get("events", []):
+            print("   ", json.dumps(e))
     print("messages:", dict(counts))
     print("object types:", dict(types))
     print("bad json:", bad)

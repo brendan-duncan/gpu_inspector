@@ -22,7 +22,8 @@ import {
   schema, stackLines, stringArg,
 } from "./describe.js";
 import { capturesDir, type LiveSession, type SessionManager } from "./live_session.js";
-import { IMAGE_PARAMS, NO_D3D12_REPLAY, d3d12ShaderModel, d3d12Stages, isD3D12Pipeline, texelAnswer } from "./resource_tools.js";
+import { IMAGE_PARAMS, d3d12ShaderModel, d3d12Stages, isD3D12Pipeline, texelAnswer } from "./resource_tools.js";
+import { measuresWhileCapturing } from "../renderer/overdraw.js";
 import { searchPaths, symbolizeOnHost } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 import { captureSummary } from "./tools.js";
@@ -171,6 +172,45 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const result = jsonResult({
           ...sessionStatus(s),
           problem: s.connected ? undefined : "The capture library did not connect. recentLog (and get_session_log) has the application's and the capture library's output: a crash, an application that uses neither Vulkan nor (on Windows) D3D12, a layer the loader did not load, or a target the D3D12 launcher could not inject into.",
+        });
+        if (!s.connected) result.isError = true;
+        return result;
+      },
+    },
+    {
+      name: "wait_for_app",
+      description: "Windows and Direct3D 12: wait for an application to be started by something else (its launcher, an " +
+        "editor, Steam) and put GPU Inspector's D3D12 capture library into it as it starts, then connect to it. This is " +
+        "what D3D12 has in place of the Vulkan implicit layer, since a device cannot be found in a process after the fact: " +
+        "the process list is polled for the executable's name and the process is frozen while the library goes in, before " +
+        "its first D3D12 call. Call this first and start the application afterwards - an application that is already " +
+        "running cannot be caught, and only x64 processes are injected (one running elevated needs this server elevated " +
+        "too). Returns the same status as launch_app once the application connects. stop_app ends the wait, never the " +
+        "application, which this server did not start. For Vulkan, start the application with the implicit layer " +
+        "(VKINSP_ENABLE=1) and use attach_app.",
+      inputSchema: schema({
+        image: { type: "string", description: "The application's executable name (\"TestVulkan.exe\"), matched without regard to case, or its full path to match only that build." },
+        validation: { type: "boolean", description: "Enable the D3D12 debug layer in the application, so validation messages reach the captures (default false)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command list as it is built, so lists recorded once and reused appear in captures (default false; costs CPU time)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 3600, description: "How long to wait for the application to start and connect (default 300)." },
+      }, ["image"]),
+      handler: async (args) => {
+        const s = await sessions.waitForApp({
+          image: requireString(args, "image"), validation: boolArg(args, "validation", false),
+          stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false),
+          port: optionalInt(args, "port"),
+        }, (numberArg(args, "waitSeconds") ?? 300) * 1000);
+        const injected = s.log.some((line) => line.startsWith("dxinsp: injected "));
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? undefined : injected
+            ? "The capture library went into the application (recentLog says which process) but no D3D12 device was created: either the "
+              + "application does not use Direct3D 12, or it already had its device when the library went in - the wait has to be "
+              + "running before the application starts."
+            : "No matching process appeared, or it could not be injected into. recentLog (and get_session_log) has the watcher's "
+              + "dxinsp: lines: a 32-bit process, or access denied, which means the application runs elevated or as another user.",
         });
         if (!s.connected) result.isError = true;
         return result;
@@ -334,13 +374,14 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
-        overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
+        overdraw: { type: "boolean", description: "Metal and D3D12: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
         pixelHistory: {
           type: "object",
-          description: "Metal: follow one pixel of a render target through the captured frame, for get_pixel_history on the new capture. " +
-            "Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own command buffers. " +
-            "A drawable's texture id (from an earlier capture) follows whichever drawable the captured frame renders into. Vulkan " +
-            "applications ignore it; get_pixel_history replays a Vulkan capture instead.",
+          description: "Metal and D3D12: follow one pixel of a render target through the captured frame, for get_pixel_history on the " +
+            "new capture. Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own " +
+            "command buffers. A texture id from an earlier capture; a Metal drawable's, or a D3D12 swap chain's back buffer, follows " +
+            "whichever one the captured frame renders into. Vulkan applications ignore it; get_pixel_history replays a Vulkan capture " +
+            "instead.",
           properties: {
             texture: { type: "integer", description: "The texture's object id (list_textures of an earlier capture)." },
             x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
@@ -379,11 +420,10 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
         if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
         if (pixelHistory && !result.data.pixelHistory) {
-          notes.push(result.data.api === "metal"
-            ? "No pixel history arrived: the application's capture library was built before pixel history."
-            : result.data.api === "d3d12"
-              ? `pixelHistory is followed by the Metal capture library only, and get_pixel_history is ${NO_D3D12_REPLAY}.`
-              : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+          notes.push(measuresWhileCapturing(result.data.api)
+            ? "No pixel history arrived: no render pass of the frame rendered to that resource at that mip and layer, or the " +
+              "application's capture library was built before pixel history."
+            : "pixelHistory is followed by the Metal and D3D12 capture libraries only; get_pixel_history replays a Vulkan capture instead.");
         }
         return jsonResult({
           session: s.id, file, megabytes: round(capture.fileBytes / 1048576), secondsToCapture: round(result.elapsedMs / 1000),

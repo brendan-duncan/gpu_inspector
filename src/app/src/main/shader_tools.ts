@@ -58,28 +58,35 @@ export function findShaderTool(): string | null {
 const NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (src/d3d12/README.md)`;
 
 /** One source file dxinsp_shader --sources printed, however it spelled the pair. */
-function embeddedSource(entry: unknown): { name: string; text: string } | null {
+function embeddedSource(entry: unknown): { name: string; text: string; from?: string } | null {
   if (Array.isArray(entry) && entry.length >= 2) return { name: String(entry[0]), text: String(entry[1]) };
   if (entry && typeof entry === "object") {
     const o = entry as Record<string, unknown>;
     const text = o.text ?? o.source ?? o.contents;
-    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text };
+    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text, from: typeof o.from === "string" ? o.from : undefined };
   }
   return null;
 }
 
+/** What keeps a D3D12 shader's HLSL, and where GPU Inspector looks for it when the container has none. */
+export const NO_HLSL_HINT = "dxc -Zi embeds the HLSL in the container; dxc -Zs keeps it out and writes it to a PDB beside the build "
+  + "(-Fd <dir>\\), which GPU Inspector reads when a symbol directory names that directory.";
+
 /**
- * A DXBC/DXIL container as its disassembly ("dis") or as the HLSL embedded in it ("hlsl": compiled
- * with -Zi -Qembed_debug), through dxinsp_shader.exe. Nothing cross-compiles it to GLSL or MSL.
+ * A DXBC/DXIL container as its disassembly ("dis") or as its HLSL ("hlsl"), through
+ * dxinsp_shader.exe: the source dxc embedded with -Zi, or, for a -Zs build that kept it out, the
+ * source in the PDB found under `pdbDirs`. Nothing cross-compiles the bytecode to GLSL or MSL.
  */
-function dxbcText(bytes: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult> {
-  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its embedded HLSL source` });
+function dxbcText(bytes: Uint8Array, mode: ShaderTextMode, pdbDirs: string[] = []): Promise<ShaderTextResult> {
+  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its HLSL source` });
   const tool = findShaderTool();
   if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.dxbc`;
     fs.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    execFile(tool, [mode === "dis" ? "--disassemble" : "--sources", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const args = [mode === "dis" ? "--disassemble" : "--sources", tmp];
+    if (mode === "hlsl") for (const dir of pdbDirs) if (dir && fs.existsSync(dir)) args.push("--pdb-dir", dir);
+    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
         fs.unlinkSync(tmp);
       } catch {
@@ -93,7 +100,7 @@ function dxbcText(bytes: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextRe
         resolve({ ok: true, text: stdout });
         return;
       }
-      let sources: { name: string; text: string }[];
+      let sources: { name: string; text: string; from?: string }[];
       try {
         const parsed: unknown = JSON.parse(stdout);
         sources = (Array.isArray(parsed) ? parsed : []).map(embeddedSource).filter((s): s is { name: string; text: string } => s !== null);
@@ -101,8 +108,9 @@ function dxbcText(bytes: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextRe
         resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
         return;
       }
-      if (!sources.length) resolve({ ok: false, text: "no embedded source: compile with dxc -Zi -Qembed_debug" });
-      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}\n${s.text.endsWith("\n") ? s.text : `${s.text}\n`}`).join("\n") });
+      // An empty list is not a tool failure: the tool writes why on stderr and exits 0.
+      if (!sources.length) resolve({ ok: false, text: `${(stderr || "").trim() || "no HLSL source"}. ${NO_HLSL_HINT}` });
+      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}${s.from ? ` (from ${s.from})` : ""}\n${s.text.endsWith("\n") ? s.text : `${s.text}\n`}`).join("\n") });
     });
   });
 }
@@ -115,15 +123,22 @@ export interface ShaderTextOptions {
    * a debugger stepping the translation by line stops about once per SPIR-V instruction.
    */
   forceTemporary?: boolean;
+  /**
+   * D3D12: directories holding the PDBs dxc wrote for shaders built with -Zs, which keep the HLSL
+   * out of the container. These are the session's symbol directories — the same build output the
+   * stack traces are symbolized against (main.ts's inspector:shaderText, mcp/search_paths.ts).
+   */
+  pdbDirs?: string[];
 }
 
 /**
  * SPIR-V as assembly (spirv-dis) or as GLSL, HLSL or MSL (spirv-cross). A DXBC/DXIL container
- * (isDxbc) goes through dxinsp_shader.exe instead: "dis" is its disassembly, "hlsl" its embedded
- * source, and the other modes say they are not available for it.
+ * (isDxbc) goes through dxinsp_shader.exe instead: "dis" is its disassembly, "hlsl" its HLSL
+ * source (embedded, or out of a PDB under `options.pdbDirs`), and the other modes say they are
+ * not available for it.
  */
 export function shaderText(spirv: Uint8Array, mode: ShaderTextMode, options: ShaderTextOptions = {}): Promise<ShaderTextResult> {
-  if (isDxbc(spirv)) return dxbcText(spirv, mode);
+  if (isDxbc(spirv)) return dxbcText(spirv, mode, options.pdbDirs);
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
     fs.writeFileSync(tmp, Buffer.from(spirv));
@@ -283,7 +298,8 @@ const DXIL_PROFILES: Record<string, string> = {
  * D3D12 capture library's ReplaceShader takes (the result's `spirv` holds the bytecode; the field
  * keeps its name). `shaderModel` is the profile's suffix ("6_0", "6_6"): the pipeline's own,
  * read from its reflection's `target`, so the replacement stays within what the device accepts.
- * Debug information with the source embedded (-Zi -Qembed_debug), so the replacement keeps a
+ * Debug information with the source embedded (-Zi; -Qembed_debug only silences dxc's warning
+ * about having no -Fd to write a PDB to), so the replacement keeps a
  * source view in the Inspect panel.
  */
 export function compileDxil(source: string, stage: string, entryPoint: string, shaderModel = "6_0", options: CompileOptions = {}): Promise<CompileShaderResult> {

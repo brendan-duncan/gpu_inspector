@@ -22,12 +22,18 @@ export function emptyLaunchConfig(): LaunchConfig {
 
 const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", "none"], ["Capture frame", "frame"], ["Capture after seconds", "time"]];
 type Target = [string, LaunchConfig["target"]];
-const TARGETS: Target[] = [["This computer", "native"], ["Android device (adb)", "android"], ["An application started elsewhere (implicit layer)", "implicit"]];
+const TARGETS: Target[] = [
+  ["This computer", "native"],
+  ["Android device (adb)", "android"],
+  ["An application started elsewhere (implicit layer)", "implicit"],
+  ["An application started elsewhere (Direct3D 12)", "waitD3D12"],
+];
 
 // macOS launches a local application with the Metal capture library injected (main/metal.ts), so
 // it offers the local target — but not the implicit one, which is a Vulkan loader mechanism with
-// no Metal counterpart. The main process reports the host in AppConfig.platform and the window
-// passes it here before any dialog is opened.
+// no Metal counterpart. Waiting for a Direct3D 12 application is the Windows counterpart of the
+// implicit layer (main/d3d12.ts) and is offered only there, beside it. The main process reports the
+// host in AppConfig.platform and the window passes it here before any dialog is opened.
 let hostPlatform = "";
 export function setHostPlatform(platform: string): void {
   hostPlatform = platform;
@@ -36,12 +42,13 @@ export function getHostPlatform(): string {
   return hostPlatform;
 }
 function hostTargets(): Target[] {
-  return hostPlatform === "darwin" ? TARGETS.filter(([, t]) => t !== "implicit") : TARGETS;
+  return TARGETS.filter(([, t]) => (t === "implicit" ? hostPlatform !== "darwin" : t === "waitD3D12" ? hostPlatform === "win32" : true));
 }
 
 export function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
+  if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = c.exe.replace(/\\/g, "/").split("/").pop() || c.exe;
   return c.args ? `${base} ${c.args}` : base;
 }
@@ -66,6 +73,8 @@ export class LaunchDialog extends Dialog {
   private _nativeRows: Div;
   private _androidRows: Div;
   private _implicitRows!: Div;
+  private _waitD3D12Rows!: Div;
+  private _waitD3D12Exe!: TextInput;
   private _implicitStatus!: Span;
   private _implicitButton!: Button;
   private _implicitRegistered = false;
@@ -194,12 +203,32 @@ export class LaunchDialog extends Dialog {
       text: "Start the application yourself with these environment variables, then press Wait: VKINSP_ENABLE=1 and VKINSP_PORT set to the port below (VKINSP_LOG_FILE=<path> writes the layer's log to a file, since the inspector cannot read the output of a process it did not start). For an editor started from a launcher, set them for your account with Set for my account and restart the launcher. The registration is per user and stays until you unregister it.",
       class: "launch-dialog-hint",
     });
+    // Direct3D 12: nothing is registered and nothing is started; dxinsp_launch.exe watches for a
+    // process with this name and injects the capture library into it as it starts (main/d3d12.ts).
+    this._waitD3D12Rows = new Div(body);
+    section(this._waitD3D12Rows, "Direct3D 12 Application To Wait For");
+    this._waitD3D12Exe = this._inputRow(this._waitD3D12Rows, "Executable Name", "TestVulkan.exe, or its full path");
+    this._waitD3D12Exe.tooltip = "The application's executable name, matched without regard to case; a full path matches only that build. "
+      + "Press Wait first and start the application afterwards: the library has to be inside the process before it creates its "
+      + "Direct3D 12 device, so the inspector has to be watching before the application is launched. An application that is "
+      + "already running cannot be caught.";
+    new Div(this._waitD3D12Rows, {
+      text: "Press Wait, then start the application however it is normally started (its launcher, the editor, a shortcut). "
+        + "The inspector watches for a process with that name and injects the Direct3D 12 capture library into it the moment it "
+        + "appears, freezing it until the library is in. It cannot help an application that is already running, and only x64 "
+        + "applications are injected; an application running elevated or as another user needs the inspector to run elevated too. "
+        + "This is Direct3D 12 only — for Vulkan, use the implicit layer above.",
+      class: "launch-dialog-hint",
+    });
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
     this._activity.tooltip = "Activity to start, as com.example.Activity or .Activity; empty for the launcher activity";
-    this._symbolDirs = this._inputRow(this._androidRows, "Symbol directories", "(directories with the unstripped .so files, separated by ;)");
-    this._symbolDirs.tooltip = "Where to look for the application's unstripped libraries (the build tree): stack traces of objects and captured commands then show functions, files and lines, resolved with the NDK's llvm-symbolizer on this machine.";
 
     section(body, "Inspector Options");
+    this._symbolDirs = this._inputRow(body, "Symbol directories", "(directories with the unstripped libraries and shader PDBs, separated by ;)");
+    this._symbolDirs.tooltip = "Where the application's debug files are on this machine (its build tree): the unstripped libraries, so stack traces of "
+      + "objects and captured commands show functions, files and lines (an Android library is resolved with the NDK's llvm-symbolizer here), and the "
+      + "PDBs of Direct3D 12 shaders, so a shader built with dxc -Zs -Fd <dir>\\ — which keeps its HLSL out of the bytecode — still gets its Source "
+      + "view, and Edit starts from the real source. Searched five levels deep.";
     this._sourceRoots = this._inputRow(body, "Source roots", "(directories with the shader sources, separated by ;)");
     this._sourceRoots.tooltip = "Where the shader sources live on this machine: a shader compiled with line information but without embedded text (dxc -Zi, a stripped build) then gets its Source view, line costs and findings from the file its debug information names.";
     {
@@ -252,6 +281,11 @@ export class LaunchDialog extends Dialog {
           (this._package.selectEdit ?? this._package).element.focus();
           return;
         }
+      } else if (config.target === "waitD3D12") {
+        if (!config.exe) {
+          this._waitD3D12Exe.element.focus();
+          return;
+        }
       } else if (!config.exe) {
         this._exe.element.focus();
         return;
@@ -289,10 +323,12 @@ export class LaunchDialog extends Dialog {
   private _updateTarget(): void {
     const android = this.target === "android";
     const implicit = this.target === "implicit";
-    this._nativeRows.style.display = android || implicit ? "none" : "";
+    const waitD3D12 = this.target === "waitD3D12";
+    this._nativeRows.style.display = android || implicit || waitD3D12 ? "none" : "";
     this._androidRows.style.display = android ? "" : "none";
     this._implicitRows.style.display = implicit ? "" : "none";
-    this._launchButton.text = implicit ? "Wait" : "Launch";
+    this._waitD3D12Rows.style.display = waitD3D12 ? "" : "none";
+    this._launchButton.text = implicit || waitD3D12 ? "Wait" : "Launch";
     if (android && !this._devices.length) void this._loadDevices();
     if (implicit) void this._refreshImplicit();
   }
@@ -400,7 +436,10 @@ export class LaunchDialog extends Dialog {
     const android = target === "android";
     return {
       target,
-      exe: android ? this._package.value.trim() : target === "implicit" ? "" : this._exe.value.trim(),
+      exe: android ? this._package.value.trim()
+        : target === "implicit" ? ""
+          : target === "waitD3D12" ? this._waitD3D12Exe.value.trim()
+            : this._exe.value.trim(),
       args: android ? "" : this._args.value,
       cwd: android ? "" : this._cwd.value.trim(),
       env: android ? "" : this._env.value,
@@ -411,7 +450,7 @@ export class LaunchDialog extends Dialog {
       recordAlways: this._recordAlways.checked,
       validation: !android && this._validation.checked,
       syncValidation: !android && this._validation.checked && this._syncValidation.checked,
-      symbolDirs: android ? this._symbolDirs.value.trim() : "",
+      symbolDirs: this._symbolDirs.value.trim(),
       sourceRoots: this._sourceRoots.value.trim(),
       stacktraces: this._stacktraces.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
@@ -431,6 +470,8 @@ export class LaunchDialog extends Dialog {
       this._pendingDevice = c.device ?? "";
       const index = this._devices.findIndex((d) => d.serial === this._pendingDevice);
       if (index >= 0) this._device.index = index;
+    } else if (this.target === "waitD3D12") {
+      this._waitD3D12Exe.value = c.exe ?? "";
     } else {
       this._exe.value = c.exe ?? "";
       this._args.value = c.args ?? "";

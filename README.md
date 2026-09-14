@@ -250,6 +250,13 @@ Windows) and restart the launcher. **Unregister** removes the registration. From
 line: `npm start -- --wait-for-app --port=<port>`, and `--implicit-layer=on|off` switches the
 registration.
 
+Direct3D 12 has no implicit layer to register — its capture library has to be inside the process
+before it creates a device — so the inspector waits for the process instead: pick **An application
+started elsewhere (Direct3D 12)**, type the executable's name (`TestVulkan.exe`), press **Wait**
+and *then* start the application. The library goes in as the process starts, ahead of its first
+D3D12 call. An application that is already running cannot be caught. See
+[Direct3D 12](docs/D3D12.md#waiting-for-an-application-to-start).
+
 ## Direct3D 12
 
 On Windows the inspector captures Direct3D 12 applications too. D3D12 has no loader layers, so
