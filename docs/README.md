@@ -46,7 +46,7 @@ Pick the one that matches the application you want to inspect.
 | [Troubleshooting](TROUBLESHOOTING.md) | What to do when something does not work |
 | [Building from source](BUILDING.md) | Prerequisites and build steps for each platform |
 | [Capture replay](REPLAY.md) | `vkinsp_replay`, the tool behind overdraw, draw overlays, mesh output and pixel history |
-| [Architecture](ARCHITECTURE.md) | How the layer, the protocol and the UI are put together (the Metal and Direct3D 12 libraries have their own accounts in `metal/README.md` and `d3d12/README.md`) |
+| [Architecture](ARCHITECTURE.md) | How the layer, the protocol and the UI are put together (the Metal and Direct3D 12 libraries have their own accounts in `src/metal/README.md` and `src/d3d12/README.md`) |
 | [Releasing](RELEASING.md) | How releases are built and published |
 
 ---

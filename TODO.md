@@ -44,16 +44,16 @@ interpreter and re-created pipelines.
 - Capture files (`.gpucap`): save from the capture bar or tab menu, open from the launch bar or by
   drag and drop into a session of their own with the object graph, shaders, buffers, render
   targets and timings; "Open in New Tab" copies a capture in memory.
-- Metal (macOS): the capture library in `metal/`, hooking the driver's classes without wrapping
+- Metal (macOS): the capture library in `src/metal/`, hooking the driver's classes without wrapping
   objects, with object tracking and lifetime, frame capture with render targets, buffers in
-  every storage mode, pass timings and pipeline reflection (see `metal/README.md`).
-- Direct3D 12 (Windows): the capture library in `d3d12/`, injected at process start by
+  every storage mode, pass timings and pipeline reflection (see `src/metal/README.md`).
+- Direct3D 12 (Windows): the capture library in `src/d3d12/`, injected at process start by
   `dxinsp_launch.exe` and hooking the D3D12 and DXGI entry points and vtables without wrapping
   objects, speaking the Vulkan layer's protocol: object tracking with descriptors, names and
   descriptor heap contents, frame capture with synthesized passes, render targets, bound buffers
   and textures, root constants, `ExecuteIndirect` arguments, pass timings and counters, the
   debug layer's messages, stack traces, DXBC/DXIL reflection and disassembly (`dxinsp_shader.exe`),
-  shader editing through `dxc`, and record-always for pre-recorded lists (see `d3d12/README.md`).
+  shader editing through `dxc`, and record-always for pre-recorded lists (see `src/d3d12/README.md`).
   `test/d3d12_triangle` is its test application.
 - Render graph suggestions: rules over the graph (unread stores per subresource and per write,
   results overwritten before anything reads them, transient-attachment candidates, mergeable
@@ -63,7 +63,7 @@ interpreter and re-created pipelines.
   descriptor sets and transfers, versioned per write and keyed per subresource; a resource
   lifetime chart with a node-link view of the selected pass' neighbourhood, GPU times, the
   critical path, external inputs and passes whose output nothing reads.
-- Claude Code plugin (`claude-plugin/`): an MCP server (`app/src/mcp/`) over saved `.gpucap` files,
+- Claude Code plugin (`claude-plugin/`): an MCP server (`src/app/src/mcp/`) over saved `.gpucap` files,
   built on the renderer's own analysis modules (split out of the UI for it).
   - Tools: summary, Frame Issues, GPU Bottlenecks, render graph, command list and bound state,
     objects, validation, read-back images as PNG, buffers through GLSL layouts, vertices with
@@ -85,11 +85,11 @@ interpreter and re-created pipelines.
       bundle differs from a fresh build of its sources.
 
 ### Captures
-- [x] Pipeline statistics queries per pass on Vulkan (`vulkan/src/pipeline_stats.h`), carrying the
+- [x] Pipeline statistics queries per pass on Vulkan (`src/vulkan/src/pipeline_stats.h`), carrying the
       same counters Metal's statistic set does, so the GPU Bottlenecks report and its rules work
       for Vulkan captures too.
 - [x] Depth rejection on Vulkan: the layer runs a precise occlusion query around each render pass
-      (`vulkan/src/capture.cpp`), counting the samples that passed its depth and stencil tests
+      (`src/vulkan/src/capture.cpp`), counting the samples that passed its depth and stencil tests
       (`fragmentsPassed`, Metal's name for the same figure), so `late-depth-rejection` and the
       report's depth rejection column work for Vulkan captures. A pass whose command buffer has an
       application query open is skipped, and the query ends early (dropping that pass's count) when
@@ -140,14 +140,14 @@ resources and re-executes the frame on the inspector's own Vulkan device (what R
 `renderdoc/driver/vulkan/vk_replay.cpp`), or (b) lean on the existing layer and re-run the live
 application with injected state. Route (a) is the general one and is the prerequisite for the rest.
 
-- [x] Replay engine (`replay/`, docs/REPLAY.md): `vkinsp_replay` re-creates a capture's objects on
+- [x] Replay engine (`src/replay/`, docs/REPLAY.md): `vkinsp_replay` re-creates a capture's objects on
       this machine's GPU through decoders generated from vk.xml, re-executes its command buffers,
       and compares every read-back render target with its own copy. The triangle, hazard and
       Unity captures replay pixel-identical.
 - [x] Swapchain images of a recreated swapchain: a driver hands the new swapchain its
       predecessor's image handles, and the tracker kept them under the old swapchain, so destroying
       it took them and the views over them away. A recycled handle now moves to its new owner
-      (`vulkan/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
+      (`src/vulkan/src/tracker.cpp`). A Unity frame used to lose its final image in the capture and drop
       two passes in the replay; it now replays with 0 problems and every target identical.
 - [x] Frame-start contents, RenderDoc's "initial contents" (`vk_initstate.cpp`), the way a layer
       that sees every command can take them: the first read of an image subresource the capture has
@@ -199,15 +199,15 @@ application with injected state. Route (a) is the general one and is the prerequ
       history of the pixel clicked beside the image.
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
-- [x] Draw-call overlays (`vkinsp_replay --overlay`, `replay/src/overlay.cpp`): highlight draw,
+- [x] Draw-call overlays (`vkinsp_replay --overlay`, `src/replay/src/overlay.cpp`): highlight draw,
       depth test and wireframe in the render target tab, for any draw of the pass.
 - [ ] Draw overlays, the rest: stencil apart from depth, backface cull, viewport/scissor,
       NaN/INF, clipping, triangle size and quad overdraw (RenderDoc's other overlays); discarded
       fragments; `get_draw_overlay` in the MCP server.
 - [x] Per-draw GPU timing and counters via replay with timestamp and pipeline-statistics queries
-      (`replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
+      (`src/replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
       dispatch timed and counted, kept in capture files, read by the Shader Flame Graph.
-- [x] Mesh output view (`renderer/mesh_view.ts`, `vkinsp_replay --mesh`, `replay/src/mesh.cpp`):
+- [x] Mesh output view (`renderer/mesh_view.ts`, `vkinsp_replay --mesh`, `src/replay/src/mesh.cpp`):
       VS In from the captured buffers and VS Out through transform feedback, as a wireframe and a
       table, with `get_mesh_output` in the MCP server.
 - [ ] Mesh output, the rest: tessellation and geometry stage outputs, every view of a multiview
@@ -225,7 +225,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       from running the draw's own vertex shader rather than from a replay, since Metal has none.
 - [ ] Shader debugger, the rest: tessellation and geometry stages (Metal: object, mesh and tile),
       per-sample shading, watch expressions, and editing a value and running on.
-- [x] Shader cost by ablation (`renderer/vulkan/spirv_ablate.ts`, `replay/src/ablation.cpp`,
+- [x] Shader cost by ablation (`renderer/vulkan/spirv_ablate.ts`, `src/replay/src/ablation.cpp`,
       **Measure shader**, `measure_shader_cost`): a draw replayed with SPIR-V variants that leave out
       a function, a line or a texture, sizing the flame graph's measured stages.
 - [ ] Ablation, the rest:
@@ -240,7 +240,7 @@ application with injected state. Route (a) is the general one and is the prerequ
 ## Vulkan-specific
 - [x] Implicit layer: **Set for my account** for the environment variables (the account's
       environment on Windows, `~/.config/environment.d` on Linux), and the Windows installer
-      registers the layer and the uninstaller removes it (`app/installer/installer.nsh`).
+      registers the layer and the uninstaller removes it (`src/app/installer/installer.nsh`).
 - [ ] Implicit layer, the rest: the .deb could register the layer in
       `/usr/share/vulkan/implicit_layer.d` (a postinst script); the installer script is built but
       has not been run on a machine.
@@ -305,7 +305,7 @@ application with injected state. Route (a) is the general one and is the prerequ
 
 ## Metal
 
-The Metal capture library (`metal/`) reaches the Inspect and Capture panels through the same
+The Metal capture library (`src/metal/`) reaches the Inspect and Capture panels through the same
 protocol as the Vulkan layer. What it lacks falls into two groups: what the UI already does for
 Vulkan and only needs the library to send, and what Xcode's Metal Debugger has that neither
 backend does. Ordered by value per effort.
@@ -321,12 +321,12 @@ backend does. Ordered by value per effort.
 - [x] Capture options: `atFrame`, `maxBufferSize`, `maxBufferTotal`, `maxTextureSize`,
       `captureTextures`, `captureBuffers`, `profilePasses`, `captureSampledTextures`,
       `maxSampledTextureTotal`.
-- [x] Sampled texture read-back (`QueueTextureCapture` in `metal/src/capture.mm`): every texture a
+- [x] Sampled texture read-back (`QueueTextureCapture` in `src/metal/src/capture.mm`): every texture a
       draw or dispatch bound, whole (all mips, all slices), read once per capture and blitted at
       the end of the pass the bind was in, carried on the binding command as `textureData`. It is
       what lets a debugged fragment sample what the GPU sampled.
 - [x] The shader debugger on a Metal capture: the Metal Shading Language interpreter in
-      `app/src/renderer/msl/`, with the sessions in `app/src/renderer/metal/shader_debug.ts`.
+      `src/app/src/renderer/msl/`, with the sessions in `src/app/src/renderer/metal/shader_debug.ts`.
 - [x] Validation messages: a command buffer's error with the encoder that faulted (encoder
       execution status is on while a client is connected), Metal's validation layer in its
       logging mode through an NSLog interpose (the launch dialog's "Validation layer" sets
@@ -357,13 +357,13 @@ backend does. Ordered by value per effort.
 - [x] Bottleneck analysis over the pass counters: overdraw, fragments per primitive, depth
       rejection and the bound stage per pass, as a report and as Frame Issues rules
       (`metal/pass_metrics.ts`, `metal/bottleneck_report.ts`, `docs/PROFILING.md`).
-- [x] Overdraw measured while capturing (`metal/src/overdraw.mm`): every render pass drawn again
+- [x] Overdraw measured while capturing (`src/metal/src/overdraw.mm`): every render pass drawn again
       right after the application's encoder ends, with counting copies of its pipelines, with and
       without its depth and stencil tests. Heatmaps in the pass's details, the measured figure in
       the pass header and GPU Bottlenecks, kept in capture files, `get_overdraw` in the MCP server.
 - [x] Run Metal overdraw on a Mac: the heatmaps show in the pass details (2026-09-11).
 - [ ] Metal overdraw on a Unity player, and against the pass's `fragmentsPassed` counter.
-- [x] Pixel history for Metal, the same way (`metal/src/pixel_history.mm`): a pixel picked in a
+- [x] Pixel history for Metal, the same way (`src/metal/src/pixel_history.mm`): a pixel picked in a
       capture captures the next frame with every pass that renders to the texture drawn again one
       draw at a time at the pixel, into copies of its attachments, with a one-pixel scissor,
       visibility results in counting mode, and cull mode and depth-stencil state varied on the
@@ -387,18 +387,18 @@ backend does. Ordered by value per effort.
 - [x] ASTC, ETC2 / EAC, PVRTC and the extended-range and packed 4:2:2 pixel formats, in the
       read-back table and the UI's decoder, with reference vectors.
 - [ ] Stencil attachment read-back; the multi-planar YUV formats.
-- [x] Function constants in the capture (`metal/src/function_constants.mm`): MTLFunctionConstantValues
+- [x] Function constants in the capture (`src/metal/src/function_constants.mm`): MTLFunctionConstantValues
       has no getters, so its setters are hooked and the values ride along on the tracked MTLFunction.
       The shader debugger specializes the invocation with them, so a `[[function_constant]]`-guarded
       variant steps the branches the draw used. `is_function_constant_defined` answers from them.
 - [ ] Function constants on an entry point's *arguments* (`[[function_constant(isEnabled)]]` on a
       parameter), which decide whether the argument exists at all: the debugger binds it regardless.
 - [ ] The shader debugger on a Unity player's Metal shaders, which are generated MSL rather than
-      hand-written: the parser's coverage is what to watch (`app/test/vectors/msl/`).
+      hand-written: the parser's coverage is what to watch (`src/app/test/vectors/msl/`).
 
 ## Direct3D 12
 
-The D3D12 capture library (`d3d12/`) reaches the Inspect and Capture panels through the same
+The D3D12 capture library (`src/d3d12/`) reaches the Inspect and Capture panels through the same
 protocol as the Vulkan layer. What it lacks is what the replay does for Vulkan, and what the
 library does not read back yet.
 
@@ -430,7 +430,7 @@ project or the Xcode project it generates. The macOS design carries over unchang
 dyld honours `DYLD_INSERT_LIBRARIES` on iOS for a process signed with `get-task-allow` (every
 development-profile build), which is how Xcode itself inserts `libMTLCapture.dylib` for GPU Frame
 Capture; `__DATA,__interpose` and the class hooks work the same; and the transport already binds
-`127.0.0.1` and listens (`metal/src/transport.mm`), which is exactly what a USB port forward
+`127.0.0.1` and listens (`src/metal/src/transport.mm`), which is exactly what a USB port forward
 (usbmux, the iOS `adb forward`) connects to, with no Local Network permission prompt.
 
 What is unknown until measured on a device is where the library may live and whether iOS accepts
@@ -478,8 +478,8 @@ and would need re-signing with a development profile first; the device needs Dev
       No `get-task-allow`: the profile is not a development one, and nothing below can work.
 
 ### Step 0: will iOS load an inserted library at all, and from where
-A probe library that only logs, so the answer does not depend on porting `metal/`. The same
-experiment `metal/README.md` records for macOS signing; put the resulting table beside it.
+A probe library that only logs, so the answer does not depend on porting `src/metal/`. The same
+experiment `src/metal/README.md` records for macOS signing; put the resulting table beside it.
 - [ ] Build and sign the probe:
       ```c
       // probe.c
@@ -544,7 +544,7 @@ experiment `metal/README.md` records for macOS signing; put the resulting table 
             Capture* set to Disabled so Xcode inserts nothing of its own. The scheme only affects
             the launch, not the build, so this still leaves the build uninstrumented.
 - [ ] Write the results down (placement × path form × launcher → loaded / refused and the message)
-      in `metal/README.md` next to the macOS table. **No case loads: stop here**; Route A is not
+      in `src/metal/README.md` next to the macOS table. **No case loads: stop here**; Route A is not
       possible and the remaining option is Xcode's `.gputrace` via LLDB.
 
 ### Step 1: build the capture library for iOS
@@ -591,12 +591,12 @@ experiment `metal/README.md` records for macOS signing; put the resulting table 
       iproxy 47531:47531 -u <udid>            # libimobiledevice 1.3+; older: iproxy 47531 47531 <udid>
       # or: pymobiledevice3 usbmux forward 47531 47531
       ```
-- [ ] Connect the UI: **Connect** in the launch bar with port 47531, or from `app/`:
+- [ ] Connect the UI: **Connect** in the launch bar with port 47531, or from `src/app/`:
       `npm start -- --connect=47531`. The MCP server's attach should work the same way.
 - [ ] What to check, in order, noting anything that differs from a Mac:
       - [ ] Inspect: the snapshot arrives; device, queues, buffers, textures, pipelines listed.
             Record the concrete class names (the `AGX…Device` family for the device's GPU, and the
-            `MTLDebug*` ones with `MTL_DEBUG_LAYER=1`) in the class-tree table in `metal/README.md`.
+            `MTLDebug*` ones with `MTL_DEBUG_LAYER=1`) in the class-tree table in `src/metal/README.md`.
       - [ ] Frame capture of one frame: commands per command buffer and pass, render targets read
             back, vertex and index buffers, pass timings.
       - [ ] Pixel formats a phone uses that a Mac player does not: ASTC textures, `BGRA8_sRGB`
@@ -604,7 +604,7 @@ experiment `metal/README.md` records for macOS signing; put the resulting table 
       - [ ] Frame Stats: frame time and the refresh rate (60 / 120).
       - [ ] Validation layer: add `"MTL_DEBUG_LAYER":"1","MTL_DEBUG_LAYER_ERROR_MODE":"nslog",
             "MTL_DEBUG_LAYER_WARNING_MODE":"nslog"` to the environment (what `captureEnvironment`
-            in `app/src/main/metal.ts` sets on a Mac).
+            in `src/app/src/main/metal.ts` sets on a Mac).
       - [ ] Stack traces (`MTLINSP_STACKTRACES=1`): addresses symbolize against the dSYMs Xcode
             wrote for `UnityFramework`, which the host needs via `set_search_paths`.
       - [ ] Overdraw, pixel history and Xcode Trace (then `devicectl device copy from` the
@@ -614,7 +614,7 @@ experiment `metal/README.md` records for macOS signing; put the resulting table 
       - [ ] Backgrounding the app and returning: the listener survives, and the UI can reconnect.
 
 ### Step 3: make it a launch target (only once step 2 works)
-- [ ] `app/src/main/ios.ts`, the counterpart of `metal.ts` and the Android launcher: list devices
+- [ ] `src/app/src/main/ios.ts`, the counterpart of `metal.ts` and the Android launcher: list devices
       (`xcrun devicectl list devices --json-output`), check the app's `get-task-allow` and team,
       sign and place the library the way step 0 found works, install, launch with the environment,
       forward the port, connect. The usbmux forward can be spoken directly (a plist protocol over
@@ -622,7 +622,7 @@ experiment `metal/README.md` records for macOS signing; put the resulting table 
 - [ ] The launch dialog's *Run On* lists iOS devices beside Android ones; a `launch_ios_app` MCP
       tool beside `launch_android_app`.
 - [ ] The iOS library built by CI and staged into the macOS app's resources
-      (`app/tools/stage_layer.mjs`), signed at launch time with the user's identity rather than
+      (`src/app/tools/stage_layer.mjs`), signed at launch time with the user's identity rather than
       the project's (a Developer ID signature is a different team from the app's).
 - [ ] `docs/IOS.md`: requirements (development-signed build, Developer Mode, same team), and a
       Troubleshooting section built from step 0's failure messages.

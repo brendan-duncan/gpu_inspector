@@ -44,24 +44,24 @@ jobs:
         with:
           submodules: recursive
 
-      # The tag must match app/package.json (a tag v1.2.3 releases version 1.2.3); checked first so a
+      # The tag must match src/app/package.json (a tag v1.2.3 releases version 1.2.3); checked first so a
       # mismatch fails in seconds rather than after the layer build.
       - name: Check that the tag matches package.json
         if: github.ref_type == 'tag'
-        working-directory: app
+        working-directory: src/app
         shell: bash
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${PKG_VERSION}."
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match src/app/package.json version ${PKG_VERSION}."
             cat <<MSG
 
-          Tag ${GITHUB_REF_NAME} does not match app/package.json, which says ${PKG_VERSION}.
+          Tag ${GITHUB_REF_NAME} does not match src/app/package.json, which says ${PKG_VERSION}.
           The tag and package.json must agree. To release ${TAG_VERSION}:
 
             git push --delete origin ${GITHUB_REF_NAME} && git tag -d ${GITHUB_REF_NAME}
-            (cd app && npm version ${TAG_VERSION} --no-git-tag-version)
+            (cd src/app && npm version ${TAG_VERSION} --no-git-tag-version)
             git commit -am "v${TAG_VERSION}"
             git tag ${GITHUB_REF_NAME} && git push origin main ${GITHUB_REF_NAME}
 
@@ -75,7 +75,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: src/app/package-lock.json
 
       - name: Cache Electron downloads
         uses: actions/cache@v4
@@ -83,7 +83,7 @@ jobs:
           path: |
             .cache/electron
             .cache/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          key: electron-${{ runner.os }}-${{ hashFiles('src/app/package-lock.json') }}
           restore-keys: electron-${{ runner.os }}-
 
       - uses: actions/setup-python@v5
@@ -117,15 +117,15 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Install app dependencies
-        working-directory: app
+        working-directory: src/app
         run: npm ci
 
       - name: Type check
-        working-directory: app
+        working-directory: src/app
         run: npm run typecheck
 
       - name: Unit tests
-        working-directory: app
+        working-directory: src/app
         run: npm test
 
       # The MCP server ships as a bundle committed to the repository
@@ -134,19 +134,19 @@ jobs:
       # was committed is stale. Linux only: the bundle is the same on every platform.
       - name: Check that the committed MCP bundle is current
         if: runner.os == 'Linux'
-        working-directory: app
+        working-directory: src/app
         shell: bash
         run: |
           npm run build
-          if ! git diff --quiet -- ../claude-plugin/server/gpu-inspector-mcp.mjs; then
+          if ! git diff --quiet -- ../../claude-plugin/server/gpu-inspector-mcp.mjs; then
             echo "::error::claude-plugin/server/gpu-inspector-mcp.mjs is older than the sources it is built from."
-            git diff --stat -- ../claude-plugin/server/gpu-inspector-mcp.mjs
+            git diff --stat -- ../../claude-plugin/server/gpu-inspector-mcp.mjs
             cat <<'MSG'
 
-          The committed MCP server bundle does not match a fresh build of app/src/mcp. Rebuild it
+          The committed MCP server bundle does not match a fresh build of src/app/src/mcp. Rebuild it
           and commit the result, then tag again:
 
-            (cd app && npm run build)
+            (cd src/app && npm run build)
             git commit -am "rebuild the MCP server bundle"
 
           MSG
@@ -156,7 +156,7 @@ jobs:
       # Builds only; the release job below publishes once every platform has built.
       - name: Build installer
         if: runner.os != 'macOS'
-        working-directory: app
+        working-directory: src/app
         run: npm run dist:${{ matrix.target }} -- --publish never
 
       # macOS is its own step because CSC_LINK and CSC_KEY_PASSWORD are what electron-builder
@@ -175,7 +175,7 @@ jobs:
       # empty values are falsy where they are read, and notarization logs that it skipped.
       - name: Build installer (macOS, signed and notarized)
         if: runner.os == 'macOS'
-        working-directory: app
+        working-directory: src/app
         env:
           MAC_CERTS: ${{ secrets.MAC_CERTS }}
           MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
@@ -197,13 +197,13 @@ jobs:
           name: installer-${{ matrix.target }}
           if-no-files-found: error
           path: |
-            app/release/*.exe
-            app/release/*.deb
-            app/release/*.dmg
-            app/release/*.zip
-            app/release/*.yml
-            app/release/*.blockmap
-            !app/release/builder-*.yml
+            src/app/release/*.exe
+            src/app/release/*.deb
+            src/app/release/*.dmg
+            src/app/release/*.zip
+            src/app/release/*.yml
+            src/app/release/*.blockmap
+            !src/app/release/builder-*.yml
 
   release:
     needs: build

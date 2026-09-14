@@ -25,7 +25,7 @@ Files that contain adapted code carry a header comment naming their origin.
 ## MinHook
 - Source: https://github.com/TsudaKageyu/minhook (the `third_party/minhook` submodule, built into `dxinsp_capture.dll`)
 - License: BSD-2-Clause, Copyright (C) 2009-2017 Tsuda Kageyu. Its Hacker Disassembler Engine (`src/hde`) is Copyright (c) 2008-2009 Vyacheslav Patkov, under the same terms.
-- Used for: hooking the `D3D12CreateDevice` and `CreateDXGIFactory*` entry points inline in the Direct3D 12 capture library (`d3d12/src/hook.cpp`).
+- Used for: hooking the `D3D12CreateDevice` and `CreateDXGIFactory*` entry points inline in the Direct3D 12 capture library (`src/d3d12/src/hook.cpp`).
 
 The BSD-2-Clause license requires this notice to accompany binary distributions:
 

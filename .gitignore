@@ -14,8 +14,8 @@ dist/
 
 # node
 node_modules/
-app/dist/
-app/out/
+src/app/dist/
+src/app/out/
 
 # editors / OS
 .vs/
@@ -29,9 +29,9 @@ Thumbs.db
 *.vkcap
 
 # generated from vk.xml by CMake (tools/gen_vulkan.py, tools/gen_replay.py)
-vulkan/gen/
-replay/gen/
+src/vulkan/gen/
+src/replay/gen/
 __pycache__/
 
 # installers (electron-builder)
-app/release/
+src/app/release/

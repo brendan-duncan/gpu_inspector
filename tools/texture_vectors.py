@@ -1,7 +1,7 @@
 """
-Reference vectors for the UI's compressed-texture decoders (app/test/texture_decode.test.js).
+Reference vectors for the UI's compressed-texture decoders (src/app/test/texture_decode.test.js).
 
-    python tools/texture_vectors.py        # writes app/test/vectors/texture_decode.json
+    python tools/texture_vectors.py        # writes src/app/test/vectors/texture_decode.json
 
 Blocks come from two places: random bytes, which every ETC2, EAC, BC7, BC6H and PVRTC bit
 pattern decodes (reserved BC modes are skipped), and for ASTC an encoder (astc-encoder-py),

@@ -3,7 +3,7 @@
 
 Each shot is one run of the app with its testing aids (--debug-open, --debug-view,
 --debug-select, --debug-launch-dialog, --screenshot), quitting itself when the shot is written.
-The UI is the one in app/dist, so build it first (`npm run build` in app/, or `npm start` once).
+The UI is the one in src/app/dist, so build it first (`npm run build` in src/app/, or `npm start` once).
 
     python tools/doc_screenshots.py --captures <dir>      # all of them
     python tools/doc_screenshots.py --only render-graph   # one
@@ -22,7 +22,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "app")
+APP = os.path.join(ROOT, "src", "app")
 IS_WIN = sys.platform == "win32"
 
 
@@ -172,7 +172,7 @@ def main():
             print(f"{s.name:<16} {s.capture or ('the test application' if s.launch else '-')}")
         return 0
     if not electron():
-        print("electron is not installed: run npm install in app/", file=sys.stderr)
+        print("electron is not installed: run npm install in src/app/", file=sys.stderr)
         return 2
     os.makedirs(args.out, exist_ok=True)
 

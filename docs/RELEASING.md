@@ -8,19 +8,23 @@ update themselves from the GitHub releases of this repository.
 
 ## Cutting a release
 
-The version lives in one place, `app/package.json`; the tag must match it. `CHANGELOG.md` has
+The version lives in one place, `src/app/package.json`; the tag must match it. `CHANGELOG.md` has
 a section per version, the upcoming one at the top; check it is complete before tagging:
 
 ```
-(cd app && npm version 0.2.0 --no-git-tag-version)
+(cd src/app && npm version 0.2.0 --no-git-tag-version)
 git commit -am "v0.2.0"
 git tag v0.2.0
 git push origin main v0.2.0
 ```
 
-`npm version` also rebuilds the app (the `version` script in `app/package.json`), because the
-committed MCP server bundle, `claude-plugin/server/gpu-inspector-mcp.mjs`, carries the version
-number: the workflow fails when that bundle differs from a fresh build, so commit it with the bump.
+Nothing else has to be rebuilt for a version bump. The committed MCP server bundle,
+`claude-plugin/server/gpu-inspector-mcp.mjs`, holds no version: it reads the one in
+`claude-plugin/.claude-plugin/plugin.json` when it starts, so the bundle is byte-identical
+whatever `package.json` says and only changes when `src/app/src/mcp` does. (It used to have the
+version baked in, which meant every bump made the committed bundle stale and failed the workflow's
+freshness check on a file nobody had touched.) The plugin's own version in `plugin.json` is
+separate and is bumped when the plugin changes, not with every app release.
 
 The workflow then runs on a Windows, an Ubuntu 22.04 and a macOS 14 runner, and:
 
@@ -29,7 +33,7 @@ The workflow then runs on a Windows, an Ubuntu 22.04 and a macOS 14 runner, and:
    needed): the Vulkan layer on Windows and Linux, the Metal library on macOS, where it is built
    for both architectures at once (`-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64`) because dyld can
    only insert a library with a slice matching the process it loads into,
-3. checks that the tag matches the `version` in `app/package.json` (`v0.2.0` needs `0.2.0`)
+3. checks that the tag matches the `version` in `src/app/package.json` (`v0.2.0` needs `0.2.0`)
    and fails with instructions if it does not,
 4. runs `npm run dist:win` / `dist:linux` / `dist:mac` and uploads the installers, their block
    maps and the update manifests (`latest.yml` / `latest-linux.yml` / `latest-mac.yml`) as
@@ -72,7 +76,7 @@ environment by electron-builder in the macOS build step of the workflow:
 GitHub secrets are per-repository, so these have to exist on this repository even if the same
 values are already set on another.
 
-`app/electron-builder.yml` leaves `mac.identity` unset on purpose: electron-builder then finds
+`src/app/electron-builder.yml` leaves `mac.identity` unset on purpose: electron-builder then finds
 the certificate itself, from the keychain on a developer's Mac and from `CSC_LINK` /
 `CSC_KEY_PASSWORD` in CI. `hardenedRuntime: true` is what notarization requires, and
 electron-builder's default entitlements (`allow-jit`, `allow-unsigned-executable-memory`,
@@ -83,7 +87,7 @@ Notarization runs after signing, once per architecture, and staples Apple's tick
 before the `.dmg` and `.zip` are built from it, so both carry it. It adds a few minutes per
 architecture. Neither step is mandatory for a build to succeed: with no certificate
 electron-builder logs `skipped macOS code signing`, with no Apple credentials it logs `skipped
-macOS notarization`, and `app/tools/adhoc_sign.cjs` leaves the bundle ad-hoc signed so a
+macOS notarization`, and `src/app/tools/adhoc_sign.cjs` leaves the bundle ad-hoc signed so a
 contributor without an Apple Developer account can still build and run it.
 
 To check a finished build, `spctl -a -vv -t exec "GPU Inspector.app"` should say `accepted`
@@ -92,21 +96,21 @@ notarization did not run.
 
 ## How the installer is put together
 
-`app/electron-builder.yml` is the configuration. Beyond the app bundle it ships:
+`src/app/electron-builder.yml` is the configuration. Beyond the app bundle it ships:
 
 - `resources/layer/`: the layer library and its manifest, copied from `build/bin[/Release]`
-  into `app/dist/layer` by `npm run stage:layer` (`app/tools/stage_layer.mjs`;
+  into `src/app/dist/layer` by `npm run stage:layer` (`src/app/tools/stage_layer.mjs`;
   `INSPECTOR_LAYER_DIR` overrides the source). The app finds them there through
-  `findLayerDir` in `app/src/main/main.ts`, the same lookup that finds a development build.
+  `findLayerDir` in `src/app/src/main/main.ts`, the same lookup that finds a development build.
   On macOS the same directory holds `libmtlinsp_capture.dylib` instead, which is what
-  `findCaptureLibrary` in `app/src/main/metal.ts` looks for; the staging step fails if it was
+  `findCaptureLibrary` in `src/app/src/main/metal.ts` looks for; the staging step fails if it was
   not built, since a package without it cannot capture anything.
 - `resources/assets/`: the window icons.
 - `resources/app-update.yml`: the update feed (generated by electron-builder from `publish`).
 
 The `.deb` installs to `/opt/GPU Inspector` with a `gpu-inspector` launcher in `/usr/bin` and a
 `gpu-inspector.desktop` entry whose `StartupWMClass` matches the `desktopName` in
-`app/package.json`, so GNOME associates the running window with its icon. It depends on
+`src/app/package.json`, so GNOME associates the running window with its icon. It depends on
 `libvulkan1` in addition to Electron's usual libraries.
 
 ## Self-update
@@ -129,11 +133,11 @@ the app bundle in place.
 
 ```
 cmake --build build --config Release     # the layer
-cd app
-npm run pack                             # unpacked app in app/release/<platform>-unpacked
-npm run dist:win                         # app/release/GPU-Inspector-Setup-<version>.exe
-npm run dist:linux                       # app/release/gpu-inspector_<version>_amd64.deb
-npm run dist:mac                         # app/release/GPU-Inspector-<version>-{arm64,x64}.dmg
+cd src/app
+npm run pack                             # unpacked app in src/app/release/<platform>-unpacked
+npm run dist:win                         # src/app/release/GPU-Inspector-Setup-<version>.exe
+npm run dist:linux                       # src/app/release/gpu-inspector_<version>_amd64.deb
+npm run dist:mac                         # src/app/release/GPU-Inspector-<version>-{arm64,x64}.dmg
 ```
 
 `dist:mac` needs no layer build and builds both Mac architectures from either one. It signs with
@@ -145,7 +149,7 @@ export APPLE_ID=... APPLE_APP_SPECIFIC_PASSWORD=... APPLE_TEAM_ID=W2FKLA6G2Y
 npm run dist:mac
 ```
 
-`npm run dist` only builds; `gh release create vX.Y.Z app/release/*` (or `-- --publish always`
+`npm run dist` only builds; `gh release create vX.Y.Z src/app/release/*` (or `-- --publish always`
 with `GH_TOKEN` set) publishes from a machine instead of the workflow.
 
 ---

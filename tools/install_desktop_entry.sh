@@ -27,7 +27,7 @@ Type=Application
 Name=GPU Inspector
 Comment=Graphics inspector for native Vulkan applications
 Exec=$ROOT/tools/gpu-inspector
-Icon=$ROOT/app/assets/icon.png
+Icon=$ROOT/src/app/assets/icon.png
 Terminal=false
 Categories=Development;
 Keywords=Vulkan;GPU;Graphics;Debugger;Profiler;
@@ -37,4 +37,4 @@ DESKTOP
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DIR" || true
 echo "installed $FILE"
 echo "  launches: $ROOT/tools/gpu-inspector"
-echo "  icon:     $ROOT/app/assets/icon.png"
+echo "  icon:     $ROOT/src/app/assets/icon.png"

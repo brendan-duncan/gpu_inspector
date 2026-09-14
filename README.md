@@ -51,7 +51,7 @@ Linux and Windows need the same things: a C++20 compiler, CMake 3.20 or newer, P
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm (the Electron UI),
 the windowing-system headers Vulkan's surface extensions include, and the shader tools `glslc`,
 `spirv-dis` and `spirv-cross`. Where they come from differs per platform. Windows also builds the
-Direct3D 12 capture library (`d3d12/`), which needs a recent Windows SDK and the MinHook
+Direct3D 12 capture library (`src/d3d12/`), which needs a recent Windows SDK and the MinHook
 submodule, and its test application, which needs `dxc`. macOS builds the Metal capture library
 instead of the Vulkan layer and needs a shorter list.
 
@@ -103,7 +103,7 @@ The Windows SDK provides the windowing and Direct3D headers, and your GPU's Vulk
 drivers come with its normal graphics driver, so nothing extra is needed for either.
 `git submodule update --init` brings `third_party/minhook` (the D3D12 library's entry-point
 hooks) beside `Vulkan-Headers`. The D3D12 library's generated enum and vtable tables
-(`d3d12/gen/`) are committed, so Python regenerates them only when `tools/gen_d3d12.py` changes.
+(`src/d3d12/gen/`) are committed, so Python regenerates them only when `tools/gen_d3d12.py` changes.
 
 ### macOS
 
@@ -113,7 +113,7 @@ hooks) beside `Vulkan-Headers`. The D3D12 library's generated enum and vtable ta
 | CMake 3.20+ | `brew install cmake`, or https://cmake.org/download/ |
 | Node.js LTS (includes npm) | `brew install node`, or https://nodejs.org/en/download |
 
-Nothing else: `vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator
+Nothing else: `src/vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator
 nor `glslc` is part of the build. `spirv-dis` and `spirv-cross` (`brew install spirv-tools
 spirv-cross`) are still worth having, for the shader text of Vulkan captures taken on another
 machine or on an Android device.
@@ -126,7 +126,7 @@ machine or on an Android device.
 git clone --recurse-submodules https://github.com/brendan-duncan/gpu_inspector.git
 cd gpu_inspector
 tools/setup.sh
-cd app && npm start
+cd src/app && npm start
 ```
 
 Optionally, `tools/install_desktop_entry.sh` adds GPU Inspector to the desktop's application
@@ -145,7 +145,7 @@ To do the same by hand:
 git submodule update --init
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
 ### Windows
@@ -154,7 +154,7 @@ cd app && npm install && npm start
 git submodule update --init
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
 Use the generator name of the Visual Studio you installed (`"Visual Studio 18 2026"` for VS 2026).
@@ -166,11 +166,11 @@ Use the generator name of the Visual Studio you installed (`"Visual Studio 18 20
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
-No submodule, and a different CMake build: `vulkan/` has no Apple target, so the top-level
-`CMakeLists.txt` builds `metal/` — the Metal capture library, `build/bin/libmtlinsp_capture.dylib`
+No submodule, and a different CMake build: `src/vulkan/` has no Apple target, so the top-level
+`CMakeLists.txt` builds `src/metal/` — the Metal capture library, `build/bin/libmtlinsp_capture.dylib`
 — and the `mtlinsp_triangle` test application in its place. `tools/setup.sh` is Linux-only. See
 [macOS](#macos) below for what the Metal side can and cannot do.
 
@@ -188,14 +188,14 @@ registered system-wide. The save button of
 the capture bar writes the capture to a `.gpucap` file; **Open Capture...** (or dropping the file
 on the window) reopens it later, on any machine, without the application.
 
-Other useful commands, from `app/`:
+Other useful commands, from `src/app/`:
 
 ```
 npm run typecheck    # tsc
 npm run watch        # rebuild the UI on change
 npm run icons        # re-render assets/icon.{ico,png} from assets/icon.svg
-npm run pack         # unpacked packaged app in app/release (needs the Release layer build)
-npm run dist         # installer for this platform in app/release (see docs/RELEASING.md)
+npm run pack         # unpacked packaged app in src/app/release (needs the Release layer build)
+npm run dist         # installer for this platform in src/app/release (see docs/RELEASING.md)
 ```
 
 ## Claude Code
@@ -253,7 +253,7 @@ registration.
 ## Direct3D 12
 
 On Windows the inspector captures Direct3D 12 applications too. D3D12 has no loader layers, so
-`d3d12/` is a library that `dxinsp_launch.exe` injects into the target before its first
+`src/d3d12/` is a library that `dxinsp_launch.exe` injects into the target before its first
 instruction runs; it hooks `D3D12CreateDevice` and `CreateDXGIFactory*` and patches the vtables
 of the objects they hand out, and speaks the Vulkan layer's protocol byte for byte. The launch
 dialog needs no API field: a Windows target is started with the layer and the library both, and
@@ -266,7 +266,7 @@ counters; the D3D12 debug layer's messages; stack traces; DXBC/DXIL disassembly,
 and reflection; and shader editing through `dxc`. Not yet: the shader debugger and the
 replay-based analyses (overdraw, pixel history, draw overlays, mesh output, per-draw
 measurements), stencil read-back, 32-bit targets, and attaching to an application already
-running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `d3d12/README.md` the design.
+running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `src/d3d12/README.md` the design.
 
 `build\bin\Release\dxinsp_triangle.exe` is the D3D12 test application, the counterpart of
 `vkinsp_triangle` (`--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`).
@@ -274,8 +274,8 @@ running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `d3d12/README.md`
 ## macOS
 
 Applications on macOS render with Metal, and the Vulkan layer would see only the few that run on
-MoltenVK — so a port of it was never the answer, and `vulkan/` does not build for Apple targets at
-all. `metal/` is a Metal capture library that takes its place, loaded into the target with
+MoltenVK — so a port of it was never the answer, and `src/vulkan/` does not build for Apple targets at
+all. `src/metal/` is a Metal capture library that takes its place, loaded into the target with
 `DYLD_INSERT_LIBRARIES`. It is newer than the Vulkan layer and does less, but the Inspect and
 Capture panels both work against a Metal application today, over the same protocol and with no
 separate UI of their own.
@@ -301,10 +301,10 @@ What works:
   applications on Android devices over adb (see [Android](#android)), and `.gpucap` files taken
   anywhere.
 
-What is not there yet: only the pixel formats `metal/src/formats.h` maps are read back (no ASTC,
+What is not there yet: only the pixel formats `src/metal/src/formats.h` maps are read back (no ASTC,
 ETC or PVRTC); stencil attachments are not; and shader editing does not apply — it is built around
 SPIR-V and its compilers, and Metal's shaders are already source. Only Apple Silicon has been
-verified. `metal/README.md` is the detailed account, including what the
+verified. `src/metal/README.md` is the detailed account, including what the
 interception itself cost to get right, and it keeps the current list.
 
 ### Injecting into an application
@@ -411,9 +411,9 @@ linked to their commands, and stack traces with source lines. Each case starts t
 the inspector, captures a frame, and checks what the renderer reports (`--debug-dump`) and the
 layer's log. `--captures <dir>` also opens every `.gpucap` in a directory, checking a
 `<name>.expect.json` next to it (`{"findings": {"rule": count}}`) when there is one. The
-renderer's and the MCP server's unit tests run with `npm test` in `app/`. The triangle cases drive the Vulkan layer,
+renderer's and the MCP server's unit tests run with `npm test` in `src/app/`. The triangle cases drive the Vulkan layer,
 so on macOS only `--captures <dir>` applies; the Metal library has no automated test yet, and
-`build/bin/mtlinsp_triangle` is run by hand (see `metal/README.md`).
+`build/bin/mtlinsp_triangle` is run by hand (see `src/metal/README.md`).
 
 ## Troubleshooting
 

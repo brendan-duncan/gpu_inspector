@@ -351,7 +351,7 @@ def emit_entry_cpp(reg, cmds, out):
     lines.append("}")
     lines.append("")
 
-    lines.append("// Hand-written entry points (see vulkan/src).")
+    lines.append("// Hand-written entry points (see src/vulkan/src).")
     for c in cmds:
         if c.name in MANUAL_COMMANDS:
             params = ", ".join(p.decl for p in c.params)
@@ -485,7 +485,7 @@ def ref_decl(p):
 
 def emit_hooks_header(cmds, out):
     lines = [HEADER, "#pragma once", "#include <vulkan/vulkan.h>", "", "namespace vkinsp {", "",
-             "// Post-call hooks implemented in vulkan/src/hooks.cpp."]
+             "// Post-call hooks implemented in src/vulkan/src/hooks.cpp."]
     for c in cmds:
         if c.name in EXTRA_HOOKS:
             params = ", ".join(p.decl for p in c.params)

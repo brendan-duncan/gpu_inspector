@@ -3,7 +3,7 @@
 Generates the replay tool's decoders from vk.xml: the JSON the capture layer writes, read back into
 Vulkan structs and command calls (see tools/vkgen/deserialize.py).
 
-Usage: python gen_replay.py --xml third_party/Vulkan-Headers/registry/vk.xml --out replay/gen
+Usage: python gen_replay.py --xml third_party/Vulkan-Headers/registry/vk.xml --out src/replay/gen
 """
 import argparse
 import os

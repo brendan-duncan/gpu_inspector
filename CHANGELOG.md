@@ -50,6 +50,17 @@
 - The Windows build needs the Windows SDK 10.0.26100 or newer and the `third_party/minhook`
   submodule (BSD-2-Clause) for the D3D12 library, and `dxc` for its test application.
 
+### Changed
+- The source directories moved under `src/`: `src/app`, `src/d3d12`, `src/metal`, `src/replay`
+  and `src/vulkan`. `test/`, `tools/`, `docs/`, `claude-plugin/` and `third_party/` stay at the
+  repository root, and so does the `build/` tree CMake writes. Build it the same way; only the
+  paths changed (`cd src/app && npm start` where it used to be `cd app`).
+- A version bump no longer has to rebuild the committed MCP server bundle. The bundle used to
+  carry the version from `package.json`, so bumping one without rebuilding the other left a
+  stale file that failed the release workflow's freshness check; it now reads the version from
+  `claude-plugin/.claude-plugin/plugin.json` at startup and is byte-identical whatever the app
+  version says.
+
 ## v0.11.0
 
 ### Added

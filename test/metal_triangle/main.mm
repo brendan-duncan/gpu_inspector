@@ -12,7 +12,7 @@
 //                                 the way Unity's macOS player does, instead of through
 //                                 [MTLCommandBuffer presentDrawable:]
 //
-// Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See metal/README.md.
+// Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See src/metal/README.md.
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -161,7 +161,7 @@ constexpr NSUInteger kWaveCount = 256;
     pipelineDescriptor.label = @"triangle pipeline";
     pipelineDescriptor.vertexFunction = [library newFunctionWithName:@"vertex_main"];
     // Specialized: kTintMode selects the branch, kTintAmount is what it mixes by. Nothing reads
-    // these back out of Metal, so the capture library watches the setters (metal/src/function_constants.h).
+    // these back out of Metal, so the capture library watches the setters (src/metal/src/function_constants.h).
     MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
     const int tintMode = 1;
     const float tintAmount = 0.25f;

@@ -32,7 +32,7 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
 - **`--overdraw-data <file>`:** measures overdraw the same way and writes every measurement with its
   per-pixel counts into one file: a magic line (`OVERDRAW 1`), a little-endian u32 manifest length,
   a JSON manifest, then 16-bit counts the manifest names as `[offset, length]`. GPU Inspector's
-  **Measure Overdraw** runs the tool this way (`app/src/main/replay.ts`), and so does the MCP
+  **Measure Overdraw** runs the tool this way (`src/app/src/main/replay.ts`), and so does the MCP
   server's `get_overdraw` for a Vulkan capture.
 - **`--pixel <image> <x> <y>`:** follows one pixel of an image (tracker id; `--mip` and `--layer`
   pick the subresource) through the frame, and lists every pass start, draw and clear that touched
@@ -65,7 +65,7 @@ It builds with the layer (`VKINSP_BUILD_REPLAY`, on by default) on Windows and L
 
 **Decoding.** The layer writes creation arguments and command arguments as JSON with a serializer
 generated from vk.xml (`tools/vkgen/serialize.py`). `tools/vkgen/deserialize.py` generates the
-inverse from the same registry model, as `replay/gen/vk_decode.gen.*`:
+inverse from the same registry model, as `src/replay/gen/vk_decode.gen.*`:
 - a decoder for every enum, flags type, struct and `pNext` chain;
 - an argument struct and decoder for every command;
 - a recorder for every `vkCmd*`, which decodes the JSON and records the call into a command buffer.
@@ -78,7 +78,7 @@ The generator handles several quirks of the JSON:
   decoded (for `VkClearValue`, `color.uint32`: the exact bits).
 - **Truncated data.** Data the layer summarized comes back zeroed, and the decoder reports it.
 
-**Loading.** `replay/src/json.*` is a JSON parser into an arena that keeps numbers as text, so
+**Loading.** `src/replay/src/json.*` is a JSON parser into an arena that keeps numbers as text, so
 64-bit values stay exact. `gpucap.*` reads the file. The Vulkan loader is opened at run time
 (`LoadGlobalFunctions`), so the replay links against no loader and the headers may be newer
 than the installed runtime.
@@ -149,7 +149,7 @@ kept, so the next analysis of the same draws does not make them again.
 On the Unity frame, a fresh process takes 0.3 to 0.4 s per analysis. Served, setup takes 0.2 s once,
 and then each analysis 35 to 150 ms; each output is byte for byte what the one-shot flag writes
 (draw timings aside), and three `replay` frames in a row compare all 12 targets identical. The app
-keeps one such process per open capture (`ReplayServerPool` in `app/src/main/replay.ts`, at most
+keeps one such process per open capture (`ReplayServerPool` in `src/app/src/main/replay.ts`, at most
 three, stopped after five minutes idle), and falls back to a one-shot replay when a process cannot
 start or dies.
 
@@ -190,7 +190,7 @@ Limits:
 
 A Metal capture measures the same while capturing, with no replay: the capture library draws each
 pass again right after the application ends its encoder, with the application's own objects
-(`metal/README.md`, "Overdraw").
+(`src/metal/README.md`, "Overdraw").
 
 The pipeline copies of overdraw and pixel history are made by `pipeline_copy.cpp`: the captured
 create info is decoded, its shader stages rebuilt from the capture's SPIR-V, and an edit changes
@@ -353,7 +353,7 @@ action issued between a pair of timestamps and inside a pipeline statistics quer
   spans overlap and add up to more than the pass takes. What they are good for is the share of a
   pass a draw accounts for.
 
-`--draw-data <file>` writes them as JSON (`app/src/renderer/draw_stats.ts` reads it). GPU
+`--draw-data <file>` writes them as JSON (`src/app/src/renderer/draw_stats.ts` reads it). GPU
 Inspector's Shader Flame Graph runs the tool this way from **Measure draws**, and the MCP server's
 `get_shader_flame_graph` does on first use: a pass's measured GPU time is then split between its
 draws by what the replay timed, and each fragment stage takes its measured invocation count instead
@@ -376,7 +376,7 @@ the layer's per-pass counters exactly and one draw shows real rejection (3,480 f
 `--ablate` measures what the parts of a shader cost. The idea is to time a draw with a part of its
 shader taken out: the time it saves is the part's cost.
 
-**The variants.** `app/src/renderer/vulkan/spirv_ablate.ts` writes the variants of a stage, and
+**The variants.** `src/app/src/renderer/vulkan/spirv_ablate.ts` writes the variants of a stage, and
 spirv-val checks each one before any reaches the driver:
 
 - **The stage**, with its outputs left out (fragment and compute stages only: a vertex stage
@@ -426,7 +426,7 @@ ablations: 1
     checker                                  0.3060 ms, saves -0.0040 ms
 ```
 
-`app/src/main/shader_ablation_run.ts` writes the request. `app/src/renderer/shader_ablation.ts`
+`src/app/src/main/shader_ablation_run.ts` writes the request. `src/app/src/renderer/shader_ablation.ts`
 turns the answer into what each part saved. A line is charged only for what it saved beyond the
 costliest measured part feeding it. On `test/triangle --heavy`, a fragment shader running 480
 octaves of hash noise, the hash function measures at 98.7% of the stage, its one line at 98.7%, and

@@ -8,7 +8,7 @@ in the pages it links to.
 ## 1. Start GPU Inspector
 
 An installed build starts from the Start menu on Windows, the application list on Linux, or
-Applications on macOS. A source build starts with `npm start` in `app/`.
+Applications on macOS. A source build starts with `npm start` in `src/app/`.
 
 The bar along the top is where sessions begin:
 

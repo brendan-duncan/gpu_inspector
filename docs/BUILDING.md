@@ -56,7 +56,7 @@ is an alternative source of the same shader tools.
 The Windows SDK provides the windowing and Direct3D headers, and the Vulkan driver comes with
 your graphics driver. `git submodule update --init` brings `third_party/minhook`, which the D3D12
 library hooks the entry points with, beside `Vulkan-Headers`. The D3D12 library's generated enum
-and vtable tables (`d3d12/gen/`) are committed, so Python regenerates them only when
+and vtable tables (`src/d3d12/gen/`) are committed, so Python regenerates them only when
 `tools/gen_d3d12.py` changes.
 
 ### macOS
@@ -67,7 +67,7 @@ and vtable tables (`d3d12/gen/`) are committed, so Python regenerates them only 
 | CMake 3.20+ | `brew install cmake` |
 | Node.js LTS | `brew install node` |
 
-`vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator nor `glslc` is
+`src/vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator nor `glslc` is
 part of the build. `spirv-dis` and `spirv-cross` (`brew install spirv-tools spirv-cross`) are
 still worth having, for the shader text of Vulkan captures taken elsewhere.
 
@@ -79,7 +79,7 @@ still worth having, for the shader text of Vulkan captures taken elsewhere.
 git clone --recurse-submodules https://github.com/brendan-duncan/gpu_inspector.git
 cd gpu_inspector
 tools/setup.sh
-cd app && npm start
+cd src/app && npm start
 ```
 
 `tools/setup.sh` checks the prerequisites, initializes the `Vulkan-Headers` submodule, builds the
@@ -96,7 +96,7 @@ By hand:
 git submodule update --init
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
 ### Windows
@@ -105,7 +105,7 @@ cd app && npm install && npm start
 git submodule update --init
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
 Use the generator name of the Visual Studio you installed. The build puts the Vulkan layer, the
@@ -117,10 +117,10 @@ applications (`vkinsp_triangle.exe`, `dxinsp_triangle.exe`) in `build\bin\Releas
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-cd app && npm install && npm start
+cd src/app && npm install && npm start
 ```
 
-No submodule: the top-level `CMakeLists.txt` builds `metal/` — `build/bin/libmtlinsp_capture.dylib`
+No submodule: the top-level `CMakeLists.txt` builds `src/metal/` — `build/bin/libmtlinsp_capture.dylib`
 — and the `mtlinsp_triangle` test application instead of the Vulkan layer. `tools/setup.sh` is
 Linux-only.
 
@@ -134,14 +134,14 @@ See [Android and Quest](ANDROID.md#build-the-android-layer).
 
 ## Other commands
 
-From `app/`:
+From `src/app/`:
 
 ```sh
 npm run typecheck    # tsc
 npm run watch        # rebuild the UI on change
 npm run icons        # re-render assets/icon.{ico,png} from assets/icon.svg
-npm run pack         # unpacked packaged app in app/release (needs the Release layer build)
-npm run dist         # installer for this platform in app/release
+npm run pack         # unpacked packaged app in src/app/release (needs the Release layer build)
+npm run dist         # installer for this platform in src/app/release
 npm test             # renderer and MCP server unit tests
 ```
 

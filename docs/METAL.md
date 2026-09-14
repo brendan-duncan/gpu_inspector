@@ -7,7 +7,7 @@ library is inserted into the application by dyld (`DYLD_INSERT_LIBRARIES`) and h
 objects from there. The Inspect and Capture tabs work the same way as they do for Vulkan.
 
 Metal support is newer than the Vulkan layer and does less; [what is not there
-yet](#what-is-not-there-yet) has the current list, and `metal/README.md` the details.
+yet](#what-is-not-there-yet) has the current list, and `src/metal/README.md` the details.
 
 A macOS build also opens `.gpucap` files taken anywhere, and inspects
 [Android devices](ANDROID.md) over adb, exactly as the Windows and Linux builds do.
@@ -80,7 +80,7 @@ following the pixel, so it needs the application to still be running.
 
 - No pass timings: the profile view still says *waiting for GPU timestamps*.
 - Depth attachments and sampled images are not read back.
-- Only the pixel formats `metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
+- Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
 - No creation stack traces.
 - Shader editing does not apply: it is built around SPIR-V and its compilers, and Metal's shaders
   are already source.
