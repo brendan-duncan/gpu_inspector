@@ -62,6 +62,20 @@ Inside a pass, the split between draws is modelled until something measures it:
   They also fill in the depth rejection figure for passes whose draws are recorded into secondary
   command buffers, which the capture itself cannot measure (see
   [Finding GPU bottlenecks](PROFILING.md)).
+- **Measure shader** (Vulkan) measures what a stage's functions, source lines and textures cost.
+  It replays one draw of the stage with variants of its shader, each missing one part: a function's
+  calls, a line's values, or every read of one texture. The time a variant saves is that part's
+  cost. The button measures the stage of the selected frame, or the widest fragment or compute
+  stage when nothing is selected. It works this way:
+  - **Frames.** The stage's function and line frames are sized by their measured shares.
+  - **List.** The graph lists every part with what it saved, textures included.
+  - **Lines.** Taking a line out also takes out the work that only feeds it. A line's **own** time is
+    therefore what it saved beyond the costliest measured part feeding it.
+  - **Not measured.** Some parts are left out, and the list says why: values that decide a
+    branch or a loop, a value a loop carries into its next iteration (removing it would let the
+    compiler move the loop's work out), and lines of a module without line information.
+  - **Precision.** Savings within the baseline's noise mean nothing.
+  - **Saved.** The measurements are saved with the capture.
 
 Use it to find which shader function is eating a pass, rather than which pass is eating the frame.
 

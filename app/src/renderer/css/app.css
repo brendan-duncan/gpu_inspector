@@ -786,6 +786,10 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .flame-legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
 .flame-legend-hint { margin-left: 8px; }
 .flame-notes { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.flame-measured { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 9pt; }
+.flame-measured-title { font-weight: 600; margin-top: 4px; white-space: normal; }
+.flame-measured-row { display: grid; grid-template-columns: minmax(120px, 1fr) 90px 90px 60px; gap: 8px; }
+.flame-measured-row > span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .flamegraph { width: 100%; background: var(--timeline-bg); overflow: auto; position: relative; box-sizing: border-box; min-height: 120px; }
 .flamegraph-breadcrumb { font-size: 9pt; color: var(--fg-secondary); padding: 3px 6px; min-height: 16px; line-height: 16px; white-space: nowrap; overflow-x: auto; }
 .flamegraph-crumb-sep { color: var(--fg-secondary); }

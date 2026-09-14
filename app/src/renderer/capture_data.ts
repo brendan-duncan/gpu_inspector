@@ -7,6 +7,7 @@ import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { DrawOverlay } from "./draw_overlay.js";
 import type { DrawStat } from "./draw_stats.js";
+import { ablationKey, type ShaderAblation } from "./shader_ablation.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
@@ -87,6 +88,8 @@ export class CaptureData {
   pixelHistory: Record<string, unknown> | null = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats: DrawStat[] | null = null;
+  /** Shader stages whose functions and lines a replay measured by ablation (renderer/shader_ablation.ts), one per pipeline stage. */
+  ablations: ShaderAblation[] = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
   drawOverlays = new Map<number, DrawOverlay>();
   private _expectedCommands = 0;
@@ -109,6 +112,8 @@ export class CaptureData {
   readonly onDrawStats = new Signal<() => void>();
   /** Draw-call overlays arrived from a replay. */
   readonly onDrawOverlays = new Signal<() => void>();
+  /** A shader stage was measured by ablation. */
+  readonly onAblations = new Signal<() => void>();
 
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets(): CommandSets {
@@ -126,6 +131,7 @@ export class CaptureData {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.ablations = [];
     this.drawOverlays = new Map();
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
@@ -135,6 +141,19 @@ export class CaptureData {
   overdrawForPass(frame: number, commandBufferId: number, passIndex: number): CapturedOverdraw[] {
     return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex)
       .sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
+  }
+
+  /** The ablation measured for a pipeline's stage, if any. */
+  ablation(pipeline: number, stage: string, entryPoint: string): ShaderAblation | null {
+    const key = ablationKey(pipeline, stage, entryPoint);
+    return this.ablations.find((a) => ablationKey(a.pipeline, a.stage, a.entryPoint) === key) ?? null;
+  }
+
+  /** Keeps a stage's measurement, replacing an earlier one of the same stage. */
+  addAblation(a: ShaderAblation): void {
+    const key = ablationKey(a.pipeline, a.stage, a.entryPoint);
+    this.ablations = [...this.ablations.filter((x) => ablationKey(x.pipeline, x.stage, x.entryPoint) !== key), a];
+    this.onAblations.emit();
   }
 
   passTiming(frame: number, commandBufferId: number, passIndex: number, compute = false): PassTiming | null {
@@ -200,6 +219,7 @@ export class CaptureData {
     this.overdraw = c.overdraw;
     this.pixelHistory = c.pixelHistory;
     this.drawStats = c.drawStats;
+    this.ablations = c.ablations;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();

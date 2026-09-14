@@ -42,7 +42,7 @@ void PrintUsage() {
     std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
-                         "                     [--mesh <command> ... [--mesh-data <file>]]\n"
+                         "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
                          "                     [--trace] | --check | --serve [--validate]\n");
 }
 
@@ -269,6 +269,112 @@ bool WriteDrawData(const ReplayReport& report, const std::string& path) {
     if (!out) return false;
     out.write(json.data(), (std::streamsize)json.size());
     return (bool)out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// --ablate: draws timed again with variants of a shader stage (ablation.cpp). The request is a file
+// GPU Inspector writes (encodeAblationRequest in app/src/renderer/shader_ablation.ts), in the capture
+// file's layout: "ABLATE 1\n", a little-endian u32 manifest length, the JSON manifest
+//   {"rounds": 5, "targets": [{"command": 17, "stage": "fragment", "variants": [{"name": "fbm", "payload": [0, 7288]}]}]}
+// and the variants' SPIR-V, which the manifest names as [offset, length] after it.
+
+bool ReadAblationRequest(const std::string& path, ReplayOptions& options, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string magic = "ABLATE 1\n";
+    if (bytes.size() < magic.size() + 4 || std::memcmp(bytes.data(), magic.data(), magic.size()) != 0) {
+        error = "not an ablation request: " + path;
+        return false;
+    }
+    uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + magic.size(), 4);
+    const size_t start = magic.size() + 4;
+    if (start + length > bytes.size()) {
+        error = "the ablation request is truncated";
+        return false;
+    }
+    JsonDocument doc;
+    if (!doc.Parse(bytes.data() + start, length, error)) {
+        error = "the ablation request's manifest is not valid JSON: " + error;
+        return false;
+    }
+    const size_t base = start + length;
+    const JValue& root = doc.Root();
+    options.ablation.enabled = true;
+    if (const JValue* rounds = root.Get("rounds")) options.ablation.rounds = std::clamp<uint32_t>((uint32_t)rounds->Uint(), 1, 64);
+    const JValue* targets = root.Get("targets");
+    for (uint32_t t = 0; targets && targets->IsArray() && t < targets->count; ++t) {
+        const JValue& target = targets->items[t];
+        ReplayOptions::AblationTarget out;
+        out.command = target.Get("command") ? (uint32_t)target.Get("command")->Uint() : 0;
+        out.stage = Str(target.Get("stage"));
+        if (const JValue* repeat = target.Get("repeat")) out.repeat = std::clamp<uint32_t>((uint32_t)repeat->Uint(), 1, 256);
+        const JValue* variants = target.Get("variants");
+        for (uint32_t v = 0; variants && variants->IsArray() && v < variants->count; ++v) {
+            const JValue& variant = variants->items[v];
+            ReplayOptions::AblationVariant vo;
+            vo.name = Str(variant.Get("name"));
+            const JValue* payload = variant.Get("payload");
+            if (payload && payload->IsArray() && payload->count == 2) {
+                const uint64_t offset = payload->items[0].Uint();
+                const uint64_t size = payload->items[1].Uint();
+                if (base + offset + size <= bytes.size() && size % 4 == 0) {
+                    vo.words.resize((size_t)size / 4);
+                    std::memcpy(vo.words.data(), bytes.data() + base + offset, (size_t)size);
+                }
+            }
+            out.variants.push_back(std::move(vo));
+        }
+        options.ablation.targets.push_back(std::move(out));
+    }
+    return true;
+}
+
+/** --ablate-data: each target's timings (parseAblationResult in app/src/renderer/shader_ablation.ts). */
+bool WriteAblationData(const ReplayReport& report, const std::string& path) {
+    auto timing = [](const AblationTiming& t) {
+        char ms[32];
+        std::snprintf(ms, sizeof(ms), "%.6f", t.ms);
+        std::string s = "{\"name\":" + JsonString(t.name) + ",\"measured\":" + (t.measured ? "true" : "false") + ",\"ms\":" + ms + ",\"samples\":[";
+        for (size_t i = 0; i < t.samples.size(); ++i) {
+            std::snprintf(ms, sizeof(ms), "%.6f", t.samples[i]);
+            s += std::string(i ? "," : "") + ms;
+        }
+        return s + "]" + (t.note.empty() ? "" : ",\"note\":" + JsonString(t.note)) + "}";
+    };
+    std::string json = "{\"format\":\"gpu-inspector-ablation\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"targets\":[";
+    for (size_t i = 0; i < report.ablations.size(); ++i) {
+        const AblationResult& a = report.ablations[i];
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(a.command) + ",\"stage\":" + JsonString(a.stage) +
+                ",\"pipeline\":" + std::to_string(a.pipeline) + ",\"frame\":" + std::to_string(a.frame) + ",\"commandBuffer\":" +
+                std::to_string(a.commandBuffer) + ",\"passIndex\":" + std::to_string(a.passIndex) + ",\"rounds\":" + std::to_string(a.rounds) + ",\"repeat\":" + std::to_string(a.repeat) +
+                ",\"baseline\":" + timing(a.baseline) + ",\"variants\":[";
+        for (size_t v = 0; v < a.variants.size(); ++v) json += (v ? "," : "") + timing(a.variants[v]);
+        json += "]" + (a.note.empty() ? std::string() : ",\"note\":" + JsonString(a.note)) + "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
+void PrintAblations(const ReplayReport& report) {
+    std::printf("ablations: %zu\n", report.ablations.size());
+    for (const AblationResult& a : report.ablations) {
+        std::printf("  [%u] %s stage, pipeline %llu: ", a.command, a.stage.c_str(), (unsigned long long)a.pipeline);
+        if (!a.baseline.measured) {
+            std::printf("not measured: %s\n", a.note.c_str());
+            continue;
+        }
+        std::printf("%.4f ms as captured (median of %u rounds)\n", a.baseline.ms, a.rounds);
+        for (const AblationTiming& v : a.variants) {
+            if (!v.measured) std::printf("    %-40s not measured%s%s\n", v.name.c_str(), v.note.empty() ? "" : ": ", v.note.c_str());
+            else std::printf("    %-40s %.4f ms, saves %.4f ms\n", v.name.c_str(), v.ms, a.baseline.ms - v.ms);
+        }
+    }
 }
 
 void PrintDraws(const ReplayReport& report) {
@@ -693,7 +799,7 @@ int Check(const CaptureFile& capture) {
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
            const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
-           const std::string& meshData) {
+           const std::string& meshData, const std::string& ablationData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -770,6 +876,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", meshData.c_str());
         }
     }
+    if (options.ablation.enabled) {
+        PrintAblations(report);
+        if (!ablationData.empty()) {
+            if (WriteAblationData(report, ablationData)) std::printf("  wrote %s\n", ablationData.c_str());
+            else std::printf("  could not write %s\n", ablationData.c_str());
+        }
+    }
     if (report.history.requested) {
         PrintHistory(report.history);
         if (!pixelData.empty()) {
@@ -797,6 +910,7 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
 //   {"id": 1, "kind": "pixel", "image": 17, "x": 320, "y": 240, "mip": 0, "layer": 0, "out": "<file>"}
 //   {"id": 2, "kind": "overdraw" | "draws", "out": "<file>"}
 //   {"id": 3, "kind": "overlay" | "mesh", "commands": [17, 18], "out": "<file>"}
+//   {"id": 6, "kind": "ablate", "in": "<request file>", "out": "<file>"}
 //   {"id": 4, "kind": "replay"}          the frame alone, comparing its render targets
 //   {"kind": "quit"}
 // Answers are lines on stdout beginning "@replay " (anything else a driver prints is not one):
@@ -855,6 +969,12 @@ int Serve(const CaptureFile& capture, bool validation) {
         } else if (kind == "mesh") {
             options.mesh.enabled = true;
             commands(options.mesh.commands);
+        } else if (kind == "ablate") {
+            std::string error;
+            if (!ReadAblationRequest(request.Get("in") ? std::string(request.Get("in")->Str()) : std::string(), options, error)) {
+                fail(error);
+                continue;
+            }
         } else if (kind == "pixel") {
             options.history.enabled = true;
             options.history.image = request.Get("image") ? request.Get("image")->Uint() : 0;
@@ -879,6 +999,7 @@ int Serve(const CaptureFile& capture, bool validation) {
         else if (kind == "draws") wrote = WriteDrawData(report, out);
         else if (kind == "overlay") wrote = WriteOverlayData(report, out);
         else if (kind == "mesh") wrote = WriteMeshData(report, out);
+        else if (kind == "ablate") wrote = WriteAblationData(report, out);
         else if (kind == "pixel") wrote = WritePixelHistoryData(report, out);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         if (!wrote) {
@@ -915,6 +1036,8 @@ int main(int argc, char** argv) {
     std::string drawData;
     std::string overlayData;
     std::string meshData;
+    std::string ablationRequest;
+    std::string ablationData;
     bool check = false;
     bool serve = false;
     ReplayOptions options;
@@ -947,6 +1070,8 @@ int main(int argc, char** argv) {
             options.mesh.commands.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 10));
         }
         else if (!std::strcmp(argv[i], "--mesh-data") && i + 1 < argc) meshData = argv[++i];
+        else if (!std::strcmp(argv[i], "--ablate") && i + 1 < argc) ablationRequest = argv[++i];
+        else if (!std::strcmp(argv[i], "--ablate-data") && i + 1 < argc) ablationData = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -988,5 +1113,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --overlay-data needs --overlay <command>\n");
         return 2;
     }
-    return check ? Check(capture) : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData);
+    if (!ablationRequest.empty() && !ReadAblationRequest(ablationRequest, options, error)) {
+        std::fprintf(stderr, "vkinsp_replay: %s\n", error.c_str());
+        return 2;
+    }
+    if (!ablationData.empty() && !options.ablation.enabled) {
+        std::fprintf(stderr, "vkinsp_replay: --ablate-data needs --ablate <request>\n");
+        return 2;
+    }
+    return check ? Check(capture)
+                 : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData);
 }

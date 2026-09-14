@@ -48,6 +48,7 @@ add_executable(vkinsp_replay
     src/xfb_patch.cpp
     src/history.cpp
     src/draw_stats.cpp
+    src/ablation.cpp
     src/pipeline_copy.cpp
     src/util.h
     ${GEN_OUTPUTS})

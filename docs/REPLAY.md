@@ -5,13 +5,13 @@
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the basis for the analyses that have to run a frame again with something
 changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output (which the shader
-debugger's pixels are rasterized from) and per-draw timing.
+debugger's pixels are rasterized from), per-draw timing and shader cost by ablation.
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
               [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]
               [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]
-              [--mesh <command> ... [--mesh-data <file>]] [--trace]
+              [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 vkinsp_replay <capture.gpucap> --serve [--validate]
 ```
@@ -50,6 +50,10 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
 - **`--mesh-data <file>`:** with `--mesh`, writes each draw's vertex records in `--overdraw-data`'s
   layout (`MESH 1`). GPU Inspector's mesh tab and the MCP server's `get_mesh_output` run the tool
   this way.
+- **`--ablate <request>`:** times draws with variants of one of their shader stages (see
+  [Shader cost by ablation](#shader-cost-by-ablation)) and prints each variant's time.
+- **`--ablate-data <file>`:** with `--ablate`, writes the timings as JSON. GPU Inspector's
+  **Measure shader** and the MCP server's `measure_shader_cost` run the tool this way.
 - **`--serve`:** keeps the replay alive for many analyses of the capture (see
   [Kept alive](#kept-alive)). GPU Inspector and its MCP server run the tool this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
@@ -354,6 +358,72 @@ On the test triangle the fragment count matches the pipeline statistics the capt
 measured, exactly. On a Unity frame, whose 11 draws all sit in secondaries, the per-draw sums match
 the layer's per-pass counters exactly and one draw shows real rejection (3,480 fragments shaded,
 2,089 samples passed).
+
+## Shader cost by ablation
+
+`--ablate` measures what the parts of a shader cost. The idea is to time a draw with a part of its
+shader taken out: the time it saves is the part's cost.
+
+**The variants.** `app/src/renderer/vulkan/spirv_ablate.ts` writes the variants of a stage, and
+spirv-val checks each one before any reaches the driver:
+
+- **The stage**, with its outputs left out (fragment and compute stages only: a vertex stage
+  decides what is rasterized).
+- **Each function**, with its calls removed or their results replaced.
+- **Each source line**, with the values it computes replaced. This needs line information.
+- **Each texture**, with every read of it replaced.
+
+**Replacement values.** A replaced value comes from something the compiler cannot fold into a
+constant: `gl_FragCoord`, the vertex index or the invocation id. Inside a loop it comes from a
+value that changes every iteration, so the loop's work is not hoisted out.
+
+**What is left out:**
+
+- Values that decide a branch, a switch or a loop test, and everything they are computed from.
+  That dependency is followed through variables by the stores a read can see, so a temporary that
+  an engine's generated shader reuses for unrelated values does not tie them together.
+- Lines that update a value the rest of their loop reads on the next iteration.
+
+**The request.** The file holds a magic line (`ABLATE 1`), a u32 manifest length, and a JSON
+manifest naming each target draw, its stage and `repeat`, then the variants' SPIR-V.
+
+**How a target is timed** (`ablation.cpp`). The replay runs the frame as captured. Right before
+each target draw, inside its pass and command buffer, it issues the draw again with every
+variant:
+
+- Each variant runs in a copy of the pipeline that writes no depth or stencil, so nothing after it
+  changes.
+- After each bind comes one untimed draw.
+- Then `repeat` draws run between one pair of timestamps, and the time is divided back to a
+  single draw.
+- Variants rotate order each round, and the first round is a warm-up.
+- A variant's time is the median of its rounds.
+
+The captured pipeline is then bound again, and the draw runs as recorded.
+
+```
+vkinsp_replay heavy.gpucap --ablate request.bin
+ablations: 1
+  [17] fragment stage, pipeline 48: 0.3021 ms as captured (median of 5 rounds)
+    fragment: main                           0.0000 ms, saves 0.3021 ms
+    blurred(vf2;                             0.3022 ms, saves -0.0001 ms
+    fbm(vf2;                                 0.0038 ms, saves 0.2982 ms
+    hash(vf2;                                0.0039 ms, saves 0.2982 ms
+    heavy.frag:18                            0.0039 ms, saves 0.2982 ms
+    heavy.frag:29                            0.2460 ms, saves 0.0561 ms
+    checker                                  0.3060 ms, saves -0.0040 ms
+```
+
+`app/src/main/shader_ablation_run.ts` writes the request. `app/src/renderer/shader_ablation.ts`
+turns the answer into what each part saved. A line is charged only for what it saved beyond the
+costliest measured part feeding it. On `test/triangle --heavy`, a fragment shader running 480
+octaves of hash noise, the hash function measures at 98.7% of the stage, its one line at 98.7%, and
+the lines that only call it at 0.
+
+Two limits:
+
+- The times come from one GPU and driver.
+- A part the driver's optimizer had already made free measures as free.
 
 ## Where it stands
 

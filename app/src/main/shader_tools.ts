@@ -64,6 +64,27 @@ export function shaderText(spirv: Uint8Array, mode: ShaderTextMode, options: Sha
   });
 }
 
+/**
+ * spirv-val's verdict on a module: null when it is valid, the first lines of the complaint when not, and
+ * undefined when there is no spirv-val to ask (nothing is known).
+ */
+export function validateSpirv(spirv: Uint8Array): Promise<string | null | undefined> {
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
+    execFile(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore
+      }
+      if (!err) resolve(null);
+      else if ((err as NodeJS.ErrnoException).code === "ENOENT") resolve(undefined);
+      else resolve((stderr || stdout || err.message).trim().split(/\r?\n/).slice(0, 3).join(" "));
+    });
+  });
+}
+
 // Shader editing: compiles a source language to SPIR-V with the SDK's compilers. `stage` uses the
 // layer's stage names ("vertex", "fragment", ...); `spirvVersion` ("1.5") picks the target
 // environment so the module matches what the application's driver accepts.

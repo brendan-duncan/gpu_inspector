@@ -43,6 +43,7 @@ import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
 import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
+import type { ShaderMeasureTarget } from "./shader_ablation.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
 /** A tab a capture opens beside its own: a render target (its overlays and pixel history), a draw's mesh, or the shader debugger. */
@@ -1254,7 +1255,7 @@ export class CaptureView implements CaptureHost {
         const entry = reflection?.entryPoints.find((e) => e.name === source.entryPoint) ?? reflection?.entryPoints[0] ?? null;
         stages.push({
           stage: source.stage, entryPoint: source.entryPoint, objectId: source.object.id,
-          analysis: data ? analyzeSpirvCached(data) : null, workgroupSize: entry?.workgroupSize ?? null,
+          analysis: data ? analyzeSpirvCached(data) : null, workgroupSize: entry?.workgroupSize ?? null, spirv: data,
         });
       }
       models.set(pipelineId, stages);
@@ -1269,7 +1270,7 @@ export class CaptureView implements CaptureHost {
       data: this.data, db, models,
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
-      ...(this.data.api !== "metal" ? { measureDraws: () => this.measureDraws() } : {}),
+      ...(this.data.api !== "metal" ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
     });
   }
 
@@ -1763,6 +1764,29 @@ export class CaptureView implements CaptureHost {
       const message = e instanceof Error ? e.message : String(e);
       this._drawRun = { running: false, error: message };
       this._setStatus(`draws not measured: ${message.split("\n")[0]}`);
+      return false;
+    }
+  }
+
+  /**
+   * Vulkan: measures what a shader stage's functions, lines and textures cost at one draw, by
+   * replaying the draw with variants of the stage that leave each out (vkinsp_replay --ablate).
+   */
+  async measureShader(target: ShaderMeasureTarget): Promise<boolean> {
+    if (this.data.api === "metal") return false;
+    const drawMs = this.data.drawStats?.find((d) => d.command === target.command)?.ms ?? null;
+    this._setStatus(`measuring the ${target.stage} shader at draw #${target.command}: replaying its variants...`);
+    try {
+      const result = await this._replay((r) => window.inspector.measureShader({ ...r, stage: { ...target, drawMs } }));
+      if (!result.ablation) throw new Error(result.error ?? "the replay did not measure the shader");
+      this.data.addAblation(result.ablation);
+      const a = result.ablation;
+      this._setStatus(`${target.stage} shader measured at draw #${target.command}: ${a.parts.length} part${a.parts.length === 1 ? "" : "s"}, `
+        + `stage ${a.stageMs === null ? "not timed" : `${a.stageMs.toFixed(4)} ms`} of ${a.baselineMs.toFixed(4)} ms per draw`);
+      return true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this._setStatus(`shader not measured: ${message.split("\n")[0]}`);
       return false;
     }
   }

@@ -116,6 +116,13 @@ each step.
        the split inside a pass is modeled.
      - Vertex and compute invocation counts are exact. Fragment counts come from the scissor area,
        so they are an upper bound that ignores overdraw.
+   - `measure_shader_cost` measures a stage instead of modeling it. It replays one draw with each
+     function, source line or texture of its fragment or compute shader taken out, and reports the
+     time each saved. With no `command` it takes the widest stage of the flame graph.
+     - Trust it over the model for which part is expensive.
+     - Savings within `noiseMs` are noise.
+     - A line's `ownMs` excludes the work of the parts feeding it.
+     - Anything that decides a branch or loop is not measured.
    - `get_shader` with view `analysis` gives costs per function and source line, and findings such
      as texture samples in loops, non-constant division and derivatives in branches.
 

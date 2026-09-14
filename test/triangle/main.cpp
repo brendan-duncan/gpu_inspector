@@ -144,6 +144,9 @@ struct App {
     // --persistent: every frame reads state the frames before it left behind, which a capture
     // must hold for its replay to match (see RecordPersistent).
     bool persistent = false;
+    // --heavy: the cube's fragment shader is heavy.frag, whose functions cost known amounts (the
+    // Shader Flame Graph's measurements by ablation).
+    bool heavy = false;
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -939,7 +942,7 @@ struct App {
 
         // Pipeline
         VkShaderModule vs = LoadShader("cube.vert.spv");
-        VkShaderModule fs = LoadShader("cube.frag.spv");
+        VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : "cube.frag.spv");
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1460,6 +1463,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--persistent")) app.persistent = true;
+        else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen")) {
             app.offscreen = true;

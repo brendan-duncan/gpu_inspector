@@ -831,11 +831,15 @@ void Replayer::CreateObject(const JValue& o) {
     } else if (type == "VkShaderModule") {
         VkShaderModule m = ModuleFromBlob(o, "SPIR-V");
         if (!m && args) {
+            // Code the capture summarized decodes to zeros, which is no module: pipelines take theirs from their own payloads.
             Args_vkCreateShaderModule a{};
             DecodeArgs(_ctx, *args, a);
-            if (a.pCreateInfo) _fns.CreateShaderModule(d, a.pCreateInfo, nullptr, &m);
+            if (a.pCreateInfo && a.pCreateInfo->pCode && a.pCreateInfo->codeSize >= 20 && a.pCreateInfo->pCode[0] == 0x07230203)
+                _fns.CreateShaderModule(d, a.pCreateInfo, nullptr, &m);
         }
         handle = (uint64_t)m;
+        // Left out without a problem for what names it: a pipeline is created from its own stages' payloads.
+        if (!m) _skipped.insert(id);
     } else if (type == "VkPipeline") {
         if (args) handle = CreatePipeline(o, cmd, index, *args, unresolvedBefore);
     } else {
@@ -1481,6 +1485,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
         VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)Handle(id);
         if (!cb) continue;
         bool begun = false;
+        StreamState stream;   // a secondary starts with nothing bound
         for (uint32_t i = (uint32_t)executeIndex + 1; i < commands->count; ++i) {
             const JValue& c = commands->items[i];
             const JValue* sec = c.Get("secondary");
@@ -1503,6 +1508,8 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 begun = false;
             } else if (ReplayFn fn = FindReplayCommand(m); fn && args && begun) {
                 ApplyDescriptorSnapshot(c.Get("descriptors"));
+                NoteStreamCommand(stream, m, *args, i);
+                if (_options.ablation.enabled && IsAction(m)) IssueAblation(cb, i, m, *args, frame, commandBuffer, passIndex, stream);
                 // Per-draw timing and counters: an engine that records its draws into secondaries
                 // (a Unity player records every one) has them measured here rather than above.
                 const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
@@ -1539,9 +1546,11 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
     _fns.BeginCommandBuffer(cb, &beginInfo);
     // The submission's first command buffer resets the pools its actions write into.
     if (_options.drawStats && _drawQueryCapacity && _drawSlot == 0) ResetDrawQueries(cb);
+    if (_options.ablation.enabled) ResetAblationQueries(cb, group);
     _arena.Reset();
 
     PassState pass;
+    StreamState stream;
     uint32_t passCount = 0;
     // Set when a pass's begin was left out (it names objects the replay does not have): the
     // commands inside the pass are invalid without it and are left out up to its end.
@@ -1706,6 +1715,9 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             Problem("command " + std::to_string(i) + ": " + m + " is not replayed");
             continue;
         }
+        NoteStreamCommand(stream, m, *args, i);
+        if (_options.ablation.enabled && IsAction(m) && _ctx.unresolved == unresolvedBefore && ArgsResolve(m, *args))
+            IssueAblation(cb, i, m, *args, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX, stream);
         // Per-draw timing and counters: the action is issued between the queries (draw_stats.cpp).
         const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
         const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
@@ -1780,6 +1792,7 @@ void Replayer::ReplayCommands() {
         if (cbs.empty()) {
             CompleteHistory(histories);
             CompleteDrawStats(false);
+            CompleteAblation(false);
             CompleteOverlay(false);
             CompleteMesh(false);
             ReleaseTransients();
@@ -1797,6 +1810,7 @@ void Replayer::ReplayCommands() {
             _report->submissions++;
         }
         CompleteDrawStats(r == VK_SUCCESS);
+        CompleteAblation(r == VK_SUCCESS);
         CompareReadbacks(readbacks);
         CompleteHistory(histories);
         CompleteOverlay(r == VK_SUCCESS);
@@ -1863,8 +1877,23 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
     UploadImageContents();
     TransitionToInitialLayouts();
     if (options.drawStats) PrepareDrawStats();
+    const bool ablating = options.ablation.enabled && PrepareAblation();
     ReplayCommands();
     DestroyDrawStats();
+    DestroyAblation();
+    // A target the frame did not reach (or a device that cannot time it) still gets an answer.
+    for (const auto& target : options.ablation.targets) {
+        if (std::any_of(report.ablations.begin(), report.ablations.end(), [&](const AblationResult& a) { return a.command == target.command; })) continue;
+        AblationResult missing;
+        missing.command = target.command;
+        missing.stage = target.stage;
+        for (const auto& v : target.variants) missing.variants.push_back({v.name});
+        const JValue* commands = capture.Commands();
+        missing.note = !ablating ? "the replay's queue writes no timestamps"
+                     : !commands || target.command >= commands->count ? "the capture has no command " + std::to_string(target.command)
+                     : "command " + std::to_string(target.command) + " was not replayed";
+        report.ablations.push_back(std::move(missing));
+    }
     if (options.history.enabled && !_historyPasses) {
         report.history.notes.push_back("no replayed render pass renders to image " + std::to_string(options.history.image) + " at mip " +
                                        std::to_string(options.history.mip) + ", layer " + std::to_string(options.history.layer) +
