@@ -45,6 +45,17 @@ def find_metal_triangle():
     return path if os.path.isfile(path) else None
 
 
+def find_d3d12_triangle():
+    """The Direct3D 12 sample (test/d3d12_triangle), which only builds on Windows."""
+    if sys.platform != "win32":
+        return None
+    for c in [os.path.join(ROOT, "build", "bin", "Release", "dxinsp_triangle.exe"),
+              os.path.join(ROOT, "build", "bin", "dxinsp_triangle.exe")]:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
 def find_replay():
     for c in [os.path.join(ROOT, "build", "bin", "Release", "vkinsp_replay.exe"),
               os.path.join(ROOT, "build", "bin", "vkinsp_replay.exe"),
@@ -552,6 +563,46 @@ def triangle_cases(triangle):
     return cases
 
 
+# ------------------------------------------------------------------------------------------ Direct3D 12
+
+def d3d12_plain(state, log):
+    f = findings(state)
+    s = session(state)
+    # The depth buffer is stored and nothing reads it (D3D12 has no store op to say so): the
+    # graph's unread-store is the honest finding. The launcher's line says the library got in.
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect(set(f) <= {"unread-store", "oversynchronized-barrier"}, f"unexpected findings {f}") +         expect(s.get("frameBoundary") == "present", f"frame boundary {s.get('frameBoundary')!r}") +         expect(s.get("refreshSource") == "monitor", f"refresh source {s.get('refreshSource')!r}") +         expect("injected" in log, "the launcher did not report injecting the D3D12 library") +         expect("capture sent" in log, "the library never finished the capture")
+
+
+def d3d12_render_pass(state, log):
+    # BeginRenderPass / EndRenderPass with a multisampled target: the colour target is read back
+    # through a resolve; multisampled depth is reported as not read back, not silently missing.
+    # Statistics and occlusion queries are not begun inside a render pass region, so the pass
+    # has a timing but no counters (check_capture_basic would ask for them).
+    c = capture(state)
+    return check_connected(state, log) +         expect(bool(c), "no capture tab") +         expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") +         expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws") +         expect((c.get("textures") or 0) >= 2, f"{c.get('textures')} render targets read back") +         expect((c.get("textureErrors") or 0) == 1, f"{c.get('textureErrors')} render targets failed to read back (the multisampled depth target is expected to)") +         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0) - 1, "not every readable render target's data arrived") +         expect((c.get("passTimings") or 0) >= 1, "no pass timings") +         expect("multisampled depth" in log, "the multisampled depth target's read-back was not reported")
+
+
+def d3d12_bundle(state, log):
+    # The draw sits in a bundle recorded at start-up: only record-always from launch sees it.
+    return check_connected(state, log) + check_capture_basic(state, log)
+
+
+def d3d12_cases(triangle):
+    launch = [f"--launch={triangle}"]
+    saved = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12.gpucap")
+
+    def d3d12_open(state, log):
+        c = capture(state)
+        return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") +             expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") +             expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws in the reopened file") +             expect((c.get("texturesLoaded") or 0) >= 2, "the reopened file lost its render targets")
+    return [
+        Case("d3d12-plain", launch + ["--args=--compute", "--debug-capture", "--debug-command=22", "--debug-expand=Vertex Shader",
+                                      f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
+        Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
+        Case("d3d12-bundle", launch + ["--args=--bundle", "--record-always", "--debug-capture"], d3d12_bundle),
+        Case("d3d12-open", [f"--debug-open={saved}", "--debug-command=22"], d3d12_open, delay_ms=9000),
+    ]
+
+
 def capture_case(path):
     name = "open_" + os.path.splitext(os.path.basename(path))[0]
     expect_file = os.path.splitext(path)[0] + ".expect.json"
@@ -583,6 +634,7 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     ap.add_argument("--no-triangle", action="store_true", help="skip the live triangle cases")
     ap.add_argument("--no-metal", action="store_true", help="skip the live Metal cases (macOS)")
+    ap.add_argument("--no-d3d12", action="store_true", help="skip the live Direct3D 12 cases (Windows)")
     args = ap.parse_args()
     if not electron():
         print("electron not installed: run npm install in app/", file=sys.stderr)
@@ -600,6 +652,12 @@ def main():
             cases += metal_cases(metal_triangle)
         elif sys.platform == "darwin":
             print("  (mtlinsp_triangle not built: skipping the Metal cases)")
+    if not args.no_d3d12:
+        d3d12_triangle = find_d3d12_triangle()
+        if d3d12_triangle:
+            cases += d3d12_cases(d3d12_triangle)
+        elif sys.platform == "win32":
+            print("  (dxinsp_triangle not built: skipping the Direct3D 12 cases)")
     if args.captures:
         for p in sorted(glob.glob(os.path.join(args.captures, "*.gpucap"))):
             cases.append(capture_case(p))

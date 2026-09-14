@@ -15,7 +15,8 @@ import { describeDebugInfo, hasEmbeddedSource } from "../renderer/vulkan/spirv_d
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructType } from "../renderer/vulkan/spirv_reflect.js";
 import { decodeTexels, displayTexels, isFormatSupported, sliceBytes, type TexelData } from "../renderer/vulkan/texture_decode.js";
 import { vertexFormat } from "../renderer/vulkan/vk_format.js";
-import { num, str, type VulkanObject } from "../renderer/vulkan/vulkan_object.js";
+import { isObject, num, str, type VulkanObject } from "../renderer/vulkan/vulkan_object.js";
+import type { ArgObject, ArgValue } from "../shared/protocol.js";
 import type { Capture, CaptureStore } from "./capture_store.js";
 import { indexSize, readIndex, vertexInputs, vertexStruct } from "./command_tools.js";
 import {
@@ -46,7 +47,101 @@ export const IMAGE_PARAMS = {
   texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." },
 };
 
-interface ShaderSource { stage: string; entryPoint: string; object: VulkanObject; blobIndex: number }
+export interface ShaderSource { stage: string; entryPoint: string; object: VulkanObject; blobIndex: number }
+
+/** What is said where a Vulkan capture would be replayed (docs/REPLAY.md) and a D3D12 one cannot be. */
+export const NO_D3D12_REPLAY = "not available for D3D12 captures (no replay)";
+
+/** A D3D12 pipeline state: its shaders are DXBC/DXIL containers, not SPIR-V. */
+export function isD3D12Pipeline(o: VulkanObject): boolean {
+  return o.type === "ID3D12PipelineState";
+}
+
+/**
+ * The descriptor of a D3D12 object: `pDesc` of the call that created it (d3d12/README.md, "Talking
+ * to the UI"), from wherever the object model puts it.
+ */
+export function d3d12Descriptor(o: VulkanObject): ArgObject | null {
+  const d = o.descriptor;
+  if (d) return d;
+  const a = o.args;
+  return a && isObject(a.pDesc) ? a.pDesc : a ?? null;
+}
+
+/**
+ * The stages of a D3D12 pipeline: its bytecode is attached as payloads named "<stage>:<entry>"
+ * with the UI's stage names (vertex, fragment, compute, ...), where a Vulkan pipeline's are.
+ */
+export function d3d12Stages(o: VulkanObject): ShaderSource[] {
+  return o.blobs.map((b, blobIndex) => {
+    const colon = b.name.indexOf(":");
+    const stage = colon < 0 ? b.name : b.name.substring(0, colon);
+    const entryPoint = colon < 0 ? "" : b.name.substring(colon + 1);
+    return { stage, entryPoint, object: o, blobIndex };
+  });
+}
+
+/**
+ * A D3D12 pipeline's reflection of one stage, as the capture library wrote it beside the bytecode
+ * (`reflection` in the descriptor, keyed by stage: entry point, target profile, inputs, outputs,
+ * resources by register and space); null when the library could not reflect the shader.
+ */
+export function d3d12Reflection(o: VulkanObject, stage: string): ArgObject | null {
+  const d = d3d12Descriptor(o);
+  const all = d?.reflection;
+  if (!isObject(all)) return null;
+  const r = all[stage];
+  if (isObject(r)) return r;
+  if (typeof r === "string") {
+    try {
+      const parsed = JSON.parse(r) as ArgValue;
+      return isObject(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** The profile suffix ("6_0") of a stage's reflection `target` ("ps_6_0"), the shader model a replacement is compiled for. */
+export function d3d12ShaderModel(o: VulkanObject, stage: string): string | undefined {
+  const target = str(d3d12Reflection(o, stage)?.target);
+  const m = /(\d+)_(\d+)$/.exec(target);
+  return m ? `${m[1]}_${m[2]}` : undefined;
+}
+
+/** get_shader on a D3D12 pipeline state: reflection from the capture, text through dxinsp_shader.exe. */
+async function d3d12Shader(c: Capture, o: VulkanObject, view: string, stage: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
+  const db = c.db;
+  let sources = d3d12Stages(o);
+  if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
+  const stages: Record<string, unknown>[] = [];
+  for (const s of sources) {
+    const bytes = c.spirv(s.object, s.blobIndex);
+    const head = { stage: s.stage, entryPoint: s.entryPoint || undefined, shader: refText(db, s.object.id), bytecodeBytes: bytes?.byteLength };
+    if (view === "reflection") {
+      const r = d3d12Reflection(o, s.stage);
+      stages.push(r ? { ...head, reflection: r } : { ...head, note: "The capture carries no reflection for this stage: the capture library could not reflect its bytecode (a DXIL shader needs dxcompiler.dll beside the library, in the Vulkan SDK or the Windows SDK, or on PATH)." });
+      continue;
+    }
+    if (!bytes) {
+      stages.push({ ...head, note: "The capture file carries no bytecode for this stage." });
+      continue;
+    }
+    if (view === "source" || view === "hlsl" || view === "disassembly") {
+      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl");
+      stages.push(r.ok
+        ? { ...head, text: clip(r.text.replace(/\r\n/g, "\n"), maxChars) }
+        : { ...head, error: r.text, note: view === "disassembly" ? undefined : "A D3D12 shader's source is what dxc embedded in it (-Zi -Qembed_debug); \"disassembly\" shows the bytecode's text either way." });
+    } else {
+      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its embedded HLSL source (view \"source\") and its disassembly.` });
+    }
+  }
+  return {
+    capture: c.id, object: refText(db, o.id), api: "d3d12", view, stages,
+    note: sources.length ? undefined : "No shader stages with code were found for this pipeline.",
+  };
+}
 
 function texelStats(tex: TexelData): Record<string, unknown>[] {
   const n = tex.width * tex.height;
@@ -617,7 +712,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         "\"source\" (the source the compiler embedded, when it did), \"glsl\" / \"hlsl\" / \"msl\" (cross-compiled with " +
         "spirv-cross), \"disassembly\" (spirv-dis), or \"analysis\" (the modeled per-invocation cost by function and source " +
         "line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline " +
-        "state's reflection.",
+        "state's reflection. For D3D12: an ID3D12PipelineState's stages, with the reflection the capture library took " +
+        "(resources by register and space), the HLSL dxc embedded (\"source\", compiled with -Zi -Qembed_debug) or the " +
+        "DXBC/DXIL disassembly; the other views are not available for D3D12.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         object: { type: "integer", minimum: 0, description: "The pipeline, shader module, library, function or pipeline state object id." },
@@ -635,12 +732,13 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const view = enumArg(args, "view", SHADER_VIEWS, "reflection");
         const maxChars = intArg(args, "maxChars", 40000, 1000, 200000);
         if (o.type.startsWith("MTL")) return jsonResult(metalShader(c, o, view, maxChars));
+        const stage = stringArg(args, "stage")?.toLowerCase();
+        if (isD3D12Pipeline(o)) return jsonResult(await d3d12Shader(c, o, view, stage, maxChars));
         let sources: ShaderSource[];
         // A shader object's code is attached to it the way a pipeline's stages are ("fragment:main").
         if (o.type === "VkPipeline" || o.type === "VkShaderEXT") sources = pipelineStages(o, db);
         else if (o.type === "VkShaderModule") sources = o.blobs.length ? [{ stage: str(o.updates.stage) || "unknown", entryPoint: "", object: o, blobIndex: 0 }] : [];
-        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
-        const stage = stringArg(args, "stage")?.toLowerCase();
+        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an ID3D12PipelineState, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
         if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
         const stages: Record<string, unknown>[] = [];
         for (const s of sources) {
@@ -682,6 +780,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const db = c.db;
         if (d.api === "metal") {
           return jsonResult({ capture: c.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures. For Metal shaders, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        if (d.api !== "vulkan") {
+          return jsonResult({ capture: c.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly." });
         }
         const rows: { score: number; row: Record<string, unknown> }[] = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
@@ -738,6 +839,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const c = store.resolve(stringArg(args, "capture"));
         if (c.data.api === "metal") {
           return jsonResult({ capture: c.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        if (c.data.api !== "vulkan") {
+          return jsonResult({ capture: c.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's time and counters.` });
         }
         // Per-draw timings and counters: replayed once, and kept with the open capture.
         let drawNote: string | undefined;
@@ -814,6 +918,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const c = store.resolve(stringArg(args, "capture"));
         if (c.data.api === "metal") {
           return jsonResult({ capture: c.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        if (c.data.api !== "vulkan") {
+          return jsonResult({ capture: c.id, note: `Ablation replays a Vulkan capture: ${NO_D3D12_REPLAY}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);

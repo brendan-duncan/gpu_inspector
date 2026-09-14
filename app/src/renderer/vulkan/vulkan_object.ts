@@ -4,6 +4,8 @@
 // generic class plus a per-type summary table: the layer sends the creating call's full
 // argument list as the descriptor, so everything the UI needs is in `args`.
 import { estimateImageBytes } from "./vk_format.js";
+import { d3d12PipelineKind, d3d12ResourceBytes, d3d12TextureShape, isD3D12Type } from "../d3d12/d3d12_object.js";
+import { dxgiFormatShort } from "../d3d12/dxgi_format.js";
 import type { AddObjectMessage, ArgObject, ArgValue, BlobInfo, HandleRef } from "../../shared/protocol.js";
 
 export interface ObjectLookup {
@@ -105,7 +107,11 @@ export class VulkanObject {
   }
 
   get shortType(): string {
-    return this.type.startsWith("Vk") ? this.type.substring(2) : this.type;
+    if (this.type.startsWith("Vk")) return this.type.substring(2);
+    // "ID3D12Resource" -> "Resource", "IDXGISwapChain" -> "SwapChain".
+    if (this.type.startsWith("ID3D12")) return this.type.substring(6);
+    if (this.type.startsWith("IDXGI")) return this.type.substring(5);
+    return this.type;
   }
 
   get name(): string {
@@ -134,6 +140,9 @@ export class VulkanObject {
     const a = this.args;
     if (!a) return null;
     if (this.type.startsWith("MTL")) return a;
+    // A D3D12 object's descriptor is the creating call's pDesc (d3d12/README.md, "Talking to the
+    // UI"); a call without one (GetBuffer, CreateFence) has only its parameters.
+    if (isD3D12Type(this.type)) return isObject(a.pDesc) ? a.pDesc : a;
     if (isObject(a.pCreateInfo)) return a.pCreateInfo;
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
     if (Array.isArray(a.pCreateInfos)) {
@@ -223,6 +232,55 @@ export class VulkanObject {
         return a.queueFamilyIndex !== undefined ? `family ${num(a.queueFamilyIndex)} index ${num(a.queueIndex)}` : "";
       case "VkQueryPool":
         return d ? `${fmt(d.queryType)} x${num(d.queryCount)}` : "";
+      // D3D12 objects, from their pDesc (d3d12/d3d12_object.ts reads the resource shapes).
+      case "ID3D12Resource": {
+        const shape = d3d12TextureShape(this, db);
+        if (shape) {
+          const dims = shape.dimension === "3d" ? `${shape.width}x${shape.height}x${shape.depth}` : `${shape.width}x${shape.height}`;
+          const layers = shape.layers > 1 ? ` [${shape.layers}]` : "";
+          const mips = shape.mips > 1 ? ` ${shape.mips} mips` : "";
+          const samples = shape.samples > 1 ? ` ${shape.samples}x` : "";
+          return `${this.cmd === "GetBuffer" ? "back buffer " : ""}${dxgiFormatShort(shape.format)} ${dims}${layers}${mips}${samples}`;
+        }
+        return d && d.Width !== undefined ? `buffer ${formatBytes(num(d.Width))}${d.Flags && d.Flags !== "0" ? `  ${fmtFlags(d.Flags)}` : ""}` : "";
+      }
+      case "ID3D12Heap":
+        return d ? `${formatBytes(num(d.SizeInBytes))}${isObject(d.Properties) ? `  ${fmt(d.Properties.Type)}` : ""}` : "";
+      case "ID3D12PipelineState": {
+        const refl = d && isObject(d.reflection) ? Object.keys(d.reflection) : [];
+        const stages = refl.length ? refl : this.blobs.map((b) => b.name.split(":")[0]);
+        return stages.length ? stages.map((s) => s.replace(/_/g, " ")).join(" + ") : d3d12PipelineKind(this);
+      }
+      case "ID3D12DescriptorHeap":
+        return d ? `${fmt(d.Type).replace(/^DESCRIPTOR_HEAP_TYPE_/, "")} x${num(d.NumDescriptors)}${str(d.Flags).includes("SHADER_VISIBLE") ? "  shader visible" : ""}` : "";
+      case "ID3D12CommandQueue":
+        return d ? fmt(d.Type).replace(/^COMMAND_LIST_TYPE_/, "").toLowerCase() : "";
+      case "ID3D12GraphicsCommandList":
+      case "ID3D12CommandList":
+      case "ID3D12CommandAllocator":
+        return a.type !== undefined ? fmt(a.type).replace(/^COMMAND_LIST_TYPE_/, "").toLowerCase() : "";
+      case "ID3D12RootSignature": {
+        const params = d && Array.isArray(d.pParameters) ? d.pParameters.length : num(d?.NumParameters);
+        return d ? `${params} parameter${params === 1 ? "" : "s"}` : "";
+      }
+      case "ID3D12QueryHeap":
+        return d ? `${fmt(d.Type).replace(/^QUERY_HEAP_TYPE_/, "")} x${num(d.Count)}` : "";
+      case "ID3D12CommandSignature":
+        return d ? `${Array.isArray(d.pArgumentDescs) ? d.pArgumentDescs.length : num(d.NumArgumentDescs)} args, stride ${num(d.ByteStride)}` : "";
+      case "IDXGISwapChain": {
+        if (!d) return "";
+        const bd = isObject(d.BufferDesc) ? d.BufferDesc : d;
+        return `${dxgiFormatShort(str(bd.Format))} ${num(bd.Width)}x${num(bd.Height)} x${num(d.BufferCount)}`;
+      }
+      case "IDXGIAdapter": {
+        const desc = isObject(this.updates.Desc) ? this.updates.Desc : isObject(a.Desc) ? a.Desc : null;
+        return desc ? str(desc.Description) : "";
+      }
+      case "ID3D12Device": {
+        const adapter = db?.getObject(this.parentId);
+        const level = str(a.MinimumFeatureLevel ?? a.featureLevel).replace(/^D3D_FEATURE_LEVEL_/, "").replace("_", ".");
+        return `${adapter?.summary(db) ?? ""}${level ? `  feature level ${level}` : ""}`.trim();
+      }
       default:
         return "";
     }
@@ -239,6 +297,12 @@ export class VulkanObject {
 export function objectMemoryBytes(o: VulkanObject, db: ObjectLookup | null): number {
   const d = o.descriptor;
   switch (o.type) {
+    // D3D12: a heap's size, and a resource's estimate from its description (a placed resource
+    // lives inside a heap, and is counted in both like a Vulkan image inside its VkDeviceMemory).
+    case "ID3D12Heap":
+      return num(d?.SizeInBytes);
+    case "ID3D12Resource":
+      return d3d12ResourceBytes(o, db);
     case "MTLHeap":
       return num(o.args?.allocatedSize) || num(o.args?.size);
     case "MTLBuffer":
@@ -305,13 +369,34 @@ export function fmt(v: ArgValue | undefined): string {
   ];
   for (const p of prefixes) if (v.startsWith(p)) return v.substring(p.length).replace(/_BIT$/, "");
   const m = /^VK_[A-Z0-9]+_(.+)$/.exec(v);
-  return m ? m[1] : v;
+  if (m) return m[1];
+  // D3D12 and DXGI enums: "DXGI_FORMAT_R8G8B8A8_UNORM" -> "R8G8B8A8_UNORM", "D3D12_CULL_MODE_BACK" -> "BACK".
+  for (const p of D3D12_PREFIXES) if (v.startsWith(p)) return v.substring(p.length);
+  return v;
 }
+
+const D3D12_PREFIXES = [
+  "DXGI_FORMAT_", "D3D12_DESCRIPTOR_RANGE_TYPE_", "D3D12_ROOT_PARAMETER_TYPE_", "D3D12_SHADER_VISIBILITY_",
+  "D3D12_PRIMITIVE_TOPOLOGY_TYPE_", "D3D_PRIMITIVE_TOPOLOGY_", "D3D12_PRIMITIVE_TOPOLOGY_", "D3D12_CULL_MODE_", "D3D12_FILL_MODE_",
+  "D3D12_COMPARISON_FUNC_", "D3D12_DEPTH_WRITE_MASK_", "D3D12_BLEND_OP_", "D3D12_BLEND_", "D3D12_LOGIC_OP_", "D3D12_STENCIL_OP_",
+  "D3D12_RESOURCE_STATE_", "D3D12_RESOURCE_DIMENSION_", "D3D12_RESOURCE_FLAG_", "D3D12_HEAP_TYPE_", "D3D12_HEAP_FLAG_",
+  "D3D12_TEXTURE_LAYOUT_", "D3D12_FILTER_", "D3D12_TEXTURE_ADDRESS_MODE_", "D3D12_SRV_DIMENSION_", "D3D12_UAV_DIMENSION_",
+  "D3D12_RTV_DIMENSION_", "D3D12_DSV_DIMENSION_", "D3D12_DSV_FLAG_", "D3D12_CLEAR_FLAG_", "D3D12_RESOURCE_BARRIER_TYPE_",
+  "D3D12_RESOURCE_BARRIER_FLAG_", "D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_", "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_",
+  "D3D12_RENDER_PASS_FLAG_", "D3D12_COMMAND_LIST_TYPE_", "D3D12_DESCRIPTOR_HEAP_TYPE_", "D3D12_DESCRIPTOR_HEAP_FLAG_",
+  "D3D12_QUERY_HEAP_TYPE_", "D3D12_QUERY_TYPE_", "D3D12_INDIRECT_ARGUMENT_TYPE_", "D3D12_INPUT_CLASSIFICATION_",
+  "D3D12_PIPELINE_STATE_FLAG_", "D3D12_BARRIER_LAYOUT_", "D3D12_BARRIER_SYNC_", "D3D12_BARRIER_ACCESS_", "D3D12_BARRIER_TYPE_",
+  "D3D12_FEATURE_", "D3D_FEATURE_LEVEL_", "D3D_SHADER_MODEL_", "D3D12_STATIC_BORDER_COLOR_", "D3D12_STATE_OBJECT_TYPE_",
+  "D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_", "D3D12_CONSERVATIVE_RASTERIZATION_MODE_", "D3D12_COLOR_WRITE_ENABLE_",
+  "DXGI_SWAP_EFFECT_", "DXGI_SCALING_", "DXGI_ALPHA_MODE_", "DXGI_MODE_SCANLINE_ORDER_", "DXGI_MODE_SCALING_", "DXGI_USAGE_",
+];
 
 /** "VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT" -> "VERTEX_BUFFER | TRANSFER_DST" */
 export function fmtFlags(v: ArgValue | undefined): string {
   if (typeof v !== "string") return v === undefined ? "" : String(v);
-  return v.split(" | ").map((s) => s.replace(/^VK_[A-Z0-9]+?_(USAGE_|CREATE_|STAGE_|ACCESS_|ASPECT_)?/, "").replace(/_BIT(_[A-Z]+)?$/, "$1")).join(" | ");
+  return v.split(" | ").map((s) => (s.startsWith("VK_")
+    ? s.replace(/^VK_[A-Z0-9]+?_(USAGE_|CREATE_|STAGE_|ACCESS_|ASPECT_)?/, "").replace(/_BIT(_[A-Z]+)?$/, "$1")
+    : fmt(s))).join(" | ");
 }
 
 export function formatBytes(bytes: number): string {

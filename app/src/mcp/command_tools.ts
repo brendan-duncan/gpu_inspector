@@ -5,7 +5,7 @@ import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVerte
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
-import { bindingTableRegions, shaderGroups, stageFromFlag, stateStages } from "../renderer/shader_cache.js";
+import { bindingTableRegions, findBoundResource, shaderGroups, stageFromFlag, stateStages } from "../renderer/shader_cache.js";
 import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { imageOfView } from "../renderer/vulkan/pass_info.js";
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructMember, StructType } from "../renderer/vulkan/spirv_reflect.js";
@@ -175,7 +175,7 @@ class StateReader {
   private binding(set: number, b: CaptureDescriptorBinding): Record<string, unknown> {
     let res: ShaderResource | null = null;
     for (const s of this.stages) {
-      res = s.reflection?.findResource(set, b.binding) ?? null;
+      res = findBoundResource(s.reflection, set, b);
       if (res) break;
     }
     const shown = b.descriptors.slice(0, 16);

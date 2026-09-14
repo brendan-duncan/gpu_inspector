@@ -3,12 +3,13 @@
 // This is the API-neutral half of the extraction: it segments the command stream into passes the
 // same way the capture panel's command tree does (so a graph node and a tree block are the same
 // pass, with the same pass key and so the same GPU timing), and asks a per-API ResourceSource
-// what each command touches. The Vulkan and Metal sources are in vulkan/frame_resources.ts and
-// metal/frame_resources.ts; the graph model they feed is render_graph.ts.
+// what each command touches. The Vulkan, Metal and D3D12 sources are in vulkan/frame_resources.ts,
+// metal/frame_resources.ts and d3d12/frame_resources.ts; the graph model they feed is render_graph.ts.
 import { buildRenderGraph, type NodeKind, type RawAccess, type RawPass, type RenderGraph, type SyncPoint } from "./render_graph.js";
 import { isAction, type CommandSets } from "./command_sets.js";
 import { passKey } from "./capture_data.js";
 import type { CaptureData } from "./capture_data.js";
+import { D3D12ResourceSource } from "./d3d12/frame_resources.js";
 import { MetalResourceSource } from "./metal/frame_resources.js";
 import { VulkanResourceSource } from "./vulkan/frame_resources.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
@@ -245,6 +246,6 @@ export function buildFrameGraph(data: CaptureData, sets: CommandSets, source: Re
 
 /** The render graph of a capture, using the resource source of the API the capture came from. */
 export function frameRenderGraph(data: CaptureData, db: ObjectLookup): RenderGraph {
-  const source = data.api === "metal" ? new MetalResourceSource(db) : new VulkanResourceSource(db);
+  const source = data.api === "metal" ? new MetalResourceSource(db) : data.api === "d3d12" ? new D3D12ResourceSource(db) : new VulkanResourceSource(db);
   return buildFrameGraph(data, data.sets, source);
 }

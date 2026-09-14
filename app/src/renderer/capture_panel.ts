@@ -61,6 +61,7 @@ import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
 import { isAction, labelNameOf } from "./command_sets.js";
 import { fmt, isObject, refId } from "./vulkan/vulkan_object.js";
+import { d3d12AttributeNames, isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { SessionContext } from "./session_panel.js";
 import { getHostPlatform } from "./launch_dialog.js";
 import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
@@ -1068,6 +1069,16 @@ export class CaptureView implements CaptureHost {
       const depth = isObject(a.depthAttachment) ? " + depth" : "";
       return `Render Pass ${passIndex}: ${target?.name ?? `${colors} color attachment${colors === 1 ? "" : "s"}`}${depth}`;
     }
+    // D3D12: OMSetRenderTargets / BeginRenderPass carry each target handle resolved to its resource.
+    if (a && (cmd.method === "OMSetRenderTargets" || cmd.method === "BeginRenderPass")) {
+      const list = cmd.method === "OMSetRenderTargets" ? a.pRenderTargetDescriptors : a.pRenderTargets;
+      const targets = Array.isArray(list) ? list.filter(isObject) : [];
+      const first = targets.map((t) => (isObject(t.cpuDescriptor) ? t.cpuDescriptor : t)).find((t) => isObject(t.resource));
+      const target = first ? db.getObject(refId(first.resource)) : null;
+      const depth = isObject(cmd.method === "OMSetRenderTargets" ? a.pDepthStencilDescriptor : a.pDepthStencil) ? " + depth" : "";
+      const colors = targets.length;
+      return `Render Pass ${passIndex}: ${target?.name ?? `${colors} render target${colors === 1 ? "" : "s"}`}${depth}`;
+    }
     if (cmd.method.startsWith("computeCommandEncoder")) return `Compute Pass ${passIndex}`;
     if (cmd.method.startsWith("blitCommandEncoder")) return `Blit Pass ${passIndex}`;
     if (cmd.method.startsWith("resourceStateCommandEncoder")) return `Resource State Pass ${passIndex}`;
@@ -1270,7 +1281,8 @@ export class CaptureView implements CaptureHost {
       data: this.data, db, models,
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
-      ...(this.data.api !== "metal" ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
+      // Per-draw and per-shader measurements replay the capture, which only Vulkan captures can be.
+      ...(this.data.api === "vulkan" ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
     });
   }
 
@@ -1521,6 +1533,8 @@ export class CaptureView implements CaptureHost {
     const names = new Map<number, string>();
     const state = drawState(this.data, this.window.database, cmd);
     if ((!state.pipeline && !state.shaders.length) || state.pipeline?.type.startsWith("MTL")) return names;
+    // A D3D12 input layout names its attributes itself ("POSITION0", "TEXCOORD0").
+    if (state.pipeline && isD3D12Type(state.pipeline.type)) return d3d12AttributeNames(state.pipeline);
     const stages = await this.window.shaders.stagesOf(state);
     const vs = stages.find((s) => s.source.stage === "vertex");
     for (const input of vs?.reflection?.entryPoint(vs.source.entryPoint)?.inputs ?? []) {
@@ -1671,6 +1685,7 @@ export class CaptureView implements CaptureHost {
       if (!this.data.pixelHistory || !this.hasPixelHistory(request)) throw new Error("this capture did not follow that pixel: a Metal pixel history captures the application's next frame");
       return parsePixelHistory(this.data.pixelHistory);
     }
+    if (this.data.api !== "vulkan") throw new Error("a pixel history replays the capture, which is not available for D3D12 captures");
     this._setStatus(`pixel history: replaying the capture for pixel (${request.x}, ${request.y})...`);
     try {
       const result = await this._replay((r) => window.inspector.pixelHistory({ ...r, pixel: request }));
@@ -1703,6 +1718,10 @@ export class CaptureView implements CaptureHost {
         this._setStatus("this capture did not measure overdraw: capture again with Overdraw ticked");
         return;
       }
+      if (this.data.api !== "vulkan") {
+        this._setStatus("overdraw is measured by replaying the capture, which is not available for D3D12 captures");
+        return;
+      }
       if (!(await this.measureOverdraw())) return;
     }
     const first = (this.data.overdraw.find((o) => o.info.measured !== false) ?? this.data.overdraw[0])?.info;
@@ -1717,6 +1736,10 @@ export class CaptureView implements CaptureHost {
    */
   async measureOverdraw(open?: OverdrawPassKey): Promise<boolean> {
     if (this._overdrawRun?.running) return false;
+    if (this.data.api !== "vulkan") {
+      this._setStatus(`overdraw is measured by replaying the capture, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay`);
+      return false;
+    }
     this._overdrawRun = { running: true };
     this._refreshSelection();
     this._setStatus("measuring overdraw: replaying the capture on this machine's GPU...");
@@ -1745,8 +1768,8 @@ export class CaptureView implements CaptureHost {
    */
   async measureDraws(): Promise<boolean> {
     if (this._drawRun?.running) return false;
-    if (this.data.api === "metal") {
-      this._setStatus("per-draw measurements need the capture replayed, and Metal captures do not replay yet");
+    if (this.data.api !== "vulkan") {
+      this._setStatus(`per-draw measurements need the capture replayed, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay yet`);
       return false;
     }
     this._drawRun = { running: true };
@@ -1773,7 +1796,7 @@ export class CaptureView implements CaptureHost {
    * replaying the draw with variants of the stage that leave each out (vkinsp_replay --ablate).
    */
   async measureShader(target: ShaderMeasureTarget): Promise<boolean> {
-    if (this.data.api === "metal") return false;
+    if (this.data.api !== "vulkan") return false;
     const drawMs = this.data.drawStats?.find((d) => d.command === target.command)?.ms ?? null;
     this._setStatus(`measuring the ${target.stage} shader at draw #${target.command}: replaying its variants...`);
     try {
@@ -1821,8 +1844,8 @@ export class CaptureView implements CaptureHost {
       new Div(grp.body, { text: "No render target data for this pass (pre-recorded command buffer, or readback disabled).", class: "text-muted", style: "padding: 6px;" });
     } else {
       const strip = new Div(grp.body, { class: "capture_frameImages" });
-      // A Vulkan draw's targets can show where it landed (replayed); a Metal capture has no replay to draw it with.
-      const draw = command && this.data.api !== "metal" && this.data.sets.DRAW.has(command.method) ? command : undefined;
+      // A Vulkan draw's targets can show where it landed (replayed); Metal and D3D12 captures have no replay to draw it with.
+      const draw = command && this.data.api === "vulkan" && this.data.sets.DRAW.has(command.method) ? command : undefined;
       for (const tex of textures) this._renderTexture(strip, tex, draw);
     }
     this._renderPassOverdraw(container, frame, commandBufferId, passIndex);
@@ -1837,7 +1860,7 @@ export class CaptureView implements CaptureHost {
     const key: OverdrawPassKey = { frame, commandBuffer: commandBufferId, passIndex };
     const measurements = this.data.overdrawForPass(frame, commandBufferId, passIndex);
     if (!measurements.length) {
-      if (this.data.api !== "metal") this._renderOverdrawReplay(container, key);
+      if (this.data.api === "vulkan") this._renderOverdrawReplay(container, key);
       return;
     }
     const grp = new collapsible(container, { label: "Overdraw", collapsed: false });

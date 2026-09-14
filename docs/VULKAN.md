@@ -7,7 +7,8 @@ nothing has to be recompiled or linked against the inspector. Unity Vulkan playe
 primary target.
 
 For Vulkan on a phone or headset, see [Android and Quest](ANDROID.md). For macOS, see
-[Metal](METAL.md).
+[Metal](METAL.md). A Direct3D 12 application on Windows is launched from the same dialog, with
+nothing to choose; see [Direct3D 12](D3D12.md).
 
 ## Launching an application
 

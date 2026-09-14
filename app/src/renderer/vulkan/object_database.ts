@@ -5,6 +5,7 @@
 // in each object's serialized creation arguments instead of per-class knowledge.
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
+import { isD3D12Texture } from "../d3d12/d3d12_object.js";
 import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
@@ -260,12 +261,12 @@ export class ObjectDatabase implements ObjectLookup {
 
   private _accountMemory(o: VulkanObject, sign: 1 | -1): void {
     const bytes = objectMemoryBytes(o, this);
-    if (o.type === "VkDeviceMemory" || o.type === "MTLHeap") {
+    if (o.type === "VkDeviceMemory" || o.type === "MTLHeap" || o.type === "ID3D12Heap") {
       this.memory.device += sign * bytes;
       this.memory.allocations += sign;
-    } else if (o.type === "VkBuffer" || o.type === "MTLBuffer") {
+    } else if (o.type === "VkBuffer" || o.type === "MTLBuffer" || (o.type === "ID3D12Resource" && !isD3D12Texture(o))) {
       this.memory.buffers += sign * bytes;
-    } else if (o.type === "VkImage" || o.type === "MTLTexture") {
+    } else if (o.type === "VkImage" || o.type === "MTLTexture" || o.type === "ID3D12Resource") {
       this.memory.images += sign * bytes;
     }
   }

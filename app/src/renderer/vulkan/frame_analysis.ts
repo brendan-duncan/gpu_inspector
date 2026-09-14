@@ -38,6 +38,7 @@ import type { RenderGraph } from "../render_graph.js";
 import type { CaptureData } from "../capture_data.js";
 import type { ObjectLookup } from "./vulkan_object.js";
 import { analyzeMetalFrame } from "../metal/frame_analysis.js";
+import { analyzeD3D12Frame } from "../d3d12/frame_analysis.js";
 import { analyzeCounters } from "../counter_rules.js";
 import { analyzeSampling } from "../sampling_rules.js";
 import { textureReads, type TextureReads } from "./spirv_ablate.js";
@@ -644,14 +645,16 @@ export class FrameAnalysis {
  * The findings of a capture, and which commands each applies to.
  *
  * Two analyses contribute. These per-command rules (or metal/frame_analysis.ts for a Metal
- * capture) read each API's own command stream; and when the caller has built the capture's render
- * graph, the rules over that graph (render_graph_analysis.ts) read the frame's dependencies. The
- * graph answers exactly what a few of the per-command rules can only approximate, so those are
- * dropped in its favour rather than reported twice in two wordings.
+ * capture, d3d12/frame_analysis.ts for a D3D12 one) read each API's own command stream; and when
+ * the caller has built the capture's render graph, the rules over that graph
+ * (render_graph_analysis.ts) read the frame's dependencies. The graph answers exactly what a few
+ * of the per-command rules can only approximate, so those are dropped in its favour rather than
+ * reported twice in two wordings.
  */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  const vulkan = data.api === "metal" ? null : new FrameAnalysis(db);
-  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : analyzeMetalFrame(data, db);
+  const vulkan = data.api === "metal" || data.api === "d3d12" ? null : new FrameAnalysis(db);
+  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() }
+    : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : analyzeMetalFrame(data, db);
   // The rules over the GPU counters read the same measurements for either API (counter_rules.ts),
   // and say nothing when the capture carries none; the sampling rules read descriptors both APIs
   // record (sampling_rules.ts).

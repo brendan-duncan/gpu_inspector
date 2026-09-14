@@ -11,8 +11,9 @@ Only needed if you want to build GPU Inspector yourself, or to build the
 Linux and Windows need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm, the windowing-system
 headers Vulkan's surface extensions include, and the shader tools `glslc`, `spirv-dis` and
-`spirv-cross`. A macOS build makes the Metal capture library instead of the Vulkan layer, and
-needs less.
+`spirv-cross`. Windows also builds the Direct3D 12 capture library, which needs a recent Windows
+SDK and the MinHook submodule, and its test application, which needs `dxc`. A macOS build makes
+the Metal capture library instead of the Vulkan layer, and needs less.
 
 ### Linux
 
@@ -48,11 +49,15 @@ is an alternative source of the same shader tools.
 | CMake 3.20+ (the C++ workload installs one) | https://cmake.org/download/ |
 | Python 3.8+ (tick **Add python.exe to PATH**) | https://www.python.org/downloads/ |
 | Node.js LTS | https://nodejs.org/en/download |
-| Vulkan SDK — `glslc`, `spirv-dis`, `spirv-cross`, and the loader the test app links against | https://vulkan.lunarg.com/sdk/home#windows |
+| Vulkan SDK — `glslc`, `spirv-dis`, `spirv-cross`, `dxc` (the D3D12 test application's shaders, and `dxcompiler.dll` for DXIL reflection), and the loader the Vulkan test app links against | https://vulkan.lunarg.com/sdk/home#windows |
+| Windows SDK 10.0.26100 or newer — the D3D12 headers the capture library needs | The Visual Studio installer's *Individual components*, or https://developer.microsoft.com/windows/downloads/windows-sdk/ |
 | Git | https://git-scm.com/download/win |
 
-The Windows SDK from Visual Studio provides the windowing headers, and the Vulkan driver comes
-with your graphics driver.
+The Windows SDK provides the windowing and Direct3D headers, and the Vulkan driver comes with
+your graphics driver. `git submodule update --init` brings `third_party/minhook`, which the D3D12
+library hooks the entry points with, beside `Vulkan-Headers`. The D3D12 library's generated enum
+and vtable tables (`d3d12/gen/`) are committed, so Python regenerates them only when
+`tools/gen_d3d12.py` changes.
 
 ### macOS
 
@@ -103,7 +108,9 @@ cmake --build build --config Release
 cd app && npm install && npm start
 ```
 
-Use the generator name of the Visual Studio you installed.
+Use the generator name of the Visual Studio you installed. The build puts the Vulkan layer, the
+D3D12 capture library with `dxinsp_launch.exe` and `dxinsp_shader.exe`, and the two test
+applications (`vkinsp_triangle.exe`, `dxinsp_triangle.exe`) in `build\bin\Release`.
 
 ### macOS
 

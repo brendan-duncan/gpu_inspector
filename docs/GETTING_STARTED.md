@@ -27,7 +27,9 @@ system-wide, and the application does not have to be modified.
 
 What you pick depends on the platform:
 
-- **Windows and Linux:** a Vulkan executable. See [Vulkan](VULKAN.md).
+- **Windows:** a Vulkan or Direct3D 12 executable; the inspector does not need to be told
+  which. See [Vulkan](VULKAN.md) and [Direct3D 12](D3D12.md).
+- **Linux:** a Vulkan executable. See [Vulkan](VULKAN.md).
 - **macOS:** a Metal application, usually an `.app` bundle. See [Metal](METAL.md) — code signing
   decides whether a given application can be inspected.
 - **An Android phone or headset:** choose **Android device (adb)** under *Run On*. See

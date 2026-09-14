@@ -138,8 +138,8 @@ export class LaunchDialog extends Dialog {
     this._nativeRows = new Div(body);
     section(this._nativeRows, "Program");
     this._exe = this._pathRow(this._nativeRows, "Executable Path",
-      hostPlatform === "darwin" ? "path to a Metal application (.app)" : "path to a Vulkan application",
-      hostPlatform === "darwin" ? "Choose Metal application" : "Choose Vulkan application", false);
+      hostPlatform === "darwin" ? "path to a Metal application (.app)" : hostPlatform === "win32" ? "path to a Vulkan or Direct3D 12 application" : "path to a Vulkan application",
+      hostPlatform === "darwin" ? "Choose Metal application" : hostPlatform === "win32" ? "Choose Vulkan or Direct3D 12 application" : "Choose Vulkan application", false);
     this._cwd = this._pathRow(this._nativeRows, "Working Directory", "(executable's folder)", "Choose working directory", true);
     this._args = this._inputRow(this._nativeRows, "Command-line Arguments", "");
     {
@@ -210,7 +210,9 @@ export class LaunchDialog extends Dialog {
       this._validation = new Checkbox(row, { label: "Validation layer", checked: false,
         tooltip: hostPlatform === "darwin"
           ? "Enable Metal's API validation layer and shader validation for the target, in the mode that logs a failure rather than aborting on it. Errors and warnings are listed in the Inspect tab. Slows the application down."
-          : "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
+          : hostPlatform === "win32"
+            ? "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK) for a Vulkan target, or the D3D12 debug layer for a Direct3D 12 target. Errors and warnings are listed in the Inspect tab (Vulkan's linked to the objects they name, D3D12's attached to the command they fired in). Native targets only; slows the application down."
+            : "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
       this._syncValidation = new Checkbox(row, { label: "Sync validation", checked: false,
         tooltip: "With the validation layer: synchronization validation, which reports hazards between commands (at record time) and between submissions (at vkQueueSubmit, linked to the command the message names). Slow." });
       this._stacktraces = new Checkbox(row, { label: "Stack traces", checked: true,

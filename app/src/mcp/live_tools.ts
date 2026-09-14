@@ -3,13 +3,14 @@
 // objects, images and descriptor sets, capturing frames into .gpucap files that the capture tools
 // then read, and replacing a pipeline's shader while the application runs.
 import { listPackages } from "../main/android.js";
-import { compileShader } from "../main/shader_tools.js";
+import { compileDxil, compileShader } from "../main/shader_tools.js";
 import { fetchBlob } from "../renderer/capture_file.js";
 import { REFRESH_SOURCE_NOTE } from "../renderer/capture_statistics.js";
 import { pipelineStages } from "../renderer/shader_cache.js";
 import { requestStacks } from "../renderer/stack_requests.js";
 import { reflectSpirv } from "../renderer/vulkan/spirv_reflect.js";
 import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
+import type { VulkanObject } from "../renderer/vulkan/vulkan_object.js";
 import { imageOfView } from "../renderer/vulkan/pass_info.js";
 import { decodeTexels, isFormatSupported } from "../renderer/vulkan/texture_decode.js";
 import { isObject, num, refId, str } from "../renderer/vulkan/vulkan_object.js";
@@ -21,7 +22,7 @@ import {
   schema, stackLines, stringArg,
 } from "./describe.js";
 import { capturesDir, type LiveSession, type SessionManager } from "./live_session.js";
-import { IMAGE_PARAMS, texelAnswer } from "./resource_tools.js";
+import { IMAGE_PARAMS, NO_D3D12_REPLAY, d3d12ShaderModel, d3d12Stages, isD3D12Pipeline, texelAnswer } from "./resource_tools.js";
 import { searchPaths, symbolizeOnHost } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 import { captureSummary } from "./tools.js";
@@ -67,7 +68,7 @@ function sessionStatus(s: LiveSession): Record<string, unknown> {
 }
 
 /** The temporary source file the compilers were given (shader_tools.ts), however a compiler writes its path. */
-const TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
+const TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm|dxil)/g;
 
 /** A compiler's output with the temporary file's path read as "source"; glslangValidator prints nothing else on success. */
 function compilerLog(log: string): string {
@@ -75,15 +76,26 @@ function compilerLog(log: string): string {
 }
 
 /** The stage flag of a pipeline's stage by the stage's name ("fragment"). */
-function stageOf(s: LiveSession, pipelineId: number, stage: string): { flag: string; entryPoint: string; source: ReturnType<typeof pipelineStages>[number] } {
+/**
+ * A stage of a live pipeline: what ReplaceShader names it by (`flag`: the VkShaderStageFlagBits
+ * name, or for a D3D12 pipeline the stage name itself), its entry point and its payload.
+ */
+function stageOf(s: LiveSession, pipelineId: number, stage: string): { flag: string; entryPoint: string; object: VulkanObject; blobIndex: number } {
   const pipeline = s.database.getObject(pipelineId);
+  const wanted = stage.toLowerCase();
+  if (pipeline && isD3D12Pipeline(pipeline)) {
+    const stages = d3d12Stages(pipeline);
+    const source = stages.find((x) => x.stage === wanted);
+    if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
+    return { flag: source.stage, entryPoint: source.entryPoint, object: source.object, blobIndex: source.blobIndex };
+  }
   if (!pipeline || (pipeline.type !== "VkPipeline" && pipeline.type !== "VkShaderEXT")) {
-    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline or VkShaderEXT of ${s.id}.`);
+    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline, VkShaderEXT or ID3D12PipelineState of ${s.id}.`);
   }
   const stages = pipelineStages(pipeline, s.database);
-  const source = stages.find((x) => x.stage === stage.toLowerCase());
+  const source = stages.find((x) => x.stage === wanted);
   if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
-  return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
+  return { flag: source.stageFlag, entryPoint: source.entryPoint, object: source.object, blobIndex: source.blobIndex };
 }
 
 /** A descriptor a live set holds, as get_live_descriptor_set lists it. */
@@ -129,7 +141,8 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
   return [
     {
       name: "launch_app",
-      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on macOS the Metal " +
+      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on Windows the D3D12 " +
+        "library too, injected by its launcher, so whichever API the application uses connects; on macOS the Metal " +
         "library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns " +
         "the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's " +
         "own output is in it, which is where to look when it does not connect). The application runs until stop_app or " +
@@ -139,7 +152,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         args: { type: "string", description: "Command line arguments, quoted as in a shell." },
         cwd: { type: "string", description: "Working directory (default the executable's directory)." },
         env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
-        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK) or Metal's validation, so validation messages reach the captures (default false)." },
+        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK), the D3D12 debug layer or Metal's validation, so validation messages reach the captures (default false)." },
         syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
@@ -157,7 +170,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         }, (numberArg(args, "waitSeconds") ?? 60) * 1000);
         const result = jsonResult({
           ...sessionStatus(s),
-          problem: s.connected ? undefined : "The capture library did not connect. recentLog (and get_session_log) has the application's and the layer's output: a crash, an application that does not use Vulkan, or a layer the loader did not load.",
+          problem: s.connected ? undefined : "The capture library did not connect. recentLog (and get_session_log) has the application's and the capture library's output: a crash, an application that uses neither Vulkan nor (on Windows) D3D12, a layer the loader did not load, or a target the D3D12 launcher could not inject into.",
         });
         if (!s.connected) result.isError = true;
         return result;
@@ -368,7 +381,9 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         if (pixelHistory && !result.data.pixelHistory) {
           notes.push(result.data.api === "metal"
             ? "No pixel history arrived: the application's capture library was built before pixel history."
-            : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+            : result.data.api === "d3d12"
+              ? `pixelHistory is followed by the Metal capture library only, and get_pixel_history is ${NO_D3D12_REPLAY}.`
+              : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
         }
         return jsonResult({
           session: s.id, file, megabytes: round(capture.fileBytes / 1048576), secondsToCapture: round(result.elapsedMs / 1000),
@@ -551,32 +566,45 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
     },
     {
       name: "replace_shader",
-      description: "Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled " +
+      description: "Replace one stage of a running Vulkan or D3D12 pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled " +
         "with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline " +
         "with it, binding the replacement wherever the application binds the original. get_shader with view \"glsl\" on a " +
         "capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader " +
-        "undoes it. Command buffers recorded before the edit keep the original until the application records them again.",
+        "undoes it. Command buffers recorded before the edit keep the original until the application records them again. " +
+        "A D3D12 pipeline (ID3D12PipelineState) takes HLSL only, compiled to DXIL with dxc for the stage's own shader model; " +
+        "get_shader with view \"source\" has the HLSL dxc embedded in the original.",
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), or a VkShaderEXT's for an application using shader objects." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), a VkShaderEXT's for an application using shader objects, or an ID3D12PipelineState's." },
         stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
         source: { type: "string", description: "The complete new source of the stage." },
-        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
+        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl; a D3D12 pipeline takes hlsl only, and defaults to it)." },
         entryPoint: { type: "string", description: "The entry point in the source (default the stage's own)." },
       }, ["pipeline", "stage", "source"]),
       handler: async (args) => {
         const s = sessions.get(stringArg(args, "session"));
-        if (s.api === "metal") throw new Error("Shader replacement is Vulkan only.");
+        if (s.api === "metal") throw new Error("Shader replacement is Vulkan and D3D12 only.");
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stageName = requireString(args, "stage").toLowerCase();
-        const { flag, entryPoint, source } = stageOf(s, pipelineId, stageName);
-        // The stage's current SPIR-V says which SPIR-V version the application's driver was given.
-        const original = await fetchBlob(s, source.object, source.blobIndex);
-        const version = (original && reflectSpirv(original)?.version) || "";
-        const language = enumArg(args, "language", LANGUAGES, "glsl") as ShaderLanguage;
-        const compiled = await compileShader(requireString(args, "source"), language, stageName, stringArg(args, "entryPoint") ?? entryPoint, version,
-                                             { includeDirs: searchPaths("sourceRoots").dirs });
+        const { flag, entryPoint, object, blobIndex } = stageOf(s, pipelineId, stageName);
+        const entry = stringArg(args, "entryPoint") ?? entryPoint;
+        const includeDirs = searchPaths("sourceRoots").dirs;
+        let compiled;
+        let version = "";
+        if (isD3D12Pipeline(object)) {
+          // A D3D12 stage: HLSL to DXIL, for the shader model the original was compiled with
+          // (its reflection's target), so the replacement stays within what the device accepts.
+          const language = enumArg(args, "language", LANGUAGES, "hlsl") as ShaderLanguage;
+          if (language !== "hlsl") throw new Error(`A D3D12 pipeline's stage is replaced from HLSL (compiled to DXIL with dxc): language "${language}" is not available for a D3D12 session.`);
+          compiled = await compileDxil(requireString(args, "source"), stageName, entry, d3d12ShaderModel(object, stageName) ?? "6_0", { includeDirs });
+        } else {
+          // The stage's current SPIR-V says which SPIR-V version the application's driver was given.
+          const original = await fetchBlob(s, object, blobIndex);
+          version = (original && reflectSpirv(original)?.version) || "";
+          const language = enumArg(args, "language", LANGUAGES, "glsl") as ShaderLanguage;
+          compiled = await compileShader(requireString(args, "source"), language, stageName, entry, version, { includeDirs });
+        }
         if (!compiled.ok || !compiled.spirv) {
           const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12000) });
           failed.isError = true;
@@ -585,8 +613,8 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const reply = await s.replaceShader(pipelineId, flag, stageName, compiled.spirv);
         const result = jsonResult({
           ok: reply?.ok ?? false, pipeline: refText(s.database, pipelineId), stage: stageName, spirvVersion: version || undefined,
-          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `VkPipeline#${reply.replacement}` : undefined,
-          error: reply ? reply.error : "The layer did not answer within 15 s.", layerNote: reply?.note,
+          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `${isD3D12Pipeline(object) ? "ID3D12PipelineState" : "VkPipeline"}#${reply.replacement}` : undefined,
+          error: reply ? reply.error : "The capture library did not answer within 15 s.", layerNote: reply?.note,
           compilerLog: compilerLog(compiled.log) ? clip(compilerLog(compiled.log), 4000) : undefined,
         });
         if (!reply?.ok) result.isError = true;
@@ -598,7 +626,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
       description: "Undo replace_shader: the pipeline binds its original code again, for one stage or every replaced stage.",
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's (or ID3D12PipelineState's) object id." },
         stage: { type: "string", description: "The stage to restore (default every replaced stage)." },
       }, ["pipeline"]),
       handler: async (args) => {

@@ -92,9 +92,21 @@ export interface InspectorApi {
   removeRecent(index: number): Promise<LaunchConfig[]>;
   clearRecents(): Promise<LaunchConfig[]>;
   onRecents(cb: (recents: LaunchConfig[]) => void): void;
+  /**
+   * A shader payload as text: SPIR-V through spirv-dis / spirv-cross; a D3D12 pipeline's DXBC/DXIL
+   * container through dxinsp_shader.exe ("dis" its disassembly, "hlsl" the source embedded in it,
+   * other modes not available).
+   */
   shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult>;
   /** Compiles shader source to SPIR-V with the Vulkan SDK's compilers (shader editor). */
   compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult>;
+  /**
+   * D3D12 shader editor: HLSL compiled to DXIL with dxc for the stage (`spirv` in the result holds
+   * the bytecode). `shaderModel` is the profile suffix ("6_0", the default; the pipeline's own
+   * reflection names its target). #include is resolved against the session's source roots, as for
+   * compileShader.
+   */
+  compileDxil(source: string, stage: string, entryPoint: string, shaderModel?: string): Promise<CompileShaderResult>;
   /** A SPIR-V module decompiled to GLSL and recompiled with line information, for the shader debugger. */
   decompileForDebugging(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult>;
 }

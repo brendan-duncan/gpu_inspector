@@ -30,4 +30,13 @@ else()
     if(VKINSP_BUILD_TESTS AND NOT ANDROID)
         add_subdirectory(test/triangle)
     endif()
+    # Windows also builds the Direct3D 12 capture library, its launcher and its shader tool
+    # (d3d12/README.md); the app injects the library into every local target beside the Vulkan
+    # layer, and whichever API the application uses connects.
+    if(WIN32)
+        add_subdirectory(d3d12)
+        if(VKINSP_BUILD_TESTS)
+            add_subdirectory(test/d3d12_triangle)
+        endif()
+    endif()
 endif()

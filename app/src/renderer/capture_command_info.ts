@@ -16,8 +16,12 @@ import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
 import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
-import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
+import { boundPipelineOf, isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
+import { d3d12AttributeNames, d3d12PipelineKind, d3d12ViewSubresource, isD3D12Type } from "./d3d12/d3d12_object.js";
+import { dxgiFormatShort } from "./d3d12/dxgi_format.js";
+import { isD3D12Binding } from "./d3d12/reflection.js";
+import { highlight } from "./code_editor.js";
 import { argumentBufferEntries, isArgumentBufferType } from "./metal/argument_buffer.js";
 import { renderArgumentBuffer } from "./metal/argument_buffer_view.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
@@ -26,7 +30,7 @@ import {
 } from "./vulkan/spirv_reflect.js";
 import { vertexFormat } from "./vulkan/vk_format.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
-import { stageLabel, type StageSource } from "./shader_cache.js";
+import { findBoundResource, stageLabel, type StageSource } from "./shader_cache.js";
 import { kindLabel, renderReflection } from "./shader_reflection_view.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
@@ -198,15 +202,23 @@ export class CommandInfoView {
       if (graphics) {
         if (cmdSets.DRAW.has(method)) {
           const row = new Div(container, { class: "capture-mesh-row" });
+          const api = this.panel.data.api;
           new Button(row, { label: "View Mesh", class: "btn btn-sm", callback: () => this.panel.openMesh(cmd),
-            tooltip: "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table" });
-          const metal = this.panel.data.api === "metal";
-          new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
-            tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
-          new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
-            tooltip: metal
-              ? "Step through the draw's fragment shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel"
-              : "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
+            tooltip: api === "vulkan"
+              ? "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table"
+              : "The draw's mesh in a tab: the vertices it read (VS In), as a wireframe and a table; VS Out needs a replay, which only Vulkan captures have" });
+          // The shader debugger interprets SPIR-V and MSL; DXIL has no interpreter here.
+          if (api === "d3d12") {
+            new Span(row, { text: "Shader debugging is not available for D3D12 captures", class: "text-muted font-sm capture-note" });
+          } else {
+            const metal = api === "metal";
+            new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
+              tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
+            new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
+              tooltip: metal
+                ? "Step through the draw's fragment shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel"
+                : "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
+          }
         }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
@@ -214,14 +226,18 @@ export class CommandInfoView {
       this._renderStageBuffers(container, state, [...state.stageBuffers.values()].filter((sb) => graphics ? sb.stage !== "compute" : sb.stage === "compute"));
       if (!graphics && cmdSets.DISPATCH.has(method)) {
         const row = new Div(container, { class: "capture-mesh-row" });
-        new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
-          tooltip: "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });
+        if (this.panel.data.api === "d3d12") {
+          new Span(row, { text: "Shader debugging is not available for D3D12 captures", class: "text-muted font-sm capture-note" });
+        } else {
+          new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
+            tooltip: "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });
+        }
       }
       if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
       this._renderPushConstants(container, state, state.pushConstants, token);
       if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);
     } else if (cmdSets.BIND_PIPELINE.has(method)) {
-      const pipeline = db.getObject(refId(cmd.args?.pipeline));
+      const pipeline = db.getObject(refId(boundPipelineOf(cmd.args)));
       const state = emptyDrawState(cmdSets.pipelineBindPointOf(method, cmd.args));
       state.pipelineCmd = cmd;
       state.pipeline = pipeline;
@@ -246,14 +262,17 @@ export class CommandInfoView {
       if (cmdSets.BIND_VERTEX.has(method)) this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
       this._renderStageBuffers(container, state, bound);
     } else if (cmdSets.BIND_VERTEX.has(method)) {
-      const state = bindingState(this.panel.data, db, cmd,"VK_PIPELINE_BIND_POINT_GRAPHICS");
+      const state = bindingState(this.panel.data, db, cmd, cmdSets.graphicsBindPoint);
       this._renderVertexBuffers(container, state, this._vertexBuffersOf(cmd), token);
     } else if (cmdSets.BIND_INDEX.has(method)) {
       const ib = this._indexBufferOf(cmd);
       if (ib) this._renderIndexBuffer(container, ib, null);
     } else if (cmdSets.PUSH_CONSTANT.has(method)) {
       const pc = pushConstantOf(cmd);
-      const state = bindingState(this.panel.data, db, cmd,pc && pc.stageFlags.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
+      // Vulkan names the stages ("VK_SHADER_STAGE_COMPUTE_BIT"); D3D12 root constants name the bind point ("compute").
+      const compute = !!pc && (pc.stageFlags.includes("COMPUTE") || pc.stageFlags === "compute");
+      const computePoint = cmdSets.DISPATCH.size ? cmdSets.bindPointOf([...cmdSets.DISPATCH][0]) : cmdSets.graphicsBindPoint;
+      const state = bindingState(this.panel.data, db, cmd, compute ? computePoint : cmdSets.graphicsBindPoint);
       if (pc) this._renderPushConstants(container, state, [pc], token);
     } else if (cmdSets.PASS_BEGIN.has(method) || cmdSets.PASS_END.has(method)) {
       this._renderTargets(container, cmd);
@@ -342,7 +361,9 @@ export class CommandInfoView {
     }
 
     const d = pipeline?.descriptor;
-    if (d) {
+    if (d && pipeline && isD3D12Type(pipeline.type)) {
+      this._renderD3D12PipelineState(line, pipeline, d);
+    } else if (d) {
       const stages = Array.isArray(d.pStages) ? d.pStages : (isObject(d.stage) ? [d.stage] : []);
       for (const s of stages) {
         if (!isObject(s)) continue;
@@ -383,14 +404,74 @@ export class CommandInfoView {
 
     if (Array.isArray(state.viewports) && isObject(state.viewports[0])) {
       const v = state.viewports[0];
-      new Span(line("Viewport"), { text: `${num(v.x)},${num(v.y)} ${num(v.width)}x${num(v.height)} depth ${num(v.minDepth)}..${num(v.maxDepth)}` });
+      // A VkViewport, or a D3D12_VIEWPORT (TopLeftX, TopLeftY, Width, Height, MinDepth, MaxDepth).
+      const d3d = v.Width !== undefined;
+      new Span(line("Viewport"), { text: d3d
+        ? `${num(v.TopLeftX)},${num(v.TopLeftY)} ${num(v.Width)}x${num(v.Height)} depth ${num(v.MinDepth)}..${num(v.MaxDepth)}`
+        : `${num(v.x)},${num(v.y)} ${num(v.width)}x${num(v.height)} depth ${num(v.minDepth)}..${num(v.maxDepth)}` });
     }
     if (Array.isArray(state.scissors) && isObject(state.scissors[0])) {
       const s = state.scissors[0];
-      const o = isObject(s.offset) ? s.offset : {};
-      const e = isObject(s.extent) ? s.extent : {};
-      new Span(line("Scissor"), { text: `${num(o.x)},${num(o.y)} ${num(e.width)}x${num(e.height)}` });
+      if (s.right !== undefined) {
+        // A D3D12_RECT.
+        new Span(line("Scissor"), { text: `${num(s.left)},${num(s.top)} ${num(s.right) - num(s.left)}x${num(s.bottom) - num(s.top)}` });
+      } else {
+        const o = isObject(s.offset) ? s.offset : {};
+        const e = isObject(s.extent) ? s.extent : {};
+        new Span(line("Scissor"), { text: `${num(o.x)},${num(o.y)} ${num(e.width)}x${num(e.height)}` });
+      }
     }
+  }
+
+  /**
+   * A D3D12 pipeline state's summary: the stages it carries, the root signature, the topology
+   * type, rasterizer, depth and blend state and the target formats, from its
+   * D3D12_GRAPHICS_PIPELINE_STATE_DESC (or a compute one's CS and root signature).
+   */
+  private _renderD3D12PipelineState(line: (label: string) => Div, pipeline: VulkanObject, d: ArgObject): void {
+    const db = this.db;
+    const kind = d3d12PipelineKind(pipeline);
+    new Span(line("Kind"), { text: kind === "compute" ? "compute pipeline state" : "graphics pipeline state" });
+    for (const b of pipeline.blobs) {
+      const [stage, entry = ""] = b.name.split(":");
+      const row = line(`  ${stageLabel(stage as ShaderStage)}`);
+      new Span(row, { text: `${entry || "(entry point unknown)"}`, class: "text-muted" });
+      new Span(row, { text: `  ${formatBytes(b.size)}`, class: "text-muted font-sm" });
+    }
+    const root = db.getObject(refId(d.pRootSignature));
+    if (root) objectLink(line("Root signature"), root, this._link);
+    if (kind === "compute") return;
+    if (d.PrimitiveTopologyType !== undefined) new Span(line("Topology type"), { text: fmt(d.PrimitiveTopologyType) });
+    const rs = isObject(d.RasterizerState) ? d.RasterizerState : null;
+    if (rs) {
+      new Span(line("Raster"), { text: `${fmt(rs.FillMode).toLowerCase()} cull ${fmt(rs.CullMode).toLowerCase()} ${rs.FrontCounterClockwise ? "counter-clockwise" : "clockwise"} front${num(rs.DepthBias) ? " depth bias" : ""}${rs.ConservativeRaster && !str(rs.ConservativeRaster).endsWith("_OFF") ? " conservative" : ""}` });
+    }
+    const sd = isObject(d.SampleDesc) ? d.SampleDesc : null;
+    if (sd && num(sd.Count) > 1) new Span(line("Samples"), { text: `${num(sd.Count)}x` });
+    const ds = isObject(d.DepthStencilState) ? d.DepthStencilState : null;
+    if (ds) {
+      const write = str(ds.DepthWriteMask).endsWith("_ALL");
+      new Span(line("Depth"), { text: `test ${ds.DepthEnable ? "on" : "off"} write ${ds.DepthEnable && write ? "on" : "off"}${ds.DepthEnable ? ` ${fmt(ds.DepthFunc)}` : ""}${ds.DepthBoundsTestEnable ? " bounds" : ""}` });
+      if (ds.StencilEnable) {
+        const f = isObject(ds.FrontFace) ? ds.FrontFace : {};
+        new Span(line("Stencil"), { text: `on  front ${fmt(f.StencilFunc)} pass ${fmt(f.StencilPassOp)} fail ${fmt(f.StencilFailOp)} mask ${num(ds.StencilReadMask)}/${num(ds.StencilWriteMask)}` });
+      }
+    }
+    const formats = Array.isArray(d.RTVFormats) ? d.RTVFormats : isObject(d.RTVFormats) && Array.isArray(d.RTVFormats.RTFormats) ? d.RTVFormats.RTFormats : [];
+    const targets = num(d.NumRenderTargets) || (isObject(d.RTVFormats) ? num(d.RTVFormats.NumRenderTargets) : formats.length);
+    const blend = isObject(d.BlendState) ? d.BlendState : null;
+    const blends = blend && Array.isArray(blend.RenderTarget) ? blend.RenderTarget : [];
+    for (let i = 0; i < targets; i++) {
+      const format = dxgiFormatShort(str(formats[i]));
+      const att = isObject(blends[blend?.IndependentBlendEnable ? i : 0]) ? blends[blend?.IndependentBlendEnable ? i : 0] as ArgObject : null;
+      const text = att?.BlendEnable
+        ? `blend ${fmt(att.SrcBlend)} ${fmt(att.BlendOp)} ${fmt(att.DestBlend)}, alpha ${fmt(att.SrcBlendAlpha)} ${fmt(att.BlendOpAlpha)} ${fmt(att.DestBlendAlpha)}`
+        : att?.LogicOpEnable ? `logic op ${fmt(att.LogicOp)}` : "no blend";
+      const mask = att ? ` write ${typeof att.RenderTargetWriteMask === "number" ? `0x${att.RenderTargetWriteMask.toString(16)}` : fmtFlags(att.RenderTargetWriteMask) || "0"}` : "";
+      new Span(line(`Color ${i}`), { text: `${format || "UNKNOWN"}  ${text}${mask}` });
+    }
+    if (d.DSVFormat !== undefined && !str(d.DSVFormat).endsWith("_UNKNOWN")) new Span(line("Depth format"), { text: dxgiFormatShort(str(d.DSVFormat)) });
+    if (blend?.AlphaToCoverageEnable) new Span(line("Alpha to coverage"), { text: "on" });
   }
 
   // ---------------------------------------------------------------------------------------
@@ -416,6 +497,7 @@ export class CommandInfoView {
     // fetched when the group is first opened (from the layer, or the capture file).
     const details = new Div(body);
     let loaded = false;
+    const d3d12 = isD3D12Type(source.object.type);
     const load = async (): Promise<void> => {
       if (loaded) return;
       loaded = true;
@@ -424,6 +506,15 @@ export class CommandInfoView {
       status.remove();
       if (!data) {
         new Div(details, { text: "Shader code not available.", class: "text-muted font-sm" });
+        return;
+      }
+      if (d3d12) {
+        // DXBC / DXIL: the HLSL the compiler embedded (-Zi -Qembed_debug), read by the app's
+        // shader tool; the disassembly is in the pipeline's Inspect section.
+        const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });
+        const r = await window.inspector.shaderText(data, "hlsl");
+        if (r.ok) new Widget("pre", sourceGrp.body, { html: highlight(r.text, "hlsl"), class: "shader-text" });
+        else new Div(sourceGrp.body, { text: r.text || "No embedded HLSL source: compile with -Zi -Qembed_debug to see it here. The pipeline's Inspect section shows the disassembly.", class: "text-muted font-sm" });
         return;
       }
       const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });
@@ -456,7 +547,8 @@ export class CommandInfoView {
   private _renderDescriptorSets(container: Widget, state: DrawState, sets: BoundSet[], token: number): void {
     if (!sets.length) {
       // Metal has no descriptor sets: its bindings are the stage buffers, textures and samplers.
-      if (this.panel.data.api !== "metal") new Div(container, { text: "No descriptor sets bound.", class: "text-muted capture-note" });
+      if (this.panel.data.api === "d3d12") new Div(container, { text: "No root parameters bound.", class: "text-muted capture-note" });
+      else if (this.panel.data.api !== "metal") new Div(container, { text: "No descriptor sets bound.", class: "text-muted capture-note" });
       return;
     }
     const host = new Div(container);
@@ -477,34 +569,49 @@ export class CommandInfoView {
     const set = bound.set;
     const setObj = db.getObject(refId(set.descriptorSet));
     const pushed = !set.descriptorSet;
-    const grp = new collapsible(container, { label: `Descriptor Set ${set.set}: ${pushed ? "push descriptors" : setObj?.name ?? "(destroyed)"}  (${set.bindings.length} bindings)`, collapsed: false });
+    const d3d12 = this.panel.data.api === "d3d12";
+    // D3D12: a set is a root parameter — a descriptor table into a heap, or a root view (no heap).
+    const label = d3d12
+      ? `Root parameter ${set.set}: ${pushed ? "root view" : `table in ${setObj?.name ?? "(destroyed heap)"}`}  (${set.bindings.length} range${set.bindings.length === 1 ? "" : "s"})`
+      : `Descriptor Set ${set.set}: ${pushed ? "push descriptors" : setObj?.name ?? "(destroyed)"}  (${set.bindings.length} bindings)`;
+    const grp = new collapsible(container, { label, collapsed: false });
     const head = new Div(grp.body, { class: "font-md text-muted descriptor-set-head" });
     if (setObj) {
-      new Span(head, { text: "Set: " });
+      new Span(head, { text: d3d12 ? "Heap: " : "Set: " });
       objectLink(head, setObj, this._link);
     }
     const layout = db.getObject(refId(set.layout));
     if (layout) {
-      new Span(head, { text: "  Layout: " });
+      new Span(head, { text: d3d12 ? "  Root signature: " : "  Layout: " });
       objectLink(head, layout, this._link);
     }
     if (bound.cmd !== state.pipelineCmd) {
       new Span(head, { text: `  bound by #${bound.cmd.index} ${bound.cmd.method.replace(/^vkCmd/, "")}`, class: "text-muted" });
     }
-    if (!set.bindings.length) new Div(grp.body, { text: "Contents unknown (the set was not tracked).", class: "text-muted" });
+    if (!set.bindings.length) new Div(grp.body, { text: d3d12 ? "Contents unknown (the table's heap slots were not tracked)." : "Contents unknown (the set was not tracked).", class: "text-muted" });
     for (const binding of set.bindings) this._renderBinding(grp.body, state, set, binding, stages);
+  }
+
+  /** "t3, space 1": the shader register a D3D12 binding's descriptor is at. */
+  private _registerText(binding: CaptureDescriptorBinding, element: number): string {
+    if (binding.register === undefined) return "";
+    const letter = binding.type.endsWith("_CBV") ? "b" : binding.type.endsWith("_SRV") ? "t" : binding.type.endsWith("_UAV") ? "u" : "s";
+    return `${letter}${num(binding.register) + element}${binding.space ? `, space ${binding.space}` : ""}`;
   }
 
   private _renderBinding(container: Widget, state: DrawState, set: CaptureDescriptorSet, binding: CaptureDescriptorBinding, stages: StageReflection[]): void {
     const db = this.db;
-    const found = findResource(stages, set.set, binding.binding);
-    const res = found?.resource ?? null;
-    const shaderText = res ? `  ${res.name}: ${res.typeName}` : "";
+    const d3d12 = isD3D12Binding(binding);
     const count = binding.descriptors.length;
     const shown = Math.min(count, 32);
     for (let k = 0; k < shown; k++) {
+      // A D3D12 range covers a run of registers, so each descriptor may feed a different declaration.
+      const found = findResource(stages, set.set, binding, d3d12 ? k : 0);
+      const res = found?.resource ?? null;
+      const shaderText = res ? `  ${res.name}: ${res.typeName}` : "";
       const d = binding.descriptors[k];
       const index = count > 1 ? `[${k}]` : "";
+      const register = d3d12 ? `  ${this._registerText(binding, k)}` : "";
       let resourceText = "(not written)";
       let sizeText = "";
       if (d) {
@@ -512,6 +619,12 @@ export class CommandInfoView {
           const buf = db.getObject(refId(d.buffer));
           resourceText = buf ? buf.name : "(destroyed buffer)";
           sizeText = `  ${formatBytes(num(d.range))}`;
+        } else if (d.resource !== undefined) {
+          // D3D12: a texture SRV / UAV names its resource outright (there is no view object).
+          const image = db.getObject(refId(d.resource));
+          resourceText = image ? image.name : "(destroyed resource)";
+        } else if (d.samplerDesc !== undefined && d.samplerDesc) {
+          resourceText = `${fmt(d.samplerDesc.Filter)} ${fmt(d.samplerDesc.AddressU)}`.trim();
         } else if (d.imageView !== undefined) {
           const view = db.getObject(refId(d.imageView));
           const image = db.getObject(refId(view?.descriptor?.image));
@@ -530,7 +643,7 @@ export class CommandInfoView {
       }
       const isBuffer = !!d && d.buffer !== undefined;
       const grp = new collapsible(container, {
-        label: `Binding ${binding.binding}${index}: ${fmt(binding.type)}  ${resourceText}${sizeText}${shaderText}`,
+        label: `${d3d12 ? "Range" : "Binding"} ${binding.binding}${index}: ${fmt(binding.type)}${register}  ${resourceText}${sizeText}${shaderText}`,
         collapsed: !isBuffer,
         class: "descriptor-binding",
       });
@@ -539,13 +652,13 @@ export class CommandInfoView {
         continue;
       }
       if (binding.stages) new Div(grp.body, { text: `Stages: ${fmtFlags(binding.stages)}`, class: "text-muted font-sm" });
-      if (isBuffer) this._renderBufferBinding(grp.body, state, set, binding, d, res);
+      if (isBuffer) this._renderBufferBinding(grp.body, state, set, binding, d, res, k);
       else this._renderImageBinding(grp, d);
     }
-    if (shown < count) new Div(container, { text: `... ${count - shown} more descriptors in binding ${binding.binding}`, class: "text-muted capture-note" });
+    if (shown < count) new Div(container, { text: `... ${count - shown} more descriptors in ${d3d12 ? "range" : "binding"} ${binding.binding}`, class: "text-muted capture-note" });
   }
 
-  private _renderBufferBinding(body: Widget, state: DrawState, set: CaptureDescriptorSet, binding: CaptureDescriptorBinding, d: CaptureDescriptor, res: ShaderResource | null): void {
+  private _renderBufferBinding(body: Widget, state: DrawState, set: CaptureDescriptorSet, binding: CaptureDescriptorBinding, d: CaptureDescriptor, res: ShaderResource | null, element = 0): void {
     const db = this.db;
     const buf = db.getObject(refId(d.buffer));
     const row = new Div(body, { class: "font-md" });
@@ -553,12 +666,21 @@ export class CommandInfoView {
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(destroyed)" });
     const dyn = d.dynamicOffset !== undefined ? `  dynamic offset ${d.dynamicOffset}  (effective ${num(d.offset) + num(d.dynamicOffset)})` : "";
     new Span(row, { text: `  offset ${num(d.offset)}  range ${num(d.range)}${dyn}`, class: "text-muted" });
-    if (buf?.descriptor) new Div(body, { text: `${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted font-sm" });
+    if (buf?.descriptor) new Div(body, { text: bufferSummary(buf.descriptor), class: "text-muted font-sm" });
     if (buf) this._renderAffectedBy(body, buf.id);
+    // D3D12: a buffer SRV / UAV's view description says how the shader sees it (structured, raw, typed).
+    if (isObject(d.view)) {
+      const v = d.view;
+      const b = isObject(v.Buffer) ? v.Buffer : null;
+      const parts = [fmt(v.Format), b ? `${num(b.NumElements)} elements${num(b.StructureByteStride) ? ` of ${num(b.StructureByteStride)} bytes` : ""}` : "", b && str(b.Flags).includes("RAW") ? "raw" : ""].filter((p) => p && p !== "UNKNOWN");
+      if (parts.length) new Div(body, { text: `View: ${parts.join(", ")}`, class: "text-muted font-sm" });
+    }
 
     const captured = this.panel.data.buffer(d.data);
-    const key = `${state.pipeline?.id ?? 0}:${set.set}:${binding.binding}`;
-    const kind = binding.type.includes("STORAGE") ? "storage" : "uniform";
+    const key = `${state.pipeline?.id ?? 0}:${set.set}:${binding.binding}:${element}`;
+    // Vulkan storage buffers, and D3D12 SRV / UAV buffers (structured, raw, typed), are "storage"
+    // to the buffer views: std430-style layouts; uniform / constant buffers are std140-style.
+    const kind = binding.type.includes("STORAGE") || binding.type.endsWith("_UAV") || binding.type.endsWith("_SRV") ? "storage" : "uniform";
     if (captured && !captured.info.error && captured.info.size < num(d.range)) {
       const bufSize = num(buf?.descriptor?.size);
       new Div(body, { class: "inspect_info_error", text:
@@ -598,7 +720,8 @@ export class CommandInfoView {
         for (const s of c.descriptors.sets) {
           const buffers = new Set<number>();
           for (const b of s.bindings) {
-            if (!b.type.includes("STORAGE_BUFFER")) continue;
+            // Vulkan storage buffers, and D3D12 UAVs (a table range or a root UAV), are what a shader writes.
+            if (!b.type.includes("STORAGE_BUFFER") && !b.type.endsWith("_UAV")) continue;
             for (const d of b.descriptors) {
               const id = refId(d?.buffer);
               if (id !== null) buffers.add(id);
@@ -665,7 +788,7 @@ export class CommandInfoView {
     for (const c of commands) {
       const li = new Widget("li", ul);
       const link = new Span(li, { text: `#${c.index} ${c.method.replace(/^vkCmd/, "")}`, class: "dependency_link" });
-      const how = BUFFER_WRITE_METHODS[c.method] ? "transfer destination" : "bound as a storage buffer";
+      const how = BUFFER_WRITE_METHODS[c.method] ? "transfer destination" : this.panel.data.api === "d3d12" ? "bound as a UAV" : "bound as a storage buffer";
       new Span(li, { text: `  ${how}`, class: "text-muted font-sm" });
       link.element.onclick = () => this.panel.selectCommand(c.index);
     }
@@ -766,6 +889,45 @@ export class CommandInfoView {
   private _renderImageBinding(grp: collapsible, d: CaptureDescriptor): void {
     const db = this.db;
     const body = grp.body;
+    if (d.resource !== undefined) {
+      // D3D12: the resource itself, with the SRV / UAV description saying which mips and slices.
+      const image = db.getObject(refId(d.resource));
+      const row = new Div(body, { class: "font-md" });
+      new Span(row, { text: "Resource: ", class: "text-muted" });
+      if (image) {
+        objectLink(row, image, this._link);
+        new Span(row, { text: `  ${image.summary(db)}`, class: "text-muted" });
+      } else {
+        new Span(row, { text: "(destroyed)" });
+      }
+      const sub = d3d12ViewSubresource(d.view);
+      if (isObject(d.view)) {
+        const v = d.view;
+        const tex = Object.values(v).find((x) => isObject(x) && (x.MipSlice !== undefined || x.MostDetailedMip !== undefined)) as ArgObject | undefined;
+        const mips = tex && tex.MipLevels !== undefined ? ` ${num(tex.MipLevels) === 0xffffffff ? "all" : num(tex.MipLevels)} mips from ${sub.mip}` : tex?.MipSlice !== undefined ? ` mip ${sub.mip}` : "";
+        const slices = tex && tex.ArraySize !== undefined ? ` slices ${sub.slice}..${sub.slice + num(tex.ArraySize) - 1}` : "";
+        new Div(body, { text: `View: ${fmt(v.ViewDimension)} ${fmt(v.Format)}${mips}${slices}`.replace(" UNKNOWN", ""), class: "text-muted font-sm" });
+      }
+      const captured = this.panel.data.capturedImage(d.data);
+      if (captured && !captured.info.error) this._capturedThumbnail(grp, captured, image);
+      else if (image) {
+        if (captured?.info.error) new Div(body, { text: `Not read back by the capture: ${captured.info.error}`, class: "text-muted font-sm" });
+        this._thumbnail(grp, null, image, sub.mip, sub.slice);
+      }
+    }
+    if (d.samplerDesc !== undefined && d.samplerDesc) {
+      // D3D12: a sampler is a heap slot with no object behind it; its description is all there is.
+      const s = d.samplerDesc;
+      new Div(body, { text: "Sampler:", class: "text-muted font-md" });
+      const list = new Widget("ul", body, { class: "dependency-list" });
+      const item = (label: string, value: string): void => { if (value) new Widget("li", list, { text: `${label}: ${value}`, class: "font-sm" }); };
+      item("Filter", fmt(s.Filter));
+      item("Address", `${fmt(s.AddressU)} / ${fmt(s.AddressV)} / ${fmt(s.AddressW)}`);
+      item("LOD", `${num(s.MinLOD)} .. ${num(s.MaxLOD) >= 3.4e38 ? "max" : num(s.MaxLOD)}${num(s.MipLODBias) ? `, bias ${num(s.MipLODBias)}` : ""}`);
+      if (str(s.Filter).includes("ANISOTROPIC")) item("Max anisotropy", String(num(s.MaxAnisotropy)));
+      if (str(s.Filter).includes("COMPARISON")) item("Comparison", fmt(s.ComparisonFunc));
+      if (Array.isArray(s.BorderColor) && str(s.AddressU).includes("BORDER")) item("Border color", s.BorderColor.map(num).join(", "));
+    }
     if (d.imageView !== undefined) {
       const view = db.getObject(refId(d.imageView));
       const image = db.getObject(refId(view?.descriptor?.image));
@@ -784,10 +946,11 @@ export class CommandInfoView {
       if (captured && !captured.info.error) this._capturedThumbnail(grp, captured, image);
       else if (view && image) {
         if (captured?.info.error) new Div(body, { text: `Not read back by the capture: ${captured.info.error}`, class: "text-muted font-sm" });
-        this._thumbnail(grp, view, image);
+        const range = isObject(view.descriptor?.subresourceRange) ? view.descriptor.subresourceRange : null;
+        this._thumbnail(grp, view, image, num(range?.baseMipLevel), num(range?.baseArrayLayer));
       }
     }
-    if (d.sampler !== undefined) {
+    if (d.sampler !== undefined && d.samplerDesc === undefined) {
       const sampler = db.getObject(refId(d.sampler));
       const row = new Div(body, { class: "font-md" });
       new Span(row, { text: `Sampler${d.immutable ? " (immutable)" : ""}: `, class: "text-muted" });
@@ -836,8 +999,12 @@ export class CommandInfoView {
     canvas.onclick = toggle;
   }
 
-  /** Current contents of the image (read from the running application when the binding is expanded). */
-  private _thumbnail(grp: collapsible, view: VulkanObject, image: VulkanObject): void {
+  /**
+   * Current contents of the image (read from the running application when the binding is
+   * expanded): a Vulkan image through its view's base subresource, a D3D12 resource (no view
+   * object) at the mip and slice its descriptor names.
+   */
+  private _thumbnail(grp: collapsible, _view: VulkanObject | null, image: VulkanObject, mip: number, layer: number): void {
     const canvas = document.createElement("canvas");
     canvas.className = "capture-thumb";
     canvas.title = "Current contents of the image (read from the application, not from the capture)";
@@ -845,7 +1012,6 @@ export class CommandInfoView {
     const list = this._thumbs.get(image.id) ?? [];
     list.push(canvas);
     this._thumbs.set(image.id, list);
-    const range = isObject(view.descriptor?.subresourceRange) ? view.descriptor.subresourceRange : null;
     const request = (): void => {
       if (this._thumbRequested.has(image.id)) return;
       this._thumbRequested.add(image.id);
@@ -853,7 +1019,7 @@ export class CommandInfoView {
         canvas.title = "Not connected: the image cannot be read";
         return;
       }
-      void this.panel.window.send({ action: "RequestImage", id: image.id, mip: num(range?.baseMipLevel), layer: num(range?.baseArrayLayer) });
+      void this.panel.window.send({ action: "RequestImage", id: image.id, mip, layer });
     };
     if (grp.collapsed) grp.onExpanded.addListener(request);
     else request();
@@ -893,12 +1059,14 @@ export class CommandInfoView {
     const row = new Div(body, { class: "font-md" });
     new Span(row, { text: "Buffer: ", class: "text-muted" });
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
-    if (buf?.descriptor) new Span(row, { text: `  ${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted" });
+    if (buf?.descriptor) new Span(row, { text: `  ${bufferSummary(buf.descriptor)}`, class: "text-muted" });
     if (vb.cmd !== state.pipelineCmd) new Div(body, { text: `bound by #${vb.cmd.index} ${vb.cmd.method.replace(/^vkCmd/, "")}`, class: "text-muted font-sm" });
     if (buf) this._renderAffectedBy(body, buf.id);
 
+    // Attributes are named by the vertex shader's inputs; a D3D12 input layout names them itself ("TEXCOORD0").
     const inputs = vertexReflection?.entryPoint()?.inputs ?? [];
-    const nameOf = (location: number): string => inputs.find((i) => i.location === location)?.name || `location${location}`;
+    const semantic = state.pipeline && isD3D12Type(state.pipeline.type) ? d3d12AttributeNames(state.pipeline) : null;
+    const nameOf = (location: number): string => semantic?.get(location) || inputs.find((i) => i.location === location)?.name || `location${location}`;
     if (!layout) {
       new Div(body, { text: "No vertex input layout for this binding in the bound pipeline.", class: "text-muted" });
     } else {
@@ -1015,7 +1183,7 @@ export class CommandInfoView {
     const row = new Div(body, { class: "font-md" });
     new Span(row, { text: "Buffer: ", class: "text-muted" });
     if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
-    if (buf?.descriptor) new Span(row, { text: `  ${formatBytes(num(buf.descriptor.size))}  ${fmtFlags(buf.descriptor.usage)}`, class: "text-muted" });
+    if (buf?.descriptor) new Span(row, { text: `  ${bufferSummary(buf.descriptor)}`, class: "text-muted" });
     if (buf) this._renderAffectedBy(body, buf.id);
 
     const captured = this.panel.data.buffer(ib.dataId);
@@ -1033,8 +1201,8 @@ export class CommandInfoView {
       return;
     }
     new Div(body, { text: `${data.byteLength} bytes captured${captured.info.originalSize ? ` of ${captured.info.originalSize} (truncated)` : ""}`, class: "text-muted font-sm" });
-    const firstIndex = draw && draw.method === "vkCmdDrawIndexed" ? num(draw.args?.firstIndex) : 0;
-    const indexCount = draw && draw.method === "vkCmdDrawIndexed" ? num(draw.args?.indexCount) : 0;
+    const firstIndex = draw && draw.method === "vkCmdDrawIndexed" ? num(draw.args?.firstIndex) : draw && draw.method === "DrawIndexedInstanced" ? num(draw.args?.StartIndexLocation) : 0;
+    const indexCount = draw && draw.method === "vkCmdDrawIndexed" ? num(draw.args?.indexCount) : draw && draw.method === "DrawIndexedInstanced" ? num(draw.args?.IndexCountPerInstance) : 0;
     const dataUi = new Div(body, { class: "buffer-data" });
     const button = new Button(null, { label: "Show Data", class: "btn btn-sm", callback: () => {
       if (dataUi.element.childElementCount) {
@@ -1052,6 +1220,10 @@ export class CommandInfoView {
     const db = this.db;
     const a = cmd.args;
     if (!a) return;
+    if (cmd.method === "ExecuteIndirect") {
+      this._renderExecuteIndirect(container, cmd, a);
+      return;
+    }
     const buf = db.getObject(refId(a.buffer));
     const grp = new collapsible(container, { label: `Indirect Arguments: ${buf ? buf.name : "(none)"}  offset ${num(a.offset)}`, collapsed: false });
     const body = grp.body;
@@ -1074,6 +1246,113 @@ export class CommandInfoView {
     const count = cmd.method === "vkCmdDispatchIndirect" ? 1 : Math.max(0, num(a.drawCount));
     renderTypedData(new Widget("ul", new Div(body, { class: "buffer-data" }), { class: "buffer-root" }),
       { kind: "array", element, count, stride, size: count * stride }, captured.data, 0, 10);
+  }
+
+  /**
+   * ExecuteIndirect's argument buffer, decoded through its command signature: each command is
+   * the signature's arguments in order, ByteStride bytes apart, MaxCommandCount of them (or the
+   * count buffer's value, when the capture read it back).
+   */
+  private _renderExecuteIndirect(container: Widget, cmd: CaptureCommand, a: ArgObject): void {
+    const db = this.db;
+    const signature = db.getObject(refId(a.pCommandSignature));
+    const buf = db.getObject(refId(a.pArgumentBuffer));
+    const countBuf = db.getObject(refId(a.pCountBuffer));
+    const grp = new collapsible(container, { label: `Indirect Arguments: ${buf ? buf.name : "(none)"}  offset ${num(a.ArgumentBufferOffset)}`, collapsed: false });
+    const body = grp.body;
+    const row = new Div(body, { class: "font-md" });
+    new Span(row, { text: "Buffer: ", class: "text-muted" });
+    if (buf) objectLink(row, buf, this._link); else new Span(row, { text: "(none)" });
+    if (buf) this._renderAffectedBy(body, buf.id);
+    const sigRow = new Div(body, { class: "font-md" });
+    new Span(sigRow, { text: "Command signature: ", class: "text-muted" });
+    if (signature) objectLink(sigRow, signature, this._link); else new Span(sigRow, { text: "(none)" });
+    if (countBuf) {
+      const countRow = new Div(body, { class: "font-md" });
+      new Span(countRow, { text: "Count buffer: ", class: "text-muted" });
+      objectLink(countRow, countBuf, this._link);
+      new Span(countRow, { text: `  offset ${num(a.CountBufferOffset)}`, class: "text-muted" });
+    }
+    const captured = this.panel.data.buffer(cmd.bufferData?.[0]);
+    if (!captured || captured.info.error) {
+      new Div(body, { text: captured?.info.error ? `Contents not captured: ${captured.info.error}` : "Contents were not captured.", class: "text-muted" });
+      return;
+    }
+    if (!captured.data) {
+      new Div(body, { text: "Loading contents...", class: "text-muted" });
+      return;
+    }
+    const desc = signature?.descriptor ?? null;
+    const argDescs = desc && Array.isArray(desc.pArgumentDescs) ? desc.pArgumentDescs.filter(isObject) : [];
+    if (!desc || !argDescs.length) {
+      new Div(body, { text: "The command signature's layout is not known: raw view.", class: "text-muted font-sm" });
+      this._renderData(new Div(body, { class: "buffer-data" }), null, captured.data, 16);
+      return;
+    }
+    // The count: the count buffer's first uint when captured, else MaxCommandCount.
+    let count = num(a.MaxCommandCount);
+    const counted = a.pCountBuffer ? this.panel.data.buffer(cmd.bufferData?.[1]) : null;
+    if (counted?.data && counted.data.byteLength >= 4) {
+      const read = new DataView(counted.data.buffer, counted.data.byteOffset, counted.data.byteLength).getUint32(0, true);
+      count = Math.min(count, read);
+      new Div(body, { text: `Count buffer holds ${read}; up to ${num(a.MaxCommandCount)} commands.`, class: "text-muted font-sm" });
+    }
+    // One struct per command: the signature's arguments in order, then padding to ByteStride.
+    const members: StructMember[] = [];
+    let offset = 0;
+    const uint = (name: string, signed = false): StructMember => ({ name, offset: 0, type: { kind: "scalar", base: signed ? "int" : "uint", width: 32, size: 4 } });
+    const push = (m: StructMember, size = 4): void => { m.offset = offset; members.push(m); offset += size; };
+    argDescs.forEach((arg, i) => {
+      const type = str(arg.Type).replace(/^D3D12_INDIRECT_ARGUMENT_TYPE_/, "");
+      const prefix = argDescs.length > 1 ? `arg${i}.` : "";
+      switch (type) {
+        case "DRAW":
+          for (const f of ["VertexCountPerInstance", "InstanceCount", "StartVertexLocation", "StartInstanceLocation"]) push(uint(prefix + f));
+          break;
+        case "DRAW_INDEXED":
+          for (const f of ["IndexCountPerInstance", "InstanceCount", "StartIndexLocation", "BaseVertexLocation", "StartInstanceLocation"]) push(uint(prefix + f, f === "BaseVertexLocation"));
+          break;
+        case "DISPATCH":
+        case "DISPATCH_MESH":
+          for (const f of ["ThreadGroupCountX", "ThreadGroupCountY", "ThreadGroupCountZ"]) push(uint(prefix + f));
+          break;
+        case "CONSTANT": {
+          const c = isObject(arg.Constant) ? arg.Constant : null;
+          const n = Math.max(1, num(c?.Num32BitValuesToSet));
+          push({ name: `${prefix}constants[${num(c?.RootParameterIndex)}]`, offset: 0, type: { kind: "array", element: { kind: "scalar", base: "uint", width: 32, size: 4 }, count: n, stride: 4, size: n * 4 } }, n * 4);
+          break;
+        }
+        case "VERTEX_BUFFER_VIEW":
+          push({ name: `${prefix}BufferLocation`, offset: 0, type: { kind: "scalar", base: "uint", width: 64, size: 8 } }, 8);
+          push(uint(`${prefix}SizeInBytes`));
+          push(uint(`${prefix}StrideInBytes`));
+          break;
+        case "INDEX_BUFFER_VIEW":
+          push({ name: `${prefix}BufferLocation`, offset: 0, type: { kind: "scalar", base: "uint", width: 64, size: 8 } }, 8);
+          push(uint(`${prefix}SizeInBytes`));
+          push(uint(`${prefix}Format`));
+          break;
+        case "CONSTANT_BUFFER_VIEW":
+        case "SHADER_RESOURCE_VIEW":
+        case "UNORDERED_ACCESS_VIEW":
+          push({ name: `${prefix}${type.toLowerCase().replace(/_/g, " ")} address`, offset: 0, type: { kind: "scalar", base: "uint", width: 64, size: 8 } }, 8);
+          break;
+        case "DISPATCH_RAYS":
+          // A D3D12_DISPATCH_RAYS_DESC: four address ranges and the grid; shown as words.
+          push({ name: `${prefix}DispatchRays`, offset: 0, type: { kind: "array", element: { kind: "scalar", base: "uint", width: 32, size: 4 }, count: 26, stride: 4, size: 104 } }, 104);
+          break;
+        default:
+          push({ name: `${prefix}${type.toLowerCase()}`, offset: 0, type: { kind: "scalar", base: "uint", width: 32, size: 4 } });
+          break;
+      }
+    });
+    const stride = Math.max(offset, num(desc.ByteStride));
+    const element: StructType = { kind: "struct", name: signature?.name ?? "Command", size: stride, members };
+    const available = Math.floor(Math.max(0, captured.data.byteLength - num(a.ArgumentBufferOffset)) / Math.max(1, stride));
+    const shown = Math.min(count, available);
+    if (shown < count) new Div(body, { text: `The captured range holds ${shown} of ${count} commands.`, class: "text-muted font-sm" });
+    renderTypedData(new Widget("ul", new Div(body, { class: "buffer-data" }), { class: "buffer-root" }),
+      { kind: "array", element, count: shown, stride, size: shown * stride }, captured.data, 0, 10);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1137,11 +1416,21 @@ export class CommandInfoView {
 
 // ---------------------------------------------------------------------------------------------
 
-function findResource(stages: StageReflection[], set: number, binding: number): { resource: ShaderResource; source: StageSource } | null {
+function findResource(stages: StageReflection[], set: number, binding: CaptureDescriptorBinding, element = 0): { resource: ShaderResource; source: StageSource } | null {
   for (const s of stages) {
-    const r = s.reflection?.findResource(set, binding);
+    const r = findBoundResource(s.reflection, set, binding, element);
     if (r) return { resource: r, source: s.source };
   }
   return null;
+}
+
+/** "64.0 KB  VERTEX_BUFFER | TRANSFER_DST" for a VkBuffer, "64.0 KB  buffer" for a D3D12 resource, or a Metal buffer's length. */
+function bufferSummary(d: ArgObject): string {
+  if (d.Width !== undefined && d.Dimension !== undefined) {
+    const shape = str(d.Dimension) === "D3D12_RESOURCE_DIMENSION_BUFFER" ? "buffer" : fmt(d.Dimension).toLowerCase();
+    return `${formatBytes(num(d.Width))}  ${shape}${d.Flags && d.Flags !== "0" && str(d.Flags) !== "D3D12_RESOURCE_FLAG_NONE" ? `  ${fmtFlags(d.Flags)}` : ""}`;
+  }
+  if (d.length !== undefined) return `${formatBytes(num(d.length))}  ${fmt(d.storageMode)}`;
+  return `${formatBytes(num(d.size))}  ${fmtFlags(d.usage)}`;
 }
 

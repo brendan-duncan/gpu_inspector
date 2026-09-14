@@ -1,12 +1,14 @@
 // Shader reflection on demand: fetches an object's SPIR-V payload from the layer (RequestBlob)
 // once, parses it, and keeps the result for every later draw that uses the same shader. Also
 // where each stage of a pipeline keeps its code, and which pipelines a capture's draws used.
-import { reflectSpirv, type ShaderReflection, type ShaderStage } from "./vulkan/spirv_reflect.js";
+import { reflectSpirv, type ShaderReflection, type ShaderResource, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { isObject, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
-import { isAction } from "./command_sets.js";
+import { isAction, boundPipelineOf } from "./command_sets.js";
+import { d3d12Reflection, findD3D12Resource, hasD3D12Reflection, isD3D12Binding } from "./d3d12/reflection.js";
+import { isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
-import type { ArgObject, CaptureCommand, UiRequest } from "../shared/protocol.js";
+import type { ArgObject, CaptureCommand, CaptureDescriptorBinding, UiRequest } from "../shared/protocol.js";
 
 /** Where a pipeline stage's code comes from: a blob of the pipeline or of its shader module. */
 export interface StageSource {
@@ -111,14 +113,29 @@ export function pipelineStages(pipeline: VulkanObject, db: ObjectLookup): StageS
   });
   // A pipeline linked from graphics pipeline libraries names none of their stages in its own create
   // info: the layer attaches their code to it ("fragment:main"), so those payloads are its stages too.
+  // A D3D12 pipeline state names its stages only through its payloads too ("vertex:VSMain"), and
+  // the library's ReplaceShader takes the UI's stage name, so that is what its stageFlag is.
+  const d3d12 = isD3D12Type(pipeline.type ?? "");
   pipeline.blobs.forEach((b, blobIndex) => {
     const [stage, entry = "main"] = b.name.split(":");
     const entryPoint = entry.replace(/#\d+$/, "");
     const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
     if (!stageFlag || out.some((s) => s.stage === stage)) return;
-    out.push({ stage: stage as ShaderStage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
+    out.push({ stage: stage as ShaderStage, stageFlag: d3d12 ? stage : stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
   });
   return out;
+}
+
+/**
+ * The reflected resource a bound descriptor feeds. Vulkan and Metal declare resources by set and
+ * binding, which the snapshot's set and binding index name directly; a D3D12 snapshot's binding
+ * is a root parameter's range, keyed by register and space, and `element` says which descriptor
+ * of the range (d3d12/reflection.ts).
+ */
+export function findBoundResource(reflection: ShaderReflection | null | undefined, set: number, binding: CaptureDescriptorBinding, element = 0): ShaderResource | null {
+  if (!reflection) return null;
+  if (isD3D12Binding(binding)) return findD3D12Resource(reflection, binding, element);
+  return reflection.findResource(set, binding.binding);
 }
 
 /**
@@ -188,7 +205,7 @@ export class ProgramTracker {
     if (!a) return false;
     const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
     if (sets.BIND_PIPELINE.has(c.method)) {
-      const id = refId(a.pipeline);
+      const id = refId(boundPipelineOf(a));
       const at = `${stream}:${sets.pipelineBindPointOf(c.method, a)}`;
       this._shaders.delete(at);
       if (id !== null) this._bound.set(at, id);
@@ -259,6 +276,14 @@ export class ShaderReflectionCache {
     const done = this._done.get(key);
     if (done !== undefined) return Promise.resolve(done);
     if (blobIndex < 0 || blobIndex >= object.blobs.length) return Promise.resolve(null);
+    // A D3D12 pipeline's reflection came with the object (the library reflects DXBC/DXIL in the
+    // process): read it off the descriptor for the payload's stage, no fetch needed.
+    if (hasD3D12Reflection(object)) {
+      const stage = object.blobs[blobIndex].name.split(":")[0] as ShaderStage;
+      const reflection = d3d12Reflection(object, stage);
+      this._done.set(key, reflection);
+      return Promise.resolve(reflection);
+    }
     return new Promise((resolve) => {
       const waiters = this._pending.get(key);
       if (waiters) {

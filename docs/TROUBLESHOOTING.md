@@ -17,6 +17,40 @@ the layer library.
 (`mesa-vulkan-drivers` for AMD and Intel on Linux, NVIDIA's proprietary driver for NVIDIA; the
 normal graphics driver on Windows). Nothing in the inspector works until a driver is present.
 
+## Direct3D 12
+
+**The target starts but never connects.** Look at the **Log** tab first. The launcher writes a
+line starting with `dxinsp:` when it could not inject the library — a 32-bit executable, a
+protected process, or `dxinsp_capture.dll` not found — and the target then runs without it. If
+the Log tab says the library was injected and nothing connects, the application is probably not
+a D3D12 one: a Vulkan application connects through the layer, a D3D11 or OpenGL one through
+nothing. Tick **Layer log** to see the library's own output.
+
+**"D3D12 capture library not found" in the Log tab.** `dxinsp_capture.dll` and
+`dxinsp_launch.exe` are looked for next to a packaged app and in `build/bin` and
+`build/bin/{Release,RelWithDebInfo,Debug}`. Build them ([Building from source](BUILDING.md)), or
+point `INSPECTOR_D3D12_DIR` at the directory holding them. A Vulkan application launched in the
+meantime still works.
+
+**Injection fails on a running application, or from an editor's launcher.** There is no way to
+attach to a process that already exists: the library must be inside the process before its first
+D3D12 call. Start the application through `dxinsp_launch.exe` (see
+[Direct3D 12](D3D12.md#starting-an-application-by-hand)) and press **Connect**.
+
+**Shaders show no text, and constant buffers are bytes.** The shaders are DXIL and
+`dxcompiler.dll` was not found. The library looks beside itself, in `%VULKAN_SDK%\Bin`, in the
+Windows SDK's `bin\<version>\x64` and on `PATH`; install the Vulkan SDK or copy the DLL next to
+`dxinsp_capture.dll`. Text with no **Source** view means the shader carries no embedded source:
+compile it with `dxc -Zi -Qembed_debug`.
+
+**Validation layer ticked, but no messages.** The D3D12 debug layer is part of Windows'
+optional *Graphics Tools* feature (Settings › System › Optional features). Without it
+`DXINSP_DEBUG_LAYER` has nothing to enable.
+
+**The application is slow while captured.** Every render target and every bound buffer and
+texture is read back at the end of the pass it was used in, and the debug layer, when on, checks
+every call. Untick **Validation layer**, and lower the capture's buffer and texture limits.
+
 ## macOS
 
 **The target starts but never connects.** Almost always the hardened runtime: dyld dropped
@@ -63,9 +97,9 @@ them, or point `INSPECTOR_TOOLS_DIR` at a directory containing them (`VULKAN_SDK
 too).
 
 **No Source view.** The shader carries no embedded source. Compile it with `glslc -g`,
-`glslangValidator -g` or `dxc -fspv-debug=vulkan-with-source`, or set **Source roots** in the
-launch dialog so the inspector can read the files the debug information names. See
-[shader sources](VULKAN.md#shader-sources).
+`glslangValidator -g` or `dxc -fspv-debug=vulkan-with-source` (for Direct3D 12: `dxc -Zi
+-Qembed_debug`), or set **Source roots** in the launch dialog so the inspector can read the files
+the debug information names. See [shader sources](VULKAN.md#shader-sources).
 
 ## The app itself
 

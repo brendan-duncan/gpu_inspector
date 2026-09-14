@@ -169,6 +169,299 @@ function parse(name) {
   return { size: size2, channels: outChannels, integer, read };
 }
 
+// src/renderer/d3d12/dxgi_format.ts
+var TABLE = {
+  R32G32B32A32_TYPELESS: { vk: "VK_FORMAT_R32G32B32A32_SFLOAT", bytes: 16, block: 1, depth: false, stencil: false },
+  R32G32B32A32_FLOAT: { vk: "VK_FORMAT_R32G32B32A32_SFLOAT", bytes: 16, block: 1, depth: false, stencil: false },
+  R32G32B32A32_UINT: { vk: "VK_FORMAT_R32G32B32A32_UINT", bytes: 16, block: 1, depth: false, stencil: false },
+  R32G32B32A32_SINT: { vk: "VK_FORMAT_R32G32B32A32_SINT", bytes: 16, block: 1, depth: false, stencil: false },
+  R32G32B32_TYPELESS: { vk: "VK_FORMAT_R32G32B32_SFLOAT", bytes: 12, block: 1, depth: false, stencil: false },
+  R32G32B32_FLOAT: { vk: "VK_FORMAT_R32G32B32_SFLOAT", bytes: 12, block: 1, depth: false, stencil: false },
+  R32G32B32_UINT: { vk: "VK_FORMAT_R32G32B32_UINT", bytes: 12, block: 1, depth: false, stencil: false },
+  R32G32B32_SINT: { vk: "VK_FORMAT_R32G32B32_SINT", bytes: 12, block: 1, depth: false, stencil: false },
+  R16G16B16A16_TYPELESS: { vk: "VK_FORMAT_R16G16B16A16_UNORM", bytes: 8, block: 1, depth: false, stencil: false },
+  R16G16B16A16_FLOAT: { vk: "VK_FORMAT_R16G16B16A16_SFLOAT", bytes: 8, block: 1, depth: false, stencil: false },
+  R16G16B16A16_UNORM: { vk: "VK_FORMAT_R16G16B16A16_UNORM", bytes: 8, block: 1, depth: false, stencil: false },
+  R16G16B16A16_UINT: { vk: "VK_FORMAT_R16G16B16A16_UINT", bytes: 8, block: 1, depth: false, stencil: false },
+  R16G16B16A16_SNORM: { vk: "VK_FORMAT_R16G16B16A16_SNORM", bytes: 8, block: 1, depth: false, stencil: false },
+  R16G16B16A16_SINT: { vk: "VK_FORMAT_R16G16B16A16_SINT", bytes: 8, block: 1, depth: false, stencil: false },
+  R32G32_TYPELESS: { vk: "VK_FORMAT_R32G32_SFLOAT", bytes: 8, block: 1, depth: false, stencil: false },
+  R32G32_FLOAT: { vk: "VK_FORMAT_R32G32_SFLOAT", bytes: 8, block: 1, depth: false, stencil: false },
+  R32G32_UINT: { vk: "VK_FORMAT_R32G32_UINT", bytes: 8, block: 1, depth: false, stencil: false },
+  R32G32_SINT: { vk: "VK_FORMAT_R32G32_SINT", bytes: 8, block: 1, depth: false, stencil: false },
+  R32G8X24_TYPELESS: { vk: "VK_FORMAT_D32_SFLOAT_S8_UINT", bytes: 8, block: 1, depth: true, stencil: true },
+  D32_FLOAT_S8X24_UINT: { vk: "VK_FORMAT_D32_SFLOAT_S8_UINT", bytes: 8, block: 1, depth: true, stencil: true },
+  R32_FLOAT_X8X24_TYPELESS: { vk: "VK_FORMAT_D32_SFLOAT_S8_UINT", bytes: 8, block: 1, depth: true, stencil: true },
+  X32_TYPELESS_G8X24_UINT: { vk: null, bytes: 8, block: 1, depth: true, stencil: true },
+  R10G10B10A2_TYPELESS: { vk: "VK_FORMAT_A2B10G10R10_UNORM_PACK32", bytes: 4, block: 1, depth: false, stencil: false },
+  R10G10B10A2_UNORM: { vk: "VK_FORMAT_A2B10G10R10_UNORM_PACK32", bytes: 4, block: 1, depth: false, stencil: false },
+  R10G10B10A2_UINT: { vk: "VK_FORMAT_A2B10G10R10_UINT_PACK32", bytes: 4, block: 1, depth: false, stencil: false },
+  R11G11B10_FLOAT: { vk: "VK_FORMAT_B10G11R11_UFLOAT_PACK32", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_TYPELESS: { vk: "VK_FORMAT_R8G8B8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_UNORM: { vk: "VK_FORMAT_R8G8B8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_UNORM_SRGB: { vk: "VK_FORMAT_R8G8B8A8_SRGB", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_UINT: { vk: "VK_FORMAT_R8G8B8A8_UINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_SNORM: { vk: "VK_FORMAT_R8G8B8A8_SNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8B8A8_SINT: { vk: "VK_FORMAT_R8G8B8A8_SINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_TYPELESS: { vk: "VK_FORMAT_R16G16_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_FLOAT: { vk: "VK_FORMAT_R16G16_SFLOAT", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_UNORM: { vk: "VK_FORMAT_R16G16_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_UINT: { vk: "VK_FORMAT_R16G16_UINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_SNORM: { vk: "VK_FORMAT_R16G16_SNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R16G16_SINT: { vk: "VK_FORMAT_R16G16_SINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R32_TYPELESS: { vk: "VK_FORMAT_R32_SFLOAT", bytes: 4, block: 1, depth: false, stencil: false },
+  D32_FLOAT: { vk: "VK_FORMAT_D32_SFLOAT", bytes: 4, block: 1, depth: true, stencil: false },
+  R32_FLOAT: { vk: "VK_FORMAT_R32_SFLOAT", bytes: 4, block: 1, depth: false, stencil: false },
+  R32_UINT: { vk: "VK_FORMAT_R32_UINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R32_SINT: { vk: "VK_FORMAT_R32_SINT", bytes: 4, block: 1, depth: false, stencil: false },
+  R24G8_TYPELESS: { vk: "VK_FORMAT_D24_UNORM_S8_UINT", bytes: 4, block: 1, depth: true, stencil: true },
+  D24_UNORM_S8_UINT: { vk: "VK_FORMAT_D24_UNORM_S8_UINT", bytes: 4, block: 1, depth: true, stencil: true },
+  R24_UNORM_X8_TYPELESS: { vk: "VK_FORMAT_D24_UNORM_S8_UINT", bytes: 4, block: 1, depth: true, stencil: false },
+  X24_TYPELESS_G8_UINT: { vk: null, bytes: 4, block: 1, depth: false, stencil: true },
+  R8G8_TYPELESS: { vk: "VK_FORMAT_R8G8_UNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R8G8_UNORM: { vk: "VK_FORMAT_R8G8_UNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R8G8_UINT: { vk: "VK_FORMAT_R8G8_UINT", bytes: 2, block: 1, depth: false, stencil: false },
+  R8G8_SNORM: { vk: "VK_FORMAT_R8G8_SNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R8G8_SINT: { vk: "VK_FORMAT_R8G8_SINT", bytes: 2, block: 1, depth: false, stencil: false },
+  R16_TYPELESS: { vk: "VK_FORMAT_R16_UNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R16_FLOAT: { vk: "VK_FORMAT_R16_SFLOAT", bytes: 2, block: 1, depth: false, stencil: false },
+  D16_UNORM: { vk: "VK_FORMAT_D16_UNORM", bytes: 2, block: 1, depth: true, stencil: false },
+  R16_UNORM: { vk: "VK_FORMAT_R16_UNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R16_UINT: { vk: "VK_FORMAT_R16_UINT", bytes: 2, block: 1, depth: false, stencil: false },
+  R16_SNORM: { vk: "VK_FORMAT_R16_SNORM", bytes: 2, block: 1, depth: false, stencil: false },
+  R16_SINT: { vk: "VK_FORMAT_R16_SINT", bytes: 2, block: 1, depth: false, stencil: false },
+  R8_TYPELESS: { vk: "VK_FORMAT_R8_UNORM", bytes: 1, block: 1, depth: false, stencil: false },
+  R8_UNORM: { vk: "VK_FORMAT_R8_UNORM", bytes: 1, block: 1, depth: false, stencil: false },
+  R8_UINT: { vk: "VK_FORMAT_R8_UINT", bytes: 1, block: 1, depth: false, stencil: false },
+  R8_SNORM: { vk: "VK_FORMAT_R8_SNORM", bytes: 1, block: 1, depth: false, stencil: false },
+  R8_SINT: { vk: "VK_FORMAT_R8_SINT", bytes: 1, block: 1, depth: false, stencil: false },
+  A8_UNORM: { vk: "VK_FORMAT_A8_UNORM_KHR", bytes: 1, block: 1, depth: false, stencil: false },
+  R1_UNORM: { vk: null, bytes: 1, block: 8, depth: false, stencil: false },
+  R9G9B9E5_SHAREDEXP: { vk: "VK_FORMAT_E5B9G9R9_UFLOAT_PACK32", bytes: 4, block: 1, depth: false, stencil: false },
+  R8G8_B8G8_UNORM: { vk: null, bytes: 4, block: 1, depth: false, stencil: false },
+  G8R8_G8B8_UNORM: { vk: null, bytes: 4, block: 1, depth: false, stencil: false },
+  BC1_TYPELESS: { vk: "VK_FORMAT_BC1_RGBA_UNORM_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC1_UNORM: { vk: "VK_FORMAT_BC1_RGBA_UNORM_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC1_UNORM_SRGB: { vk: "VK_FORMAT_BC1_RGBA_SRGB_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC2_TYPELESS: { vk: "VK_FORMAT_BC2_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC2_UNORM: { vk: "VK_FORMAT_BC2_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC2_UNORM_SRGB: { vk: "VK_FORMAT_BC2_SRGB_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC3_TYPELESS: { vk: "VK_FORMAT_BC3_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC3_UNORM: { vk: "VK_FORMAT_BC3_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC3_UNORM_SRGB: { vk: "VK_FORMAT_BC3_SRGB_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC4_TYPELESS: { vk: "VK_FORMAT_BC4_UNORM_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC4_UNORM: { vk: "VK_FORMAT_BC4_UNORM_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC4_SNORM: { vk: "VK_FORMAT_BC4_SNORM_BLOCK", bytes: 8, block: 4, depth: false, stencil: false },
+  BC5_TYPELESS: { vk: "VK_FORMAT_BC5_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC5_UNORM: { vk: "VK_FORMAT_BC5_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC5_SNORM: { vk: "VK_FORMAT_BC5_SNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  B5G6R5_UNORM: { vk: "VK_FORMAT_B5G6R5_UNORM_PACK16", bytes: 2, block: 1, depth: false, stencil: false },
+  B5G5R5A1_UNORM: { vk: "VK_FORMAT_A1R5G5B5_UNORM_PACK16", bytes: 2, block: 1, depth: false, stencil: false },
+  B8G8R8A8_UNORM: { vk: "VK_FORMAT_B8G8R8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  B8G8R8X8_UNORM: { vk: "VK_FORMAT_B8G8R8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  R10G10B10_XR_BIAS_A2_UNORM: { vk: null, bytes: 4, block: 1, depth: false, stencil: false },
+  B8G8R8A8_TYPELESS: { vk: "VK_FORMAT_B8G8R8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  B8G8R8A8_UNORM_SRGB: { vk: "VK_FORMAT_B8G8R8A8_SRGB", bytes: 4, block: 1, depth: false, stencil: false },
+  B8G8R8X8_TYPELESS: { vk: "VK_FORMAT_B8G8R8A8_UNORM", bytes: 4, block: 1, depth: false, stencil: false },
+  B8G8R8X8_UNORM_SRGB: { vk: "VK_FORMAT_B8G8R8A8_SRGB", bytes: 4, block: 1, depth: false, stencil: false },
+  BC6H_TYPELESS: { vk: "VK_FORMAT_BC6H_UFLOAT_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC6H_UF16: { vk: "VK_FORMAT_BC6H_UFLOAT_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC6H_SF16: { vk: "VK_FORMAT_BC6H_SFLOAT_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC7_TYPELESS: { vk: "VK_FORMAT_BC7_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC7_UNORM: { vk: "VK_FORMAT_BC7_UNORM_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  BC7_UNORM_SRGB: { vk: "VK_FORMAT_BC7_SRGB_BLOCK", bytes: 16, block: 4, depth: false, stencil: false },
+  B4G4R4A4_UNORM: { vk: "VK_FORMAT_A4R4G4B4_UNORM_PACK16", bytes: 2, block: 1, depth: false, stencil: false }
+};
+function keyOf(name) {
+  return name.startsWith("DXGI_FORMAT_") ? name.substring("DXGI_FORMAT_".length) : name;
+}
+function entry(name) {
+  if (!name) return null;
+  return TABLE[keyOf(name)] ?? null;
+}
+function vkFormatOfDxgi(name) {
+  return entry(name)?.vk ?? null;
+}
+function dxgiFormatBytes(name) {
+  return entry(name)?.bytes ?? 0;
+}
+function dxgiMipBytes(name, width, height) {
+  const e = entry(name);
+  if (!e) return 0;
+  const block = e.block === 8 ? 1 : e.block;
+  const w = Math.ceil(Math.max(1, width) / block);
+  const h = Math.ceil(Math.max(1, height) / block);
+  return e.block === 8 ? Math.ceil(w / 8) * h : w * h * e.bytes;
+}
+function dxgiFormatShort(name) {
+  return name ? keyOf(name) : "";
+}
+
+// src/renderer/d3d12/d3d12_object.ts
+function isD3D12Type(type) {
+  return type.startsWith("ID3D12") || type.startsWith("IDXGI");
+}
+function d3d12ResourceDesc(obj) {
+  if (!obj || obj.type !== "ID3D12Resource") return null;
+  const d = obj.descriptor;
+  return d && (d.Dimension !== void 0 || d.Width !== void 0) ? d : null;
+}
+function isD3D12Texture(obj) {
+  const d = d3d12ResourceDesc(obj);
+  if (d) return str(d.Dimension) !== "D3D12_RESOURCE_DIMENSION_BUFFER";
+  return !!obj && obj.type === "ID3D12Resource" && obj.cmd === "GetBuffer";
+}
+function d3d12TextureShape(obj, db = null) {
+  if (!obj || obj.type !== "ID3D12Resource") return null;
+  const d = d3d12ResourceDesc(obj);
+  if (d) {
+    const dim = str(d.Dimension);
+    if (dim === "D3D12_RESOURCE_DIMENSION_BUFFER") return null;
+    const is3D = dim === "D3D12_RESOURCE_DIMENSION_TEXTURE3D";
+    const is1D = dim === "D3D12_RESOURCE_DIMENSION_TEXTURE1D";
+    const depthOrLayers = num(d.DepthOrArraySize) || 1;
+    const sd2 = isObject(d.SampleDesc) ? d.SampleDesc : null;
+    return {
+      width: num(d.Width),
+      height: is1D ? 1 : num(d.Height) || 1,
+      depth: is3D ? depthOrLayers : 1,
+      mips: num(d.MipLevels) || 1,
+      layers: is3D ? 1 : depthOrLayers,
+      format: str(d.Format),
+      samples: num(sd2?.Count) || 1,
+      dimension: is3D ? "3d" : is1D ? "1d" : "2d"
+    };
+  }
+  if (obj.cmd !== "GetBuffer") return null;
+  const sc = db?.getObject(obj.parentId)?.descriptor ?? null;
+  if (!sc) return null;
+  const bd = isObject(sc.BufferDesc) ? sc.BufferDesc : sc;
+  const sd = isObject(sc.SampleDesc) ? sc.SampleDesc : null;
+  return {
+    width: num(bd.Width),
+    height: num(bd.Height) || 1,
+    depth: 1,
+    mips: 1,
+    layers: 1,
+    format: str(bd.Format),
+    samples: num(sd?.Count) || 1,
+    dimension: "2d"
+  };
+}
+function d3d12ResourceBytes(obj, db = null) {
+  const d = d3d12ResourceDesc(obj);
+  if (d && str(d.Dimension) === "D3D12_RESOURCE_DIMENSION_BUFFER") return num(d.Width);
+  const shape = d3d12TextureShape(obj, db);
+  if (!shape) return 0;
+  let total = 0;
+  for (let m = 0; m < shape.mips; m++) {
+    const w = Math.max(1, shape.width >> m);
+    const h = Math.max(1, shape.height >> m);
+    const depth = Math.max(1, shape.depth >> m);
+    total += dxgiMipBytes(shape.format, w, h) * depth;
+  }
+  return total * shape.layers * shape.samples;
+}
+function d3d12PipelineKind(obj) {
+  if (!obj) return "graphics";
+  const d = obj.descriptor;
+  if (d) {
+    if (isObject(d.CS) || d.CS !== void 0) return "compute";
+    if (d.VS !== void 0 || d.MS !== void 0 || d.PS !== void 0 || isObject(d.InputLayout) || d.RTVFormats !== void 0) return "graphics";
+    const refl = d.reflection;
+    if (isObject(refl)) {
+      const stages = Object.keys(refl);
+      if (stages.length && stages.every((s) => s === "compute")) return "compute";
+      if (stages.length) return "graphics";
+    }
+  }
+  if (obj.cmd === "CreateComputePipelineState") return "compute";
+  if (obj.blobs.length && obj.blobs.every((b) => b.name.startsWith("compute:"))) return "compute";
+  return "graphics";
+}
+var APPEND_ALIGNED = 4294967295;
+function d3d12InputElements(pipeline) {
+  const d = pipeline?.descriptor;
+  const layout = d && isObject(d.InputLayout) ? d.InputLayout : null;
+  const elements = layout && Array.isArray(layout.pInputElementDescs) ? layout.pInputElementDescs : [];
+  const out = [];
+  const running = /* @__PURE__ */ new Map();
+  elements.forEach((e, location) => {
+    if (!isObject(e)) return;
+    const slot = num(e.InputSlot);
+    const format = str(e.Format);
+    const size2 = vertexBytes(format);
+    const declared = num(e.AlignedByteOffset);
+    let offset = declared;
+    if (declared === APPEND_ALIGNED || declared < 0) {
+      offset = Math.ceil((running.get(slot) ?? 0) / 4) * 4;
+    }
+    running.set(slot, offset + size2);
+    const semanticName = str(e.SemanticName);
+    const semanticIndex = num(e.SemanticIndex);
+    out.push({
+      location,
+      name: `${semanticName}${semanticIndex}`,
+      semanticName,
+      semanticIndex,
+      format,
+      slot,
+      offset,
+      perInstance: str(e.InputSlotClass).includes("PER_INSTANCE"),
+      stepRate: num(e.InstanceDataStepRate)
+    });
+  });
+  return out;
+}
+function vertexBytes(format) {
+  const bits = [...format.replace(/^DXGI_FORMAT_/, "").matchAll(/[RGBAX](\d+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+  return Math.ceil(bits / 8);
+}
+function vkTopologyOfD3D(v) {
+  const s = str(v);
+  if (!s || s.startsWith("VK_")) return s;
+  const name = s.replace(/^D3D1?2?_PRIMITIVE_TOPOLOGY_(TYPE_)?/, "");
+  switch (name) {
+    case "POINTLIST":
+    case "POINT":
+      return "VK_PRIMITIVE_TOPOLOGY_POINT_LIST";
+    case "LINELIST":
+    case "LINE":
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_LIST";
+    case "LINESTRIP":
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP";
+    case "TRIANGLELIST":
+    case "TRIANGLE":
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+    case "TRIANGLESTRIP":
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP";
+    case "TRIANGLEFAN":
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN";
+    case "LINELIST_ADJ":
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY";
+    case "LINESTRIP_ADJ":
+      return "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY";
+    case "TRIANGLELIST_ADJ":
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY";
+    case "TRIANGLESTRIP_ADJ":
+      return "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY";
+    default:
+      if (/CONTROL_POINT_PATCHLIST/.test(name) || name === "PATCH") return "VK_PRIMITIVE_TOPOLOGY_PATCH_LIST";
+      return s;
+  }
+}
+function d3d12ViewSubresource(view) {
+  if (!isObject(view)) return { mip: 0, slice: 0 };
+  for (const key of ["Texture1D", "Texture1DArray", "Texture2D", "Texture2DArray", "Texture2DMS", "Texture2DMSArray", "Texture3D", "TextureCube", "TextureCubeArray"]) {
+    const sub = view[key];
+    if (!isObject(sub)) continue;
+    const mip = sub.MipSlice !== void 0 ? num(sub.MipSlice) : num(sub.MostDetailedMip);
+    const slice = num(sub.FirstArraySlice) || num(sub.First2DArrayFace);
+    return { mip, slice };
+  }
+  return { mip: 0, slice: 0 };
+}
+
 // src/renderer/vulkan/vulkan_object.ts
 var LIBRARY_PARTS = [
   ["VERTEX_INPUT_INTERFACE", ["pVertexInputState", "pInputAssemblyState"]],
@@ -259,7 +552,10 @@ var VulkanObject = class {
     this.updates = {};
   }
   get shortType() {
-    return this.type.startsWith("Vk") ? this.type.substring(2) : this.type;
+    if (this.type.startsWith("Vk")) return this.type.substring(2);
+    if (this.type.startsWith("ID3D12")) return this.type.substring(6);
+    if (this.type.startsWith("IDXGI")) return this.type.substring(5);
+    return this.type;
   }
   get name() {
     if (this.label) return this.label;
@@ -282,6 +578,7 @@ var VulkanObject = class {
     const a = this.args;
     if (!a) return null;
     if (this.type.startsWith("MTL")) return a;
+    if (isD3D12Type(this.type)) return isObject(a.pDesc) ? a.pDesc : a;
     if (isObject(a.pCreateInfo)) return a.pCreateInfo;
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
     if (Array.isArray(a.pCreateInfos)) {
@@ -368,6 +665,55 @@ var VulkanObject = class {
         return a.queueFamilyIndex !== void 0 ? `family ${num(a.queueFamilyIndex)} index ${num(a.queueIndex)}` : "";
       case "VkQueryPool":
         return d ? `${fmt(d.queryType)} x${num(d.queryCount)}` : "";
+      // D3D12 objects, from their pDesc (d3d12/d3d12_object.ts reads the resource shapes).
+      case "ID3D12Resource": {
+        const shape = d3d12TextureShape(this, db);
+        if (shape) {
+          const dims = shape.dimension === "3d" ? `${shape.width}x${shape.height}x${shape.depth}` : `${shape.width}x${shape.height}`;
+          const layers = shape.layers > 1 ? ` [${shape.layers}]` : "";
+          const mips = shape.mips > 1 ? ` ${shape.mips} mips` : "";
+          const samples = shape.samples > 1 ? ` ${shape.samples}x` : "";
+          return `${this.cmd === "GetBuffer" ? "back buffer " : ""}${dxgiFormatShort(shape.format)} ${dims}${layers}${mips}${samples}`;
+        }
+        return d && d.Width !== void 0 ? `buffer ${formatBytes(num(d.Width))}${d.Flags && d.Flags !== "0" ? `  ${fmtFlags(d.Flags)}` : ""}` : "";
+      }
+      case "ID3D12Heap":
+        return d ? `${formatBytes(num(d.SizeInBytes))}${isObject(d.Properties) ? `  ${fmt(d.Properties.Type)}` : ""}` : "";
+      case "ID3D12PipelineState": {
+        const refl = d && isObject(d.reflection) ? Object.keys(d.reflection) : [];
+        const stages = refl.length ? refl : this.blobs.map((b) => b.name.split(":")[0]);
+        return stages.length ? stages.map((s) => s.replace(/_/g, " ")).join(" + ") : d3d12PipelineKind(this);
+      }
+      case "ID3D12DescriptorHeap":
+        return d ? `${fmt(d.Type).replace(/^DESCRIPTOR_HEAP_TYPE_/, "")} x${num(d.NumDescriptors)}${str(d.Flags).includes("SHADER_VISIBLE") ? "  shader visible" : ""}` : "";
+      case "ID3D12CommandQueue":
+        return d ? fmt(d.Type).replace(/^COMMAND_LIST_TYPE_/, "").toLowerCase() : "";
+      case "ID3D12GraphicsCommandList":
+      case "ID3D12CommandList":
+      case "ID3D12CommandAllocator":
+        return a.type !== void 0 ? fmt(a.type).replace(/^COMMAND_LIST_TYPE_/, "").toLowerCase() : "";
+      case "ID3D12RootSignature": {
+        const params = d && Array.isArray(d.pParameters) ? d.pParameters.length : num(d?.NumParameters);
+        return d ? `${params} parameter${params === 1 ? "" : "s"}` : "";
+      }
+      case "ID3D12QueryHeap":
+        return d ? `${fmt(d.Type).replace(/^QUERY_HEAP_TYPE_/, "")} x${num(d.Count)}` : "";
+      case "ID3D12CommandSignature":
+        return d ? `${Array.isArray(d.pArgumentDescs) ? d.pArgumentDescs.length : num(d.NumArgumentDescs)} args, stride ${num(d.ByteStride)}` : "";
+      case "IDXGISwapChain": {
+        if (!d) return "";
+        const bd = isObject(d.BufferDesc) ? d.BufferDesc : d;
+        return `${dxgiFormatShort(str(bd.Format))} ${num(bd.Width)}x${num(bd.Height)} x${num(d.BufferCount)}`;
+      }
+      case "IDXGIAdapter": {
+        const desc = isObject(this.updates.Desc) ? this.updates.Desc : isObject(a.Desc) ? a.Desc : null;
+        return desc ? str(desc.Description) : "";
+      }
+      case "ID3D12Device": {
+        const adapter = db?.getObject(this.parentId);
+        const level = str(a.MinimumFeatureLevel ?? a.featureLevel).replace(/^D3D_FEATURE_LEVEL_/, "").replace("_", ".");
+        return `${adapter?.summary(db) ?? ""}${level ? `  feature level ${level}` : ""}`.trim();
+      }
       default:
         return "";
     }
@@ -376,6 +722,12 @@ var VulkanObject = class {
 function objectMemoryBytes(o, db) {
   const d = o.descriptor;
   switch (o.type) {
+    // D3D12: a heap's size, and a resource's estimate from its description (a placed resource
+    // lives inside a heap, and is counted in both like a Vulkan image inside its VkDeviceMemory).
+    case "ID3D12Heap":
+      return num(d?.SizeInBytes);
+    case "ID3D12Resource":
+      return d3d12ResourceBytes(o, db);
     case "MTLHeap":
       return num(o.args?.allocatedSize) || num(o.args?.size);
     case "MTLBuffer":
@@ -450,11 +802,75 @@ function fmt(v) {
   ];
   for (const p of prefixes) if (v.startsWith(p)) return v.substring(p.length).replace(/_BIT$/, "");
   const m = /^VK_[A-Z0-9]+_(.+)$/.exec(v);
-  return m ? m[1] : v;
+  if (m) return m[1];
+  for (const p of D3D12_PREFIXES) if (v.startsWith(p)) return v.substring(p.length);
+  return v;
 }
+var D3D12_PREFIXES = [
+  "DXGI_FORMAT_",
+  "D3D12_DESCRIPTOR_RANGE_TYPE_",
+  "D3D12_ROOT_PARAMETER_TYPE_",
+  "D3D12_SHADER_VISIBILITY_",
+  "D3D12_PRIMITIVE_TOPOLOGY_TYPE_",
+  "D3D_PRIMITIVE_TOPOLOGY_",
+  "D3D12_PRIMITIVE_TOPOLOGY_",
+  "D3D12_CULL_MODE_",
+  "D3D12_FILL_MODE_",
+  "D3D12_COMPARISON_FUNC_",
+  "D3D12_DEPTH_WRITE_MASK_",
+  "D3D12_BLEND_OP_",
+  "D3D12_BLEND_",
+  "D3D12_LOGIC_OP_",
+  "D3D12_STENCIL_OP_",
+  "D3D12_RESOURCE_STATE_",
+  "D3D12_RESOURCE_DIMENSION_",
+  "D3D12_RESOURCE_FLAG_",
+  "D3D12_HEAP_TYPE_",
+  "D3D12_HEAP_FLAG_",
+  "D3D12_TEXTURE_LAYOUT_",
+  "D3D12_FILTER_",
+  "D3D12_TEXTURE_ADDRESS_MODE_",
+  "D3D12_SRV_DIMENSION_",
+  "D3D12_UAV_DIMENSION_",
+  "D3D12_RTV_DIMENSION_",
+  "D3D12_DSV_DIMENSION_",
+  "D3D12_DSV_FLAG_",
+  "D3D12_CLEAR_FLAG_",
+  "D3D12_RESOURCE_BARRIER_TYPE_",
+  "D3D12_RESOURCE_BARRIER_FLAG_",
+  "D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_",
+  "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_",
+  "D3D12_RENDER_PASS_FLAG_",
+  "D3D12_COMMAND_LIST_TYPE_",
+  "D3D12_DESCRIPTOR_HEAP_TYPE_",
+  "D3D12_DESCRIPTOR_HEAP_FLAG_",
+  "D3D12_QUERY_HEAP_TYPE_",
+  "D3D12_QUERY_TYPE_",
+  "D3D12_INDIRECT_ARGUMENT_TYPE_",
+  "D3D12_INPUT_CLASSIFICATION_",
+  "D3D12_PIPELINE_STATE_FLAG_",
+  "D3D12_BARRIER_LAYOUT_",
+  "D3D12_BARRIER_SYNC_",
+  "D3D12_BARRIER_ACCESS_",
+  "D3D12_BARRIER_TYPE_",
+  "D3D12_FEATURE_",
+  "D3D_FEATURE_LEVEL_",
+  "D3D_SHADER_MODEL_",
+  "D3D12_STATIC_BORDER_COLOR_",
+  "D3D12_STATE_OBJECT_TYPE_",
+  "D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_",
+  "D3D12_CONSERVATIVE_RASTERIZATION_MODE_",
+  "D3D12_COLOR_WRITE_ENABLE_",
+  "DXGI_SWAP_EFFECT_",
+  "DXGI_SCALING_",
+  "DXGI_ALPHA_MODE_",
+  "DXGI_MODE_SCANLINE_ORDER_",
+  "DXGI_MODE_SCALING_",
+  "DXGI_USAGE_"
+];
 function fmtFlags(v) {
   if (typeof v !== "string") return v === void 0 ? "" : String(v);
-  return v.split(" | ").map((s) => s.replace(/^VK_[A-Z0-9]+?_(USAGE_|CREATE_|STAGE_|ACCESS_|ASPECT_)?/, "").replace(/_BIT(_[A-Z]+)?$/, "$1")).join(" | ");
+  return v.split(" | ").map((s) => s.startsWith("VK_") ? s.replace(/^VK_[A-Z0-9]+?_(USAGE_|CREATE_|STAGE_|ACCESS_|ASPECT_)?/, "").replace(/_BIT(_[A-Z]+)?$/, "$1") : fmt(s)).join(" | ");
 }
 function formatBytes(bytes) {
   if (!isFinite(bytes)) return "";
@@ -464,8 +880,254 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+// src/renderer/d3d12/command_sets.ts
+var DRAW = /* @__PURE__ */ new Set(["DrawInstanced", "DrawIndexedInstanced", "DispatchMesh", "ExecuteIndirect"]);
+var DISPATCH = /* @__PURE__ */ new Set(["Dispatch", "DispatchGraph"]);
+var TRACE = /* @__PURE__ */ new Set(["DispatchRays"]);
+var PASS_BEGIN = /* @__PURE__ */ new Set(["OMSetRenderTargets", "BeginRenderPass"]);
+var PASS_END = /* @__PURE__ */ new Set(["EndRenderTargets", "EndRenderPass"]);
+var SUBMIT = /* @__PURE__ */ new Set(["ExecuteCommandLists", "Present", "Present1", "Signal", "Wait"]);
+var BIND_DESCRIPTOR = /* @__PURE__ */ new Set([
+  "SetGraphicsRootDescriptorTable",
+  "SetComputeRootDescriptorTable",
+  "SetGraphicsRootConstantBufferView",
+  "SetGraphicsRootShaderResourceView",
+  "SetGraphicsRootUnorderedAccessView",
+  "SetComputeRootConstantBufferView",
+  "SetComputeRootShaderResourceView",
+  "SetComputeRootUnorderedAccessView"
+]);
+var PUSH_CONSTANT = /* @__PURE__ */ new Set(["SetGraphicsRoot32BitConstant", "SetGraphicsRoot32BitConstants", "SetComputeRoot32BitConstant", "SetComputeRoot32BitConstants"]);
+var INDIRECT = /* @__PURE__ */ new Set(["ExecuteIndirect"]);
+var COMPUTE_PASS_END = /* @__PURE__ */ new Set([
+  "ResourceBarrier",
+  "Barrier",
+  "OMSetRenderTargets",
+  "BeginRenderPass",
+  "BeginEvent",
+  "EndEvent",
+  "SetMarker",
+  "ExecuteBundle",
+  "Close",
+  "EndRenderTargets"
+]);
+function d3d12PipelineOf(a) {
+  if (!a) return void 0;
+  return a.pipeline ?? a.pPipelineState ?? a.pStateObject;
+}
+function bindPointOf(method) {
+  return DISPATCH.has(method) || TRACE.has(method) ? "compute" : "graphics";
+}
+function handleName(v, nameOf) {
+  return isObject(v) ? nameOf(v.resource) : "";
+}
+function rootSlot(a, what) {
+  return `[${num(a.RootParameterIndex)}] ${what}`;
+}
+function summarize(cmd, nameOf) {
+  const a = cmd.args;
+  const m = cmd.method;
+  if (!a) return "";
+  switch (m) {
+    case "DrawInstanced":
+      return `${num(a.VertexCountPerInstance)} verts x${num(a.InstanceCount)}`;
+    case "DrawIndexedInstanced":
+      return `${num(a.IndexCountPerInstance)} idx x${num(a.InstanceCount)}`;
+    case "DispatchMesh":
+      return `${num(a.ThreadGroupCountX)}x${num(a.ThreadGroupCountY)}x${num(a.ThreadGroupCountZ)} mesh groups`;
+    case "Dispatch":
+      return `${num(a.ThreadGroupCountX)}x${num(a.ThreadGroupCountY)}x${num(a.ThreadGroupCountZ)} groups`;
+    case "ExecuteIndirect":
+      return `${nameOf(a.pArgumentBuffer)} x${num(a.MaxCommandCount)}${a.pCountBuffer ? " (counted)" : ""}`;
+    case "DispatchRays": {
+      const d = isObject(a.pDesc) ? a.pDesc : null;
+      return d ? `${num(d.Width)}x${num(d.Height)}x${num(d.Depth)} rays` : "";
+    }
+    case "SetPipelineState":
+    case "SetPipelineState1":
+      return nameOf(d3d12PipelineOf(a));
+    case "SetGraphicsRootSignature":
+    case "SetComputeRootSignature":
+      return nameOf(a.pRootSignature);
+    case "SetGraphicsRootDescriptorTable":
+    case "SetComputeRootDescriptorTable": {
+      const h = isObject(a.BaseDescriptor) ? a.BaseDescriptor : null;
+      return rootSlot(a, h ? `${nameOf(h.heap)}${h.index !== void 0 ? ` +${num(h.index)}` : ""}` : "table");
+    }
+    case "SetGraphicsRootConstantBufferView":
+    case "SetGraphicsRootShaderResourceView":
+    case "SetGraphicsRootUnorderedAccessView":
+    case "SetComputeRootConstantBufferView":
+    case "SetComputeRootShaderResourceView":
+    case "SetComputeRootUnorderedAccessView": {
+      const loc = isObject(a.BufferLocation) ? a.BufferLocation : null;
+      const buffer = loc ? nameOf(loc.buffer) : "";
+      return rootSlot(a, buffer ? `${buffer}${num(loc?.offset) ? ` +${num(loc?.offset)}` : ""}` : str(loc?.address) || "(none)");
+    }
+    case "SetGraphicsRoot32BitConstant":
+    case "SetGraphicsRoot32BitConstants":
+    case "SetComputeRoot32BitConstant":
+    case "SetComputeRoot32BitConstants":
+      return rootSlot(a, `${a.size !== void 0 ? num(a.size) : (num(a.Num32BitValuesToSet) || 1) * 4} bytes`);
+    case "OMSetRenderTargets": {
+      const targets = Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : [];
+      const first = targets.find((t) => isObject(t) && t.resource);
+      const name = handleName(first, nameOf);
+      const count2 = num(a.NumRenderTargetDescriptors) || targets.length;
+      const more = count2 > 1 ? ` +${count2 - 1}` : "";
+      const depth = isObject(a.pDepthStencilDescriptor) ? " + depth" : "";
+      return `${name || `${count2} target${count2 === 1 ? "" : "s"}`}${more}${depth}`;
+    }
+    case "BeginRenderPass": {
+      const targets = Array.isArray(a.pRenderTargets) ? a.pRenderTargets : [];
+      const first = targets.find(isObject);
+      const handle = first ? isObject(first.cpuDescriptor) ? first.cpuDescriptor : first : void 0;
+      const name = handleName(handle, nameOf);
+      const count2 = targets.length;
+      const more = count2 > 1 ? ` +${count2 - 1}` : "";
+      const depth = isObject(a.pDepthStencil) ? " + depth" : "";
+      return `${name || `${count2} target${count2 === 1 ? "" : "s"}`}${more}${depth}`;
+    }
+    case "ClearRenderTargetView":
+      return handleName(a.RenderTargetView, nameOf);
+    case "ClearDepthStencilView":
+      return `${handleName(a.DepthStencilView, nameOf)} ${fmt(a.ClearFlags)}`.trim();
+    case "ClearUnorderedAccessViewUint":
+    case "ClearUnorderedAccessViewFloat":
+      return nameOf(a.pResource);
+    case "ResourceBarrier": {
+      const n = num(a.NumBarriers) || (Array.isArray(a.pBarriers) ? a.pBarriers.length : 0);
+      return `${n} barrier${n === 1 ? "" : "s"}`;
+    }
+    case "Barrier": {
+      const groups = Array.isArray(a.pBarrierGroups) ? a.pBarrierGroups : [];
+      const n = groups.reduce((sum, g) => sum + (isObject(g) ? num(g.NumBarriers) : 0), 0) || num(a.NumBarrierGroups);
+      return `${n} barrier${n === 1 ? "" : "s"}`;
+    }
+    case "ExecuteCommandLists": {
+      const n = num(a.NumCommandLists) || (Array.isArray(a.ppCommandLists) ? a.ppCommandLists.length : 0);
+      return `${n} list${n === 1 ? "" : "s"}`;
+    }
+    case "ExecuteBundle":
+      return nameOf(a.pCommandList);
+    case "BeginEvent":
+    case "SetMarker":
+      return typeof a.label === "string" && a.label ? `"${a.label}"` : "";
+    case "IASetVertexBuffers": {
+      const views = Array.isArray(a.pViews) ? a.pViews : [];
+      return `slot ${num(a.StartSlot)} +${num(a.NumViews) || views.length}`;
+    }
+    case "IASetIndexBuffer": {
+      const v = isObject(a.pView) ? a.pView : null;
+      const loc = v && isObject(v.BufferLocation) ? v.BufferLocation : null;
+      return v ? `${nameOf(loc?.buffer) || str(loc?.address)} ${fmt(v.Format)}` : "(none)";
+    }
+    case "IASetPrimitiveTopology":
+      return fmt(a.PrimitiveTopology);
+    case "RSSetViewports": {
+      const v = Array.isArray(a.pViewports) && isObject(a.pViewports[0]) ? a.pViewports[0] : null;
+      return v ? `${num(v.Width)}x${num(v.Height)}` : "";
+    }
+    case "RSSetScissorRects": {
+      const r = Array.isArray(a.pRects) && isObject(a.pRects[0]) ? a.pRects[0] : null;
+      return r ? `${num(r.right) - num(r.left)}x${num(r.bottom) - num(r.top)} at ${num(r.left)},${num(r.top)}` : "";
+    }
+    case "CopyResource":
+      return `${nameOf(a.pSrcResource)} -> ${nameOf(a.pDstResource)}`;
+    case "CopyBufferRegion":
+      return `${nameOf(a.pSrcBuffer)} -> ${nameOf(a.pDstBuffer)}  ${num(a.NumBytes)} bytes`;
+    case "CopyTextureRegion": {
+      const src = isObject(a.pSrc) ? nameOf(a.pSrc.pResource) : "";
+      const dst = isObject(a.pDst) ? nameOf(a.pDst.pResource) : "";
+      return `${src} -> ${dst}`;
+    }
+    case "ResolveSubresource":
+      return `${nameOf(a.pSrcResource)} -> ${nameOf(a.pDstResource)}`;
+    case "Present":
+    case "Present1":
+      return num(a.SyncInterval) ? `vsync ${num(a.SyncInterval)}` : "no vsync";
+    case "Signal":
+    case "Wait":
+      return `${nameOf(a.pFence)} ${num(a.Value)}`;
+    default:
+      break;
+  }
+  const parts2 = [];
+  for (const [key, value] of Object.entries(a)) {
+    if (parts2.length >= 4) break;
+    if (value === null || value === void 0) continue;
+    if (typeof value === "number" || typeof value === "boolean") parts2.push(`${key} ${value}`);
+    else if (typeof value === "string") parts2.push(/^(D3D12?_|DXGI_)/.test(value) ? fmt(value) : `${key} ${value}`);
+    else if (isObject(value) && typeof value.__id === "number") {
+      const n = nameOf(value);
+      if (n) parts2.push(n);
+    }
+  }
+  return parts2.join(", ");
+}
+var D3D12_SETS = {
+  DRAW,
+  DISPATCH,
+  TRACE,
+  PASS_BEGIN,
+  PASS_END,
+  LABEL_BEGIN: /* @__PURE__ */ new Set(["BeginEvent"]),
+  LABEL_END: /* @__PURE__ */ new Set(["EndEvent"]),
+  SUBMIT,
+  BIND_DESCRIPTOR,
+  BIND_VERTEX: /* @__PURE__ */ new Set(["IASetVertexBuffers"]),
+  BIND_INDEX: /* @__PURE__ */ new Set(["IASetIndexBuffer"]),
+  PUSH_CONSTANT,
+  INDIRECT,
+  COMPUTE_PASS_END,
+  // PASS_BEGIN is render-only: a compute pass is a run of dispatches the walk brackets itself.
+  bindPointOf,
+  BIND_PIPELINE: /* @__PURE__ */ new Set(["SetPipelineState", "SetPipelineState1"]),
+  // The library records the bind point beside the pipeline (a compute pipeline state binds compute).
+  pipelineBindPointOf(_method, args) {
+    return args?.bindPoint === "compute" ? "compute" : "graphics";
+  },
+  graphicsBindPoint: "graphics",
+  vertexBuffersOf(cmd) {
+    const a = cmd.args;
+    if (!a || !Array.isArray(a.pViews)) return [];
+    const first = num(a.StartSlot);
+    const out = [];
+    a.pViews.forEach((v, i) => {
+      if (!isObject(v)) return;
+      const loc = isObject(v.BufferLocation) ? v.BufferLocation : null;
+      out.push({
+        cmd,
+        binding: first + i,
+        buffer: loc?.buffer ?? null,
+        offset: num(loc?.offset),
+        size: v.SizeInBytes !== void 0 ? num(v.SizeInBytes) : null,
+        stride: v.StrideInBytes !== void 0 ? num(v.StrideInBytes) : null,
+        dataId: cmd.bufferData?.[i] ?? 0
+      });
+    });
+    return out;
+  },
+  indexBufferOf(cmd) {
+    if (cmd.method !== "IASetIndexBuffer") return null;
+    const a = cmd.args;
+    const v = a && isObject(a.pView) ? a.pView : null;
+    if (!v) return null;
+    const loc = isObject(v.BufferLocation) ? v.BufferLocation : null;
+    return {
+      cmd,
+      buffer: loc?.buffer ?? null,
+      offset: num(loc?.offset),
+      // The DXGI name; the index decoders read the width out of it (R16_UINT / R32_UINT).
+      indexType: str(v.Format) || "DXGI_FORMAT_R16_UINT",
+      dataId: cmd.bufferData?.[0] ?? 0
+    };
+  },
+  summarize
+};
+
 // src/renderer/metal/command_sets.ts
-var DRAW = /* @__PURE__ */ new Set([
+var DRAW2 = /* @__PURE__ */ new Set([
   "drawPrimitives:vertexStart:vertexCount:",
   "drawPrimitives:vertexStart:vertexCount:instanceCount:",
   "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:",
@@ -485,13 +1147,13 @@ var DRAW = /* @__PURE__ */ new Set([
   "executeCommandsInBuffer:withRange:",
   "executeCommandsInBuffer:indirectBuffer:indirectBufferOffset:"
 ]);
-var DISPATCH = /* @__PURE__ */ new Set([
+var DISPATCH2 = /* @__PURE__ */ new Set([
   "dispatchThreads:threadsPerThreadgroup:",
   "dispatchThreadgroups:threadsPerThreadgroup:",
   "dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:",
   "dispatchThreadsPerTile:"
 ]);
-var INDIRECT = /* @__PURE__ */ new Set([
+var INDIRECT2 = /* @__PURE__ */ new Set([
   "drawPrimitives:indirectBuffer:indirectBufferOffset:",
   "drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
   "drawPatches:patchIndexBuffer:patchIndexBufferOffset:indirectBuffer:indirectBufferOffset:",
@@ -501,7 +1163,7 @@ var INDIRECT = /* @__PURE__ */ new Set([
   "executeCommandsInBuffer:withRange:",
   "executeCommandsInBuffer:indirectBuffer:indirectBufferOffset:"
 ]);
-var PASS_BEGIN = /* @__PURE__ */ new Set([
+var PASS_BEGIN2 = /* @__PURE__ */ new Set([
   "renderCommandEncoderWithDescriptor:",
   "parallelRenderCommandEncoderWithDescriptor:",
   "computeCommandEncoder",
@@ -514,7 +1176,7 @@ var PASS_BEGIN = /* @__PURE__ */ new Set([
   "accelerationStructureCommandEncoder",
   "accelerationStructureCommandEncoderWithDescriptor:"
 ]);
-var PASS_END = /* @__PURE__ */ new Set(["endEncoding"]);
+var PASS_END2 = /* @__PURE__ */ new Set(["endEncoding"]);
 var STAGE_BUFFER_METHODS = {
   "setVertexBuffer:offset:atIndex:": { stage: "vertex", kind: "one" },
   "setVertexBuffers:offsets:withRange:": { stage: "vertex", kind: "many" },
@@ -578,7 +1240,7 @@ function enumShort(key, v) {
 function size(v) {
   return isObject(v) ? `${num(v.width)}x${num(v.height)}x${num(v.depth)}` : "";
 }
-function summarize(cmd, nameOf) {
+function summarize2(cmd, nameOf) {
   const a = cmd.args;
   const m = cmd.method;
   if (!a) return "";
@@ -655,11 +1317,11 @@ function summarize(cmd, nameOf) {
   return parts2.join(", ");
 }
 var METAL_SETS = {
-  DRAW,
-  DISPATCH,
+  DRAW: DRAW2,
+  DISPATCH: DISPATCH2,
   TRACE: /* @__PURE__ */ new Set(),
-  PASS_BEGIN,
-  PASS_END,
+  PASS_BEGIN: PASS_BEGIN2,
+  PASS_END: PASS_END2,
   LABEL_BEGIN: /* @__PURE__ */ new Set(["pushDebugGroup:"]),
   LABEL_END: /* @__PURE__ */ new Set(["popDebugGroup"]),
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:
@@ -691,7 +1353,7 @@ var METAL_SETS = {
     "setMeshBytes:length:atIndex:",
     "setTileBytes:length:atIndex:"
   ]),
-  INDIRECT,
+  INDIRECT: INDIRECT2,
   COMPUTE_PASS_END: /* @__PURE__ */ new Set(),
   // Every encoder is a pass and they share one counter per command buffer, but the library times
   // a compute encoder under the compute kind (PassKind::Compute in metal/src/capture.mm), which
@@ -700,7 +1362,7 @@ var METAL_SETS = {
     return method.startsWith("computeCommandEncoder");
   },
   bindPointOf(method) {
-    return DISPATCH.has(method) ? "compute" : "render";
+    return DISPATCH2.has(method) ? "compute" : "render";
   },
   BIND_PIPELINE: /* @__PURE__ */ new Set(["setRenderPipelineState:", "setComputePipelineState:"]),
   pipelineBindPointOf(method) {
@@ -737,23 +1399,23 @@ var METAL_SETS = {
     return [];
   },
   BIND_STAGE_BUFFER,
-  summarize,
+  summarize: summarize2,
   stageBuffersOf(cmd) {
-    const entry = STAGE_BUFFER_METHODS[cmd.method];
+    const entry2 = STAGE_BUFFER_METHODS[cmd.method];
     const a = cmd.args;
-    if (!entry || !a) return [];
-    if (entry.kind === "bytes") {
-      return [{ cmd, stage: entry.stage, index: num(a.index), buffer: null, offset: 0, dataId: cmd.bufferData?.[0] ?? 0, inline: true }];
+    if (!entry2 || !a) return [];
+    if (entry2.kind === "bytes") {
+      return [{ cmd, stage: entry2.stage, index: num(a.index), buffer: null, offset: 0, dataId: cmd.bufferData?.[0] ?? 0, inline: true }];
     }
-    if (entry.kind === "one") {
-      return [{ cmd, stage: entry.stage, index: num(a.index), buffer: a.buffer ?? null, offset: num(a.offset), dataId: cmd.bufferData?.[0] ?? 0, inline: false }];
+    if (entry2.kind === "one") {
+      return [{ cmd, stage: entry2.stage, index: num(a.index), buffer: a.buffer ?? null, offset: num(a.offset), dataId: cmd.bufferData?.[0] ?? 0, inline: false }];
     }
     if (!Array.isArray(a.buffers)) return [];
     const first = isObject(a.range) ? num(a.range.location) : 0;
     const offsets = Array.isArray(a.offsets) ? a.offsets : [];
     return a.buffers.map((buffer, i) => ({
       cmd,
-      stage: entry.stage,
+      stage: entry2.stage,
       index: first + i,
       buffer,
       offset: num(offsets[i]),
@@ -763,17 +1425,17 @@ var METAL_SETS = {
   },
   BIND_STAGE_TEXTURE,
   stageTexturesOf(cmd) {
-    const entry = STAGE_TEXTURE_METHODS[cmd.method];
+    const entry2 = STAGE_TEXTURE_METHODS[cmd.method];
     const a = cmd.args;
-    if (!entry || !a) return [];
-    if (entry.kind === "one") {
-      return [{ cmd, stage: entry.stage, index: num(a.index), texture: a.texture ?? null, dataId: cmd.textureData?.[0] ?? 0 }];
+    if (!entry2 || !a) return [];
+    if (entry2.kind === "one") {
+      return [{ cmd, stage: entry2.stage, index: num(a.index), texture: a.texture ?? null, dataId: cmd.textureData?.[0] ?? 0 }];
     }
     if (!Array.isArray(a.textures)) return [];
     const first = isObject(a.range) ? num(a.range.location) : 0;
     return a.textures.map((texture, i) => ({
       cmd,
-      stage: entry.stage,
+      stage: entry2.stage,
       index: first + i,
       texture,
       dataId: cmd.textureData?.[i] ?? 0
@@ -781,9 +1443,9 @@ var METAL_SETS = {
   },
   BIND_STAGE_SAMPLER,
   stageSamplersOf(cmd) {
-    const entry = STAGE_SAMPLER_METHODS[cmd.method];
+    const entry2 = STAGE_SAMPLER_METHODS[cmd.method];
     const a = cmd.args;
-    if (!entry || !a) return [];
+    if (!entry2 || !a) return [];
     const clamps = (i) => {
       const min = Array.isArray(a.lodMinClamps) ? a.lodMinClamps[i] : a.lodMinClamp;
       const max = Array.isArray(a.lodMaxClamps) ? a.lodMaxClamps[i] : a.lodMaxClamp;
@@ -792,12 +1454,12 @@ var METAL_SETS = {
         ...max === void 0 ? {} : { lodMaxClamp: num(max) }
       };
     };
-    if (entry.kind === "one") {
-      return [{ cmd, stage: entry.stage, index: num(a.index), sampler: a.sampler ?? null, ...clamps(0) }];
+    if (entry2.kind === "one") {
+      return [{ cmd, stage: entry2.stage, index: num(a.index), sampler: a.sampler ?? null, ...clamps(0) }];
     }
     if (!Array.isArray(a.samplers)) return [];
     const first = isObject(a.range) ? num(a.range.location) : 0;
-    return a.samplers.map((sampler, i) => ({ cmd, stage: entry.stage, index: first + i, sampler, ...clamps(i) }));
+    return a.samplers.map((sampler, i) => ({ cmd, stage: entry2.stage, index: first + i, sampler, ...clamps(i) }));
   },
   indexBufferOf(cmd) {
     const a = cmd.args;
@@ -830,8 +1492,8 @@ var DRAW_METHODS = /* @__PURE__ */ new Set([
 ]);
 var DISPATCH_METHODS = /* @__PURE__ */ new Set(["vkCmdDispatch", "vkCmdDispatchIndirect", "vkCmdDispatchBase"]);
 var TRACE_METHODS = /* @__PURE__ */ new Set(["vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR"]);
-var PASS_BEGIN2 = /* @__PURE__ */ new Set(["vkCmdBeginRenderPass", "vkCmdBeginRenderPass2", "vkCmdBeginRenderPass2KHR", "vkCmdBeginRendering", "vkCmdBeginRenderingKHR"]);
-var PASS_END2 = /* @__PURE__ */ new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
+var PASS_BEGIN3 = /* @__PURE__ */ new Set(["vkCmdBeginRenderPass", "vkCmdBeginRenderPass2", "vkCmdBeginRenderPass2KHR", "vkCmdBeginRendering", "vkCmdBeginRenderingKHR"]);
+var PASS_END3 = /* @__PURE__ */ new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
 var LABEL_BEGIN = /* @__PURE__ */ new Set(["vkCmdBeginDebugUtilsLabelEXT", "vkCmdDebugMarkerBeginEXT"]);
 var LABEL_END = /* @__PURE__ */ new Set(["vkCmdEndDebugUtilsLabelEXT", "vkCmdDebugMarkerEndEXT"]);
 var SUBMIT_METHODS = /* @__PURE__ */ new Set(["vkQueueSubmit", "vkQueueSubmit2", "vkQueueSubmit2KHR", "vkQueuePresentKHR", "vkQueueBindSparse"]);
@@ -848,7 +1510,7 @@ var BIND_VERTEX_METHODS = /* @__PURE__ */ new Set(["vkCmdBindVertexBuffers", "vk
 var BIND_INDEX_METHODS = /* @__PURE__ */ new Set(["vkCmdBindIndexBuffer", "vkCmdBindIndexBuffer2", "vkCmdBindIndexBuffer2KHR"]);
 var PUSH_CONSTANT_METHODS = /* @__PURE__ */ new Set(["vkCmdPushConstants", "vkCmdPushConstants2", "vkCmdPushConstants2KHR"]);
 var INDIRECT_METHODS = /* @__PURE__ */ new Set(["vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDispatchIndirect"]);
-var COMPUTE_PASS_END = /* @__PURE__ */ new Set([
+var COMPUTE_PASS_END2 = /* @__PURE__ */ new Set([
   "vkCmdPipelineBarrier",
   "vkCmdPipelineBarrier2",
   "vkCmdPipelineBarrier2KHR",
@@ -857,7 +1519,7 @@ var COMPUTE_PASS_END = /* @__PURE__ */ new Set([
   "vkCmdWaitEvents2KHR",
   "vkCmdExecuteCommands"
 ]);
-function bindPointOf(method) {
+function bindPointOf2(method) {
   if (DISPATCH_METHODS.has(method)) return "VK_PIPELINE_BIND_POINT_COMPUTE";
   if (TRACE_METHODS.has(method)) return "VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR";
   return "VK_PIPELINE_BIND_POINT_GRAPHICS";
@@ -866,8 +1528,8 @@ var VULKAN_SETS = {
   DRAW: DRAW_METHODS,
   DISPATCH: DISPATCH_METHODS,
   TRACE: TRACE_METHODS,
-  PASS_BEGIN: PASS_BEGIN2,
-  PASS_END: PASS_END2,
+  PASS_BEGIN: PASS_BEGIN3,
+  PASS_END: PASS_END3,
   LABEL_BEGIN,
   LABEL_END,
   SUBMIT: SUBMIT_METHODS,
@@ -876,8 +1538,8 @@ var VULKAN_SETS = {
   BIND_INDEX: BIND_INDEX_METHODS,
   PUSH_CONSTANT: PUSH_CONSTANT_METHODS,
   INDIRECT: INDIRECT_METHODS,
-  COMPUTE_PASS_END,
-  bindPointOf,
+  COMPUTE_PASS_END: COMPUTE_PASS_END2,
+  bindPointOf: bindPointOf2,
   BIND_PIPELINE: /* @__PURE__ */ new Set(["vkCmdBindPipeline"]),
   pipelineBindPointOf: (_method, args) => typeof args?.pipelineBindPoint === "string" ? args.pipelineBindPoint : "",
   graphicsBindPoint: "VK_PIPELINE_BIND_POINT_GRAPHICS",
@@ -970,8 +1632,11 @@ function labelNameOf(cmd) {
   const info = a && (isObject(a.pLabelInfo) ? a.pLabelInfo : isObject(a.pMarkerInfo) ? a.pMarkerInfo : null);
   return info ? str(info.pLabelName ?? info.pMarkerName) : a && a.label !== void 0 ? str(a.label) : cmd.method;
 }
+function boundPipelineOf(a) {
+  return a ? a.pipeline ?? d3d12PipelineOf(a) : void 0;
+}
 function setsFor(api) {
-  return api === "metal" ? METAL_SETS : VULKAN_SETS;
+  return api === "metal" ? METAL_SETS : api === "d3d12" ? D3D12_SETS : VULKAN_SETS;
 }
 
 // src/renderer/utils/signal.ts
@@ -1842,7 +2507,17 @@ var CaptureStatistics = class {
           for (const b of set.bindings) {
             const written = b.descriptors.filter((d) => d).length;
             const t = b.type;
-            if (t.includes("UNIFORM_BUFFER")) this.uniformBuffers += written;
+            if (t.startsWith("D3D12_")) {
+              if (t.endsWith("_CBV")) this.uniformBuffers += written;
+              else if (t.endsWith("_SAMPLER")) this.samplers += written;
+              else {
+                for (const d of b.descriptors) {
+                  if (!d) continue;
+                  if (d.buffer !== void 0) this.storageBuffers++;
+                  else this.images++;
+                }
+              }
+            } else if (t.includes("UNIFORM_BUFFER")) this.uniformBuffers += written;
             else if (t.includes("STORAGE_BUFFER")) this.storageBuffers += written;
             else if (t.includes("TEXEL_BUFFER")) this.texelBuffers += written;
             else if (t === "VK_DESCRIPTOR_TYPE_SAMPLER") this.samplers += written;
@@ -2117,7 +2792,7 @@ function buildRenderGraph(passes, options = {}) {
   const nodes = [];
   const edges = [];
   const current = /* @__PURE__ */ new Map();
-  const resourceOf = (raw) => {
+  const resourceOf2 = (raw) => {
     let r = resources.get(raw.key);
     if (!r) {
       r = { ...raw, versions: [], uses: [], first: Infinity, last: -1, externalInput: false };
@@ -2148,7 +2823,7 @@ function buildRenderGraph(passes, options = {}) {
     nodes.push(node2);
     for (const access of pass.accesses) {
       if (access.mode === "write" && access.discards) continue;
-      const resource2 = resourceOf(access.resource);
+      const resource2 = resourceOf2(access.resource);
       const version = current.get(resource2.key);
       const isRead = access.mode !== "write";
       const use = { node: node2, resource: resource2, mode: access.mode, usage: access.usage, version, discards: !!access.discards, dropped: !!access.dropped, resolved: !!access.resolved };
@@ -2169,7 +2844,7 @@ function buildRenderGraph(passes, options = {}) {
     }
     for (const access of pass.accesses) {
       if (access.mode === "read") continue;
-      const resource2 = resourceOf(access.resource);
+      const resource2 = resourceOf2(access.resource);
       const version = {
         resource: resource2,
         index: resource2.versions.length,
@@ -2241,9 +2916,9 @@ function computeCriticalPath(graph) {
     }
   }
   if (!head || best <= 0) return;
-  const path11 = [];
-  for (let n = head; n; n = next.get(n) ?? null) path11.push(n);
-  graph.criticalPath = path11;
+  const path12 = [];
+  for (let n = head; n; n = next.get(n) ?? null) path12.push(n);
+  graph.criticalPath = path12;
   graph.criticalPathMs = best;
 }
 function usageClass(usage) {
@@ -2254,6 +2929,332 @@ function usageClass(usage) {
   if (usage.startsWith("sampled")) return "sampled";
   if (usage.startsWith("vertex") || usage.startsWith("index") || usage.startsWith("indirect") || usage.startsWith("uniform")) return "input";
   return "other";
+}
+
+// src/renderer/d3d12/frame_resources.ts
+var SUBRESOURCE_ALL = 4294967295;
+var D3D12ResourceSource = class {
+  _db;
+  _bound = /* @__PURE__ */ new Map();
+  /** Vertex and index buffers bound per stream: stream -> "v<slot>" / "index" -> buffer id. */
+  _buffers = /* @__PURE__ */ new Map();
+  _resources = /* @__PURE__ */ new Map();
+  constructor(db) {
+    this._db = db;
+  }
+  observe(cmd, stream) {
+    if (cmd.descriptors) {
+      let byPoint = this._bound.get(stream);
+      if (!byPoint) this._bound.set(stream, byPoint = /* @__PURE__ */ new Map());
+      let sets = byPoint.get(cmd.descriptors.bindPoint);
+      if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
+      for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      return;
+    }
+    if (!cmd.args) return;
+    if (D3D12_SETS.BIND_VERTEX.has(cmd.method)) {
+      for (const vb of D3D12_SETS.vertexBuffersOf(cmd)) {
+        const id = refId(vb.buffer);
+        if (id !== null) this._streamBuffers(stream).set(`v${vb.binding}`, id);
+      }
+    } else if (D3D12_SETS.BIND_INDEX.has(cmd.method)) {
+      const id = refId(D3D12_SETS.indexBufferOf(cmd)?.buffer);
+      if (id !== null) this._streamBuffers(stream).set("index", id);
+    } else if (cmd.method === "SetGraphicsRootSignature" || cmd.method === "SetComputeRootSignature") {
+      this._bound.get(stream)?.delete(cmd.method.startsWith("SetCompute") ? "compute" : "graphics");
+    }
+  }
+  passAccesses(cmd, ordinal) {
+    const a = cmd.args;
+    if (!a) return null;
+    const accesses = [];
+    const targets = [];
+    if (cmd.method === "BeginRenderPass") {
+      const colors = Array.isArray(a.pRenderTargets) ? a.pRenderTargets.filter(isObject) : [];
+      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets));
+      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets);
+    } else {
+      const colors = Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : [];
+      for (const h of colors) this._target(h, "color attachment (load/store)", accesses, targets, false, false, "color");
+      this._target(a.pDepthStencilDescriptor, "depth attachment (load/store)", accesses, targets, false, false, "depth");
+    }
+    return { kind: "render", label: `Pass ${ordinal}${targets.length ? `: ${targets.join(", ")}` : ""}`, accesses };
+  }
+  actionAccesses(cmd, stream) {
+    const accesses = [];
+    let unresolved = 0;
+    const sets = this._bound.get(stream)?.get(D3D12_SETS.bindPointOf(cmd.method));
+    if (sets) {
+      for (const set of sets.values()) {
+        if (!set.bindings.length && set.descriptorSet) unresolved++;
+        for (const binding of set.bindings) {
+          const usage = descriptorUsage(binding.type);
+          if (!usage) continue;
+          for (const d of binding.descriptors) {
+            if (!d) continue;
+            const bufferId = refId(d.buffer);
+            if (bufferId !== null) {
+              const resource2 = this._bufferResource(bufferId);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+              continue;
+            }
+            const textureId = refId(d.resource);
+            if (textureId !== null) {
+              const sub = d3d12ViewSubresource(d.view);
+              const resource2 = this._imageResource(textureId, sub.mip, sub.slice);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+            }
+          }
+        }
+      }
+    }
+    if (!D3D12_SETS.DISPATCH.has(cmd.method) && !D3D12_SETS.TRACE.has(cmd.method)) {
+      for (const [binding, id] of this._streamBuffers(stream)) {
+        const resource2 = this._bufferResource(id);
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: binding === "index" ? "index buffer" : "vertex buffer" });
+      }
+    }
+    if (cmd.method === "ExecuteIndirect") {
+      for (const key of ["pArgumentBuffer", "pCountBuffer"]) {
+        const resource2 = this._bufferResource(refId(cmd.args?.[key]));
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
+      }
+    }
+    return { accesses, unresolved };
+  }
+  transferAccesses(cmd) {
+    const a = cmd.args;
+    if (!a) return null;
+    const accesses = [];
+    const names = [];
+    const add = (id, mode, verb2, sub, discards = false, dropped = false) => {
+      if (id === null) return;
+      const object = this._db.getObject(id);
+      const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub?.mip ?? 0, sub?.slice ?? 0) : this._bufferResource(id);
+      if (!resource2) return;
+      accesses.push({ resource: resource2, mode, usage: `${verb2} ${mode === "read" ? "src" : "dst"}`, discards: mode === "write" && discards, dropped });
+      if (mode === "write") names.push(resource2.label);
+    };
+    const full = () => num(a.NumRects) === 0 && !(Array.isArray(a.pRects) && a.pRects.length);
+    let verb = "";
+    switch (cmd.method) {
+      case "CopyResource":
+        verb = "copy";
+        add(refId(a.pSrcResource), "read", verb, null);
+        add(refId(a.pDstResource), "write", verb, null, true);
+        break;
+      case "CopyBufferRegion":
+      case "AtomicCopyBufferUINT":
+      case "AtomicCopyBufferUINT64":
+        verb = "copy";
+        add(refId(a.pSrcBuffer), "read", verb, null);
+        add(refId(a.pDstBuffer), "write", verb, null);
+        break;
+      case "CopyTextureRegion": {
+        verb = "copy";
+        const src = isObject(a.pSrc) ? a.pSrc : null;
+        const dst = isObject(a.pDst) ? a.pDst : null;
+        if (src) add(refId(src.pResource), "read", verb, this._subresource(refId(src.pResource), src.SubresourceIndex));
+        if (dst) add(refId(dst.pResource), "write", verb, this._subresource(refId(dst.pResource), dst.SubresourceIndex));
+        break;
+      }
+      case "ResolveSubresource":
+      case "ResolveSubresourceRegion":
+        verb = "resolve copy";
+        add(refId(a.pSrcResource), "read", verb, this._subresource(refId(a.pSrcResource), a.SrcSubresource));
+        add(refId(a.pDstResource), "write", verb, this._subresource(refId(a.pDstResource), a.DstSubresource), cmd.method === "ResolveSubresource");
+        break;
+      case "ClearRenderTargetView":
+      case "ClearDepthStencilView": {
+        verb = "clear";
+        const h = a[cmd.method === "ClearRenderTargetView" ? "RenderTargetView" : "DepthStencilView"];
+        if (isObject(h)) add(refId(h.resource), "write", verb, d3d12ViewSubresource(h.view), full());
+        break;
+      }
+      case "ClearUnorderedAccessViewUint":
+      case "ClearUnorderedAccessViewFloat": {
+        verb = "clear";
+        const h = isObject(a.ViewCPUHandle) ? a.ViewCPUHandle : null;
+        add(refId(a.pResource), "write", verb, h ? d3d12ViewSubresource(h.view) : null, full());
+        break;
+      }
+      case "DiscardResource":
+        verb = "discard";
+        add(refId(a.pResource), "write", verb, null, true, true);
+        break;
+      case "CopyTiles": {
+        verb = "copy tiles";
+        const toTiled = str(a.Flags).includes("LINEAR_BUFFER_TO_SWIZZLED_TILED_RESOURCE");
+        add(refId(toTiled ? a.pBuffer : a.pTiledResource), "read", verb, null);
+        add(refId(toTiled ? a.pTiledResource : a.pBuffer), "write", verb, null);
+        break;
+      }
+      default:
+        return null;
+    }
+    if (!accesses.length) return null;
+    const label = verb.charAt(0).toUpperCase() + verb.slice(1);
+    return { label: `${label} \u2192 ${names.join(", ") || cmd.method}`, accesses };
+  }
+  computePassLabel(ordinal) {
+    return `Compute ${ordinal}`;
+  }
+  /**
+   * The subresources a ResourceBarrier or an enhanced Barrier names. An aliasing barrier is
+   * structural (required by the API whatever the data does); a transition names the resource
+   * whose state changes, a UAV barrier the resource it orders (or every UAV, when it names none).
+   */
+  syncPoint(cmd) {
+    const a = cmd.args;
+    if (!a || cmd.method !== "ResourceBarrier" && cmd.method !== "Barrier") return null;
+    const resources = [];
+    let structural = false;
+    if (cmd.method === "ResourceBarrier") {
+      for (const b of arrayOf(a.pBarriers)) {
+        const type = str(b.Type);
+        if (type.endsWith("_ALIASING")) {
+          structural = true;
+          continue;
+        }
+        const detail = isObject(b.Transition) ? b.Transition : isObject(b.UAV) ? b.UAV : null;
+        if (isObject(b.Transition) && str(b.Transition.StateBefore) !== str(b.Transition.StateAfter)) structural = true;
+        const id = refId(detail?.pResource);
+        if (id === null) continue;
+        const sub = this._subresource(id, detail?.Subresource);
+        const object = this._db.getObject(id);
+        const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub.mip, sub.slice) : this._bufferResource(id);
+        if (resource2) resources.push(resource2.key);
+      }
+    } else {
+      for (const g of arrayOf(a.pBarrierGroups)) {
+        for (const b of arrayOf(g.pTextureBarriers)) {
+          if (str(b.LayoutBefore) !== str(b.LayoutAfter)) structural = true;
+          const id = refId(b.pResource);
+          const range = isObject(b.Subresources) ? b.Subresources : null;
+          const resource2 = id === null ? null : this._imageResource(id, num(range?.IndexOrFirstMipLevel) === SUBRESOURCE_ALL ? 0 : num(range?.IndexOrFirstMipLevel), num(range?.FirstArraySlice));
+          if (resource2) resources.push(resource2.key);
+        }
+        for (const b of arrayOf(g.pBufferBarriers)) {
+          const resource2 = this._bufferResource(refId(b.pResource));
+          if (resource2) resources.push(resource2.key);
+        }
+      }
+    }
+    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
+  }
+  // ------------------------------------------------------------------------------- targets
+  /** One BeginRenderPass target: its handle, beginning access and ending access. */
+  _renderPassTarget(rt, kind, accesses, targets) {
+    const handle = isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt;
+    const beginning = kind === "color" ? rt.BeginningAccess : rt.DepthBeginningAccess;
+    const ending = kind === "color" ? rt.EndingAccess : rt.DepthEndingAccess;
+    const begin = accessType(beginning);
+    const end = accessType(ending);
+    const stencilBegin = kind === "depth" ? accessType(rt.StencilBeginningAccess) : "";
+    const stencilEnd = kind === "depth" ? accessType(rt.StencilEndingAccess) : "";
+    const loads = begin === "PRESERVE" || stencilBegin === "PRESERVE";
+    const stores = end === "PRESERVE" || stencilEnd === "PRESERVE";
+    const resolved = end === "RESOLVE" || stencilEnd === "RESOLVE";
+    const usage = `${kind} attachment (${loads ? "load" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : resolved ? "resolve" : "discard"})`;
+    this._target(handle, usage, accesses, targets, !loads, !stores && !resolved, kind, resolved);
+    const resolve = isObject(ending) && isObject(ending.Resolve) ? ending.Resolve : null;
+    const resolveId = resolved && resolve ? refId(resolve.pDstResource) : null;
+    if (resolveId !== null) {
+      const params = Array.isArray(resolve.pSubresourceParameters) && isObject(resolve.pSubresourceParameters[0]) ? resolve.pSubresourceParameters[0] : null;
+      const sub = this._subresource(resolveId, params?.DstSubresource);
+      const target = this._imageResource(resolveId, sub.mip, sub.slice);
+      if (target) accesses.push({ resource: target, mode: "write", usage: "resolve target (discard/store)", discards: true });
+    }
+  }
+  _target(handle, usage, accesses, targets, discards, dropped, kind, resolved = false) {
+    if (!isObject(handle)) return;
+    const id = refId(handle.resource);
+    if (id === null) return;
+    const sub = d3d12ViewSubresource(handle.view);
+    const resource2 = this._imageResource(id, sub.mip, sub.slice);
+    if (!resource2) return;
+    accesses.push({ resource: resource2, mode: "write", usage, discards, dropped, resolved });
+    if (kind === "color") targets.push(resource2.label);
+  }
+  // ------------------------------------------------------------------------------- resources
+  _streamBuffers(stream) {
+    let m = this._buffers.get(stream);
+    if (!m) this._buffers.set(stream, m = /* @__PURE__ */ new Map());
+    return m;
+  }
+  /** A subresource index as a mip and slice (D3D12 numbers them mip-fastest: index = mip + slice * mips). */
+  _subresource(id, index) {
+    const i = num(index);
+    if (id === null || i === SUBRESOURCE_ALL || i === 0) return { mip: 0, slice: 0 };
+    const shape = d3d12TextureShape(this._db.getObject(id), this._db);
+    const mips = Math.max(1, shape?.mips ?? 1);
+    return { mip: i % mips, slice: Math.floor(i / mips) % Math.max(1, shape?.layers ?? 1) };
+  }
+  _imageResource(imageId, mip, slice) {
+    if (imageId === null) return null;
+    const object = this._db.getObject(imageId);
+    if (!object) return null;
+    const key = `image:${imageId}:m${mip}:l${slice}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const shape = d3d12TextureShape(object, this._db);
+    const width = Math.max(1, (shape?.width ?? 0) >> mip);
+    const height = Math.max(1, (shape?.height ?? 0) >> mip);
+    const format = dxgiFormatShort(shape?.format);
+    const sub = [(shape?.mips ?? 1) > 1 ? `mip ${mip}` : "", (shape?.layers ?? 1) > 1 ? `slice ${slice}` : ""].filter(Boolean).join(" ");
+    const resource2 = {
+      key,
+      objectId: imageId,
+      type: "image",
+      label: sub ? `${object.name} ${sub}` : object.name,
+      detail: [shape ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
+      bytes: width * height * (dxgiFormatBytes(shape?.format) || 4),
+      presented: isBackBuffer(object)
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+  _bufferResource(bufferId) {
+    if (bufferId === null) return null;
+    const object = this._db.getObject(bufferId);
+    if (!object) return null;
+    const key = `buffer:${bufferId}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const size2 = num(object.descriptor?.Width);
+    const resource2 = {
+      key,
+      objectId: bufferId,
+      type: "buffer",
+      label: object.name,
+      detail: size2 ? formatBytes2(size2) : "",
+      bytes: size2,
+      presented: false
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+};
+function descriptorUsage(type) {
+  if (type.endsWith("_UAV")) return { name: "unordered access", write: true };
+  if (type.endsWith("_SRV")) return { name: "shader resource", write: false };
+  if (type.endsWith("_CBV")) return { name: "constant buffer", write: false };
+  return null;
+}
+function accessType(v) {
+  const type = isObject(v) ? str(v.Type) : str(v);
+  return type.replace(/^D3D12_RENDER_PASS_(BEGINNING|ENDING)_ACCESS_TYPE_/, "");
+}
+function arrayOf(v) {
+  return Array.isArray(v) ? v.filter(isObject) : [];
+}
+function isBackBuffer(object) {
+  return object.cmd === "GetBuffer";
+}
+function formatBytes2(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 // src/renderer/metal/frame_resources.ts
@@ -2486,7 +3487,7 @@ var MetalResourceSource = class {
       objectId: bufferId,
       type: "buffer",
       label: object.name,
-      detail: size2 ? formatBytes2(size2) : "",
+      detail: size2 ? formatBytes3(size2) : "",
       bytes: size2,
       presented: false
     };
@@ -2503,7 +3504,7 @@ function bytesPerPixel(format) {
   if (/BC|ETC|ASTC|EAC|PVRTC/.test(format)) return 1;
   return 4;
 }
-function formatBytes2(bytes) {
+function formatBytes3(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
@@ -2734,11 +3735,11 @@ var VulkanResourceSource = class {
   actionAccesses(cmd, stream) {
     const accesses = [];
     let unresolved = 0;
-    const sets = this._bound.get(stream)?.get(bindPointOf(cmd.method));
+    const sets = this._bound.get(stream)?.get(bindPointOf2(cmd.method));
     if (sets) {
       for (const set of sets.values()) {
         for (const binding of set.bindings) {
-          const usage = descriptorUsage(binding.type);
+          const usage = descriptorUsage2(binding.type);
           if (!usage) continue;
           for (const d of binding.descriptors) {
             if (!d) continue;
@@ -2819,14 +3820,14 @@ var VulkanResourceSource = class {
     const resources = [];
     let structural = false;
     for (const g of groups) {
-      for (const b of arrayOf(g.pImageMemoryBarriers)) {
+      for (const b of arrayOf2(g.pImageMemoryBarriers)) {
         if (str(b.oldLayout) !== str(b.newLayout)) structural = true;
         if (queueTransfer(b)) structural = true;
         const range = isObject(b.subresourceRange) ? b.subresourceRange : null;
         const resource2 = this._imageResource(refId(b.image), num(range?.baseMipLevel), num(range?.baseArrayLayer));
         if (resource2) resources.push(resource2.key);
       }
-      for (const b of arrayOf(g.pBufferMemoryBarriers)) {
+      for (const b of arrayOf2(g.pBufferMemoryBarriers)) {
         if (queueTransfer(b)) structural = true;
         const resource2 = this._bufferResource(refId(b.buffer));
         if (resource2) resources.push(resource2.key);
@@ -2886,7 +3887,7 @@ var VulkanResourceSource = class {
       objectId: bufferId,
       type: "buffer",
       label: object.name,
-      detail: size2 ? formatBytes3(size2) : "",
+      detail: size2 ? formatBytes4(size2) : "",
       bytes: size2,
       presented: false
     };
@@ -2906,7 +3907,7 @@ var VulkanResourceSource = class {
     return `Pass ${ordinal}: rendering, ${colors} color attachment${colors === 1 ? "" : "s"}`;
   }
 };
-function descriptorUsage(type) {
+function descriptorUsage2(type) {
   if (type.includes("STORAGE_IMAGE")) return { name: "storage image", write: true };
   if (type.includes("STORAGE_BUFFER")) return { name: "storage buffer", write: true };
   if (type.includes("STORAGE_TEXEL_BUFFER")) return { name: "storage texel buffer", write: true };
@@ -2927,7 +3928,7 @@ function copySubresource(a, mode) {
   if (range) return { mip: num(range.baseMipLevel), layer: num(range.baseArrayLayer) };
   return { mip: 0, layer: 0 };
 }
-function arrayOf(v) {
+function arrayOf2(v) {
   return Array.isArray(v) ? v.filter(isObject) : [];
 }
 function queueTransfer(b) {
@@ -2951,7 +3952,7 @@ function bytesPerPixel2(format) {
   if (format.includes("BC") || format.includes("ETC") || format.includes("ASTC")) return 1;
   return 4;
 }
-function formatBytes3(bytes) {
+function formatBytes4(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
@@ -3123,7 +4124,7 @@ function buildFrameGraph(data, sets, source) {
   });
 }
 function frameRenderGraph(data, db) {
-  const source = data.api === "metal" ? new MetalResourceSource(db) : new VulkanResourceSource(db);
+  const source = data.api === "metal" ? new MetalResourceSource(db) : data.api === "d3d12" ? new D3D12ResourceSource(db) : new VulkanResourceSource(db);
   return buildFrameGraph(data, data.sets, source);
 }
 
@@ -4047,17 +5048,17 @@ function analyzeSpirv(data) {
     if (!fn || !loc) return null;
     const byLine = lineCosts.get(fn.id);
     const key = `${loc.file}:${loc.line}`;
-    let entry = byLine.get(key);
-    if (!entry) {
-      entry = { file: fileName(loc), line: loc.line, cost: emptyCost(), weighted: 0, dominant: "alu", instructions: 0 };
-      byLine.set(key, entry);
+    let entry2 = byLine.get(key);
+    if (!entry2) {
+      entry2 = { file: fileName(loc), line: loc.line, cost: emptyCost(), weighted: 0, dominant: "alu", instructions: 0 };
+      byLine.set(key, entry2);
     }
-    return entry;
+    return entry2;
   };
   const charge = (c2, s) => {
     addCost(fn.cost, c2, s);
-    const entry = lineOf();
-    if (entry) addCost(entry.cost, c2, s);
+    const entry2 = lineOf();
+    if (entry2) addCost(entry2.cost, c2, s);
   };
   let i = 5;
   while (i < words2.length) {
@@ -4492,13 +5493,17 @@ var GraphAnalysis = class {
    */
   _blind = false;
   /** Which API's spelling of a fix the advice should name. */
-  _metal = false;
+  _api = "vulkan";
   _options;
   constructor(graph, options) {
     this._graph = graph;
     this._options = options;
     this._blind = graph.nodes.some((n) => n.unresolvedReads > 0);
-    this._metal = graph.api === "metal";
+    this._api = graph.api;
+  }
+  /** The API's own spelling of a piece of advice: the Vulkan, Metal or D3D12 wording. */
+  _wording(vulkan, metal, d3d12) {
+    return this._api === "metal" ? metal : this._api === "d3d12" ? d3d12 : vulkan;
   }
   analyze() {
     this._unreadStores();
@@ -4538,7 +5543,7 @@ var GraphAnalysis = class {
       "unread-store",
       "medium",
       this._blind ? "medium" : "high",
-      `${count(folded.count, "write")} in the frame ${folded.count === 1 ? "reaches" : "reach"} memory that no later pass reads: ${folded.subjectText}. Discarding instead (${this._metal ? "MTLStoreActionDontCare" : "store op DONT_CARE"}) keeps the result in tile memory and skips the write. The graph only sees this capture, so a result the host reads back or the next frame consumes will look unread here${this._blindClause()}.`,
+      `${count(folded.count, "write")} in the frame ${folded.count === 1 ? "reaches" : "reach"} memory that no later pass reads: ${folded.subjectText}. Discarding instead (${this._wording("store op DONT_CARE", "MTLStoreActionDontCare", "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD in a BeginRenderPass, or DiscardResource after the pass")}) keeps the result in tile memory and skips the write. The graph only sees this capture, so a result the host reads back or the next frame consumes will look unread here${this._blindClause()}.`,
       folded
     );
   }
@@ -4633,7 +5638,11 @@ var GraphAnalysis = class {
       "subpass-candidate",
       "low",
       allChecked ? "medium" : "low",
-      `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` + (this._metal ? "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. " : "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ") + (allChecked ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position." : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."),
+      `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` + this._wording(
+        "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ",
+        "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. ",
+        "D3D12 has no subpasses; on a tiled GPU the two passes cost a store and a load of the target, so drawing both into one render target set is what saves them. "
+      ) + (allChecked ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position." : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."),
       folded
     );
     return reported;
@@ -4671,7 +5680,7 @@ var GraphAnalysis = class {
       "transient-candidate",
       "medium",
       this._blind ? "low" : "medium",
-      `${count(folded.count, "image")} ${folded.count === 1 ? "is" : "are"} written and then read only by the pass that follows, and never presented or copied: ${folded.subjectText}. A target used that way never has to reach memory: ${this._metal ? "MTLStorageModeMemoryless, or an imageblock read in the second pass" : "TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass"}${this._blindClause()}.`,
+      `${count(folded.count, "image")} ${folded.count === 1 ? "is" : "are"} written and then read only by the pass that follows, and never presented or copied: ${folded.subjectText}. A target used that way never has to reach memory: ${this._wording("TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass", "MTLStorageModeMemoryless, or an imageblock read in the second pass", "a transient render target (BeginRenderPass with DISCARD ending access, and a render pass tier that keeps it on chip), or one pass drawing both")}${this._blindClause()}.`,
       folded
     );
   }
@@ -4708,7 +5717,7 @@ var GraphAnalysis = class {
       count: findings.length
     };
     this._findings.push(f);
-    for (const entry of findings) this._attach(entry.commandIndex, f);
+    for (const entry2 of findings) this._attach(entry2.commandIndex, f);
   }
   // ------------------------------------------------------------------------------- mechanics
   /** True when `use`'s version was produced by `node` (its immediately preceding version). */
@@ -5064,8 +6073,239 @@ function analyzeMetalFrame(data, db) {
   return { findings, byCommand: analysis.byCommand() };
 }
 
-// src/renderer/counter_rules.ts
+// src/renderer/d3d12/frame_analysis.ts
+var TINY_DRAW_VERTICES2 = 12;
+var TINY_DRAW_COUNT2 = 32;
+var RULE_ORDER3 = [
+  "undefined-load",
+  "clear-then-discard",
+  "empty-pass",
+  "tiny-draws",
+  "redundant-pipeline-bind",
+  "redundant-root-signature-bind",
+  "redundant-vertex-buffer-bind",
+  "single-threadgroup-dispatch"
+];
 var Folded3 = class {
+  first = null;
+  count = 0;
+  commands = [];
+  add(cmd) {
+    if (!this.first) this.first = cmd;
+    this.count++;
+    if (this.commands.length < 64) this.commands.push(cmd);
+  }
+};
+function argKey2(v) {
+  if (isHandleRef(v)) return `#${v.__id}`;
+  if (Array.isArray(v)) return `[${v.map(argKey2).join(",")}]`;
+  if (isObject(v)) return `{${Object.entries(v).map(([k, e]) => `${k}:${argKey2(e)}`).join(",")}}`;
+  return str(v);
+}
+function accessType2(v) {
+  const type = isObject(v) ? str(v.Type) : str(v);
+  return type.replace(/^D3D12_RENDER_PASS_(BEGINNING|ENDING)_ACCESS_TYPE_/, "");
+}
+function subresourceKey(handle) {
+  if (!isObject(handle)) return null;
+  const id = refId(handle.resource);
+  if (id === null) return null;
+  const sub = d3d12ViewSubresource(handle.view);
+  return `${id}:${sub.mip}:${sub.slice}`;
+}
+var D3D12FrameAnalysis = class {
+  findings = [];
+  _db;
+  _byCommand = /* @__PURE__ */ new Map();
+  byCommand() {
+    return this._byCommand;
+  }
+  constructor(db) {
+    this._db = db;
+  }
+  analyze(data) {
+    this.findings = [];
+    this._byCommand = /* @__PURE__ */ new Map();
+    this._walk(data.commands);
+    this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER3.indexOf(a.rule) - RULE_ORDER3.indexOf(b.rule));
+    return this.findings;
+  }
+  _walk(commands) {
+    const sets = D3D12_SETS;
+    const lists = /* @__PURE__ */ new Map();
+    const openPass = /* @__PURE__ */ new Map();
+    const lastEnding = /* @__PURE__ */ new Map();
+    const pendingClear = /* @__PURE__ */ new Map();
+    const redundantPipeline = new Folded3();
+    const redundantRootSignature = new Folded3();
+    const redundantVertexBuffers = new Folded3();
+    const tinyDraws = new Folded3();
+    const singleGroup = new Folded3();
+    const undefinedLoad = new Folded3();
+    const clearThenDiscard = new Folded3();
+    const emptyPass = new Folded3();
+    const stateOf = (stream) => {
+      let s = lists.get(stream);
+      if (!s) lists.set(stream, s = { pipeline: /* @__PURE__ */ new Map(), rootSignature: /* @__PURE__ */ new Map(), vertexBuffers: /* @__PURE__ */ new Map() });
+      return s;
+    };
+    const closePass = (stream) => {
+      const pass = openPass.get(stream);
+      if (!pass) return;
+      openPass.delete(stream);
+      if (pass.draws === 0) emptyPass.add(pass.command);
+      for (const t of pass.targets) lastEnding.set(t.key, t.end);
+    };
+    for (const cmd of commands) {
+      const a = cmd.args;
+      const m = cmd.method;
+      const stream = `${cmd.frame}:${cmd.object?.__id ?? 0}:${cmd.secondary ?? 0}`;
+      if (sets.SUBMIT.has(m)) continue;
+      if (m === "Close" || m === "Reset") {
+        closePass(stream);
+        lists.delete(stream);
+        continue;
+      }
+      if (sets.PASS_BEGIN.has(m)) {
+        closePass(stream);
+        const pass = { command: cmd, draws: 0, targets: [] };
+        if (m === "BeginRenderPass" && a) {
+          const entries = [];
+          for (const rt of Array.isArray(a.pRenderTargets) ? a.pRenderTargets : []) if (isObject(rt)) entries.push([rt, false]);
+          if (isObject(a.pDepthStencil)) entries.push([a.pDepthStencil, true]);
+          for (const [rt, depth] of entries) {
+            const key = subresourceKey(isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt);
+            if (!key) continue;
+            const begin = accessType2(depth ? rt.DepthBeginningAccess : rt.BeginningAccess);
+            const end = accessType2(depth ? rt.DepthEndingAccess : rt.EndingAccess);
+            pass.targets.push({ key, begin, end });
+            if (begin === "PRESERVE" && lastEnding.get(key) === "DISCARD") undefinedLoad.add(cmd);
+            const clear = pendingClear.get(key);
+            if (clear && (begin === "DISCARD" || begin === "CLEAR")) clearThenDiscard.add(clear);
+            pendingClear.delete(key);
+          }
+        } else if (a) {
+          for (const h of Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : []) {
+            const key = subresourceKey(h);
+            if (key) {
+              pendingClear.delete(key);
+              lastEnding.delete(key);
+            }
+          }
+          const depth = subresourceKey(a.pDepthStencilDescriptor);
+          if (depth) {
+            pendingClear.delete(depth);
+            lastEnding.delete(depth);
+          }
+        }
+        openPass.set(stream, pass);
+        continue;
+      }
+      if (sets.PASS_END.has(m)) {
+        closePass(stream);
+        continue;
+      }
+      if (!a) continue;
+      if (m === "ClearRenderTargetView" || m === "ClearDepthStencilView") {
+        const key = subresourceKey(a[m === "ClearRenderTargetView" ? "RenderTargetView" : "DepthStencilView"]);
+        if (key && !openPass.has(stream)) pendingClear.set(key, cmd);
+        if (key) lastEnding.delete(key);
+        continue;
+      }
+      if (sets.BIND_PIPELINE.has(m)) {
+        const id = refId(d3d12PipelineOf(a));
+        const point = sets.pipelineBindPointOf(m, a);
+        const state = stateOf(stream);
+        if (id !== null) {
+          if (state.pipeline.get(point) === id) redundantPipeline.add(cmd);
+          state.pipeline.set(point, id);
+        }
+        continue;
+      }
+      if (m === "SetGraphicsRootSignature" || m === "SetComputeRootSignature") {
+        const id = refId(a.pRootSignature);
+        const point = m === "SetComputeRootSignature" ? "compute" : "graphics";
+        const state = stateOf(stream);
+        if (id !== null) {
+          if (state.rootSignature.get(point) === id) redundantRootSignature.add(cmd);
+          state.rootSignature.set(point, id);
+        }
+        continue;
+      }
+      if (sets.BIND_VERTEX.has(m)) {
+        const state = stateOf(stream);
+        const views = Array.isArray(a.pViews) ? a.pViews : [];
+        const first = num(a.StartSlot);
+        let same = views.length > 0;
+        views.forEach((v, i) => {
+          const key = argKey2(v);
+          if (state.vertexBuffers.get(first + i) !== key) same = false;
+          state.vertexBuffers.set(first + i, key);
+        });
+        if (same) redundantVertexBuffers.add(cmd);
+        continue;
+      }
+      if (sets.DRAW.has(m)) {
+        const pass = openPass.get(stream);
+        if (pass) pass.draws++;
+        const vertices = num(a.IndexCountPerInstance) || num(a.VertexCountPerInstance);
+        if (vertices > 0 && vertices <= TINY_DRAW_VERTICES2) tinyDraws.add(cmd);
+        continue;
+      }
+      if (m === "Dispatch") {
+        if (num(a.ThreadGroupCountX) === 1 && num(a.ThreadGroupCountY) === 1 && num(a.ThreadGroupCountZ) === 1) singleGroup.add(cmd);
+      }
+    }
+    for (const stream of [...openPass.keys()]) closePass(stream);
+    if (undefinedLoad.count) {
+      this._addFolded("undefined-load", "high", "high", `${undefinedLoad.count} render pass${undefinedLoad.count === 1 ? "" : "es"} PRESERVE${undefinedLoad.count === 1 ? "s" : ""} a target the previous render pass on it ended with D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD: the contents are undefined. Either preserve it there, or begin with CLEAR or DISCARD here.`, undefinedLoad);
+    }
+    if (clearThenDiscard.count) {
+      this._addFolded("clear-then-discard", "medium", "high", `${clearThenDiscard.count} clear${clearThenDiscard.count === 1 ? "" : "s"} of a render target that the BeginRenderPass after it discards or clears again on entry: the clear is wasted. Let the pass clear it (D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR), which a tiled GPU does in tile memory.`, clearThenDiscard);
+    }
+    if (emptyPass.count) {
+      this._addFolded("empty-pass", "low", "medium", `${emptyPass.count} render pass${emptyPass.count === 1 ? "" : "es"} with no draws: on a tiled GPU each still loads and stores its targets.`, emptyPass);
+    }
+    if (tinyDraws.count >= TINY_DRAW_COUNT2) {
+      this._addFolded("tiny-draws", "low", "medium", `${tinyDraws.count} draws of ${TINY_DRAW_VERTICES2} vertices or fewer: candidates for instancing or merging into one buffer.`, tinyDraws);
+    }
+    if (redundantPipeline.count) {
+      this._addFolded("redundant-pipeline-bind", "low", "high", `${redundantPipeline.count} SetPipelineState call${redundantPipeline.count === 1 ? "" : "s"} of the pipeline the command list already had.`, redundantPipeline);
+    }
+    if (redundantRootSignature.count) {
+      this._addFolded("redundant-root-signature-bind", "low", "high", `${redundantRootSignature.count} root signature bind${redundantRootSignature.count === 1 ? "" : "s"} of the root signature already bound. Setting a root signature also clears every root parameter, so the tables and constants have to be set again after it.`, redundantRootSignature);
+    }
+    if (redundantVertexBuffers.count) {
+      this._addFolded("redundant-vertex-buffer-bind", "low", "high", `${redundantVertexBuffers.count} IASetVertexBuffers call${redundantVertexBuffers.count === 1 ? "" : "s"} of the views already bound at those slots.`, redundantVertexBuffers);
+    }
+    if (singleGroup.count) {
+      this._addFolded("single-threadgroup-dispatch", "low", "medium", `${singleGroup.count} dispatch${singleGroup.count === 1 ? "" : "es"} of a single thread group: the rest of the GPU idles while it runs.`, singleGroup);
+    }
+  }
+  _add(rule, severity, confidence, message, cmd, count2 = 1) {
+    const f = { rule, severity, confidence, message, commandIndex: cmd?.index, count: count2 };
+    this.findings.push(f);
+    if (cmd) this._attach(cmd.index, f);
+    return f;
+  }
+  _addFolded(rule, severity, confidence, message, folded) {
+    const f = this._add(rule, severity, confidence, message, folded.first, folded.count);
+    for (const cmd of folded.commands) if (cmd !== folded.first) this._attach(cmd.index, f);
+  }
+  _attach(index, f) {
+    const list = this._byCommand.get(index);
+    if (list) list.push(f);
+    else this._byCommand.set(index, [f]);
+  }
+};
+function analyzeD3D12Frame(data, db) {
+  const analysis = new D3D12FrameAnalysis(db);
+  const findings = analysis.analyze(data);
+  return { findings, byCommand: analysis.byCommand() };
+}
+
+// src/renderer/counter_rules.ts
+var Folded4 = class {
   first = null;
   count = 0;
   commands = [];
@@ -5079,9 +6319,9 @@ function analyzeCounters(data, db) {
   const findings = [];
   const byCommand = /* @__PURE__ */ new Map();
   const metrics = collectPassMetrics(data, db);
-  const overdrawn = new Folded3();
-  const micro = new Folded3();
-  const shadedThenDropped = new Folded3();
+  const overdrawn = new Folded4();
+  const micro = new Folded4();
+  const shadedThenDropped = new Folded4();
   let worstOverdraw = 0;
   let worstFragments = Infinity;
   for (const p of metrics.passes) {
@@ -5782,7 +7022,7 @@ function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ *
 function upstreamParts(m, parts2) {
   const w = m.words;
   const taint = /* @__PURE__ */ new Map();
-  const variables = /* @__PURE__ */ new Map();
+  const variables2 = /* @__PURE__ */ new Map();
   const returns = /* @__PURE__ */ new Map();
   const get = (map, id) => map.get(id) ?? 0n;
   const or = (map, id, bits) => {
@@ -5806,11 +7046,11 @@ function upstreamParts(m, parts2) {
       let bits = 0n;
       for (const o of m.operandWords(ins)) bits |= get(taint, o);
       if (ins.op === 62 /* Store */) {
-        changed = or(variables, m.baseVariable(w[ins.start + 1]), get(taint, w[ins.start + 2])) || changed;
+        changed = or(variables2, m.baseVariable(w[ins.start + 1]), get(taint, w[ins.start + 2])) || changed;
       } else if (ins.op === 254 /* ReturnValue */) {
         changed = or(returns, ins.fn, bits) || changed;
       } else if (definesValue(ins.op) && ins.op !== 55 /* FunctionParameter */) {
-        if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+        if (ins.op === 61 /* Load */) bits |= get(variables2, m.baseVariable(w[ins.start + 3]));
         if (ins.op === 57 /* FunctionCall */) {
           bits = get(returns, w[ins.start + 3]);
           const part = calledFunction.get(w[ins.start + 3]);
@@ -5825,7 +7065,7 @@ function upstreamParts(m, parts2) {
     let bits = 0n;
     for (const ins of p.instructions) {
       for (const o of m.operandWords(ins)) bits |= get(taint, o);
-      if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+      if (ins.op === 61 /* Load */) bits |= get(variables2, m.baseVariable(w[ins.start + 3]));
       if (ins.op === 57 /* FunctionCall */) bits |= get(returns, w[ins.start + 3]) | (calledFunction.has(w[ins.start + 3]) ? 1n << BigInt(calledFunction.get(w[ins.start + 3])) : 0n);
     }
     bits &= ~(1n << BigInt(i));
@@ -5857,8 +7097,8 @@ function textureReads(spirv, entryPoint) {
     return null;
   }
   const w = m.words;
-  const entry = m.entryPoints.find((e) => e.name === entryPoint) ?? (m.entryPoints.length === 1 ? m.entryPoints[0] : void 0);
-  if (!entry) return null;
+  const entry2 = m.entryPoints.find((e) => e.name === entryPoint) ?? (m.entryPoints.length === 1 ? m.entryPoints[0] : void 0);
+  if (!entry2) return null;
   const own = /* @__PURE__ */ new Map();
   for (const ins of m.instructions) {
     if (!ins.fn || !isImageRead(ins.op)) continue;
@@ -5894,7 +7134,7 @@ function textureReads(spirv, entryPoint) {
     return out;
   };
   const result = [];
-  for (const [t, r] of total(entry.functionId, /* @__PURE__ */ new Set())) {
+  for (const [t, r] of total(entry2.functionId, /* @__PURE__ */ new Set())) {
     const set = m.sets.get(t);
     const binding = m.bindings.get(t);
     if (set !== void 0 && binding !== void 0) result.push({ set, binding, ...r });
@@ -5911,13 +7151,13 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
     return plan;
   }
   const w = m.words;
-  const entry = analysis.entryPoints.find((e) => e.name === entryPoint && e.stage === stage) ?? analysis.entryPoints.find((e) => e.stage === stage);
-  const moduleEntry = entry ? m.entryPoints.find((e) => e.functionId === entry.functionId) : void 0;
-  if (!entry || !moduleEntry) {
+  const entry2 = analysis.entryPoints.find((e) => e.name === entryPoint && e.stage === stage) ?? analysis.entryPoints.find((e) => e.stage === stage);
+  const moduleEntry = entry2 ? m.entryPoints.find((e) => e.functionId === entry2.functionId) : void 0;
+  if (!entry2 || !moduleEntry) {
     plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the entry point is not in the module" });
     return plan;
   }
-  const reachable = new Set(entry.functions.map((f) => f.id));
+  const reachable = new Set(entry2.functions.map((f) => f.id));
   const slice = m.controlSlice();
   const why = (ins) => {
     const t = w[ins.start + 1];
@@ -5929,7 +7169,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
   const candidates = [];
   let stageVariant = null;
   {
-    const part = { kind: "stage", name: `${stage}: ${entry.name}` };
+    const part = { kind: "stage", name: `${stage}: ${entry2.name}` };
     const outputs = /* @__PURE__ */ new Set();
     for (const v of moduleEntry.interface) {
       if (m.variableClass.get(v) !== 3 /* Output */) continue;
@@ -5952,7 +7192,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
     else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
     else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, /* @__PURE__ */ new Set(), remove), edits: remove.size, upstream: [] };
   }
-  for (const f of entry.functions.filter((fn) => fn.id !== entry.functionId).slice(0, limits.functions ?? 16)) {
+  for (const f of entry2.functions.filter((fn) => fn.id !== entry2.functionId).slice(0, limits.functions ?? 16)) {
     const part = { kind: "function", name: f.name, functionId: f.id, functionName: f.name };
     const replace = /* @__PURE__ */ new Set();
     const remove = /* @__PURE__ */ new Set();
@@ -6013,7 +7253,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
       if (!definesValue(ins.op)) return false;
       return (backEdges.get(w[ins.start + 2]) ?? []).some((phi) => (users.get(w[phi.start + 2]) ?? []).some((u) => lineOf(u) !== here && lineOf(u) !== ""));
     });
-    const lines = entry.functions.flatMap((f) => f.lines.map((l) => ({ f, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, limits.lines ?? 32);
+    const lines = entry2.functions.flatMap((f) => f.lines.map((l) => ({ f, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, limits.lines ?? 32);
     for (const { f, l } of lines) {
       const part = { kind: "line", name: `${l.file ? `${l.file}:` : "line "}${l.line}`, functionId: f.id, functionName: f.name, file: l.file, line: l.line };
       const replace = /* @__PURE__ */ new Set();
@@ -6596,6 +7836,147 @@ function reflectSpirv(data) {
   return r;
 }
 
+// src/renderer/d3d12/reflection.ts
+function asType(v) {
+  if (!isObject(v)) return null;
+  const kind = str(v.kind);
+  if (!["scalar", "vector", "matrix", "array", "struct", "opaque", "format"].includes(kind)) return null;
+  return v;
+}
+function hlslDimension(dimension) {
+  const d = dimension.toLowerCase();
+  const m = /^texture(1d|2d|3d|cube)(ms)?(array)?$/.exec(d);
+  if (m) return `Texture${m[1].toUpperCase().replace("CUBE", "Cube")}${m[2] ? "MS" : ""}${m[3] ? "Array" : ""}`;
+  if (d === "structured") return "StructuredBuffer";
+  if (d === "byteaddress") return "ByteAddressBuffer";
+  if (d === "buffer") return "Buffer";
+  if (d === "accelerationstructure") return "RaytracingAccelerationStructure";
+  if (d === "feedbacktexture2d") return "FeedbackTexture2D";
+  return dimension;
+}
+function kindOf(entry2) {
+  const kind = str(entry2.kind).toLowerCase();
+  const dimension = str(entry2.dimension).toLowerCase();
+  switch (kind) {
+    case "cbuffer":
+      return "uniform";
+    case "sampler":
+      return "sampler";
+    case "srv":
+      if (dimension === "structured" || dimension === "byteaddress") return "storage";
+      if (dimension === "buffer") return "uniformTexelBuffer";
+      if (dimension === "accelerationstructure") return "accelerationStructure";
+      return "sampledImage";
+    case "uav":
+      if (dimension === "structured" || dimension === "byteaddress" || dimension === "") return "storage";
+      if (dimension === "buffer") return "storageTexelBuffer";
+      return "storageImage";
+    default:
+      return "unknown";
+  }
+}
+function resourceOf(entry2) {
+  const kind = kindOf(entry2);
+  if (kind === "unknown") return null;
+  const dimension = str(entry2.dimension);
+  const returnType = str(entry2.returnType);
+  const declared = asType(entry2.type);
+  let type;
+  let name;
+  if (declared && (kind === "uniform" || kind === "storage")) {
+    type = declared;
+    name = declared.kind === "struct" ? declared.name || typeName(declared) : typeName(declared);
+    if (kind === "storage" && dimension.toLowerCase() === "structured") {
+      name = `${str(entry2.kind).toLowerCase() === "uav" ? "RW" : ""}StructuredBuffer<${name}>`;
+    }
+  } else if (kind === "sampler") {
+    type = { kind: "opaque", name: "SamplerState" };
+    name = "SamplerState";
+  } else if (kind === "storage") {
+    type = { kind: "opaque", name: `${str(entry2.kind).toLowerCase() === "uav" ? "RW" : ""}${hlslDimension(dimension || "byteaddress")}` };
+    name = type.name;
+  } else {
+    const prefix = str(entry2.kind).toLowerCase() === "uav" ? "RW" : "";
+    const base = `${prefix}${hlslDimension(dimension || "texture2d")}`;
+    type = { kind: "opaque", name: returnType ? `${base}<${returnType}>` : base };
+    name = type.name;
+  }
+  const isUav = str(entry2.kind).toLowerCase() === "uav";
+  return {
+    kind,
+    set: num(entry2.space),
+    binding: num(entry2.register),
+    name: str(entry2.name),
+    typeName: name,
+    type,
+    count: entry2.count === void 0 ? 1 : num(entry2.count),
+    readOnly: !isUav && (kind === "storage" || kind === "uniformTexelBuffer"),
+    writeOnly: false
+  };
+}
+function variables(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  list.forEach((v, location) => {
+    if (!isObject(v)) return;
+    const semantic = str(v.semantic);
+    const index = v.index === void 0 ? "" : String(num(v.index));
+    const name = semantic ? `${semantic}${/\d$/.test(semantic) ? "" : index}` : str(v.name);
+    const type = asType(v.type) ?? { kind: "opaque", name: str(v.type) || "float4" };
+    out.push({ location, name, typeName: typeName(type), type });
+  });
+  return out;
+}
+function stageJson(pipeline, stage) {
+  const refl = pipeline?.descriptor?.reflection;
+  if (!isObject(refl)) return null;
+  const s = refl[stage];
+  return isObject(s) ? s : null;
+}
+function d3d12Reflection(pipeline, stage) {
+  const s = stageJson(pipeline, stage);
+  if (!s) return null;
+  const r = new ShaderReflection();
+  const target = str(s.target);
+  r.version = target.includes("_6_") || target.includes("_6") ? "dxil" : target ? "dxbc" : "";
+  const groups = Array.isArray(s.threadGroupSize) ? s.threadGroupSize.map(num) : null;
+  const entry2 = {
+    name: str(s.entryPoint) || "main",
+    stage,
+    inputs: variables(s.inputs),
+    outputs: variables(s.outputs),
+    workgroupSize: groups && groups.length === 3 ? [groups[0], groups[1], groups[2]] : null
+  };
+  r.entryPoints.push(entry2);
+  const resources = Array.isArray(s.resources) ? s.resources.filter(isObject) : [];
+  r.resources = resources.map(resourceOf).filter((x) => !!x).sort((a, b) => a.set - b.set || a.binding - b.binding);
+  return r;
+}
+function isD3D12Binding(binding) {
+  return binding.register !== void 0 || binding.type.startsWith("D3D12_");
+}
+function kindsOfBindingType(type) {
+  if (type.endsWith("_CBV")) return ["uniform"];
+  if (type.endsWith("_SRV")) return ["sampledImage", "uniformTexelBuffer", "storage", "accelerationStructure"];
+  if (type.endsWith("_UAV")) return ["storage", "storageImage", "storageTexelBuffer"];
+  if (type.endsWith("_SAMPLER")) return ["sampler"];
+  return [];
+}
+function findD3D12Resource(reflection, binding, element = 0) {
+  const kinds = kindsOfBindingType(binding.type);
+  const register = num(binding.register) + element;
+  const space = num(binding.space);
+  let best = null;
+  for (const r of reflection.resources) {
+    if (r.set !== space || !kinds.includes(r.kind)) continue;
+    if (r.kind === "storage" && binding.type.endsWith("_SRV") !== r.readOnly) continue;
+    const count2 = Math.max(r.count, 1);
+    if (register < r.binding || r.count !== 0 && register >= r.binding + count2) continue;
+    if (!best || r.binding > best.binding) best = r;
+  }
+  return best;
+}
+
 // src/renderer/shader_cache.ts
 function shaderGroups(pipeline) {
   const groups = pipeline.descriptor?.pGroups;
@@ -6655,14 +8036,20 @@ function pipelineStages(pipeline, db) {
     if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module, stageIndex });
     else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module, stageIndex });
   });
+  const d3d12 = isD3D12Type(pipeline.type ?? "");
   pipeline.blobs.forEach((b, blobIndex) => {
-    const [stage, entry = "main"] = b.name.split(":");
-    const entryPoint = entry.replace(/#\d+$/, "");
+    const [stage, entry2 = "main"] = b.name.split(":");
+    const entryPoint = entry2.replace(/#\d+$/, "");
     const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
     if (!stageFlag || out.some((s) => s.stage === stage)) return;
-    out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
+    out.push({ stage, stageFlag: d3d12 ? stage : stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
   });
   return out;
+}
+function findBoundResource(reflection, set, binding, element = 0) {
+  if (!reflection) return null;
+  if (isD3D12Binding(binding)) return findD3D12Resource(reflection, binding, element);
+  return reflection.findResource(set, binding.binding);
 }
 var programKeys = /* @__PURE__ */ new WeakMap();
 function shaderProgramKey(data, shaderIds) {
@@ -6707,7 +8094,7 @@ var ProgramTracker = class {
     if (!a) return false;
     const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
     if (sets.BIND_PIPELINE.has(c2.method)) {
-      const id = refId(a.pipeline);
+      const id = refId(boundPipelineOf(a));
       const at = `${stream}:${sets.pipelineBindPointOf(c2.method, a)}`;
       this._shaders.delete(at);
       if (id !== null) this._bound.set(at, id);
@@ -6751,10 +8138,10 @@ function stateStages(state, db) {
 }
 
 // src/renderer/vulkan/frame_analysis.ts
-var TINY_DRAW_VERTICES2 = 12;
-var TINY_DRAW_COUNT2 = 32;
+var TINY_DRAW_VERTICES3 = 12;
+var TINY_DRAW_COUNT3 = 32;
 var OVERSIZED_COVERAGE = 0.75;
-var RULE_ORDER3 = [
+var RULE_ORDER4 = [
   "stereo-without-multiview",
   "clear-outside-pass",
   "depth-store",
@@ -6816,13 +8203,13 @@ function barrierStageMasks(a) {
   return [{ src: str(a.srcStageMask), dst: str(a.dstStageMask) }];
 }
 var BARRIER_METHODS3 = /* @__PURE__ */ new Set(["vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR"]);
-function argKey2(v) {
+function argKey3(v) {
   if (isHandleRef(v)) return `#${v.__id}`;
-  if (Array.isArray(v)) return `[${v.map(argKey2).join(",")}]`;
-  if (isObject(v)) return `{${Object.entries(v).map(([k, e]) => `${k}:${argKey2(e)}`).join(",")}}`;
+  if (Array.isArray(v)) return `[${v.map(argKey3).join(",")}]`;
+  if (isObject(v)) return `{${Object.entries(v).map(([k, e]) => `${k}:${argKey3(e)}`).join(",")}}`;
   return str(v);
 }
-var Folded4 = class {
+var Folded5 = class {
   first = null;
   count = 0;
   commands = [];
@@ -6868,7 +8255,7 @@ var FrameAnalysis = class {
     this._walk(data.commands);
     this._passRules();
     this._stereoRule();
-    this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER3.indexOf(a.rule) - RULE_ORDER3.indexOf(b.rule));
+    this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER4.indexOf(a.rule) - RULE_ORDER4.indexOf(b.rule));
     return this.findings;
   }
   // ---------------------------------------------------------------------------- the walk
@@ -6881,26 +8268,26 @@ var FrameAnalysis = class {
     const loadedImages = /* @__PURE__ */ new Set();
     const lastWrite = /* @__PURE__ */ new Map();
     let lastPass = null;
-    const redundantBinds = new Folded4();
-    const redundantSets = new Folded4();
-    const redundantBuffers = new Folded4();
-    const unchangedPush = new Folded4();
-    const adjacentBarriers = new Folded4();
-    const passBarriers = new Folded4();
-    const fullBarriers = new Folded4();
-    const singleDispatches = new Folded4();
-    const tinyDraws = new Folded4();
+    const redundantBinds = new Folded5();
+    const redundantSets = new Folded5();
+    const redundantBuffers = new Folded5();
+    const unchangedPush = new Folded5();
+    const adjacentBarriers = new Folded5();
+    const passBarriers = new Folded5();
+    const fullBarriers = new Folded5();
+    const singleDispatches = new Folded5();
+    const tinyDraws = new Folded5();
     let draws = 0;
     const boundSets = /* @__PURE__ */ new Map();
     const boundBuffers = /* @__PURE__ */ new Map();
     const pushed = /* @__PURE__ */ new Map();
     const previous = /* @__PURE__ */ new Map();
     const unusedTransitions = /* @__PURE__ */ new Map();
-    const wastedTransitions = new Folded4();
-    const noopBarriers = new Folded4();
+    const wastedTransitions = new Folded5();
+    const noopBarriers = new Folded5();
     const boundDescriptors = /* @__PURE__ */ new Map();
     const actionDescriptors = (cmd, stream) => {
-      const bindPoint = bindPointOf(cmd.method);
+      const bindPoint = bindPointOf2(cmd.method);
       const sets = boundDescriptors.get(`${stream}|${bindPoint}`);
       return sets?.size ? { bindPoint, sets: [...sets.values()] } : null;
     };
@@ -6921,7 +8308,7 @@ var FrameAnalysis = class {
         if (DRAW_METHODS.has(method) || DISPATCH_METHODS.has(method) || TRACE_METHODS.has(method)) {
           collectImages(actionDescriptors(cmd, stream), db, used);
         }
-        if (PASS_BEGIN2.has(method)) {
+        if (PASS_BEGIN3.has(method)) {
           const attachments = decodePass(cmd, db)?.attachments ?? [];
           if (!attachments.length || attachments.some((att) => att.imageId === null)) unusedTransitions.clear();
           for (const att of attachments) if (att.imageId !== null) used.add(att.imageId);
@@ -6936,7 +8323,7 @@ var FrameAnalysis = class {
           if (img !== null) readImages.add(img);
         }
       }
-      if (PASS_BEGIN2.has(method)) {
+      if (PASS_BEGIN3.has(method)) {
         const pass = this._passInfo(cmd, this._passes.length);
         if (!pass) continue;
         for (const att of pass.attachments) {
@@ -6956,7 +8343,7 @@ var FrameAnalysis = class {
         open.set(cb, pass);
         lastPass = pass;
         this._passes.push(pass);
-      } else if (PASS_END2.has(method)) {
+      } else if (PASS_END3.has(method)) {
         open.delete(cb);
       } else if (method === "vkCmdClearColorImage" || method === "vkCmdClearDepthStencilImage") {
         const id = refId(a?.image);
@@ -6985,7 +8372,7 @@ var FrameAnalysis = class {
         let offsetAt = 0;
         sets.forEach((set, i) => {
           const own = i === sets.length - 1 ? offsets.slice(offsetAt).join(",") : "";
-          const value = `${argKey2(set)}|${own}`;
+          const value = `${argKey3(set)}|${own}`;
           const key = `${cb}:${bindPoint}:${first + i}`;
           if (boundSets.get(key) !== value) same = false;
           boundSets.set(key, value);
@@ -6998,21 +8385,21 @@ var FrameAnalysis = class {
         let same = buffers.length > 0;
         buffers.forEach((b, i) => {
           const key = `${cb}:v${num(a.firstBinding) + i}`;
-          const value = `${argKey2(b)}|${field2("pOffsets", i)}|${field2("pSizes", i)}|${field2("pStrides", i)}`;
+          const value = `${argKey3(b)}|${field2("pOffsets", i)}|${field2("pSizes", i)}|${field2("pStrides", i)}`;
           if (boundBuffers.get(key) !== value) same = false;
           boundBuffers.set(key, value);
         });
         if (same) redundantBuffers.add(cmd);
       } else if ((method === "vkCmdBindIndexBuffer" || method === "vkCmdBindIndexBuffer2" || method === "vkCmdBindIndexBuffer2KHR") && a) {
         const key = `${cb}:index`;
-        const value = `${argKey2(a.buffer)}|${str(a.offset)}|${str(a.size)}|${str(a.indexType)}`;
+        const value = `${argKey3(a.buffer)}|${str(a.offset)}|${str(a.size)}|${str(a.indexType)}`;
         if (boundBuffers.get(key) === value) redundantBuffers.add(cmd);
         boundBuffers.set(key, value);
       } else if ((method === "vkCmdPushConstants" || method === "vkCmdPushConstants2" || method === "vkCmdPushConstants2KHR") && a) {
         const info = isObject(a.pPushConstantsInfo) ? a.pPushConstantsInfo : a;
         const bytes = isObject(info.pValues) ? str(info.pValues.base64) : "";
         if (bytes) {
-          const key = `${cb}:${argKey2(info.layout)}:${str(info.stageFlags)}:${num(info.offset)}:${num(info.size)}`;
+          const key = `${cb}:${argKey3(info.layout)}:${str(info.stageFlags)}:${num(info.offset)}:${num(info.size)}`;
           if (pushed.get(key) === bytes) unchangedPush.add(cmd);
           pushed.set(key, bytes);
         }
@@ -7033,11 +8420,11 @@ var FrameAnalysis = class {
           pass.drawSignature.push(`${pipeline}:${vertices}`);
           const descriptors = pass.drawStates.size < 256 ? actionDescriptors(cmd, stream) : null;
           if (descriptors) {
-            const key = `${pipeline}|${argKey2(descriptors)}`;
+            const key = `${pipeline}|${argKey3(descriptors)}`;
             if (!pass.drawStates.has(key)) pass.drawStates.set(key, { pipeline, descriptors });
           }
         }
-        if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES2) tinyDraws.add(cmd);
+        if (vertices >= 0 && vertices <= TINY_DRAW_VERTICES3) tinyDraws.add(cmd);
       } else if (a) {
         for (const key of ["srcImage", "pCopyImageInfo", "pBlitImageInfo", "pResolveImageInfo", "pCopyImageToBufferInfo"]) {
           const v = a[key];
@@ -7065,7 +8452,7 @@ var FrameAnalysis = class {
     if (singleDispatches.count) this._addFolded("single-workgroup-dispatch", "low", "medium", `vkCmdDispatch launches a single workgroup ${times(singleDispatches)}: most of the GPU idles during it. Larger dispatches, or a dispatch that folds the work of several small ones, use the machine.`, singleDispatches);
     if (wastedTransitions.count) this._addFolded("redundant-transition", "low", "medium", `A barrier transitions an image to a layout that nothing uses before a later barrier transitions the same subresources again, ${times(wastedTransitions)}. One transition straight to the layout the image is used in does the same work once. Only this capture's commands are seen, so a use on another queue or in a command buffer recorded before the capture looks like none.`, wastedTransitions);
     if (noopBarriers.count) this._addFolded("redundant-transition", "low", "medium", `A barrier leaves an image in the layout it was in, with no queue family change and no write access to wait for, ${times(noopBarriers)}: it synchronizes nothing, and each barrier still costs the driver a pipeline stall.`, noopBarriers);
-    if (tinyDraws.count >= TINY_DRAW_COUNT2) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES2} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
+    if (tinyDraws.count >= TINY_DRAW_COUNT3) this._addFolded("tiny-draws", "medium", "medium", `${tinyDraws.count} of ${draws} draws render at most ${TINY_DRAW_VERTICES3} vertices each. Per-draw overhead (command processing, state changes) outweighs such draws; instancing or merged geometry renders them in one draw.`, tinyDraws);
   }
   /** A barrier command's image transitions, against those nothing has used yet (redundant-transition). */
   _transitions(cmd, a, unused, wasted, noop) {
@@ -7129,7 +8516,7 @@ var FrameAnalysis = class {
         if (!t.passes.includes(pass)) t.passes.push(pass);
       }
     }
-    const folded = new Folded4();
+    const folded = new Folded5();
     const cases = [];
     let targets = 0;
     for (const t of byTarget.values()) {
@@ -7274,8 +8661,8 @@ var FrameAnalysis = class {
   }
 };
 function analyzeFrame(data, db, graph) {
-  const vulkan = data.api === "metal" ? null : new FrameAnalysis(db);
-  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : analyzeMetalFrame(data, db);
+  const vulkan = data.api === "metal" || data.api === "d3d12" ? null : new FrameAnalysis(db);
+  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : analyzeMetalFrame(data, db);
   const sources = [base, analyzeCounters(data, db), analyzeSampling(data, db)];
   if (graph) sources.push(analyzeRenderGraph(graph, vulkan ? { filtersInput: (node2, imageId) => vulkan.filtersInput(node2.commandIndex, imageId) } : {}));
   const findings = [];
@@ -7548,12 +8935,12 @@ var ObjectDatabase = class {
   }
   _accountMemory(o, sign2) {
     const bytes = objectMemoryBytes(o, this);
-    if (o.type === "VkDeviceMemory" || o.type === "MTLHeap") {
+    if (o.type === "VkDeviceMemory" || o.type === "MTLHeap" || o.type === "ID3D12Heap") {
       this.memory.device += sign2 * bytes;
       this.memory.allocations += sign2;
-    } else if (o.type === "VkBuffer" || o.type === "MTLBuffer") {
+    } else if (o.type === "VkBuffer" || o.type === "MTLBuffer" || o.type === "ID3D12Resource" && !isD3D12Texture(o)) {
       this.memory.buffers += sign2 * bytes;
-    } else if (o.type === "VkImage" || o.type === "MTLTexture") {
+    } else if (o.type === "VkImage" || o.type === "MTLTexture" || o.type === "ID3D12Resource") {
       this.memory.images += sign2 * bytes;
     }
   }
@@ -7731,9 +9118,9 @@ var ObjectDatabase = class {
 
 // src/mcp/capture_store.ts
 var Capture = class {
-  constructor(id, path11, mtimeMs, bytes) {
+  constructor(id, path12, mtimeMs, bytes) {
     this.id = id;
-    this.path = path11;
+    this.path = path12;
     this.mtimeMs = mtimeMs;
     const capture = parseCaptureFile(bytes);
     const m = capture.manifest;
@@ -7868,7 +9255,8 @@ var Capture = class {
       const data = this.spirv(object, blobIndex);
       let r = null;
       try {
-        r = data ? reflectSpirv(data) : null;
+        const stage = object.type === "ID3D12PipelineState" ? object.blobs[blobIndex]?.name.split(":")[0] : void 0;
+        r = stage ? d3d12Reflection(object, stage) : data ? reflectSpirv(data) : null;
       } catch {
         r = null;
       }
@@ -7974,6 +9362,7 @@ function dynamicValue(state, key, baked) {
   const value = state.dynamic[key];
   if (value === null) return baked;
   if (!state.pipeline) return value;
+  if (isD3D12Type(state.pipeline.type)) return value;
   const d = state.pipeline.descriptor;
   const declared = isObject(d?.pDynamicState) && Array.isArray(d.pDynamicState.pDynamicStates) ? d.pDynamicState.pDynamicStates : [];
   return declared.some((s) => str(s) === DYNAMIC_STATES[key]) ? value : baked;
@@ -8040,7 +9429,7 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
     if (cmdSets.BIND_PIPELINE.has(c2.method)) {
       if (!state.pipelineCmd && !state.shadersCmd && cmdSets.pipelineBindPointOf(c2.method, a) === bindPoint) {
         state.pipelineCmd = c2;
-        state.pipeline = db.getObject(refId(a.pipeline));
+        state.pipeline = db.getObject(refId(boundPipelineOf(a)));
       }
       continue;
     }
@@ -8143,11 +9532,26 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
       case "setDepthStencilState:":
         if (!state.depthStencil) state.depthStencil = db.getObject(refId(a.depthStencilState));
         break;
+      // D3D12 sets the topology, viewports and scissors on the command list.
+      case "IASetPrimitiveTopology":
+        state.dynamic.topology ??= a.PrimitiveTopology ?? null;
+        break;
+      case "RSSetViewports":
+        if (!state.viewports) state.viewports = a.pViewports ?? null;
+        break;
+      case "RSSetScissorRects":
+        if (!state.scissors) state.scissors = a.pRects ?? null;
+        break;
       case "vkCmdPushConstants":
       case "vkCmdPushConstants2":
-      case "vkCmdPushConstants2KHR": {
+      case "vkCmdPushConstants2KHR":
+      // D3D12 root constants arrive in the same shape (pValues, offset, size, stageFlags).
+      case "SetGraphicsRoot32BitConstant":
+      case "SetGraphicsRoot32BitConstants":
+      case "SetComputeRoot32BitConstant":
+      case "SetComputeRoot32BitConstants": {
         const pc = pushConstantOf(c2);
-        if (pc) state.pushConstants.unshift(pc);
+        if (pc && (!pc.stageFlags || pc.stageFlags === bindPoint || !["graphics", "compute"].includes(pc.stageFlags))) state.pushConstants.unshift(pc);
         break;
       }
       default:
@@ -8175,7 +9579,7 @@ function bindingState(data, db, cmd, bindPoint) {
     }
     if (cmdSets.BIND_PIPELINE.has(c2.method) && cmdSets.pipelineBindPointOf(c2.method, c2.args) === bindPoint) {
       state.pipelineCmd = c2;
-      state.pipeline = db.getObject(refId(c2.args?.pipeline));
+      state.pipeline = db.getObject(refId(boundPipelineOf(c2.args)));
       break;
     }
   }
@@ -8206,6 +9610,13 @@ function findPass(data, cmd) {
   return null;
 }
 function vertexLayout(state, binding, vb) {
+  if (state.pipeline && isD3D12Type(state.pipeline.type)) {
+    const elements = d3d12InputElements(state.pipeline).filter((e) => e.slot === binding);
+    if (!elements.length) return null;
+    const attributes2 = elements.map((e) => ({ location: e.location, format: vkFormatOfDxgi(e.format) ?? e.format, offset: e.offset })).sort((x, y) => x.offset - y.offset);
+    const perInstance = elements.some((e) => e.perInstance);
+    return { stride: vb.stride ?? 0, rate: perInstance ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX", attributes: attributes2 };
+  }
   const vd = state.pipeline?.descriptor?.vertexDescriptor;
   if (isObject(vd)) {
     const layouts = Array.isArray(vd.layouts) ? vd.layouts : [];
@@ -8269,7 +9680,7 @@ function argumentBufferEntries(type, data, db) {
   const index = new HandleIndex(db);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const out = [];
-  const walk = (t, offset, path11, depth) => {
+  const walk = (t, offset, path12, depth) => {
     if (out.length >= MAX_ENTRIES || depth > 8) return;
     const handle = handleOf(t);
     if (handle) {
@@ -8288,16 +9699,16 @@ function argumentBufferEntries(type, data, db) {
           object = index.resource(value);
         }
       }
-      out.push({ path: path11, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
+      out.push({ path: path12, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
       return;
     }
     if (t.kind === "struct") {
-      for (const m of t.members) walk(m.type, offset + m.offset, path11 ? `${path11}.${m.name}` : m.name, depth + 1);
+      for (const m of t.members) walk(m.type, offset + m.offset, path12 ? `${path12}.${m.name}` : m.name, depth + 1);
     } else if (t.kind === "array") {
       const stride = t.stride || (t.element.kind === "opaque" ? 8 : t.element.size);
       if (stride <= 0) return;
       const count2 = t.count > 0 ? t.count : Math.floor((data.byteLength - offset) / stride);
-      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path11}[${i}]`, depth + 1);
+      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path12}[${i}]`, depth + 1);
     }
   };
   walk(type, 0, "", 0);
@@ -8305,21 +9716,21 @@ function argumentBufferEntries(type, data, db) {
 }
 
 // src/renderer/metal/reflection.ts
-function asType(v) {
+function asType2(v) {
   if (!isObject(v)) return null;
   const kind = str(v.kind);
   if (!["scalar", "vector", "matrix", "array", "struct", "opaque"].includes(kind)) return null;
   return v;
 }
-function resource(entry, kind, typeOverride) {
-  const type = typeOverride ?? asType(entry.type);
+function resource(entry2, kind, typeOverride) {
+  const type = typeOverride ?? asType2(entry2.type);
   if (!type) return null;
-  const access = str(entry.access);
+  const access = str(entry2.access);
   return {
     kind,
     set: 0,
-    binding: num(entry.index),
-    name: str(entry.name),
+    binding: num(entry2.index),
+    name: str(entry2.name),
     typeName: type.kind === "struct" ? type.name : typeName(type),
     type,
     count: 1,
@@ -9065,7 +10476,7 @@ var StateReader = class {
   binding(set, b) {
     let res = null;
     for (const s of this.stages) {
-      res = s.reflection?.findResource(set, b.binding) ?? null;
+      res = findBoundResource(s.reflection, set, b);
       if (res) break;
     }
     const shown = b.descriptors.slice(0, 16);
@@ -9799,26 +11210,261 @@ ${stamp}`;
 var replayServers = new ReplayServerPool();
 
 // src/main/shader_tools.ts
+import { execFile as execFile3 } from "node:child_process";
+import fs8 from "node:fs";
+import os5 from "node:os";
+import path7 from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/main/d3d12.ts
+import fs7 from "node:fs";
+import path6 from "node:path";
+
+// src/main/launch_env.ts
 import { execFile as execFile2 } from "node:child_process";
 import fs6 from "node:fs";
+import net from "node:net";
 import os4 from "node:os";
 import path5 from "node:path";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
+var DEFAULT_PORT = 47531;
+function findLayerDir(roots, packaged = []) {
+  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
+  const candidates = [];
+  for (const root of roots) {
+    const bin = path5.join(root, "build", "bin");
+    candidates.push(path5.join(bin, "Release"), path5.join(bin, "RelWithDebInfo"), path5.join(bin, "Debug"), bin);
+  }
+  candidates.push(...packaged);
+  for (const dir of candidates) {
+    if (fs6.existsSync(path5.join(dir, `${LAYER_NAME}.json`))) return dir;
+  }
+  return null;
+}
+function findValidationLayerDir() {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path5.join(sdk, "Bin"), path5.join(sdk, "share", "vulkan", "explicit_layer.d"), path5.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    for (const root of ["C:\\VulkanSDK", path5.join(os4.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs6.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path5.join(root, v, "Bin"));
+      } catch {
+      }
+    }
+  } else {
+    candidates.push(
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/local/share/vulkan/explicit_layer.d",
+      "/etc/vulkan/explicit_layer.d",
+      path5.join(os4.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+    );
+  }
+  for (const c2 of candidates) if (fs6.existsSync(path5.join(c2, manifest))) return c2;
+  return null;
+}
+function vulkanLayerEnvironment(o) {
+  const layers = [LAYER_NAME, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
+  return {
+    VK_ADD_LAYER_PATH: layerPaths.join(path5.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
+    // Older loaders:
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path5.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path5.delimiter),
+    VKINSP_PORT: String(o.port),
+    VKINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
+    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
+    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
+  };
+}
+function splitArgs(s) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
+  });
+}
+async function findFreePort(start, taken = () => false) {
+  for (let port = start; port < start + 100 && port < 65536; port++) {
+    if (taken(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return start;
+}
+function terminate(proc) {
+  if (process.platform === "win32" && proc.pid) {
+    execFile2("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+      try {
+        proc.kill();
+      } catch {
+      }
+    });
+    return;
+  }
+  proc.kill();
+}
+
+// src/main/d3d12.ts
+var CAPTURE_LIBRARY = "dxinsp_capture.dll";
+var LAUNCHER = "dxinsp_launch.exe";
+var SHADER_TOOL = "dxinsp_shader.exe";
+function d3d12ToolDirs(roots, packaged = []) {
+  const dirs = [];
+  if (process.env.INSPECTOR_D3D12_DIR) dirs.push(process.env.INSPECTOR_D3D12_DIR);
+  for (const root of roots) {
+    const bin = path6.join(root, "build", "bin");
+    dirs.push(path6.join(bin, "Release"), path6.join(bin, "RelWithDebInfo"), path6.join(bin, "Debug"), bin);
+  }
+  dirs.push(...packaged);
+  return dirs;
+}
+function findD3D12Tools(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const library = path6.join(dir, CAPTURE_LIBRARY);
+    const launcher = path6.join(dir, LAUNCHER);
+    if (!fs7.existsSync(library) || !fs7.existsSync(launcher)) continue;
+    const shaderTool = path6.join(dir, SHADER_TOOL);
+    return { dir, library, launcher, shaderTool: fs7.existsSync(shaderTool) ? shaderTool : null };
+  }
+  return null;
+}
+function findD3D12ShaderTool(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const tool = path6.join(dir, SHADER_TOOL);
+    if (fs7.existsSync(tool)) return tool;
+  }
+  return null;
+}
+function d3d12Environment(o) {
+  return {
+    DXINSP_PORT: String(o.port),
+    DXINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
+    DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0"
+  };
+}
+function wrapLaunch(tools, exe, args, cwd) {
+  return { exe: tools.launcher, args: ["--dll", tools.library, ...cwd ? ["--cwd", cwd] : [], "--", exe, ...args] };
+}
+function windowsLaunch(o) {
+  const env = { ...o.env };
+  const notes = [];
+  let exe = o.exe;
+  let args = o.args;
+  if (o.vulkan) {
+    Object.assign(env, vulkanLayerEnvironment(o.vulkan));
+    notes.push(`layer: ${o.vulkan.layerDir}`);
+  } else {
+    notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
+  }
+  if (o.d3d12) {
+    const { tools, ...options } = o.d3d12;
+    Object.assign(env, d3d12Environment(options));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
+    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? " (D3D12 debug layer on)" : ""}`);
+  } else {
+    notes.push("D3D12 capture library not found: build it (d3d12/README.md); only Vulkan will be captured");
+  }
+  return { exe, args, env, notes };
+}
+
+// src/main/shader_tools.ts
 var tempCounter = 0;
 function tempBase() {
-  return path5.join(os4.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+  return path7.join(os5.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
 }
+var moduleDir = path7.dirname(fileURLToPath(import.meta.url));
 function findTool(name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path5.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path5.join(process.env.VULKAN_SDK, "Bin", exe), path5.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs6.existsSync(c2)) return c2;
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path7.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path7.join(process.env.VULKAN_SDK, "Bin", exe), path7.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs8.existsSync(c2)) return c2;
   return exe;
 }
+function isDxbc(bytes) {
+  return bytes.byteLength >= 4 && bytes[0] === 68 && bytes[1] === 88 && bytes[2] === 66 && bytes[3] === 67;
+}
+function findShaderTool() {
+  if (process.env.INSPECTOR_TOOLS_DIR) {
+    const c2 = path7.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
+    if (fs8.existsSync(c2)) return c2;
+  }
+  const roots = [path7.resolve(moduleDir, "..", ".."), path7.resolve(moduleDir, "..", "..", "..")];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  const packaged = process.resourcesPath ? [path7.join(process.resourcesPath, "layer")] : [];
+  return findD3D12ShaderTool(roots, packaged);
+}
+var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (d3d12/README.md)`;
+function embeddedSource(entry2) {
+  if (Array.isArray(entry2) && entry2.length >= 2) return { name: String(entry2[0]), text: String(entry2[1]) };
+  if (entry2 && typeof entry2 === "object") {
+    const o = entry2;
+    const text = o.text ?? o.source ?? o.contents;
+    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text };
+  }
+  return null;
+}
+function dxbcText(bytes, mode) {
+  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its embedded HLSL source` });
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.dxbc`;
+    fs8.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    execFile3(tool, [mode === "dis" ? "--disassemble" : "--sources", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs8.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) {
+        resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
+        return;
+      }
+      if (mode === "dis") {
+        resolve({ ok: true, text: stdout });
+        return;
+      }
+      let sources;
+      try {
+        const parsed = JSON.parse(stdout);
+        sources = (Array.isArray(parsed) ? parsed : []).map(embeddedSource).filter((s) => s !== null);
+      } catch {
+        resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
+        return;
+      }
+      if (!sources.length) resolve({ ok: false, text: "no embedded source: compile with dxc -Zi -Qembed_debug" });
+      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}
+${s.text.endsWith("\n") ? s.text : `${s.text}
+`}`).join("\n") });
+    });
+  });
+}
 function shaderText(spirv, mode, options = {}) {
+  if (isDxbc(spirv)) return dxbcText(spirv, mode);
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
-    fs6.writeFileSync(tmp, Buffer.from(spirv));
+    fs8.writeFileSync(tmp, Buffer.from(spirv));
     let tool;
     let args;
     if (mode === "dis") {
@@ -9833,12 +11479,12 @@ function shaderText(spirv, mode, options = {}) {
       if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
       if (options.forceTemporary) args.push("--force-temporary");
     }
-    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs6.unlinkSync(tmp);
+        fs8.unlinkSync(tmp);
       } catch {
       }
-      if (err) resolve({ ok: false, text: `${path5.basename(tool)} failed: ${stderr || err.message}` });
+      if (err) resolve({ ok: false, text: `${path7.basename(tool)} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
     });
   });
@@ -9846,10 +11492,10 @@ function shaderText(spirv, mode, options = {}) {
 function validateSpirv(spirv) {
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
-    fs6.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
-    execFile2(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    fs8.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
+    execFile3(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs6.unlinkSync(tmp);
+        fs8.unlinkSync(tmp);
       } catch {
       }
       if (!err) resolve(null);
@@ -9903,13 +11549,13 @@ function needsIncludeExtension(source) {
 function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
   return new Promise((resolve) => {
     const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs6.existsSync(d));
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs8.existsSync(d));
     const debugName = language === "glsl" ? options.debugFileName : void 0;
-    const dir = debugName ? fs6.mkdtempSync(`${base}_`) : null;
-    const src = dir ? path5.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const dir = debugName ? fs8.mkdtempSync(`${base}_`) : null;
+    const src = dir ? path7.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
-    fs6.writeFileSync(src, source);
-    const entry = entryPoint || "main";
+    fs8.writeFileSync(src, source);
+    const entry2 = entryPoint || "main";
     let tool;
     let args;
     if (language === "spirv-asm") {
@@ -9917,7 +11563,7 @@ function compileShader(source, language, stage, entryPoint, spirvVersion, option
       args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
     } else if (language === "hlsl") {
       tool = findTool("dxc");
-      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry2, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
       for (const dir2 of includeDirs) args.push("-I", dir2);
     } else {
       tool = findTool("glslangValidator");
@@ -9930,7 +11576,7 @@ function compileShader(source, language, stage, entryPoint, spirvVersion, option
         "--source-entrypoint",
         "main",
         "-e",
-        entry,
+        entry2,
         "-o",
         out
       ];
@@ -9939,27 +11585,72 @@ function compileShader(source, language, stage, entryPoint, spirvVersion, option
       for (const dir2 of includeDirs) args.push(`-I${dir2}`);
       if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
     }
-    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
+    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
       let spirv;
       try {
-        if (fs6.existsSync(out)) spirv = new Uint8Array(fs6.readFileSync(out));
+        if (fs8.existsSync(out)) spirv = new Uint8Array(fs8.readFileSync(out));
       } catch {
         spirv = void 0;
       }
       for (const f of [src, out]) {
         try {
-          fs6.unlinkSync(f);
+          fs8.unlinkSync(f);
         } catch {
         }
       }
-      if (dir) fs6.rmSync(dir, { recursive: true, force: true });
-      const name = path5.basename(tool);
+      if (dir) fs8.rmSync(dir, { recursive: true, force: true });
+      const name = path7.basename(tool);
       if (err || !spirv || spirv.byteLength < 20) {
         const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
         resolve({ ok: false, log: reason, tool: name });
       } else {
         resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
+var DXIL_PROFILES = {
+  vertex: "vs",
+  fragment: "ps",
+  tess_control: "hs",
+  tess_eval: "ds",
+  geometry: "gs",
+  compute: "cs",
+  task: "as",
+  mesh: "ms"
+};
+function compileDxil(source, stage, entryPoint, shaderModel = "6_0", options = {}) {
+  const prefix = DXIL_PROFILES[stage];
+  if (!prefix) return Promise.resolve({ ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs8.existsSync(d));
+    const src = `${base}.hlsl`;
+    const out = `${base}.dxil`;
+    fs8.writeFileSync(src, source);
+    const tool = findTool("dxc");
+    const args = ["-T", `${prefix}_${shaderModel.replace(/^[^0-9]*/, "").replace(".", "_") || "6_0"}`, "-E", entryPoint || "main", "-Zi", "-Qembed_debug", "-Fo", out, src];
+    for (const dir of includeDirs) args.push("-I", dir);
+    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let bytecode;
+      try {
+        if (fs8.existsSync(out)) bytecode = new Uint8Array(fs8.readFileSync(out));
+      } catch {
+        bytecode = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs8.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (err || !bytecode || !isDxbc(bytecode)) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR" : err?.message ?? "dxc produced no output");
+        resolve({ ok: false, log: reason, tool: "dxc" });
+      } else {
+        resolve({ ok: true, spirv: bytecode, log, tool: "dxc" });
       }
     });
   });
@@ -10548,7 +12239,7 @@ var TypeTable = class {
     return this.types[ref];
   }
   intern(type) {
-    const key = keyOf(type);
+    const key = keyOf2(type);
     const hit = this._byKey.get(key);
     if (hit !== void 0) return hit;
     const ref = this.types.length;
@@ -10796,10 +12487,10 @@ var TypeTable = class {
    * Where an access path lands in a buffer: the byte offset and the type there. Null when the path
    * leaves the type (an index into a scalar), which the interpreter reports rather than guessing at.
    */
-  locate(ref, path11) {
+  locate(ref, path12) {
     let at = 0;
     let type = ref;
-    for (const index of path11) {
+    for (const index of path12) {
       const t = this.types[type];
       if (!t) return null;
       if (t.kind === "struct") {
@@ -10920,7 +12611,7 @@ var TypeTable = class {
 function align(at, to) {
   return to > 1 ? Math.ceil(at / to) * to : at;
 }
-function keyOf(type) {
+function keyOf2(type) {
   switch (type.kind) {
     case "void":
       return "void";
@@ -13982,9 +15673,9 @@ var OpaqueValue = class {
   }
 };
 var Pointer = class {
-  constructor(cell, path11, type, storage, variable) {
+  constructor(cell, path12, type, storage, variable) {
     this.cell = cell;
-    this.path = path11;
+    this.path = path12;
     this.type = type;
     this.storage = storage;
     this.variable = variable;
@@ -14131,8 +15822,8 @@ var MslProgram = class _MslProgram {
    * A constant reached only through `is_function_constant_defined` is deliberately not counted:
    * asking whether it was set is exactly what a shader does when it may not have been.
    */
-  functionConstantsUsedBy(entry) {
-    const at = this.ir.functions.indexOf(entry);
+  functionConstantsUsedBy(entry2) {
+    const at = this.ir.functions.indexOf(entry2);
     const cached = this._constantsUsed.get(at);
     if (cached) return cached;
     this._buildReferences();
@@ -14863,15 +16554,15 @@ var MslInvocation = class {
   _blocked = false;
   constructor(program, options) {
     this.program = program;
-    const entry = program.entryPoint(options.entryPoint, options.stage);
-    if (!entry) throw new Error(`the library has no ${options.entryPoint ?? options.stage ?? ""} entry point`);
-    this.entry = entry;
+    const entry2 = program.entryPoint(options.entryPoint, options.stage);
+    if (!entry2) throw new Error(`the library has no ${options.entryPoint ?? options.stage ?? ""} entry point`);
+    this.entry = entry2;
     this.bindings = options.bindings;
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
     for (const g of program.ir.globals) this.globals.set(g.symbol.id, { value: cloneValue(g.value) });
     this._specialize(options.constants);
-    this.frames.push(this._frame(entry, -1));
+    this.frames.push(this._frame(entry2, -1));
     this._bindEntry(this.frames[0]);
   }
   /**
@@ -15775,8 +17466,18 @@ function indexBytes(indexType) {
 function drawArgs(data, cmd, notes) {
   const a = cmd.args ?? {};
   const fields = INDIRECT_FIELDS2[cmd.method];
+  if (cmd.method === "ExecuteIndirect") {
+    notes.push("An ExecuteIndirect draw's counts are in its argument buffer, laid out by its command signature: the command's details decode them.");
+    return {};
+  }
   if (!fields) {
-    return { vertexCount: num(a.vertexCount), indexCount: num(a.indexCount), firstVertex: num(a.firstVertex), firstIndex: num(a.firstIndex), vertexOffset: num(a.vertexOffset) };
+    return {
+      vertexCount: num(a.vertexCount ?? a.VertexCountPerInstance),
+      indexCount: num(a.indexCount ?? a.IndexCountPerInstance),
+      firstVertex: num(a.firstVertex ?? a.StartVertexLocation),
+      firstIndex: num(a.firstIndex ?? a.StartIndexLocation),
+      vertexOffset: num(a.vertexOffset ?? a.BaseVertexLocation)
+    };
   }
   const b = data.buffer(cmd.bufferData?.[0]);
   if (!b?.data || b.data.byteLength < fields.length * 4) {
@@ -15796,7 +17497,7 @@ function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
   const notes = [];
   const d = state.pipeline?.descriptor;
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
-  const topology = str(dynamicValue(state, "topology", assembly?.topology)) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  const topology = vkTopologyOfD3D(str(dynamicValue(state, "topology", assembly?.topology ?? d?.PrimitiveTopologyType))) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
   const args = drawArgs(data, cmd, notes);
   let ids = [];
   let indices = null;
@@ -16421,11 +18122,11 @@ function decodeAstcBlock(s, block, bw, bh, px, srgb) {
     for (let x = 0; x < bw; x++) {
       const gs = ds * x * (gw - 1) + 32 >> 6;
       const js = gs >> 4;
-      const fs12 = gs & 15;
-      const w11 = fs12 * ft + 8 >> 4;
+      const fs13 = gs & 15;
+      const w11 = fs13 * ft + 8 >> 4;
       const w10 = ft - w11;
-      const w01 = fs12 - w11;
-      const w00 = 16 - fs12 - ft + w11;
+      const w01 = fs13 - w11;
+      const w00 = 16 - fs13 - ft + w11;
       const infill = (plane) => weightAt(plane, js, jt) * w00 + weightAt(plane, js + 1, jt) * w01 + weightAt(plane, js, jt + 1) * w10 + weightAt(plane, js + 1, jt + 1) * w11 + 8 >> 4;
       const w0 = infill(0);
       const w1 = dual ? infill(1) : w0;
@@ -20126,32 +21827,32 @@ async function metalStage(ctx, state, stage) {
   const bytes = ctx.db.blobData.get(key) ?? await ctx.fetchBlob?.(library.id, blobIndex) ?? null;
   if (!bytes) throw new Error("the library's source is not in the capture file, and the application is no longer connected");
   const program = MslProgram.of(new TextDecoder().decode(bytes), library.label || "shader.metal");
-  const entry = program.entryPoint(entryPoint, QUALIFIER[stage]);
-  if (!entry) {
+  const entry2 = program.entryPoint(entryPoint, QUALIFIER[stage]);
+  if (!entry2) {
     throw new Error(`the library's source has no ${QUALIFIER[stage]} function ${entryPoint}${program.diagnostics.length ? `; the source did not parse cleanly (line ${program.diagnostics[0].line}: ${program.diagnostics[0].message})` : ""}`);
   }
   const source = {
     stage,
     stageFlag: stage,
-    entryPoint: entry.name,
+    entryPoint: entry2.name,
     object: library,
     blobIndex,
     module: library
   };
-  return { source, program, entry, constants: functionConstants(fn) };
+  return { source, program, entry: entry2, constants: functionConstants(fn) };
 }
 function functionConstants(fn) {
   const byIndex = /* @__PURE__ */ new Map();
   const byName = /* @__PURE__ */ new Map();
   const list = fn?.args?.constantValues;
   if (!Array.isArray(list)) return { byIndex, byName };
-  for (const entry of list) {
-    if (!isObject(entry)) continue;
-    const value = entry.value;
+  for (const entry2 of list) {
+    if (!isObject(entry2)) continue;
+    const value = entry2.value;
     if (value === void 0 || value === null) continue;
     const decoded = Array.isArray(value) ? value.map(scalarOf) : scalarOf(value);
-    if (entry.index !== void 0) byIndex.set(num(entry.index), decoded);
-    const name = str(entry.name);
+    if (entry2.index !== void 0) byIndex.set(num(entry2.index), decoded);
+    const name = str(entry2.name);
     if (name) byName.set(name, decoded);
   }
   return { byIndex, byName };
@@ -20209,8 +21910,8 @@ function metalBindings(ctx, state, stage) {
     label: (kind, index) => `${kind}(${index})`
   };
 }
-function stageInType(program, entry) {
-  for (const p of entry.params) {
+function stageInType(program, entry2) {
+  for (const p of entry2.params) {
     const symbol = program.ir.symbols[p.id];
     if (symbol?.binding?.kind === "stage_in") return p.type;
   }
@@ -20239,14 +21940,14 @@ function topologyOf(cmd) {
   }
 }
 async function interpretedMeshOutput(ctx, cmd, state) {
-  const { program, entry, constants } = await metalStage(ctx, state, "vertex");
+  const { program, entry: entry2, constants } = await metalStage(ctx, state, "vertex");
   const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
   const bindings = metalBindings(ctx, state, "vertex");
   const a = cmd.args ?? {};
   const firstInstance = num(a.baseInstance);
   const topology = topologyOf(cmd);
   const types = program.ir.types;
-  const returnType = types.get(entry.returnType);
+  const returnType = types.get(entry2.returnType);
   const outputs = [];
   let stride = 0;
   const members = returnType?.kind === "struct" ? returnType.members : [];
@@ -20265,7 +21966,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
     stride += components * 4;
   };
   if (members.length) for (const m of members) flatten(m.name, m.type, m.attributes);
-  else flatten("return", entry.returnType, entry.returnAttributes);
+  else flatten("return", entry2.returnType, entry2.returnAttributes);
   const instances = Math.max(1, num(a.instanceCount) || 1);
   const perInstance = Math.min(input.ids.length, Math.max(3, Math.floor(MAX_INTERPRETED_VERTICES / instances)));
   const instanceCount = Math.min(instances, Math.max(1, Math.floor(MAX_INTERPRETED_VERTICES / Math.max(1, perInstance))));
@@ -20292,7 +21993,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
         attributes,
         varyings: /* @__PURE__ */ new Map()
       };
-      const invocation = new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants });
+      const invocation = new MslInvocation(program, { entryPoint: entry2.name, stage: "vertex", bindings, inputs, constants });
       invocation.run();
       for (const w of invocation.warnings) warnings.add(w);
       const written = invocation.outputs();
@@ -20378,7 +22079,7 @@ function metalRasterState(ctx, cmd, state) {
 }
 async function prepareMetalSession(ctx, target, state, cmd) {
   const stage = target.stage;
-  const { source, program, entry, constants } = await metalStage(ctx, state, stage);
+  const { source, program, entry: entry2, constants } = await metalStage(ctx, state, stage);
   const bindings = metalBindings(ctx, state, stage);
   const notes = [];
   if (program.diagnostics.length) {
@@ -20403,7 +22104,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
       notes,
       description: `invocation (${g.join(", ")}) of a ${groups.join(" x ")} dispatch with threadgroups of ${localSize.join(" x ")}`,
       limits: { groups, localSize },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "kernel", bindings, inputs, constants })
+      start: () => new MslInvocation(program, { entryPoint: entry2.name, stage: "kernel", bindings, inputs, constants })
     };
   }
   if (stage === "vertex") {
@@ -20439,7 +22140,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
       notes,
       description: `vertex ${order} of the draw (vertex_id ${vertexId}), instance ${instance}`,
       limits: { vertices: input.ids.length, instances: Math.max(1, num(a.instanceCount) || 1) },
-      start: () => new MslInvocation(program, { entryPoint: entry.name, stage: "vertex", bindings, inputs, constants })
+      start: () => new MslInvocation(program, { entryPoint: entry2.name, stage: "vertex", bindings, inputs, constants })
     };
   }
   const mesh = await interpretedMeshOutput(ctx, cmd, state);
@@ -20450,7 +22151,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
   const { hit, triangles, reason } = coveringTriangle(raster, mesh, x, y, (o) => o.builtin === "Position" ? null : o.name);
   if (!hit) throw new Error(reason);
   const { x0, y0, target: lane } = PixelQuad.place(x, y);
-  const stageIn = stageInType(program, entry);
+  const stageIn = stageInType(program, entry2);
   const interpolationOf = interpolationsOf(program, stageIn);
   const targetPixel = passPixel(ctx, cmd, x, y);
   return {
@@ -20463,7 +22164,7 @@ async function prepareMetalSession(ctx, target, state, cmd) {
     description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing), whose vertices the interpreter ran the vertex shader for`,
     limits: { width: raster.viewport ? Math.abs(raster.viewport.width) : void 0, height: raster.viewport ? Math.abs(raster.viewport.height) : void 0 },
     start: () => new PixelQuad((dx, dy, derivatives) => new MslInvocation(program, {
-      entryPoint: entry.name,
+      entryPoint: entry2.name,
       stage: "fragment",
       bindings,
       derivatives,
@@ -21092,11 +22793,11 @@ function memberMatrix(m, struct, member) {
   if (stride === void 0) return void 0;
   return { stride, rowMajor: m.memberDecoration(struct, member, 4 /* RowMajor */) !== void 0 };
 }
-function bufferLocation(m, blockType, path11, bytes) {
+function bufferLocation(m, blockType, path12, bytes) {
   let at = 0;
   let type = blockType;
   let matrix;
-  for (const index of path11) {
+  for (const index of path12) {
     const t = m.types.get(type);
     if (!t) return null;
     if (t.kind === "struct") {
@@ -21367,17 +23068,17 @@ var Invocation = class {
   onResult = null;
   constructor(module, options) {
     this.module = module;
-    const entry = module.entryPoint(options.entryPoint, options.model);
-    if (!entry) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
-    this.entry = entry;
+    const entry2 = module.entryPoint(options.entryPoint, options.model);
+    if (!entry2) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
+    this.entry = entry2;
     this.bindings = options.bindings;
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
     this.constants = new Map(module.constants);
     this._specialize();
     this._createGlobals();
-    const fn = module.functions.get(entry.function);
-    if (!fn || !fn.blocks.length) throw new Error(`the entry point ${entry.name} has no body`);
+    const fn = module.functions.get(entry2.function);
+    if (!fn || !fn.blocks.length) throw new Error(`the entry point ${entry2.name} has no body`);
     this.frames.push(this._frame(fn, 0));
     this._skipNoops();
   }
@@ -22378,26 +24079,26 @@ var Invocation = class {
     for (let i = 0; i < ptr.path.length - 1; i++) parent = parent[ptr.path[i]];
     parent[ptr.path[ptr.path.length - 1]] = value;
   }
-  _loadBuffer(buffer, path11, limit = Infinity) {
+  _loadBuffer(buffer, path12, limit = Infinity) {
     const m = this.module;
-    const key = path11.join("/");
-    for (let n = path11.length; n >= 0; n--) {
-      const k = path11.slice(0, n).join("/");
+    const key = path12.join("/");
+    for (let n = path12.length; n >= 0; n--) {
+      const k = path12.slice(0, n).join("/");
       const stored = buffer.overrides.get(k);
       if (stored === void 0) continue;
       let value2 = stored;
-      for (const index of path11.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
+      for (const index of path12.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
       return cloneValue(value2);
     }
     const view = new DataView(buffer.bytes.buffer, buffer.bytes.byteOffset, buffer.bytes.byteLength);
     let value;
-    const loc = bufferLocation(m, buffer.type, path11, buffer.bytes.byteLength);
+    const loc = bufferLocation(m, buffer.type, path12, buffer.bytes.byteLength);
     if (loc) {
       value = readBuffer(m, view, loc.at, loc.type, loc.matrix, limit);
       if (loc.at >= buffer.bytes.byteLength && buffer.bytes.byteLength) this.warnings.add("a read past the captured end of a buffer reads zeros (the capture's Max KB truncated it?)");
     } else {
       value = readBuffer(m, view, 0, buffer.type, void 0, limit);
-      for (const index of path11) value = Array.isArray(value) ? value[index] : 0;
+      for (const index of path12) value = Array.isArray(value) ? value[index] : 0;
     }
     for (const [k, stored] of buffer.overrides) {
       if (!k.startsWith(key ? `${key}/` : "") || k === key) continue;
@@ -22617,8 +24318,8 @@ var Invocation = class {
         const x = a(0);
         const whole = mapScalars(x, (e) => Math.trunc(num3(e)));
         const member = this.module.types.get(inst.resultType);
-        const fs12 = member?.kind === "struct" ? scalarOf2(this.module, member.members[0]) : s;
-        const n = (value) => fs12 ? mapScalars(value, (e) => normalize(e, fs12)) : value;
+        const fs13 = member?.kind === "struct" ? scalarOf2(this.module, member.members[0]) : s;
+        const n = (value) => fs13 ? mapScalars(value, (e) => normalize(e, fs13)) : value;
         return [n(zipScalars(x, whole, (e, w) => num3(e) - num3(w))), n(whole)];
       }
       case 37:
@@ -23146,7 +24847,7 @@ var locationKey = (o) => o.location === void 0 ? null : String(o.location);
 function edge(ax, ay, bx, by, px, py) {
   return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
-function coveringTriangle(raster, mesh, px, py, keyOf2 = locationKey) {
+function coveringTriangle(raster, mesh, px, py, keyOf3 = locationKey) {
   const viewport = raster.viewport;
   const pos = positionOutput(mesh);
   if (!viewport) return { hit: null, triangles: 0, reason: "the draw has no viewport" };
@@ -23158,7 +24859,7 @@ function coveringTriangle(raster, mesh, px, py, keyOf2 = locationKey) {
     const read = (offset, components, base2) => Array.from({ length: components }, (_, k) => base2 === "float" ? view.getFloat32(base + offset + k * 4, true) : base2 === "int" ? view.getInt32(base + offset + k * 4, true) : view.getUint32(base + offset + k * 4, true));
     const outputs = /* @__PURE__ */ new Map();
     for (const o of mesh.outputs) {
-      const key = keyOf2(o);
+      const key = keyOf3(o);
       if (key !== null) outputs.set(key, read(o.offset, o.components, o.base));
     }
     return { clip: read(pos.offset, 4, "float"), outputs };
@@ -23280,10 +24981,10 @@ async function prepareDebugSession(ctx, target) {
     original: translated ? () => start(captured) : void 0
   });
   if (target.stage === "compute") {
-    const entry = captured.entryPoint(entryPoint, model);
+    const entry2 = captured.entryPoint(entryPoint, model);
     let localSize = [1, 1, 1];
-    const literal = entry?.modes.get(17);
-    const ids = entry?.modes.get(38);
+    const literal = entry2?.modes.get(17);
+    const ids = entry2?.modes.get(38);
     if (literal) localSize = [literal[0] ?? 1, literal[1] ?? 1, literal[2] ?? 1];
     else if (ids) localSize = ids.map((id) => Number(captured.constants.get(id) ?? 1));
     const groups = cmd.method.includes("Indirect") ? [1, 1, 1] : [Math.max(1, num(a.groupCountX)), Math.max(1, num(a.groupCountY)), Math.max(1, num(a.groupCountZ))];
@@ -23436,19 +25137,19 @@ function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
 
 // src/mcp/live_session.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs10 from "node:fs";
+import fs11 from "node:fs";
 import net2 from "node:net";
 import os7 from "node:os";
-import path9 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import path10 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/main/android.ts
-import { execFile as execFile3, execFileSync, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile4, execFileSync, spawn as spawn2 } from "node:child_process";
 import crypto from "node:crypto";
-import fs7 from "node:fs";
-import os5 from "node:os";
-import path6 from "node:path";
-var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+import fs9 from "node:fs";
+import os6 from "node:os";
+import path8 from "node:path";
+var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
 var LAYER_LIB = "libVkLayer_inspector_capture.so";
 var LAYER_APK = "gpu_inspector_layer.apk";
 var DEVICE_TMP = "/data/local/tmp";
@@ -23465,18 +25166,18 @@ function findAdb() {
   const candidates = [];
   if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
   for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path6.join(process.env[v], "platform-tools", exe));
+    if (process.env[v]) candidates.push(path8.join(process.env[v], "platform-tools", exe));
   }
   if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path6.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+    if (process.env.LOCALAPPDATA) candidates.push(path8.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
   } else if (process.platform === "darwin") {
-    candidates.push(path6.join(os5.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+    candidates.push(path8.join(os6.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
   } else {
-    candidates.push(path6.join(os5.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+    candidates.push(path8.join(os6.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
   }
-  for (const c2 of candidates) if (fs7.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path6.delimiter)) {
-    if (dir && fs7.existsSync(path6.join(dir, exe))) return path6.join(dir, exe);
+  for (const c2 of candidates) if (fs9.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path8.delimiter)) {
+    if (dir && fs9.existsSync(path8.join(dir, exe))) return path8.join(dir, exe);
   }
   return null;
 }
@@ -23485,7 +25186,7 @@ function adbArgs(serial, args) {
 }
 function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile3(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile4(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
         reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
@@ -23544,19 +25245,19 @@ async function resolveActivity(adbPath, serial, pkg) {
 }
 function findAndroidLayer(candidates) {
   for (const dir of candidates) {
-    const libRoot = path6.join(dir, "lib");
-    if (!fs7.existsSync(libRoot)) continue;
+    const libRoot = path8.join(dir, "lib");
+    if (!fs9.existsSync(libRoot)) continue;
     const libs = {};
-    for (const abi of fs7.readdirSync(libRoot)) {
-      const lib = path6.join(libRoot, abi, LAYER_LIB);
-      if (fs7.existsSync(lib)) libs[abi] = lib;
+    for (const abi of fs9.readdirSync(libRoot)) {
+      const lib = path8.join(libRoot, abi, LAYER_LIB);
+      if (fs9.existsSync(lib)) libs[abi] = lib;
     }
     if (!Object.keys(libs).length) continue;
-    const apk = path6.join(dir, LAYER_APK);
+    const apk = path8.join(dir, LAYER_APK);
     let apkInfo = null;
-    if (fs7.existsSync(apk)) {
+    if (fs9.existsSync(apk)) {
       try {
-        apkInfo = JSON.parse(fs7.readFileSync(`${apk}.json`, "utf8"));
+        apkInfo = JSON.parse(fs9.readFileSync(`${apk}.json`, "utf8"));
       } catch {
         apkInfo = null;
       }
@@ -23588,7 +25289,7 @@ var AndroidTarget = class {
     log(`layer: ${how}`);
     await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
     await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME2}`);
     await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
     await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
     await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
@@ -23723,7 +25424,7 @@ var AndroidTarget = class {
       throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
     }
     const lib = layer.libs[abi];
-    const local = crypto.createHash("md5").update(fs7.readFileSync(lib)).digest("hex");
+    const local = crypto.createHash("md5").update(fs9.readFileSync(lib)).digest("hex");
     let remote = "";
     try {
       remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
@@ -23873,147 +25574,45 @@ var FrameReader = class {
   }
 };
 
-// src/main/launch_env.ts
-import { execFile as execFile4 } from "node:child_process";
-import fs8 from "node:fs";
-import net from "node:net";
-import os6 from "node:os";
-import path7 from "node:path";
-var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
-var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
-var DEFAULT_PORT = 47531;
-function findLayerDir(roots, packaged = []) {
-  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
-  const candidates = [];
-  for (const root of roots) {
-    const bin = path7.join(root, "build", "bin");
-    candidates.push(path7.join(bin, "Release"), path7.join(bin, "RelWithDebInfo"), path7.join(bin, "Debug"), bin);
-  }
-  candidates.push(...packaged);
-  for (const dir of candidates) {
-    if (fs8.existsSync(path7.join(dir, `${LAYER_NAME2}.json`))) return dir;
-  }
-  return null;
-}
-function findValidationLayerDir() {
-  const manifest = "VkLayer_khronos_validation.json";
-  const candidates = [];
-  const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path7.join(sdk, "Bin"), path7.join(sdk, "share", "vulkan", "explicit_layer.d"), path7.join(sdk, "etc", "vulkan", "explicit_layer.d"));
-  if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path7.join(os6.homedir(), "VulkanSDK")]) {
-      try {
-        const versions = fs8.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path7.join(root, v, "Bin"));
-      } catch {
-      }
-    }
-  } else {
-    candidates.push(
-      "/usr/share/vulkan/explicit_layer.d",
-      "/usr/local/share/vulkan/explicit_layer.d",
-      "/etc/vulkan/explicit_layer.d",
-      path7.join(os6.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
-    );
-  }
-  for (const c2 of candidates) if (fs8.existsSync(path7.join(c2, manifest))) return c2;
-  return null;
-}
-function vulkanLayerEnvironment(o) {
-  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
-  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
-  return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path7.delimiter),
-    VK_LOADER_LAYERS_ENABLE: layers.join(","),
-    // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path7.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path7.delimiter),
-    VKINSP_PORT: String(o.port),
-    VKINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
-    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    // The validation layer stops reporting a message after a few repeats (its
-    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
-    // attaches a message to the captured command it fired on, which needs every occurrence.
-    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
-    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
-    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
-  };
-}
-function splitArgs(s) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-function portFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
-  });
-}
-async function findFreePort(start, taken = () => false) {
-  for (let port = start; port < start + 100 && port < 65536; port++) {
-    if (taken(port)) continue;
-    if (await portFree(port)) return port;
-  }
-  return start;
-}
-function terminate(proc) {
-  if (process.platform === "win32" && proc.pid) {
-    execFile4("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
-      try {
-        proc.kill();
-      } catch {
-      }
-    });
-    return;
-  }
-  proc.kill();
-}
-
 // src/main/metal.ts
 import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
-import fs9 from "node:fs";
-import path8 from "node:path";
-import { fileURLToPath } from "node:url";
-var moduleDir = path8.dirname(fileURLToPath(import.meta.url));
-var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path8.resolve(moduleDir, "..", "..", "..")], packaged = [path8.join(process.resourcesPath ?? "", "layer")]) {
+import fs10 from "node:fs";
+import path9 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var moduleDir2 = path9.dirname(fileURLToPath2(import.meta.url));
+var CAPTURE_LIBRARY2 = "libmtlinsp_capture.dylib";
+function findCaptureLibrary(roots = [path9.resolve(moduleDir2, "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
     for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path8.join(root, dir, CAPTURE_LIBRARY));
+      candidates.push(path9.join(root, dir, CAPTURE_LIBRARY2));
     }
   }
-  for (const dir of packaged) candidates.push(path8.join(dir, CAPTURE_LIBRARY));
-  return candidates.find((p) => fs9.existsSync(p)) ?? null;
+  for (const dir of packaged) candidates.push(path9.join(dir, CAPTURE_LIBRARY2));
+  return candidates.find((p) => fs10.existsSync(p)) ?? null;
 }
 function resolveExecutable(exe) {
   if (!exe.endsWith(".app")) return exe;
-  const macOS = path8.join(exe, "Contents", "MacOS");
-  const plist = path8.join(exe, "Contents", "Info.plist");
-  if (fs9.existsSync(plist)) {
+  const macOS = path9.join(exe, "Contents", "MacOS");
+  const plist = path9.join(exe, "Contents", "Info.plist");
+  if (fs10.existsSync(plist)) {
     try {
       const name = execFileSync2(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
       ).trim();
-      const candidate = path8.join(macOS, name);
-      if (name && fs9.existsSync(candidate)) return candidate;
+      const candidate = path9.join(macOS, name);
+      if (name && fs10.existsSync(candidate)) return candidate;
     } catch {
     }
   }
-  const byBundleName = path8.join(macOS, path8.basename(exe, ".app"));
-  if (fs9.existsSync(byBundleName)) return byBundleName;
+  const byBundleName = path9.join(macOS, path9.basename(exe, ".app"));
+  if (fs10.existsSync(byBundleName)) return byBundleName;
   try {
-    const entries = fs9.readdirSync(macOS);
-    if (entries.length === 1) return path8.join(macOS, entries[0]);
+    const entries = fs10.readdirSync(macOS);
+    if (entries.length === 1) return path9.join(macOS, entries[0]);
   } catch {
   }
   return exe;
@@ -24029,7 +25628,7 @@ function injectionBlockedReason(exe) {
   const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
   const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
   if (hasDyld && hasLibrary) return null;
-  return `${path8.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+  return `${path9.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
 
   /usr/bin/codesign --force --deep --sign - --options runtime \\
     --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
@@ -24311,34 +25910,34 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path9.join(os7.tmpdir(), "gpu-inspector-captures");
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path10.join(os7.tmpdir(), "gpu-inspector-captures");
 }
 function checkoutRoots() {
   const roots = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path9.resolve(path9.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  roots.push(path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "..", ".."));
   return roots;
 }
 function installedLayerDirs() {
   const home = os7.homedir();
   if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path9.join(home, "AppData", "Local");
-    const apps = [path9.join(local, "Programs", "gpu-inspector"), path9.join(local, "Programs", "GPU Inspector")];
+    const local = process.env.LOCALAPPDATA ?? path10.join(home, "AppData", "Local");
+    const apps = [path10.join(local, "Programs", "gpu-inspector"), path10.join(local, "Programs", "GPU Inspector")];
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path9.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(path10.join(programFiles, "GPU Inspector"));
     }
-    return apps.map((dir) => path9.join(dir, "resources", "layer"));
+    return apps.map((dir) => path10.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path9.join(home, "Applications")].map((dir) => path9.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    return ["/Applications", path10.join(home, "Applications")].map((dir) => path10.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
   }
   return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 function androidLayer() {
   const candidates = [
     process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path9.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path9.join(dir, "android"))
+    ...checkoutRoots().map((root) => path10.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path10.join(dir, "android"))
   ].filter((d) => !!d);
   return findAndroidLayer(candidates);
 }
@@ -24361,8 +25960,8 @@ var LiveSession = class {
       this.frameStats.push({ at: Date.now(), msg });
       if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
     });
-    db.onValidationMessage.addListener((entry, isNew) => {
-      if (isNew) this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${entry.message.split("\n")[0].slice(0, 300)}`);
+    db.onValidationMessage.addListener((entry2, isNew) => {
+      if (isNew) this.appendLog(`validation ${entry2.severity}${entry2.idName ? ` ${entry2.idName}` : ""}: ${entry2.message.split("\n")[0].slice(0, 300)}`);
     });
     db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
     db.onOtherMessage.addListener((msg) => {
@@ -24398,7 +25997,10 @@ var LiveSession = class {
   }
   /** The API the capture library reports objects of; null before any arrived. */
   get api() {
-    for (const type of this.database.objectsByType.keys()) if (type.startsWith("MTL")) return "metal";
+    for (const type of this.database.objectsByType.keys()) {
+      if (type.startsWith("MTL")) return "metal";
+      if (type.startsWith("ID3D12") || type.startsWith("IDXGI")) return "d3d12";
+    }
     return this.database.allObjects.size ? "vulkan" : null;
   }
   appendLog(line) {
@@ -24637,16 +26239,16 @@ var LiveSession = class {
     });
     let target;
     if (file) {
-      target = path9.resolve(file);
-      fs10.mkdirSync(path9.dirname(target), { recursive: true });
+      target = path10.resolve(file);
+      fs11.mkdirSync(path10.dirname(target), { recursive: true });
     } else {
       const dir = capturesDir();
-      fs10.mkdirSync(dir, { recursive: true });
+      fs11.mkdirSync(dir, { recursive: true });
       const name = captureFileName(this.name, data.frame, data.frames);
-      target = path9.join(dir, name);
-      for (let n = 2; fs10.existsSync(target); n++) target = path9.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+      target = path10.join(dir, name);
+      for (let n = 2; fs11.existsSync(target); n++) target = path10.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }
-    fs10.writeFileSync(target, bytes);
+    fs11.writeFileSync(target, bytes);
     return target;
   }
   /**
@@ -24724,14 +26326,16 @@ var SessionManager = class {
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
   async launch(o, waitMs) {
-    const requested = path9.resolve(o.exe);
-    if (!fs10.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const requested = path10.resolve(o.exe);
+    if (!fs11.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
     const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
     let exe = requested;
+    let spawnArgs = args;
     let env;
-    let note;
+    const notes = [];
+    const cwd = o.cwd && fs11.existsSync(o.cwd) ? o.cwd : path10.dirname(requested);
     if (process.platform === "darwin") {
       const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
       if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
@@ -24739,35 +26343,50 @@ var SessionManager = class {
       const blocked = injectionBlockedReason(exe);
       if (blocked) throw new Error(blocked);
       env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
-      note = `capture library: ${library}`;
+      notes.push(`capture library: ${library}`);
     } else {
       const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
-      if (!layerDir) {
-        throw new Error("The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
+      const d3d12 = process.platform === "win32" ? findD3D12Tools(checkoutRoots(), installedLayerDirs()) : null;
+      if (!layerDir && !d3d12) {
+        throw new Error(process.platform === "win32" ? "Neither GPU Inspector's Vulkan layer nor its D3D12 capture library was found: build them (docs/BUILDING.md), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR / INSPECTOR_D3D12_DIR) to the directory holding them." : "The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
       }
-      const validationDir = o.validation ? findValidationLayerDir() : null;
-      env = {
-        ...process.env,
-        ...o.env,
-        ...vulkanLayerEnvironment({
-          layerDir,
-          validationDir,
-          port,
-          log: true,
-          recordAlways: !!o.recordAlways,
-          stacktraces: o.stacktraces ?? true,
-          validation: !!o.validation,
-          syncValidation: !!o.syncValidation
-        })
-      };
-      note = `layer: ${layerDir}${o.validation ? validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : ""}`;
+      const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
+      const vulkan = layerDir ? {
+        layerDir,
+        validationDir,
+        port,
+        log: true,
+        recordAlways: !!o.recordAlways,
+        stacktraces: o.stacktraces ?? true,
+        validation: !!o.validation,
+        syncValidation: !!o.syncValidation
+      } : null;
+      const validationNote = o.validation && layerDir ? validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : null;
+      if (process.platform === "win32") {
+        const launch = windowsLaunch({
+          exe: requested,
+          args,
+          cwd,
+          env: { ...process.env, ...o.env },
+          vulkan,
+          d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation } : null
+        });
+        exe = launch.exe;
+        spawnArgs = launch.args;
+        env = launch.env;
+        notes.push(...launch.notes);
+      } else {
+        env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan) };
+        notes.push(`layer: ${layerDir}`);
+      }
+      if (validationNote) notes.push(validationNote);
     }
-    const session = new LiveSession(`app-${++this._counter}`, `${path9.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
-    session.appendLog(`launching ${exe} ${args.join(" ")}`);
-    session.appendLog(note);
+    const session = new LiveSession(`app-${++this._counter}`, `${path10.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
+    for (const note of notes) session.appendLog(note);
     this._sessions.set(session.id, session);
     this._latest = session;
-    session.startProcess(exe, args, o.cwd && fs10.existsSync(o.cwd) ? o.cwd : path9.dirname(exe), env);
+    session.startProcess(exe, spawnArgs, cwd, env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
     return session;
   }
@@ -24866,217 +26485,6 @@ var SessionManager = class {
     await Promise.all([...this._sessions.values()].map((s) => s.stop()));
   }
 };
-
-// src/mcp/debug_tools.ts
-var MAX_TRACE = 400;
-var MAX_VALUES_PER_LINE = 24;
-function meshOutputs(c2) {
-  const cache3 = /* @__PURE__ */ new Map();
-  return async (command) => {
-    const hit = cache3.get(command);
-    if (hit) return hit;
-    const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
-    if (!tool) throw new Error(`a fragment's inputs come from replaying the draw's vertex shader, and ${NO_REPLAY_TOOL}`);
-    const run2 = await replayServers.run(tool, c2.path, { kind: "mesh", commands: [command] });
-    if (!run2.data) throw new Error(`the replay could not capture the draw's vertex outputs: ${run2.error ?? "no data"}`);
-    const m = parseMeshFile(run2.data).draws.find((d) => d.command === command);
-    if (!m) throw new Error("the replay did not reach the draw");
-    cache3.set(command, m);
-    return m;
-  };
-}
-function debugTools(store) {
-  return [
-    {
-      name: "debug_shader",
-      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V or a Metal capture's Metal Shading Language. A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal fragment's come from running the draw's own vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. A Metal library the application loaded precompiled has no source, and says so.",
-      inputSchema: schema({
-        capture: CAPTURE_PARAM,
-        command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
-        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "Default: compute for a dispatch, fragment for a draw." },
-        vertex: { type: "integer", minimum: 0, description: "Vertex: the vertex, in the order the draw read them (an indexed draw's index order). Default 0." },
-        instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
-        x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
-        y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
-        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
-        line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
-        trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
-        decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back with line information, for a shader built without debug information (lines instead of instructions). It is not the module the GPU ran, so the original runs too and `original` says whether they agree. Needs the Vulkan SDK's spirv-cross and glslangValidator. Default false." }
-      }, ["command"]),
-      readOnly: true,
-      handler: async (args) => {
-        const c2 = store.resolve(stringArg(args, "capture"));
-        const command = requireInt(args, "command");
-        const cmd = c2.data.commands[command];
-        if (!cmd) throw new Error(`The capture has no command ${command}.`);
-        const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
-        if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
-        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
-        const state = drawState(c2.data, c2.db, cmd);
-        const inputNames = /* @__PURE__ */ new Map();
-        for (const v of vertexInputs(c2, state)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
-        const metal = c2.data.api === "metal";
-        const decompiled = !metal && boolArg(args, "decompiled", false);
-        const ctx = {
-          data: c2.data,
-          db: c2.db,
-          inputNames,
-          meshOutput: metal ? void 0 : meshOutputs(c2),
-          translate: decompiled ? async (bytes, source) => {
-            const r = await decompileForDebugging(bytes, source.stage, source.entryPoint);
-            if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
-            return r.spirv;
-          } : void 0
-        };
-        let target;
-        if (stage === "compute") {
-          const inv2 = Array.isArray(args.invocation) ? args.invocation.map((v) => Math.max(0, Math.floor(Number(v) || 0))) : [0, 0, 0];
-          target = { stage, command, invocation: [inv2[0] ?? 0, inv2[1] ?? 0, inv2[2] ?? 0] };
-        } else if (stage === "vertex") {
-          target = { stage, command, vertex: intArg(args, "vertex", 0, 0), instance: intArg(args, "instance", 0, 0) };
-        } else {
-          let x = optionalInt(args, "x"), y = optionalInt(args, "y");
-          if (x === void 0 || y === void 0) {
-            let mesh;
-            try {
-              mesh = metal ? await interpretedMeshOutput(ctx, cmd, state) : await ctx.meshOutput(command);
-            } catch (e) {
-              return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug the fragment: ${e.message}` });
-            }
-            const pixel = mesh.measured ? coveredPixel(state, mesh, metal ? metalRasterState(ctx, cmd, state) : void 0) : null;
-            if (!pixel) return jsonResult({ capture: c2.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
-            x = pixel.x;
-            y = pixel.y;
-          }
-          target = { stage, command, x, y };
-        }
-        let session;
-        try {
-          session = await prepareDebugSession(ctx, target);
-        } catch (e) {
-          return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug: ${e.message}` });
-        }
-        const program = session.program;
-        if (program instanceof SpirvProgram) {
-          const missing = program.files.filter((f) => f.text === null && f.name);
-          if (missing.length) {
-            const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
-            for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
-          }
-        }
-        const maps = program.files.map((f) => f.text == null ? null : sourceLineMap(f.text));
-        const sourceOf = (file, line) => {
-          const map = maps[file];
-          const phys = map?.physicalOf.get(line);
-          return map && phys !== void 0 ? map.lines[phys].trim() : void 0;
-        };
-        const ctl = new DebugController(session);
-        const onlyLine = optionalInt(args, "line");
-        const wantTrace = boolArg(args, "trace", true);
-        const trace = [];
-        let traceTruncated = false;
-        let firstNonFinite;
-        while (!ctl.finished) {
-          ctl.advance(ctl.mode === "source" ? "into" : "instruction", 1e6);
-          const last = ctl.lastLine;
-          if (!last.results.length) continue;
-          const inst = last.results[last.results.length - 1].inst;
-          const loc = ctl.location(inst);
-          for (const r of last.results) {
-            if (!firstNonFinite && nonFinite(r.value)) {
-              const l = ctl.location(r.inst);
-              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: program.nameOf(r.id), value: program.valueText(program.resultType(r), r.value), source: l ? sourceOf(l.file, l.line) : void 0 };
-            }
-          }
-          if (!wantTrace || onlyLine !== void 0 && loc?.line !== onlyLine) continue;
-          if (trace.length >= MAX_TRACE) {
-            traceTruncated = true;
-            continue;
-          }
-          const values = last.results.filter((r) => !(r.value instanceof Pointer));
-          if (!values.length) continue;
-          const named = values.filter((r) => !program.resultTemporary(r));
-          const shown = (named.length ? named : values).slice(-MAX_VALUES_PER_LINE);
-          const texts = shown.map((r) => `${program.nameOf(r.id)} = ${program.valueText(program.resultType(r), r.value)}`);
-          if (ctl.mode === "instruction") {
-            trace.push(`${inst.index}: ${texts.join("; ")}`);
-          } else {
-            trace.push({
-              line: loc?.line,
-              file: program.files.length > 1 && loc ? program.files[loc.file]?.name : void 0,
-              source: loc ? sourceOf(loc.file, loc.line) : void 0,
-              values: texts,
-              depth: ctl.invocation.depth > 1 ? ctl.invocation.depth : void 0
-            });
-          }
-          ctl.lastLine.results.length = 0;
-        }
-        const inv = ctl.invocation;
-        let original;
-        if (session.original) {
-          try {
-            const run2 = session.original();
-            run2.run();
-            const c3 = compareWithOriginal(inv, run2.invocation, stage);
-            original = {
-              matches: c3.matches,
-              status: c3.status.original,
-              error: c3.status.error,
-              differences: c3.values.filter((v) => !v.matches).map((v) => {
-                if ((v.translated?.length ?? 0) <= 16 && (v.original?.length ?? 0) <= 16) return { name: v.label, translated: v.translated?.map(tidy), original: v.original?.map(tidy) };
-                const at = (v.original ?? []).findIndex((x, i2) => !sameValue(x, v.translated?.[i2]));
-                const i = at < 0 ? Math.min(v.original?.length ?? 0, v.translated?.length ?? 0) : at;
-                return { name: v.label, firstDifference: i, translated: v.translated?.[i], original: v.original?.[i] };
-              })
-            };
-            if (!c3.matches) original.note = "The translation does not compute what the original does: debug without `decompiled`.";
-          } catch (e) {
-            original = { error: `the original could not be run to compare with: ${e.message}` };
-          }
-        }
-        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
-        let compare2;
-        if (inv.status === "returned" && session.targetPixel) {
-          compare2 = {
-            renderTargetAfterPass: session.targetPixel.value.map(tidy),
-            format: session.targetPixel.format,
-            note: "The pixel after the whole pass: blending and later draws come between. get_pixel_history has the value after this draw."
-          };
-        } else if (inv.status === "returned" && session.replayedOutputs) {
-          const outs = inv.outputs();
-          compare2 = {
-            replayedVertexOutputs: session.replayedOutputs.map((r) => {
-              const mine = r.builtin === "Position" ? outs.find((o) => o.builtin === 0)?.value ?? outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]))?.value?.[0] : outs.find((o) => o.location === r.location)?.value;
-              const values = scalars(mine);
-              const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
-              return { name: r.name, gpu: r.value.map(tidy), matches: diff < 1e-4 };
-            })
-          };
-        }
-        return jsonResult({
-          capture: c2.id,
-          command,
-          method: cmd.method,
-          stage,
-          entryPoint: session.stage.entryPoint,
-          invocation: session.description,
-          notes: session.notes.length ? session.notes : void 0,
-          status: inv.status,
-          error: inv.error || void 0,
-          instructions: inv.steps,
-          steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)" : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
-          outputs,
-          compare: compare2,
-          original,
-          firstNonFinite,
-          warnings: inv.warnings.size ? [...inv.warnings] : void 0,
-          trace: wantTrace ? trace : void 0,
-          traceTruncated: traceTruncated || void 0
-        });
-      }
-    }
-  ];
-}
 
 // src/main/shader_ablation_run.ts
 function ablationRepeat(drawMs) {
@@ -25379,20 +26787,20 @@ function entryOf(model) {
   if (!a) return null;
   return a.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? a.entryPoints.find((e) => e.name === model.entryPoint) ?? a.entryPoints.find((e) => e.stage === model.stage) ?? null;
 }
-function functionTree(fn, byId, factor, path11, depth) {
+function functionTree(fn, byId, factor, path12, depth) {
   const n = node("function", fn.name || `function ${fn.id}`);
   n.functionId = fn.id;
   n.totalCost = weighCost(fn.inclusive) * factor;
   n.selfCost = weighCost(fn.cost) * factor;
   n.dimension = dominantDimension(fn.inclusive);
   if (depth < 24) {
-    path11.add(fn.id);
+    path12.add(fn.id);
     for (const calleeId of fn.calls) {
       const callee = byId.get(calleeId);
-      if (!callee || path11.has(calleeId)) continue;
-      n.children.push(functionTree(callee, byId, factor, path11, depth + 1));
+      if (!callee || path12.has(calleeId)) continue;
+      n.children.push(functionTree(callee, byId, factor, path12, depth + 1));
     }
-    path11.delete(fn.id);
+    path12.delete(fn.id);
   }
   if (fn.lines.length) {
     const shown = fn.lines.slice(0, MAX_LINE_FRAMES);
@@ -25484,11 +26892,11 @@ function buildFrameCostTree(o) {
       const stages = [];
       let cost = 0;
       for (const acc of totals.values()) {
-        const entry = entryOf(acc.model);
-        const usable = !!entry && !acc.unknown && acc.invocations > 0;
+        const entry2 = entryOf(acc.model);
+        const usable = !!entry2 && !acc.unknown && acc.invocations > 0;
         if (!usable) stats.unknownStages++;
         else if (acc.confidence === "estimated") stats.estimatedStages++;
-        const c2 = usable ? weighCost(entry.cost) * acc.invocations : 0;
+        const c2 = usable ? weighCost(entry2.cost) * acc.invocations : 0;
         cost += c2;
         stages.push({ ...acc, cost: c2 });
       }
@@ -25515,9 +26923,9 @@ function buildFrameCostTree(o) {
       const stageNodes = [];
       for (const s of stages) {
         const label = `${s.model.stage}: ${s.model.entryPoint}`;
-        const entry = entryOf(s.model);
-        if (!entry || s.unknown || s.invocations <= 0) {
-          const reason = !entry ? s.model.analysis ? "entry point not found" : "not analyzable" : "invocation count unknown";
+        const entry2 = entryOf(s.model);
+        if (!entry2 || s.unknown || s.invocations <= 0) {
+          const reason = !entry2 ? s.model.analysis ? "entry point not found" : "not analyzable" : "invocation count unknown";
           const n2 = node("stage", `${label} (${reason})`);
           n2.estimated = true;
           n2.reason = reason;
@@ -25528,10 +26936,10 @@ function buildFrameCostTree(o) {
           continue;
         }
         const byId = new Map(s.model.analysis.functions.map((f) => [f.id, f]));
-        const root2 = byId.get(entry.functionId);
+        const root2 = byId.get(entry2.functionId);
         const suffix = s.confidence === "estimated" ? " estimated" : "";
         const n = node("stage", `${label}: ${s.invocations.toLocaleString()}${suffix} invocations`, s.cost);
-        n.dimension = entry.dominant;
+        n.dimension = entry2.dominant;
         n.invocations = s.invocations;
         n.confidence = s.confidence;
         n.estimated = s.confidence !== "exact";
@@ -25871,6 +27279,78 @@ var IMAGE_PARAMS = {
   maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
   texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." }
 };
+var NO_D3D12_REPLAY = "not available for D3D12 captures (no replay)";
+function isD3D12Pipeline(o) {
+  return o.type === "ID3D12PipelineState";
+}
+function d3d12Descriptor(o) {
+  const d = o.descriptor;
+  if (d) return d;
+  const a = o.args;
+  return a && isObject(a.pDesc) ? a.pDesc : a ?? null;
+}
+function d3d12Stages(o) {
+  return o.blobs.map((b, blobIndex) => {
+    const colon = b.name.indexOf(":");
+    const stage = colon < 0 ? b.name : b.name.substring(0, colon);
+    const entryPoint = colon < 0 ? "" : b.name.substring(colon + 1);
+    return { stage, entryPoint, object: o, blobIndex };
+  });
+}
+function d3d12Reflection2(o, stage) {
+  const d = d3d12Descriptor(o);
+  const all = d?.reflection;
+  if (!isObject(all)) return null;
+  const r = all[stage];
+  if (isObject(r)) return r;
+  if (typeof r === "string") {
+    try {
+      const parsed = JSON.parse(r);
+      return isObject(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+function d3d12ShaderModel(o, stage) {
+  const target = str(d3d12Reflection2(o, stage)?.target);
+  const m = /(\d+)_(\d+)$/.exec(target);
+  return m ? `${m[1]}_${m[2]}` : void 0;
+}
+async function d3d12Shader(c2, o, view, stage, maxChars) {
+  const db = c2.db;
+  let sources = d3d12Stages(o);
+  if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
+  const stages = [];
+  for (const s of sources) {
+    const bytes = c2.spirv(s.object, s.blobIndex);
+    const head = { stage: s.stage, entryPoint: s.entryPoint || void 0, shader: refText(db, s.object.id), bytecodeBytes: bytes?.byteLength };
+    if (view === "reflection") {
+      const r = d3d12Reflection2(o, s.stage);
+      stages.push(r ? { ...head, reflection: r } : { ...head, note: "The capture carries no reflection for this stage: the capture library could not reflect its bytecode (a DXIL shader needs dxcompiler.dll beside the library, in the Vulkan SDK or the Windows SDK, or on PATH)." });
+      continue;
+    }
+    if (!bytes) {
+      stages.push({ ...head, note: "The capture file carries no bytecode for this stage." });
+      continue;
+    }
+    if (view === "source" || view === "hlsl" || view === "disassembly") {
+      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl");
+      stages.push(r.ok ? { ...head, text: clip(r.text.replace(/\r\n/g, "\n"), maxChars) } : { ...head, error: r.text, note: view === "disassembly" ? void 0 : `A D3D12 shader's source is what dxc embedded in it (-Zi -Qembed_debug); "disassembly" shows the bytecode's text either way.` });
+    } else {
+      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its embedded HLSL source (view "source") and its disassembly.` });
+    }
+  }
+  return {
+    capture: c2.id,
+    object: refText(db, o.id),
+    api: "d3d12",
+    view,
+    stages,
+    note: sources.length ? void 0 : "No shader stages with code were found for this pipeline."
+  };
+}
 function texelStats(tex) {
   const n = tex.width * tex.height;
   const out = [];
@@ -26135,13 +27615,13 @@ function stageModels(c2) {
       const bytes = c2.spirv(s.object, s.blobIndex);
       if (bytes) spirv.set(`${s.object.id}|${s.stage}`, bytes);
       const reflection = s.stage === "compute" ? c2.reflection(s.object, s.blobIndex) : null;
-      const entry = reflection?.entryPoints.find((e) => e.name === s.entryPoint) ?? reflection?.entryPoints[0] ?? null;
+      const entry2 = reflection?.entryPoints.find((e) => e.name === s.entryPoint) ?? reflection?.entryPoints[0] ?? null;
       return {
         stage: s.stage,
         entryPoint: s.entryPoint,
         objectId: s.object.id,
         analysis: bytes ? analyzeSpirvCached(bytes) : null,
-        workgroupSize: entry?.workgroupSize ?? null
+        workgroupSize: entry2?.workgroupSize ?? null
       };
     }));
   }
@@ -26463,7 +27943,7 @@ function resourceTools(store) {
     },
     {
       name: "get_shader",
-      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`), a VkShaderModule or a VkShaderEXT: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection.`,
+      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`), a VkShaderModule or a VkShaderEXT: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection. For D3D12: an ID3D12PipelineState's stages, with the reflection the capture library took (resources by register and space), the HLSL dxc embedded ("source", compiled with -Zi -Qembed_debug) or the DXBC/DXIL disassembly; the other views are not available for D3D12.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         object: { type: "integer", minimum: 0, description: "The pipeline, shader module, library, function or pipeline state object id." },
@@ -26481,11 +27961,12 @@ function resourceTools(store) {
         const view = enumArg(args, "view", SHADER_VIEWS, "reflection");
         const maxChars = intArg(args, "maxChars", 4e4, 1e3, 2e5);
         if (o.type.startsWith("MTL")) return jsonResult(metalShader(c2, o, view, maxChars));
+        const stage = stringArg(args, "stage")?.toLowerCase();
+        if (isD3D12Pipeline(o)) return jsonResult(await d3d12Shader(c2, o, view, stage, maxChars));
         let sources;
         if (o.type === "VkPipeline" || o.type === "VkShaderEXT") sources = pipelineStages(o, db);
         else if (o.type === "VkShaderModule") sources = o.blobs.length ? [{ stage: str(o.updates.stage) || "unknown", entryPoint: "", object: o, blobIndex: 0 }] : [];
-        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
-        const stage = stringArg(args, "stage")?.toLowerCase();
+        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an ID3D12PipelineState, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
         if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
         const stages = [];
         for (const s of sources) {
@@ -26526,6 +28007,9 @@ function resourceTools(store) {
         const db = c2.db;
         if (d.api === "metal") {
           return jsonResult({ capture: c2.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures. For Metal shaders, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        if (d.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly." });
         }
         const rows = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
@@ -26586,6 +28070,9 @@ function resourceTools(store) {
         const c2 = store.resolve(stringArg(args, "capture"));
         if (c2.data.api === "metal") {
           return jsonResult({ capture: c2.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's time and counters.` });
         }
         let drawNote;
         if (boolArg(args, "measureDraws", true) && !c2.data.drawStats) {
@@ -26662,6 +28149,9 @@ function resourceTools(store) {
         if (c2.data.api === "metal") {
           return jsonResult({ capture: c2.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, note: `Ablation replays a Vulkan capture: ${NO_D3D12_REPLAY}.` });
+        }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);
         const { models, spirv } = stageModels(c2);
@@ -26708,14 +28198,14 @@ function resourceTools(store) {
           textures: intArg(args, "textures", 16, 0, 64)
         });
         c2.setAblation(measured);
-        const entry = model.analysis.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? model.analysis.entryPoints[0];
+        const entry2 = model.analysis.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? model.analysis.entryPoints[0];
         const byId = new Map(model.analysis.functions.map((f) => [f.id, f]));
         const texts = sourceLineTexts(debugInfoWithSources(bytes).info);
         const modeledShare = (p) => {
           const f = byId.get(p.functionId ?? -1);
-          if (!f || !entry || entry.weighted <= 0) return void 0;
+          if (!f || !entry2 || entry2.weighted <= 0) return void 0;
           const w = p.kind === "function" ? weighCost(f.inclusive) : f.lines.find((l) => l.line === p.line && l.file === p.file)?.weighted ?? 0;
-          return round(Math.min(1, w / entry.weighted));
+          return round(Math.min(1, w / entry2.weighted));
         };
         const top = intArg(args, "top", 30, 1, 200);
         const describe = (p) => ({
@@ -26760,9 +28250,223 @@ function resourceTools(store) {
   ];
 }
 
+// src/mcp/debug_tools.ts
+var MAX_TRACE = 400;
+var MAX_VALUES_PER_LINE = 24;
+function meshOutputs(c2) {
+  const cache3 = /* @__PURE__ */ new Map();
+  return async (command) => {
+    const hit = cache3.get(command);
+    if (hit) return hit;
+    const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+    if (!tool) throw new Error(`a fragment's inputs come from replaying the draw's vertex shader, and ${NO_REPLAY_TOOL}`);
+    const run2 = await replayServers.run(tool, c2.path, { kind: "mesh", commands: [command] });
+    if (!run2.data) throw new Error(`the replay could not capture the draw's vertex outputs: ${run2.error ?? "no data"}`);
+    const m = parseMeshFile(run2.data).draws.find((d) => d.command === command);
+    if (!m) throw new Error("the replay did not reach the draw");
+    cache3.set(command, m);
+    return m;
+  };
+}
+function debugTools(store) {
+  return [
+    {
+      name: "debug_shader",
+      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V or a Metal capture's Metal Shading Language. A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal fragment's come from running the draw's own vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. A Metal library the application loaded precompiled has no source, and says so.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "Default: compute for a dispatch, fragment for a draw." },
+        vertex: { type: "integer", minimum: 0, description: "Vertex: the vertex, in the order the draw read them (an indexed draw's index order). Default 0." },
+        instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
+        x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
+        y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
+        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
+        line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
+        trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
+        decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back with line information, for a shader built without debug information (lines instead of instructions). It is not the module the GPU ran, so the original runs too and `original` says whether they agree. Needs the Vulkan SDK's spirv-cross and glslangValidator. Default false." }
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const command = requireInt(args, "command");
+        const cmd = c2.data.commands[command];
+        if (!cmd) throw new Error(`The capture has no command ${command}.`);
+        if (c2.data.api !== "vulkan" && c2.data.api !== "metal") {
+          return jsonResult({ capture: c2.id, command, note: `The shader debugger interprets a Vulkan capture's SPIR-V or a Metal capture's MSL: ${NO_D3D12_REPLAY}, and no DXIL interpreter. get_shader has a D3D12 pipeline's source and disassembly.` });
+        }
+        const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
+        if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
+        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
+        const state = drawState(c2.data, c2.db, cmd);
+        const inputNames = /* @__PURE__ */ new Map();
+        for (const v of vertexInputs(c2, state)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
+        const metal = c2.data.api === "metal";
+        const decompiled = !metal && boolArg(args, "decompiled", false);
+        const ctx = {
+          data: c2.data,
+          db: c2.db,
+          inputNames,
+          meshOutput: metal ? void 0 : meshOutputs(c2),
+          translate: decompiled ? async (bytes, source) => {
+            const r = await decompileForDebugging(bytes, source.stage, source.entryPoint);
+            if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+            return r.spirv;
+          } : void 0
+        };
+        let target;
+        if (stage === "compute") {
+          const inv2 = Array.isArray(args.invocation) ? args.invocation.map((v) => Math.max(0, Math.floor(Number(v) || 0))) : [0, 0, 0];
+          target = { stage, command, invocation: [inv2[0] ?? 0, inv2[1] ?? 0, inv2[2] ?? 0] };
+        } else if (stage === "vertex") {
+          target = { stage, command, vertex: intArg(args, "vertex", 0, 0), instance: intArg(args, "instance", 0, 0) };
+        } else {
+          let x = optionalInt(args, "x"), y = optionalInt(args, "y");
+          if (x === void 0 || y === void 0) {
+            let mesh;
+            try {
+              mesh = metal ? await interpretedMeshOutput(ctx, cmd, state) : await ctx.meshOutput(command);
+            } catch (e) {
+              return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug the fragment: ${e.message}` });
+            }
+            const pixel = mesh.measured ? coveredPixel(state, mesh, metal ? metalRasterState(ctx, cmd, state) : void 0) : null;
+            if (!pixel) return jsonResult({ capture: c2.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
+            x = pixel.x;
+            y = pixel.y;
+          }
+          target = { stage, command, x, y };
+        }
+        let session;
+        try {
+          session = await prepareDebugSession(ctx, target);
+        } catch (e) {
+          return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug: ${e.message}` });
+        }
+        const program = session.program;
+        if (program instanceof SpirvProgram) {
+          const missing = program.files.filter((f) => f.text === null && f.name);
+          if (missing.length) {
+            const texts = findShaderSources(missing.map((f) => f.name), searchPaths("sourceRoots").dirs);
+            for (const f of missing) if (typeof texts[f.name] === "string") f.text = texts[f.name];
+          }
+        }
+        const maps = program.files.map((f) => f.text == null ? null : sourceLineMap(f.text));
+        const sourceOf = (file, line) => {
+          const map = maps[file];
+          const phys = map?.physicalOf.get(line);
+          return map && phys !== void 0 ? map.lines[phys].trim() : void 0;
+        };
+        const ctl = new DebugController(session);
+        const onlyLine = optionalInt(args, "line");
+        const wantTrace = boolArg(args, "trace", true);
+        const trace = [];
+        let traceTruncated = false;
+        let firstNonFinite;
+        while (!ctl.finished) {
+          ctl.advance(ctl.mode === "source" ? "into" : "instruction", 1e6);
+          const last = ctl.lastLine;
+          if (!last.results.length) continue;
+          const inst = last.results[last.results.length - 1].inst;
+          const loc = ctl.location(inst);
+          for (const r of last.results) {
+            if (!firstNonFinite && nonFinite(r.value)) {
+              const l = ctl.location(r.inst);
+              firstNonFinite = { line: l?.line, instruction: r.inst.index, name: program.nameOf(r.id), value: program.valueText(program.resultType(r), r.value), source: l ? sourceOf(l.file, l.line) : void 0 };
+            }
+          }
+          if (!wantTrace || onlyLine !== void 0 && loc?.line !== onlyLine) continue;
+          if (trace.length >= MAX_TRACE) {
+            traceTruncated = true;
+            continue;
+          }
+          const values = last.results.filter((r) => !(r.value instanceof Pointer));
+          if (!values.length) continue;
+          const named = values.filter((r) => !program.resultTemporary(r));
+          const shown = (named.length ? named : values).slice(-MAX_VALUES_PER_LINE);
+          const texts = shown.map((r) => `${program.nameOf(r.id)} = ${program.valueText(program.resultType(r), r.value)}`);
+          if (ctl.mode === "instruction") {
+            trace.push(`${inst.index}: ${texts.join("; ")}`);
+          } else {
+            trace.push({
+              line: loc?.line,
+              file: program.files.length > 1 && loc ? program.files[loc.file]?.name : void 0,
+              source: loc ? sourceOf(loc.file, loc.line) : void 0,
+              values: texts,
+              depth: ctl.invocation.depth > 1 ? ctl.invocation.depth : void 0
+            });
+          }
+          ctl.lastLine.results.length = 0;
+        }
+        const inv = ctl.invocation;
+        let original;
+        if (session.original) {
+          try {
+            const run2 = session.original();
+            run2.run();
+            const c3 = compareWithOriginal(inv, run2.invocation, stage);
+            original = {
+              matches: c3.matches,
+              status: c3.status.original,
+              error: c3.status.error,
+              differences: c3.values.filter((v) => !v.matches).map((v) => {
+                if ((v.translated?.length ?? 0) <= 16 && (v.original?.length ?? 0) <= 16) return { name: v.label, translated: v.translated?.map(tidy), original: v.original?.map(tidy) };
+                const at = (v.original ?? []).findIndex((x, i2) => !sameValue(x, v.translated?.[i2]));
+                const i = at < 0 ? Math.min(v.original?.length ?? 0, v.translated?.length ?? 0) : at;
+                return { name: v.label, firstDifference: i, translated: v.translated?.[i], original: v.original?.[i] };
+              })
+            };
+            if (!c3.matches) original.note = "The translation does not compute what the original does: debug without `decompiled`.";
+          } catch (e) {
+            original = { error: `the original could not be run to compare with: ${e.message}` };
+          }
+        }
+        const outputs = inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, type: program.typeName(o.type), value: program.valueText(o.type, o.value, 64) }));
+        let compare2;
+        if (inv.status === "returned" && session.targetPixel) {
+          compare2 = {
+            renderTargetAfterPass: session.targetPixel.value.map(tidy),
+            format: session.targetPixel.format,
+            note: "The pixel after the whole pass: blending and later draws come between. get_pixel_history has the value after this draw."
+          };
+        } else if (inv.status === "returned" && session.replayedOutputs) {
+          const outs = inv.outputs();
+          compare2 = {
+            replayedVertexOutputs: session.replayedOutputs.map((r) => {
+              const mine = r.builtin === "Position" ? outs.find((o) => o.builtin === 0)?.value ?? outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]))?.value?.[0] : outs.find((o) => o.location === r.location)?.value;
+              const values = scalars(mine);
+              const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
+              return { name: r.name, gpu: r.value.map(tidy), matches: diff < 1e-4 };
+            })
+          };
+        }
+        return jsonResult({
+          capture: c2.id,
+          command,
+          method: cmd.method,
+          stage,
+          entryPoint: session.stage.entryPoint,
+          invocation: session.description,
+          notes: session.notes.length ? session.notes : void 0,
+          status: inv.status,
+          error: inv.error || void 0,
+          instructions: inv.steps,
+          steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)" : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
+          outputs,
+          compare: compare2,
+          original,
+          firstNonFinite,
+          warnings: inv.warnings.size ? [...inv.warnings] : void 0,
+          trace: wantTrace ? trace : void 0,
+          traceTruncated: traceTruncated || void 0
+        });
+      }
+    }
+  ];
+}
+
 // src/mcp/tools.ts
-import fs11 from "node:fs";
-import path10 from "node:path";
+import fs12 from "node:fs";
+import path11 from "node:path";
 
 // src/renderer/pixel_history.ts
 function hexBytes(text) {
@@ -26987,7 +28691,7 @@ function captureNotes(c2) {
   if (!d.passTimings.size) {
     notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
   } else if (!c2.metrics.withCounters) {
-    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : d.api === "d3d12" ? "The passes carry timestamps but no pipeline statistics (the capture library's statistics queries did not resolve), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
   }
   const failedImages = d.textures.filter((t) => t.info.error).length;
   if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
@@ -27216,7 +28920,7 @@ function captureTools(store) {
       readOnly: true,
       handler: () => {
         const open = store.list();
-        const recent = [...new Set(recentCaptureFiles().map((p) => path10.normalize(p)))];
+        const recent = [...new Set(recentCaptureFiles().map((p) => path11.normalize(p)))];
         return jsonResult({
           open: open.map((c2) => ({
             capture: c2.id,
@@ -27230,8 +28934,8 @@ function captureTools(store) {
           })),
           recent: recent.map((file) => ({
             file,
-            missing: fs11.existsSync(file) ? void 0 : true,
-            open: open.find((c2) => c2.path === path10.resolve(file))?.id
+            missing: fs12.existsSync(file) ? void 0 : true,
+            open: open.find((c2) => c2.path === path11.resolve(file))?.id
           })),
           note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
         });
@@ -27315,7 +29019,7 @@ function captureTools(store) {
         } else {
           notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
         }
-        if (!metal) notes.push("The vertex/fragment split is Metal only: Vulkan has no portable stage-boundary timestamps. Depth rejection comes from an occlusion query the layer runs around each pass, which it skips where the application has a query of its own open.");
+        if (!metal) notes.push(`The vertex/fragment split is Metal only: ${c2.data.api === "d3d12" ? "D3D12" : "Vulkan"} has no portable stage-boundary timestamps. Depth rejection comes from an occlusion query the capture library runs around each pass, which it skips where the application has a query of its own open.`);
         const totals = m.totals;
         const p = page(ranked, args, 30, 200);
         return jsonResult({
@@ -27366,7 +29070,7 @@ function captureTools(store) {
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         let replayNote;
-        if (!c2.data.overdraw.length && c2.data.api !== "metal") {
+        if (!c2.data.overdraw.length && c2.data.api === "vulkan") {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c2.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
           const run2 = await replayServers.run(tool, c2.path, { kind: "overdraw" });
@@ -27378,7 +29082,7 @@ function captureTools(store) {
         if (!c2.data.overdraw.length) {
           return jsonResult({
             capture: c2.id,
-            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : `The replay measured no pass. ${replayNote ?? ""}`
+            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : c2.data.api === "d3d12" ? `Overdraw is measured by replaying a Vulkan capture, or by the Metal library while it captures: ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's fragments per primitive where the pass carried counters.` : `The replay measured no pass. ${replayNote ?? ""}`
           });
         }
         const passes = c2.metrics.passes;
@@ -27459,6 +29163,9 @@ function captureTools(store) {
       readOnly: true,
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api === "d3d12") {
+          return jsonResult({ capture: c2.id, note: `The pixel history replays a Vulkan capture (a Metal application follows the pixel while it captures): ${NO_D3D12_REPLAY}. read_texture shows the render target after the pass, and list_commands with kind draw the draws of the pass.` });
+        }
         if (c2.data.api === "metal") {
           if (!c2.data.pixelHistory) {
             return jsonResult({
@@ -27522,6 +29229,9 @@ function captureTools(store) {
         if (!cmd || !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_mesh_output takes a draw command (list_commands with kind draw).`);
         if (c2.data.api === "metal") {
           return jsonResult({ capture: c2.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
+        }
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, command: index, note: `The mesh output replays the draw's vertex shader: ${NO_D3D12_REPLAY}. read_vertices gives what the draw read.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
@@ -27752,19 +29462,26 @@ function sessionStatus(s) {
     note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : void 0
   };
 }
-var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm)/g;
+var TEMP_SOURCE = /\S*vkinsp_\d+_\d+_\d+\.(glsl|hlsl|spvasm|dxil)/g;
 function compilerLog(log) {
   return log.split(/\r?\n/).filter((line) => line.trim().replace(TEMP_SOURCE, "") !== "").join("\n").replace(TEMP_SOURCE, "source").trim();
 }
 function stageOf2(s, pipelineId, stage) {
   const pipeline = s.database.getObject(pipelineId);
+  const wanted = stage.toLowerCase();
+  if (pipeline && isD3D12Pipeline(pipeline)) {
+    const stages2 = d3d12Stages(pipeline);
+    const source2 = stages2.find((x) => x.stage === wanted);
+    if (!source2) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages2.map((x) => x.stage).join(", ") || "none"}).`);
+    return { flag: source2.stage, entryPoint: source2.entryPoint, object: source2.object, blobIndex: source2.blobIndex };
+  }
   if (!pipeline || pipeline.type !== "VkPipeline" && pipeline.type !== "VkShaderEXT") {
-    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline or VkShaderEXT of ${s.id}.`);
+    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline, VkShaderEXT or ID3D12PipelineState of ${s.id}.`);
   }
   const stages = pipelineStages(pipeline, s.database);
-  const source = stages.find((x) => x.stage === stage.toLowerCase());
+  const source = stages.find((x) => x.stage === wanted);
   if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
-  return { flag: source.stageFlag, entryPoint: source.entryPoint, source };
+  return { flag: source.stageFlag, entryPoint: source.entryPoint, object: source.object, blobIndex: source.blobIndex };
 }
 function liveDescriptor(db, d) {
   if (d.buffer !== void 0) return { buffer: refText(db, d.buffer), offset: d.offset, range: d.range };
@@ -27806,13 +29523,13 @@ function liveTools(sessions2, store) {
   return [
     {
       name: "launch_app",
-      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on macOS the Metal library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's own output is in it, which is where to look when it does not connect). The application runs until stop_app or until this server exits.",
+      description: "Launch an application with GPU Inspector's capture library in it (the Vulkan layer; on Windows the D3D12 library too, injected by its launcher, so whichever API the application uses connects; on macOS the Metal library) and connect to it, so its frames can be captured and its frame statistics watched while it runs. Returns the session's status: the device, live objects, the frame rate once frames arrive, and the recent log (the layer's own output is in it, which is where to look when it does not connect). The application runs until stop_app or until this server exits.",
       inputSchema: schema({
         exe: { type: "string", description: "The executable (on macOS an .app bundle works too)." },
         args: { type: "string", description: "Command line arguments, quoted as in a shell." },
         cwd: { type: "string", description: "Working directory (default the executable's directory)." },
         env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
-        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK) or Metal's validation, so validation messages reach the captures (default false)." },
+        validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK), the D3D12 debug layer or Metal's validation, so validation messages reach the captures (default false)." },
         syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
@@ -27836,7 +29553,7 @@ function liveTools(sessions2, store) {
         }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
         const result = jsonResult({
           ...sessionStatus(s),
-          problem: s.connected ? void 0 : "The capture library did not connect. recentLog (and get_session_log) has the application's and the layer's output: a crash, an application that does not use Vulkan, or a layer the loader did not load."
+          problem: s.connected ? void 0 : "The capture library did not connect. recentLog (and get_session_log) has the application's and the capture library's output: a crash, an application that uses neither Vulkan nor (on Windows) D3D12, a layer the loader did not load, or a target the D3D12 launcher could not inject into."
         });
         if (!s.connected) result.isError = true;
         return result;
@@ -28046,7 +29763,7 @@ function liveTools(sessions2, store) {
         if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
         if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
         if (pixelHistory && !result.data.pixelHistory) {
-          notes.push(result.data.api === "metal" ? "No pixel history arrived: the application's capture library was built before pixel history." : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+          notes.push(result.data.api === "metal" ? "No pixel history arrived: the application's capture library was built before pixel history." : result.data.api === "d3d12" ? `pixelHistory is followed by the Metal capture library only, and get_pixel_history is ${NO_D3D12_REPLAY}.` : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
         }
         return jsonResult({
           session: s.id,
@@ -28242,33 +29959,36 @@ function liveTools(sessions2, store) {
     },
     {
       name: "replace_shader",
-      description: `Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again.`,
+      description: `Replace one stage of a running Vulkan or D3D12 pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again. A D3D12 pipeline (ID3D12PipelineState) takes HLSL only, compiled to DXIL with dxc for the stage's own shader model; get_shader with view "source" has the HLSL dxc embedded in the original.`,
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), or a VkShaderEXT's for an application using shader objects." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), a VkShaderEXT's for an application using shader objects, or an ID3D12PipelineState's." },
         stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
         source: { type: "string", description: "The complete new source of the stage." },
-        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
+        language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl; a D3D12 pipeline takes hlsl only, and defaults to it)." },
         entryPoint: { type: "string", description: "The entry point in the source (default the stage's own)." }
       }, ["pipeline", "stage", "source"]),
       handler: async (args) => {
         const s = sessions2.get(stringArg(args, "session"));
-        if (s.api === "metal") throw new Error("Shader replacement is Vulkan only.");
+        if (s.api === "metal") throw new Error("Shader replacement is Vulkan and D3D12 only.");
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stageName = requireString(args, "stage").toLowerCase();
-        const { flag, entryPoint, source } = stageOf2(s, pipelineId, stageName);
-        const original = await fetchBlob(s, source.object, source.blobIndex);
-        const version = original && reflectSpirv(original)?.version || "";
-        const language = enumArg(args, "language", LANGUAGES, "glsl");
-        const compiled = await compileShader(
-          requireString(args, "source"),
-          language,
-          stageName,
-          stringArg(args, "entryPoint") ?? entryPoint,
-          version,
-          { includeDirs: searchPaths("sourceRoots").dirs }
-        );
+        const { flag, entryPoint, object, blobIndex } = stageOf2(s, pipelineId, stageName);
+        const entry2 = stringArg(args, "entryPoint") ?? entryPoint;
+        const includeDirs = searchPaths("sourceRoots").dirs;
+        let compiled;
+        let version = "";
+        if (isD3D12Pipeline(object)) {
+          const language = enumArg(args, "language", LANGUAGES, "hlsl");
+          if (language !== "hlsl") throw new Error(`A D3D12 pipeline's stage is replaced from HLSL (compiled to DXIL with dxc): language "${language}" is not available for a D3D12 session.`);
+          compiled = await compileDxil(requireString(args, "source"), stageName, entry2, d3d12ShaderModel(object, stageName) ?? "6_0", { includeDirs });
+        } else {
+          const original = await fetchBlob(s, object, blobIndex);
+          version = original && reflectSpirv(original)?.version || "";
+          const language = enumArg(args, "language", LANGUAGES, "glsl");
+          compiled = await compileShader(requireString(args, "source"), language, stageName, entry2, version, { includeDirs });
+        }
         if (!compiled.ok || !compiled.spirv) {
           const failed = jsonResult({ ok: false, failedAt: "compile", compiler: compiled.tool, log: clip(compilerLog(compiled.log), 12e3) });
           failed.isError = true;
@@ -28280,8 +30000,8 @@ function liveTools(sessions2, store) {
           pipeline: refText(s.database, pipelineId),
           stage: stageName,
           spirvVersion: version || void 0,
-          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `VkPipeline#${reply.replacement}` : void 0,
-          error: reply ? reply.error : "The layer did not answer within 15 s.",
+          replacement: reply?.replacement ? refText(s.database, reply.replacement) ?? `${isD3D12Pipeline(object) ? "ID3D12PipelineState" : "VkPipeline"}#${reply.replacement}` : void 0,
+          error: reply ? reply.error : "The capture library did not answer within 15 s.",
           layerNote: reply?.note,
           compilerLog: compilerLog(compiled.log) ? clip(compilerLog(compiled.log), 4e3) : void 0
         });
@@ -28294,7 +30014,7 @@ function liveTools(sessions2, store) {
       description: "Undo replace_shader: the pipeline binds its original code again, for one stage or every replaced stage.",
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's (or ID3D12PipelineState's) object id." },
         stage: { type: "string", description: "The stage to restore (default every replaced stage)." }
       }, ["pipeline"]),
       handler: async (args) => {

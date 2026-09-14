@@ -47,6 +47,14 @@ interpreter and re-created pipelines.
 - Metal (macOS): the capture library in `metal/`, hooking the driver's classes without wrapping
   objects, with object tracking and lifetime, frame capture with render targets, buffers in
   every storage mode, pass timings and pipeline reflection (see `metal/README.md`).
+- Direct3D 12 (Windows): the capture library in `d3d12/`, injected at process start by
+  `dxinsp_launch.exe` and hooking the D3D12 and DXGI entry points and vtables without wrapping
+  objects, speaking the Vulkan layer's protocol: object tracking with descriptors, names and
+  descriptor heap contents, frame capture with synthesized passes, render targets, bound buffers
+  and textures, root constants, `ExecuteIndirect` arguments, pass timings and counters, the
+  debug layer's messages, stack traces, DXBC/DXIL reflection and disassembly (`dxinsp_shader.exe`),
+  shader editing through `dxc`, and record-always for pre-recorded lists (see `d3d12/README.md`).
+  `test/d3d12_triangle` is its test application.
 - Render graph suggestions: rules over the graph (unread stores per subresource and per write,
   results overwritten before anything reads them, transient-attachment candidates, mergeable
   passes, barriers that synchronize nothing), in the Render Graph view and Frame Issues, shared
@@ -387,6 +395,33 @@ backend does. Ordered by value per effort.
       parameter), which decide whether the argument exists at all: the debugger binds it regardless.
 - [ ] The shader debugger on a Unity player's Metal shaders, which are generated MSL rather than
       hand-written: the parser's coverage is what to watch (`app/test/vectors/msl/`).
+
+## Direct3D 12
+
+The D3D12 capture library (`d3d12/`) reaches the Inspect and Capture panels through the same
+protocol as the Vulkan layer. What it lacks is what the replay does for Vulkan, and what the
+library does not read back yet.
+
+- [ ] Shader debugger: the interpreters are SPIR-V's (`renderer/spirv/`) and MSL's
+      (`renderer/msl/`); DXIL has none. Either a DXIL interpreter behind the `DebugProgram` seam,
+      or the HLSL compiled to SPIR-V with `dxc -spirv` and stepped in the SPIR-V one, with the
+      D3D12 bindings mapped to sets and bindings.
+- [ ] The replay-based analyses — overdraw, pixel history, draw overlays, mesh output, per-draw
+      timings and counters (**Measure draws**), shader cost by ablation (**Measure shader**) —
+      which `vkinsp_replay` does for Vulkan captures only. Either a D3D12 replayer, or the Metal
+      route: measured while capturing, inside the application.
+- [ ] Stencil read-back, and the contents of sampler feedback, video, work graph and raytracing
+      objects; enhanced barriers (`Barrier`) beyond the layouts that map to legacy states.
+- [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded
+      without contents (bundles inherit the caller's root signature).
+- [ ] 32-bit targets: only x64 processes are injected.
+- [ ] Attaching to an application already running: injection has to happen at process start and
+      there is no implicit-layer equivalent. A launcher-side hook of `CreateProcess` in the
+      editor, or a registered AppInit-style mechanism, would be the way in.
+- [ ] DXIL reflection and disassembly without `dxcompiler.dll` on the machine: ship it beside the
+      library, or parse the DXIL container's reflection part in the library.
+- [ ] Automated test: `tools/ui_tests.py` cases over `dxinsp_triangle` (a plain capture, MSAA, a
+      bundle, indirect, render passes, the debug layer), the way the Vulkan cases run.
 
 ## iOS devices
 

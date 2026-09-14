@@ -19,6 +19,7 @@ import { usageClass } from "./render_graph.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "./vulkan/spirv_analysis.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import type { GraphNode, GraphUse, RenderGraph } from "./render_graph.js";
+import type { CaptureApi } from "../shared/protocol.js";
 
 /**
  * Rules of the per-command analyses that these replace: the graph answers the same question
@@ -68,7 +69,7 @@ class GraphAnalysis {
    */
   private _blind = false;
   /** Which API's spelling of a fix the advice should name. */
-  private _metal = false;
+  private _api: CaptureApi = "vulkan";
 
   private _options: GraphAnalysisOptions;
 
@@ -76,7 +77,12 @@ class GraphAnalysis {
     this._graph = graph;
     this._options = options;
     this._blind = graph.nodes.some((n) => n.unresolvedReads > 0);
-    this._metal = graph.api === "metal";
+    this._api = graph.api;
+  }
+
+  /** The API's own spelling of a piece of advice: the Vulkan, Metal or D3D12 wording. */
+  private _wording(vulkan: string, metal: string, d3d12: string): string {
+    return this._api === "metal" ? metal : this._api === "d3d12" ? d3d12 : vulkan;
   }
 
   analyze(): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
@@ -117,7 +123,7 @@ class GraphAnalysis {
     if (!folded.count) return;
     this._add("unread-store", "medium", this._blind ? "medium" : "high",
       `${count(folded.count, "write")} in the frame ${folded.count === 1 ? "reaches" : "reach"} memory that no later pass reads: ${folded.subjectText}. ` +
-      `Discarding instead (${this._metal ? "MTLStoreActionDontCare" : "store op DONT_CARE"}) keeps the result in tile memory and skips the write. ` +
+      `Discarding instead (${this._wording("store op DONT_CARE", "MTLStoreActionDontCare", "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD in a BeginRenderPass, or DiscardResource after the pass")}) keeps the result in tile memory and skips the write. ` +
       `The graph only sees this capture, so a result the host reads back or the next frame consumes will look unread here${this._blindClause()}.`, folded);
   }
 
@@ -213,9 +219,10 @@ class GraphAnalysis {
     const allChecked = checked === folded.count;
     this._add("subpass-candidate", "low", allChecked ? "medium" : "low",
       `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` +
-      (this._metal
-        ? "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. "
-        : "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ") +
+      this._wording(
+        "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ",
+        "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. ",
+        "D3D12 has no subpasses; on a tiled GPU the two passes cost a store and a load of the target, so drawing both into one render target set is what saves them. ") +
       (allChecked
         ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position."
         : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."), folded);
@@ -257,7 +264,7 @@ class GraphAnalysis {
     if (!folded.count) return;
     this._add("transient-candidate", "medium", this._blind ? "low" : "medium",
       `${count(folded.count, "image")} ${folded.count === 1 ? "is" : "are"} written and then read only by the pass that follows, and never presented or copied: ${folded.subjectText}. ` +
-      `A target used that way never has to reach memory: ${this._metal ? "MTLStorageModeMemoryless, or an imageblock read in the second pass" : "TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass"}${this._blindClause()}.`, folded);
+      `A target used that way never has to reach memory: ${this._wording("TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass", "MTLStorageModeMemoryless, or an imageblock read in the second pass", "a transient render target (BeginRenderPass with DISCARD ending access, and a render pass tier that keeps it on chip), or one pass drawing both")}${this._blindClause()}.`, folded);
   }
 
   /**

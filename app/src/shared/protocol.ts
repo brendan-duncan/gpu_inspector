@@ -121,7 +121,7 @@ export interface ObjectBlobMessage {
 }
 
 /** Which graphics API produced a capture: it decides how the UI classifies the command names. */
-export type CaptureApi = "vulkan" | "metal";
+export type CaptureApi = "vulkan" | "metal" | "d3d12";
 
 export interface CaptureFrameResultsMessage {
   action: "CaptureFrameResults";
@@ -147,25 +147,39 @@ export interface CaptureDescriptor {
   sampler?: HandleRef | null;
   immutable?: boolean;
   bufferView?: HandleRef | null;
+  /**
+   * D3D12: a texture SRV/UAV names its resource and carries the view description (there is no view
+   * object); `data` is the read-back's capture id as for `imageView`. A buffer view uses `buffer` /
+   * `offset` / `range` above (the view description in `view`); a sampler descriptor has no object
+   * and carries its description in `samplerDesc` with `sampler` null.
+   */
+  resource?: HandleRef | null;
+  view?: ArgObject | null;
+  samplerDesc?: ArgObject | null;
 }
 
 export interface CaptureDescriptorBinding {
   binding: number;
-  type: string;         // "VK_DESCRIPTOR_TYPE_..."
+  /** "VK_DESCRIPTOR_TYPE_..."; D3D12: "D3D12_DESCRIPTOR_RANGE_TYPE_..." for a table's range, "D3D12_ROOT_PARAMETER_TYPE_..." for a root view. */
+  type: string;
   stages?: string;
   descriptors: (CaptureDescriptor | null)[];
+  /** D3D12: the shader register the binding's first descriptor is at and its register space (the reflection is keyed by them). */
+  register?: number;
+  space?: number;
 }
 
 /** Snapshot of a descriptor set's contents taken when it was bound. */
 export interface CaptureDescriptorSet {
+  /** The set index; D3D12: the root parameter index. */
   set: number;
-  descriptorSet: HandleRef | null;   // null for push descriptors
-  layout?: HandleRef | null;
+  descriptorSet: HandleRef | null;   // null for push descriptors; D3D12: the descriptor heap, or null for a root view
+  layout?: HandleRef | null;         // D3D12: the root signature
   bindings: CaptureDescriptorBinding[];
 }
 
 export interface CaptureDescriptorSets {
-  bindPoint: string;    // "VK_PIPELINE_BIND_POINT_..."
+  bindPoint: string;    // "VK_PIPELINE_BIND_POINT_..."; D3D12: "graphics" | "compute"
   sets: CaptureDescriptorSet[];
 }
 
@@ -560,7 +574,7 @@ export interface CaptureRequest {
   pixelHistory?: { texture: number; x: number; y: number; mip?: number; layer?: number };
 }
 
-/** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64). */
+/** Live shader editing: rebuild a pipeline with one stage replaced by the given SPIR-V (base64); D3D12: DXBC/DXIL bytecode in the same field. */
 export interface ReplaceShaderRequest { action: "ReplaceShader"; pipeline: number; stage: string; spirv: string }
 /** Drops the edit of one stage (or of every stage when `stage` is omitted). */
 export interface RestoreShaderRequest { action: "RestoreShader"; pipeline: number; stage?: string }
@@ -753,6 +767,7 @@ export type ShaderLanguage = "glsl" | "hlsl" | "spirv-asm";
 
 export interface CompileShaderResult {
   ok: boolean;
+  /** The compiled module: SPIR-V, or DXIL/DXBC bytecode from compileDxil. */
   spirv?: Uint8Array;
   /** Compiler output (errors and warnings). */
   log: string;

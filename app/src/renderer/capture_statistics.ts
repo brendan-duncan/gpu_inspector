@@ -189,7 +189,19 @@ export class CaptureStatistics {
           for (const b of set.bindings) {
             const written = b.descriptors.filter((d) => d).length;
             const t = b.type;
-            if (t.includes("UNIFORM_BUFFER")) this.uniformBuffers += written;
+            if (t.startsWith("D3D12_")) {
+              // A D3D12 range or root view: CBVs are constant buffers; an SRV / UAV is a buffer or a
+              // texture depending on what each descriptor names (a buffer view carries `buffer`).
+              if (t.endsWith("_CBV")) this.uniformBuffers += written;
+              else if (t.endsWith("_SAMPLER")) this.samplers += written;
+              else {
+                for (const d of b.descriptors) {
+                  if (!d) continue;
+                  if (d.buffer !== undefined) this.storageBuffers++;
+                  else this.images++;
+                }
+              }
+            } else if (t.includes("UNIFORM_BUFFER")) this.uniformBuffers += written;
             else if (t.includes("STORAGE_BUFFER")) this.storageBuffers += written;
             else if (t.includes("TEXEL_BUFFER")) this.texelBuffers += written;
             else if (t === "VK_DESCRIPTOR_TYPE_SAMPLER") this.samplers += written;

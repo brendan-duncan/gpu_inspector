@@ -54,6 +54,21 @@ if (process.platform === "darwin") {
   } else {
     console.log(`no ${replay} in ${src}: the package will not measure Vulkan overdraw`);
   }
+  // Windows: the D3D12 capture library, its launcher and the shader tool (d3d12/README.md), built
+  // into the same directory. The app looks for them in resources/layer (findD3D12Tools in
+  // src/main/d3d12.ts). Optional: without the library and launcher only Vulkan is captured, and
+  // without the shader tool a D3D12 shader has no text; the log says which is missing.
+  if (process.platform === "win32") {
+    const d3d12Src = process.env.INSPECTOR_D3D12_DIR ?? src;
+    for (const f of ["dxinsp_capture.dll", "dxinsp_launch.exe", "dxinsp_shader.exe"]) {
+      if (fs.existsSync(path.join(d3d12Src, f))) {
+        fs.copyFileSync(path.join(d3d12Src, f), path.join(dst, f));
+        console.log(`staged ${f} from ${d3d12Src}`);
+      } else {
+        console.warn(`warning: no ${f} in ${d3d12Src} (build it: d3d12/README.md); the package will ${f === "dxinsp_shader.exe" ? "show no text for D3D12 shaders" : "not capture D3D12"}`);
+      }
+    }
+  }
 }
 
 // Android: the layer libraries and the layer APK from tools/build_android.py, when built. The

@@ -16,7 +16,8 @@ import { collectPassMetrics, type FrameMetrics } from "../renderer/pass_metrics.
 import type { RenderGraph } from "../renderer/render_graph.js";
 import { analyzeFrame, type FrameFinding } from "../renderer/vulkan/frame_analysis.js";
 import { ObjectDatabase } from "../renderer/vulkan/object_database.js";
-import { reflectSpirv, type ShaderReflection } from "../renderer/vulkan/spirv_reflect.js";
+import { d3d12Reflection } from "../renderer/d3d12/reflection.js";
+import { reflectSpirv, type ShaderReflection, type ShaderStage } from "../renderer/vulkan/spirv_reflect.js";
 import { isObject, refId, type VulkanObject } from "../renderer/vulkan/vulkan_object.js";
 import type { CaptureTextureInfo, ValidationMessage } from "../shared/protocol.js";
 
@@ -167,7 +168,10 @@ export class Capture {
       const data = this.spirv(object, blobIndex);
       let r: ShaderReflection | null = null;
       try {
-        r = data ? reflectSpirv(data) : null;
+        // A D3D12 pipeline's reflection travels in its descriptor (the library reflects the
+        // bytecode in the process); its blob is DXBC/DXIL, which reflectSpirv cannot read.
+        const stage = object.type === "ID3D12PipelineState" ? (object.blobs[blobIndex]?.name.split(":")[0] as ShaderStage | undefined) : undefined;
+        r = stage ? d3d12Reflection(object, stage) : data ? reflectSpirv(data) : null;
       } catch {
         r = null;
       }

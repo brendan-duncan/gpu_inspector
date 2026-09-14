@@ -9,7 +9,8 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
-import { fmt, formatBytes, isObject, num, str, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { fmt, formatBytes, isObject, num, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { objectLink } from "./args_view.js";
 import type { ArgObject, ArgValue } from "../shared/protocol.js";
 
 const VENDORS: Record<number, string> = {
@@ -221,6 +222,88 @@ export function renderDeviceSections(container: Widget, object: VulkanObject): v
     if (/FEATURES/.test(sType)) rows.push(...featureRows(s, shortSType(sType)));
   }
   featureList(section(container, "Enabled Features", false), rows, "enabled");
+}
+
+// ---------------------------------------------------------------------------------------------
+// D3D12: the device's feature level and CheckFeatureSupport answers (d3d12/README.md, "Device
+// sections"), and the adapter's DXGI_ADAPTER_DESC.
+
+/** "D3D_FEATURE_LEVEL_12_1" -> "12.1"; "D3D_SHADER_MODEL_6_6" -> "6.6". */
+function dottedLevel(v: ArgValue | undefined): string {
+  const s = str(v);
+  const m = /_(\d+)_(\d+)$/.exec(s);
+  return m ? `${m[1]}.${m[2]}` : fmt(s);
+}
+
+/** The rows of one CheckFeatureSupport struct: every member, nested ones flattened with a dot. */
+function optionRows(obj: ArgObject, prefix = ""): [string, string][] {
+  const out: [string, string][] = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (isObject(v)) out.push(...optionRows(v, `${prefix}${k}.`));
+    else out.push([`${prefix}${k}`, valueText(v)]);
+  }
+  return out;
+}
+
+export function renderD3D12DeviceSections(container: Widget, object: VulkanObject, db: ObjectLookup | null = null): void {
+  const a = object.args ?? {};
+  const u = object.updates;
+  const features = isObject(u.features) ? u.features : null;
+  const p = section(container, "Device");
+  const adapter = db?.getObject(object.parentId) ?? null;
+  if (adapter) {
+    const r = row(p, "Adapter", "");
+    objectLink(r, adapter, () => undefined);
+    const desc = isObject(adapter.updates.Desc) ? adapter.updates.Desc : isObject(adapter.args?.Desc) ? adapter.args.Desc : null;
+    if (desc) new Span(r, { text: `  ${str(desc.Description)}`, class: "text-muted" });
+  }
+  const requested = a.MinimumFeatureLevel ?? a.featureLevel;
+  if (requested !== undefined) row(p, "Feature level requested", dottedLevel(requested));
+  const levels = features && isObject(features.FEATURE_LEVELS) ? features.FEATURE_LEVELS : null;
+  if (levels && levels.MaxSupportedFeatureLevel !== undefined) row(p, "Feature level supported", dottedLevel(levels.MaxSupportedFeatureLevel));
+  const sm = features && isObject(features.SHADER_MODEL) ? features.SHADER_MODEL : null;
+  if (sm && sm.HighestShaderModel !== undefined) row(p, "Shader model", dottedLevel(sm.HighestShaderModel));
+  const rootSig = features && isObject(features.ROOT_SIGNATURE) ? features.ROOT_SIGNATURE : null;
+  if (rootSig && rootSig.HighestVersion !== undefined) row(p, "Root signature", fmt(rootSig.HighestVersion).replace(/^ROOT_SIGNATURE_VERSION_/, "").replace("_", "."));
+  const arch = features && isObject(features.ARCHITECTURE1) ? features.ARCHITECTURE1 : features && isObject(features.ARCHITECTURE) ? features.ARCHITECTURE : null;
+  if (arch) {
+    const parts = [arch.TileBasedRenderer ? "tile-based" : "immediate-mode", arch.UMA ? (arch.CacheCoherentUMA ? "cache-coherent UMA" : "UMA") : "discrete memory", arch.IsolatedMMU ? "isolated MMU" : ""].filter(Boolean);
+    row(p, "Architecture", parts.join(", "));
+  }
+  if (!features) {
+    new Div(container, { text: "The library did not report this device's features (CheckFeatureSupport answers arrive as an update after creation).", class: "text-muted capture-note" });
+    return;
+  }
+  // One filterable table per option struct (D3D12_OPTIONS, D3D12_OPTIONS1, ...), in the order the library sent them.
+  for (const [name, value] of Object.entries(features)) {
+    if (!isObject(value)) continue;
+    const rows = optionRows(value);
+    if (!rows.length) continue;
+    filterableRows(section(container, `${name} (${rows.length})`, true), rows, "option name or value...");
+  }
+}
+
+export function renderDxgiAdapterSections(container: Widget, object: VulkanObject): void {
+  const desc = isObject(object.updates.Desc) ? object.updates.Desc : isObject(object.args?.Desc) ? object.args.Desc : isObject(object.args?.pDesc) ? object.args.pDesc : null;
+  if (!desc) {
+    new Div(container, { text: "The library did not report this adapter's description.", class: "text-muted capture-note" });
+    return;
+  }
+  const vendor = num(desc.VendorId);
+  const p = section(container, "Adapter");
+  row(p, "Description", str(desc.Description));
+  row(p, "Vendor", `${VENDORS[vendor] ?? "unknown"}  ${hex(vendor)}`);
+  row(p, "Device ID", hex(num(desc.DeviceId)));
+  if (desc.SubSysId !== undefined) row(p, "Subsystem ID", hex(num(desc.SubSysId)));
+  if (desc.Revision !== undefined) row(p, "Revision", String(num(desc.Revision)));
+  if (desc.DedicatedVideoMemory !== undefined) row(p, "Dedicated video memory", formatBytes(num(desc.DedicatedVideoMemory)));
+  if (desc.DedicatedSystemMemory !== undefined) row(p, "Dedicated system memory", formatBytes(num(desc.DedicatedSystemMemory)));
+  if (desc.SharedSystemMemory !== undefined) row(p, "Shared system memory", formatBytes(num(desc.SharedSystemMemory)));
+  if (desc.Flags !== undefined && flagsText(desc.Flags)) row(p, "Flags", flagsText(desc.Flags));
+  if (desc.GraphicsPreemptionGranularity !== undefined) row(p, "Graphics preemption", fmt(desc.GraphicsPreemptionGranularity).replace(/^GRAPHICS_PREEMPTION_/, "").toLowerCase().replace(/_/g, " "));
+  if (desc.ComputePreemptionGranularity !== undefined) row(p, "Compute preemption", fmt(desc.ComputePreemptionGranularity).replace(/^COMPUTE_PREEMPTION_/, "").toLowerCase().replace(/_/g, " "));
+  const luid = isObject(desc.AdapterLuid) ? desc.AdapterLuid : null;
+  if (luid) row(p, "LUID", `${hex(num(luid.HighPart))}:${hex(num(luid.LowPart))}`);
 }
 
 export function renderInstanceSections(container: Widget, object: VulkanObject): void {
