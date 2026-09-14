@@ -1,6 +1,6 @@
 // Validation messages: what Metal says went wrong, as the UI's ValidationMessage.
 //
-// The counterpart of the Vulkan layer's debug-utils messenger (layer/src/validation.cpp), with
+// The counterpart of the Vulkan layer's debug-utils messenger (vulkan/src/validation.cpp), with
 // the same message shape, dedupe by text and repeat counts, so the Inspect panel's message list,
 // the object markers and the session bar's counter work unchanged. Metal has no messenger; it
 // has three things that say the same kinds of things:

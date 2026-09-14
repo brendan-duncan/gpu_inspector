@@ -1,5 +1,5 @@
 // Stack traces: where an object was created and where a captured command was recorded, the
-// counterpart of layer/src/stacktrace.h. The raw return addresses are taken in the hot path
+// counterpart of vulkan/src/stacktrace.h. The raw return addresses are taken in the hot path
 // (cheap: no symbol lookup); the UI asks for the symbolized frames of the objects it shows
 // (RequestStacktraces) and of the addresses a capture's commands carry (RequestSymbols).
 // Symbols come from dladdr: exported symbols, else module and offset, which is what the

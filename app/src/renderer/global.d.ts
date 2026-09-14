@@ -1,6 +1,6 @@
 import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
-  CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus,
+  CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus, UserEnvironmentStatus,
 } from "../shared/protocol.js";
 import type { ShaderAblation, ShaderMeasureTarget } from "./shader_ablation.js";
 
@@ -26,6 +26,9 @@ export interface InspectorApi {
   /** The implicit registration of the capture layer for this user, and switching it. */
   implicitLayer(): Promise<ImplicitLayerStatus>;
   setImplicitLayer(on: boolean): Promise<ImplicitLayerStatus>;
+  /** VKINSP_ENABLE and VKINSP_PORT for the user's account, and setting them (a port) or clearing them (null). */
+  userEnvironment(): Promise<UserEnvironmentStatus>;
+  setUserEnvironment(port: number | null): Promise<UserEnvironmentStatus>;
   /** Third-party packages installed on an Android device. */
   androidPackages(serial: string): Promise<string[]>;
   /** Terminates the session's application; the session stays open. */

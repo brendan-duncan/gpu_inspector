@@ -433,6 +433,7 @@ Every capture replayed so far, with its result:
 |---|---|
 | test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
+| test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |
 | test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |
 | test/triangle `--persistent` (images loaded and copied from what earlier frames left, a host-written staging buffer, a mip in another layout) | all 5 targets identical, no validation messages; before frame-start contents, the 3 persistent targets differed in nearly every texel |
 | Unity player frame (secondary command buffers, two subpasses, `vkCmdSetVertexInputEXT`, MRT) | all 12 targets identical, 0 problems |
@@ -472,9 +473,10 @@ These cases differ for known reasons:
    ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
    `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
-Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, descriptor update
-templates and push descriptors with templates, queries whose results the frame reads back, and
-Metal captures.
+Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, queries whose
+results the frame reads back, and Metal captures. Descriptor update templates are not created:
+sets are written from the snapshots their binds carry, and a push through a template is pushed
+again as plain writes from its own.
 
 ---
 

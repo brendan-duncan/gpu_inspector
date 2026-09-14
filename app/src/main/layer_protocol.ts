@@ -1,4 +1,4 @@
-// The wire format between a capture library and its client (layer/src/transport.h): every frame is
+// The wire format between a capture library and its client (vulkan/src/transport.h): every frame is
 // a little-endian u32 payload length, a u8 kind and the payload. Kind 0 is a JSON message; kind 1
 // is a u32 header length, a JSON header, then raw bytes, which the message carries as `__binary`.
 // The app's sessions (main.ts) and the MCP server's live sessions both speak it.

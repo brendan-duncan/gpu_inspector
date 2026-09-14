@@ -52,7 +52,7 @@ An editor, or a game behind its own launcher, can still be inspected.
 1. In the launch dialog, choose **An application started elsewhere (implicit layer)** under
    *Run On*.
 2. Press **Register**. The layer is registered for your user account as an implicit layer.
-   Nothing loads it until an application asks for it.
+   Nothing loads it until an application asks for it. The Windows installer registers it for you.
 3. Press **Wait**.
 4. Start the application with these environment variables set:
 
@@ -64,8 +64,16 @@ An editor, or a game behind its own launcher, can still be inspected.
 
 5. The session connects when the application starts.
 
-For an application started by a launcher, set the variables for your account (`setx` on Windows)
-and restart the launcher. **Unregister** removes the registration when you are done.
+An application started by a launcher inherits the launcher's environment. Press **Set for my
+account** to set `VKINSP_ENABLE` and `VKINSP_PORT` for every program you start, then restart the
+launcher:
+- **Where they are kept.** On Windows they go into your account's environment, and programs
+  started afterwards see them. On Linux they go into `~/.config/environment.d/gpu-inspector.conf`,
+  which takes effect the next time you log in.
+- **While they are set,** every Vulkan application you start loads the layer and tries to connect.
+  Press **Clear** when you are done.
+
+**Unregister** removes the registration.
 
 From the command line: `npm start -- --wait-for-app --port=<port>`, and
 `--implicit-layer=on|off` switches the registration.

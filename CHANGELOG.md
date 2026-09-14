@@ -1,6 +1,23 @@
 ## Unreleased
 
 ### Added
+- Implicit layer:
+  - **Set for my account** in the launch dialog sets `VKINSP_ENABLE` and `VKINSP_PORT` for every
+    program the user starts, for an application behind a launcher.
+  - The Windows installer registers the implicit layer, and uninstalling removes it.
+- Descriptors pushed through an update template (`vkCmdPushDescriptorSetWithTemplate` and its
+  `2` and KHR forms) are captured like other push descriptors:
+  - The command shows what it bound.
+  - Its buffers and images are read back.
+  - `vkinsp_replay` pushes them again. The test application's `--push-template` option draws
+    this way.
+- Frame Issues rules:
+  - `oversized-attachment`: an attachment larger than every render area drawn into it.
+  - `subpass-candidate`: a render pass reading nothing but what the previous pass rendered, at
+    the same size, through fragment shaders that read each input once (a blur's pass is not
+    reported).
+  - `redundant-transition`: a layout transition nothing uses before the next one, or a barrier
+    that changes nothing.
 - Shader cost by ablation (Vulkan): **Measure shader** in the Shader Flame Graph replays a draw
   with variants of its fragment or compute shader, each with one function, source line or texture
   taken out, and sizes the stage's frames by the time each saved on this GPU. A line is charged only
@@ -39,11 +56,18 @@
 - The test application's `--persistent` option renders a frame that depends on the frames before it.
 
 ### Changed
+- The Vulkan capture layer's sources moved from `layer/` to `vulkan/`, beside `metal/`. An existing
+  CMake build directory reconfigures on its own. A packaged app still keeps the layer in
+  `resources/layer`.
 - Replay-based analyses (pixel history, overdraw, draw overlays, the mesh view, **Measure draws**)
   answer in tens of milliseconds after the first: each capture keeps one `vkinsp_replay --serve`
   process alive, and the capture is sent to it once.
 
 ### Fixed
+- A command buffer recorded before the capture began no longer shows a later command buffer's
+  rendering in its render targets when both are in one submission. The capture now splits the
+  submission after it and reads its targets back in between. The triangle test app's
+  `--prerecord` option now submits a second prerecorded buffer that draws over the first.
 - `vkinsp_replay` took seconds to read back render targets and analysis results on NVIDIA GPUs: its
   staging buffers were in memory meant for writing, where reading is very slow. A Unity frame's
   replay went from 2.2 s to 0.3 s.
@@ -168,7 +192,7 @@
   rejection (the last two Metal only) — each with what causes it and what to try. Slowest first,
   linked to their commands; a missing measurement says so rather than showing zeroes.
 - Vulkan pass counters: a pipeline statistics query alongside the layer's timestamps
-  (`layer/src/pipeline_stats.h`), so the bottleneck report and its rules work for Vulkan captures.
+  (`vulkan/src/pipeline_stats.h`), so the bottleneck report and its rules work for Vulkan captures.
   `VKINSP_NO_PIPELINE_STATISTICS=1` turns it off.
 - Four Frame Issues rules from those measurements: `high-overdraw`, `microtriangles`,
   `late-depth-rejection` (Metal only) and `unmipped-texture`. Pass headers gained the same figures

@@ -156,7 +156,7 @@ def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every render target's data arrived") + \
         expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings") + \
         expect(not timings or (c.get("passCounters") or 0) >= 1,
-               "no pass carried GPU counters: the layer's pipeline statistics query (layer/src/pipeline_stats.h) "
+               "no pass carried GPU counters: the layer's pipeline statistics query (vulkan/src/pipeline_stats.h) "
                "is what the GPU Bottlenecks report is built from")
 
 
@@ -231,7 +231,7 @@ def triangle_bottlenecks(state, log):
         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters") + \
         expect((c.get("passDepthRejection") or 0) >= 1,
                "no pass carried fragmentsPassed: the layer's occlusion query around each pass "
-               "(layer/src/capture.cpp) is what the late-depth-rejection rule needs")
+               "(vulkan/src/capture.cpp) is what the late-depth-rejection rule needs")
 
 
 def triangle_overdraw(state, log):

@@ -45,6 +45,7 @@ struct DescriptorTemplateInfo {
     std::vector<VkDescriptorUpdateTemplateEntry> entries;
     VkDescriptorUpdateTemplateType type = VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;   // push descriptor templates
 };
 
 class DescriptorTracker {
@@ -64,6 +65,9 @@ public:
 
     // Builds the bindings of a push descriptor set from its writes (no set object exists).
     static DescriptorSetContents FromWrites(uint32_t writeCount, const VkWriteDescriptorSet* writes);
+    // The same from a push through an update template and its data; false for an unknown template.
+    bool FromTemplate(VkDescriptorUpdateTemplate tmpl, const void* data, DescriptorSetContents& out,
+                      VkPipelineBindPoint& bindPoint) const;
 
 private:
     DescriptorTracker() = default;

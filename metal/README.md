@@ -1,6 +1,6 @@
 # Metal capture
 
-Capturing Metal, the way `layer/` captures Vulkan. It discovers and hooks the Metal class tree,
+Capturing Metal, the way `vulkan/` captures Vulkan. It discovers and hooks the Metal class tree,
 tracks the objects an application creates and releases, records the command stream of a frame on
 request with its render targets, bound buffers and GPU pass timings, and streams all of it to the
 inspector over the same protocol the Vulkan layer speaks. The Inspect and Capture panels both
@@ -846,5 +846,5 @@ recorded as passes without their commands. `MTLIndirectCommandBuffer` contents a
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary
 timing path those GPUs would take. Re-signing a hardened target is left to the user, on purpose.
 
-`transport.mm` also duplicates `layer/src/transport.cpp`; see the note at the top of
+`transport.mm` also duplicates `vulkan/src/transport.cpp`; see the note at the top of
 `transport.h` for why they are not one file yet.

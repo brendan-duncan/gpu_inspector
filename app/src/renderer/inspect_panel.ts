@@ -1488,7 +1488,7 @@ export class InspectPanel {
 
   // ---------------------------------------------------------------------------------------
   // Shader editor: edit the decompiled text, compile it with the SDK, have the layer rebuild
-  // the pipeline(s) with the new code (see layer/src/shader_edit.h).
+  // the pipeline(s) with the new code (see vulkan/src/shader_edit.h).
 
   /** The pipelines an edit of this payload applies to: the pipeline itself, or every pipeline using the module. */
   private _editTargets(object: VulkanObject, view: ShaderView): EditTargets | null {

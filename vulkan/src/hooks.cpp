@@ -17,6 +17,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace vkinsp {
@@ -492,13 +493,185 @@ static void SubmitEnd(VkQueue queue) {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_submitStart).count();
     if (DeviceData* dev = GetDeviceData(queue)) dev->submitNanos.fetch_add((uint64_t)ns, std::memory_order_relaxed);
 }
-void PreHook_vkQueueSubmit(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo*& pSubmits, VkFence& fence) { SubmitBegin(); }
+// Command buffers recorded before the capture began carry no read-back copies, so their attachments
+// are read after they run (CaptureManager::ReadBackSubmitted). Read after the whole submission, a
+// target a later buffer of the same submission renders over would show the later contents, so the
+// submission is split after each such buffer: the parts before the last are submitted here, each
+// followed by its read-back, and the application's call submits the last part with its fence. An
+// info whose buffers are split waits on its semaphores in its first part and signals them in its
+// last. Submissions extending their infos with anything but timeline semaphore values stay whole.
+struct SubmitPart {
+    std::vector<VkSubmitInfo> infos;
+    std::vector<VkTimelineSemaphoreSubmitInfo> timelines;   // reserved up front: infos point into it
+    std::vector<VkSubmitInfo2> infos2;
+};
+struct SplitSubmit {
+    bool active = false;
+    uint32_t count = 0;
+    const VkSubmitInfo* submits = nullptr;
+    const VkSubmitInfo2* submits2 = nullptr;
+    std::vector<VkCommandBuffer> readBack;
+    SubmitPart last;
+};
+static thread_local SplitSubmit t_split;
+
+// Where the flattened command buffers [first, end) of `total` fall in an info holding [lo, hi): the
+// range it contributes, and whether that includes the info's first and last buffers. An info with
+// no buffers goes with the part its position starts.
+static bool PartRange(size_t lo, size_t hi, size_t first, size_t end, size_t total, size_t& from, size_t& to, bool& head, bool& tail) {
+    if (lo == hi) {
+        from = to = lo;
+        head = tail = true;
+        return lo >= first && (lo < end || (end == total && lo == total));
+    }
+    from = std::max(lo, first);
+    to = std::min(hi, end);
+    head = from == lo;
+    tail = to == hi;
+    return from < to;
+}
+
+static const VkTimelineSemaphoreSubmitInfo* TimelineOf(const VkSubmitInfo& s, bool& other) {
+    const VkTimelineSemaphoreSubmitInfo* timeline = nullptr;
+    for (auto* p = static_cast<const VkBaseInStructure*>(s.pNext); p; p = p->pNext) {
+        if (p->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) timeline = reinterpret_cast<const VkTimelineSemaphoreSubmitInfo*>(p);
+        else other = true;
+    }
+    return timeline;
+}
+
+static void BuildPart(uint32_t count, const VkSubmitInfo* submits, size_t first, size_t end, size_t total, SubmitPart& out) {
+    out.infos.clear();
+    out.timelines.clear();
+    out.timelines.reserve(count);
+    size_t base = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkSubmitInfo& s = submits[i];
+        size_t lo = base, hi = base + s.commandBufferCount, from, to;
+        bool head, tail, other = false;
+        base = hi;
+        if (!PartRange(lo, hi, first, end, total, from, to, head, tail)) continue;
+        VkSubmitInfo part = s;
+        part.pNext = nullptr;
+        part.commandBufferCount = (uint32_t)(to - from);
+        part.pCommandBuffers = s.pCommandBuffers ? s.pCommandBuffers + (from - lo) : nullptr;
+        if (!head) { part.waitSemaphoreCount = 0; part.pWaitSemaphores = nullptr; part.pWaitDstStageMask = nullptr; }
+        if (!tail) { part.signalSemaphoreCount = 0; part.pSignalSemaphores = nullptr; }
+        if (const VkTimelineSemaphoreSubmitInfo* t = TimelineOf(s, other)) {
+            VkTimelineSemaphoreSubmitInfo tp = *t;
+            tp.pNext = nullptr;
+            if (!head) { tp.waitSemaphoreValueCount = 0; tp.pWaitSemaphoreValues = nullptr; }
+            if (!tail) { tp.signalSemaphoreValueCount = 0; tp.pSignalSemaphoreValues = nullptr; }
+            out.timelines.push_back(tp);
+            part.pNext = &out.timelines.back();
+        }
+        out.infos.push_back(part);
+    }
+}
+
+static void BuildPart(uint32_t count, const VkSubmitInfo2* submits, size_t first, size_t end, size_t total, SubmitPart& out) {
+    out.infos2.clear();
+    size_t base = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkSubmitInfo2& s = submits[i];
+        size_t lo = base, hi = base + s.commandBufferInfoCount, from, to;
+        bool head, tail;
+        base = hi;
+        if (!PartRange(lo, hi, first, end, total, from, to, head, tail)) continue;
+        VkSubmitInfo2 part = s;
+        part.commandBufferInfoCount = (uint32_t)(to - from);
+        part.pCommandBufferInfos = s.pCommandBufferInfos ? s.pCommandBufferInfos + (from - lo) : nullptr;
+        if (!head) { part.waitSemaphoreInfoCount = 0; part.pWaitSemaphoreInfos = nullptr; }
+        if (!tail) { part.signalSemaphoreInfoCount = 0; part.pSignalSemaphoreInfos = nullptr; }
+        out.infos2.push_back(part);
+    }
+}
+
+// The submission's command buffers, and after which of them to split; none when it stays whole.
+static std::vector<size_t> SplitPoints(DeviceData* dev, const std::vector<VkCommandBuffer>& cbs, bool splittable) {
+    std::vector<size_t> cuts;
+    if (!dev || !splittable || cbs.size() < 2 || !CaptureManager::Get().IsCapturing()) return cuts;
+    for (size_t k = 0; k + 1 < cbs.size(); ++k)
+        if (CaptureManager::Get().NeedsSubmitReadBack(dev, cbs[k])) cuts.push_back(k);
+    return cuts;
+}
+
+// Submits each part before a cut and reads its buffer back; returns where the last part starts.
+template <typename Info>
+static size_t SubmitParts(DeviceData* dev, VkQueue queue, uint32_t count, const Info* submits, const std::vector<VkCommandBuffer>& cbs,
+                          const std::vector<size_t>& cuts) {
+    size_t first = 0;
+    for (size_t cut : cuts) {
+        SubmitPart part;
+        BuildPart(count, submits, first, cut + 1, cbs.size(), part);
+        VkResult res = std::is_same_v<Info, VkSubmitInfo>
+            ? dev->dispatch.QueueSubmit(queue, (uint32_t)part.infos.size(), part.infos.data(), VK_NULL_HANDLE)
+            : dev->dispatch.QueueSubmit2(queue, (uint32_t)part.infos2.size(), part.infos2.data(), VK_NULL_HANDLE);
+        if (res != VK_SUCCESS) break;
+        LayoutTracker::Get().OnSubmit((uint32_t)(cut + 1 - first), cbs.data() + first);
+        CaptureManager::Get().ReadBackSubmitted(dev, queue, cbs[cut]);
+        t_split.readBack.push_back(cbs[cut]);
+        first = cut + 1;
+    }
+    return first;
+}
+
+void PreHook_vkQueueSubmit(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo*& pSubmits, VkFence& fence) {
+    t_split = SplitSubmit{};
+    if (!pSubmits || submitCount == 0 || !CaptureManager::Get().IsCapturing()) return SubmitBegin();
+    DeviceData* dev = GetDeviceData(queue);
+    std::vector<VkCommandBuffer> cbs;
+    bool splittable = pSubmits != nullptr;
+    for (uint32_t i = 0; pSubmits && i < submitCount; ++i) {
+        bool other = false;
+        TimelineOf(pSubmits[i], other);
+        splittable = splittable && !other;
+        for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; ++j) cbs.push_back(pSubmits[i].pCommandBuffers[j]);
+    }
+    std::vector<size_t> cuts = SplitPoints(dev, cbs, splittable);
+    if (!cuts.empty()) {
+        t_split.active = true;
+        t_split.count = submitCount;
+        t_split.submits = pSubmits;
+        size_t first = SubmitParts(dev, queue, submitCount, pSubmits, cbs, cuts);
+        BuildPart(submitCount, pSubmits, first, cbs.size(), cbs.size(), t_split.last);
+        submitCount = (uint32_t)t_split.last.infos.size();
+        pSubmits = t_split.last.infos.data();
+    }
+    SubmitBegin();
+}
+
 // An application without a swapchain marks its frames by waiting on its fences (see layer.cpp).
 void PreHook_vkWaitForFences(VkDevice& device, uint32_t& fenceCount, const VkFence*& pFences, VkBool32& waitAll, uint64_t& timeout) {
     OnWaitForFrames(GetDeviceData(device));
 }
-void PreHook_vkQueueSubmit2(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
-void PreHook_vkQueueSubmit2KHR(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) { SubmitBegin(); }
+
+void PreHook_vkQueueSubmit2(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) {
+    t_split = SplitSubmit{};
+    if (!pSubmits || submitCount == 0 || !CaptureManager::Get().IsCapturing()) return SubmitBegin();
+    DeviceData* dev = GetDeviceData(queue);
+    std::vector<VkCommandBuffer> cbs;
+    bool splittable = pSubmits != nullptr;
+    for (uint32_t i = 0; pSubmits && i < submitCount; ++i) {
+        splittable = splittable && !pSubmits[i].pNext;
+        for (uint32_t j = 0; j < pSubmits[i].commandBufferInfoCount; ++j) cbs.push_back(pSubmits[i].pCommandBufferInfos[j].commandBuffer);
+    }
+    std::vector<size_t> cuts = SplitPoints(dev, cbs, splittable);
+    if (!cuts.empty()) {
+        t_split.active = true;
+        t_split.count = submitCount;
+        t_split.submits2 = pSubmits;
+        size_t first = SubmitParts(dev, queue, submitCount, pSubmits, cbs, cuts);
+        BuildPart(submitCount, pSubmits, first, cbs.size(), cbs.size(), t_split.last);
+        submitCount = (uint32_t)t_split.last.infos2.size();
+        pSubmits = t_split.last.infos2.data();
+    }
+    SubmitBegin();
+}
+
+void PreHook_vkQueueSubmit2KHR(VkQueue& queue, uint32_t& submitCount, const VkSubmitInfo2*& pSubmits, VkFence& fence) {
+    PreHook_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+}
 
 // =============================================================================================
 // Resource registry
@@ -994,6 +1167,13 @@ static void NoteRenderingLayouts(VkCommandBuffer commandBuffer, const VkRenderin
 
 void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
     SubmitEnd(queue);
+    // A split submission (PreHook_vkQueueSubmit) is recorded as the application made it.
+    SplitSubmit split = std::move(t_split);
+    t_split = SplitSubmit{};
+    if (split.active && split.submits) {
+        submitCount = split.count;
+        pSubmits = split.submits;
+    }
     OnSubmitForFrames(GetDeviceData(queue), queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
@@ -1002,11 +1182,17 @@ void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo*
     if (!CaptureManager::Get().IsCapturing()) return;
     JsonWriter w(&Tracker::Get());
     ArgsToJson_vkQueueSubmit(w, queue, submitCount, pSubmits, fence);
-    CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit", std::move(w.str()), 0, cbs);
+    CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit", std::move(w.str()), 0, cbs, split.readBack);
 }
 
 void Hook_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence) {
     SubmitEnd(queue);
+    SplitSubmit split = std::move(t_split);
+    t_split = SplitSubmit{};
+    if (split.active && split.submits2) {
+        submitCount = split.count;
+        pSubmits = split.submits2;
+    }
     OnSubmitForFrames(GetDeviceData(queue), queue);
     std::vector<VkCommandBuffer> cbs;
     for (uint32_t i = 0; pSubmits && i < submitCount; ++i)
@@ -1016,7 +1202,7 @@ void Hook_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo
     if (!CaptureManager::Get().IsCapturing()) return;
     JsonWriter w(&Tracker::Get());
     ArgsToJson_vkQueueSubmit2(w, queue, submitCount, pSubmits, fence);
-    CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit2", std::move(w.str()), 0, cbs);
+    CaptureManager::Get().OnSubmit(GetDeviceData(queue), queue, "vkQueueSubmit2", std::move(w.str()), 0, cbs, split.readBack);
 }
 
 void Hook_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence) {
@@ -1229,12 +1415,30 @@ void Hook_vkCmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer, const VkBin
     Hook_vkCmdBindDescriptorSets2(commandBuffer, pBindDescriptorSetsInfo);
 }
 
+static void SnapshotPushedContents(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, uint32_t set,
+                                   const DescriptorSetContents& c);
+
 static void SnapshotPushedSet(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, uint32_t set,
                               uint32_t writeCount, const VkWriteDescriptorSet* writes) {
     DeviceData* dev = GetDeviceData(commandBuffer);
+    if (!dev->RecorderFor(commandBuffer)) return;
+    SnapshotPushedContents(commandBuffer, bindPoint, set, DescriptorTracker::FromWrites(writeCount, writes));
+}
+
+static void SnapshotPushedTemplate(VkCommandBuffer commandBuffer, VkDescriptorUpdateTemplate tmpl, uint32_t set, const void* data) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (!dev->RecorderFor(commandBuffer)) return;
+    DescriptorSetContents c;
+    VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    if (DescriptorTracker::Get().FromTemplate(tmpl, data, c, bindPoint)) SnapshotPushedContents(commandBuffer, bindPoint, set, c);
+}
+
+// Attaches {"descriptors": {...}} for a push descriptor set, which has no set object of its own.
+static void SnapshotPushedContents(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, uint32_t set,
+                                   const DescriptorSetContents& c) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
     CommandRecorder* rec = dev->RecorderFor(commandBuffer);
     if (!rec) return;
-    DescriptorSetContents c = DescriptorTracker::FromWrites(writeCount, writes);
     uint32_t dynamicIndex = 0;
     auto ids = CaptureSetBuffers(dev, rec, c, nullptr, 0, dynamicIndex);
     JsonWriter w(&Tracker::Get());
@@ -1266,6 +1470,25 @@ void Hook_vkCmdPushDescriptorSet2(VkCommandBuffer commandBuffer, const VkPushDes
 
 void Hook_vkCmdPushDescriptorSet2KHR(VkCommandBuffer commandBuffer, const VkPushDescriptorSetInfo* pPushDescriptorSetInfo) {
     Hook_vkCmdPushDescriptorSet2(commandBuffer, pPushDescriptorSetInfo);
+}
+
+void Hook_vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer commandBuffer, VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                             VkPipelineLayout layout, uint32_t set, const void* pData) {
+    SnapshotPushedTemplate(commandBuffer, descriptorUpdateTemplate, set, pData);
+}
+
+void Hook_vkCmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer commandBuffer, VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                                VkPipelineLayout layout, uint32_t set, const void* pData) {
+    SnapshotPushedTemplate(commandBuffer, descriptorUpdateTemplate, set, pData);
+}
+
+void Hook_vkCmdPushDescriptorSetWithTemplate2(VkCommandBuffer commandBuffer, const VkPushDescriptorSetWithTemplateInfo* pPushDescriptorSetWithTemplateInfo) {
+    const VkPushDescriptorSetWithTemplateInfo* i = pPushDescriptorSetWithTemplateInfo;
+    if (i) SnapshotPushedTemplate(commandBuffer, i->descriptorUpdateTemplate, i->set, i->pData);
+}
+
+void Hook_vkCmdPushDescriptorSetWithTemplate2KHR(VkCommandBuffer commandBuffer, const VkPushDescriptorSetWithTemplateInfo* pPushDescriptorSetWithTemplateInfo) {
+    Hook_vkCmdPushDescriptorSetWithTemplate2(commandBuffer, pPushDescriptorSetWithTemplateInfo);
 }
 
 // =============================================================================================

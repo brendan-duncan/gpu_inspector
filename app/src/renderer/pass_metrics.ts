@@ -2,7 +2,7 @@
 //
 // Both capture backends sample GPU counters around every pass: the Metal library takes Metal's
 // counter sets (metal/src/capture.mm) and the Vulkan layer a pipeline statistics query beside its
-// timestamps (layer/src/pipeline_stats.h). Those are raw totals. What a profiling session asks is
+// timestamps (vulkan/src/pipeline_stats.h). Those are raw totals. What a profiling session asks is
 // "how many times was each pixel shaded", "how big are the triangles", "is the depth test doing
 // its job" — each of which is one division away, against the render target's size or another
 // counter. This module does those divisions once, so the report, the rules and the pass headers
@@ -127,7 +127,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
   // no timing. A Metal encoder is the pass and every encoder of a command buffer takes the next
   // number whatever its kind, with compute encoders keyed apart (g_passCounters in
   // metal/src/capture.mm). Vulkan's PASS_BEGIN is render-only and its runs of dispatches are
-  // counted separately (NextPassIndex / NextComputeIndex in layer/src/command_recorder.h). One
+  // counted separately (NextPassIndex / NextComputeIndex in vulkan/src/command_recorder.h). One
   // counter per command buffer for PASS_BEGIN, and a second for compute runs, does both.
   const passIndexOf = new Map<number, number>();
   const computeIndexOf = new Map<number, number>();

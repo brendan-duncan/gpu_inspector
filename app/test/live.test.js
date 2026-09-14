@@ -1,5 +1,5 @@
 // The MCP server's live sessions (src/mcp/live_session.ts, live_tools.ts) against a fake capture
-// library: a TCP server speaking the layer's framing (layer/src/transport.h) that sends a snapshot
+// library: a TCP server speaking the layer's framing (vulkan/src/transport.h) that sends a snapshot
 // and frame reports, streams a capture when asked, and answers blob, stack, image, descriptor set
 // and shader requests. Attaching, frame statistics, capturing into a saved and reopened .gpucap
 // (with and without the CaptureComplete marker), live reads, shader restore, the log and stopping.

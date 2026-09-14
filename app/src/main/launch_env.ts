@@ -76,7 +76,7 @@ export interface VulkanLayerOptions {
 /** The variables that load the layer into a process started with them, on top of its environment. */
 export function vulkanLayerEnvironment(o: VulkanLayerOptions): NodeJS.ProcessEnv {
   // With "Validation layer" the Khronos validation layer is enabled too; its messages reach the
-  // inspector's debug-utils messenger (layer/src/validation.cpp).
+  // inspector's debug-utils messenger (vulkan/src/validation.cpp).
   const layers = [LAYER_NAME, ...(o.validationDir ? [VALIDATION_LAYER_NAME] : [])];
   const layerPaths = [o.layerDir, ...(o.validationDir ? [o.validationDir] : [])];
   return {

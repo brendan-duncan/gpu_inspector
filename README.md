@@ -107,7 +107,7 @@ Vulkan driver comes with its normal graphics driver, so nothing extra is needed 
 | CMake 3.20+ | `brew install cmake`, or https://cmake.org/download/ |
 | Node.js LTS (includes npm) | `brew install node`, or https://nodejs.org/en/download |
 
-Nothing else: `layer/` does not build for Apple targets, so neither `vk.xml`'s Python generator
+Nothing else: `vulkan/` does not build for Apple targets, so neither `vk.xml`'s Python generator
 nor `glslc` is part of the build. `spirv-dis` and `spirv-cross` (`brew install spirv-tools
 spirv-cross`) are still worth having, for the shader text of Vulkan captures taken on another
 machine or on an Android device.
@@ -161,7 +161,7 @@ cmake --build build
 cd app && npm install && npm start
 ```
 
-No submodule, and a different CMake build: `layer/` has no Apple target, so the top-level
+No submodule, and a different CMake build: `vulkan/` has no Apple target, so the top-level
 `CMakeLists.txt` builds `metal/` — the Metal capture library, `build/bin/libmtlinsp_capture.dylib`
 — and the `mtlinsp_triangle` test application in its place. `tools/setup.sh` is Linux-only. See
 [macOS](#macos) below for what the Metal side can and cannot do.
@@ -242,7 +242,7 @@ registration.
 ## macOS
 
 Applications on macOS render with Metal, and the Vulkan layer would see only the few that run on
-MoltenVK — so a port of it was never the answer, and `layer/` does not build for Apple targets at
+MoltenVK — so a port of it was never the answer, and `vulkan/` does not build for Apple targets at
 all. `metal/` is a Metal capture library that takes its place, loaded into the target with
 `DYLD_INSERT_LIBRARIES`. It is newer than the Vulkan layer and does less, but the Inspect and
 Capture panels both work against a Metal application today, over the same protocol and with no

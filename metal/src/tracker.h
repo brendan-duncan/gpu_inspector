@@ -1,7 +1,7 @@
 // Live object tracker: every Metal object the application creates, with the arguments of the call
 // that created it (its "descriptor"), its parent and its label.
 //
-// The counterpart of layer/src/tracker.h, and it emits the same messages — AddObject,
+// The counterpart of vulkan/src/tracker.h, and it emits the same messages — AddObject,
 // DeleteObjects, ObjectSetLabel — because the UI's object database does not care which API the
 // objects came from. What differs is what identifies an object: Vulkan has typed handles, Metal
 // has an Objective-C pointer, so the side table is keyed by pointer and the "type" is the

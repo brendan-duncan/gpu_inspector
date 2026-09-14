@@ -643,7 +643,9 @@ void Replayer::CreateObject(const JValue& o) {
         _fns.GetDeviceQueue(d, family, qi, &q);
         handle = (uint64_t)(uintptr_t)(q ? q : _queue);
     } else if (type == "VkSurfaceKHR" || type == "VkSwapchainKHR" || type == "VkDeviceMemory" || type == "VkPipelineCache" ||
-               type == "VkDebugUtilsMessengerEXT" || type == "VkDebugReportCallbackEXT") {
+               type == "VkDebugUtilsMessengerEXT" || type == "VkDebugReportCallbackEXT" ||
+               // Sets are written from their snapshots and template pushes pushed as writes (IssueCommand).
+               type == "VkDescriptorUpdateTemplate") {
         _skipped.insert(id);
         _report->objectsSkipped++;
         return;
@@ -1175,11 +1177,55 @@ void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
         const uint64_t setId = IdOf(set.Get("descriptorSet"));
         const VkDescriptorSet handle = (VkDescriptorSet)Handle(setId);
         if (!setId || !handle) continue;  // push descriptors are recorded by their own command
-        std::vector<VkWriteDescriptorSet> writes;
-        std::vector<std::unique_ptr<std::vector<VkDescriptorBufferInfo>>> bufferInfos;
-        std::vector<std::unique_ptr<std::vector<VkDescriptorImageInfo>>> imageInfos;
-        std::vector<std::unique_ptr<std::vector<VkBufferView>>> viewInfos;
-        std::string key;
+        DescriptorWrites w;
+        BuildDescriptorWrites(set, handle, w);
+        auto& last = _descriptorContents[setId];
+        if (last == w.key) continue;  // rewriting a bound set would invalidate the command buffers that bound it
+        last = w.key;
+        if (!w.writes.empty()) _fns.UpdateDescriptorSets(_device, (uint32_t)w.writes.size(), w.writes.data(), 0, nullptr);
+    }
+    _arena.Reset();
+}
+
+void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb) {
+    const std::string m = Str(command.Get("method"));
+    if (!StartsWith(m, "vkCmdPushDescriptorSetWithTemplate")) {
+        fn(_ctx, args, cb);
+        return;
+    }
+    // A push through an update template passes its descriptors as a pointer to application memory
+    // the arguments cannot carry; the layer snapshots what was pushed ("descriptors"), pushed here as
+    // plain writes.
+    const JValue* info = args.Get("pPushDescriptorSetWithTemplateInfo");
+    const JValue& a = info ? *info : args;
+    const JValue* descriptors = command.Get("descriptors");
+    const JValue* sets = descriptors ? descriptors->Get("sets") : nullptr;
+    if (!sets || !sets->IsArray() || !sets->count) {
+        _ctx.Problem("left out: the capture has no snapshot of the descriptors it pushed");
+        return;
+    }
+    const VkPipelineLayout layout = (VkPipelineLayout)Handle(IdOf(a.Get("layout")));
+    if (!layout) {
+        _ctx.Problem("left out: it names a pipeline layout the replay does not have");
+        return;
+    }
+    const VkPipelineBindPoint bindPoint = (VkPipelineBindPoint)DecodeEnum_VkPipelineBindPoint(_ctx, descriptors->Get("bindPoint"));
+    const uint32_t set = a.Get("set") ? (uint32_t)a.Get("set")->Uint() : 0;
+    DescriptorWrites w;
+    BuildDescriptorWrites(sets->items[0], VK_NULL_HANDLE, w);
+    if (w.writes.empty()) return;
+    if (_fns.CmdPushDescriptorSetKHR) _fns.CmdPushDescriptorSetKHR(cb, bindPoint, layout, set, (uint32_t)w.writes.size(), w.writes.data());
+    else if (_fns.CmdPushDescriptorSet) _fns.CmdPushDescriptorSet(cb, bindPoint, layout, set, (uint32_t)w.writes.size(), w.writes.data());
+    else _ctx.Problem("left out: push descriptors are not available on this device");
+}
+
+void Replayer::BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, DescriptorWrites& out) {
+    {
+        std::vector<VkWriteDescriptorSet>& writes = out.writes;
+        auto& bufferInfos = out.buffers;
+        auto& imageInfos = out.images;
+        auto& viewInfos = out.views;
+        std::string& key = out.key;
         const JValue* bindings = set.Get("bindings");
         for (uint32_t b = 0; bindings && b < bindings->count; ++b) {
             const JValue& binding = bindings->items[b];
@@ -1232,12 +1278,7 @@ void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
                 key += "|" + std::to_string(bindingIndex) + "@" + std::to_string(start) + "|";
             }
         }
-        auto& last = _descriptorContents[setId];
-        if (last == key) continue;  // rewriting a bound set would invalidate the command buffers that bound it
-        last = key;
-        if (!writes.empty()) _fns.UpdateDescriptorSets(_device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
     }
-    _arena.Reset();
 }
 
 void Replayer::BeginPass(const JValue& command, uint32_t index, uint64_t commandBuffer) {
@@ -1514,7 +1555,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 // (a Unity player records every one) has them measured here rather than above.
                 const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
                 const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, commandBuffer, passIndex) : -1;
-                fn(_ctx, *args, cb);
+                IssueCommand(fn, c, *args, cb);
                 if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
                 if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
                 else if (StartsWith(m, "vkCmdEndQuery") && _appQueryDepth) --_appQueryDepth;
@@ -1721,7 +1762,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         // Per-draw timing and counters: the action is issued between the queries (draw_stats.cpp).
         const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
         const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
-        fn(_ctx, *args, cb);
+        IssueCommand(fn, c, *args, cb);
         if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
         // The capture's own queries: a statistics query of ours must not begin inside one.
         if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;

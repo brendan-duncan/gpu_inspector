@@ -111,6 +111,10 @@ EXTRA_HOOKS = {
     "vkCmdPushDescriptorSetKHR",
     "vkCmdPushDescriptorSet2",
     "vkCmdPushDescriptorSet2KHR",
+    "vkCmdPushDescriptorSetWithTemplate",
+    "vkCmdPushDescriptorSetWithTemplateKHR",
+    "vkCmdPushDescriptorSetWithTemplate2",
+    "vkCmdPushDescriptorSetWithTemplate2KHR",
     "vkCmdBindVertexBuffers",
     "vkCmdBindVertexBuffers2",
     "vkCmdBindVertexBuffers2EXT",
@@ -340,7 +344,7 @@ def emit_entry_cpp(reg, cmds, out):
     lines.append("}")
     lines.append("")
 
-    lines.append("// Hand-written entry points (see layer/src).")
+    lines.append("// Hand-written entry points (see vulkan/src).")
     for c in cmds:
         if c.name in MANUAL_COMMANDS:
             params = ", ".join(p.decl for p in c.params)
@@ -474,7 +478,7 @@ def ref_decl(p):
 
 def emit_hooks_header(cmds, out):
     lines = [HEADER, "#pragma once", "#include <vulkan/vulkan.h>", "", "namespace vkinsp {", "",
-             "// Post-call hooks implemented in layer/src/hooks.cpp."]
+             "// Post-call hooks implemented in vulkan/src/hooks.cpp."]
     for c in cmds:
         if c.name in EXTRA_HOOKS:
             params = ", ".join(p.decl for p in c.params)

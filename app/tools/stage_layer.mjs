@@ -18,7 +18,7 @@ fs.rmSync(dst, { recursive: true, force: true });
 fs.mkdirSync(dst, { recursive: true });
 
 // macOS ships the Metal capture library instead of the Vulkan layer, which does not build for
-// Apple targets (layer/CMakeLists.txt covers UNIX AND NOT APPLE). It is a plain dylib injected
+// Apple targets (vulkan/CMakeLists.txt covers UNIX AND NOT APPLE). It is a plain dylib injected
 // with DYLD_INSERT_LIBRARIES rather than a layer with a manifest, so there is nothing beside it
 // to copy. findCaptureLibrary in app/src/main/metal.ts looks for it in resources/layer.
 if (process.platform === "darwin") {

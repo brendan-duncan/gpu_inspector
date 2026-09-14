@@ -167,7 +167,7 @@ test("a Vulkan capture measures overdraw from the render area", () => {
 });
 
 test("a Vulkan pass with the layer's occlusion query has a depth rejection rate", () => {
-  // The layer runs an occlusion query around each pass (layer/src/capture.cpp), which counts the
+  // The layer runs an occlusion query around each pass (vulkan/src/capture.cpp), which counts the
   // samples that passed its depth and stencil tests: `fragmentsPassed`, the same name Metal uses.
   const data = capture([
     ["vkCmdBeginRenderPass", { pRenderPassBegin: { renderArea: { offset: { x: 0, y: 0 }, extent: { width: 200, height: 50 } } } }],

@@ -114,8 +114,25 @@ void CaptureManager::OnFreeCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
 // ---------------------------------------------------------------------------------------------
 // Submission
 
+bool CaptureManager::NeedsSubmitReadBack(DeviceData* dev, VkCommandBuffer cb) {
+    if (!IsCapturing() || !_options.captureTextures) return false;
+    CommandRecorder* rec = RecorderFor(dev, cb);
+    if (!rec) return false;
+    for (const RecordedPass& pass : rec->passes())
+        if (!pass.readBack && !pass.attachments.empty()) return true;
+    return false;
+}
+
+void CaptureManager::ReadBackSubmitted(DeviceData* dev, VkQueue queue, VkCommandBuffer cb) {
+    CommandRecorder* rec = RecorderFor(dev, cb);
+    if (!rec || !IsCapturing()) return;
+    ReadBackAfterSubmit(dev, queue, rec, Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb),
+                        (uint32_t)(dev->frameIndex - _frameIndex));
+}
+
 void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args,
-                              int64_t result, const std::vector<VkCommandBuffer>& commandBuffers) {
+                              int64_t result, const std::vector<VkCommandBuffer>& commandBuffers,
+                              const std::vector<VkCommandBuffer>& readBack) {
     if (!IsCapturing()) return;
     CaptureSubmission sub;
     sub.queueId = Tracker::Get().Resolve(HT_VkQueue, (uint64_t)(uintptr_t)queue);
@@ -129,7 +146,8 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
         if (CommandRecorder* rec = RecorderFor(dev, cb)) {
             scb.commands = rec->Snapshot();
             _commandTotal += scb.commands->size();
-            ReadBackAfterSubmit(dev, queue, rec, scb.commandBufferId, sub.frame);
+            if (std::find(readBack.begin(), readBack.end(), cb) == readBack.end())
+                ReadBackAfterSubmit(dev, queue, rec, scb.commandBufferId, sub.frame);
         }
         sub.commandBuffers.push_back(std::move(scb));
     }

@@ -3,7 +3,7 @@
 Generates the Vulkan layer's dispatch tables, forwarding entry points and JSON serializers
 from vk.xml. See tools/vkgen/*.py for the individual emitters.
 
-Usage: python gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out layer/gen
+Usage: python gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out vulkan/gen
 """
 import argparse
 import os

@@ -58,7 +58,7 @@ target_include_directories(vkinsp_replay PRIVATE
     "${VULKAN_HEADERS}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${GEN_DIR}"
-    "${VKINSP_ROOT}/layer/src")
+    "${VKINSP_ROOT}/vulkan/src")
 
 target_compile_definitions(vkinsp_replay PRIVATE VK_NO_PROTOTYPES)
 if(WIN32)

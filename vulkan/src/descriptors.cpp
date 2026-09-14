@@ -189,6 +189,7 @@ void DescriptorTracker::OnCreateTemplate(VkDescriptorUpdateTemplate tmpl, const 
     DescriptorTemplateInfo t;
     t.type = info->templateType;
     t.layout = info->descriptorSetLayout;
+    t.bindPoint = info->pipelineBindPoint;
     if (info->pDescriptorUpdateEntries)
         t.entries.assign(info->pDescriptorUpdateEntries, info->pDescriptorUpdateEntries + info->descriptorUpdateEntryCount);
     std::unique_lock lock(_mutex);
@@ -267,6 +268,54 @@ DescriptorSetContents DescriptorTracker::FromWrites(uint32_t writeCount, const V
         return a.binding < b.binding;
     });
     return c;
+}
+
+bool DescriptorTracker::FromTemplate(VkDescriptorUpdateTemplate tmpl, const void* data, DescriptorSetContents& out,
+                                     VkPipelineBindPoint& bindPoint) const {
+    if (!data) return false;
+    std::shared_lock lock(_mutex);
+    auto it = _templates.find(VKINSP_KEY(tmpl));
+    if (it == _templates.end()) return false;
+    bindPoint = it->second.bindPoint;
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    out = DescriptorSetContents{};
+    for (const VkDescriptorUpdateTemplateEntry& t : it->second.entries) {
+        // Entries may name one binding several times, at different array elements.
+        auto b = std::find_if(out.bindings.begin(), out.bindings.end(), [&](const DescriptorBinding& x) { return x.binding == t.dstBinding; });
+        if (b == out.bindings.end()) {
+            DescriptorBinding nb;
+            nb.binding = t.dstBinding;
+            nb.type = t.descriptorType;
+            out.bindings.push_back(std::move(nb));
+            b = out.bindings.end() - 1;
+        }
+        uint32_t count = t.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : t.descriptorCount;
+        if (b->entries.size() < t.dstArrayElement + count) b->entries.resize(t.dstArrayElement + count);
+        for (uint32_t k = 0; k < count; ++k) {
+            DescriptorEntry& e = b->entries[t.dstArrayElement + k];
+            const uint8_t* p = bytes + t.offset + k * t.stride;
+            e.written = true;
+            if (IsImageType(t.descriptorType)) {
+                VkDescriptorImageInfo ii;
+                memcpy(&ii, p, sizeof(ii));
+                e.imageView = ii.imageView;
+                e.sampler = ii.sampler;
+                e.imageLayout = ii.imageLayout;
+            } else if (IsBufferType(t.descriptorType)) {
+                VkDescriptorBufferInfo bi;
+                memcpy(&bi, p, sizeof(bi));
+                e.buffer = bi.buffer;
+                e.offset = bi.offset;
+                e.range = bi.range;
+            } else if (IsTexelType(t.descriptorType)) {
+                memcpy(&e.bufferView, p, sizeof(e.bufferView));
+            }
+        }
+    }
+    std::sort(out.bindings.begin(), out.bindings.end(), [](const DescriptorBinding& a, const DescriptorBinding& b) {
+        return a.binding < b.binding;
+    });
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------
