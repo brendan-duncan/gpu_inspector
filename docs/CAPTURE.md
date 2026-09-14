@@ -77,7 +77,8 @@ draw overlays, the mesh view and the shader debugger answer questions about one 
 
 Overdraw, pixel history, draw overlays, the mesh view's VS Out, the shader debugger's pixels and **Measure draws** replay a Vulkan
 capture on this machine's GPU with `vkinsp_replay`, which the Windows and Linux installers include. The application
-does not need to be running; see [Capture replay](REPLAY.md).
+does not need to be running; see [Capture replay](REPLAY.md). A [Direct3D 12](D3D12.md) capture has no
+replay, so these are not offered for it; a [Metal](METAL.md) capture measures overdraw and pixel history while capturing.
 
 ## Capture files
 

@@ -60,7 +60,10 @@ A shader module or pipeline has a **Shader Code** section per stage with these v
 | **Reflection** | Entry points, inputs and outputs, resources and push constants, read from the SPIR-V itself |
 
 On Metal, a library shows the Metal Shading Language it was compiled from, when it was compiled on
-the spot rather than loaded as a precompiled `metallib`.
+the spot rather than loaded as a precompiled `metallib`. On Direct3D 12, a pipeline state's stages
+show their DXBC or DXIL disassembly, the HLSL embedded by `dxc -Zi -Qembed_debug` as the Source
+view, and a Reflection section from the bytecode (DXIL needs `dxcompiler.dll`; see
+[Direct3D 12](D3D12.md)).
 
 ### Editing a shader
 
@@ -76,7 +79,9 @@ source. `#include` directives in GLSL and HLSL are resolved against the director
 compiles as it did in your build.
 
 This works for Vulkan on the desktop and on [Android](ANDROID.md), where the shader is compiled
-here and sent to the device. It does not apply to [Metal](METAL.md).
+here and sent to the device, and for [Direct3D 12](D3D12.md), where the HLSL is compiled with
+`dxc` for the stage's profile and the library rebuilds the pipeline state with it. It does not
+apply to [Metal](METAL.md).
 
 A pipeline linked from graphics pipeline libraries shows and edits the stages its libraries hold.
 An application drawing with shader objects (`VK_EXT_shader_object`) edits a **VkShaderEXT** the

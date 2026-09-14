@@ -14,6 +14,8 @@ import {
   type ChannelMode, type DisplaySettings, type TexelData,
 } from "./vulkan/texture_decode.js";
 import { isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { d3d12TextureShape } from "./d3d12/d3d12_object.js";
+import { dxgiFormatIsDepth } from "./d3d12/dxgi_format.js";
 import type { SessionContext } from "./session_panel.js";
 import type { CaptureTextureInfo, ImageDataMessage } from "../shared/protocol.js";
 
@@ -149,6 +151,14 @@ export class ImageView {
       if (image?.cmd === "vkGetSwapchainImagesKHR") {
         const sd = db.getObject(image.parentId)?.descriptor;
         this._layerCount = Math.max(1, num(sd?.imageArrayLayers) || 1);
+      } else if (image?.type === "ID3D12Resource") {
+        // D3D12: the resource's D3D12_RESOURCE_DESC (a back buffer takes its swap chain's), with
+        // DepthOrArraySize standing for both the depth and the layer count.
+        const shape = d3d12TextureShape(image, db);
+        this._is3D = shape?.dimension === "3d";
+        this._mipCount = Math.max(1, shape?.mips ?? 1);
+        this._layerCount = Math.max(1, this._is3D ? shape?.depth ?? 1 : shape?.layers ?? 1);
+        isDepth = dxgiFormatIsDepth(shape?.format);
       } else if (image?.type === "MTLTexture" && d) {
         // Metal's descriptor names the same things differently: mipmapLevelCount for mipLevels,
         // arrayLength for arrayLayers, and a numeric MTLTextureType where Vulkan has a string.

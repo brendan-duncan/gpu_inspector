@@ -17,7 +17,7 @@ import {
   NO_REPLAY_TOOL, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
-import { compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
+import { compileDxil, compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
 import { measureStageByAblation, type StageAblationRequest } from "./shader_ablation_run.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
 import {
@@ -26,6 +26,7 @@ import {
 } from "./launch_env.js";
 import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironmentStatus } from "./implicit_layer.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
+import { findD3D12Tools as findD3D12ToolsIn, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
@@ -193,17 +194,27 @@ function saveSettings(settings: Settings): void {
 // Layer location
 
 /**
- * What to say when there is no layer directory. macOS builds are the UI only — the capture layer
- * does not build on Apple — so there the local targets (a program launched here, or the implicit
- * layer) are simply unavailable, and telling the user to go build one would send them nowhere.
+ * What to say when there is no capture library. macOS launches inject the Metal library; Windows
+ * launches carry both the Vulkan layer and the D3D12 library (d3d12.ts), so there a launch is
+ * possible with either and this is said only when neither is built.
  */
 const NO_LAYER_ERROR = process.platform === "darwin"
   ? `capture library not found (${CAPTURE_LIBRARY}): build it first (see metal/README.md)`
-  : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
+  : process.platform === "win32"
+    ? "no capture library found: build the Vulkan layer and the D3D12 library first (docs/BUILDING.md)"
+    : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
+/** The implicit layer and the layer registration are the Vulkan layer's alone, whatever else is built. */
+const NO_VULKAN_LAYER_ERROR = "Vulkan layer not found: build the layer first (see docs/BUILDING.md)";
 
 /** The layer of the checkout the app was built in, or of the packaged app. */
 function findLayerDir(): string | null {
   return findLayerDirIn([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+}
+
+/** The D3D12 capture library and launcher (d3d12/README.md), from the same places; Windows only. */
+function findD3D12Tools(): D3D12Tools | null {
+  if (process.platform !== "win32") return null;
+  return findD3D12ToolsIn([path.resolve(__dirname, "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
 }
 
 /** The Android layer libraries and APK (tools/build_android.py), from the build tree or a packaged app. */
@@ -455,12 +466,16 @@ function findFreePort(start: number, except: Session | null): Promise<number> {
   return findFreePortFrom(start, (port) => portInUseBySession(port, except));
 }
 
-/** Starts the session's configured executable with the layer enabled and connects to it. */
-function spawnTarget(s: Session, layerDir: string): LaunchResult {
+/**
+ * Starts the session's configured executable with the layer enabled and connects to it. On
+ * Windows the D3D12 capture library goes in too, through its launcher (d3d12.ts): whichever API
+ * the application uses connects. Either of the two may be missing, but not both (validateLaunch).
+ */
+function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | null): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
   let validationDir: string | null = null;
-  if (config.validation) {
+  if (config.validation && layerDir) {
     validationDir = findValidationLayerDir();
     if (validationDir) s.appendLog(`validation layer: ${validationDir}`);
     else s.appendLog("validation layer not found: install the Vulkan SDK (or the distribution's validation layer package) or set VULKAN_SDK");
@@ -468,15 +483,25 @@ function spawnTarget(s: Session, layerDir: string): LaunchResult {
   // Testing aid: with --debug-log the layer also writes its log to a file (Unity players have no
   // usable stderr).
   const debugLog = cliOption("debug-log");
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...parseEnvLines(config.env ?? ""),
-    ...vulkanLayerEnvironment({
-      layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
-      validation: config.validation, syncValidation: !!config.syncValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
-    }),
-  };
-  return runTarget(s, config.exe, env, `layer: ${layerDir}`);
+  const vulkan = layerDir ? {
+    layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
+    validation: config.validation, syncValidation: !!config.syncValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
+  } : null;
+  const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };
+  const args = splitArgs(config.args ?? "");
+  const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
+  if (process.platform === "win32") {
+    const launch = windowsLaunch({
+      exe: config.exe, args, cwd, env: base, vulkan,
+      d3d12: d3d12 ? {
+        tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
+        validation: config.validation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
+      } : null,
+    });
+    return runTarget(s, launch.exe, launch.args, cwd, launch.env, launch.notes);
+  }
+  if (!vulkan) return { ok: false, error: NO_LAYER_ERROR };
+  return runTarget(s, config.exe, args, cwd, { ...base, ...vulkanLayerEnvironment(vulkan) }, [`layer: ${layerDir}`]);
 }
 
 /**
@@ -493,17 +518,20 @@ function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResul
     ...parseEnvLines(config.env ?? ""),
     ...captureEnvironment(library, s.port, config.log ?? true, config.validation, config.stacktraces),
   };
-  return runTarget(s, exe, env, `capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`);
+  const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(exe);
+  return runTarget(s, exe, splitArgs(config.args ?? ""), cwd, env, [`capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`]);
 }
 
-/** Spawns the target, pipes its output into the session's log and follows it to its exit. */
-function runTarget(s: Session, exe: string, env: NodeJS.ProcessEnv, note: string): LaunchResult {
+/**
+ * Spawns the target, pipes its output into the session's log and follows it to its exit. `exe`
+ * and `args` are what is actually spawned: on Windows the D3D12 launcher with the application's
+ * command line after "--" (d3d12.ts), so they are taken as given rather than from the configuration.
+ */
+function runTarget(s: Session, exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, notes: string[]): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
-  const args = splitArgs(config.args ?? "");
-  const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(exe);
   s.appendLog(`launching ${exe} ${args.join(" ")}`);
-  s.appendLog(note);
+  for (const note of notes) s.appendLog(note);
   if (s.port !== config.port) s.appendLog(`port ${config.port} is in use; using ${s.port}`);
   let proc: ChildProcess;
   try {
@@ -624,7 +652,8 @@ function killTarget(s: Session): Promise<void> {
 }
 
 type ValidLaunch =
-  | { kind: "native"; layerDir: string }
+  /** A local process: the Vulkan layer, and on Windows the D3D12 tools too; at least one of them is there. */
+  | { kind: "native"; layerDir: string | null; d3d12: D3D12Tools | null }
   /** macOS: the capture library to inject, and the binary inside the bundle to run. */
   | { kind: "metal"; library: string; exe: string }
   | { kind: "android"; adb: string; layer: AndroidLayerFiles }
@@ -632,7 +661,7 @@ type ValidLaunch =
 
 function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
   if (config.target === "implicit") {
-    if (!findLayerDir()) return { error: NO_LAYER_ERROR };
+    if (!findLayerDir()) return { error: NO_VULKAN_LAYER_ERROR };
     return { kind: "implicit" };
   }
   if (config.target === "android") {
@@ -659,16 +688,19 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
     if (blocked) return { error: blocked };
     return { kind: "metal", library, exe };
   }
+  // Windows: the Vulkan layer and the D3D12 library both go into every target, so either one
+  // makes the launch possible (the session log says which is missing).
   const layerDir = findLayerDir();
-  if (!layerDir) return { error: NO_LAYER_ERROR };
-  return { kind: "native", layerDir };
+  const d3d12 = findD3D12Tools();
+  if (!layerDir && !d3d12) return { error: NO_LAYER_ERROR };
+  return { kind: "native", layerDir, d3d12 };
 }
 
 function startTarget(s: Session, v: ValidLaunch): LaunchResult {
   if (v.kind === "implicit") return waitForApplication(s);
   if (v.kind === "android") return launchAndroid(s, v.adb, v.layer);
   if (v.kind === "metal") return spawnMetalTarget(s, v.library, v.exe);
-  return spawnTarget(s, v.layerDir);
+  return spawnTarget(s, v.layerDir, v.d3d12);
 }
 
 /**
@@ -975,6 +1007,10 @@ ipcMain.handle("inspector:compileShader", (_e, source: string, language: ShaderL
   // the files a module's debug information names from.
   compileShader(source, language, stage, entryPoint, spirvVersion, { includeDirs: sourceRootDirs() }));
 
+// A D3D12 pipeline's stage: HLSL to DXIL with dxc, includes from the same roots.
+ipcMain.handle("inspector:compileDxil", (_e, source: string, stage: string, entryPoint: string, shaderModel?: string) =>
+  compileDxil(source, stage, entryPoint, shaderModel || "6_0", { includeDirs: sourceRootDirs() }));
+
 ipcMain.handle("inspector:decompileForDebugging", (_e, spirv: Uint8Array, stage: string, entryPoint: string) =>
   decompileForDebugging(spirv, stage, entryPoint));
 
@@ -1036,11 +1072,11 @@ ipcMain.handle("inspector:launch", (_e, config: LaunchConfig) => launch(config))
 ipcMain.handle("inspector:connect", (_e, port: number) => connectOnly(port));
 ipcMain.handle("inspector:implicitLayer", async (): Promise<ImplicitLayerStatus> => {
   const dir = findLayerDir();
-  return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: NO_LAYER_ERROR };
+  return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: NO_VULKAN_LAYER_ERROR };
 });
 ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<ImplicitLayerStatus> => {
   const dir = findLayerDir();
-  return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: NO_LAYER_ERROR };
+  return dir ? setImplicitLayer(dir, !!on) : { registered: false, manifest: "", error: NO_VULKAN_LAYER_ERROR };
 });
 // The implicit layer's variables for the whole account, for applications started by a launcher.
 ipcMain.handle("inspector:userEnvironment", () => userEnvironmentStatus());
@@ -1327,7 +1363,7 @@ void app.whenReady().then(() => {
     const implicit = cliOption("implicit-layer");
     if (implicit === "on" || implicit === "off") {
       const dir = findLayerDir();
-      const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: NO_LAYER_ERROR } as ImplicitLayerStatus);
+      const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: NO_VULKAN_LAYER_ERROR } as ImplicitLayerStatus);
       void done.then((status) => {
         console.log(status.error ? `implicit layer: ${status.error}` : `implicit layer ${status.registered ? "registered" : "not registered"}: ${status.manifest}`);
         app.quit();

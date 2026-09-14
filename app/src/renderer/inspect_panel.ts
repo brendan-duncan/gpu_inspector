@@ -30,15 +30,17 @@ import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
 import { metalReflection, metalStages } from "./metal/reflection.js";
+import { d3d12Reflection } from "./d3d12/reflection.js";
+import { isD3D12Texture } from "./d3d12/d3d12_object.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
-import { renderDeviceSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
+import { renderD3D12DeviceSections, renderDeviceSections, renderDxgiAdapterSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
 import { renderAccelerationStructure, renderShaderGroups } from "./ray_tracing_view.js";
-import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
+import type { CaptureDescriptorBinding, CompileShaderResult, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears. Both APIs
 // share the list rather than selecting one, because a session only ever holds objects of one of
@@ -55,12 +57,19 @@ const TYPE_ORDER = [
   "MTLDevice", "MTLCommandQueue", "MTLLibrary", "MTLFunction",
   "MTLRenderPipelineState", "MTLComputePipelineState", "MTLDepthStencilState",
   "MTLTexture", "MTLBuffer", "MTLSamplerState", "MTLHeap",
+
+  "ID3D12Device", "IDXGIAdapter", "IDXGISwapChain", "ID3D12CommandQueue", "ID3D12GraphicsCommandList", "ID3D12CommandList",
+  "ID3D12CommandAllocator", "ID3D12PipelineState", "ID3D12StateObject", "ID3D12RootSignature", "ID3D12DescriptorHeap",
+  "ID3D12Heap", "ID3D12Resource", "ID3D12Fence", "ID3D12QueryHeap", "ID3D12CommandSignature", "ID3D12PipelineLibrary",
 ];
 
 /** The types whose creation or destruction moves the memory meter. */
-const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap", "MTLBuffer", "MTLTexture"]);
+const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap", "MTLBuffer", "MTLTexture", "ID3D12Heap", "ID3D12Resource"]);
 
-const PLURALS: Record<string, string> = { VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains" };
+const PLURALS: Record<string, string> = {
+  VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains",
+  IDXGISwapChain: "Swap Chains", ID3D12GraphicsCommandList: "Graphics Command Lists", ID3D12PipelineLibrary: "Pipeline Libraries",
+};
 
 /**
  * The line defining `name` in Metal Shading Language: one whose declaration carries a stage
@@ -86,7 +95,7 @@ function functionLine(source: string, name: string): number {
 
 function typeLabel(type: string): string {
   if (PLURALS[type]) return PLURALS[type];
-  const t = type.replace(/^Vk/, "").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
+  const t = type.replace(/^Vk/, "").replace(/^ID3D12/, "").replace(/^IDXGI/, "DXGI ").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
   const words = t.replace(/([a-z])([A-Z])/g, "$1 $2");
   if (words.endsWith("s")) return words + "es";
   // "MTLLibrary" would otherwise read "MTLLibrarys". No Vulkan type ends in y, so this only ever
@@ -132,6 +141,10 @@ interface ShaderView {
   analysis: Div;
   /** The payload's section (its label carries the "[edited]" mark). */
   group: collapsible;
+  /** A D3D12 pipeline state's DXBC / DXIL payload: disassembly and embedded HLSL through the app's shader tool, edits compiled with dxc. */
+  d3d12?: boolean;
+  /** The embedded HLSL of a D3D12 payload, "" when the container has none. */
+  hlsl?: string;
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
@@ -163,6 +176,21 @@ const STAGE_FLAG: Record<string, string> = {
 
 const LANGUAGE_OF_MODE: Record<ShaderViewMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null, source: null };
 const LANGUAGE_LABEL: Record<ShaderLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)" };
+
+/** A blank HLSL stage for a D3D12 pipeline whose container carries no source. */
+function hlslTemplate(stage: ShaderStage, entryPoint: string, pipelineName: string): string {
+  const head = `// Replacement ${stage} shader for ${pipelineName}: the pipeline's HLSL was not embedded in its\n// bytecode (compile with -Zi -Qembed_debug to see it here), so this stage starts from scratch.\n// Registers (b#, t#, u#, s#) must match the pipeline's root signature: see its Reflection section.\n\n`;
+  switch (stage) {
+    case "vertex":
+      return `${head}struct VSInput { float3 position : POSITION; };\nstruct VSOutput { float4 position : SV_POSITION; };\n\nVSOutput ${entryPoint}(VSInput input) {\n    VSOutput output;\n    output.position = float4(input.position, 1.0);\n    return output;\n}\n`;
+    case "fragment":
+      return `${head}struct PSInput { float4 position : SV_POSITION; };\n\nfloat4 ${entryPoint}(PSInput input) : SV_TARGET {\n    return float4(1.0, 0.0, 1.0, 1.0);\n}\n`;
+    case "compute":
+      return `${head}[numthreads(8, 8, 1)]\nvoid ${entryPoint}(uint3 id : SV_DispatchThreadID) {\n}\n`;
+    default:
+      return `${head}void ${entryPoint}() {\n}\n`;
+  }
+}
 
 /** Object list filters, after WebGPU Inspector's inspect panel filter panel. */
 interface Filters {
@@ -506,7 +534,15 @@ export class InspectPanel {
       this._memoryLabel.classList.toggle("meter-dropped", m.workingSet > 0 && m.reported > m.workingSet);
       return;
     }
+    // A D3D12 session: heaps stand where VkDeviceMemory does, and a committed resource has an
+    // implicit heap of its own, so the resources are the better total.
+    if (this.database.getObjectsOfType("ID3D12Device")?.size) {
+      this._memoryLabel.text = `Heaps: ${formatBytes(m.device)} in ${m.allocations}   Textures: ${formatBytes(m.images)}   Buffers: ${formatBytes(m.buffers)}${objects}`;
+      this._memoryLabel.tooltip = "Heaps: the application's ID3D12Heaps (placed and reserved resources live inside them). Textures and buffers: estimated from every ID3D12Resource's description (format, size, mips, layers, samples); a committed resource has an implicit heap of its own that is not listed.";
+      return;
+    }
     this._memoryLabel.text = `Device Memory: ${formatBytes(m.device)} in ${m.allocations} allocation${m.allocations === 1 ? "" : "s"}   Images: ${formatBytes(m.images)}   Buffers: ${formatBytes(m.buffers)}${objects}`;
+    this._memoryLabel.tooltip = "Device memory: the application's VkDeviceMemory allocations. Images and buffers: estimated from their formats and sizes (they live inside those allocations). A D3D12 session lists its heaps and resources the same way.";
   }
 
   private static _emptyFilters(): Filters {
@@ -750,8 +786,9 @@ export class InspectPanel {
     if (object.type === "VkPipeline") addPipeline(object, null);
     else if (object.type === "VkShaderEXT") out.add(str(object.descriptor?.stage));
     else for (const dep of object.dependents) if (dep.type === "VkPipeline") addPipeline(dep, object);
-    // Stages a linked pipeline has from its libraries are only in its payloads ("fragment:main").
-    if (object.type === "VkPipeline") for (const b of object.blobs) if (STAGE_FLAG[b.name.split(":")[0] as ShaderStage]) out.add(STAGE_FLAG[b.name.split(":")[0] as ShaderStage]);
+    // Stages a linked pipeline has from its libraries are only in its payloads ("fragment:main");
+    // a D3D12 pipeline state names its stages the same way.
+    if (object.type === "VkPipeline" || object.type === "ID3D12PipelineState") for (const b of object.blobs) if (STAGE_FLAG[b.name.split(":")[0] as ShaderStage]) out.add(STAGE_FLAG[b.name.split(":")[0] as ShaderStage]);
     return out;
   }
 
@@ -790,7 +827,8 @@ export class InspectPanel {
         return this._bufferMatches(object);
       case "VkShaderModule":
       case "VkShaderEXT":
-      case "VkPipeline": {
+      case "VkPipeline":
+      case "ID3D12PipelineState": {
         if (!f.shader.size) return true;
         const stages = this._stagesOf(object);
         for (const s of f.shader) if (stages.has(`VK_SHADER_STAGE_${s}_BIT`)) return true;
@@ -1022,15 +1060,20 @@ export class InspectPanel {
     if (object.type === "VkPipeline") renderShaderGroups(this.inspectPanel, object);
     if (object.type === "VkAccelerationStructureKHR") renderAccelerationStructure(this.inspectPanel, object, db, onLink);
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
+    if (object.type === "ID3D12PipelineState") this._buildD3D12ShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
     if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
-    if (object.type === "VkDescriptorSet") this._buildDescriptorSetSection(object);
+    if (object.type === "ID3D12Device") renderD3D12DeviceSections(this.inspectPanel, object, db);
+    if (object.type === "IDXGIAdapter") renderDxgiAdapterSections(this.inspectPanel, object);
+    if (object.type === "VkDescriptorSet" || object.type === "ID3D12DescriptorHeap") this._buildDescriptorSetSection(object);
     this._imageView = null;
-    if (object.type === "VkImage" || object.type === "VkImageView" || object.type === "MTLTexture") {
+    // A D3D12 texture is an ID3D12Resource whose description is not a buffer's; the live read-back
+    // (RequestImage) works on the resource id, as it does on a VkImage.
+    if (object.type === "VkImage" || object.type === "VkImageView" || object.type === "MTLTexture" || isD3D12Texture(object)) {
       const grp = new collapsible(this.inspectPanel, { label: "Image", collapsed: false });
       this._imageView = new ImageView(grp.body, this.window, object);
     }
@@ -1045,9 +1088,10 @@ export class InspectPanel {
   private _buildDescriptorSetSection(object: VulkanObject): void {
     const db = this.database;
     const onLink = (o: VulkanObject) => this.revealObject(o);
+    const heap = object.type === "ID3D12DescriptorHeap";
     const grp = new collapsible(this.inspectPanel, { label: "Contents", collapsed: false });
     const bar = new Div(grp.body, { class: "shader-toolbar" });
-    new Button(bar, { label: "Refresh", class: "btn btn-sm", tooltip: "Read the set's current contents from the application", callback: () => this._requestDescriptorSet(object) });
+    new Button(bar, { label: "Refresh", class: "btn btn-sm", tooltip: heap ? "Read the heap's written slots from the application (the first 4096)" : "Read the set's current contents from the application", callback: () => this._requestDescriptorSet(object) });
     const layout = db.getObject(refId(object.updates.layout));
     if (layout) {
       new Span(bar, { text: "Layout: ", class: "text-muted font-md" });
@@ -1061,11 +1105,11 @@ export class InspectPanel {
       return;
     }
     if (object.updates.tracked === false) {
-      new Div(grp.body, { text: "The layer has no record of this set's contents (freed, or its pool was reset).", class: "text-muted" });
+      new Div(grp.body, { text: heap ? "The library has no record of this heap's slots." : "The layer has no record of this set's contents (freed, or its pool was reset).", class: "text-muted" });
       return;
     }
     if (!bindings.length) {
-      new Div(grp.body, { text: "No bindings.", class: "text-muted" });
+      new Div(grp.body, { text: heap ? "No slots written." : "No bindings.", class: "text-muted" });
       return;
     }
     const list = new Widget("ul", grp.body, { class: "descriptor-contents" });
@@ -1073,7 +1117,7 @@ export class InspectPanel {
       const count = b.descriptors.length;
       b.descriptors.forEach((d, k) => {
         const li = new Widget("li", list);
-        new Span(li, { text: `Binding ${b.binding}${count > 1 ? `[${k}]` : ""}: `, class: "buffer-member" });
+        new Span(li, { text: `${heap ? "Slot" : "Binding"} ${b.binding}${count > 1 ? `[${k}]` : ""}: `, class: "buffer-member" });
         new Span(li, { text: `${fmt(b.type)}  `, class: "args-enum" });
         if (!d) {
           new Span(li, { text: "(not written)", class: "text-muted" });
@@ -1087,13 +1131,21 @@ export class InspectPanel {
           link(d.buffer, "(destroyed buffer)");
           new Span(li, { text: `  offset ${num(d.offset)}  range ${num(d.range)}`, class: "text-muted" });
         }
+        // D3D12: a texture view names its resource; a sampler slot carries only its description.
+        if (d.resource !== undefined) {
+          link(d.resource, "(destroyed resource)");
+          if (isObject(d.view)) new Span(li, { text: `  ${fmt(d.view.ViewDimension)} ${fmt(d.view.Format)}`.replace(" UNKNOWN", ""), class: "text-muted" });
+        }
+        if (d.samplerDesc !== undefined && d.samplerDesc) {
+          new Span(li, { text: `${fmt(d.samplerDesc.Filter)}  ${fmt(d.samplerDesc.AddressU)} / ${fmt(d.samplerDesc.AddressV)} / ${fmt(d.samplerDesc.AddressW)}`, class: "text-muted" });
+        }
         if (d.imageView !== undefined) {
           link(d.imageView, "(destroyed view)");
           const view = db.getObject(refId(d.imageView));
           if (view) new Span(li, { text: `  ${view.summary(db)}`, class: "text-muted" });
           if (d.imageLayout) new Span(li, { text: `  ${fmt(d.imageLayout)}`, class: "text-muted" });
         }
-        if (d.sampler !== undefined) {
+        if (d.sampler !== undefined && d.samplerDesc === undefined) {
           new Span(li, { text: d.imageView !== undefined ? "  sampler " : "", class: "text-muted" });
           link(d.sampler, "(destroyed sampler)");
           if (d.immutable) new Span(li, { text: " (immutable)", class: "text-muted" });
@@ -1182,6 +1234,73 @@ export class InspectPanel {
     const pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
     this._libraryViews.set(index, { pre, name: library.blobs[index].name, ownerId: library.id, focus: name || undefined });
     void this.window.send({ action: "RequestBlob", id: library.id, index });
+  }
+
+  /**
+   * A D3D12 pipeline state's shaders: one section per DXBC / DXIL payload ("vertex:VSMain") with
+   * the disassembly and, when the container carries it (-Zi -Qembed_debug), the HLSL source; the
+   * Reflection section from the reflection the library attached at pipeline creation; and Edit,
+   * which compiles HLSL with dxc and rebuilds the pipeline with the stage swapped. No GLSL / MSL
+   * cross-compilation: the bytecode is not SPIR-V.
+   */
+  private _buildD3D12ShaderSection(object: VulkanObject): void {
+    this._shaderViews = new Map();
+    this._openEditor = null;
+    if (!object.blobs.length) {
+      const grp = new collapsible(this.inspectPanel, { label: "Shader Code", collapsed: false });
+      new Div(grp.body, { text: "No shader stages recorded (a pipeline loaded from a pipeline library carries no bytecode).", class: "text-muted" });
+      return;
+    }
+    object.blobs.forEach((blob, index) => {
+      const key = `${object.id}:${index}`;
+      const edit = this._shaderEdits.get(key);
+      const [stage, entryPoint = ""] = blob.name.split(":");
+      const grp = new collapsible(this.inspectPanel, { label: `Shader: ${blob.name} (${blob.size} bytes)${edit?.applied ? "  [edited]" : ""}`, collapsed: index > 0 });
+      const bar = new Div(grp.body, { class: "shader-toolbar" });
+      const view: ShaderView = {
+        index, blobName: blob.name, pre: new Widget("pre"), mode: "dis", data: null, text: "", buttons: {},
+        editButton: new Button(null), editor: null, body: grp.body, debug: null, sourceFile: 0, disText: "",
+        summary: new Div(null), fileBar: null, reflection: new collapsible(null), analysis: new Div(null), group: grp, d3d12: true, hlsl: "",
+      };
+      view.reflection = new collapsible(grp.body, { label: "Reflection", collapsed: true, class: "shader-reflection" });
+      const reflection = d3d12Reflection(object, stage as ShaderStage);
+      if (reflection) {
+        renderReflection(new Div(view.reflection.body, { class: "shader-info" }), reflection, { entryPoint: entryPoint || undefined, showStage: true });
+        view.reflection.label.text = `Reflection: ${reflection.resources.length} resource${reflection.resources.length === 1 ? "" : "s"}${reflection.version ? ` (${reflection.version})` : ""}`;
+      } else {
+        new Div(view.reflection.body, { text: "No reflection: the library could not reflect this stage (DXIL needs dxcompiler.dll beside the library, in the Vulkan SDK or on PATH).", class: "text-muted font-sm" });
+      }
+      view.analysis = new Div(grp.body, { class: "shader-analysis" });
+      view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The HLSL the compiler embedded in the container (-Zi -Qembed_debug)", callback: () => void this._showShader(index, "source") });
+      view.buttons.source.style.display = "none";
+      view.buttons.dis = new Button(bar, { label: "Disassembly", class: "btn btn-sm", tooltip: "The DXBC or DXIL disassembly", callback: () => void this._showShader(index, "dis") });
+      view.editButton = new Button(bar, { label: edit?.applied ? "Edit (edited)" : "Edit", class: "btn btn-sm shader-edit-button", disabled: true,
+        tooltip: "Edit the HLSL (the embedded source, or a stage written from scratch), compile it with dxc and rebuild the pipeline in the running application", callback: () => this._openShaderEditor(object, view) });
+      view.summary = new Div(grp.body, { class: "shader-debug-summary text-muted font-sm" });
+      view.pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
+      this._shaderViews.set(index, view);
+      void this.window.send({ action: "RequestBlob", id: object.id, index });
+    });
+  }
+
+  /** A D3D12 payload's text: the disassembly always, the embedded HLSL when the container has it. */
+  private async _loadD3D12Shader(view: ShaderView, index: number): Promise<void> {
+    const data = view.data;
+    if (!data) return;
+    const dis = await window.inspector.shaderText(data, "dis");
+    if (view.data !== data) return;
+    view.disText = dis.ok ? dis.text : "";
+    if (!dis.ok) view.summary.text = dis.text;
+    const source = await window.inspector.shaderText(data, "hlsl");
+    if (view.data !== data) return;
+    view.hlsl = source.ok ? source.text : "";
+    if (source.ok) {
+      view.buttons.source!.style.display = "";
+      view.summary.text = "HLSL source embedded in the container.";
+    } else if (dis.ok) {
+      view.summary.text = source.text || "No embedded HLSL source: compile with -Zi -Qembed_debug to see it here. Edit writes the stage from scratch.";
+    }
+    void this._showShader(index, source.ok ? "source" : "dis");
   }
 
   private _buildShaderSection(object: VulkanObject): void {
@@ -1277,6 +1396,18 @@ export class InspectPanel {
     const view = this._shaderViews.get(index);
     if (!view || !view.data) return;
     this._setShaderMode(view, mode);
+    if (view.d3d12) {
+      // The texts came with the payload (_loadD3D12Shader); Edit works on the source, or from scratch.
+      if (mode === "source" && view.hlsl) {
+        view.text = view.hlsl;
+        view.pre.html = highlight(view.hlsl, "hlsl");
+      } else {
+        view.text = view.disText;
+        view.pre.text = view.disText || "Disassembly not available.";
+      }
+      view.editButton.disabled = !this.window.connected;
+      return;
+    }
     if (mode === "source") {
       this._renderSourceView(view, 0);
       return;
@@ -1339,6 +1470,10 @@ export class InspectPanel {
     }
     view.data = data;
     view.disText = "";
+    if (view.d3d12) {
+      void this._loadD3D12Shader(view, index);
+      return;
+    }
     this._fillReflection(view, data);
     this._fillAnalysis(view, data);
     view.debug = parseSpirvDebugInfo(data);
@@ -1500,6 +1635,14 @@ export class InspectPanel {
   /** The pipelines an edit of this payload applies to: the pipeline itself, or every pipeline using the module. */
   private _editTargets(object: VulkanObject, view: ShaderView): EditTargets | null {
     if (!view.data) return null;
+    if (view.d3d12) {
+      // The library's ReplaceShader takes the UI's stage name ("vertex") and DXBC / DXIL bytecode.
+      const sep = view.blobName.indexOf(":");
+      const stage = (sep > 0 ? view.blobName.substring(0, sep) : view.blobName) as ShaderStage;
+      const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : "main";
+      if (!STAGE_FLAG[stage]) return null;
+      return { pipelines: [object], stage, stageFlag: stage, entryPoint: entryPoint || "main", spirvVersion: "" };
+    }
     const reflection = reflectSpirv(view.data);
     const spirvVersion = reflection?.version ?? "1.5";
     if (object.type === "VkPipeline" || object.type === "VkShaderEXT") {
@@ -1533,7 +1676,7 @@ export class InspectPanel {
       return;
     }
     const key = `${object.id}:${view.index}`;
-    const language = view.mode === "source" ? sourceLanguageOf(view.debug) : LANGUAGE_OF_MODE[view.mode];
+    const language = view.d3d12 ? "hlsl" : view.mode === "source" ? sourceLanguageOf(view.debug) : LANGUAGE_OF_MODE[view.mode];
     if (!language) return;
     const targets = this._editTargets(object, view);
     const existing = this._shaderEdits.get(key);
@@ -1544,9 +1687,10 @@ export class InspectPanel {
 
     const head = new Div(editor, { class: "shader-editor-head" });
     const fromSource = view.mode === "source" && view.debug;
-    new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${LANGUAGE_LABEL[language]}` : `Editing as ${LANGUAGE_LABEL[language]}`, class: "font-md" });
+    const languageLabel = view.d3d12 ? "HLSL (dxc, shader model 6.0)" : LANGUAGE_LABEL[language];
+    new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${languageLabel}` : view.d3d12 && view.hlsl ? `Editing the embedded HLSL as ${languageLabel}` : `Editing as ${languageLabel}`, class: "font-md" });
     if (targets) {
-      const where = object.type === "VkPipeline" ? "this pipeline" : object.type === "VkShaderEXT" ? "this shader object"
+      const where = object.type === "VkPipeline" || object.type === "ID3D12PipelineState" ? "this pipeline" : object.type === "VkShaderEXT" ? "this shader object"
         : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
       new Span(head, { text: `  ${stageLabel(targets.stage)} stage, entry ${targets.entryPoint}, applies to ${where}`, class: "text-muted font-sm" });
     } else {
@@ -1558,10 +1702,15 @@ export class InspectPanel {
     if (fromSource && view.debug!.files.filter((f) => f.text !== null).length > 1) {
       new Div(editor, { text: "Note: the compiler is given only this file; #include directives cannot be resolved, so paste the included code in if the compile needs it.", class: "text-muted font-sm" });
     }
+    if (view.d3d12 && !view.hlsl) {
+      new Div(editor, { text: "The container carries no HLSL (compile with -Zi -Qembed_debug to edit the original): write the stage from scratch, against the pipeline's root signature. The Reflection section lists the registers it expects.", class: "text-muted font-sm" });
+    }
 
     // Embedded source carries the compiler's own prefix (comments, a #line directive before
     // #version) that a compiler will not take back; edit the clean text.
-    const source = existing && existing.language === language ? existing.source : fromSource ? compilableSource(view.text) : view.text;
+    const source = existing && existing.language === language ? existing.source
+      : view.d3d12 ? (view.hlsl || hlslTemplate(targets?.stage ?? "vertex", targets?.entryPoint ?? "main", object.name))
+      : fromSource ? compilableSource(view.text) : view.text;
     const text = new CodeEditor(editor, { value: source, language, class: "shader-editor-text" });
     const buttons = new Div(editor, { class: "shader-toolbar" });
     const status = new Div(editor, { class: "shader-editor-status text-muted font-sm" });
@@ -1569,13 +1718,20 @@ export class InspectPanel {
     this._openEditor = targets ? { key, targets, status, view } : null;
     if (existing?.results.size) status.text = [...existing.results.values()].join("\n");
 
+    // What compiles the text: the Vulkan SDK's compilers to SPIR-V, or dxc to DXIL for a D3D12 pipeline.
+    const compile = (t: EditTargets): Promise<CompileShaderResult> => {
+      if (!view.d3d12) return window.inspector.compileShader(text.value, language, t.stage, t.entryPoint, t.spirvVersion);
+      return window.inspector.compileDxil(text.value, t.stage, t.entryPoint, "6_0");
+    };
+    const bytecodeWord = view.d3d12 ? "DXIL" : "SPIR-V";
+
     new Button(buttons, { label: "Compile & Apply", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length, callback: () => {
       if (!targets) return;
       const edit: ShaderEdit = { language, source: text.value, results: new Map(), applied: false };
       this._shaderEdits.set(key, edit);
-      status.text = `Compiling with ${LANGUAGE_LABEL[language]}...`;
+      status.text = `Compiling with ${languageLabel}...`;
       log.style.display = "none";
-      void window.inspector.compileShader(text.value, language, targets.stage, targets.entryPoint, targets.spirvVersion).then((r) => {
+      void compile(targets).then((r) => {
         // Errors mark their lines in the editor, and the log's lines jump to them.
         const errors = r.log ? parseCompileErrors(r.log) : new Map<number, string>();
         text.setErrors(errors);
@@ -1589,13 +1745,14 @@ export class InspectPanel {
           log.style.display = "";
         }
         if (!r.ok || !r.spirv) {
-          status.text = `${r.tool}: compilation failed${errors.size ? ` (${errors.size} line${errors.size === 1 ? "" : "s"} marked in the editor)` : ""}.`;
+          const why = (r as { error?: string }).error;
+          status.text = `${r.tool}: compilation failed${why ? `: ${why}` : ""}${errors.size ? ` (${errors.size} line${errors.size === 1 ? "" : "s"} marked in the editor)` : ""}.`;
           const first = [...errors.keys()].sort((a, b) => a - b)[0];
           if (first !== undefined) text.goToLine(first);
           return;
         }
         const spirv = encodeBase64(r.spirv);
-        status.text = `${r.tool}: ${r.spirv.byteLength} bytes of SPIR-V. Applying to ${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"}...`;
+        status.text = `${r.tool}: ${r.spirv.byteLength} bytes of ${bytecodeWord}. Applying to ${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"}...`;
         for (const p of targets.pipelines) {
           edit.results.set(p.id, `${p.name}: applying...`);
           void this.window.send({ action: "ReplaceShader", pipeline: p.id, stage: targets.stageFlag, spirv });

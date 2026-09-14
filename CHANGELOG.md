@@ -1,3 +1,48 @@
+## v0.12.0
+
+### Added
+- Direct3D 12 on Windows (`d3d12/`, docs/D3D12.md): a capture library injected into the
+  application at process start by `dxinsp_launch.exe`, hooking the D3D12 and DXGI entry points
+  and the vtables of the objects they create, speaking the Vulkan layer's protocol. The launch
+  dialog needs no API field: every local Windows target is started with the Vulkan layer and the
+  D3D12 library both, and whichever the application uses connects.
+  - Object inspection: every D3D12 and DXGI object with the call that created it, its descriptor
+    under the D3D12 names and its `SetName`; descriptor heap contents; the adapter's description
+    and the device's feature level and `CheckFeatureSupport` results as device sections; the leak
+    report when the device is released.
+  - Frame capture: the command lists executed during the frame in submission order, bundles
+    inlined at `ExecuteBundle`, passes synthesized from `OMSetRenderTargets` (a synthetic
+    `EndRenderTargets` closes one where the application made no call) or taken from
+    `BeginRenderPass`, compute passes from runs of dispatches. Render targets are read back at
+    the end of each pass, multisampled ones resolved. Descriptor tables and root views are
+    snapshotted at each draw and dispatch with their buffers and textures read back, root
+    constants shown as push constants, vertex and index buffers decoded with the pipeline's
+    input layout, and `ExecuteIndirect` arguments read.
+  - Pass timings, pipeline statistics and occlusion counts per pass, so Frame Stats and GPU
+    Bottlenecks work on D3D12 captures.
+  - The D3D12 debug layer (**Validation layer**) as validation messages, linked to the command
+    that fired them where `ID3D12InfoQueue1` exists.
+  - Creation and command stack traces, with the runtime's and the driver's frames marked
+    internal.
+  - Shaders: DXBC and DXIL reflection at pipeline creation (constant buffer members, resources
+    by register and space, inputs and outputs), so a draw's constant buffers render as typed
+    blocks and the Shader Flame Graph weighs the stages; `dxinsp_shader.exe` gives the Inspect
+    panel disassembly and the HLSL embedded with `dxc -Zi -Qembed_debug`.
+  - Shader editing: an HLSL stage is compiled with `dxc` and the library rebuilds the pipeline
+    state with it. Pipelines from streams are rebuilt from their streams; one loaded from a
+    pipeline library says it cannot be edited.
+  - `DXINSP_RECORD_ALWAYS` (**Record all command buffers**) for command lists recorded once and
+    executed every frame; `DXINSP_LOG`, `DXINSP_LOG_FILE`, `DXINSP_STACKTRACES`,
+    `DXINSP_DEBUG_LAYER` and `DXINSP_PORT`, the D3D12 spellings of the layer's variables.
+  - `test/d3d12_triangle`: `dxinsp_triangle.exe`, the D3D12 counterpart of the Vulkan test
+    application, with `--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`
+    and `--debug-layer`.
+  - Not there yet for D3D12: the shader debugger and the replay-based analyses (overdraw, pixel
+    history, draw overlays, mesh output, per-draw measurements, ablation), stencil read-back,
+    32-bit targets, and attaching to an application already running.
+- The Windows build needs the Windows SDK 10.0.26100 or newer and the `third_party/minhook`
+  submodule (BSD-2-Clause) for the D3D12 library, and `dxc` for its test application.
+
 ## v0.11.0
 
 ### Added

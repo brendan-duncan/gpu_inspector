@@ -18,6 +18,7 @@ import type { Capture, CaptureStore } from "./capture_store.js";
 import { vertexInputs } from "./command_tools.js";
 import { CAPTURE_PARAM, boolArg, enumArg, intArg, jsonResult, optionalInt, requireInt, schema, stringArg, tidy } from "./describe.js";
 import { checkoutRoots, installedLayerDirs } from "./live_session.js";
+import { NO_D3D12_REPLAY } from "./resource_tools.js";
 import { searchPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
@@ -74,6 +75,11 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         const command = requireInt(args, "command");
         const cmd = c.data.commands[command];
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
+        // The interpreters are SPIR-V's and MSL's; DXIL has none here, and a D3D12 fragment's
+        // inputs would need the replay a D3D12 capture does not have either.
+        if (c.data.api !== "vulkan" && c.data.api !== "metal") {
+          return jsonResult({ capture: c.id, command, note: `The shader debugger interprets a Vulkan capture's SPIR-V or a Metal capture's MSL: ${NO_D3D12_REPLAY}, and no DXIL interpreter. get_shader has a D3D12 pipeline's source and disassembly.` });
+        }
         const isDispatch = c.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");

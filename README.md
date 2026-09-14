@@ -3,7 +3,7 @@
 **GPU Inspector** captures and inspects frames from native graphics applications. It is the
 native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector).
 
-Supports **Vulkan**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
+Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
 
 * **Object inspection**: every GPU object, with how it was created and what it uses.
 * **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
@@ -24,7 +24,7 @@ The user documentation is in [docs/](docs/README.md):
 | | |
 |---|---|
 | [Install](docs/INSTALL.md) · [Getting started](docs/GETTING_STARTED.md) | the first session, start to a saved capture |
-| [Vulkan](docs/VULKAN.md) · [Metal](docs/METAL.md) · [Android and Quest](docs/ANDROID.md) | the workflow for each platform |
+| [Vulkan](docs/VULKAN.md) · [Direct3D 12](docs/D3D12.md) · [Metal](docs/METAL.md) · [Android and Quest](docs/ANDROID.md) | the workflow for each platform |
 | [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
 | [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |
 | [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |
@@ -50,8 +50,10 @@ how releases are made in [docs/RELEASING.md](docs/RELEASING.md).
 Linux and Windows need the same things: a C++20 compiler, CMake 3.20 or newer, Python 3.8 or newer
 (the layer's source is generated from `vk.xml`), Node.js 18 or newer with npm (the Electron UI),
 the windowing-system headers Vulkan's surface extensions include, and the shader tools `glslc`,
-`spirv-dis` and `spirv-cross`. Where they come from differs per platform. macOS builds the Metal
-capture library instead of the Vulkan layer and needs a shorter list.
+`spirv-dis` and `spirv-cross`. Where they come from differs per platform. Windows also builds the
+Direct3D 12 capture library (`d3d12/`), which needs a recent Windows SDK and the MinHook
+submodule, and its test application, which needs `dxc`. macOS builds the Metal capture library
+instead of the Vulkan layer and needs a shorter list.
 
 ### Linux
 
@@ -93,11 +95,15 @@ alternative source for the same shader tools if your distribution's are too old.
 | CMake 3.20+ — the C++ workload above installs one; standalone: | https://cmake.org/download/ |
 | Python 3.8+ (tick **Add python.exe to PATH**) | https://www.python.org/downloads/ |
 | Node.js LTS (includes npm) | https://nodejs.org/en/download |
-| Vulkan SDK — supplies `glslc`, `spirv-dis`, `spirv-cross` and the loader the test app links against | https://vulkan.lunarg.com/sdk/home#windows |
+| Vulkan SDK — supplies `glslc`, `spirv-dis`, `spirv-cross`, `dxc` (the D3D12 test application's shaders, and `dxcompiler.dll` for DXIL reflection) and the loader the Vulkan test app links against | https://vulkan.lunarg.com/sdk/home#windows |
+| Windows SDK 10.0.26100 or newer — the Direct3D 12 headers the capture library is built against | The Visual Studio installer's *Individual components*, or https://developer.microsoft.com/windows/downloads/windows-sdk/ |
 | Git | https://git-scm.com/download/win |
 
-The Windows SDK that comes with Visual Studio provides the windowing headers, and your GPU's
-Vulkan driver comes with its normal graphics driver, so nothing extra is needed for either.
+The Windows SDK provides the windowing and Direct3D headers, and your GPU's Vulkan and D3D12
+drivers come with its normal graphics driver, so nothing extra is needed for either.
+`git submodule update --init` brings `third_party/minhook` (the D3D12 library's entry-point
+hooks) beside `Vulkan-Headers`. The D3D12 library's generated enum and vtable tables
+(`d3d12/gen/`) are committed, so Python regenerates them only when `tools/gen_d3d12.py` changes.
 
 ### macOS
 
@@ -152,6 +158,8 @@ cd app && npm install && npm start
 ```
 
 Use the generator name of the Visual Studio you installed (`"Visual Studio 18 2026"` for VS 2026).
+`build\bin\Release` then holds the Vulkan layer, the D3D12 capture library with its launcher
+(`dxinsp_launch.exe`) and shader tool (`dxinsp_shader.exe`), and both test applications.
 
 ### macOS
 
@@ -170,7 +178,10 @@ No submodule, and a different CMake build: `vulkan/` has no Apple target, so the
 
 Point the launcher at a Vulkan executable — for example the bundled test application,
 `build/bin/vkinsp_triangle` (`build\bin\Release\vkinsp_triangle.exe` on Windows) — and press
-**Launch**, then **Capture** in the Capture tab. On macOS the target is a Metal application
+**Launch**, then **Capture** in the Capture tab. On Windows the target can also be a Direct3D 12
+application (`build\bin\Release\dxinsp_triangle.exe`); there is nothing to choose, since every
+local target is started with both the layer and the D3D12 library and whichever API it uses
+connects (see [Direct3D 12](#direct3d-12)). On macOS the target is a Metal application
 instead — `build/bin/mtlinsp_triangle`, or an `.app` bundle — and the rest is the same. The
 inspector sets the capture environment variables for the process it launches, so nothing is
 registered system-wide. The save button of
@@ -238,6 +249,27 @@ start). For an editor started from a launcher, set the variables for your accoun
 Windows) and restart the launcher. **Unregister** removes the registration. From the command
 line: `npm start -- --wait-for-app --port=<port>`, and `--implicit-layer=on|off` switches the
 registration.
+
+## Direct3D 12
+
+On Windows the inspector captures Direct3D 12 applications too. D3D12 has no loader layers, so
+`d3d12/` is a library that `dxinsp_launch.exe` injects into the target before its first
+instruction runs; it hooks `D3D12CreateDevice` and `CreateDXGIFactory*` and patches the vtables
+of the objects they hand out, and speaks the Vulkan layer's protocol byte for byte. The launch
+dialog needs no API field: a Windows target is started with the layer and the library both, and
+whichever the application uses connects.
+
+What works: object inspection with descriptors, names and descriptor heap contents; frame
+capture with passes synthesized from `OMSetRenderTargets` (or the application's own
+`BeginRenderPass`), render targets, bound buffers and textures, root constants, pass timings and
+counters; the D3D12 debug layer's messages; stack traces; DXBC/DXIL disassembly, embedded HLSL
+and reflection; and shader editing through `dxc`. Not yet: the shader debugger and the
+replay-based analyses (overdraw, pixel history, draw overlays, mesh output, per-draw
+measurements), stencil read-back, 32-bit targets, and attaching to an application already
+running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `d3d12/README.md` the design.
+
+`build\bin\Release\dxinsp_triangle.exe` is the D3D12 test application, the counterpart of
+`vkinsp_triangle` (`--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`).
 
 ## macOS
 
@@ -400,6 +432,12 @@ library's own output in the session's Log tab.
 **The target starts but never connects.** The layer only loads if the Vulkan loader can find it;
 run the target with `VK_LOADER_DEBUG=layer` to see the loader's search, and turn on **Log** in the
 launch dialog to see the layer's own output in the session's Log tab.
+
+**Direct3D 12: the target starts but never connects.** The Log tab has the launcher's `dxinsp:`
+line when it could not inject the library (a 32-bit executable, a protected process, the DLL not
+found), and the target then runs without it. `INSPECTOR_D3D12_DIR` points at a build of
+`dxinsp_capture.dll` and `dxinsp_launch.exe` that is somewhere other than `build/bin`. See
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#direct3d-12).
 
 **`TypeError: Cannot read properties of undefined (reading 'handle')` at startup.** Electron
 started as plain Node because the terminal exported `ELECTRON_RUN_AS_NODE=1` — VS Code's

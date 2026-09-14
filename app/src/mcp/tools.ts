@@ -24,6 +24,7 @@ import {
 } from "./describe.js";
 import { checkoutRoots, installedLayerDirs } from "./live_session.js";
 import { encodePng, fitPixels } from "./png.js";
+import { NO_D3D12_REPLAY } from "./resource_tools.js";
 import { describeSearchPaths, setSearchPaths, splitPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
@@ -67,7 +68,9 @@ function captureNotes(c: Capture): string[] {
   } else if (!c.metrics.withCounters) {
     notes.push(d.api === "metal"
       ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured."
-      : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+      : d.api === "d3d12"
+        ? "The passes carry timestamps but no pipeline statistics (the capture library's statistics queries did not resolve), so overdraw and fragments per primitive are not measured."
+        : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
   }
   const failedImages = d.textures.filter((t) => t.info.error).length;
   if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
@@ -367,7 +370,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         } else {
           notes.push(`${m.withCounters} of ${m.timed} timed passes carried counters.`);
         }
-        if (!metal) notes.push("The vertex/fragment split is Metal only: Vulkan has no portable stage-boundary timestamps. Depth rejection comes from an occlusion query the layer runs around each pass, which it skips where the application has a query of its own open.");
+        if (!metal) notes.push(`The vertex/fragment split is Metal only: ${c.data.api === "d3d12" ? "D3D12" : "Vulkan"} has no portable stage-boundary timestamps. Depth rejection comes from an occlusion query the capture library runs around each pass, which it skips where the application has a query of its own open.`);
         const totals = m.totals;
         const p = page(ranked, args, 30, 200);
         return jsonResult({
@@ -412,7 +415,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         let replayNote: string | undefined;
-        if (!c.data.overdraw.length && c.data.api !== "metal") {
+        if (!c.data.overdraw.length && c.data.api === "vulkan") {
           // A Vulkan capture: replayed once, and the measurements kept with the open capture.
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c.id, note: `A Vulkan capture's overdraw is measured by replaying it on this machine's GPU, and ${NO_REPLAY_TOOL}` });
@@ -428,7 +431,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
             capture: c.id,
             note: c.data.api === "metal"
               ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true."
-              : `The replay measured no pass. ${replayNote ?? ""}`,
+              : c.data.api === "d3d12"
+                ? `Overdraw is measured by replaying a Vulkan capture, or by the Metal library while it captures: ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's fragments per primitive where the pass carried counters.`
+                : `The replay measured no pass. ${replayNote ?? ""}`,
           });
         }
         const passes = c.metrics.passes;
@@ -505,6 +510,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       readOnly: true,
       handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
+        if (c.data.api === "d3d12") {
+          return jsonResult({ capture: c.id, note: `The pixel history replays a Vulkan capture (a Metal application follows the pixel while it captures): ${NO_D3D12_REPLAY}. read_texture shows the render target after the pass, and list_commands with kind draw the draws of the pass.` });
+        }
         if (c.data.api === "metal") {
           if (!c.data.pixelHistory) {
             return jsonResult({
@@ -580,6 +588,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         if (!cmd || !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_mesh_output takes a draw command (list_commands with kind draw).`);
         if (c.data.api === "metal") {
           return jsonResult({ capture: c.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
+        }
+        if (c.data.api !== "vulkan") {
+          return jsonResult({ capture: c.id, command: index, note: `The mesh output replays the draw's vertex shader: ${NO_D3D12_REPLAY}. read_vertices gives what the draw read.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });

@@ -71,7 +71,8 @@ export class MeshView {
   constructor(host: MeshViewHost, draw: CaptureCommand, options: MeshViewOptions = {}) {
     this.host = host;
     this._draw = draw;
-    this._stage = options.stage ?? (host.data.api === "metal" ? "in" : "out");
+    // VS Out needs a replay, which only Vulkan captures have: the others open on VS In.
+    this._stage = options.stage ?? (host.data.api === "vulkan" ? "out" : "in");
     this.root = new Div(null, { class: "mesh-view" });
     this._rebuild();
   }
@@ -196,9 +197,11 @@ export class MeshView {
   }
 
   private async _showOutput(token: number, draws: CaptureCommand[]): Promise<void> {
-    if (this.host.data.api === "metal") {
+    if (this.host.data.api !== "vulkan") {
       this._setStatus("");
-      this._setNotes(["What a Metal draw's vertex function wrote needs a replay, which Metal captures do not have yet: VS In has the vertices it read."]);
+      this._setNotes([this.host.data.api === "metal"
+        ? "What a Metal draw's vertex function wrote needs a replay, which Metal captures do not have yet: VS In has the vertices it read."
+        : "What a D3D12 draw's vertex shader wrote needs a replay, which D3D12 captures do not have: VS In has the vertices it read."]);
       this._preview?.setMesh(null);
       return;
     }

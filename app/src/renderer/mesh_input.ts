@@ -6,6 +6,7 @@ import { drawState, dynamicValue, vertexLayout, type VertexLayout } from "./draw
 import { primitiveKind, verticesPerPrimitive } from "./mesh_output.js";
 import { vertexFormat, type VertexFormat } from "./vulkan/vk_format.js";
 import { isObject, num, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
+import { vkTopologyOfD3D } from "./d3d12/d3d12_object.js";
 import type { CaptureCommand } from "../shared/protocol.js";
 
 export interface MeshInputAttribute {
@@ -51,8 +52,17 @@ function indexBytes(indexType: string): number {
 function drawArgs(data: CaptureData, cmd: CaptureCommand, notes: string[]): Record<string, number> {
   const a = cmd.args ?? {};
   const fields = INDIRECT_FIELDS[cmd.method];
+  if (cmd.method === "ExecuteIndirect") {
+    notes.push("An ExecuteIndirect draw's counts are in its argument buffer, laid out by its command signature: the command's details decode them.");
+    return {};
+  }
   if (!fields) {
-    return { vertexCount: num(a.vertexCount), indexCount: num(a.indexCount), firstVertex: num(a.firstVertex), firstIndex: num(a.firstIndex), vertexOffset: num(a.vertexOffset) };
+    // Vulkan's names, or D3D12's (DrawInstanced / DrawIndexedInstanced).
+    return {
+      vertexCount: num(a.vertexCount ?? a.VertexCountPerInstance), indexCount: num(a.indexCount ?? a.IndexCountPerInstance),
+      firstVertex: num(a.firstVertex ?? a.StartVertexLocation), firstIndex: num(a.firstIndex ?? a.StartIndexLocation),
+      vertexOffset: num(a.vertexOffset ?? a.BaseVertexLocation),
+    };
   }
   const b = data.buffer(cmd.bufferData?.[0]);
   if (!b?.data || b.data.byteLength < fields.length * 4) {
@@ -71,7 +81,8 @@ export function meshInput(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
   const notes: string[] = [];
   const d = state.pipeline?.descriptor;
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
-  const topology = str(dynamicValue(state, "topology", assembly?.topology)) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
+  // D3D12 names the topology on the list (IASetPrimitiveTopology), with the pipeline's type as the fallback.
+  const topology = vkTopologyOfD3D(str(dynamicValue(state, "topology", assembly?.topology ?? d?.PrimitiveTopologyType))) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
   const args = drawArgs(data, cmd, notes);
 
   // Draw order: the index buffer's values, or the run of vertices from firstVertex.

@@ -163,13 +163,21 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
   const limits = new Div(root, { class: "frame-stats-section" });
   new Div(limits, { text: "Going further", class: "frame-stats-heading" });
   const metal = data.api === "metal";
+  const d3d12 = data.api === "d3d12";
   const counterNote = m.withCounters === 0
     ? (metal
       ? "This GPU exposes only the timestamp counter set through public Metal, so the columns above that need invocation counts are empty."
-      : "No pass carried counters. The device may not support pipelineStatisticsQuery, or the application enabled a feature set that excludes it; the layer's log says which.")
+      : d3d12
+        ? "No pass carried counters. The library puts a pipeline statistics query around every render pass; a pass whose command list had a query of the application's open is not counted."
+        : "No pass carried counters. The device may not support pipelineStatisticsQuery, or the application enabled a feature set that excludes it; the layer's log says which.")
     : `${m.withCounters} of ${m.timed} timed passes carried counters.`;
   new Div(limits, { text: counterNote, class: "text-muted" });
-  if (!metal) {
+  if (d3d12) {
+    new Div(limits, {
+      text: "The vertex and fragment spans are Metal only: they come from timestamps at a pass's stage boundaries. Depth rejection needs the samples that survived the depth and stencil tests, which the D3D12 library counts with an occlusion query around each pass. Per-draw timings and shader costs come from replaying the capture, which only Vulkan captures can be.",
+      class: "text-muted",
+    });
+  } else if (!metal) {
     new Div(limits, {
       text: "The vertex and fragment spans are Metal only: they come from timestamps at a pass's stage boundaries, which Vulkan has no portable equivalent for. Depth rejection needs the samples that survived the depth and stencil tests, which the Vulkan layer counts with an occlusion query around each pass (skipped for a pass where the application has a query of its own open).",
       class: "text-muted",

@@ -342,7 +342,8 @@ export class ShaderDebuggerView {
     button("out", ICON_STEP_OUT, "Step Out (Shift+F11): run until the function returns", () => this._step("out"));
     button("restart", ICON_RESTART, "Restart (Ctrl+Shift+F5): start the invocation again, keeping the breakpoints", () => this._restart());
     sep();
-    if (this.host.decompile && this.host.data.api !== "metal") {
+    // Decompiling to GLSL is spirv-cross over the capture's SPIR-V: a Vulkan capture only.
+    if (this.host.decompile && this.host.data.api === "vulkan") {
       const code = new Select(bar, {
         options: ["Original SPIR-V", "Decompiled GLSL"],
         index: this._decompiled ? 1 : 0,

@@ -3,9 +3,11 @@
 // walking back through its command buffer. The command details view (capture_command_info.ts)
 // renders it and the MCP server (src/mcp/) reports it, so both read one reconstruction.
 import { decodeBase64 } from "./utils/base64.js";
-import type {
-  BoundIndexBuffer, BoundStageBuffer, BoundStageSampler, BoundStageTexture, BoundVertexBuffer, CommandSets,
+import {
+  boundPipelineOf, type BoundIndexBuffer, type BoundStageBuffer, type BoundStageSampler, type BoundStageTexture, type BoundVertexBuffer, type CommandSets,
 } from "./command_sets.js";
+import { d3d12InputElements, isD3D12Type } from "./d3d12/d3d12_object.js";
+import { vkFormatOfDxgi } from "./d3d12/dxgi_format.js";
 import { isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ArgObject, ArgValue, CaptureCommand, CaptureDescriptorSet } from "../shared/protocol.js";
@@ -73,6 +75,9 @@ export function dynamicValue(state: DrawState, key: keyof DrawState["dynamic"], 
   const value = state.dynamic[key];
   if (value === null) return baked;
   if (!state.pipeline) return value;
+  // D3D12 bakes only the topology *type* into a pipeline: the topology itself is always set on
+  // the list (IASetPrimitiveTopology), as are the viewports and scissors.
+  if (isD3D12Type(state.pipeline.type)) return value;
   const d = state.pipeline.descriptor;
   const declared = isObject(d?.pDynamicState) && Array.isArray(d!.pDynamicState.pDynamicStates) ? d!.pDynamicState.pDynamicStates : [];
   return declared.some((s) => str(s) === DYNAMIC_STATES[key]) ? value : baked;
@@ -148,7 +153,7 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       // replaced by them, so it only counts when no shader object was bound since.
       if (!state.pipelineCmd && !state.shadersCmd && cmdSets.pipelineBindPointOf(c.method, a) === bindPoint) {
         state.pipelineCmd = c;
-        state.pipeline = db.getObject(refId(a.pipeline));
+        state.pipeline = db.getObject(refId(boundPipelineOf(a)));
       }
       continue;
     }
@@ -251,11 +256,27 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       case "setDepthStencilState:":
         if (!state.depthStencil) state.depthStencil = db.getObject(refId(a.depthStencilState));
         break;
+      // D3D12 sets the topology, viewports and scissors on the command list.
+      case "IASetPrimitiveTopology":
+        state.dynamic.topology ??= a.PrimitiveTopology ?? null;
+        break;
+      case "RSSetViewports":
+        if (!state.viewports) state.viewports = a.pViewports ?? null;
+        break;
+      case "RSSetScissorRects":
+        if (!state.scissors) state.scissors = a.pRects ?? null;
+        break;
       case "vkCmdPushConstants":
       case "vkCmdPushConstants2":
-      case "vkCmdPushConstants2KHR": {
+      case "vkCmdPushConstants2KHR":
+      // D3D12 root constants arrive in the same shape (pValues, offset, size, stageFlags).
+      case "SetGraphicsRoot32BitConstant":
+      case "SetGraphicsRoot32BitConstants":
+      case "SetComputeRoot32BitConstant":
+      case "SetComputeRoot32BitConstants": {
         const pc = pushConstantOf(c);
-        if (pc) state.pushConstants.unshift(pc);
+        // A root constant binds one bind point; the other's are not this draw's.
+        if (pc && (!pc.stageFlags || pc.stageFlags === bindPoint || !["graphics", "compute"].includes(pc.stageFlags))) state.pushConstants.unshift(pc);
         break;
       }
       default:
@@ -286,7 +307,7 @@ export function bindingState(data: CaptureData, db: ObjectLookup, cmd: CaptureCo
     if (cmdSets.BIND_PIPELINE.has(c.method) &&
         cmdSets.pipelineBindPointOf(c.method, c.args) === bindPoint) {
       state.pipelineCmd = c;
-      state.pipeline = db.getObject(refId(c.args?.pipeline));
+      state.pipeline = db.getObject(refId(boundPipelineOf(c.args)));
       break;
     }
   }
@@ -321,6 +342,17 @@ export function findPass(data: CaptureData, cmd: CaptureCommand): { passBegin: C
 
 /** The vertex layout of one binding: stride, input rate and its attributes, from the pipeline or dynamic state. */
 export function vertexLayout(state: DrawState, binding: number, vb: BoundVertexBuffer): VertexLayout | null {
+  // D3D12: the pipeline's InputLayout lists elements that name their input slot; the stride is
+  // the bound vertex buffer view's (a slot with no element is not read). The attribute location
+  // is the element's index in the list, which is also how the mesh view names it.
+  if (state.pipeline && isD3D12Type(state.pipeline.type)) {
+    const elements = d3d12InputElements(state.pipeline).filter((e) => e.slot === binding);
+    if (!elements.length) return null;
+    const attributes = elements.map((e) => ({ location: e.location, format: vkFormatOfDxgi(e.format) ?? e.format, offset: e.offset }))
+      .sort((x, y) => x.offset - y.offset);
+    const perInstance = elements.some((e) => e.perInstance);
+    return { stride: vb.stride ?? 0, rate: perInstance ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX", attributes };
+  }
   // Metal: the pipeline's MTLVertexDescriptor, with a layout per buffer index and attributes
   // that name their buffer. Each attribute carries the protocol's format name beside Metal's,
   // which is what the decoder understands.

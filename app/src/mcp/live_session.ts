@@ -1,5 +1,6 @@
 // Live applications the MCP server drives. An application is launched with GPU Inspector's capture
-// library in it (the Vulkan layer's environment, or the Metal library injected on macOS), an
+// library in it (the Vulkan layer's environment, on Windows the D3D12 library through its launcher
+// beside it, or the Metal library injected on macOS), an
 // Android package is started over adb with the layer enabled for it (main/android.ts), or an
 // application already listening is attached to on its port. The capture library's socket feeds
 // an ObjectDatabase as it feeds the app's session: live objects, frame statistics, validation
@@ -15,6 +16,7 @@ import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, ty
 import { FrameReader, encodeRequest } from "../main/layer_protocol.js";
 import { DEFAULT_PORT, findFreePort, findLayerDir, findValidationLayerDir, splitArgs, terminate, vulkanLayerEnvironment } from "../main/launch_env.js";
 import { captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "../main/metal.js";
+import { findD3D12Tools, windowsLaunch } from "../main/d3d12.js";
 import { CaptureData } from "../renderer/capture_data.js";
 import { serializeCapture } from "../renderer/capture_file.js";
 import { captureFileName } from "../renderer/capture_format.js";
@@ -185,8 +187,11 @@ export class LiveSession {
   }
 
   /** The API the capture library reports objects of; null before any arrived. */
-  get api(): "vulkan" | "metal" | null {
-    for (const type of this.database.objectsByType.keys()) if (type.startsWith("MTL")) return "metal";
+  get api(): "vulkan" | "metal" | "d3d12" | null {
+    for (const type of this.database.objectsByType.keys()) {
+      if (type.startsWith("MTL")) return "metal";
+      if (type.startsWith("ID3D12") || type.startsWith("IDXGI")) return "d3d12";
+    }
     return this.database.allObjects.size ? "vulkan" : null;
   }
 
@@ -536,8 +541,10 @@ export class SessionManager {
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
     let exe = requested;
+    let spawnArgs = args;
     let env: NodeJS.ProcessEnv;
-    let note: string;
+    const notes: string[] = [];
+    const cwd = o.cwd && fs.existsSync(o.cwd) ? o.cwd : path.dirname(requested);
     if (process.platform === "darwin") {
       const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
       if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
@@ -545,28 +552,44 @@ export class SessionManager {
       const blocked = injectionBlockedReason(exe);
       if (blocked) throw new Error(blocked);
       env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
-      note = `capture library: ${library}`;
+      notes.push(`capture library: ${library}`);
     } else {
       const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
-      if (!layerDir) {
-        throw new Error("The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
+      // Windows: the D3D12 library goes in beside the Vulkan layer, through its launcher
+      // (main/d3d12.ts), and whichever API the application uses connects; either one is enough.
+      const d3d12 = process.platform === "win32" ? findD3D12Tools(checkoutRoots(), installedLayerDirs()) : null;
+      if (!layerDir && !d3d12) {
+        throw new Error(process.platform === "win32"
+          ? "Neither GPU Inspector's Vulkan layer nor its D3D12 capture library was found: build them (docs/BUILDING.md), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR / INSPECTOR_D3D12_DIR) to the directory holding them."
+          : "The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
       }
-      const validationDir = o.validation ? findValidationLayerDir() : null;
-      env = {
-        ...process.env, ...o.env,
-        ...vulkanLayerEnvironment({
-          layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
-          validation: !!o.validation, syncValidation: !!o.syncValidation,
-        }),
-      };
-      note = `layer: ${layerDir}${o.validation ? (validationDir ? `; validation layer: ${validationDir}` : "; validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : ""}`;
+      const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
+      const vulkan = layerDir ? {
+        layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
+        validation: !!o.validation, syncValidation: !!o.syncValidation,
+      } : null;
+      const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;
+      if (process.platform === "win32") {
+        const launch = windowsLaunch({
+          exe: requested, args, cwd, env: { ...process.env, ...o.env }, vulkan,
+          d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation } : null,
+        });
+        exe = launch.exe;
+        spawnArgs = launch.args;
+        env = launch.env;
+        notes.push(...launch.notes);
+      } else {
+        env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan!) };
+        notes.push(`layer: ${layerDir}`);
+      }
+      if (validationNote) notes.push(validationNote);
     }
     const session = new LiveSession(`app-${++this._counter}`, `${path.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
-    session.appendLog(`launching ${exe} ${args.join(" ")}`);
-    session.appendLog(note);
+    session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
+    for (const note of notes) session.appendLog(note);
     this._sessions.set(session.id, session);
     this._latest = session;
-    session.startProcess(exe, args, o.cwd && fs.existsSync(o.cwd) ? o.cwd : path.dirname(exe), env);
+    session.startProcess(exe, spawnArgs, cwd, env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
     return session;
   }

@@ -7,7 +7,8 @@ counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspe
 the first API: it works with any uninstrumented Vulkan application by interposing a Vulkan layer,
 and it targets Unity Vulkan players first. The UI and protocol are API-neutral (see Multi-API
 below), so another API is another capture library speaking the same protocol. Metal is the second
-one, described in `metal/README.md`; what follows is the Vulkan side.
+one, described in `metal/README.md`, and Direct3D 12 the third, described in `d3d12/README.md`;
+what follows is the Vulkan side.
 
 ## Design decisions
 
@@ -22,7 +23,7 @@ one, described in `metal/README.md`; what follows is the Vulkan side.
 | Distribution | electron-builder installers (Windows NSIS, Linux .deb, macOS .dmg) bundling the capture library under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
 | Handles | Pass-through. The layer never wraps Vulkan handles; it keeps side tables keyed by handle and uses the loader's dispatch pointer (first word of each dispatchable handle) to find its per-instance/per-device state. This is what RenderDoc's `vk_dispatchtables.cpp` does for tables, and it avoids RenderDoc's 20k+ lines of handle unwrapping. |
 | Code generation | Everything mechanical is generated from `vk.xml` (Vulkan-Headers submodule): dispatch tables, forwarding entry points, object create/destroy hooks, and JSON serializers for every struct, enum, bitmask and command signature. |
-| Multi-API | Vulkan first, Metal second. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. |
+| Multi-API | Vulkan first, Metal second, Direct3D 12 third. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. `d3d12/` is a library injected at process start by `dxinsp_launch.exe` that hooks the D3D12 and DXGI entry points and vtables, synthesizes the pass boundaries D3D12 does not have, and speaks the Vulkan layer's wire format byte for byte (`d3d12/README.md`). On Windows every local target is started with both the layer and the library, and the API is known by which one connects. |
 | Reference code | WebGPU Inspector (MIT), RenderDoc (MIT), GFXReconstruct (Apache-2.0). Adapted files name their origin; see `THIRD_PARTY_LICENSES.md`. |
 
 ## Components
@@ -41,6 +42,13 @@ one, described in `metal/README.md`; what follows is the Vulkan side.
 +---------------------------+                                              |     widgets)             |
                                                                            +--------------------------+
 ```
+
+The right half is the same for every API. On macOS `metal/` takes the layer's place, inserted by
+dyld (`metal/README.md`). On Windows `d3d12/` sits beside the layer: `dxinsp_launch.exe` starts the
+target suspended and injects `dxinsp_capture.dll`, which hooks `D3D12CreateDevice` and
+`CreateDXGIFactory*` and patches the vtables of the objects they hand out; `dxinsp_shader.exe`
+gives the app DXBC/DXIL disassembly, embedded HLSL and reflection the way `spirv-dis` and
+`spirv-cross` give it SPIR-V's (`d3d12/README.md`).
 
 ### vulkan/ — the Vulkan layer
 
@@ -504,7 +512,8 @@ See [REPLAY.md](REPLAY.md).
   `utils/` are TypeScript ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds
   the object model, database, texture decoding, SPIR-V reflection, vertex format decoding, the
   buffer layout parser, the render pass decoder and the frame rules; `metal/` the Metal command
-  tables, reflection and resource source.
+  tables, reflection and resource source; `d3d12/` the D3D12 command tables and the reader of the
+  reflection the D3D12 library sends with each pipeline.
 
 #### Frame Stats
 

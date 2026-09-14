@@ -6,7 +6,8 @@
 // from every API at once, each API contributes a table and a capture selects the one for its own
 // (`CaptureData.sets`, from the `api` the capture library reported or the `.gpucap` recorded).
 //
-// The tables themselves live beside the rest of each API's code, in `vulkan/` and `metal/`.
+// The tables themselves live beside the rest of each API's code, in `vulkan/`, `metal/` and `d3d12/`.
+import { D3D12_SETS, d3d12PipelineOf } from "./d3d12/command_sets.js";
 import { METAL_SETS } from "./metal/command_sets.js";
 import { VULKAN_SETS } from "./vulkan/command_sets.js";
 import { isObject, str } from "./vulkan/vulkan_object.js";
@@ -175,6 +176,14 @@ export function labelNameOf(cmd: CaptureCommand): string {
   return info ? str(info.pLabelName ?? info.pMarkerName) : a && a.label !== undefined ? str(a.label) : cmd.method;
 }
 
+/**
+ * The pipeline a BIND_PIPELINE command binds. Vulkan and Metal record it as `pipeline`; the D3D12
+ * library may keep SetPipelineState's own parameter name.
+ */
+export function boundPipelineOf(a: ArgObject | null | undefined): ArgValue | undefined {
+  return a ? a.pipeline ?? d3d12PipelineOf(a) : undefined;
+}
+
 export function setsFor(api: CaptureApi): CommandSets {
-  return api === "metal" ? METAL_SETS : VULKAN_SETS;
+  return api === "metal" ? METAL_SETS : api === "d3d12" ? D3D12_SETS : VULKAN_SETS;
 }

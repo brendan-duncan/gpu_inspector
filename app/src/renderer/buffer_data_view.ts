@@ -206,7 +206,8 @@ function renderArray(ui: Widget, element: ReflType, count: number, stride: numbe
 
 /** Renders a flat list of index values with the same paging as arrays. */
 export function renderIndexData(parent: Widget, view: DataView, indexType: string, firstIndex: number, indexCount: number): void {
-  const bytes = indexType.includes("UINT32") ? 4 : indexType.includes("UINT8") ? 1 : 2;
+  // VK_INDEX_TYPE_UINT16, MTLIndexTypeUInt32, DXGI_FORMAT_R16_UINT: the width is in the name.
+  const bytes = /32/.test(indexType) ? 4 : /UINT8/i.test(indexType) ? 1 : 2;
   const available = Math.floor(view.byteLength / bytes);
   const element: ScalarType = { kind: "scalar", base: "uint", width: bytes * 8, size: bytes };
   const start = Math.min(firstIndex, available);

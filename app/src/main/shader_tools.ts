@@ -1,10 +1,16 @@
 // The Vulkan SDK's shader tools: where they are, spirv-dis / spirv-cross turning a SPIR-V payload
 // into text, and the compilers turning edited source back into SPIR-V. No Electron here, so the
 // MCP server (src/mcp/) shows and replaces shaders the way the Inspect tab does.
+//
+// A D3D12 pipeline's shader is a DXBC/DXIL container instead: its text comes from
+// dxinsp_shader.exe, built beside the D3D12 capture library (d3d12/README.md, "Shaders"), and an
+// edited HLSL goes back through dxc to bytecode (compileDxil).
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { SHADER_TOOL, findD3D12ShaderTool } from "./d3d12.js";
 import type { CompileShaderResult, DebugTranslationResult, ShaderLanguage, ShaderTextMode, ShaderTextResult } from "../shared/protocol.js";
 
 let tempCounter = 0;
@@ -12,6 +18,10 @@ let tempCounter = 0;
 function tempBase(): string {
   return path.join(os.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
 }
+
+// The bundle is ESM, so there is no __dirname. The app's bundle is dist/main/main.js, the MCP
+// server's claude-plugin/server/gpu-inspector-mcp.mjs: the checkout is two or three levels up.
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 /** A tool from INSPECTOR_TOOLS_DIR or the Vulkan SDK, else the bare name for PATH to resolve. */
 export function findTool(name: string): string {
@@ -21,6 +31,79 @@ export function findTool(name: string): string {
   if (process.env.VULKAN_SDK) candidates.push(path.join(process.env.VULKAN_SDK, "Bin", exe), path.join(process.env.VULKAN_SDK, "bin", exe));
   for (const c of candidates) if (fs.existsSync(c)) return c;
   return exe; // hope it is on PATH
+}
+
+/** Whether the bytes are a DXBC/DXIL container (a D3D12 pipeline's shader) rather than SPIR-V. */
+export function isDxbc(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 4 && bytes[0] === 0x44 && bytes[1] === 0x58 && bytes[2] === 0x42 && bytes[3] === 0x43;  // "DXBC"
+}
+
+/**
+ * dxinsp_shader.exe: from INSPECTOR_TOOLS_DIR, else where the D3D12 capture library is looked for
+ * (INSPECTOR_D3D12_DIR, the build tree of this checkout or of GPU_INSPECTOR_ROOT, the packaged
+ * app's layer directory); null when it is not built.
+ */
+export function findShaderTool(): string | null {
+  if (process.env.INSPECTOR_TOOLS_DIR) {
+    const c = path.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
+    if (fs.existsSync(c)) return c;
+  }
+  const roots = [path.resolve(moduleDir, "..", ".."), path.resolve(moduleDir, "..", "..", "..")];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  const packaged = process.resourcesPath ? [path.join(process.resourcesPath, "layer")] : [];
+  return findD3D12ShaderTool(roots, packaged);
+}
+
+const NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (d3d12/README.md)`;
+
+/** One source file dxinsp_shader --sources printed, however it spelled the pair. */
+function embeddedSource(entry: unknown): { name: string; text: string } | null {
+  if (Array.isArray(entry) && entry.length >= 2) return { name: String(entry[0]), text: String(entry[1]) };
+  if (entry && typeof entry === "object") {
+    const o = entry as Record<string, unknown>;
+    const text = o.text ?? o.source ?? o.contents;
+    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text };
+  }
+  return null;
+}
+
+/**
+ * A DXBC/DXIL container as its disassembly ("dis") or as the HLSL embedded in it ("hlsl": compiled
+ * with -Zi -Qembed_debug), through dxinsp_shader.exe. Nothing cross-compiles it to GLSL or MSL.
+ */
+function dxbcText(bytes: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult> {
+  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its embedded HLSL source` });
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.dxbc`;
+    fs.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    execFile(tool, [mode === "dis" ? "--disassemble" : "--sources", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore
+      }
+      if (err) {
+        resolve({ ok: false, text: (err as NodeJS.ErrnoException).code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
+        return;
+      }
+      if (mode === "dis") {
+        resolve({ ok: true, text: stdout });
+        return;
+      }
+      let sources: { name: string; text: string }[];
+      try {
+        const parsed: unknown = JSON.parse(stdout);
+        sources = (Array.isArray(parsed) ? parsed : []).map(embeddedSource).filter((s): s is { name: string; text: string } => s !== null);
+      } catch {
+        resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
+        return;
+      }
+      if (!sources.length) resolve({ ok: false, text: "no embedded source: compile with dxc -Zi -Qembed_debug" });
+      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}\n${s.text.endsWith("\n") ? s.text : `${s.text}\n`}`).join("\n") });
+    });
+  });
 }
 
 export interface ShaderTextOptions {
@@ -33,8 +116,13 @@ export interface ShaderTextOptions {
   forceTemporary?: boolean;
 }
 
-/** SPIR-V as assembly (spirv-dis) or as GLSL, HLSL or MSL (spirv-cross). */
+/**
+ * SPIR-V as assembly (spirv-dis) or as GLSL, HLSL or MSL (spirv-cross). A DXBC/DXIL container
+ * (isDxbc) goes through dxinsp_shader.exe instead: "dis" is its disassembly, "hlsl" its embedded
+ * source, and the other modes say they are not available for it.
+ */
 export function shaderText(spirv: Uint8Array, mode: ShaderTextMode, options: ShaderTextOptions = {}): Promise<ShaderTextResult> {
+  if (isDxbc(spirv)) return dxbcText(spirv, mode);
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
     fs.writeFileSync(tmp, Buffer.from(spirv));
@@ -179,6 +267,58 @@ export function compileShader(source: string, language: ShaderLanguage, stage: s
         resolve({ ok: false, log: reason, tool: name });
       } else {
         resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
+
+/** dxc's target profile prefixes by the layer's stage names, for a D3D12 pipeline's stages. */
+const DXIL_PROFILES: Record<string, string> = {
+  vertex: "vs", fragment: "ps", tess_control: "hs", tess_eval: "ds", geometry: "gs", compute: "cs", task: "as", mesh: "ms",
+};
+
+/**
+ * HLSL compiled to DXIL bytecode with dxc for one stage of a D3D12 pipeline, the replacement the
+ * D3D12 capture library's ReplaceShader takes (the result's `spirv` holds the bytecode; the field
+ * keeps its name). `shaderModel` is the profile's suffix ("6_0", "6_6"): the pipeline's own,
+ * read from its reflection's `target`, so the replacement stays within what the device accepts.
+ * Debug information with the source embedded (-Zi -Qembed_debug), so the replacement keeps a
+ * source view in the Inspect panel.
+ */
+export function compileDxil(source: string, stage: string, entryPoint: string, shaderModel = "6_0", options: CompileOptions = {}): Promise<CompileShaderResult> {
+  const prefix = DXIL_PROFILES[stage];
+  if (!prefix) return Promise.resolve({ ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs.existsSync(d));
+    const src = `${base}.hlsl`;
+    const out = `${base}.dxil`;
+    fs.writeFileSync(src, source);
+    const tool = findTool("dxc");
+    const args = ["-T", `${prefix}_${shaderModel.replace(/^[^0-9]*/, "").replace(".", "_") || "6_0"}`, "-E", entryPoint || "main", "-Zi", "-Qembed_debug", "-Fo", out, src];
+    for (const dir of includeDirs) args.push("-I", dir);
+    execFile(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let bytecode: Uint8Array | undefined;
+      try {
+        if (fs.existsSync(out)) bytecode = new Uint8Array(fs.readFileSync(out));
+      } catch {
+        bytecode = undefined;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          // ignore
+        }
+      }
+      if (err || !bytecode || !isDxbc(bytecode)) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT"
+          ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR"
+          : err?.message ?? "dxc produced no output");
+        resolve({ ok: false, log: reason, tool: "dxc" });
+      } else {
+        resolve({ ok: true, spirv: bytecode, log, tool: "dxc" });
       }
     });
   });
