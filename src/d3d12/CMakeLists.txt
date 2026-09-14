@@ -70,6 +70,10 @@ add_library(dxinsp_capture SHARED
     src/shader_reflect.cpp
     src/shader_edit.h
     src/shader_edit.cpp
+    src/pass_record.h
+    src/overdraw.h
+    src/overdraw.cpp
+    src/pixel_history.cpp
     src/device_info.h
     src/device_info.cpp
     src/hooks.h
@@ -90,7 +94,7 @@ target_include_directories(dxinsp_capture PRIVATE
     "${DXINSP_ROOT}/src/vulkan/src")
 target_compile_definitions(dxinsp_capture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 target_compile_options(dxinsp_capture PRIVATE /W3 /bigobj)
-target_link_libraries(dxinsp_capture PRIVATE minhook d3d12 dxgi dxguid ws2_32 dbghelp)
+target_link_libraries(dxinsp_capture PRIVATE minhook d3d12 dxgi dxguid ws2_32 iphlpapi dbghelp)
 set_target_properties(dxinsp_capture PROPERTIES
     PREFIX ""
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -98,6 +102,10 @@ set_target_properties(dxinsp_capture PROPERTIES
 
 add_executable(dxinsp_launch launcher/main.cpp)
 target_compile_definitions(dxinsp_launch PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+# winmm: a millisecond timer while --watch polls for a process to start. psapi: EnumProcesses,
+# which is a fraction of the cost of a toolhelp snapshot when a poll has to be that quick
+# (launcher/main.cpp).
+target_link_libraries(dxinsp_launch PRIVATE winmm psapi)
 set_target_properties(dxinsp_launch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # The shader tool shares the reflection code with the library; it needs the log and the generated

@@ -12,6 +12,29 @@
 
 namespace dxinsp {
 
+/**
+ * What a measurement changes in its copy of a graphics pipeline (overdraw.h). Everything else --
+ * the vertex, hull, domain, geometry and mesh stages, the input layout, the rasterizer state, the
+ * root signature -- is the application's, so the copy rasterizes exactly what the original did.
+ */
+struct PipelineVariant {
+    /** Replaces the pixel shader when `pixelShaderSize` is not zero. */
+    const void* pixelShader = nullptr;
+    size_t pixelShaderSize = 0;
+    /** One render target of this format, blended ONE + ONE and writing red only (the overdraw count). */
+    DXGI_FORMAT countFormat = DXGI_FORMAT_UNKNOWN;
+    /** The depth-stencil format of the attachment the measurement binds (UNKNOWN: none). */
+    bool setDepthFormat = false;
+    DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
+    bool disableDepth = false;         // DepthEnable FALSE
+    bool disableDepthWrite = false;    // DepthWriteMask ZERO
+    bool disableStencil = false;       // StencilEnable FALSE
+    bool disableStencilWrites = false; // every stencil write mask cleared (the operations still run)
+    bool disableCull = false;          // CullMode NONE
+    bool disableColorWrites = false;   // every target's write mask cleared
+    bool singleSample = false;         // one sample, no alpha to coverage
+};
+
 class ShaderEditor {
 public:
     static ShaderEditor& Get();
@@ -36,6 +59,19 @@ public:
 
     /** Retired replacements are destroyed at a later present, once no list can reference them. */
     void OnPresent();
+
+    /**
+     * A copy of a graphics pipeline with the measurement's changes (overdraw.h), cached on the
+     * pipeline under `key` and destroyed with it. The pointer is borrowed: a caller whose command
+     * list may still run takes a reference of its own. False with `error` when the pipeline's
+     * description was not recorded, when it is not a graphics pipeline, or when the copy did not
+     * build (an embedded root signature in the pixel shader it replaces, a stream subobject this
+     * library does not know).
+     */
+    bool VariantPipeline(ID3D12PipelineState* pipeline, uint64_t key, const PipelineVariant& variant,
+                         ID3D12PipelineState** out, std::string& error);
+    /** Whether the pipeline's vertex (or mesh) bytecode is a DXIL container: its copy needs a DXIL pixel shader. */
+    bool PipelineIsDxil(ID3D12PipelineState* pipeline);
 
 private:
     ShaderEditor() = default;

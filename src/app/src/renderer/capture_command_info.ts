@@ -509,12 +509,13 @@ export class CommandInfoView {
         return;
       }
       if (d3d12) {
-        // DXBC / DXIL: the HLSL the compiler embedded (-Zi -Qembed_debug), read by the app's
-        // shader tool; the disassembly is in the pipeline's Inspect section.
+        // DXBC / DXIL: the HLSL dxc embedded (-Zi) or kept in the PDB the symbol directories
+        // name (-Zs), read by the app's shader tool; the disassembly is in the pipeline's
+        // Inspect section.
         const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });
-        const r = await window.inspector.shaderText(data, "hlsl");
+        const r = await window.inspector.shaderText(data, "hlsl", this.panel.window.symbolDirs);
         if (r.ok) new Widget("pre", sourceGrp.body, { html: highlight(r.text, "hlsl"), class: "shader-text" });
-        else new Div(sourceGrp.body, { text: r.text || "No embedded HLSL source: compile with -Zi -Qembed_debug to see it here. The pipeline's Inspect section shows the disassembly.", class: "text-muted font-sm" });
+        else new Div(sourceGrp.body, { text: r.text || "No HLSL source for this shader. The pipeline's Inspect section shows the disassembly.", class: "text-muted font-sm" });
         return;
       }
       const sourceGrp = new collapsible(details, { label: "Source", collapsed: false, class: "shader-source-section" });

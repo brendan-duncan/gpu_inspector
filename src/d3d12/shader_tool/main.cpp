@@ -4,8 +4,14 @@
 //
 //   dxinsp_shader --disassemble <file>   the disassembly, as text
 //   dxinsp_shader --reflect <file>       the reflection JSON (shader_reflect.h)
-//   dxinsp_shader --sources <file>       a JSON array of {"name", "text"}: the embedded HLSL (-Zi -Qembed_debug)
-//   dxinsp_shader --info <file>          {"stage", "entryPoint", "target", "dxil"}
+//   dxinsp_shader --sources <file> [--pdb <file>]... [--pdb-dir <dir>]...
+//                                        a JSON array of {"name", "text"}: the HLSL dxc embedded
+//                                        (-Zi), else the HLSL in the PDB it wrote beside the build
+//                                        (-Zs with -Fd), named by --pdb or looked for under each
+//                                        --pdb-dir. An entry read out of a PDB carries "from", the
+//                                        file it came from. When there is no source anywhere the
+//                                        array is empty and the reason goes to stderr, exit 0.
+//   dxinsp_shader --info <file>          {"stage", "entryPoint", "target", "dxil", "debugName"}
 //
 // Output goes to stdout as UTF-8, errors to stderr with exit code 1.
 #include "common.h"
@@ -24,7 +30,9 @@ using namespace dxinsp;
 namespace {
 
 int Usage() {
-    fputs("usage: dxinsp_shader --disassemble|--reflect|--sources|--info <bytecode file>\n", stderr);
+    fputs("usage: dxinsp_shader --disassemble|--reflect|--sources|--info <bytecode file>\n"
+          "       --sources also takes --pdb <file> and --pdb-dir <dir>, repeatable, for a shader\n"
+          "       built with -Zs whose source dxc wrote to a PDB instead of into the container\n", stderr);
     return 1;
 }
 
@@ -48,17 +56,44 @@ int Fail(const std::string& message) {
     return 1;
 }
 
+struct Options {
+    std::wstring mode;
+    std::wstring file;
+    std::vector<std::wstring> pdbFiles;
+    std::vector<std::wstring> pdbDirs;
+};
+
+/** The command line: the mode, one bytecode file, and repeatable --pdb / --pdb-dir. */
+bool ParseArgs(int argc, wchar_t** argv, Options& out) {
+    for (int i = 1; i < argc; ++i) {
+        std::wstring arg = argv[i];
+        const bool wantsValue = arg == L"--pdb" || arg == L"--pdb-dir";
+        if (wantsValue && i + 1 >= argc) return false;
+        if (arg == L"--pdb") out.pdbFiles.push_back(argv[++i]);
+        else if (arg == L"--pdb-dir") out.pdbDirs.push_back(argv[++i]);
+        else if (arg.rfind(L"--", 0) == 0) {
+            if (!out.mode.empty()) return false;
+            out.mode = arg;
+        } else {
+            if (!out.file.empty()) return false;
+            out.file = arg;
+        }
+    }
+    return !out.mode.empty() && !out.file.empty();
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 3) return Usage();
-    std::wstring mode = argv[1];
+    Options options;
+    if (!ParseArgs(argc, argv, options)) return Usage();
     std::vector<uint8_t> bytes;
-    if (!ReadFile(argv[2], bytes)) return Fail("cannot read " + Narrow(argv[2]));
-    if (!IsShaderContainer(bytes.data(), bytes.size())) return Fail(Narrow(argv[2]) + " is not a DXBC/DXIL container");
+    if (!ReadFile(options.file.c_str(), bytes)) return Fail("cannot read " + Narrow(options.file.c_str()));
+    if (!IsShaderContainer(bytes.data(), bytes.size())) return Fail(Narrow(options.file.c_str()) + " is not a DXBC/DXIL container");
     // The disassembly and the sources may hold any UTF-8; a text-mode stdout would translate it.
     _setmode(_fileno(stdout), _O_BINARY);
 
+    const std::wstring& mode = options.mode;
     if (mode == L"--disassemble") {
         std::string text, error;
         if (!DisassembleShader(bytes.data(), bytes.size(), text, error)) return Fail(error);
@@ -72,17 +107,21 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (mode == L"--sources") {
-        auto sources = EmbeddedSources(bytes.data(), bytes.size());
+        ShaderSourceFiles sources = FindShaderSources(bytes.data(), bytes.size(), options.pdbFiles, options.pdbDirs);
         JsonWriter w;
         w.BeginArray();
-        for (auto& [name, text] : sources) {
+        for (auto& [name, text] : sources.files) {
             w.BeginObject();
             w.Key("name"); w.String(name);
             w.Key("text"); w.String(text);
+            // Where the text came from, for a source the container itself does not carry.
+            if (!sources.pdb.empty()) { w.Key("from"); w.String(sources.pdb); }
             w.EndObject();
         }
         w.EndArray();
         WriteOut(w.str() + "\n");
+        // An empty array is not a failure: the reason belongs with it, and the caller shows it.
+        if (sources.files.empty() && !sources.note.empty()) fprintf(stderr, "%s\n", sources.note.c_str());
         return 0;
     }
     if (mode == L"--info") {
@@ -94,6 +133,10 @@ int wmain(int argc, wchar_t** argv) {
         w.Key("entryPoint"); w.String(info.entryPoint);
         w.Key("target"); w.String(info.target);
         w.Key("dxil"); w.Boolean(info.dxil);
+        // The PDB dxc wrote for this container, for finding it on this machine.
+        std::string debugName = ShaderDebugName(bytes.data(), bytes.size());
+        if (!debugName.empty()) { w.Key("debugName"); w.String(debugName); }
+        w.Key("hash"); w.String(ShaderHashHex(bytes.data(), bytes.size()));
         if (!info.error.empty()) { w.Key("error"); w.String(info.error); }
         w.EndObject();
         WriteOut(w.str() + "\n");

@@ -37,8 +37,9 @@ foreach(spec ${SHADERS})
     list(GET parts 3 out)
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${out}"
-        # -Zi -Qembed_debug keeps the HLSL source and line information inside the DXIL container
-        # (the inspector's Source view and line links).
+        # -Zi keeps the HLSL source and line information inside the DXIL container (the
+        # inspector's Source view and line links); -Qembed_debug adds nothing to that, it only
+        # silences dxc's warning about having no -Fd to write a PDB to instead.
         COMMAND ${DXC} -T ${profile} -E ${entry} -Zi -Qembed_debug
                 -Fo "${CMAKE_CURRENT_BINARY_DIR}/${out}" "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}"

@@ -61,9 +61,10 @@ A shader module or pipeline has a **Shader Code** section per stage with these v
 
 On Metal, a library shows the Metal Shading Language it was compiled from, when it was compiled on
 the spot rather than loaded as a precompiled `metallib`. On Direct3D 12, a pipeline state's stages
-show their DXBC or DXIL disassembly, the HLSL embedded by `dxc -Zi -Qembed_debug` as the Source
-view, and a Reflection section from the bytecode (DXIL needs `dxcompiler.dll`; see
-[Direct3D 12](D3D12.md)).
+show their DXBC or DXIL disassembly, their HLSL as the Source view — what `dxc -Zi` embedded in
+the container, or what `dxc -Zs` wrote to a PDB beside the build, found under the session's
+**Symbol directories** — and a Reflection section from the bytecode (DXIL needs `dxcompiler.dll`;
+see [Direct3D 12](D3D12.md)).
 
 ### Editing a shader
 

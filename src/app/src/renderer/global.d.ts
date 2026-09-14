@@ -94,10 +94,11 @@ export interface InspectorApi {
   onRecents(cb: (recents: LaunchConfig[]) => void): void;
   /**
    * A shader payload as text: SPIR-V through spirv-dis / spirv-cross; a D3D12 pipeline's DXBC/DXIL
-   * container through dxinsp_shader.exe ("dis" its disassembly, "hlsl" the source embedded in it,
-   * other modes not available).
+   * container through dxinsp_shader.exe ("dis" its disassembly, "hlsl" its HLSL source, other
+   * modes not available). `pdbDirs` (the session's symbol directories) are searched for the PDB a
+   * shader built with dxc -Zs kept its source in.
    */
-  shaderText(spirv: Uint8Array, mode: ShaderTextMode): Promise<ShaderTextResult>;
+  shaderText(spirv: Uint8Array, mode: ShaderTextMode, pdbDirs?: string[]): Promise<ShaderTextResult>;
   /** Compiles shader source to SPIR-V with the Vulkan SDK's compilers (shader editor). */
   compileShader(source: string, language: ShaderLanguage, stage: string, entryPoint: string, spirvVersion: string): Promise<CompileShaderResult>;
   /**

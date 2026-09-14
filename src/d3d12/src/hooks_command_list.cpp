@@ -14,11 +14,13 @@
 #include "d3d12_vtables.gen.h"
 #include "descriptors.h"
 #include "json.h"
+#include "overdraw.h"
 #include "resources.h"
 #include "serialize.h"
 #include "shader_edit.h"
 #include "tracker.h"
 
+#include <array>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -35,6 +37,30 @@ using List = ID3D12GraphicsCommandList10;
 
 inline CaptureManager& Cap() { return CaptureManager::Get(); }
 inline CommandRecorder* Rec(List* This) { return CaptureManager::Get().RecorderFor(This); }
+
+// ---------------------------------------------------------------------------------------------
+// Keeping a call so a measurement can issue the pass again (overdraw.h). Every call that shapes
+// what a render pass rasterizes is kept beside the recorded command, as a closure holding its
+// arguments with a reference on each object it names; barriers, queries and everything that does
+// not change rasterization are not. Nothing is kept unless a capture with Overdraw or a pixel
+// history is recording, which PassRecordingActive() answers with one atomic load.
+
+inline void LogOp(CommandRecorder* rec, OpKey key, PassOp op) {
+    if (PassRecordingActive()) LogPassOp(rec, key, std::move(op));
+}
+
+/** A reference on one of the application's objects, held for as long as a kept call may be issued. */
+template <typename T>
+inline ComPtr<T> Held(T* object) {
+    if (object) object->AddRef();
+    return ComPtr<T>(object);
+}
+
+/** The list a kept call is issued on, as the newest interface: the object answered to it when the application called. */
+inline List* AsList(ID3D12GraphicsCommandList* list) { return static_cast<List*>(list); }
+
+/** Which root view setter a kept call is (RecordRootView serves all six). */
+enum class RootView { ConstantBuffer, ShaderResource, UnorderedAccess };
 
 // ---------------------------------------------------------------------------------------------
 // Per-object facts looked up from the tracker's args, cached by pointer. The tracked id is kept
@@ -300,18 +326,39 @@ uint32_t RtvIncrement(CommandRecorder* rec) {
 // ---------------------------------------------------------------------------------------------
 // Root parameters: the three shapes every graphics/compute pair shares.
 
+/**
+ * A root argument's key: the parameter index, and for root constants the offset within it, so two
+ * SetGraphicsRoot32BitConstants that fill different parts of one parameter do not undo each other.
+ */
+inline uint32_t RootSlot(UINT index, UINT offsetIn32BitValues = 0) {
+    return (index << 16) | (offsetIn32BitValues & 0xFFFF);
+}
+
 void RecordRootTable(CommandRecorder* rec, const char* method, bool compute, UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base) {
     Args args;
     args.u("RootParameterIndex", index).gpuHandle("BaseDescriptor", base);
     rec->Record(method, args.str());
     Cap().SnapshotRootTable(rec, compute, index, base);
+    if (compute) return;   // only the graphics root shapes what a render pass rasterizes
+    LogOp(rec, OpKey::Slot(ops::kGraphicsRoot, RootSlot(index)),
+          [index, base](ID3D12GraphicsCommandList* list, PassReplay&) { list->SetGraphicsRootDescriptorTable(index, base); });
 }
 
-void RecordRootView(CommandRecorder* rec, const char* method, bool compute, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+void RecordRootView(CommandRecorder* rec, const char* method, bool compute, RootView kind, UINT index,
+                    D3D12_GPU_VIRTUAL_ADDRESS address) {
     Args args;
     args.u("RootParameterIndex", index).address("BufferLocation", address);
     rec->Record(method, args.str());
     Cap().SnapshotRootView(rec, compute, index, address);
+    if (compute) return;
+    LogOp(rec, OpKey::Slot(ops::kGraphicsRoot, RootSlot(index)),
+          [kind, index, address](ID3D12GraphicsCommandList* list, PassReplay&) {
+              switch (kind) {
+                  case RootView::ConstantBuffer: list->SetGraphicsRootConstantBufferView(index, address); break;
+                  case RootView::ShaderResource: list->SetGraphicsRootShaderResourceView(index, address); break;
+                  case RootView::UnorderedAccess: list->SetGraphicsRootUnorderedAccessView(index, address); break;
+              }
+          });
 }
 
 /** Root constants under their D3D12 names and, beside them, the UI's push-constant shape (README.md). */
@@ -330,6 +377,12 @@ void RecordRootConstants(CommandRecorder* rec, const char* method, bool compute,
         args.u("register", layout->parameters[index].shaderRegister).u("space", layout->parameters[index].space);
     }
     rec->Record(method, args.str());
+    if (compute || !data || !num) return;
+    std::vector<UINT> values(static_cast<const UINT*>(data), static_cast<const UINT*>(data) + num);
+    LogOp(rec, OpKey::Slot(ops::kGraphicsRoot, RootSlot(index, destOffset)),
+          [index, destOffset, values = std::move(values)](ID3D12GraphicsCommandList* list, PassReplay&) {
+              list->SetGraphicsRoot32BitConstants(index, (UINT)values.size(), values.data(), destOffset);
+          });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -355,6 +408,14 @@ HRESULT STDMETHODCALLTYPE Hook_Reset(List* This, ID3D12CommandAllocator* pAlloca
         args.ref("pAllocator", pAllocator, "ID3D12CommandAllocator").ref("pInitialState", pInitialState, "ID3D12PipelineState");
         rec->Record("Reset", args.str());
         rec->state().pipeline = pInitialState;
+        // Reset's initial pipeline is the only bind many engines make: the test application, and
+        // Unity's D3D12 player, both hand the pipeline to Reset rather than SetPipelineState.
+        if (pInitialState) {
+            LogOp(rec, OpKey::Replace(ops::kPipeline), [held = Held(pInitialState)](ID3D12GraphicsCommandList* list,
+                                                                                   PassReplay& replay) {
+                replay.SetPipeline(list, held.get());
+            });
+        }
     }
     return hr;
 }
@@ -383,7 +444,13 @@ void STDMETHODCALLTYPE Hook_ClearState(List* This, ID3D12PipelineState* pPipelin
     Args args;
     args.ref("pPipelineState", pPipelineState, "ID3D12PipelineState");
     rec->Record("ClearState", args.str());
-    // ClearState unbinds everything except the pipeline it is given.
+    // ClearState unbinds everything except the pipeline it is given, so nothing kept of the list
+    // is still in effect.
+    OnMeasuredListClearState(This);
+    if (pPipelineState) {
+        LogOp(rec, OpKey::Replace(ops::kPipeline),
+              [held = Held(pPipelineState)](ID3D12GraphicsCommandList* list, PassReplay& replay) { replay.SetPipeline(list, held.get()); });
+    }
     ListState& s = rec->state();
     uint32_t depth = s.appQueryDepth;
     s = ListState{};
@@ -406,6 +473,13 @@ void STDMETHODCALLTYPE Hook_DrawInstanced(List* This, UINT VertexCountPerInstanc
         .u("StartVertexLocation", StartVertexLocation).u("StartInstanceLocation", StartInstanceLocation);
     rec->Record("DrawInstanced", args.str());
     Cap().OnDraw(rec);
+    LogOp(rec, OpKey::DrawCall(),
+          [VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation](ID3D12GraphicsCommandList* list,
+                                                                                             PassReplay& replay) {
+              replay.IssueDraw(list, [&](ID3D12GraphicsCommandList* on) {
+                  on->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
+              });
+          });
 }
 
 void STDMETHODCALLTYPE Hook_DrawIndexedInstanced(List* This, UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation, UINT StartInstanceLocation) {
@@ -421,6 +495,14 @@ void STDMETHODCALLTYPE Hook_DrawIndexedInstanced(List* This, UINT IndexCountPerI
         .u("StartInstanceLocation", StartInstanceLocation);
     rec->Record("DrawIndexedInstanced", args.str());
     Cap().OnDraw(rec);
+    LogOp(rec, OpKey::DrawCall(),
+          [IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
+           StartInstanceLocation](ID3D12GraphicsCommandList* list, PassReplay& replay) {
+              replay.IssueDraw(list, [&](ID3D12GraphicsCommandList* on) {
+                  on->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
+                                           StartInstanceLocation);
+              });
+          });
 }
 
 void STDMETHODCALLTYPE Hook_Dispatch(List* This, UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) {
@@ -447,6 +529,12 @@ void STDMETHODCALLTYPE Hook_DispatchMesh(List* This, UINT ThreadGroupCountX, UIN
     args.u("ThreadGroupCountX", ThreadGroupCountX).u("ThreadGroupCountY", ThreadGroupCountY).u("ThreadGroupCountZ", ThreadGroupCountZ);
     rec->Record("DispatchMesh", args.str());
     Cap().OnDraw(rec);
+    LogOp(rec, OpKey::DrawCall(),
+          [ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ](ID3D12GraphicsCommandList* list, PassReplay& replay) {
+              replay.IssueDraw(list, [&](ID3D12GraphicsCommandList* on) {
+                  AsList(on)->DispatchMesh(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+              });
+          });
 }
 
 void STDMETHODCALLTYPE Hook_DispatchRays(List* This, const D3D12_DISPATCH_RAYS_DESC* pDesc) {
@@ -496,6 +584,9 @@ void STDMETHODCALLTYPE Hook_ExecuteIndirect(List* This, ID3D12CommandSignature* 
     if (pCountBuffer) ids.push_back(Cap().QueueBufferCapture(rec, pCountBuffer, CountBufferOffset, 4));
     rec->SetExtraOnLast(BufferDataExtra(ids));
     if (inPass) Cap().OnDraw(rec);
+    // The draws are in a buffer the GPU reads, so a measurement cannot issue them one at a time
+    // or with a pipeline of its own: they are reported as not measured.
+    if (inPass) LogOp(rec, OpKey::DrawCall(), [](ID3D12GraphicsCommandList*, PassReplay& replay) { replay.Skip(); });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -657,6 +748,15 @@ void STDMETHODCALLTYPE Hook_ClearDepthStencilView(List* This, D3D12_CPU_DESCRIPT
     args.d("Depth", Depth).u("Stencil", Stencil).u("NumRects", NumRects);
     WriteRects(args.key("pRects"), NumRects, pRects);
     rec->Record("ClearDepthStencilView", args.str());
+    // A D3D12 pass has no load action: a clear inside it is what a measurement's copy of the
+    // attachment has to be given too.
+    std::vector<D3D12_RECT> rects(pRects, pRects + (pRects ? NumRects : 0));
+    LogOp(rec, OpKey::Ordered(ops::kClear),
+          [DepthStencilView, ClearFlags, Depth, Stencil, rects = std::move(rects)](ID3D12GraphicsCommandList* list,
+                                                                                  PassReplay& replay) {
+              replay.ClearDepthStencil(list, DepthStencilView, ClearFlags, Depth, Stencil, (UINT)rects.size(),
+                                       rects.empty() ? nullptr : rects.data());
+          });
 }
 
 void STDMETHODCALLTYPE Hook_ClearRenderTargetView(List* This, D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView, const FLOAT ColorRGBA[4], UINT NumRects, const D3D12_RECT* pRects) {
@@ -673,6 +773,14 @@ void STDMETHODCALLTYPE Hook_ClearRenderTargetView(List* This, D3D12_CPU_DESCRIPT
     args.u("NumRects", NumRects);
     WriteRects(args.key("pRects"), NumRects, pRects);
     rec->Record("ClearRenderTargetView", args.str());
+    std::vector<D3D12_RECT> rects(pRects, pRects + (pRects ? NumRects : 0));
+    std::array<FLOAT, 4> color{};
+    if (ColorRGBA) std::copy(ColorRGBA, ColorRGBA + 4, color.begin());
+    LogOp(rec, OpKey::Ordered(ops::kClear),
+          [RenderTargetView, color, rects = std::move(rects)](ID3D12GraphicsCommandList* list, PassReplay& replay) {
+              replay.ClearTarget(list, RenderTargetView, color.data(), (UINT)rects.size(),
+                                 rects.empty() ? nullptr : rects.data());
+          });
 }
 
 void STDMETHODCALLTYPE Hook_ClearUnorderedAccessViewUint(List* This, D3D12_GPU_DESCRIPTOR_HANDLE ViewGPUHandleInCurrentHeap, D3D12_CPU_DESCRIPTOR_HANDLE ViewCPUHandle, ID3D12Resource* pResource, const UINT Values[4], UINT NumRects, const D3D12_RECT* pRects) {
@@ -734,6 +842,9 @@ void STDMETHODCALLTYPE Hook_IASetPrimitiveTopology(List* This, D3D12_PRIMITIVE_T
     args.e("PrimitiveTopology", ToString_D3D_PRIMITIVE_TOPOLOGY(PrimitiveTopology), PrimitiveTopology);
     rec->Record("IASetPrimitiveTopology", args.str());
     rec->state().topology = PrimitiveTopology;
+    LogOp(rec, OpKey::Replace(ops::kTopology), [PrimitiveTopology](ID3D12GraphicsCommandList* list, PassReplay&) {
+        list->IASetPrimitiveTopology(PrimitiveTopology);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_RSSetViewports(List* This, UINT NumViewports, const D3D12_VIEWPORT* pViewports) {
@@ -750,6 +861,10 @@ void STDMETHODCALLTYPE Hook_RSSetViewports(List* This, UINT NumViewports, const 
     for (UINT i = 0; pViewports && i < NumViewports; ++i) Write(w, pViewports[i]);
     w.EndArray();
     rec->Record("RSSetViewports", args.str());
+    std::vector<D3D12_VIEWPORT> viewports(pViewports, pViewports + (pViewports ? NumViewports : 0));
+    LogOp(rec, OpKey::Replace(ops::kViewports), [viewports = std::move(viewports)](ID3D12GraphicsCommandList* list, PassReplay&) {
+        list->RSSetViewports((UINT)viewports.size(), viewports.empty() ? nullptr : viewports.data());
+    });
 }
 
 void STDMETHODCALLTYPE Hook_RSSetScissorRects(List* This, UINT NumRects, const D3D12_RECT* pRects) {
@@ -763,6 +878,10 @@ void STDMETHODCALLTYPE Hook_RSSetScissorRects(List* This, UINT NumRects, const D
     args.u("NumRects", NumRects);
     WriteRects(args.key("pRects"), NumRects, pRects);
     rec->Record("RSSetScissorRects", args.str());
+    std::vector<D3D12_RECT> rects(pRects, pRects + (pRects ? NumRects : 0));
+    LogOp(rec, OpKey::Replace(ops::kScissors), [rects = std::move(rects)](ID3D12GraphicsCommandList* list, PassReplay& replay) {
+        replay.SetScissors(list, (UINT)rects.size(), rects.empty() ? nullptr : rects.data());
+    });
 }
 
 void STDMETHODCALLTYPE Hook_OMSetBlendFactor(List* This, const FLOAT BlendFactor[4]) {
@@ -775,6 +894,12 @@ void STDMETHODCALLTYPE Hook_OMSetBlendFactor(List* This, const FLOAT BlendFactor
     Args args;
     WriteFloats(args.key("BlendFactor"), BlendFactor, 4);
     rec->Record("OMSetBlendFactor", args.str());
+    std::array<FLOAT, 4> factor{};
+    if (BlendFactor) std::copy(BlendFactor, BlendFactor + 4, factor.begin());
+    const bool given = BlendFactor != nullptr;
+    LogOp(rec, OpKey::Replace(ops::kBlendFactor), [factor, given](ID3D12GraphicsCommandList* list, PassReplay&) {
+        list->OMSetBlendFactor(given ? factor.data() : nullptr);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_OMSetStencilRef(List* This, UINT StencilRef) {
@@ -787,6 +912,9 @@ void STDMETHODCALLTYPE Hook_OMSetStencilRef(List* This, UINT StencilRef) {
     Args args;
     args.u("StencilRef", StencilRef);
     rec->Record("OMSetStencilRef", args.str());
+    LogOp(rec, OpKey::Replace(ops::kStencilRef), [StencilRef](ID3D12GraphicsCommandList* list, PassReplay&) {
+        list->OMSetStencilRef(StencilRef);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_OMSetDepthBounds(List* This, FLOAT Min, FLOAT Max) {
@@ -799,6 +927,9 @@ void STDMETHODCALLTYPE Hook_OMSetDepthBounds(List* This, FLOAT Min, FLOAT Max) {
     Args args;
     args.d("Min", Min).d("Max", Max);
     rec->Record("OMSetDepthBounds", args.str());
+    LogOp(rec, OpKey::Replace(ops::kDepthBounds), [Min, Max](ID3D12GraphicsCommandList* list, PassReplay&) {
+        AsList(list)->OMSetDepthBounds(Min, Max);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_SetSamplePositions(List* This, UINT NumSamplesPerPixel, UINT NumPixels, D3D12_SAMPLE_POSITION* pSamplePositions) {
@@ -871,6 +1002,9 @@ void STDMETHODCALLTYPE Hook_OMSetFrontAndBackStencilRef(List* This, UINT FrontSt
     Args args;
     args.u("FrontStencilRef", FrontStencilRef).u("BackStencilRef", BackStencilRef);
     rec->Record("OMSetFrontAndBackStencilRef", args.str());
+    LogOp(rec, OpKey::Replace(ops::kStencilRef), [FrontStencilRef, BackStencilRef](ID3D12GraphicsCommandList* list, PassReplay&) {
+        AsList(list)->OMSetFrontAndBackStencilRef(FrontStencilRef, BackStencilRef);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_RSSetDepthBias(List* This, FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) {
@@ -925,6 +1059,8 @@ void STDMETHODCALLTYPE Hook_SetPipelineState(List* This, ID3D12PipelineState* pP
         .s("bindPoint", IsComputePipeline(pPipelineState) ? "compute" : "graphics");
     rec->Record("SetPipelineState", args.str());
     rec->state().pipeline = pPipelineState;
+    LogOp(rec, OpKey::Replace(ops::kPipeline),
+          [held = Held(pPipelineState)](ID3D12GraphicsCommandList* list, PassReplay& replay) { replay.SetPipeline(list, held.get()); });
 }
 
 void STDMETHODCALLTYPE Hook_SetPipelineState1(List* This, ID3D12StateObject* pStateObject) {
@@ -961,6 +1097,9 @@ void STDMETHODCALLTYPE Hook_SetGraphicsRootSignature(List* This, ID3D12RootSigna
     Args args;
     args.ref("pRootSignature", pRootSignature, "ID3D12RootSignature");
     rec->Record("SetGraphicsRootSignature", args.str());
+    // Setting a root signature drops every root argument, so the calls that set them are undone too.
+    LogOp(rec, OpKey::Replace(ops::kGraphicsRootSignature, ops::kGraphicsRoot),
+          [held = Held(pRootSignature)](ID3D12GraphicsCommandList* list, PassReplay&) { list->SetGraphicsRootSignature(held.get()); });
     rec->state().graphicsRootSignature = pRootSignature;
     rec->state().graphicsLayout = RootSignatures::Get().Find(pRootSignature);
 }
@@ -993,6 +1132,16 @@ void STDMETHODCALLTYPE Hook_SetDescriptorHeaps(List* This, UINT NumDescriptorHea
     for (UINT i = 0; ppDescriptorHeaps && i < NumDescriptorHeaps; ++i) WriteRef(w, ppDescriptorHeaps[i], "ID3D12DescriptorHeap");
     w.EndArray();
     rec->Record("SetDescriptorHeaps", args.str());
+    {
+        std::vector<ComPtr<ID3D12DescriptorHeap>> held;
+        for (UINT i = 0; ppDescriptorHeaps && i < NumDescriptorHeaps; ++i) held.push_back(Held(ppDescriptorHeaps[i]));
+        LogOp(rec, OpKey::Replace(ops::kDescriptorHeaps), [held = std::move(held)](ID3D12GraphicsCommandList* list, PassReplay&) {
+            std::vector<ID3D12DescriptorHeap*> raw;
+            raw.reserve(held.size());
+            for (const ComPtr<ID3D12DescriptorHeap>& h : held) raw.push_back(h.get());
+            list->SetDescriptorHeaps((UINT)raw.size(), raw.empty() ? nullptr : raw.data());
+        });
+    }
     // The call replaces both shader-visible heaps, whichever of them it names.
     ListState& s = rec->state();
     s.heaps[0] = s.heaps[1] = nullptr;
@@ -1072,7 +1221,7 @@ void STDMETHODCALLTYPE Hook_SetGraphicsRootConstantBufferView(List* This, UINT R
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetGraphicsRootConstantBufferView", false, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetGraphicsRootConstantBufferView", false, RootView::ConstantBuffer, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE Hook_SetComputeRootConstantBufferView(List* This, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
@@ -1081,7 +1230,7 @@ void STDMETHODCALLTYPE Hook_SetComputeRootConstantBufferView(List* This, UINT Ro
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetComputeRootConstantBufferView", true, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetComputeRootConstantBufferView", true, RootView::ConstantBuffer, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE Hook_SetGraphicsRootShaderResourceView(List* This, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
@@ -1090,7 +1239,7 @@ void STDMETHODCALLTYPE Hook_SetGraphicsRootShaderResourceView(List* This, UINT R
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetGraphicsRootShaderResourceView", false, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetGraphicsRootShaderResourceView", false, RootView::ShaderResource, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE Hook_SetComputeRootShaderResourceView(List* This, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
@@ -1099,7 +1248,7 @@ void STDMETHODCALLTYPE Hook_SetComputeRootShaderResourceView(List* This, UINT Ro
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetComputeRootShaderResourceView", true, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetComputeRootShaderResourceView", true, RootView::ShaderResource, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE Hook_SetGraphicsRootUnorderedAccessView(List* This, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
@@ -1108,7 +1257,7 @@ void STDMETHODCALLTYPE Hook_SetGraphicsRootUnorderedAccessView(List* This, UINT 
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetGraphicsRootUnorderedAccessView", false, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetGraphicsRootUnorderedAccessView", false, RootView::UnorderedAccess, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE Hook_SetComputeRootUnorderedAccessView(List* This, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
@@ -1117,7 +1266,7 @@ void STDMETHODCALLTYPE Hook_SetComputeRootUnorderedAccessView(List* This, UINT R
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, RootParameterIndex, BufferLocation);
-    if (rec) RecordRootView(rec, "SetComputeRootUnorderedAccessView", true, RootParameterIndex, BufferLocation);
+    if (rec) RecordRootView(rec, "SetComputeRootUnorderedAccessView", true, RootView::UnorderedAccess, RootParameterIndex, BufferLocation);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1143,6 +1292,11 @@ void STDMETHODCALLTYPE Hook_IASetIndexBuffer(List* This, const D3D12_INDEX_BUFFE
         w.EndObject();
     }
     rec->Record("IASetIndexBuffer", args.str());
+    const bool haveView = pView != nullptr;
+    const D3D12_INDEX_BUFFER_VIEW view = haveView ? *pView : D3D12_INDEX_BUFFER_VIEW{};
+    LogOp(rec, OpKey::Replace(ops::kIndexBuffer), [haveView, view](ID3D12GraphicsCommandList* list, PassReplay&) {
+        list->IASetIndexBuffer(haveView ? &view : nullptr);
+    });
     if (pView && pView->BufferLocation) {
         rec->SetExtraOnLast(BufferDataExtra({Cap().QueueAddressCapture(rec, pView->BufferLocation, pView->SizeInBytes)}));
     }
@@ -1172,6 +1326,14 @@ void STDMETHODCALLTYPE Hook_IASetVertexBuffers(List* This, UINT StartSlot, UINT 
         w.EndArray();
     }
     rec->Record("IASetVertexBuffers", args.str());
+    {
+        std::vector<D3D12_VERTEX_BUFFER_VIEW> views(pViews, pViews + (pViews ? NumViews : 0));
+        const bool given = pViews != nullptr;
+        LogOp(rec, OpKey::Range(ops::kVertexBuffers, StartSlot, NumViews),
+              [StartSlot, NumViews, given, views = std::move(views)](ID3D12GraphicsCommandList* list, PassReplay&) {
+                  list->IASetVertexBuffers(StartSlot, NumViews, given ? views.data() : nullptr);
+              });
+    }
     if (!pViews) return;
     std::vector<uint32_t> ids;
     for (UINT i = 0; i < NumViews; ++i) {
@@ -1246,17 +1408,34 @@ void STDMETHODCALLTYPE Hook_OMSetRenderTargets(List* This, UINT NumRenderTargetD
     } else {
         args.null("pDepthStencilDescriptor");
     }
+    // The copies a measurement starts from, taken before the application's first draw of the pass
+    // and while the list is outside a render-pass region (overdraw.h).
+    PrepareMeasuredPass(rec, targets);
     rec->Record("OMSetRenderTargets", args.str());
     Cap().BeginPass(rec, std::move(targets), false);
+    BeginMeasuredPass(rec);
 }
+
+std::string BeginRenderPassArgs(CommandRecorder* rec, UINT NumRenderTargets,
+                                const D3D12_RENDER_PASS_RENDER_TARGET_DESC* pRenderTargets,
+                                const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC* pDepthStencil,
+                                D3D12_RENDER_PASS_FLAGS Flags, std::vector<BoundTarget>& targets);
 
 void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, const D3D12_RENDER_PASS_RENDER_TARGET_DESC* pRenderTargets, const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC* pDepthStencil, D3D12_RENDER_PASS_FLAGS Flags) {
     auto orig = ORIG(BeginRenderPass);
     if (Internal()) return orig(This, NumRenderTargets, pRenderTargets, pDepthStencil, Flags);
     CommandRecorder* rec = Rec(This);
+    std::vector<BoundTarget> targets;
+    std::string argsJson;
+    // The arguments and the pass's targets are resolved before the forward, because the copies a
+    // measurement starts from have to be taken while the list is still outside the render-pass
+    // region: a copy may not interrupt one. The command itself is recorded after the forward, so
+    // the stream keeps the order the application made its calls in.
     if (rec) {
         Cap().EndPass(rec, true);
         Cap().OnComputePassEnd(rec);
+        argsJson = BeginRenderPassArgs(rec, NumRenderTargets, pRenderTargets, pDepthStencil, Flags, targets);
+        PrepareMeasuredPass(rec, targets);
     }
     CommandScope scope(rec);
     orig(This, NumRenderTargets, pRenderTargets, pDepthStencil, Flags);
@@ -1266,7 +1445,17 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     // after the first pass.
     HookCommandList(This);
     if (!rec) return;
-    std::vector<BoundTarget> targets;
+    rec->Record("BeginRenderPass", argsJson);
+    Cap().BeginPass(rec, std::move(targets), true);
+    BeginMeasuredPass(rec);
+}
+
+/** BeginRenderPass' arguments as the capture records them, with the pass's targets resolved beside them. */
+std::string BeginRenderPassArgs(CommandRecorder* rec, UINT NumRenderTargets,
+                                const D3D12_RENDER_PASS_RENDER_TARGET_DESC* pRenderTargets,
+                                const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC* pDepthStencil,
+                                D3D12_RENDER_PASS_FLAGS Flags, std::vector<BoundTarget>& targets) {
+    (void)rec;
     Args args;
     args.u("NumRenderTargets", NumRenderTargets);
     JsonWriter& w = args.key("pRenderTargets");
@@ -1280,7 +1469,12 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
         w.Key("BeginningAccess"); Write(w, d.BeginningAccess);
         w.Key("EndingAccess"); Write(w, d.EndingAccess);
         w.EndObject();
+        const size_t before = targets.size();
         AddTarget(targets, d.cpuDescriptor, t, false, i);
+        if (targets.size() > before) {
+            targets.back().beginAccess = d.BeginningAccess.Type;
+            targets.back().clearValue = d.BeginningAccess.Clear.ClearValue;
+        }
     }
     w.EndArray();
     args.key("pDepthStencil");
@@ -1297,11 +1491,17 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
         w.Key("DepthEndingAccess"); Write(w, d.DepthEndingAccess);
         w.Key("StencilEndingAccess"); Write(w, d.StencilEndingAccess);
         w.EndObject();
+        const size_t before = targets.size();
         AddTarget(targets, d.cpuDescriptor, t, true, NumRenderTargets);
+        if (targets.size() > before) {
+            targets.back().beginAccess = d.DepthBeginningAccess.Type;
+            targets.back().stencilBeginAccess = d.StencilBeginningAccess.Type;
+            targets.back().clearValue = d.DepthBeginningAccess.Clear.ClearValue;
+            targets.back().clearValue.DepthStencil.Stencil = d.StencilBeginningAccess.Clear.ClearValue.DepthStencil.Stencil;
+        }
     }
     Flags_D3D12_RENDER_PASS_FLAGS(args.key("Flags"), Flags);
-    rec->Record("BeginRenderPass", args.str());
-    Cap().BeginPass(rec, std::move(targets), true);
+    return args.str();
 }
 
 void STDMETHODCALLTYPE Hook_EndRenderPass(List* This) {
@@ -1404,6 +1604,9 @@ void STDMETHODCALLTYPE Hook_ExecuteBundle(List* This, ID3D12GraphicsCommandList*
     args.ref("pCommandList", pCommandList, "ID3D12GraphicsCommandList");
     rec->Record("ExecuteBundle", args.str());
     Cap().OnExecuteBundle(rec, pCommandList);
+    // A bundle sets state on the list that executes it and draws with it, so its kept calls become
+    // the list's; one recorded before the capture has none, and the pass says so.
+    OnMeasuredBundle(This, pCommandList);
 }
 
 // ---------------------------------------------------------------------------------------------

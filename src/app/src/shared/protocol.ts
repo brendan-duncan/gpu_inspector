@@ -357,9 +357,9 @@ export interface CapturePassTimingsMessage { action: "CapturePassTimings"; times
 
 /**
  * The overdraw of one render pass: how many fragments landed on each pixel when the pass was drawn
- * again with a counting fragment shader (a Metal capture with `overdraw`, src/metal/src/overdraw.h;
- * vkinsp_replay --overdraw measures the same for a Vulkan capture). Two per pass: with the pass's
- * depth and stencil tests, and without.
+ * again with a counting fragment shader (a Metal or D3D12 capture with `overdraw`,
+ * src/metal/src/overdraw.h and src/d3d12/src/overdraw.h; vkinsp_replay --overdraw measures the same
+ * for a Vulkan capture). Two per pass: with the pass's depth and stencil tests, and without.
  */
 export interface OverdrawMeasurement {
   frame: number;
@@ -389,9 +389,9 @@ export interface OverdrawMeasurement {
 export interface CaptureOverdrawMessage { action: "CaptureOverdraw"; count: number; passes: OverdrawMeasurement[] }
 
 /**
- * Metal: the pixel a capture with `pixelHistory` followed through its frame
- * (src/metal/src/pixel_history.mm), in the JSON vkinsp_replay --pixel-data writes
- * (renderer/pixel_history.ts parses it).
+ * Metal and D3D12: the pixel a capture with `pixelHistory` followed through its frame
+ * (src/metal/src/pixel_history.mm, src/d3d12/src/pixel_history.cpp), in the JSON
+ * vkinsp_replay --pixel-data writes (renderer/pixel_history.ts parses it).
  */
 export interface CapturePixelHistoryMessage { action: "CapturePixelHistory"; history: Record<string, unknown> }
 
@@ -561,15 +561,17 @@ export interface CaptureRequest {
   /** Every recorded command carries the stack it was recorded from. */
   stacktraces?: boolean;
   /**
-   * Metal: draw every render pass a second time with a counting fragment shader, for its overdraw
-   * (CaptureOverdraw). The Vulkan layer ignores it; vkinsp_replay --overdraw measures a Vulkan capture file.
+   * Metal and D3D12: draw every render pass a second time with a counting fragment shader, for its
+   * overdraw (CaptureOverdraw). The Vulkan layer ignores it; vkinsp_replay --overdraw measures a
+   * Vulkan capture file.
    */
   overdraw?: boolean;
   /**
-   * Metal: follow one pixel of a texture through the captured frame (CapturePixelHistory): every
-   * pass that renders to it drawn again one draw at a time at that pixel. `texture` is an object id
-   * from an earlier capture; a drawable's (or one no longer alive) follows the drawable the frame
-   * renders into. The Vulkan layer ignores it; vkinsp_replay --pixel follows a Vulkan capture file.
+   * Metal and D3D12: follow one pixel of a texture through the captured frame (CapturePixelHistory):
+   * every pass that renders to it drawn again one draw at a time at that pixel. `texture` is an
+   * object id from an earlier capture; a Metal drawable's, or a D3D12 swap chain's back buffer (or
+   * one no longer alive), follows whichever one the frame renders into. The Vulkan layer ignores it;
+   * vkinsp_replay --pixel follows a Vulkan capture file.
    */
   pixelHistory?: { texture: number; x: number; y: number; mip?: number; layer?: number };
 }
@@ -599,9 +601,12 @@ export interface QueuedCapture {
 export interface LaunchConfig {
   /** "native": an executable on this machine. "android": a package on a device reached through adb.
    *  "implicit": nothing is started; the session waits for an application that the registered implicit
-   *  layer connects (started with VKINSP_ENABLE=1 and VKINSP_PORT). */
-  target: "native" | "android" | "implicit";
-  /** Executable path, or the package name for an Android target. */
+   *  layer connects (started with VKINSP_ENABLE=1 and VKINSP_PORT).
+   *  "waitD3D12" (Windows): nothing is started either; dxinsp_launch.exe --watch waits for a process
+   *  with `exe`'s image name to appear and injects the D3D12 capture library into it as it starts,
+   *  which is what D3D12 has in place of an implicit layer (src/d3d12/README.md, docs/D3D12.md). */
+  target: "native" | "android" | "implicit" | "waitD3D12";
+  /** Executable path, the package name for an Android target, or the image name to wait for ("waitD3D12"). */
   exe: string;
   args: string;
   cwd: string;
@@ -616,7 +621,8 @@ export interface LaunchConfig {
   recordAlways: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
-  /** Android: directories holding the unstripped libraries of the application (";"-separated), for stack trace source lines. */
+  /** Directories holding the application's debug files (";"-separated): the unstripped libraries, for stack
+   *  trace source lines, and the PDBs of D3D12 shaders built with `dxc -Zs`, for their HLSL. */
   symbolDirs?: string;
   /** Directories holding the shader sources (";"-separated), for modules with line information but no embedded text. */
   sourceRoots?: string;
@@ -703,8 +709,8 @@ export interface AppConfig {
   version: string;
   /** Whether this build can update itself (installed builds only, not `npm start`). */
   canUpdate: boolean;
-  /** launchDialog: open the launch dialog at startup, on the "native" or "android" target
-   *  ("android:<text>" prefills the package field) (testing aid). */
+  /** launchDialog: open the launch dialog at startup, on the "native", "android", "implicit" or
+   *  "waitD3D12" target ("android:<text>" and "waitD3D12:<text>" prefill the name field) (testing aid). */
   debug: {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
     /** --debug-capture-stacks: the debug capture records command stack traces. */

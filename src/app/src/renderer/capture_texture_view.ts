@@ -6,9 +6,10 @@
 // per attachment, overlays drawn over the image rather than views of their own, and the pixel
 // history filled by clicking a pixel rather than by typing coordinates. The draw overlays are
 // RenderDoc's texture viewer overlays (highlight drawcall, depth test, wireframe). Where the
-// measurements come from differs per API: a Metal capture carries its overdraw and the one pixel
-// history it was taken with (src/metal/src/overdraw.h, src/metal/src/pixel_history.mm), a Vulkan capture is
-// replayed for all of them (vkinsp_replay, docs/REPLAY.md).
+// measurements come from differs per API: a Metal or D3D12 capture carries the overdraw and the one
+// pixel history it was taken with, measured in the application while it captured
+// (src/metal/src/overdraw.h, src/d3d12/src/overdraw.h); a Vulkan capture is replayed for all of
+// them (vkinsp_replay, docs/REPLAY.md).
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { NumberInput } from "./widget/number_input.js";
@@ -20,8 +21,8 @@ import {
 } from "./draw_overlay.js";
 import { ImageView, type ImageOverlay } from "./image_view.js";
 import {
-  OVERDRAW_LEGEND, isMeasured, overdrawCount, overdrawHistogramText, overdrawRgba, overdrawSummary,
-  type OverdrawPassKey,
+  OVERDRAW_LEGEND, isMeasured, measuresWhileCapturing, overdrawCount, overdrawHistogramText, overdrawRgba,
+  overdrawSummary, type OverdrawPassKey,
 } from "./overdraw.js";
 import type { PixelHistory, PixelRequest } from "./pixel_history.js";
 import { PixelHistoryView } from "./pixel_history_view.js";
@@ -53,9 +54,9 @@ export interface CaptureTextureHost {
   showObject(id: number): void;
   /** Runs a pixel's history; the answer comes back through setHistoryRunning / Result / Error. */
   followPixel(request: PixelRequest): void;
-  /** Metal: whether the capture already followed this pixel while it was taken. */
+  /** Metal and D3D12: whether the capture already followed this pixel while it was taken. */
   storedHistory(request: PixelRequest): boolean;
-  /** Metal: captures the application's next frame following the pixel. */
+  /** Metal and D3D12: captures the application's next frame following the pixel. */
   captureHistory(request: PixelRequest): void;
   /** Vulkan: replays the capture to measure its overdraw. False when it could not be measured. */
   measureOverdraw(): Promise<boolean>;
@@ -74,7 +75,7 @@ export interface CaptureTextureOptions {
   /** Open with this overlay on; `draw` names the draw a draw overlay is for. */
   overlay?: TextureOverlayKind;
   draw?: number;
-  /** Open following this pixel (a Metal capture's own pixel history, or --debug-view). */
+  /** Open following this pixel (the capture's own pixel history, or --debug-view). */
   pixel?: PixelRequest;
 }
 
@@ -254,8 +255,9 @@ export class CaptureTextureView {
     left.element.style.flex = `0 0 ${this._split}%`;
     this._dragSplit(handle, split, left);
 
-    // The history pane, which the image's clicks fill.
-    const metal = this.host.data.api === "metal";
+    // The history pane, which the image's clicks fill. A library that follows the pixel while it
+    // captures answers only for the pixel the capture was taken with, and offers to capture again.
+    const capturesHistory = measuresWhileCapturing(this.host.data.api);
     this._history = new PixelHistoryView({
       objectName: (id) => this.host.objectName(id),
       passLabelOf: (k) => this.host.passLabelOf(k),
@@ -263,7 +265,7 @@ export class CaptureTextureView {
       showObject: (id) => this.host.showObject(id),
       run: (r) => this._follow(r),
       debugPixel: this.host.debugPixel ? (command, x, y) => this.host.debugPixel!(command, x, y) : undefined,
-      captures: metal,
+      captures: capturesHistory,
       compact: true,
     }, this._picked ?? { image: info.id, x: 0, y: 0, mip: info.mip, layer: 0 });
     right.element.appendChild(this._history.root.element);
@@ -430,10 +432,10 @@ export class CaptureTextureView {
     }
     const m = this._measurement();
     if (!m) {
-      if (this.host.data.api === "metal") {
+      if (measuresWhileCapturing(this.host.data.api)) {
         note("This capture did not measure overdraw: capture again with Overdraw ticked.");
       } else if (this.host.data.api !== "vulkan") {
-        note("Overdraw is measured by replaying the capture, which is not available for D3D12 captures.");
+        note("Overdraw is measured by replaying the capture, which this capture's API has no replay for.");
       } else {
         note(this._measureError || "A Vulkan capture's overdraw is measured by replaying it on this machine's GPU.");
         new Button(row, { label: "Measure Overdraw", class: "btn btn-sm", callback: () => void this._ensureMeasured() });
@@ -564,21 +566,21 @@ export class CaptureTextureView {
   }
 
   /**
-   * Follows a pixel: a Vulkan capture replays, a Metal capture answers for the pixel it was taken
-   * with and otherwise offers to capture the next frame following this one.
+   * Follows a pixel: a Vulkan capture replays; a Metal or D3D12 capture answers for the pixel it
+   * was taken with and otherwise offers to capture the next frame following this one.
    */
   private _follow(request: PixelRequest): void {
     const pixel: PixelRequest = { mip: 0, layer: 0, ...request };
     this._picked = pixel;
-    if (this.host.data.api === "metal" && !this.host.storedHistory(pixel)) {
+    if (measuresWhileCapturing(this.host.data.api) && !this.host.storedHistory(pixel)) {
       this._history?.setPrompt(
-        `This capture did not follow pixel (${pixel.x}, ${pixel.y}). A Metal application follows a pixel while it captures, `
+        `This capture did not follow pixel (${pixel.x}, ${pixel.y}). The capture library follows a pixel while it captures, `
         + "so another pixel means capturing the application's next frame.",
         { label: "Capture Next Frame", callback: () => this.host.captureHistory(pixel) });
       return;
     }
-    if (this.host.data.api !== "vulkan" && this.host.data.api !== "metal") {
-      this._history?.setPrompt("A pixel's history replays the capture, which is not available for D3D12 captures.");
+    if (this.host.data.api !== "vulkan" && !measuresWhileCapturing(this.host.data.api)) {
+      this._history?.setPrompt("A pixel's history needs either a replay or a capture library that follows the pixel while it captures.");
       return;
     }
     this.host.followPixel(pixel);

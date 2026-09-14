@@ -10284,7 +10284,8 @@ function describeSearchPaths() {
   return {
     sourceRoots: describe("sourceRoots"),
     symbolDirs: describe("symbolDirs"),
-    symbolizer: symbolizer ? symbolizer.exe : "None found: llvm-symbolizer from the Android NDK (ANDROID_NDK_HOME), or llvm-symbolizer or addr2line on PATH, resolves frames under symbolDirs."
+    symbolizer: symbolizer ? symbolizer.exe : "None found: llvm-symbolizer from the Android NDK (ANDROID_NDK_HOME), or llvm-symbolizer or addr2line on PATH, resolves frames under symbolDirs.",
+    shaderPdbs: "symbolDirs are also searched for the PDB a D3D12 shader built with dxc -Zs kept its HLSL in, by the file name and shader hash the container carries."
   };
 }
 function debugInfoWithSources(spirv) {
@@ -11225,7 +11226,7 @@ import fs7 from "node:fs";
 import path6 from "node:path";
 
 // src/main/launch_env.ts
-import { execFile as execFile2 } from "node:child_process";
+import { execFile as execFile2, execFileSync } from "node:child_process";
 import fs6 from "node:fs";
 import net from "node:net";
 import os4 from "node:os";
@@ -11313,17 +11314,29 @@ async function findFreePort(start, taken = () => false) {
   }
   return start;
 }
-function terminate(proc) {
+function terminate(proc, wait = false) {
   if (process.platform === "win32" && proc.pid) {
-    execFile2("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
+    const args = ["/PID", String(proc.pid), "/T", "/F"];
+    if (wait) {
       try {
-        proc.kill();
+        execFileSync("taskkill", args, { stdio: "ignore" });
+        return;
       } catch {
       }
-    });
-    return;
+    } else {
+      execFile2("taskkill", args, () => {
+        try {
+          proc.kill();
+        } catch {
+        }
+      });
+      return;
+    }
   }
-  proc.kill();
+  try {
+    proc.kill();
+  } catch {
+  }
 }
 
 // src/main/d3d12.ts
@@ -11369,6 +11382,22 @@ function d3d12Environment(o) {
 }
 function wrapLaunch(tools, exe, args, cwd) {
   return { exe: tools.launcher, args: ["--dll", tools.library, ...cwd ? ["--cwd", cwd] : [], "--", exe, ...args] };
+}
+function watchLaunch(tools, o) {
+  const { image, timeoutSeconds, once, ...environment } = o;
+  const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  return {
+    exe: tools.launcher,
+    args: [
+      "--watch",
+      image,
+      "--dll",
+      tools.library,
+      ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
+      ...once ? ["--once"] : [],
+      ...env
+    ]
+  };
 }
 function windowsLaunch(o) {
   const env = { ...o.env };
@@ -11429,18 +11458,23 @@ function embeddedSource(entry2) {
   if (entry2 && typeof entry2 === "object") {
     const o = entry2;
     const text = o.text ?? o.source ?? o.contents;
-    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text };
+    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text, from: typeof o.from === "string" ? o.from : void 0 };
   }
   return null;
 }
-function dxbcText(bytes, mode) {
-  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its embedded HLSL source` });
+var NO_HLSL_HINT = "dxc -Zi embeds the HLSL in the container; dxc -Zs keeps it out and writes it to a PDB beside the build (-Fd <dir>\\), which GPU Inspector reads when a symbol directory names that directory.";
+function dxbcText(bytes, mode, pdbDirs = []) {
+  if (mode !== "dis" && mode !== "hlsl") return Promise.resolve({ ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its HLSL source` });
   const tool = findShaderTool();
   if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.dxbc`;
     fs8.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    execFile3(tool, [mode === "dis" ? "--disassemble" : "--sources", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const args = [mode === "dis" ? "--disassemble" : "--sources", tmp];
+    if (mode === "hlsl") {
+      for (const dir of pdbDirs) if (dir && fs8.existsSync(dir)) args.push("--pdb-dir", dir);
+    }
+    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
         fs8.unlinkSync(tmp);
       } catch {
@@ -11461,15 +11495,15 @@ function dxbcText(bytes, mode) {
         resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
         return;
       }
-      if (!sources.length) resolve({ ok: false, text: "no embedded source: compile with dxc -Zi -Qembed_debug" });
-      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}
+      if (!sources.length) resolve({ ok: false, text: `${(stderr || "").trim() || "no HLSL source"}. ${NO_HLSL_HINT}` });
+      else resolve({ ok: true, text: sources.map((s) => `// ==== ${s.name}${s.from ? ` (from ${s.from})` : ""}
 ${s.text.endsWith("\n") ? s.text : `${s.text}
 `}`).join("\n") });
     });
   });
 }
 function shaderText(spirv, mode, options = {}) {
-  if (isDxbc(spirv)) return dxbcText(spirv, mode);
+  if (isDxbc(spirv)) return dxbcText(spirv, mode, options.pdbDirs);
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
     fs8.writeFileSync(tmp, Buffer.from(spirv));
@@ -25152,7 +25186,7 @@ import path10 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/main/android.ts
-import { execFile as execFile4, execFileSync, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile4, execFileSync as execFileSync2, spawn as spawn2 } from "node:child_process";
 import crypto from "node:crypto";
 import fs9 from "node:fs";
 import os6 from "node:os";
@@ -25383,7 +25417,7 @@ var AndroidTarget = class {
     const { adb: adbPath, serial, package: pkg, port } = this.opts;
     for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
       try {
-        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
+        execFileSync2(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
       } catch {
       }
     }
@@ -25583,7 +25617,7 @@ var FrameReader = class {
 };
 
 // src/main/metal.ts
-import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
 import fs10 from "node:fs";
 import path9 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -25606,7 +25640,7 @@ function resolveExecutable(exe) {
   const plist = path9.join(exe, "Contents", "Info.plist");
   if (fs10.existsSync(plist)) {
     try {
-      const name = execFileSync2(
+      const name = execFileSync3(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
@@ -26395,6 +26429,45 @@ var SessionManager = class {
     this._sessions.set(session.id, session);
     this._latest = session;
     session.startProcess(exe, spawnArgs, cwd, env);
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+  /**
+   * Watches for a Direct3D 12 application to start and injects the capture library into it as it
+   * does, which is what D3D12 has in place of the Vulkan implicit layer (main/d3d12.ts): the
+   * session's process is dxinsp_launch.exe --watch, and it stands in for the application afterwards,
+   * so stopping the session ends the watch and never an application this server did not start.
+   *
+   * It races the application's start, so the watch has to be running before the application is
+   * launched; a process that already has a device cannot be caught, and the capture library then
+   * never opens its port, which is what a connection that does not come means.
+   */
+  async waitForApp(o, waitMs) {
+    if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
+    const image = path10.basename(o.image);
+    if (!image) throw new Error(`Pass the application's executable name ("TestVulkan.exe") or its full path as image.`);
+    const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
+    if (!d3d12) {
+      throw new Error("GPU Inspector's D3D12 capture library was not found: build it (src/d3d12/README.md), install GPU Inspector, or set INSPECTOR_D3D12_DIR to the directory holding dxinsp_capture.dll and dxinsp_launch.exe.");
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const watch = watchLaunch(d3d12, {
+      image: o.image,
+      timeoutSeconds: Math.ceil(waitMs / 1e3),
+      once: true,
+      port,
+      log: true,
+      recordAlways: !!o.recordAlways,
+      stacktraces: o.stacktraces ?? true,
+      validation: !!o.validation
+    });
+    const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
+    session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
+    session.appendLog(`D3D12 capture library: ${d3d12.library}`);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
     return session;
   }
@@ -27344,10 +27417,10 @@ async function d3d12Shader(c2, o, view, stage, maxChars) {
       continue;
     }
     if (view === "source" || view === "hlsl" || view === "disassembly") {
-      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl");
-      stages.push(r.ok ? { ...head, text: clip(r.text.replace(/\r\n/g, "\n"), maxChars) } : { ...head, error: r.text, note: view === "disassembly" ? void 0 : `A D3D12 shader's source is what dxc embedded in it (-Zi -Qembed_debug); "disassembly" shows the bytecode's text either way.` });
+      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl", { pdbDirs: searchPaths("symbolDirs").dirs });
+      stages.push(r.ok ? { ...head, text: clip(r.text.replace(/\r\n/g, "\n"), maxChars) } : { ...head, error: r.text, note: view === "disassembly" ? void 0 : `A D3D12 shader's source is the HLSL dxc embedded in it (-Zi), or the HLSL it wrote to a PDB beside the build (-Zs -Fd <dir>\\), which set_search_paths' symbolDirs point at; "disassembly" shows the bytecode's text either way.` });
     } else {
-      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its embedded HLSL source (view "source") and its disassembly.` });
+      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its HLSL source (view "source") and its disassembly.` });
     }
   }
   return {
@@ -27951,7 +28024,7 @@ function resourceTools(store) {
     },
     {
       name: "get_shader",
-      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`), a VkShaderModule or a VkShaderEXT: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection. For D3D12: an ID3D12PipelineState's stages, with the reflection the capture library took (resources by register and space), the HLSL dxc embedded ("source", compiled with -Zi -Qembed_debug) or the DXBC/DXIL disassembly; the other views are not available for D3D12.`,
+      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`), a VkShaderModule or a VkShaderEXT: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection. For D3D12: an ID3D12PipelineState's stages, with the reflection the capture library took (resources by register and space), its HLSL ("source": what dxc embedded with -Zi, or what it wrote to a PDB with -Zs, found under set_search_paths' symbolDirs) or the DXBC/DXIL disassembly; the other views are not available for D3D12.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         object: { type: "integer", minimum: 0, description: "The pipeline, shader module, library, function or pipeline state object id." },
@@ -28472,6 +28545,81 @@ function debugTools(store) {
   ];
 }
 
+// src/renderer/overdraw.ts
+function measuresWhileCapturing(api) {
+  return api === "metal" || api === "d3d12";
+}
+var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
+function overdrawCount(o, x, y) {
+  const { width, height } = o.info;
+  if (!o.data || x < 0 || y < 0 || x >= width || y >= height) return 0;
+  const i = (y * width + x) * 2;
+  return i + 1 < o.data.byteLength ? o.data[i] | o.data[i + 1] << 8 : 0;
+}
+var RAMP = [
+  [0, 0, 0, 0],
+  [1, 20, 40, 150],
+  [2, 0, 120, 230],
+  [3, 0, 190, 170],
+  [4, 110, 210, 40],
+  [6, 240, 210, 0],
+  [10, 250, 120, 0],
+  [16, 220, 20, 20],
+  [32, 240, 0, 200],
+  [65535, 255, 255, 255]
+];
+var OVERDRAW_LEGEND = RAMP.map(([upTo, r, g, b], i) => {
+  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
+  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
+  return { label, color: [r, g, b] };
+});
+function heatColor(n) {
+  for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
+  return [255, 255, 255];
+}
+function overdrawRgba(o, transparentZero = false) {
+  const { width, height } = o.info;
+  const pixels = width * height;
+  if (!o.data || o.data.byteLength < pixels * 2) return null;
+  const out = new Uint8ClampedArray(pixels * 4);
+  for (let p = 0; p < pixels; p++) {
+    const count2 = o.data[p * 2] | o.data[p * 2 + 1] << 8;
+    const [r, g, b] = heatColor(count2);
+    out[p * 4] = r;
+    out[p * 4 + 1] = g;
+    out[p * 4 + 2] = b;
+    out[p * 4 + 3] = transparentZero && count2 === 0 ? 0 : 255;
+  }
+  return out;
+}
+function overdrawAverages(info) {
+  const pixels = info.width * info.height;
+  return {
+    perPixel: pixels > 0 ? info.fragments / pixels : 0,
+    perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
+  };
+}
+var OVERDRAW_MAGIC = "OVERDRAW 1\n";
+function parseOverdrawFile(bytes) {
+  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
+  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length2;
+  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
+    let data = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
+      data = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { info, data };
+  });
+  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
+}
+
 // src/mcp/tools.ts
 import fs12 from "node:fs";
 import path11 from "node:path";
@@ -28591,78 +28739,6 @@ function texelValues(format, bytes, depth = false) {
   if (!bytes.byteLength || !format) return null;
   const tex = decodeTexels(texelInfo(format, depth), bytes);
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
-}
-
-// src/renderer/overdraw.ts
-var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
-function overdrawCount(o, x, y) {
-  const { width, height } = o.info;
-  if (!o.data || x < 0 || y < 0 || x >= width || y >= height) return 0;
-  const i = (y * width + x) * 2;
-  return i + 1 < o.data.byteLength ? o.data[i] | o.data[i + 1] << 8 : 0;
-}
-var RAMP = [
-  [0, 0, 0, 0],
-  [1, 20, 40, 150],
-  [2, 0, 120, 230],
-  [3, 0, 190, 170],
-  [4, 110, 210, 40],
-  [6, 240, 210, 0],
-  [10, 250, 120, 0],
-  [16, 220, 20, 20],
-  [32, 240, 0, 200],
-  [65535, 255, 255, 255]
-];
-var OVERDRAW_LEGEND = RAMP.map(([upTo, r, g, b], i) => {
-  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
-  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
-  return { label, color: [r, g, b] };
-});
-function heatColor(n) {
-  for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
-  return [255, 255, 255];
-}
-function overdrawRgba(o, transparentZero = false) {
-  const { width, height } = o.info;
-  const pixels = width * height;
-  if (!o.data || o.data.byteLength < pixels * 2) return null;
-  const out = new Uint8ClampedArray(pixels * 4);
-  for (let p = 0; p < pixels; p++) {
-    const count2 = o.data[p * 2] | o.data[p * 2 + 1] << 8;
-    const [r, g, b] = heatColor(count2);
-    out[p * 4] = r;
-    out[p * 4 + 1] = g;
-    out[p * 4 + 2] = b;
-    out[p * 4 + 3] = transparentZero && count2 === 0 ? 0 : 255;
-  }
-  return out;
-}
-function overdrawAverages(info) {
-  const pixels = info.width * info.height;
-  return {
-    perPixel: pixels > 0 ? info.fragments / pixels : 0,
-    perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
-  };
-}
-var OVERDRAW_MAGIC = "OVERDRAW 1\n";
-function parseOverdrawFile(bytes) {
-  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
-  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
-  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
-  const start = magic.byteLength + 4;
-  const base = start + length2;
-  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
-  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
-  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
-    let data = null;
-    if (payload) {
-      const [offset, size2] = payload;
-      if (base + offset + size2 > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
-      data = bytes.slice(base + offset, base + offset + size2);
-    }
-    return { info, data };
-  });
-  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
 }
 
 // src/mcp/tools.ts
@@ -28951,10 +29027,10 @@ function captureTools(store) {
     },
     {
       name: "set_search_paths",
-      description: "Where to look on this machine for what captures only name. sourceRoots: the directories holding the shader sources, for shaders compiled with line information but no embedded text (dxc -Zi, glslc without -g, stripped builds), so get_shader shows their source and the analyses quote their costliest lines. symbolDirs: the directories holding the application's unstripped libraries (the build tree), so stack frames named only by module and offset (Android, Linux) resolve to functions, files and lines. A list replaces the previous one for this server; an empty list goes back to GPU_INSPECTOR_SOURCE_ROOTS / GPU_INSPECTOR_SYMBOL_DIRS, else the directories GPU Inspector's launch dialog used last. Without arguments it shows what is in effect.",
+      description: "Where to look on this machine for what captures only name. sourceRoots: the directories holding the shader sources, for shaders compiled with line information but no embedded text (dxc -Zi, glslc without -g, stripped builds), so get_shader shows their source and the analyses quote their costliest lines. symbolDirs: the directories holding the application's unstripped libraries (the build tree), so stack frames named only by module and offset (Android, Linux) resolve to functions, files and lines, and so a D3D12 shader built with dxc -Zs gives up its HLSL out of the PDB -Fd wrote beside the build. A list replaces the previous one for this server; an empty list goes back to GPU_INSPECTOR_SOURCE_ROOTS / GPU_INSPECTOR_SYMBOL_DIRS, else the directories GPU Inspector's launch dialog used last. Without arguments it shows what is in effect.",
       inputSchema: schema({
         sourceRoots: { type: "array", items: { type: "string" }, description: "Directories searched (six levels deep) for the shader files debug information names." },
-        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name." }
+        symbolDirs: { type: "array", items: { type: "string" }, description: "Directories searched (five levels deep) for the libraries stack frames name and for the PDBs D3D12 shaders name." }
       }),
       handler: (args) => {
         if (args.sourceRoots !== void 0) setSearchPaths("sourceRoots", splitPaths(args.sourceRoots));
@@ -29090,7 +29166,7 @@ function captureTools(store) {
         if (!c2.data.overdraw.length) {
           return jsonResult({
             capture: c2.id,
-            note: c2.data.api === "metal" ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : c2.data.api === "d3d12" ? `Overdraw is measured by replaying a Vulkan capture, or by the Metal library while it captures: ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's fragments per primitive where the pass carried counters.` : `The replay measured no pass. ${replayNote ?? ""}`
+            note: measuresWhileCapturing(c2.data.api) ? "The capture did not measure overdraw. Capture again with capture_frames overdraw: true." : `The replay measured no pass. ${replayNote ?? ""}`
           });
         }
         const passes = c2.metrics.passes;
@@ -29171,14 +29247,12 @@ function captureTools(store) {
       readOnly: true,
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
-        if (c2.data.api === "d3d12") {
-          return jsonResult({ capture: c2.id, note: `The pixel history replays a Vulkan capture (a Metal application follows the pixel while it captures): ${NO_D3D12_REPLAY}. read_texture shows the render target after the pass, and list_commands with kind draw the draws of the pass.` });
-        }
-        if (c2.data.api === "metal") {
+        if (measuresWhileCapturing(c2.data.api)) {
+          const metal = c2.data.api === "metal";
           if (!c2.data.pixelHistory) {
             return jsonResult({
               capture: c2.id,
-              note: "This Metal capture did not follow a pixel. A Metal application follows one while it captures: capture_frames with pixelHistory { texture, x, y } (a render target's texture id from list_textures; a drawable's follows the next frame's drawable), then get_pixel_history on that capture."
+              note: `This ${metal ? "Metal" : "D3D12"} capture did not follow a pixel. The capture library follows one while it captures: capture_frames with pixelHistory { texture, x, y } (a render target's id from list_textures; ${metal ? "a drawable's follows the next frame's drawable" : "a swap chain's back buffer follows whichever one the next frame renders into"}), then get_pixel_history on that capture.`
             });
           }
           const h2 = parsePixelHistory(c2.data.pixelHistory);
@@ -29187,10 +29261,10 @@ function captureTools(store) {
           const askedY = optionalInt(args, "y");
           const other = askedImage !== void 0 && askedImage !== h2.image && askedImage !== h2.requestedImage || askedX !== void 0 && askedX !== h2.x || askedY !== void 0 && askedY !== h2.y;
           return jsonResult(pixelHistoryAnswer(c2, h2, boolArg(args, "allDraws", false), {
-            followed: other ? `This capture followed pixel (${h2.x}, ${h2.y}) of ${refText(c2.db, h2.image)}, not the one asked for: a Metal capture answers for the pixel it was taken with (capture_frames pixelHistory follows another).` : void 0,
-            requestedImage: h2.requestedImage !== h2.image ? `${refText(c2.db, h2.requestedImage)} (the frame rendered into its own drawable, which was followed instead)` : void 0,
+            followed: other ? `This capture followed pixel (${h2.x}, ${h2.y}) of ${refText(c2.db, h2.image)}, not the one asked for: the capture answers for the pixel it was taken with (capture_frames pixelHistory follows another).` : void 0,
+            requestedImage: h2.requestedImage !== h2.image ? `${refText(c2.db, h2.requestedImage)} (${metal ? "the frame rendered into its own drawable" : "the frame rendered into another of the swap chain's back buffers"}, which was followed instead)` : void 0,
             measuredOn: h2.device || void 0,
-            method: "While capturing, the Metal library issued each draw again in the application's own command buffer after its pass, under visibility results in counting mode with a one-pixel scissor and pipeline and depth-stencil copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against copies of the pass's attachments, with depth and stencil writes off. Counts are samples."
+            method: `While capturing, the ${metal ? "Metal" : "D3D12"} library issued each draw again in the application's own ${metal ? "command buffer" : "command list"} after its pass, under ${metal ? "visibility results in counting mode" : "occlusion queries"} with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against copies of the pass's attachments, with depth and stencil writes off. Counts are samples.`
           }));
         }
         let image = optionalInt(args, "image");
@@ -29568,6 +29642,34 @@ function liveTools(sessions2, store) {
       }
     },
     {
+      name: "wait_for_app",
+      description: "Windows and Direct3D 12: wait for an application to be started by something else (its launcher, an editor, Steam) and put GPU Inspector's D3D12 capture library into it as it starts, then connect to it. This is what D3D12 has in place of the Vulkan implicit layer, since a device cannot be found in a process after the fact: the process list is polled for the executable's name and the process is frozen while the library goes in, before its first D3D12 call. Call this first and start the application afterwards - an application that is already running cannot be caught, and only x64 processes are injected (one running elevated needs this server elevated too). Returns the same status as launch_app once the application connects. stop_app ends the wait, never the application, which this server did not start. For Vulkan, start the application with the implicit layer (VKINSP_ENABLE=1) and use attach_app.",
+      inputSchema: schema({
+        image: { type: "string", description: `The application's executable name ("TestVulkan.exe"), matched without regard to case, or its full path to match only that build.` },
+        validation: { type: "boolean", description: "Enable the D3D12 debug layer in the application, so validation messages reach the captures (default false)." },
+        stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
+        recordAlways: { type: "boolean", description: "Record every command list as it is built, so lists recorded once and reused appear in captures (default false; costs CPU time)." },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
+        waitSeconds: { type: "number", minimum: 1, maximum: 3600, description: "How long to wait for the application to start and connect (default 300)." }
+      }, ["image"]),
+      handler: async (args) => {
+        const s = await sessions2.waitForApp({
+          image: requireString(args, "image"),
+          validation: boolArg(args, "validation", false),
+          stacktraces: boolArg(args, "stacktraces", true),
+          recordAlways: boolArg(args, "recordAlways", false),
+          port: optionalInt(args, "port")
+        }, (numberArg(args, "waitSeconds") ?? 300) * 1e3);
+        const injected = s.log.some((line) => line.startsWith("dxinsp: injected "));
+        const result = jsonResult({
+          ...sessionStatus(s),
+          problem: s.connected ? void 0 : injected ? "The capture library went into the application (recentLog says which process) but no D3D12 device was created: either the application does not use Direct3D 12, or it already had its device when the library went in - the wait has to be running before the application starts." : "No matching process appeared, or it could not be injected into. recentLog (and get_session_log) has the watcher's dxinsp: lines: a 32-bit process, or access denied, which means the application runs elevated or as another user."
+        });
+        if (!s.connected) result.isError = true;
+        return result;
+      }
+    },
+    {
       name: "attach_app",
       description: "Connect to an application whose capture library already listens on a port: one started with GPU Inspector's implicit layer (VKINSP_ENABLE=1 and VKINSP_PORT), by hand, or by GPU Inspector itself. The capture library serves one client at a time, so attaching disconnects GPU Inspector from that application if it was connected.",
       inputSchema: schema({
@@ -29725,10 +29827,10 @@ function liveTools(sessions2, store) {
         buffers: { type: "boolean", description: "Read back bound buffer ranges (default true)." },
         images: { type: "boolean", description: "Read back images bound through descriptor sets (default true)." },
         stacktraces: { type: "boolean", description: "Record the stack of every command (default false; costs CPU time in the application while capturing)." },
-        overdraw: { type: "boolean", description: "Metal: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
+        overdraw: { type: "boolean", description: "Metal and D3D12: draw every render pass a second time with a counting fragment shader, measuring its overdraw per pixel (get_overdraw, and get_bottlenecks' measuredOverdraw). Default false: it costs GPU and CPU time in the captured frame. Vulkan applications ignore it; vkinsp_replay --overdraw measures a Vulkan capture file." },
         pixelHistory: {
           type: "object",
-          description: "Metal: follow one pixel of a render target through the captured frame, for get_pixel_history on the new capture. Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own command buffers. A drawable's texture id (from an earlier capture) follows whichever drawable the captured frame renders into. Vulkan applications ignore it; get_pixel_history replays a Vulkan capture instead.",
+          description: "Metal and D3D12: follow one pixel of a render target through the captured frame, for get_pixel_history on the new capture. Every pass that renders to the texture is drawn again one draw at a time at the pixel, in the frame's own command buffers. A texture id from an earlier capture; a Metal drawable's, or a D3D12 swap chain's back buffer, follows whichever one the captured frame renders into. Vulkan applications ignore it; get_pixel_history replays a Vulkan capture instead.",
           properties: {
             texture: { type: "integer", description: "The texture's object id (list_textures of an earlier capture)." },
             x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
@@ -29771,7 +29873,7 @@ function liveTools(sessions2, store) {
         if (result.completion === "quiet") notes.push("This capture library does not mark the end of a capture (it was built before that message existed), so the capture was taken as complete once its stream went quiet.");
         if (!result.data.commands.length) notes.push("The capture has no commands. An application that records its command buffers once and resubmits them needs recordAlways: true.");
         if (pixelHistory && !result.data.pixelHistory) {
-          notes.push(result.data.api === "metal" ? "No pixel history arrived: the application's capture library was built before pixel history." : result.data.api === "d3d12" ? `pixelHistory is followed by the Metal capture library only, and get_pixel_history is ${NO_D3D12_REPLAY}.` : "pixelHistory is followed by the Metal capture library only; get_pixel_history replays a Vulkan capture instead.");
+          notes.push(measuresWhileCapturing(result.data.api) ? "No pixel history arrived: no render pass of the frame rendered to that resource at that mip and layer, or the application's capture library was built before pixel history." : "pixelHistory is followed by the Metal and D3D12 capture libraries only; get_pixel_history replays a Vulkan capture instead.");
         }
         return jsonResult({
           session: s.id,

@@ -31,6 +31,7 @@ import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
 import { metalReflection, metalStages } from "./metal/reflection.js";
 import { d3d12Reflection } from "./d3d12/reflection.js";
+import { hlslStub } from "./d3d12/hlsl_stub.js";
 import { isD3D12Texture } from "./d3d12/d3d12_object.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
@@ -145,6 +146,8 @@ interface ShaderView {
   d3d12?: boolean;
   /** The embedded HLSL of a D3D12 payload, "" when the container has none. */
   hlsl?: string;
+  /** Why a D3D12 payload has no HLSL, for the generated stub's header comment. */
+  hlslReason?: string;
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
@@ -176,21 +179,6 @@ const STAGE_FLAG: Record<string, string> = {
 
 const LANGUAGE_OF_MODE: Record<ShaderViewMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null, source: null };
 const LANGUAGE_LABEL: Record<ShaderLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)" };
-
-/** A blank HLSL stage for a D3D12 pipeline whose container carries no source. */
-function hlslTemplate(stage: ShaderStage, entryPoint: string, pipelineName: string): string {
-  const head = `// Replacement ${stage} shader for ${pipelineName}: the pipeline's HLSL was not embedded in its\n// bytecode (compile with -Zi -Qembed_debug to see it here), so this stage starts from scratch.\n// Registers (b#, t#, u#, s#) must match the pipeline's root signature: see its Reflection section.\n\n`;
-  switch (stage) {
-    case "vertex":
-      return `${head}struct VSInput { float3 position : POSITION; };\nstruct VSOutput { float4 position : SV_POSITION; };\n\nVSOutput ${entryPoint}(VSInput input) {\n    VSOutput output;\n    output.position = float4(input.position, 1.0);\n    return output;\n}\n`;
-    case "fragment":
-      return `${head}struct PSInput { float4 position : SV_POSITION; };\n\nfloat4 ${entryPoint}(PSInput input) : SV_TARGET {\n    return float4(1.0, 0.0, 1.0, 1.0);\n}\n`;
-    case "compute":
-      return `${head}[numthreads(8, 8, 1)]\nvoid ${entryPoint}(uint3 id : SV_DispatchThreadID) {\n}\n`;
-    default:
-      return `${head}void ${entryPoint}() {\n}\n`;
-  }
-}
 
 /** Object list filters, after WebGPU Inspector's inspect panel filter panel. */
 interface Filters {
@@ -1238,7 +1226,8 @@ export class InspectPanel {
 
   /**
    * A D3D12 pipeline state's shaders: one section per DXBC / DXIL payload ("vertex:VSMain") with
-   * the disassembly and, when the container carries it (-Zi -Qembed_debug), the HLSL source; the
+   * the disassembly and its HLSL source when there is one (embedded by -Zi, or out of the PDB a
+   * -Zs build wrote, found under the session's symbol directories); the
    * Reflection section from the reflection the library attached at pipeline creation; and Edit,
    * which compiles HLSL with dxc and rebuilds the pipeline with the stage swapped. No GLSL / MSL
    * cross-compilation: the bytecode is not SPIR-V.
@@ -1271,11 +1260,11 @@ export class InspectPanel {
         new Div(view.reflection.body, { text: "No reflection: the library could not reflect this stage (DXIL needs dxcompiler.dll beside the library, in the Vulkan SDK or on PATH).", class: "text-muted font-sm" });
       }
       view.analysis = new Div(grp.body, { class: "shader-analysis" });
-      view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The HLSL the compiler embedded in the container (-Zi -Qembed_debug)", callback: () => void this._showShader(index, "source") });
+      view.buttons.source = new Button(bar, { label: "Source", class: "btn btn-sm", tooltip: "The HLSL of this stage: what dxc embedded in the container (-Zi), or what it wrote to the PDB a symbol directory names (-Zs)", callback: () => void this._showShader(index, "source") });
       view.buttons.source.style.display = "none";
       view.buttons.dis = new Button(bar, { label: "Disassembly", class: "btn btn-sm", tooltip: "The DXBC or DXIL disassembly", callback: () => void this._showShader(index, "dis") });
       view.editButton = new Button(bar, { label: edit?.applied ? "Edit (edited)" : "Edit", class: "btn btn-sm shader-edit-button", disabled: true,
-        tooltip: "Edit the HLSL (the embedded source, or a stage written from scratch), compile it with dxc and rebuild the pipeline in the running application", callback: () => this._openShaderEditor(object, view) });
+        tooltip: "Edit the HLSL (the recovered source, or a stage generated from this pipeline's reflection), compile it with dxc and rebuild the pipeline in the running application", callback: () => this._openShaderEditor(object, view) });
       view.summary = new Div(grp.body, { class: "shader-debug-summary text-muted font-sm" });
       view.pre = new Widget("pre", grp.body, { text: "Loading...", class: "shader-text" });
       this._shaderViews.set(index, view);
@@ -1283,7 +1272,7 @@ export class InspectPanel {
     });
   }
 
-  /** A D3D12 payload's text: the disassembly always, the embedded HLSL when the container has it. */
+  /** A D3D12 payload's text: the disassembly always, the HLSL when the container or a PDB has it. */
   private async _loadD3D12Shader(view: ShaderView, index: number): Promise<void> {
     const data = view.data;
     if (!data) return;
@@ -1291,14 +1280,18 @@ export class InspectPanel {
     if (view.data !== data) return;
     view.disText = dis.ok ? dis.text : "";
     if (!dis.ok) view.summary.text = dis.text;
-    const source = await window.inspector.shaderText(data, "hlsl");
+    // The symbol directories hold the PDB of a shader built with -Zs, which is where its HLSL is.
+    const source = await window.inspector.shaderText(data, "hlsl", this.window.symbolDirs);
     if (view.data !== data) return;
     view.hlsl = source.ok ? source.text : "";
+    view.hlslReason = source.ok ? undefined : source.text;
     if (source.ok) {
       view.buttons.source!.style.display = "";
-      view.summary.text = "HLSL source embedded in the container.";
+      // The tool marks a file it read out of a PDB, so the header says where the text came from.
+      const from = /^\/\/ ==== .*\(from (.*)\)$/m.exec(source.text);
+      view.summary.text = from ? `HLSL source from ${from[1]}.` : "HLSL source embedded in the container.";
     } else if (dis.ok) {
-      view.summary.text = source.text || "No embedded HLSL source: compile with -Zi -Qembed_debug to see it here. Edit writes the stage from scratch.";
+      view.summary.text = `${source.text || "No HLSL source."} Edit writes the stage from this pipeline's reflection.`;
     }
     void this._showShader(index, source.ok ? "source" : "dis");
   }
@@ -1688,7 +1681,7 @@ export class InspectPanel {
     const head = new Div(editor, { class: "shader-editor-head" });
     const fromSource = view.mode === "source" && view.debug;
     const languageLabel = view.d3d12 ? "HLSL (dxc, shader model 6.0)" : LANGUAGE_LABEL[language];
-    new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${languageLabel}` : view.d3d12 && view.hlsl ? `Editing the embedded HLSL as ${languageLabel}` : `Editing as ${languageLabel}`, class: "font-md" });
+    new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${languageLabel}` : view.d3d12 && view.hlsl ? `Editing the recovered HLSL as ${languageLabel}` : `Editing as ${languageLabel}`, class: "font-md" });
     if (targets) {
       const where = object.type === "VkPipeline" || object.type === "ID3D12PipelineState" ? "this pipeline" : object.type === "VkShaderEXT" ? "this shader object"
         : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
@@ -1703,13 +1696,14 @@ export class InspectPanel {
       new Div(editor, { text: "Note: the compiler is given only this file; #include directives cannot be resolved, so paste the included code in if the compile needs it.", class: "text-muted font-sm" });
     }
     if (view.d3d12 && !view.hlsl) {
-      new Div(editor, { text: "The container carries no HLSL (compile with -Zi -Qembed_debug to edit the original): write the stage from scratch, against the pipeline's root signature. The Reflection section lists the registers it expects.", class: "text-muted font-sm" });
+      new Div(editor, { text: "There is no HLSL for this stage, and DXIL cannot be decompiled: the code below was generated from the pipeline's reflection, so it declares the same constant buffers, resources and registers and compiles into a binding-compatible replacement. Only its body is invented.", class: "text-muted font-sm" });
     }
 
     // Embedded source carries the compiler's own prefix (comments, a #line directive before
     // #version) that a compiler will not take back; edit the clean text.
     const source = existing && existing.language === language ? existing.source
-      : view.d3d12 ? (view.hlsl || hlslTemplate(targets?.stage ?? "vertex", targets?.entryPoint ?? "main", object.name))
+      : view.d3d12 ? (view.hlsl || hlslStub(d3d12Reflection(object, targets?.stage ?? "vertex"), targets?.stage ?? "vertex",
+          targets?.entryPoint ?? "main", { pipelineName: object.name, reason: view.hlslReason }))
       : fromSource ? compilableSource(view.text) : view.text;
     const text = new CodeEditor(editor, { value: source, language, class: "shader-editor-text" });
     const buttons = new Div(editor, { class: "shader-toolbar" });

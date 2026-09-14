@@ -150,6 +150,16 @@ void HandleCapture(const JsonValue& msg) {
     o.captureImages = msg.GetBool("captureImages", true);
     o.profilePasses = msg.GetBool("profilePasses", true);
     o.stacktraces = msg.GetBool("stacktraces", false);
+    o.overdraw = msg.GetBool("overdraw", false);
+    // {texture, x, y, mip, layer}: the pixel to follow through the captured frame (pixel_history.cpp).
+    if (const JsonValue* h = msg.Get("pixelHistory"); h != nullptr && h->kind == JsonValue::Object) {
+        o.pixelHistory.enabled = true;
+        o.pixelHistory.texture = (uint64_t)h->GetNumber("texture");
+        o.pixelHistory.x = (uint32_t)h->GetNumber("x");
+        o.pixelHistory.y = (uint32_t)h->GetNumber("y");
+        o.pixelHistory.mip = (uint32_t)h->GetNumber("mip");
+        o.pixelHistory.layer = (uint32_t)h->GetNumber("layer");
+    }
     CaptureManager::Get().RequestCapture(o);
 }
 

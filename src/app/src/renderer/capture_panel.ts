@@ -33,8 +33,8 @@ import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
 import {
-  isMeasured, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary, parseOverdrawFile,
-  type OverdrawPassKey,
+  isMeasured, measuresWhileCapturing, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary,
+  parseOverdrawFile, type OverdrawPassKey,
 } from "./overdraw.js";
 import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
 import { parseDrawOverlayFile, type DrawOverlay } from "./draw_overlay.js";
@@ -114,7 +114,7 @@ export class CapturePanel {
   private _imagesCheck!: Checkbox;
   private _profileCheck!: Checkbox;
   private _stacksCheck!: Checkbox;
-  /** Metal only: every render pass drawn again to measure its overdraw. */
+  /** Metal and D3D12: every render pass drawn again to measure its overdraw. */
   private _overdrawCheck: Checkbox | null = null;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
@@ -204,13 +204,18 @@ export class CapturePanel {
     this._profileCheck = new Checkbox(row, { label: "Profile passes", checked: true, tooltip: "Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card in Frame Stats" });
     this._stacksCheck = new Checkbox(row, { label: "Stack traces", checked: false, tooltip: "Record the call stack of every command of the captured frame (a Stack trace section in the command's details). Costs CPU time in the target while capturing." });
     c.push(this._frameCountInput, this._texturesCheck, this._buffersCheck, this._imagesCheck, this._profileCheck, this._stacksCheck);
+    // The libraries that measure while capturing (src/metal/src/overdraw.h,
+    // src/d3d12/src/overdraw.h) offer it here: a Metal target on macOS, a D3D12 one on Windows. A
+    // Vulkan capture's overdraw comes from vkinsp_replay --overdraw afterwards instead, and the
+    // Vulkan layer ignores the option, so a session that turns out to be Vulkan loses nothing.
+    if (getHostPlatform() === "darwin" || getHostPlatform() === "win32") {
+      this._overdrawCheck = new Checkbox(row, { label: "Overdraw", checked: false, tooltip: "Metal and D3D12: draw every render pass a second time with a counting fragment shader, and show how many fragments landed on each pixel (with the pass's depth and stencil tests, and without). Costs GPU and CPU time in the captured frame." });
+      c.push(this._overdrawCheck);
+    }
     // macOS: the next frame as an Xcode GPU trace document, for the shader debugger and profiler
     // this tool does not have (src/metal/src/gpu_trace.mm). Written beside the Desktop; the Log
     // tab says where.
     if (getHostPlatform() === "darwin") {
-      // src/metal/src/overdraw.h. A Vulkan capture's overdraw comes from vkinsp_replay --overdraw instead.
-      this._overdrawCheck = new Checkbox(row, { label: "Overdraw", checked: false, tooltip: "Metal: draw every render pass a second time with a counting fragment shader, and show how many fragments landed on each pixel (with the pass's depth and stencil tests, and without). Costs GPU and CPU time in the captured frame." });
-      c.push(this._overdrawCheck);
       c.push(new Button(row, { label: "Xcode Trace", class: "btn", tooltip: "Write the next frame as a .gputrace document, to open in Xcode's Metal debugger (shader debugging and per-line profiling of the same frame). The path is in the Log tab.", callback: () => {
         if (!this.window.connected) {
           this._statusLabel.text = "not connected";
@@ -465,9 +470,10 @@ export class CapturePanel {
   }
 
   /**
-   * Metal: captures the application's next frame with the library following the pixel
-   * (src/metal/src/pixel_history.mm), and shows the history in the new capture's tab when it arrives.
-   * A drawable's pixel follows whichever drawable that frame renders into.
+   * Metal and D3D12: captures the application's next frame with the library following the pixel
+   * (src/metal/src/pixel_history.mm, src/d3d12/src/pixel_history.cpp), and shows the history in the
+   * new capture's tab when it arrives. A pixel of a Metal drawable, or of a D3D12 swap chain's back
+   * buffer, follows whichever one that frame renders into.
    */
   private _captureWithPixelHistory(request: PixelRequest): void {
     const live = this.capture(undefined, undefined, undefined,
@@ -1348,7 +1354,7 @@ export class CaptureView implements CaptureHost {
         tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
       { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw", open: () => void this.openOverdraw(),
         detail: "Fragments per pixel, over the pass's render target",
-        tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Vulkan capture is replayed on this machine's GPU to measure it" },
+        tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
     ];
     for (const report of reports) {
       const item = new Div(menu, { class: "menu-item reports-menu-item" });
@@ -1667,7 +1673,7 @@ export class CaptureView implements CaptureHost {
     this._replayKey = null;
   }
 
-  /** Metal: whether the capture followed this pixel while it was taken (a capture with pixelHistory). */
+  /** Metal and D3D12: whether the capture followed this pixel while it was taken (a capture with pixelHistory). */
   hasPixelHistory(request: PixelRequest): boolean {
     const h = this.data.pixelHistory;
     if (!h) return false;
@@ -1681,11 +1687,13 @@ export class CaptureView implements CaptureHost {
    * Metal: the pixel the capture followed while it was taken.
    */
   async pixelHistory(request: PixelRequest): Promise<PixelHistory> {
-    if (this.data.api === "metal") {
-      if (!this.data.pixelHistory || !this.hasPixelHistory(request)) throw new Error("this capture did not follow that pixel: a Metal pixel history captures the application's next frame");
+    if (measuresWhileCapturing(this.data.api)) {
+      if (!this.data.pixelHistory || !this.hasPixelHistory(request)) {
+        throw new Error("this capture did not follow that pixel: the library follows one while it captures, so another pixel means capturing the application's next frame");
+      }
       return parsePixelHistory(this.data.pixelHistory);
     }
-    if (this.data.api !== "vulkan") throw new Error("a pixel history replays the capture, which is not available for D3D12 captures");
+    if (this.data.api !== "vulkan") throw new Error("a pixel history needs either a replay or a capture library that follows the pixel while it captures");
     this._setStatus(`pixel history: replaying the capture for pixel (${request.x}, ${request.y})...`);
     try {
       const result = await this._replay((r) => window.inspector.pixelHistory({ ...r, pixel: request }));
@@ -1714,12 +1722,12 @@ export class CaptureView implements CaptureHost {
   /** Opens the first measured pass's render target with its overdraw over it; a Vulkan capture is measured first. */
   async openOverdraw(): Promise<void> {
     if (!this.data.overdraw.length) {
-      if (this.data.api === "metal") {
+      if (measuresWhileCapturing(this.data.api)) {
         this._setStatus("this capture did not measure overdraw: capture again with Overdraw ticked");
         return;
       }
       if (this.data.api !== "vulkan") {
-        this._setStatus("overdraw is measured by replaying the capture, which is not available for D3D12 captures");
+        this._setStatus("overdraw is measured by replaying the capture, which this capture's API has no replay for");
         return;
       }
       if (!(await this.measureOverdraw())) return;

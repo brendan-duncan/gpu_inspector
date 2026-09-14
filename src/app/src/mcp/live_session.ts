@@ -16,7 +16,7 @@ import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, ty
 import { FrameReader, encodeRequest } from "../main/layer_protocol.js";
 import { DEFAULT_PORT, findFreePort, findLayerDir, findValidationLayerDir, splitArgs, terminate, vulkanLayerEnvironment } from "../main/launch_env.js";
 import { captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "../main/metal.js";
-import { findD3D12Tools, windowsLaunch } from "../main/d3d12.js";
+import { findD3D12Tools, watchLaunch, windowsLaunch } from "../main/d3d12.js";
 import { CaptureData } from "../renderer/capture_data.js";
 import { serializeCapture } from "../renderer/capture_file.js";
 import { captureFileName } from "../renderer/capture_format.js";
@@ -118,6 +118,15 @@ function androidLayer(): AndroidLayerFiles | null {
     ...installedLayerDirs().map((dir) => path.join(dir, "android")),
   ].filter((d): d is string => !!d);
   return findAndroidLayer(candidates);
+}
+
+export interface WatchOptions {
+  /** The application's executable name ("TestVulkan.exe"), or its full path. */
+  image: string;
+  port?: number;
+  validation?: boolean;
+  stacktraces?: boolean;
+  recordAlways?: boolean;
 }
 
 export interface AndroidLaunchOptions {
@@ -590,6 +599,40 @@ export class SessionManager {
     this._sessions.set(session.id, session);
     this._latest = session;
     session.startProcess(exe, spawnArgs, cwd, env);
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+
+  /**
+   * Watches for a Direct3D 12 application to start and injects the capture library into it as it
+   * does, which is what D3D12 has in place of the Vulkan implicit layer (main/d3d12.ts): the
+   * session's process is dxinsp_launch.exe --watch, and it stands in for the application afterwards,
+   * so stopping the session ends the watch and never an application this server did not start.
+   *
+   * It races the application's start, so the watch has to be running before the application is
+   * launched; a process that already has a device cannot be caught, and the capture library then
+   * never opens its port, which is what a connection that does not come means.
+   */
+  async waitForApp(o: WatchOptions, waitMs: number): Promise<LiveSession> {
+    if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
+    const image = path.basename(o.image);
+    if (!image) throw new Error("Pass the application's executable name (\"TestVulkan.exe\") or its full path as image.");
+    const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
+    if (!d3d12) {
+      throw new Error("GPU Inspector's D3D12 capture library was not found: build it (src/d3d12/README.md), install GPU Inspector, or set INSPECTOR_D3D12_DIR to the directory holding dxinsp_capture.dll and dxinsp_launch.exe.");
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const watch = watchLaunch(d3d12, {
+      image: o.image, timeoutSeconds: Math.ceil(waitMs / 1000), once: true,
+      port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation,
+    });
+    const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
+    session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
+    session.appendLog(`D3D12 capture library: ${d3d12.library}`);
+    this._sessions.set(session.id, session);
+    this._latest = session;
+    session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
     return session;
   }

@@ -129,12 +129,13 @@ async function d3d12Shader(c: Capture, o: VulkanObject, view: string, stage: str
       continue;
     }
     if (view === "source" || view === "hlsl" || view === "disassembly") {
-      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl");
+      // set_search_paths' symbol directories hold the PDB a shader built with -Zs kept its HLSL in.
+      const r = await shaderText(bytes, view === "disassembly" ? "dis" : "hlsl", { pdbDirs: searchPaths("symbolDirs").dirs });
       stages.push(r.ok
         ? { ...head, text: clip(r.text.replace(/\r\n/g, "\n"), maxChars) }
-        : { ...head, error: r.text, note: view === "disassembly" ? undefined : "A D3D12 shader's source is what dxc embedded in it (-Zi -Qembed_debug); \"disassembly\" shows the bytecode's text either way." });
+        : { ...head, error: r.text, note: view === "disassembly" ? undefined : "A D3D12 shader's source is the HLSL dxc embedded in it (-Zi), or the HLSL it wrote to a PDB beside the build (-Zs -Fd <dir>\\), which set_search_paths' symbolDirs point at; \"disassembly\" shows the bytecode's text either way." });
     } else {
-      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its embedded HLSL source (view \"source\") and its disassembly.` });
+      stages.push({ ...head, note: `${view} is not available for DXBC/DXIL: a D3D12 shader has its reflection, its HLSL source (view \"source\") and its disassembly.` });
     }
   }
   return {
@@ -713,8 +714,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         "spirv-cross), \"disassembly\" (spirv-dis), or \"analysis\" (the modeled per-invocation cost by function and source " +
         "line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline " +
         "state's reflection. For D3D12: an ID3D12PipelineState's stages, with the reflection the capture library took " +
-        "(resources by register and space), the HLSL dxc embedded (\"source\", compiled with -Zi -Qembed_debug) or the " +
-        "DXBC/DXIL disassembly; the other views are not available for D3D12.",
+        "(resources by register and space), its HLSL (\"source\": what dxc embedded with -Zi, or what it wrote to a PDB " +
+        "with -Zs, found under set_search_paths' symbolDirs) or the DXBC/DXIL disassembly; the other views are not " +
+        "available for D3D12.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         object: { type: "integer", minimum: 0, description: "The pipeline, shader module, library, function or pipeline state object id." },

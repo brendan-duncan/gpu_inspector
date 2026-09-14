@@ -26,7 +26,7 @@ import {
 } from "./launch_env.js";
 import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironmentStatus } from "./implicit_layer.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
-import { findD3D12Tools as findD3D12ToolsIn, windowsLaunch, type D3D12Tools } from "./d3d12.js";
+import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import {
   THEMES,
@@ -47,12 +47,20 @@ const LAUNCH_CONNECT_TIMEOUT_MS = 60000;
 const ATTACH_CONNECT_TIMEOUT_MS = 5000;
 /** How long a session waits for an application the implicit layer brings (see waitForApplication). */
 const WAIT_CONNECT_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * How long a D3D12 watch session gives an injected application to create a device before it says
+ * the injection probably came too late. The capture library opens its port at D3D12CreateDevice
+ * and not before (src/d3d12/README.md), so silence past this means either no device was made or
+ * one was made before the hooks went in.
+ */
+const D3D12_DEVICE_WAIT_MS = 10000;
 const KILL_TIMEOUT_MS = 3000;
 
 let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
 //               --launch-android=<package> --device=<serial> [--activity=<name>]
+//               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 //               [--debug-settle=<ms>]
@@ -111,7 +119,7 @@ function removeRecentCapture(index: number): string[] {
 
 function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
   return {
-    target: c.target === "android" ? "android" : c.target === "implicit" ? "implicit" : "native",
+    target: c.target === "android" || c.target === "implicit" || c.target === "waitD3D12" ? c.target : "native",
     exe: c.exe ?? "",
     args: c.args ?? "",
     cwd: c.cwd ?? "",
@@ -205,6 +213,8 @@ const NO_LAYER_ERROR = process.platform === "darwin"
     : "layer not found: build the layer first (see docs/ARCHITECTURE.md)";
 /** The implicit layer and the layer registration are the Vulkan layer's alone, whatever else is built. */
 const NO_VULKAN_LAYER_ERROR = "Vulkan layer not found: build the layer first (see docs/BUILDING.md)";
+/** Waiting for a Direct3D 12 application needs the D3D12 tools and nothing else. */
+const NO_D3D12_ERROR = "D3D12 capture library not found: build it (see src/d3d12/README.md) or set INSPECTOR_D3D12_DIR";
 
 /** The layer of the checkout the app was built in, or of the packaged app. */
 function findLayerDir(): string | null {
@@ -234,6 +244,7 @@ function findAndroidLayerFiles(): AndroidLayerFiles | null {
 function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
+  if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = path.basename(c.exe) || c.exe;
   return c.args ? `${base} ${c.args}` : base;
 }
@@ -522,12 +533,24 @@ function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResul
   return runTarget(s, exe, splitArgs(config.args ?? ""), cwd, env, [`capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`]);
 }
 
+interface RunOptions {
+  /** How long to keep trying to connect; the launch deadline by default. */
+  connectMs?: number;
+  /** Every line the process writes, after it has gone into the session log (the D3D12 watch reads it). */
+  onOutput?: (line: string) => void;
+  /** What the session's status says it started; "pid N" by default. */
+  started?: string;
+  /** What "exited" says for an exit code of the process's own; `code N` by default. */
+  exitDetail?: (code: number | null) => string | undefined;
+}
+
 /**
  * Spawns the target, pipes its output into the session's log and follows it to its exit. `exe`
  * and `args` are what is actually spawned: on Windows the D3D12 launcher with the application's
- * command line after "--" (d3d12.ts), so they are taken as given rather than from the configuration.
+ * command line after "--" (d3d12.ts), or that same launcher watching for an application to start
+ * (waitForD3D12Application), so they are taken as given rather than from the configuration.
  */
-function runTarget(s: Session, exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, notes: string[]): LaunchResult {
+function runTarget(s: Session, exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, notes: string[], o: RunOptions = {}): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
   s.appendLog(`launching ${exe} ${args.join(" ")}`);
@@ -551,7 +574,11 @@ function runTarget(s: Session, exe: string, args: string[], cwd: string, env: No
       rest += d.toString("utf8");
       const lines = rest.split(/\r?\n/);
       rest = lines.pop() ?? "";
-      for (const line of lines) if (line.length) s.appendLog(line);
+      for (const line of lines) {
+        if (!line.length) continue;
+        s.appendLog(line);
+        o.onOutput?.(line);
+      }
     });
   };
   pipe(proc.stdout);
@@ -561,7 +588,7 @@ function runTarget(s: Session, exe: string, args: string[], cwd: string, env: No
     s.target = null;
     s.pid = null;
     disconnectSession(s);
-    s.setStatus("exited", s.killing ? "terminated by inspector" : `code ${signal ?? code}`);
+    s.setStatus("exited", s.killing ? "terminated by inspector" : o.exitDetail?.(code) ?? `code ${signal ?? code}`);
     s.killing = false;
   });
   proc.on("error", (e) => {
@@ -571,8 +598,8 @@ function runTarget(s: Session, exe: string, args: string[], cwd: string, env: No
     disconnectSession(s);
     s.setStatus("error", e.message);
   });
-  s.setStatus("launched", `pid ${proc.pid}`);
-  connectSession(s, LAUNCH_CONNECT_TIMEOUT_MS);
+  s.setStatus("launched", o.started ?? `pid ${proc.pid}`);
+  connectSession(s, o.connectMs ?? LAUNCH_CONNECT_TIMEOUT_MS);
   return { ok: true, sessionId: s.id, pid: proc.pid, port: s.port };
 }
 
@@ -657,12 +684,22 @@ type ValidLaunch =
   /** macOS: the capture library to inject, and the binary inside the bundle to run. */
   | { kind: "metal"; library: string; exe: string }
   | { kind: "android"; adb: string; layer: AndroidLayerFiles }
-  | { kind: "implicit" };
+  | { kind: "implicit" }
+  /** Windows: the D3D12 tools, whose launcher watches for the application to start. */
+  | { kind: "waitD3D12"; d3d12: D3D12Tools };
 
 function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
   if (config.target === "implicit") {
     if (!findLayerDir()) return { error: NO_VULKAN_LAYER_ERROR };
     return { kind: "implicit" };
+  }
+  if (config.target === "waitD3D12") {
+    if (process.platform !== "win32") return { error: "waiting for a Direct3D 12 application is a Windows target" };
+    const image = path.basename(config.exe || "");
+    if (!image) return { error: "no application to wait for: give the executable's name (TestVulkan.exe) or its full path" };
+    const d3d12 = findD3D12Tools();
+    if (!d3d12) return { error: NO_D3D12_ERROR };
+    return { kind: "waitD3D12", d3d12 };
   }
   if (config.target === "android") {
     const adb = findAdb();
@@ -698,6 +735,7 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
 
 function startTarget(s: Session, v: ValidLaunch): LaunchResult {
   if (v.kind === "implicit") return waitForApplication(s);
+  if (v.kind === "waitD3D12") return waitForD3D12Application(s, v.d3d12);
   if (v.kind === "android") return launchAndroid(s, v.adb, v.layer);
   if (v.kind === "metal") return spawnMetalTarget(s, v.library, v.exe);
   return spawnTarget(s, v.layerDir, v.d3d12);
@@ -713,6 +751,52 @@ function waitForApplication(s: Session): LaunchResult {
   connectSession(s, WAIT_CONNECT_TIMEOUT_MS);
   s.setStatus("connecting", `waiting for an application with VKINSP_ENABLE=1 on port ${s.port}`);
   return { ok: true, sessionId: s.id, port: s.port };
+}
+
+/**
+ * D3D12's counterpart of the implicit layer (src/d3d12/README.md, "Getting in"): nothing can be
+ * registered with the D3D12 runtime, so the session's process is dxinsp_launch.exe --watch, which
+ * polls for a process with the configured image name and injects the capture library into it as it
+ * starts. The watcher then stands in for the application the way the launcher does for one it
+ * started, so the session's log, status and Stop all work unchanged — except that stopping ends
+ * the watch, never an application the inspector did not start.
+ *
+ * The library opens its port only once a D3D12 device exists, so a connection is also the proof
+ * that the injection was in time; when none comes within D3D12_DEVICE_WAIT_MS of an injection the
+ * session says what that means.
+ */
+function waitForD3D12Application(s: Session, d3d12: D3D12Tools): LaunchResult {
+  const config = s.config;
+  if (!config) return { ok: false, error: "session has no launch configuration" };
+  const debugLog = cliOption("debug-log");
+  const watch = watchLaunch(d3d12, {
+    image: config.exe, timeoutSeconds: WAIT_CONNECT_TIMEOUT_MS / 1000, once: true,
+    port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
+    validation: config.validation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
+  });
+  const image = path.basename(config.exe);
+  let timer: NodeJS.Timeout | null = null;
+  return runTarget(s, watch.exe, watch.args, d3d12.dir, { ...process.env, ...parseEnvLines(config.env ?? "") }, [
+    `D3D12 capture library: ${d3d12.library}${config.validation ? " (D3D12 debug layer on)" : ""}`,
+    `waiting for ${image} to start: run it now, from wherever it is normally started`,
+    "only the D3D12 library goes in this way; a Vulkan application is waited for with the implicit layer instead",
+  ], {
+    connectMs: WAIT_CONNECT_TIMEOUT_MS,
+    started: `waiting for ${image} on port ${s.port}`,
+    exitDetail: (code) => code === WATCH_TIMED_OUT ? `${image} did not start within ${WAIT_CONNECT_TIMEOUT_MS / 60000} minutes` : undefined,
+    onOutput: (line) => {
+      // The watcher says which process it got into; from there the library has a few seconds to
+      // create a device, which is the only sign it was in the process early enough.
+      if (!/^dxinsp: injected /.test(line) || timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (s.connected || s.state === "exited") return;
+        s.appendLog(`no D3D12 device was created in ${image} within ${D3D12_DEVICE_WAIT_MS / 1000} s: either it does not use `
+          + "Direct3D 12, or it already had its device when the library went in (the watch has to be running before the "
+          + "application starts). The session keeps waiting.");
+      }, D3D12_DEVICE_WAIT_MS);
+    },
+  });
 }
 
 async function launch(config: LaunchConfig): Promise<LaunchResult> {
@@ -779,7 +863,9 @@ function killAllTargets(): void {
     }
     if (s.target) {
       try {
-        terminate(s.target);
+        // Synchronously: this runs on the way out of the process, where a kill left to a callback
+        // never happens and the inspected application outlives the inspector.
+        terminate(s.target, true);
       } catch {
         // already gone
       }
@@ -1226,7 +1312,15 @@ ipcMain.handle("inspector:send", (_e, id: number, msg: UiRequest) => {
   if (msg.action === "Settings" && msg.recordAlways !== undefined) s.recordAlways = msg.recordAlways;
   return sendJson(s, msg);
 });
-ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode) => shaderText(spirv, mode));
+// A D3D12 shader built with dxc -Zs keeps its HLSL out of the container and in a PDB beside the
+// build, so the tool is given directories to look in: the session's symbol directories, which
+// already name unstripped build output, then the last ones a launch used and the MCP server's
+// environment variable, so a capture file opened later still finds them.
+ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode, pdbDirs?: string[]) => {
+  const dirs = [...(pdbDirs ?? []), ...(loadSettings().symbolDirs ?? "").split(";"), ...(process.env.GPU_INSPECTOR_SYMBOL_DIRS ?? "").split(";")]
+    .map((d) => d.trim()).filter(Boolean);
+  return shaderText(spirv, mode, { pdbDirs: [...new Set(dirs)] });
+});
 ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   const win = windowOf(e.sender) ?? mainWin;
   if (!win) return null;
@@ -1378,6 +1472,13 @@ void app.whenReady().then(() => {
     // --wait-for-app: a session that waits for an application started with VKINSP_ENABLE=1.
     if (cliFlag("wait-for-app")) {
       void launch({ ...normalizeLaunch({} as LaunchConfig), target: "implicit", port: Number(cliOption("port")) || DEFAULT_PORT,
+        recordAlways: cliFlag("record-always"), log: true });
+    }
+    // --wait-for-d3d12=<image name or path>: the same for Direct3D 12, where there is no implicit
+    // layer: the session watches for the application to start and injects the library into it.
+    const waitD3D12 = cliOption("wait-for-d3d12");
+    if (waitD3D12) {
+      void launch({ ...normalizeLaunch({} as LaunchConfig), target: "waitD3D12", exe: waitD3D12, port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"), log: true });
     }
     // Testing aid: switch the theme through the same path the picker uses.

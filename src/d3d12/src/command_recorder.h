@@ -36,6 +36,15 @@ struct BoundTarget {
     bool readOnlyDepth = false;
     uint32_t attachment = 0;              // RTV index, or the number of RTVs for the depth target
     D3D12_CPU_DESCRIPTOR_HANDLE handle{};
+    /**
+     * How a real render pass starts the attachment (BeginRenderPass). OMSetRenderTargets has no
+     * such thing -- the attachment keeps what it held and the application clears it with a command
+     * of its own -- so it is PRESERVE there, which is what it means. A measurement that starts from
+     * a copy of the attachment reads this to know whether to copy it or to clear it (overdraw.h).
+     */
+    D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE beginAccess = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+    D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE stencilBeginAccess = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+    D3D12_CLEAR_VALUE clearValue{};
 };
 
 /** The render pass open in the list, synthesized from OMSetRenderTargets or a real BeginRenderPass. */

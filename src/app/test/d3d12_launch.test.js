@@ -1,6 +1,7 @@
 // Launching a Windows target with the D3D12 capture library (src/main/d3d12.ts): finding the
-// tools in a build tree, the environment the library reads, the launcher's command line, and the
-// DXBC path of shaderText (src/main/shader_tools.ts) saying the shader tool is missing when it is.
+// tools in a build tree, the environment the library reads, the launcher's command line for a
+// launch and for a watch (the "wait for an application" target), and the DXBC path of shaderText
+// (src/main/shader_tools.ts) saying the shader tool is missing when it is.
 //
 //     cd src/app && npm test
 import { test } from "node:test";
@@ -17,7 +18,7 @@ buildSync({
   entryPoints: [join(here, "..", "src", "main", "d3d12.ts"), join(here, "..", "src", "main", "shader_tools.ts")],
   bundle: true, format: "esm", platform: "node", outdir: join(dir, "build"), logLevel: "silent",
 });
-const { CAPTURE_LIBRARY, LAUNCHER, SHADER_TOOL, d3d12Environment, findD3D12Tools, findD3D12ShaderTool, windowsLaunch, wrapLaunch } =
+const { CAPTURE_LIBRARY, LAUNCHER, SHADER_TOOL, WATCH_TIMED_OUT, d3d12Environment, findD3D12Tools, findD3D12ShaderTool, watchLaunch, windowsLaunch, wrapLaunch } =
   await import(pathToFileURL(join(dir, "build", "d3d12.js")).href);
 const { isDxbc, shaderText } = await import(pathToFileURL(join(dir, "build", "shader_tools.js")).href);
 
@@ -81,6 +82,41 @@ test("wrapLaunch: the launcher's argument list (quoting is the launcher's job)",
     args: ["--dll", "C:\\b\\dxinsp_capture.dll", "--cwd", "C:\\Games", "--", "C:\\Games\\app.exe", "--frames", "3", "a b"],
   });
   assert.deepEqual(wrapLaunch(tools, "app.exe", []).args, ["--dll", "C:\\b\\dxinsp_capture.dll", "--", "app.exe"]);
+});
+
+test("watchLaunch: the watcher's arguments, with the library's variables passed into the target", () => {
+  const tools = { dir: "C:\\b", library: "C:\\b\\dxinsp_capture.dll", launcher: "C:\\b\\dxinsp_launch.exe", shaderTool: null };
+  const watch = watchLaunch(tools, {
+    image: "TestVulkan.exe", timeoutSeconds: 1800, once: true,
+    port: 47540, log: true, recordAlways: false, stacktraces: true, validation: false,
+  });
+  assert.equal(watch.exe, tools.launcher);
+  assert.deepEqual(watch.args.slice(0, 8),
+    ["--watch", "TestVulkan.exe", "--dll", tools.library, "--timeout", "1800", "--once", "--env"]);
+  // The watched process is started by someone else, so every variable the library reads is handed
+  // to the launcher, which writes them into the process along with the library.
+  const env = new Map();
+  for (let i = 0; i < watch.args.length - 1; i++) {
+    if (watch.args[i] === "--env") env.set(...watch.args[i + 1].split("="));
+  }
+  assert.equal(env.get("DXINSP_PORT"), "47540");
+  assert.equal(env.get("DXINSP_LOG"), "1");
+  assert.equal(env.get("DXINSP_STACKTRACES"), "1");
+  assert.equal(env.get("DXINSP_DEBUG_LAYER"), "0");
+  assert.ok(!env.has("DXINSP_LOG_FILE"));
+
+  // No timeout and no --once: it watches until it is stopped, injecting into every match.
+  const forever = watchLaunch(tools, {
+    image: "D:\\Unity\\TestVulkan\\build_d3d12\\TestVulkan.exe", timeoutSeconds: 0, once: false,
+    port: 47531, log: false, recordAlways: true, stacktraces: false, validation: true, logFile: "C:\\tmp\\d3d12.log",
+  });
+  assert.deepEqual(forever.args.slice(0, 4), ["--watch", "D:\\Unity\\TestVulkan\\build_d3d12\\TestVulkan.exe", "--dll", tools.library]);
+  assert.ok(!forever.args.includes("--timeout"));
+  assert.ok(!forever.args.includes("--once"));
+  assert.ok(forever.args.includes("DXINSP_LOG_FILE=C:\\tmp\\d3d12.log"));
+  assert.ok(forever.args.includes("DXINSP_DEBUG_LAYER=1"));
+  // The launcher's exit code for "the timeout passed and nothing was injected".
+  assert.equal(WATCH_TIMED_OUT, 3);
 });
 
 test("windowsLaunch: both libraries when found, and a note for each", () => {

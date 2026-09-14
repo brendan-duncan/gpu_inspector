@@ -29,17 +29,88 @@ struct PatchedVtable {
 
 // Append-only, read without a lock: every hooked method looks its original up here, thousands of
 // times a frame, and there are only ever a handful of vtables (one per class the runtime
-// implements, times the debug layer's wrappers).
-constexpr size_t kMaxVtables = 64;
+// implements, times the debug layer's wrappers, plus the copies adopted below).
+constexpr size_t kMaxVtables = 256;
 PatchedVtable g_vtables[kMaxVtables];
 std::atomic<size_t> g_vtableCount{0};
 std::mutex g_vtableMutex;
+
+// Every replacement we have installed, so an entry taken from an unknown vtable can be recognised
+// as our own. Small and append-only, read without a lock like the table above.
+constexpr size_t kMaxReplacements = 512;
+void* g_replacements[kMaxReplacements];
+std::atomic<size_t> g_replacementCount{0};
 
 const PatchedVtable* Find(void** vtable) {
     size_t n = g_vtableCount.load(std::memory_order_acquire);
     for (size_t i = 0; i < n; ++i)
         if (g_vtables[i].vtable == vtable) return &g_vtables[i];
     return nullptr;
+}
+
+/** Whether `fn` is one of our own replacements rather than a runtime implementation. */
+bool IsOurs(void* fn) {
+    size_t n = g_replacementCount.load(std::memory_order_acquire);
+    for (size_t i = 0; i < n; ++i)
+        if (g_replacements[i] == fn) return true;
+    return false;
+}
+
+void RememberReplacement(void* fn) {   // caller holds g_vtableMutex
+    size_t n = g_replacementCount.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < n; ++i)
+        if (g_replacements[i] == fn) return;
+    if (n >= kMaxReplacements) return;
+    g_replacements[n] = fn;
+    g_replacementCount.store(n + 1, std::memory_order_release);
+}
+
+/**
+ * An unknown vtable holding one of our replacements was copied from a vtable we had already
+ * patched: D3D12Core hands a command list a vtable of its own along with its state, and a layer in
+ * the process (the PIX runtime, DirectStorage, an engine's own wrapper) may proxy an object the
+ * same way. The copy carries our hooks but is not in the table, so the fallback in OriginalEntry
+ * would hand a replacement back as "the original" and recurse until the stack is gone — which is
+ * exactly what a Unity D3D12 player did.
+ *
+ * The source is found by the two entries we never patch: QueryInterface and AddRef still hold the
+ * source's own implementations in the copy. The copy is then registered with the source's
+ * originals, so later calls through it are an ordinary lookup.
+ */
+const PatchedVtable* AdoptCopy(void** vtable, uint32_t slot) {
+    std::lock_guard<std::mutex> lock(g_vtableMutex);
+    if (const PatchedVtable* already = Find(vtable)) return already;   // another thread got there first
+    const size_t n = g_vtableCount.load(std::memory_order_relaxed);
+    // First the certain match: the copy's QueryInterface and AddRef, which we never patch, are
+    // still the source's own. Failing that, any vtable carrying the same replacement at the same
+    // slot, which at least came from the same hook; a class whose entry differs would not have
+    // matched IsOurs at all.
+    const PatchedVtable* source = nullptr;
+    for (int tier = 0; tier < 2 && !source; ++tier) {
+        for (size_t i = 0; i < n; ++i) {
+            const PatchedVtable& p = g_vtables[i];
+            if (p.vtable == vtable || p.originals.size() <= slot || p.originals.size() < 2) continue;
+            if (p.vtable[slot] != vtable[slot]) continue;
+            if (tier == 0 && (vtable[0] != p.originals[0] || vtable[1] != p.originals[1])) continue;
+            source = &p;
+            if (tier == 1)
+                LogAlways("a copied vtable %p was matched to %p only by its replacement at slot %u, not by its "
+                          "QueryInterface and AddRef: the originals may belong to another class",
+                          (void*)vtable, (void*)p.vtable, slot);
+            break;
+        }
+    }
+    if (!source) return nullptr;
+    if (n >= kMaxVtables) {
+        LogAlways("a copied vtable could not be adopted: the table is full; %p keeps its own entries", (void*)vtable);
+        return source;   // the originals are still the right ones to call, just not cached
+    }
+    PatchedVtable& copy = g_vtables[n];
+    copy.vtable = vtable;
+    copy.originals = source->originals;
+    g_vtableCount.store(n + 1, std::memory_order_release);
+    Log("adopted a copy of a patched vtable: %p copied from %p", (void*)vtable, (void*)source->vtable);
+    return &g_vtables[n];
 }
 
 }  // namespace
@@ -53,8 +124,20 @@ void* OriginalEntry(const void* object, uint32_t slot) {
     void** vtable = *reinterpret_cast<void** const*>(object);
     if (const PatchedVtable* p = Find(vtable)) {
         if (slot < p->originals.size()) return p->originals[slot];
+        return vtable[slot];
     }
-    return vtable[slot];
+    // Not a vtable we patched. Its entry is the original unless it is one of ours, which means the
+    // vtable was copied from one we had patched (see AdoptCopy).
+    void* entry = vtable[slot];
+    if (!IsOurs(entry)) return entry;
+    if (const PatchedVtable* source = AdoptCopy(vtable, slot)) {
+        if (slot < source->originals.size()) return source->originals[slot];
+    }
+    // The source could not be identified. Calling the entry would recurse into this replacement
+    // for ever, so the call is refused instead: the caller sees a null and forwards nothing.
+    LogAlways("a copied vtable %p holds our replacement at slot %u and its source is unknown; the call is refused",
+              (void*)vtable, slot);
+    return nullptr;
 }
 
 bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks) {
@@ -80,6 +163,14 @@ bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::in
     uint32_t patched = 0;
     for (const SlotHook& h : hooks) {
         if (h.slot >= count) continue;
+        // A vtable that already holds our replacement is a copy of one we patched (AdoptCopy); its
+        // saved "originals" would be our own replacements, so it is left alone.
+        if (p.originals[h.slot] == h.replacement) {
+            LogAlways("%s vtable %p slot %u already holds our replacement: a copy of a patched vtable, left alone",
+                      interfaceName, (void*)vtable, h.slot);
+            continue;
+        }
+        RememberReplacement(h.replacement);
         vtable[h.slot] = h.replacement;
         ++patched;
     }

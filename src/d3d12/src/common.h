@@ -35,8 +35,17 @@ bool LogEnabled();
 /** Always logged, whatever DXINSP_LOG says: the library loading, failures, the port. */
 void LogAlways(const char* fmt, ...);
 
-/** A DXINSP_* environment variable, "" when unset. */
+/** A DXINSP_* setting: one given to DxinspInitialize, else the environment variable, else "". */
 std::string ConfigValue(const char* name);
+
+/**
+ * Sets a DXINSP_* setting for this process, over whatever the environment says. The launcher passes
+ * these to DxinspInitialize when it injects into a process it did not start (dxinsp_launch --watch,
+ * see README.md): such a process was started by the user and could not inherit them. They are kept
+ * here rather than written into the process environment, which a process still running its loader
+ * is in the middle of building. Called from DxinspInitialize before anything reads a setting.
+ */
+void SetConfigValue(const char* name, const char* value);
 /** True when the variable is set and not "0". */
 bool ConfigFlag(const char* name);
 

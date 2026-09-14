@@ -3,11 +3,28 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <mutex>
 
 namespace dxinsp {
 
+// Settings the launcher handed to DxinspInitialize, which win over the environment (see
+// SetConfigValue). Written once, before the hooks are installed and before anything reads one, and
+// only read afterwards, so they need no lock; a function-local static, so a setting read from
+// another translation unit's initializer finds the map built.
+static std::map<std::string, std::string>& Settings() {
+    static std::map<std::string, std::string> settings;
+    return settings;
+}
+
+void SetConfigValue(const char* name, const char* value) {
+    if (name && *name) Settings()[name] = value ? value : "";
+}
+
 std::string ConfigValue(const char* name) {
+    auto& settings = Settings();
+    auto it = settings.find(name);
+    if (it != settings.end()) return it->second;
     char buf[1024];
     DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf)) return std::string();

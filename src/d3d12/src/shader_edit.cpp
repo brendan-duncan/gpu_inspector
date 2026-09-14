@@ -65,6 +65,17 @@ struct PipelineRecord {
     /** Stage -> the bytecode currently replacing it. */
     std::map<std::string, std::vector<uint8_t>> edits;
     ID3D12PipelineState* replacement = nullptr;
+    /**
+     * Copies of the pipeline a measurement draws with (overdraw.h), keyed by what the caller
+     * changed. They live with the record, so the application releasing its pipeline drops them.
+     */
+    struct Variant {
+        ComPtr<ID3D12PipelineState> pipeline;
+        std::string error;
+    };
+    std::map<uint64_t, Variant> variants;
+    /** Whether the vertex (or mesh) bytecode is DXIL: -1 until asked. */
+    int dxil = -1;
 
     PipelineRecord() = default;
     PipelineRecord(const PipelineRecord&) = delete;
@@ -331,6 +342,285 @@ std::string BlobName(const TrackedObject& original, const std::string& stage, co
     return prefix + (info.entryPoint.empty() ? "main" : info.entryPoint);
 }
 
+
+// --- Copies for the measurements (overdraw.h) -------------------------------------------------
+
+/** Whether a DXBC/DXIL container holds a DXIL program part. */
+bool ContainerIsDxil(const void* data, size_t size) {
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    if (!bytes || size < 32 || memcmp(bytes, "DXBC", 4) != 0) return false;
+    uint32_t parts = 0;
+    memcpy(&parts, bytes + 28, 4);   // magic, digest, version, total size, part count
+    if (parts > 64 || 32 + (size_t)parts * 4 > size) return false;
+    for (uint32_t i = 0; i < parts; ++i) {
+        uint32_t offset = 0;
+        memcpy(&offset, bytes + 32 + (size_t)i * 4, 4);
+        if ((size_t)offset + 8 > size) continue;
+        if (memcmp(bytes + offset, "DXIL", 4) == 0) return true;
+    }
+    return false;
+}
+
+/** Additive blending of the counting pixel shader's 1.0 into the red channel. */
+D3D12_RENDER_TARGET_BLEND_DESC CountBlend() {
+    D3D12_RENDER_TARGET_BLEND_DESC b{};
+    b.BlendEnable = TRUE;
+    b.LogicOpEnable = FALSE;
+    b.SrcBlend = D3D12_BLEND_ONE;
+    b.DestBlend = D3D12_BLEND_ONE;
+    b.BlendOp = D3D12_BLEND_OP_ADD;
+    b.SrcBlendAlpha = D3D12_BLEND_ONE;
+    b.DestBlendAlpha = D3D12_BLEND_ONE;
+    b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    b.LogicOp = D3D12_LOGIC_OP_NOOP;
+    b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
+    return b;
+}
+
+D3D12_BLEND_DESC DefaultBlend() {
+    D3D12_BLEND_DESC d{};
+    for (D3D12_RENDER_TARGET_BLEND_DESC& rt : d.RenderTarget) {
+        rt.SrcBlend = D3D12_BLEND_ONE;
+        rt.DestBlend = D3D12_BLEND_ZERO;
+        rt.BlendOp = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+        rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    }
+    return d;
+}
+
+D3D12_RASTERIZER_DESC DefaultRasterizer() {
+    D3D12_RASTERIZER_DESC r{};
+    r.FillMode = D3D12_FILL_MODE_SOLID;
+    r.CullMode = D3D12_CULL_MODE_BACK;
+    r.DepthClipEnable = TRUE;
+    r.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    return r;
+}
+
+D3D12_DEPTH_STENCIL_DESC DefaultDepthStencil() {
+    D3D12_DEPTH_STENCIL_DESC d{};
+    d.DepthEnable = TRUE;
+    d.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    d.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    d.StencilEnable = FALSE;
+    d.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    d.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    const D3D12_DEPTH_STENCILOP_DESC op = {D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                           D3D12_COMPARISON_FUNC_ALWAYS};
+    d.FrontFace = op;
+    d.BackFace = op;
+    return d;
+}
+
+D3D12_RT_FORMAT_ARRAY CountFormats(DXGI_FORMAT format) {
+    D3D12_RT_FORMAT_ARRAY a{};
+    a.NumRenderTargets = 1;
+    a.RTFormats[0] = format;
+    for (UINT i = 1; i < 8; ++i) a.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+    return a;
+}
+
+void ApplyVariantToBlend(D3D12_BLEND_DESC& blend, const PipelineVariant& v) {
+    if (v.countFormat != DXGI_FORMAT_UNKNOWN) {
+        // The count target is the only one, so independent blending has nothing left to describe.
+        blend.AlphaToCoverageEnable = FALSE;
+        blend.IndependentBlendEnable = FALSE;
+        for (D3D12_RENDER_TARGET_BLEND_DESC& rt : blend.RenderTarget) rt = CountBlend();
+    }
+    if (v.disableColorWrites) {
+        for (D3D12_RENDER_TARGET_BLEND_DESC& rt : blend.RenderTarget) rt.RenderTargetWriteMask = 0;
+    }
+    if (v.singleSample) blend.AlphaToCoverageEnable = FALSE;
+}
+
+// The first four members are laid out the same in all three depth-stencil descriptions, and the
+// first two in all three rasterizer ones, which is what lets one patch serve whichever subobject a
+// pipeline stream carries.
+static_assert(offsetof(D3D12_DEPTH_STENCIL_DESC, DepthEnable) == offsetof(D3D12_DEPTH_STENCIL_DESC1, DepthEnable));
+static_assert(offsetof(D3D12_DEPTH_STENCIL_DESC, DepthWriteMask) == offsetof(D3D12_DEPTH_STENCIL_DESC2, DepthWriteMask));
+static_assert(offsetof(D3D12_DEPTH_STENCIL_DESC, StencilEnable) == offsetof(D3D12_DEPTH_STENCIL_DESC2, StencilEnable));
+static_assert(offsetof(D3D12_RASTERIZER_DESC, CullMode) == offsetof(D3D12_RASTERIZER_DESC2, CullMode));
+
+/**
+ * `desc2` tells the two layouts apart: D3D12_DEPTH_STENCIL_DESC2 keeps the stencil masks per face
+ * rather than once for both, which is the only place the three descriptions differ in what a
+ * measurement changes.
+ */
+void PatchDepthStencil(bool desc2, uint8_t* payload, const PipelineVariant& v) {
+    const BOOL off = FALSE;
+    const D3D12_DEPTH_WRITE_MASK zero = D3D12_DEPTH_WRITE_MASK_ZERO;
+    if (v.disableDepth) memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC, DepthEnable), &off, sizeof(off));
+    if (v.disableDepthWrite) memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC, DepthWriteMask), &zero, sizeof(zero));
+    if (v.disableStencil) memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC, StencilEnable), &off, sizeof(off));
+    if (v.disableStencilWrites) {
+        const UINT8 none = 0;
+        if (desc2) {
+            memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC2, FrontFace) + offsetof(D3D12_DEPTH_STENCILOP_DESC1, StencilWriteMask), &none, 1);
+            memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC2, BackFace) + offsetof(D3D12_DEPTH_STENCILOP_DESC1, StencilWriteMask), &none, 1);
+        } else {
+            memcpy(payload + offsetof(D3D12_DEPTH_STENCIL_DESC, StencilWriteMask), &none, 1);
+        }
+    }
+}
+
+void PatchRasterizer(uint8_t* payload, const PipelineVariant& v) {
+    if (!v.disableCull) return;
+    const D3D12_CULL_MODE none = D3D12_CULL_MODE_NONE;
+    memcpy(payload + offsetof(D3D12_RASTERIZER_DESC, CullMode), &none, sizeof(none));
+}
+
+template <typename T>
+void AppendSubobject(std::vector<uint8_t>& stream, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type, const T& value) {
+    StreamSubobject<T> subobject{};
+    subobject.type = type;
+    subobject.inner = value;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&subobject);
+    stream.insert(stream.end(), p, p + sizeof(subobject));
+}
+
+/**
+ * The stream of a measurement's copy: every subobject the application wrote, with the ones the
+ * measurement changes patched in place, and the ones it needs that the stream did not carry
+ * appended (the runtime refuses a stream that describes one field twice).
+ */
+bool BuildVariantStream(const PipelineRecord& rec, const PipelineVariant& v, std::vector<uint8_t>& out, std::string& error) {
+    out = rec.stream;
+    ApplyEdits(rec, out.data());
+    bool hasPs = false, hasBlend = false, hasFormats = false, hasDsFormat = false, hasDepthStencil = false, hasRasterizer = false;
+    size_t pos = 0;
+    while (pos < out.size()) {
+        if (out.size() - pos < sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE)) {
+            error = "truncated pipeline stream";
+            return false;
+        }
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+        memcpy(&type, out.data() + pos, sizeof(type));
+        SubobjectLayout layout;
+        if (!SubobjectLayoutFor(type, layout) || layout.size > out.size() - pos) {
+            error = "unknown pipeline stream subobject type " + std::to_string((int)type);
+            return false;
+        }
+        uint8_t* payload = out.data() + pos + layout.payload;
+        switch (type) {
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: {
+                hasPs = true;
+                if (v.pixelShaderSize) {
+                    const D3D12_SHADER_BYTECODE bc{v.pixelShader, v.pixelShaderSize};
+                    memcpy(payload, &bc, sizeof(bc));
+                }
+                break;
+            }
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: {
+                hasBlend = true;
+                D3D12_BLEND_DESC blend;
+                memcpy(&blend, payload, sizeof(blend));
+                ApplyVariantToBlend(blend, v);
+                memcpy(payload, &blend, sizeof(blend));
+                break;
+            }
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: {
+                hasFormats = true;
+                if (v.countFormat != DXGI_FORMAT_UNKNOWN) {
+                    const D3D12_RT_FORMAT_ARRAY formats = CountFormats(v.countFormat);
+                    memcpy(payload, &formats, sizeof(formats));
+                }
+                break;
+            }
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT:
+                hasDsFormat = true;
+                if (v.setDepthFormat) memcpy(payload, &v.depthFormat, sizeof(DXGI_FORMAT));
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL:
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1:
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2:
+                hasDepthStencil = true;
+                PatchDepthStencil(type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2, payload, v);
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER:
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1:
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2:
+                hasRasterizer = true;
+                PatchRasterizer(payload, v);
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC:
+                if (v.singleSample) {
+                    const DXGI_SAMPLE_DESC one{1, 0};
+                    memcpy(payload, &one, sizeof(one));
+                }
+                break;
+            default:
+                break;
+        }
+        pos += layout.size;
+    }
+    if (!hasPs && v.pixelShaderSize) {
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_SHADER_BYTECODE{v.pixelShader, v.pixelShaderSize});
+    }
+    if (!hasFormats && v.countFormat != DXGI_FORMAT_UNKNOWN) {
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, CountFormats(v.countFormat));
+    }
+    if (!hasBlend && (v.countFormat != DXGI_FORMAT_UNKNOWN || v.disableColorWrites)) {
+        D3D12_BLEND_DESC blend = DefaultBlend();
+        ApplyVariantToBlend(blend, v);
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, blend);
+    }
+    if (!hasDsFormat && v.setDepthFormat) {
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT, v.depthFormat);
+    }
+    if (!hasDepthStencil && (v.disableDepth || v.disableDepthWrite || v.disableStencil || v.disableStencilWrites)) {
+        D3D12_DEPTH_STENCIL_DESC ds = DefaultDepthStencil();
+        PatchDepthStencil(false, reinterpret_cast<uint8_t*>(&ds), v);
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, ds);
+    }
+    if (!hasRasterizer && v.disableCull) {
+        D3D12_RASTERIZER_DESC r = DefaultRasterizer();
+        r.CullMode = D3D12_CULL_MODE_NONE;
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, r);
+    }
+    return true;
+}
+
+/** Makes the copy. The record's lock is held, and the creation runs as the library's own call. */
+void BuildVariant(PipelineRecord& rec, const PipelineVariant& v, PipelineRecord::Variant& made) {
+    ScopedInternal internal;
+    ID3D12PipelineState* pipeline = nullptr;
+    HRESULT hr = E_FAIL;
+    if (rec.kind == PipelineRecord::Kind::Graphics) {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC d = rec.graphics;
+        ApplyEdits(rec, reinterpret_cast<uint8_t*>(&d));
+        if (v.pixelShaderSize) d.PS = {v.pixelShader, v.pixelShaderSize};
+        if (v.countFormat != DXGI_FORMAT_UNKNOWN) {
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = v.countFormat;
+            for (UINT i = 1; i < 8; ++i) d.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
+        }
+        ApplyVariantToBlend(d.BlendState, v);
+        if (v.setDepthFormat) d.DSVFormat = v.depthFormat;
+        PatchDepthStencil(false, reinterpret_cast<uint8_t*>(&d.DepthStencilState), v);
+        PatchRasterizer(reinterpret_cast<uint8_t*>(&d.RasterizerState), v);
+        if (v.singleSample) d.SampleDesc = {1, 0};
+        hr = rec.device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pipeline));
+    } else {
+        std::vector<uint8_t> stream;
+        if (!BuildVariantStream(rec, v, stream, made.error)) return;
+        ComPtr<ID3D12Device2> device2;
+        if (FAILED(rec.device->QueryInterface(IID_PPV_ARGS(device2.put()))) || !device2) {
+            made.error = "ID3D12Device2 is not available: a pipeline stream cannot be copied";
+            return;
+        }
+        const D3D12_PIPELINE_STATE_STREAM_DESC sd{stream.size(), stream.data()};
+        hr = device2->CreatePipelineState(&sd, IID_PPV_ARGS(&pipeline));
+    }
+    if (FAILED(hr) || !pipeline) {
+        made.error = "a copy of the pipeline did not build: " + HrText(hr);
+        return;
+    }
+    made.pipeline.reset(pipeline);
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -589,6 +879,59 @@ ID3D12PipelineState* ShaderEditor::Substitute(ID3D12PipelineState* pipeline) {
     std::shared_lock lock(i.substitutionMutex);
     auto it = i.substitutions.find(pipeline);
     return it == i.substitutions.end() ? pipeline : it->second;
+}
+
+bool ShaderEditor::VariantPipeline(ID3D12PipelineState* pipeline, uint64_t key, const PipelineVariant& variant,
+                                   ID3D12PipelineState** out, std::string& error) {
+    if (out) *out = nullptr;
+    if (!pipeline || !out) {
+        error = "no pipeline";
+        return false;
+    }
+    Impl& i = impl();
+    std::lock_guard<std::recursive_mutex> lock(i.mutex);
+    auto it = i.records.find(pipeline);
+    if (it == i.records.end()) {
+        error = "the pipeline's description was not recorded (made before this library was loaded, or loaded from a pipeline library)";
+        return false;
+    }
+    PipelineRecord& rec = *it->second;
+    auto cached = rec.variants.find(key);
+    if (cached == rec.variants.end()) {
+        PipelineRecord::Variant made;
+        if (rec.kind == PipelineRecord::Kind::Compute) made.error = "a compute pipeline rasterizes nothing";
+        else if (rec.unsupported) made.error = "the pipeline stream cannot be copied: " + rec.note;
+        else BuildVariant(rec, variant, made);
+        if (!made.error.empty()) Log("measurement: %s", made.error.c_str());
+        cached = rec.variants.emplace(key, std::move(made)).first;
+    }
+    if (!cached->second.pipeline) {
+        error = cached->second.error;
+        return false;
+    }
+    *out = cached->second.pipeline.get();
+    return true;
+}
+
+bool ShaderEditor::PipelineIsDxil(ID3D12PipelineState* pipeline) {
+    if (!pipeline) return false;
+    Impl& i = impl();
+    std::lock_guard<std::recursive_mutex> lock(i.mutex);
+    auto it = i.records.find(pipeline);
+    if (it == i.records.end()) return false;
+    PipelineRecord& rec = *it->second;
+    if (rec.dxil < 0) {
+        rec.dxil = 0;
+        // A measurement replaces the pixel shader, so what its copy has to match is the container
+        // kind of the stages it keeps; the vertex (or mesh) stage names it.
+        for (const char* stage : {"vertex", "mesh"}) {
+            if (const D3D12_SHADER_BYTECODE* bc = rec.Stage(stage)) {
+                if (ContainerIsDxil(bc->pShaderBytecode, bc->BytecodeLength)) rec.dxil = 1;
+                break;
+            }
+        }
+    }
+    return rec.dxil > 0;
 }
 
 void ShaderEditor::OnPresent() {

@@ -1,7 +1,7 @@
 // Starting an application with a capture library in it, without Electron: where the Vulkan layer
 // and the Khronos validation layer are, the environment that enables them, free ports, and ending a
 // process tree. The app's sessions (main.ts) and the MCP server's live sessions launch this way.
-import { execFile, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -142,14 +142,31 @@ export async function findFreePort(start: number, taken: (port: number) => boole
   return start;
 }
 
-/** Terminates a process and, on Windows, everything it spawned (Unity's crash handler, launchers). */
-export function terminate(proc: ChildProcess): void {
+/**
+ * Terminates a process and, on Windows, everything it spawned (Unity's crash handler, launchers).
+ *
+ * `wait` runs the kill synchronously, for the quit path: an asynchronous `taskkill` never gets to
+ * run once Electron is on its way out, which left an inspected application running after the
+ * inspector had gone (a leaked test application per case, and a port its successor then found
+ * taken). Everywhere else the process stays alive to hear the callback, so the kill may be async.
+ */
+export function terminate(proc: ChildProcess, wait = false): void {
   if (process.platform === "win32" && proc.pid) {
-    execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"], () => {
-      // If taskkill is unavailable or the process is already gone, fall back to a plain kill.
-      try { proc.kill(); } catch { /* already gone */ }
-    });
-    return;
+    const args = ["/PID", String(proc.pid), "/T", "/F"];
+    if (wait) {
+      try {
+        execFileSync("taskkill", args, { stdio: "ignore" });
+        return;
+      } catch {
+        // Unavailable or already gone: fall through to the plain kill below.
+      }
+    } else {
+      execFile("taskkill", args, () => {
+        // If taskkill is unavailable or the process is already gone, fall back to a plain kill.
+        try { proc.kill(); } catch { /* already gone */ }
+      });
+      return;
+    }
   }
-  proc.kill();
+  try { proc.kill(); } catch { /* already gone */ }
 }
