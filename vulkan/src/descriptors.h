@@ -26,6 +26,7 @@ struct DescriptorEntry {
     VkSampler sampler = VK_NULL_HANDLE;
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkBufferView bufferView = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
 };
 
 struct DescriptorBinding {
@@ -73,7 +74,7 @@ private:
     DescriptorTracker() = default;
     void ApplyWrite(DescriptorSetContents& set, uint32_t binding, uint32_t arrayElement, VkDescriptorType type,
                     uint32_t count, const VkDescriptorImageInfo* images, const VkDescriptorBufferInfo* buffers,
-                    const VkBufferView* views, size_t stride);
+                    const VkBufferView* views, size_t stride, const VkAccelerationStructureKHR* structures = nullptr);
 
     mutable std::shared_mutex _mutex;
     std::unordered_map<uint64_t, DescriptorSetContents> _layouts;

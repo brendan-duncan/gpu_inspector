@@ -34,6 +34,18 @@ static bool IsDynamicType(VkDescriptorType t) {
     return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 }
 
+static bool IsStructureType(VkDescriptorType t) {
+    return t == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+}
+
+// The structures an acceleration structure write names (VkWriteDescriptorSetAccelerationStructureKHR in its chain).
+static const VkAccelerationStructureKHR* StructuresOf(const VkWriteDescriptorSet& w) {
+    for (auto* n = static_cast<const VkBaseInStructure*>(w.pNext); n; n = n->pNext)
+        if (n->sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
+            return reinterpret_cast<const VkWriteDescriptorSetAccelerationStructureKHR*>(n)->pAccelerationStructures;
+    return nullptr;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Layouts and sets
 
@@ -110,7 +122,8 @@ static size_t FindBinding(const DescriptorSetContents& set, uint32_t binding) {
 
 void DescriptorTracker::ApplyWrite(DescriptorSetContents& set, uint32_t binding, uint32_t arrayElement,
                                    VkDescriptorType type, uint32_t count, const VkDescriptorImageInfo* images,
-                                   const VkDescriptorBufferInfo* buffers, const VkBufferView* views, size_t stride) {
+                                   const VkDescriptorBufferInfo* buffers, const VkBufferView* views, size_t stride,
+                                   const VkAccelerationStructureKHR* structures) {
     size_t bi = FindBinding(set, binding);
     if (bi >= set.bindings.size()) return;
     if (type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) count = 1;
@@ -122,7 +135,10 @@ void DescriptorTracker::ApplyWrite(DescriptorSetContents& set, uint32_t binding,
         if (IsImageType(type) && images) base = reinterpret_cast<const uint8_t*>(images) + k * stride;
         else if (IsBufferType(type) && buffers) base = reinterpret_cast<const uint8_t*>(buffers) + k * stride;
         else if (IsTexelType(type) && views) base = reinterpret_cast<const uint8_t*>(views) + k * stride;
-        if (base) {
+        else if (IsStructureType(type) && structures) base = reinterpret_cast<const uint8_t*>(structures) + k * stride;
+        if (base && IsStructureType(type)) {
+            memcpy(&e->accelerationStructure, base, sizeof(e->accelerationStructure));
+        } else if (base) {
             if (IsImageType(type)) {
                 VkDescriptorImageInfo ii;
                 memcpy(&ii, base, sizeof(ii));
@@ -154,9 +170,10 @@ void DescriptorTracker::OnUpdateSets(uint32_t writeCount, const VkWriteDescripto
         auto it = _sets.find(VKINSP_KEY(w.dstSet));
         if (it == _sets.end()) continue;
         size_t stride = IsImageType(w.descriptorType) ? sizeof(VkDescriptorImageInfo)
-                      : IsBufferType(w.descriptorType) ? sizeof(VkDescriptorBufferInfo) : sizeof(VkBufferView);
+                      : IsBufferType(w.descriptorType) ? sizeof(VkDescriptorBufferInfo)
+                      : IsStructureType(w.descriptorType) ? sizeof(VkAccelerationStructureKHR) : sizeof(VkBufferView);
         ApplyWrite(it->second, w.dstBinding, w.dstArrayElement, w.descriptorType, w.descriptorCount, w.pImageInfo,
-                   w.pBufferInfo, w.pTexelBufferView, stride);
+                   w.pBufferInfo, w.pTexelBufferView, stride, StructuresOf(w));
     }
     for (uint32_t i = 0; copies && i < copyCount; ++i) {
         const VkCopyDescriptorSet& c = copies[i];
@@ -208,7 +225,8 @@ void DescriptorTracker::OnUpdateWithTemplate(VkDescriptorSet set, VkDescriptorUp
         ApplyWrite(sit->second, e.dstBinding, e.dstArrayElement, e.descriptorType, e.descriptorCount,
                    IsImageType(e.descriptorType) ? reinterpret_cast<const VkDescriptorImageInfo*>(p) : nullptr,
                    IsBufferType(e.descriptorType) ? reinterpret_cast<const VkDescriptorBufferInfo*>(p) : nullptr,
-                   IsTexelType(e.descriptorType) ? reinterpret_cast<const VkBufferView*>(p) : nullptr, e.stride);
+                   IsTexelType(e.descriptorType) ? reinterpret_cast<const VkBufferView*>(p) : nullptr, e.stride,
+                   IsStructureType(e.descriptorType) ? reinterpret_cast<const VkAccelerationStructureKHR*>(p) : nullptr);
     }
 }
 
@@ -260,6 +278,8 @@ DescriptorSetContents DescriptorTracker::FromWrites(uint32_t writeCount, const V
                 e.range = w.pBufferInfo[k].range;
             } else if (IsTexelType(w.descriptorType) && w.pTexelBufferView) {
                 e.bufferView = w.pTexelBufferView[k];
+            } else if (IsStructureType(w.descriptorType)) {
+                if (const VkAccelerationStructureKHR* s = StructuresOf(w)) e.accelerationStructure = s[k];
             }
         }
         c.bindings.push_back(std::move(b));
@@ -309,6 +329,8 @@ bool DescriptorTracker::FromTemplate(VkDescriptorUpdateTemplate tmpl, const void
                 e.range = bi.range;
             } else if (IsTexelType(t.descriptorType)) {
                 memcpy(&e.bufferView, p, sizeof(e.bufferView));
+            } else if (IsStructureType(t.descriptorType)) {
+                memcpy(&e.accelerationStructure, p, sizeof(e.accelerationStructure));
             }
         }
     }
@@ -388,6 +410,9 @@ void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& con
                 }
             } else if (IsTexelType(b.type)) {
                 w.Key("bufferView"); w.Handle(HT_VkBufferView, "VkBufferView", (uint64_t)(uintptr_t)e.bufferView);
+            } else if (IsStructureType(b.type)) {
+                w.Key("accelerationStructure");
+                w.Handle(HT_VkAccelerationStructureKHR, "VkAccelerationStructureKHR", (uint64_t)(uintptr_t)e.accelerationStructure);
             }
             w.EndObject();
         }

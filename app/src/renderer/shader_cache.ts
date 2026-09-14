@@ -6,7 +6,7 @@ import { isObject, refId, str, type ObjectLookup, type VulkanObject } from "./vu
 import { isAction } from "./command_sets.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
-import type { UiRequest } from "../shared/protocol.js";
+import type { ArgObject, UiRequest } from "../shared/protocol.js";
 
 /** Where a pipeline stage's code comes from: a blob of the pipeline or of its shader module. */
 export interface StageSource {
@@ -16,6 +16,48 @@ export interface StageSource {
   object: VulkanObject;   // pipeline or shader module
   blobIndex: number;
   module: VulkanObject | null;
+  /** The stage's index in pStages, which a ray tracing pipeline's shader groups refer to. */
+  stageIndex?: number;
+}
+
+/** A ray tracing pipeline's shader group, with the stages it names as their indices in pStages. */
+export interface ShaderGroup {
+  index: number;
+  type: "general" | "triangles hit" | "procedural hit" | string;
+  general?: number;
+  closestHit?: number;
+  anyHit?: number;
+  intersection?: number;
+}
+
+/** The shader groups of a ray tracing pipeline (VkRayTracingPipelineCreateInfoKHR::pGroups); empty for any other pipeline. */
+export function shaderGroups(pipeline: VulkanObject): ShaderGroup[] {
+  const groups = pipeline.descriptor?.pGroups;
+  if (!Array.isArray(groups)) return [];
+  const UNUSED = 0xffffffff;
+  const shader = (v: unknown): number | undefined => (typeof v === "number" && v !== UNUSED ? v : undefined);
+  return groups.filter(isObject).map((g, index) => {
+    const type = str(g.type).replace("VK_RAY_TRACING_SHADER_GROUP_TYPE_", "").replace("_KHR", "").replace("_GROUP", "").toLowerCase().replace("_", " ");
+    return { index, type, general: shader(g.generalShader), closestHit: shader(g.closestHitShader), anyHit: shader(g.anyHitShader), intersection: shader(g.intersectionShader) };
+  });
+}
+
+/**
+ * The shader binding table regions of a vkCmdTraceRays* command, as record counts: which records
+ * of the table each kind of shader occupies. The records' group handles are opaque, so which group
+ * each record is cannot be read from the capture.
+ */
+export function bindingTableRegions(args: ArgObject | null | undefined): { region: string; records: number; stride: number; size: number }[] {
+  if (!args) return [];
+  const out: { region: string; records: number; stride: number; size: number }[] = [];
+  for (const [key, region] of [["pRaygenShaderBindingTable", "raygen"], ["pMissShaderBindingTable", "miss"], ["pHitShaderBindingTable", "hit"], ["pCallableShaderBindingTable", "callable"]] as const) {
+    const r = args[key];
+    if (!isObject(r)) continue;
+    const stride = typeof r.stride === "number" ? r.stride : 0;
+    const size = typeof r.size === "number" ? r.size : 0;
+    out.push({ region, stride, size, records: stride > 0 ? Math.floor(size / stride) : 0 });
+  }
+  return out;
 }
 
 const STAGE_FLAGS: Record<string, ShaderStage> = {
@@ -53,21 +95,25 @@ export function pipelineStages(pipeline: VulkanObject, db: ObjectLookup): StageS
   if (!d) return [];
   const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
   const out: StageSource[] = [];
-  for (const s of stages) {
-    if (!isObject(s)) continue;
+  stages.forEach((s, stageIndex) => {
+    if (!isObject(s)) return;
     const stageFlag = str(s.stage);
     const stage = stageFromFlag(stageFlag);
     const entryPoint = str(s.pName) || "main";
     const module = db.getObject(refId(s.module));
-    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
+    // A ray tracing pipeline's payloads carry their index in pStages ("miss:main#1"): it often has
+    // several stages of one kind.
+    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}#${stageIndex}`);
+    if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
     if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name.startsWith(`${stage}:`));
-    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
-    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
-  }
+    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module, stageIndex });
+    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module, stageIndex });
+  });
   // A pipeline linked from graphics pipeline libraries names none of their stages in its own create
   // info: the layer attaches their code to it ("fragment:main"), so those payloads are its stages too.
   pipeline.blobs.forEach((b, blobIndex) => {
-    const [stage, entryPoint = "main"] = b.name.split(":");
+    const [stage, entry = "main"] = b.name.split(":");
+    const entryPoint = entry.replace(/#\d+$/, "");
     const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
     if (!stageFlag || out.some((s) => s.stage === stage)) return;
     out.push({ stage: stage as ShaderStage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });

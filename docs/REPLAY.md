@@ -476,8 +476,10 @@ These cases differ for known reasons:
    ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
    `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
-Not replayed yet: ray tracing pipelines, queries whose results the frame reads back, and Metal
-captures. Shader objects are made one at a time from their payloads, so a linked set replays
+Not replayed yet: ray tracing, queries whose results the frame reads back, and Metal captures.
+A ray tracing pipeline and acceleration structures are not made, and the builds and traces are
+left out and listed as problems. Those commands name the captured process's device addresses. The
+rest of the frame replays (test/triangle `--ray-tracing`: its raster targets are identical). Shader objects are made one at a time from their payloads, so a linked set replays
 unlinked. Descriptor update templates are not created:
 sets are written from the snapshots their binds carry, and a push through a template is pushed
 again as plain writes from its own.

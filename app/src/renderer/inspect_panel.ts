@@ -37,6 +37,7 @@ import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
+import { renderAccelerationStructure, renderShaderGroups } from "./ray_tracing_view.js";
 import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 // Preferred display order; any other type is appended alphabetically as it appears. Both APIs
@@ -1018,6 +1019,8 @@ export class InspectPanel {
       }
     }
 
+    if (object.type === "VkPipeline") renderShaderGroups(this.inspectPanel, object);
+    if (object.type === "VkAccelerationStructureKHR") renderAccelerationStructure(this.inspectPanel, object, db, onLink);
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);

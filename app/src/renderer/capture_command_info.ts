@@ -38,6 +38,7 @@ import { fetchBlob } from "./capture_file.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type PushConstantUpdate } from "./draw_state.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
+import { renderBindingTable, renderShaderGroups } from "./ray_tracing_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
@@ -188,6 +189,10 @@ export class CommandInfoView {
       const state = drawState(this.panel.data, db, cmd);
       const graphics = state.bindPoint === cmdSets.graphicsBindPoint;
       this._renderPipelineState(container, state);
+      if (method.startsWith("vkCmdTraceRays")) {
+        if (state.pipeline) renderShaderGroups(container, state.pipeline);
+        renderBindingTable(container, cmd.args);
+      }
       this._renderShaders(container, state.pipeline, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
       if (graphics) {

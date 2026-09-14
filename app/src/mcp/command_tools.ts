@@ -5,12 +5,12 @@ import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVerte
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
-import { pipelineStages } from "../renderer/shader_cache.js";
+import { bindingTableRegions, pipelineStages, shaderGroups, stageFromFlag } from "../renderer/shader_cache.js";
 import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { imageOfView } from "../renderer/vulkan/pass_info.js";
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructMember, StructType } from "../renderer/vulkan/spirv_reflect.js";
 import { vertexFormat } from "../renderer/vulkan/vk_format.js";
-import { isObject, num, objectMemoryBytes, refId, type VulkanObject } from "../renderer/vulkan/vulkan_object.js";
+import { isObject, num, objectMemoryBytes, refId, str, type VulkanObject } from "../renderer/vulkan/vulkan_object.js";
 import type { ArgValue, CaptureCommand, CaptureDescriptor, CaptureDescriptorBinding, ValidationSeverity } from "../shared/protocol.js";
 import type { Capture, CaptureStore } from "./capture_store.js";
 import {
@@ -69,6 +69,19 @@ function pick(o: ArgValue | undefined, keys: string[]): Record<string, ArgValue>
 }
 
 /** The fixed-function state of a Vulkan graphics pipeline that decides what its draws write. */
+/** A ray tracing pipeline's shader groups, each stage named as "<stage> #<index in pStages>". */
+function rayTracingGroups(p: VulkanObject): Record<string, unknown>[] | undefined {
+  const groups = shaderGroups(p);
+  if (!groups.length) return undefined;
+  const stages = Array.isArray(p.descriptor?.pStages) ? p.descriptor.pStages : [];
+  const name = (i: number | undefined): string | undefined => {
+    if (i === undefined) return undefined;
+    const s = stages[i];
+    return `${isObject(s) ? stageFromFlag(str(s.stage)) : "stage"} #${i}`;
+  };
+  return groups.map((g) => ({ group: g.index, type: g.type, general: name(g.general), closestHit: name(g.closestHit), anyHit: name(g.anyHit), intersection: name(g.intersection) }));
+}
+
 function fixedFunctionState(p: VulkanObject): Record<string, unknown> | undefined {
   const d = p.descriptor;
   if (p.type !== "VkPipeline" || !d || !Array.isArray(d.pStages)) return undefined;
@@ -86,7 +99,7 @@ function fixedFunctionState(p: VulkanObject): Record<string, unknown> | undefine
   };
 }
 
-interface StageInfo { stage: string; entryPoint: string; object: VulkanObject; blobIndex: number; reflection: ShaderReflection | null }
+interface StageInfo { stage: string; entryPoint: string; object: VulkanObject; blobIndex: number; reflection: ShaderReflection | null; stageIndex?: number }
 
 /** The state bound at a command, in the terms get_command reports it. */
 class StateReader {
@@ -98,7 +111,7 @@ class StateReader {
     if (!this._stages) {
       const p = this.state.pipeline;
       this._stages = p && !p.type.startsWith("MTL")
-        ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex) }))
+        ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex }))
         : [];
     }
     return this._stages;
@@ -120,6 +133,7 @@ class StateReader {
       viewports: state.viewports ? compact(state.viewports, this.c.db) : undefined,
       scissors: state.scissors ? compact(state.scissors, this.c.db) : undefined,
       indirect: sets.INDIRECT.has(cmd.method) ? this.indirect(cmd) : undefined,
+      shaderBindingTable: cmd.method.startsWith("vkCmdTraceRays") ? bindingTableRegions(cmd.args) : undefined,
       renderTargets: sets.DRAW.has(cmd.method) ? this.targetsOf(cmd) : undefined,
     };
   }
@@ -133,9 +147,10 @@ class StateReader {
       pipeline: refText(db, p.id), boundAt: this.state.pipelineCmd?.index, summary: p.summary(db) || undefined,
       stages: metal
         ? metalStages(p).map((s) => ({ stage: s.stage, buffers: s.buffers.size, textures: s.textures.size, samplers: s.samplers.size }))
-        : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
+        : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex, index: s.stageIndex })),
       functions: metal ? [...p.dependencies].filter((o) => o.type === "MTLFunction").map((o) => refText(db, o.id)) : undefined,
       fixedFunction: fixedFunctionState(p),
+      shaderGroups: metal ? undefined : rayTracingGroups(p),
     };
   }
 

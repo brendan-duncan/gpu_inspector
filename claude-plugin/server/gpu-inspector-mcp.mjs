@@ -6522,6 +6522,28 @@ function reflectSpirv(data) {
 }
 
 // src/renderer/shader_cache.ts
+function shaderGroups(pipeline) {
+  const groups = pipeline.descriptor?.pGroups;
+  if (!Array.isArray(groups)) return [];
+  const UNUSED = 4294967295;
+  const shader = (v) => typeof v === "number" && v !== UNUSED ? v : void 0;
+  return groups.filter(isObject).map((g, index) => {
+    const type = str(g.type).replace("VK_RAY_TRACING_SHADER_GROUP_TYPE_", "").replace("_KHR", "").replace("_GROUP", "").toLowerCase().replace("_", " ");
+    return { index, type, general: shader(g.generalShader), closestHit: shader(g.closestHitShader), anyHit: shader(g.anyHitShader), intersection: shader(g.intersectionShader) };
+  });
+}
+function bindingTableRegions(args) {
+  if (!args) return [];
+  const out = [];
+  for (const [key, region] of [["pRaygenShaderBindingTable", "raygen"], ["pMissShaderBindingTable", "miss"], ["pHitShaderBindingTable", "hit"], ["pCallableShaderBindingTable", "callable"]]) {
+    const r = args[key];
+    if (!isObject(r)) continue;
+    const stride = typeof r.stride === "number" ? r.stride : 0;
+    const size2 = typeof r.size === "number" ? r.size : 0;
+    out.push({ region, stride, size: size2, records: stride > 0 ? Math.floor(size2 / stride) : 0 });
+  }
+  return out;
+}
 var STAGE_FLAGS = {
   VK_SHADER_STAGE_VERTEX_BIT: "vertex",
   VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: "tess_control",
@@ -6546,19 +6568,21 @@ function pipelineStages(pipeline, db) {
   if (!d) return [];
   const stages = Array.isArray(d.pStages) ? d.pStages : isObject(d.stage) ? [d.stage] : [];
   const out = [];
-  for (const s of stages) {
-    if (!isObject(s)) continue;
+  stages.forEach((s, stageIndex) => {
+    if (!isObject(s)) return;
     const stageFlag = str(s.stage);
     const stage = stageFromFlag(stageFlag);
     const entryPoint = str(s.pName) || "main";
     const module = db.getObject(refId(s.module));
-    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
+    let blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}#${stageIndex}`);
+    if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name === `${stage}:${entryPoint}`);
     if (blobIndex < 0) blobIndex = pipeline.blobs.findIndex((b) => b.name.startsWith(`${stage}:`));
-    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
-    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
-  }
+    if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module, stageIndex });
+    else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module, stageIndex });
+  });
   pipeline.blobs.forEach((b, blobIndex) => {
-    const [stage, entryPoint = "main"] = b.name.split(":");
+    const [stage, entry = "main"] = b.name.split(":");
+    const entryPoint = entry.replace(/#\d+$/, "");
     const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
     if (!stageFlag || out.some((s) => s.stage === stage)) return;
     out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
@@ -8738,6 +8762,17 @@ function pick(o, keys) {
   for (const k of keys) if (o[k] !== void 0) out[k] = o[k];
   return out;
 }
+function rayTracingGroups(p) {
+  const groups = shaderGroups(p);
+  if (!groups.length) return void 0;
+  const stages = Array.isArray(p.descriptor?.pStages) ? p.descriptor.pStages : [];
+  const name = (i) => {
+    if (i === void 0) return void 0;
+    const s = stages[i];
+    return `${isObject(s) ? stageFromFlag(str(s.stage)) : "stage"} #${i}`;
+  };
+  return groups.map((g) => ({ group: g.index, type: g.type, general: name(g.general), closestHit: name(g.closestHit), anyHit: name(g.anyHit), intersection: name(g.intersection) }));
+}
 function fixedFunctionState(p) {
   const d = p.descriptor;
   if (p.type !== "VkPipeline" || !d || !Array.isArray(d.pStages)) return void 0;
@@ -8762,7 +8797,7 @@ var StateReader = class {
   get stages() {
     if (!this._stages) {
       const p = this.state.pipeline;
-      this._stages = p && !p.type.startsWith("MTL") ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex) })) : [];
+      this._stages = p && !p.type.startsWith("MTL") ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex })) : [];
     }
     return this._stages;
   }
@@ -8782,6 +8817,7 @@ var StateReader = class {
       viewports: state.viewports ? compact(state.viewports, this.c.db) : void 0,
       scissors: state.scissors ? compact(state.scissors, this.c.db) : void 0,
       indirect: sets.INDIRECT.has(cmd.method) ? this.indirect(cmd) : void 0,
+      shaderBindingTable: cmd.method.startsWith("vkCmdTraceRays") ? bindingTableRegions(cmd.args) : void 0,
       renderTargets: sets.DRAW.has(cmd.method) ? this.targetsOf(cmd) : void 0
     };
   }
@@ -8794,9 +8830,10 @@ var StateReader = class {
       pipeline: refText(db, p.id),
       boundAt: this.state.pipelineCmd?.index,
       summary: p.summary(db) || void 0,
-      stages: metal ? metalStages(p).map((s) => ({ stage: s.stage, buffers: s.buffers.size, textures: s.textures.size, samplers: s.samplers.size })) : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
+      stages: metal ? metalStages(p).map((s) => ({ stage: s.stage, buffers: s.buffers.size, textures: s.textures.size, samplers: s.samplers.size })) : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex, index: s.stageIndex })),
       functions: metal ? [...p.dependencies].filter((o) => o.type === "MTLFunction").map((o) => refText(db, o.id)) : void 0,
-      fixedFunction: fixedFunctionState(p)
+      fixedFunction: fixedFunctionState(p),
+      shaderGroups: metal ? void 0 : rayTracingGroups(p)
     };
   }
   sets(bound) {

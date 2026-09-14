@@ -690,6 +690,15 @@ buffers recorded before the edit keep binding the original until they are re-rec
   records, so an edit can make every library again, with the edited stage in whichever library
   holds it, and link the replacement from those. The rebuilt libraries live as long as the
   replacement, which the spec requires of a library.
+- **Ray tracing pipelines** are shown but not edited. Each stage's code is a payload named with
+  its index in `pStages` (`miss:main#1`), since a ray tracing pipeline usually has several stages
+  of one kind and its shader groups refer to them by index. `shaderGroups` and
+  `bindingTableRegions` (`renderer/shader_cache.ts`) read the groups and a trace command's table
+  regions for `renderer/ray_tracing_view.ts` and `get_command`.
+  - **Acceleration structures:** the build hooks put each build's geometries and primitive counts
+    on the structure as a `build` update.
+  - **Descriptors:** acceleration structure descriptors are tracked from
+    `VkWriteDescriptorSetAccelerationStructureKHR`.
 - **Shader objects** (`VK_EXT_shader_object`). Each `VkShaderEXT` gets its SPIR-V as a
   `<stage>:<entry>` payload, and its create info is recorded. An edit makes a replacement shader
   object, and a `vkCmdBindShadersEXT` pre-hook binds it instead of the original. A shader created
@@ -1057,7 +1066,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --ray-tracing
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
