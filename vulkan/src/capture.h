@@ -44,6 +44,7 @@ struct CaptureOptions {
 
 // GPU timing of one pass: a timestamp query pair, read back when the capture finishes.
 struct PassTiming {
+    VkDevice device = VK_NULL_HANDLE;   // whose query pools hold the results
     uint32_t frame = UINT32_MAX;
     uint64_t commandBufferId = 0;
     uint32_t passIndex = 0;
@@ -83,7 +84,8 @@ struct TextureCapture {
     VkDeviceSize size = 0;
     uint32_t samples = 1;         // > 1: a multisampled image, read back through a resolve
     bool resolveTarget = false;   // dynamic rendering: the attachment's resolve target
-    uint32_t stagingIndex = 0;    // staging chunk
+    VkDevice device = VK_NULL_HANDLE;   // whose staging chunk holds the data
+    uint32_t stagingIndex = 0;    // staging chunk of that device
     VkDeviceSize stagingOffset = 0;
     bool failed = false;
     std::string note;
@@ -109,6 +111,7 @@ struct BufferCapture {
     VkDeviceSize offset = 0;
     VkDeviceSize size = 0;          // bytes copied
     VkDeviceSize originalSize = 0;  // bytes bound, when truncated to maxBufferSize
+    VkDevice device = VK_NULL_HANDLE;   // whose staging chunk holds the data
     uint32_t stagingIndex = 0;
     VkDeviceSize stagingOffset = 0;
     bool recorded = false;          // the copy command has been recorded
@@ -160,8 +163,12 @@ public:
     // Reads back such a buffer's attachments, once the part of the submission holding it was submitted.
     void ReadBackSubmitted(DeviceData* dev, VkQueue queue, VkCommandBuffer cb);
     // A frame ended: after a present (`info`), or without one (info null: the frame-boundary
-    // substitutes of layer.cpp).
+    // substitutes of layer.cpp). Only the device the capture started on counts the captured
+    // frames; another device's present is recorded in the frame that device is in.
     void OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result);
+    // A device is about to be destroyed: a capture started on it finishes now, and a capture
+    // using it as well releases what it holds on it (its read-backs are reported as lost).
+    void OnDestroyDevice(DeviceData* dev);
 
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
@@ -225,8 +232,7 @@ private:
     void SendCommands();
     void SendTextures(DeviceData* dev);
     void SendBuffers(DeviceData* dev);
-    void SendPassTimings(DeviceData* dev);
-    void ReleaseStaging(DeviceData* dev);
+    void SendPassTimings();
     void FlushBufferCopies(DeviceData* dev, CommandRecorder* rec);
     void FlushImageCopies(DeviceData* dev, CommandRecorder* rec);
     // The capture record and pending copies of `tc.mip` .. + `mips` of an image (tc carries the
@@ -234,8 +240,6 @@ private:
     // record when the copy cannot be made.
     uint32_t QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
                             uint32_t mips, VkImageLayout layout);
-    void EnsureQueryPool(DeviceData* dev);
-    void ReleaseQueryPool(DeviceData* dev);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
     uint32_t BeginTimestamp(DeviceData* dev, CommandRecorder* rec);
     // Resets and begins a pipeline statistics query over a render pass; UINT32_MAX when the
@@ -257,6 +261,44 @@ private:
         VkDeviceSize used = 0;
         void* mapped = nullptr;
     };
+    struct ResolveImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+    /**
+     * What a capture holds on one device: the query pools its passes are timed and counted with,
+     * the staging chunks and resolve images of its read-backs, and the frame it was at when it first
+     * took part. Every device an application records on gets one, since none of these can be used
+     * by another device's command buffers.
+     */
+    struct DeviceCapture {
+        DeviceData* dev = nullptr;
+        uint64_t startFrame = 0;
+        VkQueryPool queryPool = VK_NULL_HANDLE;
+        uint32_t queryCount = 0;
+        std::atomic<uint32_t> queriesUsed{0};
+        VkQueryPool statsPool = VK_NULL_HANDLE;
+        uint32_t statsCount = 0;
+        std::atomic<uint32_t> statsUsed{0};
+        VkQueryPool occlusionPool = VK_NULL_HANDLE;
+        uint32_t occlusionCount = 0;
+        std::atomic<uint32_t> occlusionUsed{0};
+        std::vector<StagingChunk> staging;          // guarded by _mutex
+        std::vector<ResolveImage> resolveImages;    // guarded by _mutex
+        std::vector<VkImageView> resolveViews;      // guarded by _mutex (depth_resolve.h)
+    };
+    void CreateQueryPools(DeviceCapture& dc);
+    // Maps every device's staging chunks, once the GPU is done, for SendTextures and SendBuffers.
+    void MapStaging();
+    const StagingChunk* StagingOf(VkDevice device, uint32_t index);
+    // The capture's record for a device, made (with its query pools) the first time the device
+    // takes part; null when no capture is in progress.
+    DeviceCapture* CaptureFor(DeviceData* dev);
+    DeviceCapture* FindCapture(VkDevice device);
+    // A submission's frame ordinal on its device.
+    uint32_t FrameOf(DeviceData* dev);
+    void SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total);
+    void ReleaseDevice(DeviceCapture& dc);
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
                          VkBuffer* bufferOut = nullptr);
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
@@ -271,13 +313,6 @@ private:
     void ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, CommandRecorder* rec, uint64_t commandBufferId, uint32_t frame);
     // Single-sampled images that multisampled captures are resolved into; freed with the staging.
     bool AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out);
-    struct ResolveImage {
-        VkImage image = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-    };
-    std::vector<ResolveImage> _resolveImages;
-    // Views of a depth resolve (depth_resolve.h), freed with the staging.
-    std::vector<VkImageView> _resolveViews;
     bool PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p);
 
     mutable std::mutex _mutex;
@@ -285,6 +320,9 @@ private:
     std::atomic<uint32_t> _storeAllPasses{0};
     std::atomic<uint32_t> _postSubmitReadbacks{0};
     std::atomic<bool> _recordAlways{false};
+    // Some device of the process has presented: frames are the presents', not another device's
+    // substitute boundaries.
+    std::atomic<bool> _presentSeen{false};
     // Frame an armed capture waits for (UINT64_MAX when not armed or waiting for the next present),
     // checked cheaply at every vkBeginCommandBuffer so frame 0 can be captured from its first command.
     std::atomic<uint64_t> _armedAtFrame{UINT64_MAX};
@@ -307,22 +345,14 @@ private:
     enum SubresourceState : uint8_t { kUntouched = 0, kRead = 1, kWritten = 2 };
     std::unordered_map<uint64_t, std::vector<uint8_t>> _imageStates;
 
-    // Pass profiling: one timestamp query pool per capture (created on the capturing device),
-    // and beside it a pipeline statistics pool when the device has the feature (pipeline_stats.h).
-    VkQueryPool _queryPool = VK_NULL_HANDLE;
-    VkDevice _queryDevice = VK_NULL_HANDLE;
-    uint32_t _queryCount = 0;
-    std::atomic<uint32_t> _queriesUsed{0};
-    VkQueryPool _statsPool = VK_NULL_HANDLE;
-    uint32_t _statsCount = 0;
-    std::atomic<uint32_t> _statsUsed{0};
-    VkQueryPool _occlusionPool = VK_NULL_HANDLE;
-    uint32_t _occlusionCount = 0;
-    std::atomic<uint32_t> _occlusionUsed{0};
+    // Every device taking part in the capture (pass profiling pools, staging), and the one the
+    // capture started on, whose frames it counts.
+    std::mutex _devicesMutex;
+    std::unordered_map<VkDevice, std::unique_ptr<DeviceCapture>> _devices;
+    VkDevice _homeDevice = VK_NULL_HANDLE;
     /** Passes whose occlusion query had to end early (an application query, or secondaries). */
     std::atomic<uint32_t> _occlusionDropped{0};
     std::vector<PassTiming> _passTimings;
-    std::vector<StagingChunk> _staging;
     uint64_t _commandTotal = 0;
 };
 

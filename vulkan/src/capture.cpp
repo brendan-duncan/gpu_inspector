@@ -60,17 +60,43 @@ void CaptureManager::Start(DeviceData* dev) {
     _imageBytes = 0;
     _imageStates.clear();
     _passTimings.clear();
-    _queriesUsed.store(0, std::memory_order_relaxed);
-    _statsUsed.store(0, std::memory_order_relaxed);
-    if (_options.profilePasses) EnsureQueryPool(dev);
     _commandTotal = 0;
     _frameIndex = dev->frameIndex;
+    _homeDevice = dev->device;
     _frameCount = std::max(1u, _options.frameCount);
     _state = State::Capturing;
     _armedAtFrame.store(UINT64_MAX, std::memory_order_release);
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
+    CaptureFor(dev);
     Log("capture started at frame %llu", (unsigned long long)_frameIndex);
+}
+
+CaptureManager::DeviceCapture* CaptureManager::CaptureFor(DeviceData* dev) {
+    if (!dev || !IsCapturing()) return nullptr;
+    std::lock_guard lock(_devicesMutex);
+    auto& slot = _devices[dev->device];
+    if (!slot) {
+        slot = std::make_unique<DeviceCapture>();
+        slot->dev = dev;
+        slot->startFrame = dev->frameIndex;
+        if (_options.profilePasses) CreateQueryPools(*slot);
+        if (dev->device != _homeDevice) Log("capture: device %p takes part as well (frame %llu)", (void*)dev->device, (unsigned long long)dev->frameIndex);
+    }
+    return slot.get();
+}
+
+CaptureManager::DeviceCapture* CaptureManager::FindCapture(VkDevice device) {
+    std::lock_guard lock(_devicesMutex);
+    auto it = _devices.find(device);
+    return it == _devices.end() ? nullptr : it->second.get();
+}
+
+uint32_t CaptureManager::FrameOf(DeviceData* dev) {
+    if (dev->device == _homeDevice) return (uint32_t)(dev->frameIndex - _frameIndex);
+    // Another device counts its frames from when it joined the capture.
+    const DeviceCapture* dc = CaptureFor(dev);
+    return dc && dev->frameIndex >= dc->startFrame ? (uint32_t)(dev->frameIndex - dc->startFrame) : 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -85,7 +111,8 @@ CommandRecorder* CaptureManager::RecorderFor(DeviceData* dev, VkCommandBuffer cb
 void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, VkCommandBufferUsageFlags flags) {
     // A capture queued for a specific frame starts with that frame's first command buffer, so
     // frame 0 (before any present) can be captured whole. Later frames start at the present.
-    if (_armedAtFrame.load(std::memory_order_acquire) == dev->frameIndex) {
+    if (_armedAtFrame.load(std::memory_order_acquire) == dev->frameIndex &&
+        (dev->presentSeen.load(std::memory_order_relaxed) || !_presentSeen.load(std::memory_order_relaxed))) {
         std::lock_guard lock(_mutex);
         if (_state == State::Armed) Start(dev);
     }
@@ -95,6 +122,8 @@ void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, V
     if (!slot) slot = std::make_unique<CommandRecorder>(dev->device, cb, &Tracker::Get());
     slot->Reset((flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) != 0);
     slot->SetCaptureStacks(IsCapturing() && _options.stacktraces);
+    lock.unlock();
+    CaptureFor(dev);   // the device takes part: its recorders are released with the capture
 }
 
 void CaptureManager::OnEndCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
@@ -126,8 +155,7 @@ bool CaptureManager::NeedsSubmitReadBack(DeviceData* dev, VkCommandBuffer cb) {
 void CaptureManager::ReadBackSubmitted(DeviceData* dev, VkQueue queue, VkCommandBuffer cb) {
     CommandRecorder* rec = RecorderFor(dev, cb);
     if (!rec || !IsCapturing()) return;
-    ReadBackAfterSubmit(dev, queue, rec, Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb),
-                        (uint32_t)(dev->frameIndex - _frameIndex));
+    ReadBackAfterSubmit(dev, queue, rec, Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb), FrameOf(dev));
 }
 
 void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args,
@@ -139,7 +167,7 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     sub.method = method;
     sub.args = std::move(args);
     sub.result = result;
-    sub.frame = (uint32_t)(dev->frameIndex - _frameIndex);
+    sub.frame = FrameOf(dev);
     for (VkCommandBuffer cb : commandBuffers) {
         SubmittedCommandBuffer scb;
         scb.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
@@ -185,16 +213,21 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
 }
 
 void CaptureManager::OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* info, VkResult result) {
+    if (info) _presentSeen.store(true, std::memory_order_relaxed);
     std::unique_lock lock(_mutex);
     if (_state == State::Armed) {
+        // A process that presents has its frames ended by its presents: another device's
+        // substitute boundary (a compute device waiting on its fences) does not start the capture.
+        if (!info && _presentSeen.load(std::memory_order_relaxed)) return;
         // frameIndex was advanced by this frame end: the frame that starts now is `frameIndex`.
         if (_options.atFrame == UINT64_MAX || dev->frameIndex >= _options.atFrame) Start(dev);
         return;
     }
     if (_state != State::Capturing) return;
-    Log("capture: frame end (%s, result %d) after %zu submissions", info ? "present" : "no present", (int)result, _submissions.size());
+    const bool home = dev->device == _homeDevice;
+    if (home) Log("capture: frame end (%s, result %d) after %zu submissions", info ? "present" : "no present", (int)result, _submissions.size());
 
-    // The present itself is part of the captured frame.
+    // The present itself is part of the captured frame (frameIndex has already moved past it).
     if (info) {
         JsonWriter w(&Tracker::Get());
         ArgsToJson_vkQueuePresentKHR(w, queue, info);
@@ -203,13 +236,50 @@ void CaptureManager::OnFrameEnd(DeviceData* dev, VkQueue queue, const VkPresentI
         sub.method = "vkQueuePresentKHR";
         sub.args = std::move(w.str());
         sub.result = (int64_t)result;
-        sub.frame = (uint32_t)(dev->frameIndex - _frameIndex - 1);  // the present ends the frame
+        const uint32_t frame = FrameOf(dev);
+        sub.frame = frame ? frame - 1 : 0;
         _submissions.push_back(std::move(sub));
     }
 
-    if (--_framesLeft > 0) return;
+    // Another device's frames go on; the capture ends with the frames of the device it started on.
+    if (!home || --_framesLeft > 0) return;
     lock.unlock();
     Finish(dev);
+}
+
+void CaptureManager::OnDestroyDevice(DeviceData* dev) {
+    if (!IsCapturing() || !FindCapture(dev->device)) return;
+    if (dev->device == _homeDevice) {
+        Log("capture: the device the capture started on is being destroyed; sending what was captured");
+        Finish(dev);
+        return;
+    }
+    dev->dispatch.DeviceWaitIdle(dev->device);
+    std::unique_ptr<DeviceCapture> dc;
+    {
+        std::lock_guard lock(_devicesMutex);
+        auto it = _devices.find(dev->device);
+        if (it == _devices.end()) return;
+        dc = std::move(it->second);
+        _devices.erase(it);
+    }
+    {
+        std::lock_guard lock(_mutex);
+        for (auto& tc : _textures) {
+            if (tc.device != dev->device || tc.failed) continue;
+            tc.failed = true;
+            tc.note = "the device was destroyed before the capture finished";
+        }
+        for (auto& bc : _buffers) {
+            if (bc.device != dev->device || bc.failed) continue;
+            bc.failed = true;
+            bc.note = "the device was destroyed before the capture finished";
+        }
+        _passTimings.erase(std::remove_if(_passTimings.begin(), _passTimings.end(), [&](const PassTiming& pt) { return pt.device == dev->device; }),
+                           _passTimings.end());
+    }
+    ReleaseDevice(*dc);
+    Log("capture: device %p was destroyed during the capture; its read-backs are dropped", (void*)dev->device);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -224,13 +294,21 @@ void CaptureManager::Finish(DeviceData* dev) {
     if (uint32_t n = _storeAllPasses.exchange(0, std::memory_order_relaxed)) Log("capture: %u render passes ran with their DONT_CARE store ops forced to STORE, so those attachments read back", n);
     if (uint32_t n = _postSubmitReadbacks.exchange(0, std::memory_order_relaxed)) Log("capture: %u attachments of command buffers recorded before the capture were read back after their submission", n);
 
-    // Everything recorded in the frame has been submitted; wait for it so staging data is valid.
-    dev->dispatch.DeviceWaitIdle(dev->device);
+    // Everything recorded in the frame has been submitted; wait for it so staging data is valid,
+    // on every device that took part.
+    std::vector<DeviceData*> devices;
+    {
+        std::lock_guard lock(_devicesMutex);
+        for (auto& [device, dc] : _devices) devices.push_back(dc->dev);
+    }
+    for (DeviceData* d : devices) d->dispatch.DeviceWaitIdle(d->device);
+    if (devices.size() > 1) Log("capture: %zu devices took part", devices.size());
 
     SendCommands();
+    MapStaging();
     SendTextures(dev);
     SendBuffers(dev);
-    SendPassTimings(dev);
+    SendPassTimings();
     // The end of the capture's stream, whichever sections it had: a client waiting for the capture
     // (the MCP server) knows nothing more of it is coming.
     {
@@ -242,14 +320,20 @@ void CaptureManager::Finish(DeviceData* dev) {
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
-    ReleaseStaging(dev);
-    ReleaseQueryPool(dev);
-
-    if (!RecordAlways()) {
-        std::unique_lock lock(dev->recorderMutex);
-        dev->recorders.clear();
+    std::unordered_map<VkDevice, std::unique_ptr<DeviceCapture>> taken;
+    {
+        std::lock_guard lock(_devicesMutex);
+        taken.swap(_devices);
+    }
+    for (auto& [device, dc] : taken) {
+        ReleaseDevice(*dc);
+        if (!RecordAlways()) {
+            std::unique_lock lock(dc->dev->recorderMutex);
+            dc->dev->recorders.clear();
+        }
     }
     std::lock_guard lock(_mutex);
+    _homeDevice = VK_NULL_HANDLE;
     _submissions.clear();
     _textures.clear();
     _buffers.clear();
@@ -357,9 +441,8 @@ void CaptureManager::SendCommands() {
 // ---------------------------------------------------------------------------------------------
 // Pass profiling
 
-void CaptureManager::EnsureQueryPool(DeviceData* dev) {
-    if (_queryPool && _queryDevice == dev->device) return;
-    if (_queryPool) ReleaseQueryPool(dev);
+void CaptureManager::CreateQueryPools(DeviceCapture& dc) {
+    DeviceData* dev = dc.dev;
     if (!dev->properties.limits.timestampComputeAndGraphics) {
         Log("pass profiling: timestamps not supported on all queues; skipped");
         return;
@@ -367,13 +450,12 @@ void CaptureManager::EnsureQueryPool(DeviceData* dev) {
     VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = 16384;   // 8192 passes per capture
-    if (dev->dispatch.CreateQueryPool(dev->device, &ci, nullptr, &_queryPool) != VK_SUCCESS) {
-        _queryPool = VK_NULL_HANDLE;
+    if (dev->dispatch.CreateQueryPool(dev->device, &ci, nullptr, &dc.queryPool) != VK_SUCCESS) {
+        dc.queryPool = VK_NULL_HANDLE;
         Log("pass profiling: vkCreateQueryPool failed");
         return;
     }
-    _queryDevice = dev->device;
-    _queryCount = ci.queryCount;
+    dc.queryCount = ci.queryCount;
 
     // The counters behind the GPU Bottlenecks report. Optional: without the feature, or without a
     // pool, passes still carry their durations and the report says the columns are unavailable.
@@ -385,12 +467,12 @@ void CaptureManager::EnsureQueryPool(DeviceData* dev) {
     sci.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
     sci.queryCount = 8192;                        // one per pass, matching the timestamp pairs
     sci.pipelineStatistics = kPipelineStatistics;
-    if (dev->dispatch.CreateQueryPool(dev->device, &sci, nullptr, &_statsPool) != VK_SUCCESS) {
-        _statsPool = VK_NULL_HANDLE;
+    if (dev->dispatch.CreateQueryPool(dev->device, &sci, nullptr, &dc.statsPool) != VK_SUCCESS) {
+        dc.statsPool = VK_NULL_HANDLE;
         Log("pass counters: vkCreateQueryPool failed");
         return;
     }
-    _statsCount = sci.queryCount;
+    dc.statsCount = sci.queryCount;
 
     // The samples that passed each pass's depth and stencil tests, for the depth-rejection rule.
     // Precise counts need occlusionQueryPrecise; without it the query would only answer "any".
@@ -401,74 +483,86 @@ void CaptureManager::EnsureQueryPool(DeviceData* dev) {
     VkQueryPoolCreateInfo oci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     oci.queryType = VK_QUERY_TYPE_OCCLUSION;
     oci.queryCount = 8192;                        // one per pass, matching the statistics queries
-    if (dev->dispatch.CreateQueryPool(dev->device, &oci, nullptr, &_occlusionPool) != VK_SUCCESS) {
-        _occlusionPool = VK_NULL_HANDLE;
+    if (dev->dispatch.CreateQueryPool(dev->device, &oci, nullptr, &dc.occlusionPool) != VK_SUCCESS) {
+        dc.occlusionPool = VK_NULL_HANDLE;
         Log("depth rejection: vkCreateQueryPool failed");
         return;
     }
-    _occlusionCount = oci.queryCount;
+    dc.occlusionCount = oci.queryCount;
 }
 
-void CaptureManager::ReleaseQueryPool(DeviceData* dev) {
-    if (!_queryPool) return;
-    DeviceData* d = _queryDevice == dev->device ? dev : GetDeviceData(_queryDevice);
-    if (d) {
-        d->dispatch.DestroyQueryPool(_queryDevice, _queryPool, nullptr);
-        if (_statsPool) d->dispatch.DestroyQueryPool(_queryDevice, _statsPool, nullptr);
-        if (_occlusionPool) d->dispatch.DestroyQueryPool(_queryDevice, _occlusionPool, nullptr);
+void CaptureManager::ReleaseDevice(DeviceCapture& dc) {
+    DeviceData* dev = dc.dev;
+    const DeviceDispatch& d = dev->dispatch;
+    if (dc.queryPool) d.DestroyQueryPool(dev->device, dc.queryPool, nullptr);
+    if (dc.statsPool) d.DestroyQueryPool(dev->device, dc.statsPool, nullptr);
+    if (dc.occlusionPool) d.DestroyQueryPool(dev->device, dc.occlusionPool, nullptr);
+    dc.queryPool = dc.statsPool = dc.occlusionPool = VK_NULL_HANDLE;
+    std::lock_guard lock(_mutex);
+    for (auto& c : dc.staging) {
+        if (c.mapped) d.UnmapMemory(dev->device, c.memory);
+        d.DestroyBuffer(dev->device, c.buffer, nullptr);
+        d.FreeMemory(dev->device, c.memory, nullptr);
     }
-    _queryPool = VK_NULL_HANDLE;
-    _queryDevice = VK_NULL_HANDLE;
-    _queryCount = 0;
-    _statsPool = VK_NULL_HANDLE;
-    _statsCount = 0;
-    _occlusionPool = VK_NULL_HANDLE;
-    _occlusionCount = 0;
+    dc.staging.clear();
+    for (VkImageView v : dc.resolveViews) d.DestroyImageView(dev->device, v, nullptr);
+    dc.resolveViews.clear();
+    for (auto& r : dc.resolveImages) {
+        d.DestroyImage(dev->device, r.image, nullptr);
+        d.FreeMemory(dev->device, r.memory, nullptr);
+    }
+    dc.resolveImages.clear();
 }
 
 uint32_t CaptureManager::BeginTimestamp(DeviceData* dev, CommandRecorder* rec) {
-    if (!IsCapturing() || !_options.profilePasses || !_queryPool || _queryDevice != dev->device) return UINT32_MAX;
+    if (!IsCapturing() || !_options.profilePasses) return UINT32_MAX;
     if (rec->renderPassContinue()) return UINT32_MAX;   // secondaries inside a pass: the primary times the pass
-    uint32_t q = _queriesUsed.fetch_add(2, std::memory_order_relaxed);
-    if (q + 2 > _queryCount) return UINT32_MAX;         // pool exhausted: later passes go untimed
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc || !dc->queryPool) return UINT32_MAX;
+    uint32_t q = dc->queriesUsed.fetch_add(2, std::memory_order_relaxed);
+    if (q + 2 > dc->queryCount) return UINT32_MAX;      // pool exhausted: later passes go untimed
     VkCommandBuffer cb = rec->commandBuffer();
-    dev->dispatch.CmdResetQueryPool(cb, _queryPool, q, 2);
-    dev->dispatch.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _queryPool, q);
+    dev->dispatch.CmdResetQueryPool(cb, dc->queryPool, q, 2);
+    dev->dispatch.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dc->queryPool, q);
     return q;
 }
 
 uint32_t CaptureManager::BeginPipelineStatistics(DeviceData* dev, CommandRecorder* rec) {
-    if (!_statsPool || _queryDevice != dev->device) return UINT32_MAX;
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc || !dc->statsPool) return UINT32_MAX;
     if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
-    uint32_t q = _statsUsed.fetch_add(1, std::memory_order_relaxed);
-    if (q >= _statsCount) return UINT32_MAX;            // pool exhausted: later passes go uncounted
+    uint32_t q = dc->statsUsed.fetch_add(1, std::memory_order_relaxed);
+    if (q >= dc->statsCount) return UINT32_MAX;         // pool exhausted: later passes go uncounted
     VkCommandBuffer cb = rec->commandBuffer();
     // Both of these are outside the render pass: the layer's begin hook runs before the driver's
     // vkCmdBeginRenderPass and its end hook after vkCmdEndRenderPass, so the query brackets the
     // whole pass without landing inside a subpass.
-    dev->dispatch.CmdResetQueryPool(cb, _statsPool, q, 1);
-    dev->dispatch.CmdBeginQuery(cb, _statsPool, q, 0);
+    dev->dispatch.CmdResetQueryPool(cb, dc->statsPool, q, 1);
+    dev->dispatch.CmdBeginQuery(cb, dc->statsPool, q, 0);
     return q;
 }
 
 uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
-    if (!_occlusionPool || _queryDevice != dev->device) return UINT32_MAX;
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc || !dc->occlusionPool) return UINT32_MAX;
     if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
     // Two occlusion queries cannot be active at once, and the application's come first.
     if (rec->appQueryDepth) return UINT32_MAX;
-    uint32_t q = _occlusionUsed.fetch_add(1, std::memory_order_relaxed);
-    if (q >= _occlusionCount) return UINT32_MAX;        // pool exhausted: later passes go uncounted
+    uint32_t q = dc->occlusionUsed.fetch_add(1, std::memory_order_relaxed);
+    if (q >= dc->occlusionCount) return UINT32_MAX;     // pool exhausted: later passes go uncounted
     VkCommandBuffer cb = rec->commandBuffer();
-    dev->dispatch.CmdResetQueryPool(cb, _occlusionPool, q, 1);
-    dev->dispatch.CmdBeginQuery(cb, _occlusionPool, q, VK_QUERY_CONTROL_PRECISE_BIT);
+    dev->dispatch.CmdResetQueryPool(cb, dc->occlusionPool, q, 1);
+    dev->dispatch.CmdBeginQuery(cb, dc->occlusionPool, q, VK_QUERY_CONTROL_PRECISE_BIT);
     rec->pendingOcclusionQuery = q;
     return q;
 }
 
 void CaptureManager::DropOcclusion(DeviceData* dev, CommandRecorder* rec) {
-    if (rec->pendingOcclusionQuery == UINT32_MAX || !_occlusionPool || _queryDevice != dev->device) return;
+    if (rec->pendingOcclusionQuery == UINT32_MAX) return;
+    DeviceCapture* dc = FindCapture(dev->device);
+    if (!dc || !dc->occlusionPool) return;
     _occlusionDropped.fetch_add(1, std::memory_order_relaxed);
-    dev->dispatch.CmdEndQuery(rec->commandBuffer(), _occlusionPool, rec->pendingOcclusionQuery);
+    dev->dispatch.CmdEndQuery(rec->commandBuffer(), dc->occlusionPool, rec->pendingOcclusionQuery);
     rec->pendingOcclusionQuery = UINT32_MAX;
     rec->pass().occlusionQuery = UINT32_MAX;   // the pass reports no count rather than a partial one
 }
@@ -496,9 +590,12 @@ void CaptureManager::OnEndComputePass(DeviceData* dev, CommandRecorder* rec) {
     ActiveComputePass& c = rec->compute();
     if (!c.active) return;
     c.active = false;
-    if (c.query == UINT32_MAX || !_queryPool || _queryDevice != dev->device) return;
-    dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, c.query + 1);
+    if (c.query == UINT32_MAX) return;
+    DeviceCapture* dc = FindCapture(dev->device);   // ended as begun, even if the capture has just finished
+    if (!dc || !dc->queryPool) return;
+    dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, dc->queryPool, c.query + 1);
     PassTiming pt;
+    pt.device = dev->device;
     pt.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
     pt.passIndex = c.index;
     pt.compute = true;
@@ -592,14 +689,17 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     // The pass's end timestamp: after every command of the pass has completed.
     // The occlusion query, unless it was dropped when the application opened one of its own.
     const uint32_t occlusion = rec->pendingOcclusionQuery;
-    if (occlusion != UINT32_MAX && _occlusionPool && _queryDevice == dev->device) {
-        dev->dispatch.CmdEndQuery(rec->commandBuffer(), _occlusionPool, occlusion);
+    const bool queried = occlusion != UINT32_MAX || p.query != UINT32_MAX || p.statsQuery != UINT32_MAX;
+    DeviceCapture* dc = queried ? FindCapture(dev->device) : nullptr;
+    if (occlusion != UINT32_MAX && dc && dc->occlusionPool) {
+        dev->dispatch.CmdEndQuery(rec->commandBuffer(), dc->occlusionPool, occlusion);
         rec->pendingOcclusionQuery = UINT32_MAX;
     }
-    if (p.query != UINT32_MAX && _queryPool && _queryDevice == dev->device) {
-        dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, p.query + 1);
-        if (p.statsQuery != UINT32_MAX && _statsPool) dev->dispatch.CmdEndQuery(rec->commandBuffer(), _statsPool, p.statsQuery);
+    if (p.query != UINT32_MAX && dc && dc->queryPool) {
+        dev->dispatch.CmdWriteTimestamp(rec->commandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, dc->queryPool, p.query + 1);
+        if (p.statsQuery != UINT32_MAX && dc->statsPool) dev->dispatch.CmdEndQuery(rec->commandBuffer(), dc->statsPool, p.statsQuery);
         PassTiming pt;
+        pt.device = dev->device;
         pt.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
         pt.passIndex = p.passIndex;
         pt.query = p.query;
@@ -607,9 +707,9 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
         pt.occlusionQuery = occlusion;
         std::lock_guard lock(_mutex);
         _passTimings.push_back(pt);
-    } else if (p.statsQuery != UINT32_MAX && _statsPool && _queryDevice == dev->device) {
+    } else if (p.statsQuery != UINT32_MAX && dc && dc->statsPool) {
         // Begun but not going to be reported: it still has to end, or the command buffer is invalid.
-        dev->dispatch.CmdEndQuery(rec->commandBuffer(), _statsPool, p.statsQuery);
+        dev->dispatch.CmdEndQuery(rec->commandBuffer(), dc->statsPool, p.statsQuery);
     }
     // Buffers and images bound during the pass are copied now that transfer commands are allowed again.
     FlushBufferCopies(dev, rec);
@@ -733,6 +833,7 @@ uint32_t CaptureManager::QueueImageCopy(DeviceData* dev, CommandRecorder* rec, V
     VkImage resolve = VK_NULL_HANDLE;
     if (img.samples != VK_SAMPLE_COUNT_1_BIT && !AllocateResolveImage(dev, img, tc.mip, tc.layers, &resolve))
         return fail("resolve image allocation failed");
+    tc.device = dev->device;
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
     uint32_t id = add();
@@ -913,6 +1014,7 @@ uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* re
     VkDeviceSize stagingOffset = 0;
     VkBuffer staging = VK_NULL_HANDLE;
     if (!AllocateStaging(dev, bc.size, chunkIndex, stagingOffset, &staging)) return fail("staging allocation failed");
+    bc.device = dev->device;
     bc.stagingIndex = chunkIndex;
     bc.stagingOffset = stagingOffset;
     {
@@ -967,13 +1069,6 @@ void CaptureManager::SendBuffers(DeviceData* dev) {
     {
         std::lock_guard lock(_mutex);
         buffers = _buffers;
-        for (auto& c : _staging) {
-            if (!c.mapped) dev->dispatch.MapMemory(dev->device, c.memory, 0, VK_WHOLE_SIZE, 0, &c.mapped);
-            VkMappedMemoryRange r{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            r.memory = c.memory;
-            r.size = VK_WHOLE_SIZE;
-            dev->dispatch.InvalidateMappedMemoryRanges(dev->device, 1, &r);
-        }
     }
     for (auto& bc : buffers) {
         if (bc.failed) continue;
@@ -1010,16 +1105,41 @@ void CaptureManager::SendBuffers(DeviceData* dev) {
 
     for (auto& bc : buffers) {
         if (bc.failed) continue;
-        const StagingChunk& c = _staging[bc.stagingIndex];
-        if (!c.mapped) continue;
+        const StagingChunk* c = StagingOf(bc.device, bc.stagingIndex);
+        if (!c || !c->mapped) continue;
         JsonWriter h;
         h.BeginObject();
         h.Key("action"); h.String("CaptureBufferData");
         h.Key("id"); h.Uint(bc.id);
         h.Key("size"); h.Uint(bc.size);
         h.EndObject();
-        t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c.mapped) + bc.stagingOffset, (size_t)bc.size);
+        t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c->mapped) + bc.stagingOffset, (size_t)bc.size);
     }
+}
+
+void CaptureManager::MapStaging() {
+    // _devicesMutex is never held while taking _mutex (OnFrameEnd takes them the other way round).
+    std::vector<DeviceCapture*> captures;
+    {
+        std::lock_guard devices(_devicesMutex);
+        for (auto& [device, dc] : _devices) captures.push_back(dc.get());
+    }
+    std::lock_guard lock(_mutex);
+    for (DeviceCapture* dc : captures) {
+        const DeviceDispatch& d = dc->dev->dispatch;
+        for (auto& c : dc->staging) {
+            if (!c.mapped) d.MapMemory(dc->dev->device, c.memory, 0, VK_WHOLE_SIZE, 0, &c.mapped);
+            VkMappedMemoryRange r{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            r.memory = c.memory;
+            r.size = VK_WHOLE_SIZE;
+            d.InvalidateMappedMemoryRanges(dc->dev->device, 1, &r);
+        }
+    }
+}
+
+const CaptureManager::StagingChunk* CaptureManager::StagingOf(VkDevice device, uint32_t index) {
+    DeviceCapture* dc = FindCapture(device);
+    return dc && index < dc->staging.size() ? &dc->staging[index] : nullptr;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1029,14 +1149,18 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
                                      VkBuffer* bufferOut) {
     const VkDeviceSize kChunk = 64ull << 20;
     const VkDeviceSize align = 256;
+    // Chunks are the device's own: a command buffer can only copy into buffers of its device.
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc) return false;
     std::lock_guard lock(_mutex);
-    for (uint32_t i = 0; i < _staging.size(); ++i) {
-        VkDeviceSize start = (_staging[i].used + align - 1) & ~(align - 1);
-        if (start + size <= _staging[i].size) {
-            _staging[i].used = start + size;
+    std::vector<StagingChunk>& staging = dc->staging;
+    for (uint32_t i = 0; i < staging.size(); ++i) {
+        VkDeviceSize start = (staging[i].used + align - 1) & ~(align - 1);
+        if (start + size <= staging[i].size) {
+            staging[i].used = start + size;
             chunkIndex = i;
             offset = start;
-            if (bufferOut) *bufferOut = _staging[i].buffer;
+            if (bufferOut) *bufferOut = staging[i].buffer;
             return true;
         }
     }
@@ -1077,8 +1201,8 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
     }
     dev->dispatch.BindBufferMemory(dev->device, chunk.buffer, chunk.memory, 0);
     chunk.used = size;
-    _staging.push_back(chunk);
-    chunkIndex = (uint32_t)_staging.size() - 1;
+    staging.push_back(chunk);
+    chunkIndex = (uint32_t)staging.size() - 1;
     offset = 0;
     if (bufferOut) *bufferOut = chunk.buffer;
     Log("staging chunk %u: %llu MB", chunkIndex, (unsigned long long)(chunk.size >> 20));
@@ -1228,20 +1352,23 @@ void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy
 }
 
 bool CaptureManager::AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out) {
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc) return false;
     ResolveImage ri;
     if (!CreateResolveImage(dev, img, mip, layers, &ri.image, &ri.memory)) return false;
     std::lock_guard lock(_mutex);
-    _resolveImages.push_back(ri);
+    dc->resolveImages.push_back(ri);
     *out = ri.image;
     return true;
 }
 
 bool CaptureManager::PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p) {
-    if (!CanResolveDepth(dev)) return false;
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc || !CanResolveDepth(dev)) return false;
     if (!CreateDepthResolveViews(dev, p, &p.srcView, &p.dstView)) return false;
     std::lock_guard lock(_mutex);
-    _resolveViews.push_back(p.srcView);
-    _resolveViews.push_back(p.dstView);
+    dc->resolveViews.push_back(p.srcView);
+    dc->resolveViews.push_back(p.dstView);
     return true;
 }
 
@@ -1307,6 +1434,7 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
     VkImage resolve = VK_NULL_HANDLE;
     if (img.samples != VK_SAMPLE_COUNT_1_BIT && !AllocateResolveImage(dev, img, tc.mip, tc.layers, &resolve))
         return fail("resolve image allocation failed");
+    tc.device = dev->device;
     tc.stagingIndex = chunkIndex;
     tc.stagingOffset = offset;
 
@@ -1409,18 +1537,12 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
 }
 
 void CaptureManager::SendTextures(DeviceData* dev) {
+    (void)dev;
     Transport& t = Transport::Get();
     std::vector<TextureCapture> textures;
     {
         std::lock_guard lock(_mutex);
         textures = _textures;
-        for (auto& c : _staging) {
-            if (!c.mapped) dev->dispatch.MapMemory(dev->device, c.memory, 0, VK_WHOLE_SIZE, 0, &c.mapped);
-            VkMappedMemoryRange r{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            r.memory = c.memory;
-            r.size = VK_WHOLE_SIZE;
-            dev->dispatch.InvalidateMappedMemoryRanges(dev->device, 1, &r);
-        }
     }
 
     // Readbacks recorded into command buffers that were never submitted have no valid data.
@@ -1476,8 +1598,8 @@ void CaptureManager::SendTextures(DeviceData* dev) {
 
     for (auto& tc : textures) {
         if (tc.failed) continue;
-        const StagingChunk& c = _staging[tc.stagingIndex];
-        if (!c.mapped) continue;
+        const StagingChunk* c = StagingOf(tc.device, tc.stagingIndex);
+        if (!c || !c->mapped) continue;
         JsonWriter h;
         h.BeginObject();
         h.Key("action"); h.String("CaptureTextureData");
@@ -1489,22 +1611,61 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         if (tc.sampled || tc.initial) { h.Key("capture"); h.Uint(tc.captureId); }
         h.Key("size"); h.Uint(tc.size);
         h.EndObject();
-        t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c.mapped) + tc.stagingOffset, (size_t)tc.size);
+        t.SendBinary(std::move(h.str()), static_cast<const uint8_t*>(c->mapped) + tc.stagingOffset, (size_t)tc.size);
     }
 }
 
-void CaptureManager::SendPassTimings(DeviceData* dev) {
+void CaptureManager::SendPassTimings() {
+    std::vector<DeviceCapture*> captures;
+    DeviceCapture* home = nullptr;
+    {
+        std::lock_guard lock(_devicesMutex);
+        for (auto& [device, dc] : _devices) {
+            if (!dc->queryPool) continue;
+            captures.push_back(dc.get());
+            if (device == _homeDevice) home = dc.get();
+        }
+    }
+    if (captures.empty()) return;
+    // One message for every device. Each device keeps its own clock, so a pass's start is measured
+    // from the earliest pass of its own device, and its duration with its own timestamp period.
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("CapturePassTimings");
+    w.Key("timestampPeriodNs"); w.Double((home ? home : captures[0])->dev->properties.limits.timestampPeriod);
+    w.Key("passes"); w.BeginArray();
+    uint32_t sent = 0;
+    uint32_t counted = 0;
+    size_t total = 0;
+    for (DeviceCapture* dc : captures) SendPassTimings(*dc, w, sent, counted, total);
+    w.EndArray();
+    w.Key("count"); w.Uint(sent);
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+    Log("pass profiling: %u of %zu passes timed, %u with counters%s", sent, total, counted,
+        captures.size() > 1 ? " (several devices)" : "");
+    if (const uint32_t dropped = _occlusionDropped.exchange(0, std::memory_order_relaxed)) {
+        // An occlusion query cannot stay active across vkCmdExecuteCommands unless the secondaries
+        // were recorded with occlusionQueryEnable, which an engine that records its draws into
+        // secondaries (Unity, Unreal) does not do. Those passes keep everything but depth rejection.
+        Log("depth rejection: %u pass(es) went unmeasured (secondary command buffers, or a query of the application's)", dropped);
+    }
+}
+
+void CaptureManager::SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total) {
+    DeviceData* dev = dc.dev;
     std::vector<PassTiming> timings;
     {
         std::lock_guard lock(_mutex);
-        timings = _passTimings;
+        for (const PassTiming& pt : _passTimings)
+            if (pt.device == dev->device) timings.push_back(pt);
     }
-    if (!_queryPool || _queryDevice != dev->device) return;
-    uint32_t used = std::min(_queriesUsed.load(std::memory_order_relaxed), _queryCount);
-    if (!used) return;
+    total += timings.size();
+    uint32_t used = std::min(dc.queriesUsed.load(std::memory_order_relaxed), dc.queryCount);
+    if (!used || timings.empty()) return;
     // Each query: 64-bit value then 64-bit availability (0 when the command buffer never ran).
     std::vector<uint64_t> results((size_t)used * 2, 0);
-    VkResult res = dev->dispatch.GetQueryPoolResults(dev->device, _queryPool, 0, used, results.size() * sizeof(uint64_t),
+    VkResult res = dev->dispatch.GetQueryPoolResults(dev->device, dc.queryPool, 0, used, results.size() * sizeof(uint64_t),
                                                      results.data(), 2 * sizeof(uint64_t),
                                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     if (res != VK_SUCCESS && res != VK_NOT_READY) {
@@ -1516,12 +1677,12 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
     constexpr size_t kStatsStride = kPipelineStatisticCount + 1;
     std::vector<uint64_t> stats;
     uint32_t statsUsed = 0;
-    if (_statsPool) {
-        statsUsed = std::min(_statsUsed.load(std::memory_order_relaxed), _statsCount);
+    if (dc.statsPool) {
+        statsUsed = std::min(dc.statsUsed.load(std::memory_order_relaxed), dc.statsCount);
         if (statsUsed) {
             stats.assign((size_t)statsUsed * kStatsStride, 0);
             VkResult sres = dev->dispatch.GetQueryPoolResults(
-                dev->device, _statsPool, 0, statsUsed, stats.size() * sizeof(uint64_t), stats.data(),
+                dev->device, dc.statsPool, 0, statsUsed, stats.size() * sizeof(uint64_t), stats.data(),
                 kStatsStride * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
             if (sres != VK_SUCCESS && sres != VK_NOT_READY) {
                 Log("pass counters: vkGetQueryPoolResults failed (%d)", (int)sres);
@@ -1534,12 +1695,12 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
     // The samples that passed each pass's depth and stencil tests: one value and its availability.
     std::vector<uint64_t> occlusion;
     uint32_t occlusionUsed = 0;
-    if (_occlusionPool) {
-        occlusionUsed = std::min(_occlusionUsed.load(std::memory_order_relaxed), _occlusionCount);
+    if (dc.occlusionPool) {
+        occlusionUsed = std::min(dc.occlusionUsed.load(std::memory_order_relaxed), dc.occlusionCount);
         if (occlusionUsed) {
             occlusion.assign((size_t)occlusionUsed * 2, 0);
             VkResult ores = dev->dispatch.GetQueryPoolResults(
-                dev->device, _occlusionPool, 0, occlusionUsed, occlusion.size() * sizeof(uint64_t), occlusion.data(),
+                dev->device, dc.occlusionPool, 0, occlusionUsed, occlusion.size() * sizeof(uint64_t), occlusion.data(),
                 2 * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
             if (ores != VK_SUCCESS && ores != VK_NOT_READY) {
                 Log("depth rejection: vkGetQueryPoolResults failed (%d)", (int)ores);
@@ -1557,13 +1718,6 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
             earliest = std::min(earliest, results[(size_t)pt.query * 2]);
         }
     }
-    JsonWriter w;
-    w.BeginObject();
-    w.Key("action"); w.String("CapturePassTimings");
-    w.Key("timestampPeriodNs"); w.Double(period);
-    w.Key("passes"); w.BeginArray();
-    uint32_t sent = 0;
-    uint32_t counted = 0;
     for (auto& pt : timings) {
         if (pt.frame == UINT32_MAX || pt.query + 1 >= used) continue;
         uint64_t begin = results[(size_t)pt.query * 2];
@@ -1600,34 +1754,6 @@ void CaptureManager::SendPassTimings(DeviceData* dev) {
         w.EndObject();
         sent++;
     }
-    w.EndArray();
-    w.Key("count"); w.Uint(sent);
-    w.EndObject();
-    Transport::Get().SendJson(std::move(w.str()));
-    Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
-    if (const uint32_t dropped = _occlusionDropped.exchange(0, std::memory_order_relaxed)) {
-        // An occlusion query cannot stay active across vkCmdExecuteCommands unless the secondaries
-        // were recorded with occlusionQueryEnable, which an engine that records its draws into
-        // secondaries (Unity, Unreal) does not do. Those passes keep everything but depth rejection.
-        Log("depth rejection: %u pass(es) went unmeasured (secondary command buffers, or a query of the application's)", dropped);
-    }
-}
-
-void CaptureManager::ReleaseStaging(DeviceData* dev) {
-    std::lock_guard lock(_mutex);
-    for (auto& c : _staging) {
-        if (c.mapped) dev->dispatch.UnmapMemory(dev->device, c.memory);
-        dev->dispatch.DestroyBuffer(dev->device, c.buffer, nullptr);
-        dev->dispatch.FreeMemory(dev->device, c.memory, nullptr);
-    }
-    _staging.clear();
-    for (VkImageView v : _resolveViews) dev->dispatch.DestroyImageView(dev->device, v, nullptr);
-    _resolveViews.clear();
-    for (auto& r : _resolveImages) {
-        dev->dispatch.DestroyImage(dev->device, r.image, nullptr);
-        dev->dispatch.FreeMemory(dev->device, r.memory, nullptr);
-    }
-    _resolveImages.clear();
 }
 
 } // namespace vkinsp

@@ -64,6 +64,15 @@
   process alive, and the capture is sent to it once.
 
 ### Fixed
+- Vulkan applications with more than one device (a second device for compute, or a runtime's own)
+  are captured whole:
+  - **Passes and read-backs:** every device's passes are timed and counted, and its render
+    targets and bound buffers are read back. Before, only the device the capture started on had
+    query pools and staging memory, and read-backs recorded on another device used buffers that
+    were not its own.
+  - **Frames:** a capture starts at a present, not at another device's fence wait.
+  - **Replay:** `vkinsp_replay` replays every device's objects.
+  - **Test options:** `--second-device` and `--second-queue` in the test application.
 - A command buffer recorded before the capture began no longer shows a later command buffer's
   rendering in its render targets when both are in one submission. The capture now splits the
   submission after it and reads its targets back in between. The triangle test app's

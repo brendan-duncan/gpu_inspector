@@ -335,6 +335,17 @@ bool Replayer::CreateDevice() {
         _handles[IdOf(deviceArgs ? deviceArgs->Get("physicalDevice") : nullptr)] = (uint64_t)(uintptr_t)_physical;
         if (const JValue* id = deviceObject->Get("id")) _handles[id->Uint()] = (uint64_t)(uintptr_t)_device;
     }
+    // An application with several devices (a second one for compute, a runtime's own) has each
+    // replayed on this one: objects of different devices never refer to each other, so their
+    // commands run side by side here, with the first device's features and queues.
+    if (const JValue* objects = _capture->Objects(); objects && objects->IsArray()) {
+        for (uint32_t i = 0; i < objects->count; ++i) {
+            const JValue& o = objects->items[i];
+            if (Str(o.Get("type")) != "VkDevice" || &o == deviceObject) continue;
+            if (const JValue* id = o.Get("id")) _handles[id->Uint()] = (uint64_t)(uintptr_t)_device;
+            if (const JValue* args = o.Get("args")) _handles[IdOf(args->Get("physicalDevice"))] = (uint64_t)(uintptr_t)_physical;
+        }
+    }
     return true;
 }
 

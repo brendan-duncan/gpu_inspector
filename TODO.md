@@ -257,8 +257,13 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] OpenXR: the XR frame period (72/90/120 Hz) has no source without a swapchain, so the
       meter relies on the interval estimate; the runtime's display period would need an
       OpenXR layer or the runtime's own properties.
-- [ ] Multiple devices and queues in one process (timestamps are per device; the query pool is
-      created on the capturing device only).
+- [x] Multiple devices and queues in one process: query pools, staging and resolve images per
+      device (`CaptureManager::DeviceCapture`), captures started by presents rather than another
+      device's fence waits, and the replay running every device's objects on its one device
+      (triangle `--second-device`, `--second-queue`).
+- [ ] Several devices, the rest: devices on different GPUs replay on one (their formats and
+      features may not all be there), and a second device's own frame counter can disagree with the
+      presenting device's, so its submissions are numbered from the frame it joined at.
 - [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.
 - [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
       replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
