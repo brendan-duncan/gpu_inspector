@@ -291,6 +291,27 @@ struct RecorderSlot {
 
 }  // namespace
 
+// How a device's frames are delimited, decided per device over its lifetime (a process can hold
+// several D3D12 devices: a game and a background copy device, or, in Chrome's GPU process, Dawn's
+// WebGPU device beside the compositor's). A device that presents ends its frames at the present;
+// one that goes a long run of submissions without ever presenting ends them at every
+// ExecuteCommandLists, the way the Vulkan layer falls back for an OpenXR application that never
+// presents. DXINSP_FRAME_BOUNDARY forces one or the other.
+struct DeviceFrame {
+    enum class Boundary { Auto, Present, Submit };
+    Boundary boundary = Boundary::Auto;
+    bool presentSeen = false;
+    uint64_t frameIndex = 0;             // this device's own frame count (its presents, or its submit boundaries)
+    uint32_t submitsWithoutPresent = 0;
+    ID3D12CommandQueue* lastQueue = nullptr;   // not AddRef'd; the queue a substitute boundary ran on
+};
+
+// A device is taken to have no swap chain after this many submissions without a present, the same
+// threshold the Vulkan layer uses (layer.cpp, OnSubmitForFrames).
+constexpr uint32_t kSubmitsWithoutPresent = 60;
+
+enum class BoundaryOverride { Auto, Present, Submit };
+
 struct CaptureManager::Impl {
     enum class State { Idle, Armed, Capturing };
 
@@ -300,9 +321,28 @@ struct CaptureManager::Impl {
     uint64_t frameIndex = 0;
     uint32_t frameCount = 1;
     uint32_t framesDone = 0;
-    IDXGISwapChain* homeSwapChain = nullptr;   // whose presents count the captured frames
+    IDXGISwapChain* homeSwapChain = nullptr;   // whose presents count the captured frames (null: a submit-delimited home)
+    ID3D12Device* homeDevice = nullptr;        // the device the capture started on, whose frames it counts
+    bool presentSeenAny = false;               // any hooked device has presented: a submit boundary then does not start a capture
     bool recordAlways = false;
     bool recordAlwaysRead = false;
+
+    // Per-device frame boundary state, device lifetime (not the capture-scoped DeviceCapture).
+    std::mutex frameMutex;
+    std::unordered_map<ID3D12Device*, DeviceFrame> deviceFrames;
+    BoundaryOverride boundaryOverride = BoundaryOverride::Auto;
+    bool boundaryOverrideRead = false;
+    DeviceFrame& FrameFor(ID3D12Device* device) { return deviceFrames[device]; }   // caller holds frameMutex
+    BoundaryOverride Override() {
+        std::lock_guard lock(frameMutex);
+        if (!boundaryOverrideRead) {
+            boundaryOverrideRead = true;
+            const std::string v = ConfigValue("DXINSP_FRAME_BOUNDARY");
+            if (v == "submit") boundaryOverride = BoundaryOverride::Submit;
+            else if (v == "present") boundaryOverride = BoundaryOverride::Present;
+        }
+        return boundaryOverride;
+    }
     std::vector<Submission> submissions;
     std::vector<TextureEntry> textures;
     std::vector<BufferEntry> buffers;
@@ -590,13 +630,29 @@ void CaptureManager::OnSwapChainReleased(IDXGISwapChain* swapChain) {
         std::lock_guard lock(i.swapChainMutex);
         i.swapChains.erase(swapChain);
     }
-    std::lock_guard lock(i.mutex);
-    if (i.homeSwapChain == swapChain) i.homeSwapChain = nullptr;   // the next present of any chain counts
+    ID3D12Device* finishOn = nullptr;
+    {
+        std::lock_guard lock(i.mutex);
+        if (i.homeSwapChain == swapChain) {
+            // The swap chain whose presents delimit the capture is going away. Mid-capture that
+            // would leave nothing to end the remaining frames on (the home device presents, so its
+            // submits are not boundaries), so send what was captured; when only armed, drop it and
+            // let the next boundary re-arm.
+            if (i.state == Impl::State::Capturing) finishOn = i.homeDevice;
+            i.homeSwapChain = nullptr;
+        }
+    }
+    if (finishOn) i.Finish(*this, finishOn);
 }
 
 void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
     if (!_impl) return;
     Impl& i = impl();
+    // Its per-device frame state goes whether or not it ever took part in a capture.
+    {
+        std::lock_guard lock(i.frameMutex);
+        i.deviceFrames.erase(device);
+    }
     std::unique_ptr<DeviceCapture> dc;
     {
         std::lock_guard lock(i.deviceMutex);
@@ -1356,47 +1412,87 @@ void NoteQueue(DeviceCapture& dc, ID3D12CommandQueue* queue) {
 
 }  // namespace
 
-void CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs) {
+bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs) {
     (void)cpuMs;
-    if (!IsCapturing() || !queue) return;
+    if (!queue) return false;
     Impl& i = impl();
-    Submission s;
-    s.objectId = Tracker::Get().IdOf(queue);
-    {
-        Args a;
-        a.u("NumCommandLists", count);
-        JsonWriter& w = a.key("ppCommandLists");
-        w.BeginArray();
-        for (UINT k = 0; k < count; ++k) WriteRef(w, lists ? lists[k] : nullptr, "ID3D12GraphicsCommandList");
-        w.EndArray();
-        s.args = a.str();
-    }
-    std::vector<ID3D12GraphicsCommandList*> executed;
-    uint64_t commands = 0;
-    for (UINT k = 0; k < count; ++k) {
-        ID3D12GraphicsCommandList* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
+    // The device this submission belongs to: every list on one queue shares it. Found from a
+    // recorded list, else from the queue itself.
+    ID3D12Device* device = nullptr;
+    for (UINT k = 0; k < count && !device; ++k) {
+        auto* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
         if (!list) continue;
         CommandRecorder* rec = LookupRecorder(list);
-        SubmittedList sl;
-        sl.listId = Tracker::Get().IdOf(list);
-        if (rec) sl.commands = rec->Snapshot();
-        commands += sl.commands ? sl.commands->size() : 1;
-        s.lists.push_back(std::move(sl));
-        executed.push_back(list);
-        // The queue is waited for at the finish, through the fence of the device its lists belong to.
-        ID3D12Device* device = rec ? rec->device() : DeviceOf(list);
-        if (DeviceCapture* dc = i.CaptureFor(device)) NoteQueue(*dc, queue);
+        device = rec ? rec->device() : DeviceOf(list);
     }
-    std::lock_guard lock(i.mutex);
-    if (i.state != Impl::State::Capturing) return;
-    s.frame = i.CurrentFrame();
-    i.commandTotal += 1 + commands;
-    for (ID3D12GraphicsCommandList* list : executed) {
-        AssignFrame(i.textures, list, s.frame);
-        AssignFrame(i.buffers, list, s.frame);
-        AssignFrame(i.timings, list, s.frame);
+    if (!device) device = DeviceOf(queue);
+
+    // Record the submission (only while capturing), into the frame the home boundary is on.
+    if (IsCapturing()) {
+        Submission s;
+        s.objectId = Tracker::Get().IdOf(queue);
+        {
+            Args a;
+            a.u("NumCommandLists", count);
+            JsonWriter& w = a.key("ppCommandLists");
+            w.BeginArray();
+            for (UINT k = 0; k < count; ++k) WriteRef(w, lists ? lists[k] : nullptr, "ID3D12GraphicsCommandList");
+            w.EndArray();
+            s.args = a.str();
+        }
+        std::vector<ID3D12GraphicsCommandList*> executed;
+        uint64_t commands = 0;
+        for (UINT k = 0; k < count; ++k) {
+            ID3D12GraphicsCommandList* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
+            if (!list) continue;
+            CommandRecorder* rec = LookupRecorder(list);
+            SubmittedList sl;
+            sl.listId = Tracker::Get().IdOf(list);
+            if (rec) sl.commands = rec->Snapshot();
+            commands += sl.commands ? sl.commands->size() : 1;
+            s.lists.push_back(std::move(sl));
+            executed.push_back(list);
+            // The queue is waited for at the finish, through the fence of the device its lists belong to.
+            ID3D12Device* listDevice = rec ? rec->device() : DeviceOf(list);
+            if (DeviceCapture* dc = i.CaptureFor(listDevice)) NoteQueue(*dc, queue);
+        }
+        std::lock_guard lock(i.mutex);
+        if (i.state == Impl::State::Capturing) {
+            s.frame = i.CurrentFrame();
+            i.commandTotal += 1 + commands;
+            for (ID3D12GraphicsCommandList* list : executed) {
+                AssignFrame(i.textures, list, s.frame);
+                AssignFrame(i.buffers, list, s.frame);
+                AssignFrame(i.timings, list, s.frame);
+            }
+            i.submissions.push_back(std::move(s));
+        }
     }
-    i.submissions.push_back(std::move(s));
+
+    // The frame boundary for a device that never presents: settled per device below, and this
+    // submission ends its frame once it has. Runs whether or not a capture is active, so the
+    // decision is made from the application's normal submissions and a queued "capture frame N"
+    // lands on the right one.
+    if (!device) return false;
+    const BoundaryOverride override = i.Override();
+    if (override == BoundaryOverride::Present) return false;
+    bool boundary = false;
+    {
+        std::lock_guard lock(i.frameMutex);
+        DeviceFrame& df = i.FrameFor(device);
+        if (df.boundary == DeviceFrame::Boundary::Present) return false;   // this device presents; presents delimit it
+        df.lastQueue = queue;
+        const uint32_t n = ++df.submitsWithoutPresent;
+        if (df.boundary == DeviceFrame::Boundary::Auto) {
+            if (override == BoundaryOverride::Submit || n >= kSubmitsWithoutPresent) {
+                df.boundary = DeviceFrame::Boundary::Submit;
+                Log("no present after %u submissions on device %p: its frames end at every ExecuteCommandLists", n, (void*)device);
+            }
+        }
+        boundary = df.boundary == DeviceFrame::Boundary::Submit;
+    }
+    if (boundary) EndFrame(device, queue, nullptr, false);
+    return boundary;
 }
 
 void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle) {
@@ -1444,18 +1540,50 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
 }
 
 void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, ID3D12CommandQueue* queue) {
-    const uint64_t counter = _frameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
     Impl& i = impl();
+    // DXINSP_FRAME_BOUNDARY=submit delimits every device by its submissions and ignores presents
+    // for framing (the Chrome case: the compositor may present on a hooked device, but the work to
+    // capture is Dawn's, which never presents). The present still updated the frame timing.
+    if (i.Override() == BoundaryOverride::Submit) return;
+    {
+        // A device that presents is delimited by its presents from now on, whatever it did before,
+        // and any present in the process settles the guard below.
+        std::lock_guard lock(i.frameMutex);
+        DeviceFrame& df = i.FrameFor(device);
+        df.presentSeen = true;
+        df.boundary = DeviceFrame::Boundary::Present;
+        i.presentSeenAny = true;
+    }
+    EndFrame(device, queue ? queue : PresentQueue(swapChain), swapChain, true);
+}
+
+void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain* swapChain, bool present) {
+    if (!device) return;
+    Impl& i = impl();
+    const uint64_t deviceFrame = _frameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t deviceFrameIndex;
+    {
+        std::lock_guard lock(i.frameMutex);
+        deviceFrameIndex = ++i.FrameFor(device).frameIndex;
+    }
+    const BoundaryOverride override = i.Override();
+
     bool finish = false;
     bool started = false;
     {
         std::lock_guard lock(i.mutex);
         if (i.state == Impl::State::Armed) {
-            if (i.options.atFrame == UINT64_MAX || counter >= i.options.atFrame) {
+            // A process that presents somewhere has its frames ended by those presents: a
+            // background device's substitute submit boundary does not start the capture, unless
+            // DXINSP_FRAME_BOUNDARY=submit forces it (the Chrome case, where the compositor may
+            // present on a hooked device but the WebGPU work to capture is Dawn's, which does not).
+            if (!present && i.presentSeenAny && override != BoundaryOverride::Submit) return;
+            if (i.options.atFrame == UINT64_MAX || deviceFrameIndex >= i.options.atFrame) {
                 i.state = Impl::State::Capturing;
-                i.frameIndex = counter;
+                i.frameIndex = deviceFrame;
                 i.framesDone = 0;
-                i.homeSwapChain = swapChain;
+                i.homeDevice = device;
+                i.homeSwapChain = present ? swapChain : nullptr;   // null: the home is delimited by submits
                 i.submissions.clear();
                 i.textures.clear();
                 i.buffers.clear();
@@ -1468,15 +1596,22 @@ void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, 
                 started = true;
             }
         } else if (i.state == Impl::State::Capturing) {
-            Submission s;
-            s.present = true;
-            s.objectId = Tracker::Get().IdOf(swapChain);
-            s.frame = i.CurrentFrame();
-            i.submissions.push_back(std::move(s));
-            i.commandTotal += 1;
-            // The frames are those of the swap chain that presented first; another chain's present
-            // lands in the frame this one is in.
-            if (!i.homeSwapChain || swapChain == i.homeSwapChain) {
+            if (present) {
+                // The present itself is part of the captured frame (a submit boundary has no such
+                // command; the ExecuteCommandLists that ended the frame is already recorded).
+                Submission s;
+                s.present = true;
+                s.objectId = Tracker::Get().IdOf(swapChain);
+                s.frame = i.CurrentFrame();
+                i.submissions.push_back(std::move(s));
+                i.commandTotal += 1;
+            }
+            // The captured frames are the home boundary's: the swap chain that started a
+            // present-delimited capture, or the device that started a submit-delimited one. Any
+            // other present or submit is recorded but lands in the frame the home is on.
+            const bool home = i.homeSwapChain ? (present && swapChain == i.homeSwapChain)
+                                              : (!present && device == i.homeDevice);
+            if (home) {
                 i.framesDone++;
                 if (i.framesDone >= i.frameCount) finish = true;
             }
@@ -1491,11 +1626,12 @@ void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, 
             dc->occlusionUsed.store(0, std::memory_order_relaxed);
             dc->slotsUsed.store(0, std::memory_order_relaxed);
         }
-        Log("capture started at frame %llu (%u frame(s))", (unsigned long long)counter, i.frameCount);
+        Log("capture started at frame %llu (%u frame(s), %s)", (unsigned long long)deviceFrame, i.frameCount,
+            present ? "present" : "submit boundary");
         return;
     }
     if (IsCapturing()) {
-        if (DeviceCapture* dc = i.CaptureFor(device)) NoteQueue(*dc, queue ? queue : PresentQueue(swapChain));
+        if (DeviceCapture* dc = i.CaptureFor(device)) NoteQueue(*dc, queue);
     }
     if (finish) i.Finish(*this, device);
 }
@@ -1830,6 +1966,7 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
         textureIds.clear();
         bufferBytes = imageBytes = commandTotal = 0;
         homeSwapChain = nullptr;
+        homeDevice = nullptr;   // presentSeenAny is a device-lifetime fact and is not reset here
         state = Impl::State::Idle;
     }
     Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers, %zu passes", data.submissions.size(),

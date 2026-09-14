@@ -6,7 +6,7 @@
 // barriers and presents.
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
-//                        [--render-pass] [--compute] [--leak] [--debug-layer]
+//                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -18,6 +18,7 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -154,6 +155,9 @@ struct App {
     bool renderPass = false;
     // --compute: every frame dispatches wave.hlsl into a UAV before the draw. Nothing reads it.
     bool compute = false;
+    // --offscreen: no swap chain, no present; renders into its own targets, as Chrome's Dawn
+    // WebGPU device does. The inspector's frame boundary falls back to the per-frame submit.
+    bool offscreen = false;
     bool leak = false;         // one buffer is never released (the inspector's leak report)
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -412,6 +416,15 @@ struct App {
     }
 
     void CreateSwapChain() {
+        // --offscreen renders into its own textures and never presents, the way Chrome's Dawn
+        // WebGPU device on D3D12 renders into textures the compositor presents rather than
+        // presenting itself. There is no swap chain and no IDXGISwapChain::Present, so the
+        // inspector's frame boundary falls back to the per-frame ExecuteCommandLists.
+        if (offscreen) {
+            frameIndex = 0;
+            CreateSizedResources();
+            return;
+        }
         DXGI_SWAP_CHAIN_DESC1 sd{};
         sd.Width = width;
         sd.Height = height;
@@ -434,7 +447,28 @@ struct App {
     // the current window size.
     void CreateSizedResources() {
         for (uint32_t i = 0; i < kFrameCount; ++i) {
-            CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
+            if (offscreen) {
+                // The counterpart of a swap-chain back buffer, held in RENDER_TARGET the whole
+                // time since it is never presented.
+                D3D12_HEAP_PROPERTIES hp{};
+                hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+                D3D12_RESOURCE_DESC rd{};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                rd.Width = width;
+                rd.Height = height;
+                rd.DepthOrArraySize = 1;
+                rd.MipLevels = 1;
+                rd.Format = kColorFormat;
+                rd.SampleDesc.Count = 1;
+                rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                D3D12_CLEAR_VALUE clear{};
+                clear.Format = kColorFormat;
+                memcpy(clear.Color, kClearColor, sizeof(kClearColor));
+                CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+                                                      IID_PPV_ARGS(&backBuffers[i])));
+            } else {
+                CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
+            }
             wchar_t name[32];
             swprintf(name, 32, L"Back buffer %u", i);
             backBuffers[i]->SetName(name);
@@ -482,6 +516,7 @@ struct App {
     // is nothing to draw into (minimized).
     bool Resize() {
         resized = false;
+        if (offscreen) return true;   // no swap chain to resize; the offscreen targets keep their size
         RECT r;
         GetClientRect(hwnd, &r);
         uint32_t w = (uint32_t)(r.right - r.left), h = (uint32_t)(r.bottom - r.top);
@@ -801,10 +836,15 @@ struct App {
         }
 
         ID3D12Resource* backBuffer = backBuffers[frameIndex].Get();
+        // The state the target rests in between frames: PRESENT for a swap-chain buffer, or
+        // RENDER_TARGET for an offscreen one that is never presented.
+        const D3D12_RESOURCE_STATES idleState = offscreen ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_PRESENT;
         // With MSAA the back buffer is only ever the resolve destination.
         D3D12_RESOURCE_STATES backBufferState = msaa ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_RENDER_TARGET;
-        D3D12_RESOURCE_BARRIER toTarget = Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT, backBufferState);
-        list->ResourceBarrier(1, &toTarget);
+        if (idleState != backBufferState) {
+            D3D12_RESOURCE_BARRIER toTarget = Transition(backBuffer, idleState, backBufferState);
+            list->ResourceBarrier(1, &toTarget);
+        }
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = RtvHandle(msaa ? kFrameCount : frameIndex);
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -860,18 +900,18 @@ struct App {
                 Transition(backBuffer, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_PRESENT),
             };
             list->ResourceBarrier(2, after);
-        } else {
-            D3D12_RESOURCE_BARRIER toPresent = Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        } else if (idleState != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+            D3D12_RESOURCE_BARRIER toPresent = Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, idleState);
             list->ResourceBarrier(1, &toPresent);
         }
 
         CHECK(list->Close());
         ID3D12CommandList* lists[] = {list.Get()};
         queue->ExecuteCommandLists(1, lists);
-        CHECK(swapChain->Present(1, 0));
+        if (!offscreen) CHECK(swapChain->Present(1, 0));
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         fenceValues[frameIndex] = nextFenceValue++;
-        frameIndex = swapChain->GetCurrentBackBufferIndex();
+        frameIndex = offscreen ? (frameIndex + 1) % kFrameCount : swapChain->GetCurrentBackBufferIndex();
         ++frameCount;
         return true;
     }
@@ -891,11 +931,21 @@ struct App {
         CreateResources();
         if (bundle) RecordBundles();
         auto start = std::chrono::steady_clock::now();
+        auto nextFrame = start;
         while (!quit && (maxFrames == 0 || frameCount < maxFrames)) {
             PumpEvents();
             if (quit) break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             if (!DrawFrame(t)) Sleep(16);
+            // A swap chain paces the loop to the display; an offscreen renderer has nothing to
+            // wait on and would spin a core at thousands of fps, so it is paced to ~60 the way a
+            // real WebGPU application is driven by requestAnimationFrame.
+            if (offscreen) {
+                nextFrame += std::chrono::microseconds(16667);
+                auto now = std::chrono::steady_clock::now();
+                if (nextFrame > now) std::this_thread::sleep_for(nextFrame - now);
+                else nextFrame = now;
+            }
         }
         Cleanup();
         return 0;
@@ -917,6 +967,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--indirect")) app.indirect = true;
         else if (!strcmp(argv[i], "--render-pass")) app.renderPass = true;
         else if (!strcmp(argv[i], "--compute")) app.compute = true;
+        else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
         else {

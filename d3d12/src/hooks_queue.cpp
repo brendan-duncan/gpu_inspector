@@ -162,8 +162,16 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
     Log("queue %p ExecuteCommandLists(%u) %.3f ms", (void*)This, NumCommandLists, ms);
     for (UINT i = 0; ppCommandLists && i < NumCommandLists; ++i)
         if (ppCommandLists[i]) ResourceTracker::Get().OnListExecuted(ppCommandLists[i]);
-    Cap().OnExecuteCommandLists(This, NumCommandLists, ppCommandLists, ms);
-    AddSubmitTime(DeviceOf(This), ms);
+    ID3D12Device* device = DeviceOf(This);
+    AddSubmitTime(device, ms);
+    // For a device that never presents, this submission may be its frame boundary; then the
+    // per-frame chores a present would do run here instead (frame timing, validation, retired
+    // shader edits). See CaptureManager::OnExecuteCommandLists.
+    if (Cap().OnExecuteCommandLists(This, NumCommandLists, ppCommandLists, ms)) {
+        OnFrameNoPresent(device);
+        ValidationLog::Get().Poll(Cap().FrameCounter());
+        ShaderEditor::Get().OnPresent();
+    }
 }
 
 HRESULT STDMETHODCALLTYPE Hook_Signal(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value) {

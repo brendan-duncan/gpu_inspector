@@ -587,6 +587,13 @@ def d3d12_bundle(state, log):
     return check_connected(state, log) + check_capture_basic(state, log)
 
 
+def d3d12_offscreen(state, log):
+    # No swap chain and no present (the Dawn-in-Chrome case): the frame boundary falls back to the
+    # per-frame ExecuteCommandLists, and the capture is a full frame all the same.
+    s = session(state)
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect(s.get("frameBoundary") == "submit", f"frame boundary {s.get('frameBoundary')!r} (expected the submit fallback)") +         expect(s.get("refreshSource") in ("", None), f"refresh source {s.get('refreshSource')!r} (a device that never presents has no display period)") +         expect("no present after" in log, "the layer did not fall back to the submit frame boundary") +         expect("submit boundary" in log, "the capture did not start on a submit boundary")
+
+
 def d3d12_cases(triangle):
     launch = [f"--launch={triangle}"]
     saved = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12.gpucap")
@@ -599,6 +606,7 @@ def d3d12_cases(triangle):
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
         Case("d3d12-bundle", launch + ["--args=--bundle", "--record-always", "--debug-capture"], d3d12_bundle),
+        Case("d3d12-offscreen", launch + ["--args=--offscreen --compute", "--debug-capture"], d3d12_offscreen, delay_ms=14000),
         Case("d3d12-open", [f"--debug-open={saved}", "--debug-command=22"], d3d12_open, delay_ms=9000),
     ]
 

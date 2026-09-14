@@ -31,12 +31,19 @@
   - Shader editing: an HLSL stage is compiled with `dxc` and the library rebuilds the pipeline
     state with it. Pipelines from streams are rebuilt from their streams; one loaded from a
     pipeline library says it cannot be edited.
+  - A submit frame boundary for a device that never presents (Chrome's Dawn WebGPU device on
+    D3D12 renders into textures the compositor presents), the D3D12 form of the Vulkan layer's
+    OpenXR fallback: after a run of submissions with no present, frames end at every
+    `ExecuteCommandLists`. `DXINSP_FRAME_BOUNDARY=submit` forces it and ignores presents, for
+    capturing Dawn when the compositor also presents on a hooked device. The boundary and frame
+    count are decided per device, so several D3D12 devices in one process (a game and a background
+    device, or Dawn beside the compositor) each keep their own without hijacking a capture.
   - `DXINSP_RECORD_ALWAYS` (**Record all command buffers**) for command lists recorded once and
     executed every frame; `DXINSP_LOG`, `DXINSP_LOG_FILE`, `DXINSP_STACKTRACES`,
-    `DXINSP_DEBUG_LAYER` and `DXINSP_PORT`, the D3D12 spellings of the layer's variables.
+    `DXINSP_DEBUG_LAYER`, `DXINSP_FRAME_BOUNDARY` and `DXINSP_PORT`.
   - `test/d3d12_triangle`: `dxinsp_triangle.exe`, the D3D12 counterpart of the Vulkan test
-    application, with `--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`
-    and `--debug-layer`.
+    application, with `--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`,
+    `--offscreen` (no swap chain and no present, the Dawn shape) and `--debug-layer`.
   - Not there yet for D3D12: the shader debugger and the replay-based analyses (overdraw, pixel
     history, draw overlays, mesh output, per-draw measurements, ablation), stencil read-back,
     32-bit targets, and attaching to an application already running.

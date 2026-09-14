@@ -564,74 +564,89 @@ void OnDeviceReleased(ID3D12Device* device) {
 // ---------------------------------------------------------------------------------------------
 // Frame timing
 
+// The frame timing of one boundary, accumulated and reported every 100 ms. `boundary` is
+// "present" or "submit"; `presentMode` and the refresh period are the present path's, empty and 0
+// for a submit boundary (a device that never presents has no display period). Caller holds g_mutex.
+void EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, double refreshMs, const std::string& presentMode) {
+    d.frame++;
+    if (d.lastPresent.time_since_epoch().count() == 0) {
+        d.lastReport = now;
+        d.lastPresent = now;
+        return;
+    }
+    const double ms = std::chrono::duration<double, std::milli>(now - d.lastPresent).count();
+    if (d.frames == 0) {
+        d.minMs = ms;
+        d.maxMs = ms;
+    } else {
+        if (ms < d.minMs) d.minMs = ms;
+        if (ms > d.maxMs) d.maxMs = ms;
+    }
+    d.accumMs += ms;
+    d.frames++;
+    const double sinceReport = std::chrono::duration<double, std::milli>(now - d.lastReport).count();
+    if (sinceReport >= 100.0) {
+        if (Transport::Get().Connected()) {
+            JsonWriter w;
+            w.BeginObject();
+            w.Key("action"); w.String("FrameStats");
+            w.Key("frame"); w.Uint(d.frame);
+            w.Key("frameTimeMs"); w.Double(d.accumMs / (double)d.frames);
+            w.Key("minMs"); w.Double(d.minMs);
+            w.Key("maxMs"); w.Double(d.maxMs);
+            w.Key("frames"); w.Uint(d.frames);
+            w.Key("submitMs"); w.Double(d.submitMs / (double)d.frames);
+            w.Key("refreshMs"); w.Double(refreshMs);
+            w.Key("refreshSource"); w.String(refreshMs > 0 ? "monitor" : "");
+            w.Key("displayRefreshMs"); w.Double(refreshMs > 0 ? d.displayRefreshMs : 0);
+            if (!presentMode.empty()) { w.Key("presentMode"); w.String(presentMode); }
+            w.Key("frameBoundary"); w.String(boundary);
+            // Dropped frames need a refresh count the swap chain does not give; the UI shows the
+            // zeros as sent.
+            w.Key("dropped"); w.Uint(0);
+            w.Key("droppedTotal"); w.Uint(0);
+            w.EndObject();
+            Transport::Get().SendJson(std::move(w.str()));
+        }
+        // Reset whether or not anything was sent, so the first report after a connect covers its
+        // own interval rather than everything since the last one.
+        d.accumMs = 0;
+        d.frames = 0;
+        d.submitMs = 0;
+        d.lastReport = now;
+    }
+    d.lastPresent = now;
+}
+
 void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT) {
     // A failed present is still a frame: the application paced itself to it.
     const Clock::time_point now = Clock::now();
     std::lock_guard<std::mutex> lock(g_mutex);
     DeviceRecord& d = RecordOf(device);
-    d.frame++;
-    // The display can change (a window moved to another monitor, a mode switch): re-queried at
-    // the first present and every 120 after.
-    if (d.frame % 120 == 1) {
+    // The display can change (a window moved to another monitor, a mode switch): re-queried at the
+    // first present and every 120 after.
+    if (d.frame % 120 == 0) {
         double ms = MonitorRefreshMs(swapChain);
         if (ms > 0 && ms != d.displayRefreshMs) {
             d.displayRefreshMs = ms;
             Log("refresh rate: %.4g Hz (%.3f ms, monitor)", 1000.0 / ms, ms);
         }
     }
-    if (d.lastPresent.time_since_epoch().count() != 0) {
-        const double ms = std::chrono::duration<double, std::milli>(now - d.lastPresent).count();
-        if (d.frames == 0) {
-            d.minMs = ms;
-            d.maxMs = ms;
-        } else {
-            if (ms < d.minMs) d.minMs = ms;
-            if (ms > d.maxMs) d.maxMs = ms;
-        }
-        d.accumMs += ms;
-        d.frames++;
-        const double sinceReport = std::chrono::duration<double, std::milli>(now - d.lastReport).count();
-        if (sinceReport >= 100.0) {
-            if (Transport::Get().Connected()) {
-                // A present that syncs waits for the display: its period is the frame's floor.
-                // Tearing presents and syncInterval 0 do not, so no refresh period applies.
-                const bool synced = syncInterval > 0 && !(flags & DXGI_PRESENT_ALLOW_TEARING);
-                const double refreshMs = synced ? d.displayRefreshMs : 0;
-                std::string presentMode = "immediate";
-                if (syncInterval == 1) presentMode = "vsync";
-                else if (syncInterval > 1) presentMode = "vsync/" + std::to_string(syncInterval);
-                JsonWriter w;
-                w.BeginObject();
-                w.Key("action"); w.String("FrameStats");
-                w.Key("frame"); w.Uint(d.frame);
-                w.Key("frameTimeMs"); w.Double(d.accumMs / (double)d.frames);
-                w.Key("minMs"); w.Double(d.minMs);
-                w.Key("maxMs"); w.Double(d.maxMs);
-                w.Key("frames"); w.Uint(d.frames);
-                w.Key("submitMs"); w.Double(d.submitMs / (double)d.frames);
-                w.Key("refreshMs"); w.Double(refreshMs);
-                w.Key("refreshSource"); w.String(refreshMs > 0 ? "monitor" : "");
-                w.Key("displayRefreshMs"); w.Double(d.displayRefreshMs);
-                w.Key("presentMode"); w.String(presentMode);
-                w.Key("frameBoundary"); w.String("present");
-                // Dropped frames need a refresh count the swap chain does not give; the UI shows
-                // the zeros as sent.
-                w.Key("dropped"); w.Uint(0);
-                w.Key("droppedTotal"); w.Uint(0);
-                w.EndObject();
-                Transport::Get().SendJson(std::move(w.str()));
-            }
-            // Reset whether or not anything was sent, so the first report after a connect
-            // covers its own interval rather than everything since the last one.
-            d.accumMs = 0;
-            d.frames = 0;
-            d.submitMs = 0;
-            d.lastReport = now;
-        }
-    } else {
-        d.lastReport = now;
-    }
-    d.lastPresent = now;
+    // A present that syncs waits for the display: its period is the frame's floor. Tearing
+    // presents and syncInterval 0 do not, so no refresh period applies.
+    const bool synced = syncInterval > 0 && !(flags & DXGI_PRESENT_ALLOW_TEARING);
+    std::string presentMode = "immediate";
+    if (syncInterval == 1) presentMode = "vsync";
+    else if (syncInterval > 1) presentMode = "vsync/" + std::to_string(syncInterval);
+    EmitBoundary(d, now, "present", synced ? d.displayRefreshMs : 0, presentMode);
+}
+
+void OnFrameNoPresent(ID3D12Device* device) {
+    // A device that never presents (Dawn in Chrome): its frame time is the wall-clock interval
+    // between the submit boundaries, with no display period and no present mode.
+    const Clock::time_point now = Clock::now();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
 }
 
 void AddSubmitTime(ID3D12Device* device, double milliseconds) {
