@@ -6557,6 +6557,12 @@ function pipelineStages(pipeline, db) {
     if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
     else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
   }
+  pipeline.blobs.forEach((b, blobIndex) => {
+    const [stage, entryPoint = "main"] = b.name.split(":");
+    const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
+    if (!stageFlag || out.some((s) => s.stage === stage)) return;
+    out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
+  });
   return out;
 }
 function pipelineUses(data) {
@@ -26200,7 +26206,7 @@ function resourceTools(store) {
     },
     {
       name: "get_shader",
-      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`) or a VkShaderModule: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection.`,
+      description: `A shader of a capture. For a VkPipeline (every stage, or one with \`stage\`), a VkShaderModule or a VkShaderEXT: view "reflection" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), "source" (the source the compiler embedded, when it did), "glsl" / "hlsl" / "msl" (cross-compiled with spirv-cross), "disassembly" (spirv-dis), or "analysis" (the modeled per-invocation cost by function and source line, and findings for expensive constructs). For Metal: an MTLLibrary's or MTLFunction's source, or a pipeline state's reflection.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         object: { type: "integer", minimum: 0, description: "The pipeline, shader module, library, function or pipeline state object id." },
@@ -26219,9 +26225,9 @@ function resourceTools(store) {
         const maxChars = intArg(args, "maxChars", 4e4, 1e3, 2e5);
         if (o.type.startsWith("MTL")) return jsonResult(metalShader(c2, o, view, maxChars));
         let sources;
-        if (o.type === "VkPipeline") sources = pipelineStages(o, db);
+        if (o.type === "VkPipeline" || o.type === "VkShaderEXT") sources = pipelineStages(o, db);
         else if (o.type === "VkShaderModule") sources = o.blobs.length ? [{ stage: str(o.updates.stage) || "unknown", entryPoint: "", object: o, blobIndex: 0 }] : [];
-        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
+        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
         const stage = stringArg(args, "stage")?.toLowerCase();
         if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
         const stages = [];
@@ -27494,7 +27500,9 @@ function compilerLog(log) {
 }
 function stageOf2(s, pipelineId, stage) {
   const pipeline = s.database.getObject(pipelineId);
-  if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
+  if (!pipeline || pipeline.type !== "VkPipeline" && pipeline.type !== "VkShaderEXT") {
+    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline or VkShaderEXT of ${s.id}.`);
+  }
   const stages = pipelineStages(pipeline, s.database);
   const source = stages.find((x) => x.stage === stage.toLowerCase());
   if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
@@ -27979,7 +27987,7 @@ function liveTools(sessions2, store) {
       description: `Replace one stage of a running Vulkan pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again.`,
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures)." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), or a VkShaderEXT's for an application using shader objects." },
         stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
         source: { type: "string", description: "The complete new source of the stage." },
         language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },

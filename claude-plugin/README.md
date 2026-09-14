@@ -113,7 +113,7 @@ capture.
 | `list_sessions`, `get_session_status`, `get_session_log` | Live sessions: state, device, frame reports, objects, validation, output |
 | `get_live_frame_stats` | Frame time, rate, submit time, refresh and dropped frames over a few seconds, with a verdict |
 | `capture_frames` | Capture frames of a running application into a `.gpucap` and open it |
-| `replace_shader`, `restore_shader` | Compile a stage's new source and swap it into the running pipeline; undo it |
+| `replace_shader`, `restore_shader` | Compile a stage's new source and swap it into the running pipeline (linked from libraries or not) or shader object; undo it |
 | `read_live_image`, `get_live_descriptor_set` | An image's current pixels, or what a descriptor set binds now, without capturing |
 | `list_live_objects`, `get_live_object` | The live objects, and one in full with its creation stack |
 

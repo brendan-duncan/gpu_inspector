@@ -612,7 +612,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
     },
     {
       name: "get_shader",
-      description: "A shader of a capture. For a VkPipeline (every stage, or one with `stage`) or a VkShaderModule: view " +
+      description: "A shader of a capture. For a VkPipeline (every stage, or one with `stage`), a VkShaderModule or a VkShaderEXT: view " +
         "\"reflection\" (entry points, inputs and outputs, resources by set and binding with struct layouts, push constants), " +
         "\"source\" (the source the compiler embedded, when it did), \"glsl\" / \"hlsl\" / \"msl\" (cross-compiled with " +
         "spirv-cross), \"disassembly\" (spirv-dis), or \"analysis\" (the modeled per-invocation cost by function and source " +
@@ -636,9 +636,10 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const maxChars = intArg(args, "maxChars", 40000, 1000, 200000);
         if (o.type.startsWith("MTL")) return jsonResult(metalShader(c, o, view, maxChars));
         let sources: ShaderSource[];
-        if (o.type === "VkPipeline") sources = pipelineStages(o, db);
+        // A shader object's code is attached to it the way a pipeline's stages are ("fragment:main").
+        if (o.type === "VkPipeline" || o.type === "VkShaderEXT") sources = pipelineStages(o, db);
         else if (o.type === "VkShaderModule") sources = o.blobs.length ? [{ stage: str(o.updates.stage) || "unknown", entryPoint: "", object: o, blobIndex: 0 }] : [];
-        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
+        else throw new Error(`${refText(db, id)} has no shader code: get_shader takes a VkPipeline, a VkShaderModule, a VkShaderEXT, an MTLLibrary, an MTLFunction or a Metal pipeline state.`);
         const stage = stringArg(args, "stage")?.toLowerCase();
         if (stage) sources = sources.filter((s) => s.stage.startsWith(stage));
         const stages: Record<string, unknown>[] = [];

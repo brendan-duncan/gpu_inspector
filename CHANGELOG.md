@@ -1,6 +1,14 @@
 ## Unreleased
 
 ### Added
+- Shader editing of graphics pipeline libraries and shader objects:
+  - A pipeline linked from libraries shows the stages the libraries hold, and editing one rebuilds
+    the libraries and relinks.
+  - A shader object (`VK_EXT_shader_object`) is edited like a pipeline's stage. A linked set is
+    made again unlinked.
+  - `replace_shader` takes a VkShaderEXT, and `get_shader` reads one.
+  - `vkinsp_replay` replays shader objects.
+  - The test application's `--pipeline-library` and `--shader-object` options draw this way.
 - Implicit layer:
   - **Set for my account** in the launch dialog sets `VKINSP_ENABLE` and `VKINSP_PORT` for every
     program the user starts, for an application behind a launcher.

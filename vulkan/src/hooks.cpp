@@ -14,6 +14,7 @@
 #include "transport.h"
 #include "vk_serialize.gen.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -77,6 +78,13 @@ void PreHook_vkResetCommandBuffer(VkCommandBuffer& commandBuffer, VkCommandBuffe
 // Live shader editing: an edited pipeline is bound as its replacement (see shader_edit.h).
 void PreHook_vkCmdBindPipeline(VkCommandBuffer& commandBuffer, VkPipelineBindPoint& pipelineBindPoint, VkPipeline& pipeline) {
     pipeline = ShaderEditor::Get().Resolve(pipeline);
+}
+
+// Live shader editing of shader objects: the edited replacements are bound instead.
+static thread_local std::vector<VkShaderEXT> t_boundShaders;
+void PreHook_vkCmdBindShadersEXT(VkCommandBuffer& commandBuffer, uint32_t& stageCount, const VkShaderStageFlagBits*& pStages,
+                                 const VkShaderEXT*& pShaders) {
+    pShaders = ShaderEditor::Get().ResolveShaders(stageCount, pShaders, t_boundShaders);
 }
 
 // Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
@@ -1026,10 +1034,28 @@ void Hook_vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCac
                                     const VkGraphicsPipelineCreateInfo* pCreateInfos,
                                     const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {
     if (!pCreateInfos || !pPipelines) return;
+    Tracker& t = Tracker::Get();
     for (uint32_t i = 0; i < createInfoCount; ++i) {
         if (!pPipelines[i]) continue;
         const VkGraphicsPipelineCreateInfo& ci = pCreateInfos[i];
         for (uint32_t s = 0; s < ci.stageCount && ci.pStages; ++s) AttachStage(pPipelines[i], ci.pStages[s]);
+        // A pipeline linked from graphics pipeline libraries has its shaders in them: their stages'
+        // code (already gathered from any libraries of their own) is attached to it as well, so the
+        // pipeline a draw binds shows every stage it runs.
+        for (auto* n = static_cast<const VkBaseInStructure*>(ci.pNext); n; n = n->pNext) {
+            if (n->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR) continue;
+            const auto* libs = reinterpret_cast<const VkPipelineLibraryCreateInfoKHR*>(n);
+            auto own = t.GetBlobs(HT_VkPipeline, (uint64_t)(uintptr_t)pPipelines[i]);
+            for (uint32_t l = 0; libs->pLibraries && l < libs->libraryCount; ++l) {
+                for (auto& [name, data] : t.GetBlobs(HT_VkPipeline, (uint64_t)(uintptr_t)libs->pLibraries[l])) {
+                    const std::string stage = name.substr(0, name.find(':'));
+                    const bool present = std::any_of(own.begin(), own.end(), [&](const auto& b) { return b.first.substr(0, b.first.find(':')) == stage; });
+                    if (present) continue;
+                    t.AddBlob(HT_VkPipeline, (uint64_t)(uintptr_t)pPipelines[i], name, data);
+                    own.emplace_back(name, data);
+                }
+            }
+        }
     }
     ShaderEditor::Get().OnCreateGraphicsPipelines(device, createInfoCount, pCreateInfos, pPipelines);
 }
@@ -1042,6 +1068,21 @@ void Hook_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCach
         if (pPipelines[i]) AttachStage(pPipelines[i], pCreateInfos[i].stage);
     }
     ShaderEditor::Get().OnCreateComputePipelines(device, createInfoCount, pCreateInfos, pPipelines);
+}
+
+// A shader object's SPIR-V, attached to it as "<stage>:<entry point>" like a pipeline's stages.
+void Hook_vkCreateShadersEXT(VkDevice device, uint32_t createInfoCount, const VkShaderCreateInfoEXT* pCreateInfos,
+                             const VkAllocationCallbacks* pAllocator, VkShaderEXT* pShaders) {
+    if (!pCreateInfos || !pShaders) return;
+    for (uint32_t i = 0; i < createInfoCount; ++i) {
+        const VkShaderCreateInfoEXT& ci = pCreateInfos[i];
+        if (!pShaders[i] || ci.codeType != VK_SHADER_CODE_TYPE_SPIRV_EXT || !ci.pCode || !ci.codeSize) continue;
+        auto blob = std::make_shared<std::vector<uint8_t>>(static_cast<const uint8_t*>(ci.pCode),
+                                                          static_cast<const uint8_t*>(ci.pCode) + ci.codeSize);
+        std::string name = std::string(StageName(ci.stage)) + ":" + (ci.pName ? ci.pName : "main");
+        Tracker::Get().AddBlob(HT_VkShaderEXT, (uint64_t)(uintptr_t)pShaders[i], name, std::move(blob));
+    }
+    ShaderEditor::Get().OnCreateShaders(device, createInfoCount, pCreateInfos, pShaders);
 }
 
 // =============================================================================================

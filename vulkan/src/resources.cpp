@@ -101,6 +101,9 @@ void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
         case HT_VkPipeline:
             ShaderEditor::Get().OnDestroyPipeline(handle);
             break;
+        case HT_VkShaderEXT:
+            ShaderEditor::Get().OnDestroyShader(handle);
+            break;
         default: break;
     }
 }

@@ -433,6 +433,8 @@ Every capture replayed so far, with its result:
 |---|---|
 | test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
+| test/triangle `--pipeline-library` (the cube pipeline linked from a vertex and a fragment library) | identical, no validation messages |
+| test/triangle `--shader-object` (linked vertex and fragment shader objects, all state dynamic, dynamic rendering) | identical, no validation messages |
 | test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |
 | test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |
@@ -474,8 +476,9 @@ These cases differ for known reasons:
    ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
    `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
-Not replayed yet: pipeline libraries, ray tracing pipelines and shader objects, queries whose
-results the frame reads back, and Metal captures. Descriptor update templates are not created:
+Not replayed yet: ray tracing pipelines, queries whose results the frame reads back, and Metal
+captures. Shader objects are made one at a time from their payloads, so a linked set replays
+unlinked. Descriptor update templates are not created:
 sets are written from the snapshots their binds carry, and a push through a template is pushed
 again as plain writes from its own.
 

@@ -52,6 +52,7 @@ EXTRA_HOOKS = {
     "vkCreateShaderModule",
     "vkCreateGraphicsPipelines",
     "vkCreateComputePipelines",
+    "vkCreateShadersEXT",
     "vkBindBufferMemory",
     "vkBindImageMemory",
     "vkBindBufferMemory2",
@@ -156,8 +157,9 @@ PRE_HOOKS = {
     "vkCreateSwapchainKHR",
     "vkBeginCommandBuffer",
     "vkResetCommandBuffer",
-    # live shader editing: bind the replacement pipeline instead of the original
+    # live shader editing: bind the replacement pipeline (or shader objects) instead of the original
     "vkCmdBindPipeline",
+    "vkCmdBindShadersEXT",
     # pass profiling: timestamp before the pass begins (must be outside the render pass)
     "vkCmdBeginRenderPass",
     "vkCmdBeginRenderPass2",

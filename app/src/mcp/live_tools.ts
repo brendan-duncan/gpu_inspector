@@ -77,7 +77,9 @@ function compilerLog(log: string): string {
 /** The stage flag of a pipeline's stage by the stage's name ("fragment"). */
 function stageOf(s: LiveSession, pipelineId: number, stage: string): { flag: string; entryPoint: string; source: ReturnType<typeof pipelineStages>[number] } {
   const pipeline = s.database.getObject(pipelineId);
-  if (!pipeline || pipeline.type !== "VkPipeline") throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline of ${s.id}.`);
+  if (!pipeline || (pipeline.type !== "VkPipeline" && pipeline.type !== "VkShaderEXT")) {
+    throw new Error(`${refText(s.database, pipelineId) ?? `Object ${pipelineId}`} is not a live VkPipeline or VkShaderEXT of ${s.id}.`);
+  }
   const stages = pipelineStages(pipeline, s.database);
   const source = stages.find((x) => x.stage === stage.toLowerCase());
   if (!source) throw new Error(`${refText(s.database, pipelineId)} has no ${stage} stage with code (it has: ${stages.map((x) => x.stage).join(", ") || "none"}).`);
@@ -556,7 +558,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         "undoes it. Command buffers recorded before the edit keep the original until the application records them again.",
       inputSchema: schema({
         session: SESSION_PARAM,
-        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures)." },
+        pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), or a VkShaderEXT's for an application using shader objects." },
         stage: { type: "string", description: "The stage to replace: vertex, fragment, compute, geometry, tess_control, tess_eval, mesh, task, ..." },
         source: { type: "string", description: "The complete new source of the stage." },
         language: { type: "string", enum: LANGUAGES, description: "The source's language (default glsl)." },
