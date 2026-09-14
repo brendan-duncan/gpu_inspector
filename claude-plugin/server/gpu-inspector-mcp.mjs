@@ -170,6 +170,52 @@ function parse(name) {
 }
 
 // src/renderer/vulkan/vulkan_object.ts
+var LIBRARY_PARTS = [
+  ["VERTEX_INPUT_INTERFACE", ["pVertexInputState", "pInputAssemblyState"]],
+  ["PRE_RASTERIZATION_SHADERS", ["pViewportState", "pRasterizationState", "pTessellationState"]],
+  ["FRAGMENT_SHADER", ["pDepthStencilState", "pMultisampleState"]],
+  ["FRAGMENT_OUTPUT_INTERFACE", ["pColorBlendState", "pMultisampleState"]]
+];
+function pNextEntry(info, sType) {
+  const chain = info.pNext;
+  const list = Array.isArray(chain) ? chain : isObject(chain) ? [chain] : [];
+  return list.find((e) => isObject(e) && e.sType === sType) ?? null;
+}
+function withLibraries(info, db, depth = 0) {
+  const link = pNextEntry(info, "VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR");
+  const libraries = link && Array.isArray(link.pLibraries) ? link.pLibraries : null;
+  if (!libraries || depth > 8) return null;
+  const out = { ...info };
+  const stages = Array.isArray(info.pStages) ? [...info.pStages] : [];
+  const dynamic = isObject(info.pDynamicState) && Array.isArray(info.pDynamicState.pDynamicStates) ? [...info.pDynamicState.pDynamicStates] : [];
+  for (const ref of libraries) {
+    const library = db.getObject(isObject(ref) && typeof ref.__id === "number" ? ref.__id : null);
+    const raw = library?.args && Array.isArray(library.args.pCreateInfos) ? library.args.pCreateInfos[library.index] : null;
+    if (!isObject(raw)) return null;
+    const own = withLibraries(raw, db, depth + 1) ?? raw;
+    const flags = String(pNextEntry(raw, "VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT")?.flags ?? "");
+    const holds = (part) => own !== raw ? true : flags.includes(part);
+    for (const [part, members] of LIBRARY_PARTS) {
+      if (!holds(part)) continue;
+      for (const m of members) if (!isObject(out[m]) && isObject(own[m])) out[m] = own[m];
+    }
+    for (const s of Array.isArray(own.pStages) ? own.pStages : []) {
+      if (!isObject(s)) continue;
+      const fragment = s.stage === "VK_SHADER_STAGE_FRAGMENT_BIT";
+      if (!holds(fragment ? "FRAGMENT_SHADER" : "PRE_RASTERIZATION_SHADERS")) continue;
+      if (!stages.some((x) => isObject(x) && x.stage === s.stage)) stages.push(s);
+    }
+    if (isObject(own.pDynamicState) && Array.isArray(own.pDynamicState.pDynamicStates)) {
+      for (const d of own.pDynamicState.pDynamicStates) if (!dynamic.includes(d)) dynamic.push(d);
+    }
+    if (!out.layout && own.layout) out.layout = own.layout;
+    if (!out.renderPass && own.renderPass) out.renderPass = own.renderPass;
+  }
+  out.stageCount = stages.length;
+  out.pStages = stages;
+  if (dynamic.length) out.pDynamicState = { ...isObject(info.pDynamicState) ? info.pDynamicState : {}, dynamicStateCount: dynamic.length, pDynamicStates: dynamic };
+  return out;
+}
 var VulkanObject = class {
   id;
   type;
@@ -197,6 +243,9 @@ var VulkanObject = class {
   isDeleted = false;
   /** A shader of this pipeline / this module has been replaced by the shader editor. */
   edited = false;
+  /** Where a pipeline linked from libraries finds them (set by the object database), and its create info with theirs filled in. */
+  libraryLookup = null;
+  _linkedDescriptor = null;
   constructor(msg) {
     this.id = msg.id;
     this.type = msg.type;
@@ -237,7 +286,12 @@ var VulkanObject = class {
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
     if (Array.isArray(a.pCreateInfos)) {
       const d = a.pCreateInfos[this.index];
-      return isObject(d) ? d : null;
+      if (!isObject(d)) return null;
+      if (this.libraryLookup && this.type === "VkPipeline") {
+        this._linkedDescriptor ??= withLibraries(d, this.libraryLookup);
+        if (this._linkedDescriptor) return this._linkedDescriptor;
+      }
+      return d;
     }
     if (isObject(a.pBeginInfo)) return a.pBeginInfo;
     return null;
@@ -7612,6 +7666,7 @@ var ObjectDatabase = class {
   }
   _addObject(msg) {
     const o = new VulkanObject(msg);
+    if (o.type === "VkPipeline") o.libraryLookup = this;
     this.allObjects.set(o.id, o);
     let map = this.objectsByType.get(o.type);
     if (!map) {

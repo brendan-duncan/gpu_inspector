@@ -90,6 +90,12 @@
   process alive, and the capture is sent to it once.
 
 ### Fixed
+- Pipelines linked from graphics pipeline libraries:
+  - Overdraw, draw-call overlays, the mesh view's VS Out, pixel history and **Measure shader** work
+    on their draws. Before, `vkinsp_replay` made invalid copies of these pipelines, and VS Out
+    found no vertex shader.
+  - The command details, `get_command` and the shader debugger show the state the libraries hold:
+    topology, rasterization, depth, blending, dynamic states and vertex input.
 - Vulkan applications with more than one device (a second device for compute, or a runtime's own)
   are captured whole:
   - **Passes and read-backs:** every device's passes are timed and counted, and its render

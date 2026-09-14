@@ -159,23 +159,13 @@ Replayer::ScissorInfo Replayer::PipelineScissor(uint64_t pipelineId) {
     auto it = _pipelineScissors.find(pipelineId);
     if (it != _pipelineScissors.end()) return it->second;
     ScissorInfo info;
-    const JValue* object = _capture->Object(pipelineId);
-    const JValue* args = object ? object->Get("args") : nullptr;
-    const JValue* infos = args ? args->Get("pCreateInfos") : nullptr;
-    const uint32_t index = object && object->Get("index") ? (uint32_t)object->Get("index")->Uint() : 0;
-    if (infos && infos->IsArray() && index < infos->count) {
-        const JValue& ci = infos->items[index];
+    if (_capture->Object(pipelineId)) {
+        // A pipeline linked from libraries has its viewport state in the pre-rasterization library's create info.
         info.dynamic = false;
-        if (const JValue* d = ci.Get("pDynamicState"); d && d->Get("pDynamicStates")) {
-            const JValue* states = d->Get("pDynamicStates");
-            for (uint32_t k = 0; k < states->count; ++k) {
-                const std::string_view s = states->items[k].Str();
-                if (s == "VK_DYNAMIC_STATE_SCISSOR") info.dynamic = true;
-                if (s == "VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT") info.dynamic = info.withCount = true;
-            }
-        }
+        if (PipelineDynamic(pipelineId, "VK_DYNAMIC_STATE_SCISSOR")) info.dynamic = true;
+        if (PipelineDynamic(pipelineId, "VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT")) info.dynamic = info.withCount = true;
         if (!info.dynamic) {
-            if (const JValue* vs = ci.Get("pViewportState"); vs && vs->Get("pScissors") && vs->Get("pScissors")->IsArray() && vs->Get("pScissors")->count) {
+            if (const JValue* vs = PipelineState(pipelineId, "pViewportState", "PRE_RASTERIZATION_SHADERS"); vs && vs->Get("pScissors") && vs->Get("pScissors")->IsArray() && vs->Get("pScissors")->count) {
                 info.rect = RectOf(&vs->Get("pScissors")->items[0]);
                 info.hasRect = true;
             }
