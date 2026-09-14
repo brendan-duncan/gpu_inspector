@@ -8,11 +8,12 @@ same shape as Apple's and Unity's guidance for Xcode's Metal frame capture, beca
 is the same; what differs is that the numbers here come out of a capture you can save, reopen and
 compare.
 
-**Vulkan and Metal.** Almost all of this works for both. The Metal library samples Metal's counter
-sets around every pass and the Vulkan layer a pipeline statistics query beside its timestamps, so
-overdraw, fragments per primitive and the geometry counts come out of either. Depth rejection needs
+**Vulkan, Metal and Direct3D 12.** Almost all of this works for all three. The Metal library
+samples Metal's counter sets around every pass, the Vulkan layer a pipeline statistics query beside
+its timestamps, and the D3D12 library the same through a `PIPELINE_STATISTICS` query heap, so
+overdraw, fragments per primitive and the geometry counts come out of any of them. Depth rejection needs
 the fragments that survived the depth and stencil tests: Metal's statistic set has that, and the
-Vulkan layer counts it with an occlusion query around each pass. That query cannot stay open across
+Vulkan and D3D12 libraries count it with an occlusion query around each pass. That query cannot stay open across
 a pass that executes secondary command buffers — an engine that records its draws into secondaries,
 as Unity does — or one where the application has a query of its own, so the layer leaves those
 passes unmeasured and logs how many. **Measure draws** fills them in: the replay's per-draw

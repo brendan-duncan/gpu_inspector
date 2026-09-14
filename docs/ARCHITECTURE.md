@@ -925,8 +925,8 @@ in the frame has bindings the capture could not resolve, since the graph is then
 the reads. The findings are the same `FrameFinding` the other analyses produce, so they render in
 the Render Graph view's own Suggestions card, in Frame Stats' Frame Issues, and as the flag on the
 command rows, with no separate plumbing. Because the graph is API-neutral, so are the rules: one
-implementation serves Vulkan and Metal, and only the wording of each fix names an API, from
-`RenderGraph.api`.
+implementation serves Vulkan, Metal and Direct3D 12, and only the wording of each fix names an
+API, from `RenderGraph.api`.
 
 #### Shader source maps
 

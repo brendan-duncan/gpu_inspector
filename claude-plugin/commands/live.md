@@ -12,8 +12,9 @@ sensibly; if the executable is missing, ask for it.
    - An Android package name (`com.company.game`) goes to `launch_android_app` instead. Call
      `list_android_devices` first when more than one device may be connected.
    - If it does not connect, read `recentLog` (and `get_session_log`) and explain why.
-   - Common causes: the layer was not found (build it, install GPU Inspector, or pass `layerDir`),
-     the application is not Vulkan, or the application crashed.
+   - Common causes: the capture library was not found (build it, install GPU Inspector, or pass
+     `layerDir`), the application uses a graphics API this does not capture (Vulkan, Metal on
+     macOS and Direct3D 12 on Windows are captured; D3D11 and OpenGL are not), or it crashed.
 2. **Watch.** Call `get_live_frame_stats`: the frame rate, and whether the frame meets the display
    refresh or is bound by submission.
 3. **Capture.** Call `capture_frames` with `profilePasses` on.

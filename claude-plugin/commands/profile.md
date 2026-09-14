@@ -32,8 +32,9 @@ method of the `gpu-capture-analysis` skill (GPU Inspector's docs/PROFILING.md).
    - redundant binds
    - tiny draws
    - one pass per eye
-6. **Check the shaders those passes use** (Vulkan). Call `analyze_shaders`. For the costliest
-   fragment shaders, call `get_shader` with `view: "analysis"`.
+6. **Check the shaders those passes use.** On a Vulkan capture call `analyze_shaders`, and for the
+   costliest fragment shaders `get_shader` with `view: "analysis"`. On a Metal or D3D12 capture
+   read them with `get_shader` and reason from the pass timings and counters instead.
 7. **Recommend changes**, ordered by the GPU time they can save. For each give:
    - the pass
    - the measured evidence

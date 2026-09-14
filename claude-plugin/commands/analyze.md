@@ -21,8 +21,10 @@ the `gpu-capture-analysis` skill.
    - Say whether it is real in this frame or a pattern that may be intentional.
 5. **Bottlenecks.** If the passes were profiled, call `get_bottlenecks`. Name the slowest passes and
    what limits each.
-6. **Shaders** (Vulkan). Call `analyze_shaders`, then look at the costliest with `get_shader`
-   `view: "analysis"`.
+6. **Shaders.** On a Vulkan capture call `analyze_shaders`, then look at the costliest with
+   `get_shader` `view: "analysis"`. A Metal or D3D12 capture has no SPIR-V analysis: read the
+   shaders of the slowest passes with `get_shader` (`reflection`, `source`, `disassembly`) and
+   judge them against the measured pass times.
 7. **Report** a prioritized list. For each item give:
    - severity
    - what it is

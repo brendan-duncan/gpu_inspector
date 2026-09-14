@@ -241,7 +241,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
   return [
     {
       name: "open_capture",
-      description: "Open a GPU Inspector capture file (.gpucap: a Vulkan or Metal frame saved from GPU Inspector's capture bar) " +
+      description: "Open a GPU Inspector capture file (.gpucap: a Vulkan, Metal or Direct3D 12 frame saved from GPU Inspector's capture bar) " +
         "and return its summary. The capture stays open under the returned id (\"cap-1\") for the other tools; opening an " +
         "unchanged file again returns the capture already open.",
       inputSchema: schema({ path: { type: "string", description: "Path of the .gpucap file." } }, ["path"]),
