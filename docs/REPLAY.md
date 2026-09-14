@@ -433,6 +433,7 @@ Every capture replayed so far, with its result:
 |---|---|
 | test/triangle (render pass, compute, texture, push constants) | identical, color and depth |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
+| test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |
 | test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |
 | test/triangle `--persistent` (images loaded and copied from what earlier frames left, a host-written staging buffer, a mip in another layout) | all 5 targets identical, no validation messages; before frame-start contents, the 3 persistent targets differed in nearly every texel |

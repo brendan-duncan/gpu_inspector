@@ -260,7 +260,20 @@ much slower than on the desktop.
    a dispatch opens it (pre-hook, begin timestamp before the dispatch) and the next barrier,
    event wait, render pass begin, debug label, secondary execution or the end of the command
    buffer closes it (pre-hooks, end timestamp before that command). Each command buffer counts
-   its compute passes separately from its render passes (`kind` in the timing). The UI groups
+   its compute passes separately from its render passes (`kind` in the timing).
+   - **Several devices.** A capture keeps a `DeviceCapture` for each device the application
+     records on, holding that device's query pools, staging chunks and resolve images, since none
+     can be used by another device's command buffers. Each read-back and timing names its device.
+   - **Timings across devices.** A pass's start is measured from the earliest pass of its own
+     device, since the devices' clocks differ.
+   - **Frames.** The capture's frames are those of the device it started on. Once any device has
+     presented, a present starts the capture, not another device's substitute frame boundary (a
+     compute device waiting on its fences). Another device numbers its submissions from the frame
+     it joined at.
+   - **Queues.** Queues of one device share its pools.
+   - **Replay.** `vkinsp_replay` replays every device's objects on its own single device.
+
+   The UI groups
    the same runs into "Compute N" blocks by applying the same rule to the command stream. The UI
    shows timings as pass durations in the command tree, the pass timeline above the list, and
    the Frame Bound card and Pass Timings of Frame Stats. `FrameStats` also carries the CPU time inside `vkQueueSubmit`
@@ -1031,7 +1044,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake

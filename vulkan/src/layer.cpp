@@ -565,6 +565,8 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAlloca
     DeviceData* data = FindDevice(key);
     if (!data) return;
     Log("vkDestroyDevice frames=%llu", (unsigned long long)data->frameIndex);
+    // A capture's query pools and staging on the device go before the device does.
+    CaptureManager::Get().OnDestroyDevice(data);
     Tracker::Get().SendLeakReport(HT_VkDevice, (uint64_t)(uintptr_t)device);
     Tracker::Get().OnDestroy(HT_VkDevice, (uint64_t)(uintptr_t)device);
     PFN_vkDestroyDevice next = data->dispatch.DestroyDevice;

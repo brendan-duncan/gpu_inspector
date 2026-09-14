@@ -143,6 +143,22 @@ struct App {
     // template (vkCmdPushDescriptorSetWithTemplateKHR) instead of a bound set, whose data the
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
+    // --second-device / --second-queue: a second stream of work each frame, a 256x256 offscreen
+    // target cleared in a render pass of its own, on a VkDevice of its own (same GPU) or on a second
+    // queue of the main device, so a capture has passes, timings and read-backs from both.
+    enum class Side { None, Device, Queue } side = Side::None;
+    struct SideWork {
+        VkDevice device = VK_NULL_HANDLE;
+        VkQueue queue = VK_NULL_HANDLE;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkRenderPass pass = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    } sideWork;
     VkDescriptorUpdateTemplate pushUpdateTemplate{};
     PFN_vkCmdPushDescriptorSetWithTemplateKHR pushWithTemplate = nullptr;   // not in every loader's import library
     struct PushData {
@@ -451,11 +467,22 @@ struct App {
         }
         vkGetPhysicalDeviceMemoryProperties(gpu, &memProps);
 
-        float prio = 1.0f;
+        float prio[2] = {1.0f, 1.0f};
         VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         qci.queueFamilyIndex = queueFamily;
         qci.queueCount = 1;
-        qci.pQueuePriorities = &prio;
+        qci.pQueuePriorities = prio;
+        if (side == Side::Queue) {
+            uint32_t qn = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(gpu, &qn, nullptr);
+            std::vector<VkQueueFamilyProperties> qf(qn);
+            vkGetPhysicalDeviceQueueFamilyProperties(gpu, &qn, qf.data());
+            if (qf[queueFamily].queueCount < 2) {
+                fprintf(stderr, "--second-queue: the graphics queue family has a single queue\n");
+                exit(1);
+            }
+            qci.queueCount = 2;
+        }
         const char* devExts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
@@ -464,6 +491,19 @@ struct App {
         dci.ppEnabledExtensionNames = devExts;
         CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
+        if (side == Side::Device) {
+            // Its own device on the same GPU, with the same single queue and no extensions.
+            VkDeviceCreateInfo sdci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+            VkDeviceQueueCreateInfo sqci = qci;
+            sqci.queueCount = 1;
+            sdci.queueCreateInfoCount = 1;
+            sdci.pQueueCreateInfos = &sqci;
+            CHECK(vkCreateDevice(gpu, &sdci, nullptr, &sideWork.device));
+            vkGetDeviceQueue(sideWork.device, queueFamily, 0, &sideWork.queue);
+        } else if (side == Side::Queue) {
+            sideWork.device = device;
+            vkGetDeviceQueue(device, queueFamily, 1, &sideWork.queue);
+        }
         if (pushTemplate) {
             pushWithTemplate = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
             if (!pushWithTemplate) {
@@ -730,6 +770,118 @@ struct App {
             }
         }
         if (prerecord && computePipeline) PrerecordAll();
+    }
+
+    // --second-device / --second-queue: the side target, its pass and its command buffer.
+    void CreateSide() {
+        if (side == Side::None) return;
+        VkDevice d = sideWork.device;
+        VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cpci.queueFamilyIndex = queueFamily;
+        CHECK(vkCreateCommandPool(d, &cpci, nullptr, &sideWork.pool));
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cai.commandPool = sideWork.pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        CHECK(vkAllocateCommandBuffers(d, &cai, &sideWork.cb));
+        VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        CHECK(vkCreateFence(d, &fci, nullptr, &sideWork.fence));
+
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent = {256, 256, 1};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        CHECK(vkCreateImage(d, &ici, nullptr, &sideWork.image));
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(d, sideWork.image, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        CHECK(vkAllocateMemory(d, &mai, nullptr, &sideWork.memory));
+        CHECK(vkBindImageMemory(d, sideWork.image, sideWork.memory, 0));
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = sideWork.image;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = ici.format;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        CHECK(vkCreateImageView(d, &vci, nullptr, &sideWork.view));
+
+        VkAttachmentDescription att{};
+        att.format = ici.format;
+        att.samples = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sp{};
+        sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp.colorAttachmentCount = 1;
+        sp.pColorAttachments = &ref;
+        VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpci.attachmentCount = 1;
+        rpci.pAttachments = &att;
+        rpci.subpassCount = 1;
+        rpci.pSubpasses = &sp;
+        CHECK(vkCreateRenderPass(d, &rpci, nullptr, &sideWork.pass));
+        VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        fbci.renderPass = sideWork.pass;
+        fbci.attachmentCount = 1;
+        fbci.pAttachments = &sideWork.view;
+        fbci.width = 256;
+        fbci.height = 256;
+        fbci.layers = 1;
+        CHECK(vkCreateFramebuffer(d, &fbci, nullptr, &sideWork.framebuffer));
+    }
+
+    // One frame of side work: the target cleared to a color that follows the time.
+    void DrawSide(float t) {
+        if (side == Side::None) return;
+        VkDevice d = sideWork.device;
+        CHECK(vkWaitForFences(d, 1, &sideWork.fence, VK_TRUE, UINT64_MAX));
+        CHECK(vkResetFences(d, 1, &sideWork.fence));
+        CHECK(vkResetCommandBuffer(sideWork.cb, 0));
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        CHECK(vkBeginCommandBuffer(sideWork.cb, &bi));
+        VkClearValue clear{};
+        clear.color = {{0.2f, 0.5f + 0.5f * sinf(t), 0.3f, 1.0f}};
+        VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rpbi.renderPass = sideWork.pass;
+        rpbi.framebuffer = sideWork.framebuffer;
+        rpbi.renderArea = {{0, 0}, {256, 256}};
+        rpbi.clearValueCount = 1;
+        rpbi.pClearValues = &clear;
+        vkCmdBeginRenderPass(sideWork.cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdEndRenderPass(sideWork.cb);
+        CHECK(vkEndCommandBuffer(sideWork.cb));
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &sideWork.cb;
+        CHECK(vkQueueSubmit(sideWork.queue, 1, &si, sideWork.fence));
+    }
+
+    void DestroySide() {
+        if (side == Side::None) return;
+        VkDevice d = sideWork.device;
+        vkDeviceWaitIdle(d);
+        vkDestroyFramebuffer(d, sideWork.framebuffer, nullptr);
+        vkDestroyRenderPass(d, sideWork.pass, nullptr);
+        vkDestroyImageView(d, sideWork.view, nullptr);
+        vkDestroyImage(d, sideWork.image, nullptr);
+        vkFreeMemory(d, sideWork.memory, nullptr);
+        vkDestroyFence(d, sideWork.fence, nullptr);
+        vkDestroyCommandPool(d, sideWork.pool, nullptr);
+        if (side == Side::Device) vkDestroyDevice(d, nullptr);
     }
 
     // --prerecord: a pass that loads the presented image and clears its left half.
@@ -1414,6 +1566,7 @@ struct App {
         si.signalSemaphoreCount = offscreen ? 0 : 1;
         si.pSignalSemaphores = &renderFinished[frameSlot];
         CHECK(vkQueueSubmit(queue, 1, &si, fence));
+        DrawSide(t);
         if (offscreen) {
             // No present: pace the loop like a 90 Hz headset's runtime instead, on a steady
             // schedule (a sleep after the frame's own work would drift and jitter).
@@ -1489,6 +1642,7 @@ struct App {
 
     void Cleanup() {
         vkDeviceWaitIdle(device);
+        DestroySide();
         // --leak: leave the sampler and the wave buffer alive so the inspector's leak report has
         // something to report at vkDestroyDevice.
         if (leak) {
@@ -1553,6 +1707,7 @@ struct App {
         CreateResources();
         CreateCompute();
         if (persistent) CreatePersistent();
+        CreateSide();
         if (prerecord) PrerecordAll();
         auto start = std::chrono::steady_clock::now();
         while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
@@ -1579,6 +1734,8 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
+        else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
+        else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;
         else if (!strcmp(argv[i], "--persistent")) app.persistent = true;
         else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
         else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
