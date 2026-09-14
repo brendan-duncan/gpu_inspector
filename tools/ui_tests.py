@@ -24,7 +24,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "app")
+APP = os.path.join(ROOT, "src", "app")
 IS_WIN = sys.platform.startswith("win")
 
 
@@ -167,7 +167,7 @@ def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0), "not every render target's data arrived") + \
         expect(not timings or (c.get("passTimings") or 0) >= 1, "no pass timings") + \
         expect(not timings or (c.get("passCounters") or 0) >= 1,
-               "no pass carried GPU counters: the layer's pipeline statistics query (vulkan/src/pipeline_stats.h) "
+               "no pass carried GPU counters: the layer's pipeline statistics query (src/vulkan/src/pipeline_stats.h) "
                "is what the GPU Bottlenecks report is built from")
 
 
@@ -242,7 +242,7 @@ def triangle_bottlenecks(state, log):
         expect((c.get("passCounters") or 0) >= 1, f"{c.get('passCounters')} passes carried counters") + \
         expect((c.get("passDepthRejection") or 0) >= 1,
                "no pass carried fragmentsPassed: the layer's occlusion query around each pass "
-               "(vulkan/src/capture.cpp) is what the late-depth-rejection rule needs")
+               "(src/vulkan/src/capture.cpp) is what the late-depth-rejection rule needs")
 
 
 def triangle_overdraw(state, log):
@@ -269,7 +269,7 @@ def triangle_overlay(state, log):
     c = capture(state)
     t = c.get("textureTab") or {}
     d = t.get("drawOverlay") or {}
-    # A draw overlay end to end: the draw replayed on its own (replay/src/overlay.cpp), its mask
+    # A draw overlay end to end: the draw replayed on its own (src/replay/src/overlay.cpp), its mask
     # parsed, and the render target tab drawing it over the image. With --occluded the cube is drawn
     # twice in place, so the second draw's fragments all fail the depth test.
     return check_connected(state, log) + check_capture_basic(state, log) + \
@@ -291,7 +291,7 @@ def triangle_mesh(state, log):
     stats = o.get("stats") or {}
     preview = m.get("preview") or {}
     # The mesh tab's VS Out end to end: the cube's vertex shader edited to write transform feedback
-    # (replay/src/xfb_patch.cpp), its 36 vertices read back, and the wireframe drawn in the preview.
+    # (src/replay/src/xfb_patch.cpp), its 36 vertices read back, and the wireframe drawn in the preview.
     return check_connected(state, log) + check_capture_basic(state, log) + \
         expect(bool(m), "--debug-view=mesh opened no mesh tab") + \
         expect(not m.get("error"), f"the mesh replay failed: {m.get('error')}") + \
@@ -376,7 +376,7 @@ def triangle_debug_decompiled(state, log):
 
 
 # --------------------------------------------------------------------------------------------
-# Metal (test/metal_triangle, captured through metal/): the shader debugger on a Metal capture,
+# Metal (test/metal_triangle, captured through src/metal/): the shader debugger on a Metal capture,
 # whose shaders are Metal Shading Language rather than SPIR-V. There is no replay on this path: a
 # fragment's inputs come from running the draw's own vertex shader in the interpreter.
 
@@ -411,7 +411,7 @@ def metal_debug_constants(state, log):
     diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
     # The triangle pass's fragment_main is specialized: its tint branch is behind
     # `[[function_constant(0)]]`, and the values are only knowable because the capture library
-    # watched the setters of the MTLFunctionConstantValues (metal/src/function_constants.h). Without
+    # watched the setters of the MTLFunctionConstantValues (src/metal/src/function_constants.h). Without
     # them the branch is not taken and the colour is the untinted one, which the comparison catches
     # — and the interpreter says so in its warnings, which is the clearer diagnosis of the two.
     return check_connected(state, log) + check_metal_capture(state, log) + \
@@ -467,7 +467,7 @@ def metal_cases(triangle):
         Case("metal-debug-constants", launch + ["--debug-capture", "--debug-view=debugger:pixel::end"],
              metal_debug_constants, delay_ms=18000),
         # The last draw is the blit, which samples a texture: the one case that needs the sampled
-        # read-back (metal/src/capture.mm, QueueTextureCapture) as well as the interpreter.
+        # read-back (src/metal/src/capture.mm, QueueTextureCapture) as well as the interpreter.
         Case("metal-debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel:last:end"],
              metal_debug_pixel, delay_ms=18000),
     ]
@@ -543,7 +543,7 @@ def triangle_cases(triangle):
              triangle_debug_decompiled, delay_ms=18000),
     ]
     # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
-    # one only runs where vkinsp_replay is built (replay/, docs/REPLAY.md). The click lands on the
+    # one only runs where vkinsp_replay is built (src/replay/, docs/REPLAY.md). The click lands on the
     # image, which fits its pane; --debug-settle waits for the replay the click set going.
     if find_replay():
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
@@ -645,7 +645,7 @@ def main():
     ap.add_argument("--no-d3d12", action="store_true", help="skip the live Direct3D 12 cases (Windows)")
     args = ap.parse_args()
     if not electron():
-        print("electron not installed: run npm install in app/", file=sys.stderr)
+        print("electron not installed: run npm install in src/app/", file=sys.stderr)
         return 2
     cases = []
     if not args.no_triangle:

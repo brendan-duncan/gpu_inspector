@@ -146,11 +146,11 @@ Environment variables, which can be set in [.mcp.json](.mcp.json):
 
 ## Development
 
-The server's sources are [app/src/mcp/](../app/src/mcp). It reuses the renderer's analysis modules
+The server's sources are [src/app/src/mcp/](../src/app/src/mcp). It reuses the renderer's analysis modules
 (capture format, object database, frame rules, pass metrics, render graph, SPIR-V reflection and
 analysis, texture decoding) rather than copies of them.
 
-- `npm run build` in `app/` rebuilds [server/gpu-inspector-mcp.mjs](server/gpu-inspector-mcp.mjs)
+- `npm run build` in `src/app/` rebuilds [server/gpu-inspector-mcp.mjs](server/gpu-inspector-mcp.mjs)
   along with the app. The build fails if the server would bundle a UI module.
 - The bundle is committed, since a plugin installs from the repository as it is. Commit it with the
   source changes that produced it.

@@ -1,7 +1,11 @@
-// GPU Inspector's MCP server, built from app/src/mcp by app/build.mjs: edit the sources, not this file.
+// GPU Inspector's MCP server, built from src/app/src/mcp by src/app/build.mjs: edit the sources, not this file.
 
 // src/mcp/main.ts
 import process2 from "node:process";
+
+// src/mcp/server.ts
+import { readFileSync } from "node:fs";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/mcp/capture_store.ts
 import fs from "node:fs";
@@ -571,7 +575,7 @@ var VulkanObject = class {
   }
   /**
    * The create-info struct for this object, when the creating call has one. A Metal object's
-   * arguments are its descriptor (metal/src/tracker.h): the library flattens the creating
+   * arguments are its descriptor (src/metal/src/tracker.h): the library flattens the creating
    * call's descriptor into `args`, reflection included.
    */
   get descriptor() {
@@ -1327,7 +1331,7 @@ var METAL_SETS = {
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:
   // between them they are what vkQueueSubmit and vkQueuePresentKHR are in a Vulkan capture.
   // `present` is the marker the library records when the frame ends through the drawable's own
-  // present rather than through the command buffer (metal/README.md, "Frame boundaries").
+  // present rather than through the command buffer (src/metal/README.md, "Frame boundaries").
   SUBMIT: /* @__PURE__ */ new Set([
     "commit",
     "presentDrawable:",
@@ -1356,7 +1360,7 @@ var METAL_SETS = {
   INDIRECT: INDIRECT2,
   COMPUTE_PASS_END: /* @__PURE__ */ new Set(),
   // Every encoder is a pass and they share one counter per command buffer, but the library times
-  // a compute encoder under the compute kind (PassKind::Compute in metal/src/capture.mm), which
+  // a compute encoder under the compute kind (PassKind::Compute in src/metal/src/capture.mm), which
   // is a separate key. A blit or resource-state encoder is timed as a render pass.
   passIsCompute(method) {
     return method.startsWith("computeCommandEncoder");
@@ -11383,7 +11387,7 @@ function windowsLaunch(o) {
     ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? " (D3D12 debug layer on)" : ""}`);
   } else {
-    notes.push("D3D12 capture library not found: build it (d3d12/README.md); only Vulkan will be captured");
+    notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
   }
   return { exe, args, env, notes };
 }
@@ -11410,12 +11414,16 @@ function findShaderTool() {
     const c2 = path7.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
     if (fs8.existsSync(c2)) return c2;
   }
-  const roots = [path7.resolve(moduleDir, "..", ".."), path7.resolve(moduleDir, "..", "..", "..")];
+  const roots = [
+    path7.resolve(moduleDir, "..", ".."),
+    path7.resolve(moduleDir, "..", "..", ".."),
+    path7.resolve(moduleDir, "..", "..", "..", "..")
+  ];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
   const packaged = process.resourcesPath ? [path7.join(process.resourcesPath, "layer")] : [];
   return findD3D12ShaderTool(roots, packaged);
 }
-var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (d3d12/README.md)`;
+var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (src/d3d12/README.md)`;
 function embeddedSource(entry2) {
   if (Array.isArray(entry2) && entry2.length >= 2) return { name: String(entry2[0]), text: String(entry2[1]) };
   if (entry2 && typeof entry2 === "object") {
@@ -25581,7 +25589,7 @@ import path9 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var moduleDir2 = path9.dirname(fileURLToPath2(import.meta.url));
 var CAPTURE_LIBRARY2 = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path9.resolve(moduleDir2, "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
+function findCaptureLibrary(roots = [path9.resolve(moduleDir2, "..", "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
@@ -25638,13 +25646,13 @@ This invalidates the application's signature and notarization, so do it to a dev
 }
 function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
   const env = {
-    // A stack at every object creation (metal/src/stacktrace.mm), the launch dialog's option.
+    // A stack at every object creation (src/metal/src/stacktrace.mm), the launch dialog's option.
     MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
     // Appended rather than replacing: another inserted library is the caller's business.
     DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
     MTLINSP_PORT: String(port),
     MTLINSP_LOG: log ? "1" : "0",
-    // Lets the library write an Xcode GPU trace of a frame on request (metal/src/gpu_trace.mm);
+    // Lets the library write an Xcode GPU trace of a frame on request (src/metal/src/gpu_trace.mm);
     // without it MTLCaptureManager refuses the document destination.
     ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
   };
@@ -30148,6 +30156,15 @@ var McpStdioServer = class {
 };
 
 // src/mcp/server.ts
+function serverVersion() {
+  try {
+    const manifest = fileURLToPath4(new URL("../.claude-plugin/plugin.json", import.meta.url));
+    const version = JSON.parse(readFileSync(manifest, "utf8")).version;
+    if (typeof version === "string" && version) return version;
+  } catch {
+  }
+  return "dev";
+}
 var INSTRUCTIONS = [
   "These tools read GPU Inspector frame captures (.gpucap) of Vulkan and Metal applications, with the analyses GPU Inspector runs, and drive running applications.",
   "Open a saved capture with open_capture (list_captures shows the files GPU Inspector saved recently), or launch_app an application (launch_android_app on Android) and capture_frames it; then start from get_capture_summary.",
@@ -30156,8 +30173,7 @@ var INSTRUCTIONS = [
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
 function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
-  const version = true ? "0.11.0" : "dev";
-  return new McpStdioServer({ name: "gpu-inspector", version }, [
+  return new McpStdioServer({ name: "gpu-inspector", version: serverVersion() }, [
     ...captureTools(store),
     ...commandTools(store),
     ...resourceTools(store),

@@ -7,7 +7,7 @@ counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspe
 the first API: it works with any uninstrumented Vulkan application by interposing a Vulkan layer,
 and it targets Unity Vulkan players first. The UI and protocol are API-neutral (see Multi-API
 below), so another API is another capture library speaking the same protocol. Metal is the second
-one, described in `metal/README.md`, and Direct3D 12 the third, described in `d3d12/README.md`;
+one, described in `src/metal/README.md`, and Direct3D 12 the third, described in `src/d3d12/README.md`;
 what follows is the Vulkan side.
 
 ## Design decisions
@@ -23,8 +23,29 @@ what follows is the Vulkan side.
 | Distribution | electron-builder installers (Windows NSIS, Linux .deb, macOS .dmg) bundling the capture library under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
 | Handles | Pass-through. The layer never wraps Vulkan handles; it keeps side tables keyed by handle and uses the loader's dispatch pointer (first word of each dispatchable handle) to find its per-instance/per-device state. This is what RenderDoc's `vk_dispatchtables.cpp` does for tables, and it avoids RenderDoc's 20k+ lines of handle unwrapping. |
 | Code generation | Everything mechanical is generated from `vk.xml` (Vulkan-Headers submodule): dispatch tables, forwarding entry points, object create/destroy hooks, and JSON serializers for every struct, enum, bitmask and command signature. |
-| Multi-API | Vulkan first, Metal second, Direct3D 12 third. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. `d3d12/` is a library injected at process start by `dxinsp_launch.exe` that hooks the D3D12 and DXGI entry points and vtables, synthesizes the pass boundaries D3D12 does not have, and speaks the Vulkan layer's wire format byte for byte (`d3d12/README.md`). On Windows every local target is started with both the layer and the library, and the API is known by which one connects. |
+| Multi-API | Vulkan first, Metal second, Direct3D 12 third. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. `src/d3d12/` is a library injected at process start by `dxinsp_launch.exe` that hooks the D3D12 and DXGI entry points and vtables, synthesizes the pass boundaries D3D12 does not have, and speaks the Vulkan layer's wire format byte for byte (`src/d3d12/README.md`). On Windows every local target is started with both the layer and the library, and the API is known by which one connects. |
 | Reference code | WebGPU Inspector (MIT), RenderDoc (MIT), GFXReconstruct (Apache-2.0). Adapted files name their origin; see `THIRD_PARTY_LICENSES.md`. |
+
+## Repository layout
+
+Everything that is built lives under `src/`; everything around the build stays at the root.
+
+```
+src/app/        the Electron UI (main, renderer, preload) and the MCP server of the plugin
+src/vulkan/     the Vulkan capture layer, and the code generated from vk.xml
+src/metal/      the Metal capture library (macOS)
+src/d3d12/      the Direct3D 12 capture library, its launcher and its shader tool (Windows)
+src/replay/     vkinsp_replay, which re-executes a Vulkan capture
+test/           the test applications each backend is exercised against
+tools/          the generators, the build and setup scripts, and the UI test harness
+docs/           this documentation
+claude-plugin/  the Claude Code plugin, with the MCP server bundle committed in server/
+third_party/    submodules (Vulkan-Headers, MinHook)
+build/          CMake's binary tree; every native target lands in build/bin
+```
+
+The top-level `CMakeLists.txt` adds `src/vulkan`, `src/metal`, `src/d3d12` and `src/replay` per
+platform; the app is built with npm from `src/app`.
 
 ## Components
 
@@ -33,7 +54,7 @@ what follows is the Vulkan side.
 |  Target application       |  <---------------------------------------->  |  Inspector app (Electron)|
 |                           |                                              |                          |
 |  vulkan-1 loader          |                                              |  main process:           |
-|    +-- VK_LAYER_INSPECTOR_capture  (vulkan/)                              |    launches target with  |
+|    +-- VK_LAYER_INSPECTOR_capture  (src/vulkan/)                         |    launches target with  |
 |    |     dispatch + forwarders (generated)                               |    layer env, owns socket|
 |    |     object tracker                                                  |  renderer:               |
 |    |     frame capture + GPU readback                                    |    object database,      |
@@ -43,14 +64,14 @@ what follows is the Vulkan side.
                                                                            +--------------------------+
 ```
 
-The right half is the same for every API. On macOS `metal/` takes the layer's place, inserted by
-dyld (`metal/README.md`). On Windows `d3d12/` sits beside the layer: `dxinsp_launch.exe` starts the
+The right half is the same for every API. On macOS `src/metal/` takes the layer's place, inserted by
+dyld (`src/metal/README.md`). On Windows `src/d3d12/` sits beside the layer: `dxinsp_launch.exe` starts the
 target suspended and injects `dxinsp_capture.dll`, which hooks `D3D12CreateDevice` and
 `CreateDXGIFactory*` and patches the vtables of the objects they hand out; `dxinsp_shader.exe`
 gives the app DXBC/DXIL disassembly, embedded HLSL and reflection the way `spirv-dis` and
-`spirv-cross` give it SPIR-V's (`d3d12/README.md`).
+`spirv-cross` give it SPIR-V's (`src/d3d12/README.md`).
 
-### vulkan/ — the Vulkan layer
+### src/vulkan/ — the Vulkan layer
 
 * `src/layer.cpp` — loader negotiation, `vkCreateInstance`/`vkCreateDevice` chaining, dispatch
   registry, `vkGet*ProcAddr`, frame boundary at `vkQueuePresentKHR`.
@@ -130,7 +151,7 @@ device-side server:
   stays idle until the headset is worn) and a headset shell's launch check dialog
   ("controllers required"), which a launch attempted without controllers or tracked hands
   leaves behind and which blocks every later launch until the shell restarts.
-* **Getting into the process.** `app/src/main/android.ts` uses Android's GPU debug layer settings
+* **Getting into the process.** `src/app/src/main/android.ts` uses Android's GPU debug layer settings
   (`settings put global enable_gpu_debug_layers 1`, `gpu_debug_app <package>`,
   `gpu_debug_layers VK_LAYER_INSPECTOR_capture`). On Android 10+ the layer comes from the
   **layer APK** (`build/android/gpu_inspector_layer.apk`, a package with no code that only carries
@@ -459,7 +480,7 @@ invocation of the capture's module, and `compareWithOriginal` checks the two onc
 tab runs the original a slice at a time, off the stepping. The capture's module still decides the
 invocation's shape (a compute shader's local size).
 
-### replay/ — capture replay
+### src/replay/ — capture replay
 
 `vkinsp_replay` re-executes a `.gpucap` on this machine's GPU without the application, and is
 the base for overdraw, draw overlays, mesh output and pixel history. Its pieces:
@@ -479,7 +500,7 @@ between two timestamps and inside a pipeline statistics query, which is where th
 Graph's per-draw weights and exact fragment counts come from (`renderer/draw_stats.ts`).
 
 The app runs it for a Vulkan capture's analyses through one process kept alive per capture
-(`vkinsp_replay --serve`; `ReplayServerPool` in `app/src/main/replay.ts`). A capture view names its
+(`vkinsp_replay --serve`; `ReplayServerPool` in `src/app/src/main/replay.ts`). A capture view names its
 capture by a key: the main process asks for the serialized bytes the first time a key is used,
 writes them to a temporary file, and keeps the replay and the file until the view releases the key
 (its tab closed, or the capture rebuilt). Each analysis is a request line; the data file it writes
@@ -487,12 +508,12 @@ is parsed by `renderer/overdraw.ts`, `pixel_history.ts`, `draw_overlay.ts`, `mes
 `draw_stats.ts`, or by `shader_ablation.ts` for the shader variants `vulkan/spirv_ablate.ts` wrote
 (the request's SPIR-V goes in an input file). The MCP server uses the same pool from `get_overdraw`,
 `get_pixel_history`, `get_mesh_output`, `debug_shader` (a pixel's inputs), `get_shader_flame_graph`
-and `measure_shader_cost`. `app/tools/stage_layer.mjs` ships the tool beside
+and `measure_shader_cost`. `src/app/tools/stage_layer.mjs` ships the tool beside
 the layer.
 
 See [REPLAY.md](REPLAY.md).
 
-### app/ — Electron UI
+### src/app/ — Electron UI
 
 * `src/shared/protocol.ts` — typed definitions of every message (layer <-> UI, main <-> renderer).
 * `src/main/` — sessions (process launch with the layer environment, stdout capture, TCP client),
@@ -509,10 +530,10 @@ See [REPLAY.md](REPLAY.md).
   contents, shaders), `buffer_data_view.ts` (typed buffer values), `shader_cache.ts` (SPIR-V
   reflection on demand), `args_view.ts` (argument trees), `render_graph.ts` / `frame_graph.ts` /
   `render_graph_view.ts` (the frame's pass dependency graph and its chart). `widget/` and
-  `utils/` are TypeScript ports of WebGPU Inspector's widget library and helpers; `vulkan/` holds
+  `utils/` are TypeScript ports of WebGPU Inspector's widget library and helpers; `src/vulkan/` holds
   the object model, database, texture decoding, SPIR-V reflection, vertex format decoding, the
-  buffer layout parser, the render pass decoder and the frame rules; `metal/` the Metal command
-  tables, reflection and resource source; `d3d12/` the D3D12 command tables and the reader of the
+  buffer layout parser, the render pass decoder and the frame rules; `src/metal/` the Metal command
+  tables, reflection and resource source; `src/d3d12/` the D3D12 command tables and the reader of the
   reflection the D3D12 library sends with each pipeline.
 
 #### Frame Stats
@@ -1074,7 +1095,7 @@ python tools/build_android.py [--abi arm64-v8a,x86_64]
 # -> build/android/lib/<abi>/libVkLayer_inspector_capture.so, build/android/gpu_inspector_layer.apk
 
 # app
-cd app && npm install && npm start        # builds with esbuild, then launches Electron
+cd src/app && npm install && npm start        # builds with esbuild, then launches Electron
 npm run build                              # the bundles only, including claude-plugin/server/gpu-inspector-mcp.mjs
 npm test                                   # unit tests: pass metrics, texture decoders, the MCP server
 npm run typecheck                          # tsc
@@ -1089,7 +1110,7 @@ build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
 finds (`xcb/xcb.h`, `X11/Xlib.h`, `wayland-client.h`); a missing one is reported at configure time
 and only costs that platform's surface arguments. `npm start` goes through
-`app/tools/run_electron.mjs`, which clears `ELECTRON_RUN_AS_NODE` — terminals that are themselves
+`src/app/tools/run_electron.mjs`, which clears `ELECTRON_RUN_AS_NODE` — terminals that are themselves
 Electron apps (VS Code's) set it, and it would make the `electron` binary run as plain Node.
 
 The window icon takes two paths on Linux. `_NET_WM_ICON`, the icon the window carries, must fit in
@@ -1122,10 +1143,10 @@ overlay via `--debug-view=overlay:depth:last`; the mesh tab's VS In and VS Out v
 whose dump and log are checked. `python tools/inspector_client.py --capture
 --record-always --save out.json` talks to the layer without the UI.
 
-Regenerate `vulkan/gen` (done automatically by CMake when vk.xml or the generator changes):
+Regenerate `src/vulkan/gen` (done automatically by CMake when vk.xml or the generator changes):
 
 ```
-python tools/gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out vulkan/gen
+python tools/gen_vulkan.py --xml third_party/Vulkan-Headers/registry/vk.xml --out src/vulkan/gen
 ```
 
 ---

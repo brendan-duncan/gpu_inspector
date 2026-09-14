@@ -32,7 +32,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 tools/setup.sh is for Linux. The macOS build is the user interface alone (there is no Apple
 build of the capture layer), and needs only:
 
-    cd app && npm install && npm start
+    cd src/app && npm install && npm start
 
 See the macOS section of README.md.
 MSG
@@ -195,13 +195,13 @@ cmake -S "$ROOT" -B "$ROOT/build" "${GENERATOR[@]}" -DCMAKE_BUILD_TYPE="$BUILD_T
 cmake --build "$ROOT/build" --config "$BUILD_TYPE" --parallel
 
 step "Installing app dependencies"
-npm --prefix "$ROOT/app" install
+npm --prefix "$ROOT/src/app" install
 
 step "Done"
 cat <<EOF
 Start the inspector with:
 
-  cd app && npm start
+  cd src/app && npm start
 
 then point the launcher at a Vulkan executable — for example the bundled test application,
 $ROOT/build/bin/vkinsp_triangle — and press Launch, then Capture in the Capture tab.

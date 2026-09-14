@@ -6,7 +6,7 @@
     python tools/build_android.py --no-apk        # only the .so files
     python tools/build_android.py --debug         # Debug build of the layer
 
-Outputs (what the inspector app and app/tools/stage_layer.mjs look for):
+Outputs (what the inspector app and src/app/tools/stage_layer.mjs look for):
 
     build/android/lib/<abi>/libVkLayer_inspector_capture.so
     build/android/gpu_inspector_layer.apk         # the layer packaged as an installable app

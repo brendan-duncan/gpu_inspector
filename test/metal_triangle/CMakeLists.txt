@@ -16,6 +16,6 @@ target_link_libraries(mtlinsp_triangle PRIVATE
 # A plain executable, so it is ad-hoc signed without the hardened runtime and
 # DYLD_INSERT_LIBRARIES reaches it. A target with the hardened runtime and no
 # com.apple.security.cs.allow-dyld-environment-variables entitlement silently drops the variable;
-# see metal/README.md.
+# see src/metal/README.md.
 set_target_properties(mtlinsp_triangle PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
