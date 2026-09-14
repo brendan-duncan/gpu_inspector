@@ -1136,6 +1136,132 @@ var Signal = class _Signal {
   }
 };
 
+// src/renderer/shader_ablation.ts
+var MAGIC = "ABLATE 1\n";
+function encodeAblationRequest(targets, rounds) {
+  const payloads = [];
+  let offset = 0;
+  const manifest = {
+    format: "gpu-inspector-ablation-request",
+    rounds,
+    targets: targets.map((t) => ({
+      command: t.command,
+      stage: t.stage,
+      repeat: Math.max(1, Math.round(t.repeat ?? 1)),
+      variants: t.variants.map((v) => {
+        const payload = [offset, v.spirv.byteLength];
+        payloads.push(v.spirv);
+        offset += v.spirv.byteLength;
+        return { name: v.name, payload };
+      })
+    }))
+  };
+  const json = new TextEncoder().encode(JSON.stringify(manifest));
+  const magic = new TextEncoder().encode(MAGIC);
+  const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + offset);
+  out.set(magic, 0);
+  new DataView(out.buffer).setUint32(magic.byteLength, json.byteLength, true);
+  out.set(json, magic.byteLength + 4);
+  let pos = magic.byteLength + 4 + json.byteLength;
+  for (const p of payloads) {
+    out.set(p, pos);
+    pos += p.byteLength;
+  }
+  return out;
+}
+function parseAblationResult(input) {
+  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`The ablation timings are not valid JSON: ${e.message}`);
+  }
+  if (json.format !== "gpu-inspector-ablation") throw new Error("Not ablation timings from vkinsp_replay.");
+  const num4 = (v) => typeof v === "number" ? v : 0;
+  const timing = (raw) => {
+    const t = raw ?? {};
+    return {
+      name: typeof t.name === "string" ? t.name : "",
+      measured: t.measured === true,
+      ms: num4(t.ms),
+      samples: Array.isArray(t.samples) ? t.samples.map(num4) : [],
+      ...typeof t.note === "string" ? { note: t.note } : {}
+    };
+  };
+  const targets = (Array.isArray(json.targets) ? json.targets : []).map((raw) => {
+    const t = raw;
+    return {
+      command: num4(t.command),
+      stage: typeof t.stage === "string" ? t.stage : "",
+      pipeline: num4(t.pipeline),
+      frame: num4(t.frame),
+      commandBuffer: num4(t.commandBuffer),
+      passIndex: num4(t.passIndex),
+      rounds: num4(t.rounds),
+      baseline: timing(t.baseline),
+      variants: (Array.isArray(t.variants) ? t.variants : []).map(timing),
+      ...typeof t.note === "string" ? { note: t.note } : {}
+    };
+  });
+  return {
+    device: typeof json.device === "string" ? json.device : "",
+    targets,
+    problems: Array.isArray(json.problems) ? json.problems.filter((p) => typeof p === "string") : []
+  };
+}
+function ablationKey(pipeline, stage, entryPoint) {
+  return `${pipeline}|${stage}|${entryPoint}`;
+}
+function medianAbsoluteDeviation(samples) {
+  if (samples.length < 2) return 0;
+  const sorted = samples.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const deviations = samples.map((s) => Math.abs(s - median)).sort((a, b) => a - b);
+  return deviations[Math.floor(deviations.length / 2)];
+}
+function measuredAblation(pipeline, stage, entryPoint, plan, result, device) {
+  const baseline = result.baseline;
+  const out = {
+    pipeline,
+    stage,
+    entryPoint,
+    command: result.command,
+    device,
+    rounds: result.rounds,
+    baselineMs: baseline.ms,
+    noiseMs: medianAbsoluteDeviation(baseline.samples),
+    stageMs: null,
+    parts: [],
+    skipped: plan.skipped,
+    ...result.note ? { note: result.note } : {}
+  };
+  const saved = plan.variants.map((_, i) => {
+    const timing = result.variants[i];
+    return baseline.measured && timing?.measured ? baseline.ms - timing.ms : null;
+  });
+  plan.variants.forEach((variant, i) => {
+    const timing = result.variants[i];
+    const { spirv: _spirv, edits: _edits, upstream, ...part } = variant;
+    if (variant.kind === "stage") {
+      out.stageMs = saved[i];
+      return;
+    }
+    let own = saved[i];
+    if (own !== null && variant.kind === "line") {
+      const fed = Math.max(0, ...upstream.map((k) => saved[k] ?? 0));
+      own = Math.max(0, own - fed);
+    }
+    out.parts.push({ ...part, savedMs: saved[i], ownMs: own, ...timing?.note ? { note: timing.note } : {} });
+  });
+  return out;
+}
+function partShare(a, part) {
+  const ms = part.kind === "line" ? part.ownMs : part.savedMs;
+  if (ms === null || a.stageMs === null || a.stageMs <= 0) return null;
+  return Math.min(1, Math.max(0, ms / a.stageMs));
+}
+
 // src/renderer/capture_data.ts
 function flattenSecondaries(commands) {
   if (!commands.some((c2) => c2 && c2.children && c2.children.length)) return commands;
@@ -1191,6 +1317,8 @@ var CaptureData = class {
   pixelHistory = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats = null;
+  /** Shader stages whose functions and lines a replay measured by ablation (renderer/shader_ablation.ts), one per pipeline stage. */
+  ablations = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
   drawOverlays = /* @__PURE__ */ new Map();
   _expectedCommands = 0;
@@ -1212,6 +1340,8 @@ var CaptureData = class {
   onDrawStats = new Signal();
   /** Draw-call overlays arrived from a replay. */
   onDrawOverlays = new Signal();
+  /** A shader stage was measured by ablation. */
+  onAblations = new Signal();
   /** The command classification for this capture's API (see ../command_sets.ts). */
   get sets() {
     return setsFor(this.api);
@@ -1227,6 +1357,7 @@ var CaptureData = class {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.ablations = [];
     this.drawOverlays = /* @__PURE__ */ new Map();
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
@@ -1234,6 +1365,17 @@ var CaptureData = class {
   /** A render pass's overdraw measurements: the depth-tested one first. */
   overdrawForPass(frame, commandBufferId, passIndex) {
     return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex).sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
+  }
+  /** The ablation measured for a pipeline's stage, if any. */
+  ablation(pipeline, stage, entryPoint) {
+    const key = ablationKey(pipeline, stage, entryPoint);
+    return this.ablations.find((a) => ablationKey(a.pipeline, a.stage, a.entryPoint) === key) ?? null;
+  }
+  /** Keeps a stage's measurement, replacing an earlier one of the same stage. */
+  addAblation(a) {
+    const key = ablationKey(a.pipeline, a.stage, a.entryPoint);
+    this.ablations = [...this.ablations.filter((x) => ablationKey(x.pipeline, x.stage, x.entryPoint) !== key), a];
+    this.onAblations.emit();
   }
   passTiming(frame, commandBufferId, passIndex, compute = false) {
     return this.passTimings.get(passKey(frame, commandBufferId, passIndex, compute)) ?? null;
@@ -1289,6 +1431,7 @@ var CaptureData = class {
     this.overdraw = c2.overdraw;
     this.pixelHistory = c2.pixelHistory;
     this.drawStats = c2.drawStats;
+    this.ablations = c2.ablations;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
     this.onTexturesAnnounced.emit();
@@ -1380,7 +1523,7 @@ var CaptureData = class {
 
 // src/renderer/capture_format.ts
 var CAPTURE_FILE_EXTENSION = "gpucap";
-var MAGIC = "GPUCAP 1\n";
+var MAGIC2 = "GPUCAP 1\n";
 var CAPTURE_FORMAT = "gpu-inspector-capture";
 var CAPTURE_VERSION = 1;
 function captureFileName(source, frame, frames) {
@@ -1389,7 +1532,7 @@ function captureFileName(source, frame, frames) {
 }
 function encodeCaptureFile(manifest, payloads) {
   const json = new TextEncoder().encode(JSON.stringify(manifest));
-  const magic = new TextEncoder().encode(MAGIC);
+  const magic = new TextEncoder().encode(MAGIC2);
   const payloadBytes = payloads.reduce((n, p) => n + p.byteLength, 0);
   const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + payloadBytes);
   let pos = 0;
@@ -1406,7 +1549,7 @@ function encodeCaptureFile(manifest, payloads) {
   return out;
 }
 function parseCaptureFile(bytes) {
-  const magic = new TextEncoder().encode(MAGIC);
+  const magic = new TextEncoder().encode(MAGIC2);
   if (bytes.byteLength < magic.byteLength + 4) throw new Error("The file is too short to be a capture.");
   for (let i = 0; i < magic.byteLength; i++) {
     if (bytes[i] !== magic[i]) throw new Error("Not a GPU Inspector capture file (bad header).");
@@ -1456,6 +1599,7 @@ function parseCaptureFile(bytes) {
     overdraw,
     pixelHistory: manifest.pixelHistory ?? null,
     drawStats: manifest.drawStats ?? null,
+    ablations: manifest.ablations ?? [],
     api: manifest.api ?? "vulkan"
   };
 }
@@ -6317,6 +6461,10 @@ var Capture = class {
     this._metrics = null;
     this._analysis = null;
   }
+  /** A shader stage measured by ablation (renderer/shader_ablation.ts), which the flame graph sizes that stage's functions and lines by. */
+  setAblation(a) {
+    this.data.addAblation(a);
+  }
   get statistics() {
     return this._statistics ??= new CaptureStatistics().compute(this.data, this.db);
   }
@@ -8031,7 +8179,21 @@ var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --
 function tail(text, lines = 12) {
   return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
-function analysisArgs(analysis, out) {
+function inputFile(analysis) {
+  if (analysis.kind !== "ablate") return null;
+  const file = tempOutput("ablate_request");
+  fs5.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
+  return file;
+}
+function removeFile(file) {
+  if (!file) return;
+  try {
+    fs5.unlinkSync(file);
+  } catch {
+  }
+}
+function analysisArgs(analysis, out, input) {
+  if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
@@ -8047,7 +8209,8 @@ function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
     let output = "";
     let done = false;
     let timedOut = false;
-    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const input = inputFile(analysis);
+    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
@@ -8062,6 +8225,7 @@ function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      removeFile(input);
       let data = null;
       try {
         data = new Uint8Array(fs5.readFileSync(out));
@@ -8083,10 +8247,11 @@ ${tail(output)}`)
     child.on("close", () => finish2(null));
   });
 }
-function serveRequest(id, analysis, out) {
+function serveRequest(id, analysis, out, input) {
   if (analysis.kind === "pixel") {
     return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
   }
+  if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
   return { id, ...analysis, out };
 }
 function tempOutput(kind) {
@@ -8140,6 +8305,7 @@ var ReplayServer = class {
     if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
     const id = this._nextId++;
     const out = tempOutput(analysis.kind);
+    const input = inputFile(analysis);
     const answer = await new Promise((resolve) => {
       const timer = setTimeout(() => {
         this._pending.delete(id);
@@ -8150,8 +8316,9 @@ var ReplayServer = class {
         clearTimeout(timer);
         resolve(a);
       });
-      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out)) + "\n");
+      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out, input)) + "\n");
     });
+    removeFile(input);
     this.lastUsed = Date.now();
     let data = null;
     try {
@@ -8319,6 +8486,21 @@ function shaderText(spirv, mode, options = {}) {
       }
       if (err) resolve({ ok: false, text: `${path5.basename(tool)} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+function validateSpirv(spirv) {
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs6.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
+    execFile2(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs6.unlinkSync(tmp);
+      } catch {
+      }
+      if (!err) resolve(null);
+      else if (err.code === "ENOENT") resolve(void 0);
+      else resolve((stderr || stdout || err.message).trim().split(/\r?\n/).slice(0, 3).join(" "));
     });
   });
 }
@@ -22747,6 +22929,7 @@ async function serializeCapture(session, data, options = {}) {
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
     ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
+    ...data.ablations.length ? { ablations: data.ablations } : {},
     validation: db.validation,
     ...symbols ? { symbols } : {},
     ...stacks ? { stacks } : {}
@@ -23541,6 +23724,860 @@ function debugTools(store) {
   ];
 }
 
+// src/renderer/vulkan/spirv_ablate.ts
+function isValueOp(op) {
+  return op >= 77 && op <= 84 || op >= 87 && op <= 98 || op >= 109 && op <= 205 || op >= 207 && op <= 215 || op >= 305 && op <= 320 || op === 12 /* ExtInst */ || op === 61 /* Load */ || op === 57 /* FunctionCall */;
+}
+function definesValue(op) {
+  switch (op) {
+    case 0:
+    case 8:
+    case 62:
+    case 63:
+    case 64:
+    case 99:
+    case 218:
+    case 219:
+    case 220:
+    case 221:
+    case 224:
+    case 225:
+    case 228:
+    case 246:
+    case 247:
+    case 248:
+    case 249:
+    case 250:
+    case 251:
+    case 252:
+    case 253:
+    case 254:
+    case 255:
+    case 256:
+    case 257:
+    case 317:
+    case 4416:
+    case 5378:
+    case 5379:
+    case 5380:
+      return false;
+    default:
+      return true;
+  }
+}
+function isDecoration(op) {
+  return op >= 71 /* Decorate */ && op <= 75 /* GroupMemberDecorate */ || op === 332 /* DecorateId */ || op === 5632 /* DecorateString */ || op === 5633 /* MemberDecorateString */;
+}
+function readString4(words2, start, end) {
+  const bytes = [];
+  for (let i = start; i < end; i++) {
+    for (let b = 0; b < 4; b++) {
+      const ch2 = words2[i] >>> b * 8 & 255;
+      if (ch2 === 0) return new TextDecoder().decode(new Uint8Array(bytes));
+      bytes.push(ch2);
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+var Module = class {
+  words;
+  instructions = [];
+  defs = /* @__PURE__ */ new Map();
+  types = /* @__PURE__ */ new Map();
+  variableClass = /* @__PURE__ */ new Map();
+  builtIns = /* @__PURE__ */ new Map();
+  bufferBlocks = /* @__PURE__ */ new Set();
+  names = /* @__PURE__ */ new Map();
+  sets = /* @__PURE__ */ new Map();
+  bindings = /* @__PURE__ */ new Map();
+  entryPoints = [];
+  parameters = /* @__PURE__ */ new Map();
+  // function id -> parameter ids
+  calls = [];
+  uses = /* @__PURE__ */ new Map();
+  // id -> times it appears as an operand word in functions
+  /** OpConstant ids with their value's low word (array lengths). */
+  constants = /* @__PURE__ */ new Map();
+  /** The stores into each variable, in module order. */
+  storesTo = /* @__PURE__ */ new Map();
+  _reaching = /* @__PURE__ */ new Map();
+  firstFunction = -1;
+  /** Where new decorations go: after the last one, or before the first type. */
+  annotationEnd = -1;
+  constructor(data) {
+    const bytes = data.byteOffset % 4 ? data.slice() : data;
+    this.words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4).slice();
+    const w = this.words;
+    let fn = 0;
+    let ordinal = 0;
+    let firstType = -1;
+    let loops = [];
+    let nest = [];
+    for (let i = 5; i < w.length; ) {
+      const op = w[i] & 65535;
+      const len = w[i] >>> 16;
+      if (!len || i + len > w.length) throw new Error("malformed SPIR-V");
+      if (op === 248 /* Label */) {
+        if (loops.includes(w[i + 1])) loops = loops.slice(0, loops.indexOf(w[i + 1]));
+        if (nest.includes(w[i + 1])) nest = nest.slice(0, nest.indexOf(w[i + 1]));
+      }
+      const ins = { op, start: i, len, ordinal, fn, loops, nest };
+      if (op === 246 /* LoopMerge */) {
+        loops = [...loops, w[i + 1]];
+        nest = [...nest, w[i + 1]];
+      } else if (op === 247 /* SelectionMerge */) {
+        nest = [...nest, w[i + 1]];
+      }
+      const index = this.instructions.length;
+      this.instructions.push(ins);
+      const a = i + 1;
+      if (isDecoration(op)) this.annotationEnd = index + 1;
+      switch (op) {
+        case 15 /* EntryPoint */: {
+          const name = readString4(w, a + 2, i + len);
+          const nameWords = Math.floor(new TextEncoder().encode(name).length / 4) + 1;
+          this.entryPoints.push({ index, stage: w[a], functionId: w[a + 1], name, interface: Array.from(w.subarray(a + 2 + nameWords, i + len)) });
+          break;
+        }
+        case 5 /* Name */:
+          this.names.set(w[a], readString4(w, a + 1, i + len));
+          break;
+        case 71 /* Decorate */:
+          if (w[a + 1] === 11 /* BuiltIn */) this.builtIns.set(w[a], w[a + 2]);
+          else if (w[a + 1] === 3 /* BufferBlock */) this.bufferBlocks.add(w[a]);
+          else if (w[a + 1] === 34 /* DescriptorSet */) this.sets.set(w[a], w[a + 2]);
+          else if (w[a + 1] === 33 /* Binding */) this.bindings.set(w[a], w[a + 2]);
+          break;
+        case 19 /* TypeVoid */:
+        case 20 /* TypeBool */:
+        case 21 /* TypeInt */:
+        case 22 /* TypeFloat */:
+        case 23 /* TypeVector */:
+        case 24 /* TypeMatrix */:
+        case 28 /* TypeArray */:
+        case 30 /* TypeStruct */:
+        case 32 /* TypePointer */:
+        case 25:
+        case 26:
+        case 27:
+        case 29:
+        case 33:
+          if (firstType < 0) firstType = index;
+          this.types.set(w[a], ins);
+          break;
+        case 43 /* Constant */:
+          this.constants.set(w[a + 1], w[a + 2]);
+          break;
+        case 54 /* Function */:
+          if (this.firstFunction < 0) this.firstFunction = index;
+          fn = w[a + 1];
+          ins.fn = fn;
+          this.parameters.set(fn, []);
+          this.defs.set(w[a + 1], ins);
+          break;
+        case 56 /* FunctionEnd */:
+          fn = 0;
+          loops = [];
+          nest = [];
+          break;
+        case 55 /* FunctionParameter */:
+          this.parameters.get(fn)?.push(w[a + 1]);
+          this.defs.set(w[a + 1], ins);
+          break;
+        case 59 /* Variable */: {
+          let cls = w[a + 2];
+          const pointer = this.types.get(w[a]);
+          if (cls === 2 /* Uniform */ && pointer && this.bufferBlocks.has(w[pointer.start + 3])) cls = 12 /* StorageBuffer */;
+          this.variableClass.set(w[a + 1], cls);
+          this.defs.set(w[a + 1], ins);
+          break;
+        }
+        default:
+          if (fn && definesValue(op)) this.defs.set(w[a + 1], ins);
+          if (op === 57 /* FunctionCall */) this.calls.push(ins);
+          break;
+      }
+      ordinal++;
+      i += len;
+    }
+    if (this.annotationEnd < 0) this.annotationEnd = firstType >= 0 ? firstType : this.firstFunction;
+    for (const ins of this.instructions) {
+      if (ins.op !== 62 /* Store */) continue;
+      const v = this.baseVariable(w[ins.start + 1]);
+      let list = this.storesTo.get(v);
+      if (!list) this.storesTo.set(v, list = []);
+      list.push(ins);
+    }
+    for (const ins of this.instructions) {
+      if (!ins.fn || ins.op === 54 /* Function */) continue;
+      for (const o of this.operandWords(ins)) this.uses.set(o, (this.uses.get(o) ?? 0) + 1);
+      if (ins.op === 12 /* ExtInst */ && this.isVoid(w[ins.start + 1])) for (let k = ins.start + 5; k < ins.start + ins.len; k++) this.uses.set(w[k], (this.uses.get(w[k]) ?? 0) + 1);
+    }
+  }
+  /** The id of an existing type declared with exactly these operands after the result id, or undefined. */
+  findType(op, operands) {
+    const w = this.words;
+    for (const [id, t] of this.types) {
+      if (t.op !== op || t.len !== 2 + operands.length) continue;
+      if (operands.every((o, k) => w[t.start + 2 + k] === o)) return id;
+    }
+    return void 0;
+  }
+  /** Whether a value of a type can be built from a scalar: scalars, vectors and matrices. */
+  scalarBuilt(type) {
+    const t = this.types.get(type);
+    if (!t) return false;
+    if (t.op === 20 /* TypeBool */ || t.op === 21 /* TypeInt */ || t.op === 22 /* TypeFloat */) return true;
+    if (t.op === 23 /* TypeVector */ || t.op === 24 /* TypeMatrix */) return this.scalarBuilt(this.words[t.start + 2]);
+    return false;
+  }
+  /** Whether a value of a type can be replaced at all: built from a scalar, or a constant (arrays of a constant length, structs). */
+  replaceable(type, depth = 0) {
+    const t = this.types.get(type);
+    if (!t || depth > 16) return false;
+    const w = this.words;
+    switch (t.op) {
+      case 20 /* TypeBool */:
+      case 21 /* TypeInt */:
+      case 22 /* TypeFloat */:
+      case 23 /* TypeVector */:
+      case 24 /* TypeMatrix */:
+        return true;
+      case 28 /* TypeArray */: {
+        const length2 = this.constants.get(w[t.start + 3]);
+        return length2 !== void 0 && length2 <= 4096 && this.replaceable(w[t.start + 2], depth + 1);
+      }
+      case 30 /* TypeStruct */:
+        for (let k = t.start + 2; k < t.start + t.len; k++) if (!this.replaceable(w[k], depth + 1)) return false;
+        return true;
+      default:
+        return false;
+    }
+  }
+  isVoid(type) {
+    return this.types.get(type)?.op === 19 /* TypeVoid */;
+  }
+  /** The variable a pointer is into, through access chains. */
+  baseVariable(pointer) {
+    for (let depth = 0; depth < 64; depth++) {
+      const d = this.defs.get(pointer);
+      if (!d) return pointer;
+      if (d.op === 65 /* AccessChain */ || d.op === 66 /* InBoundsAccessChain */ || d.op === 67 /* PtrAccessChain */ || d.op === 70 /* InBoundsPtrAccessChain */) {
+        pointer = this.words[d.start + 3];
+        continue;
+      }
+      return pointer;
+    }
+    return pointer;
+  }
+  /**
+   * The value ids an instruction reads: its operands without the literals among them (line numbers,
+   * extended instruction numbers, composite indices, image operand masks), which would otherwise be
+   * taken for ids they happen to equal.
+   */
+  operandWords(ins) {
+    const w = this.words;
+    const s = ins.start;
+    const end = s + ins.len;
+    const from = (k) => Array.from(w.subarray(Math.min(s + k, end), end));
+    switch (ins.op) {
+      case 62 /* Store */:
+        return [w[s + 1], w[s + 2]];
+      case 61 /* Load */:
+        return [w[s + 3]];
+      case 254 /* ReturnValue */:
+      case 250 /* BranchConditional */:
+      case 251 /* Switch */:
+        return [w[s + 1]];
+      case 57 /* FunctionCall */:
+        return from(4);
+      case 12 /* ExtInst */:
+        return this.isVoid(w[s + 1]) ? [] : from(5);
+      // void: debug information
+      case 79:
+        return [w[s + 3], w[s + 4]];
+      // OpVectorShuffle: then component literals
+      case 81 /* CompositeExtract */:
+        return [w[s + 3]];
+      // then index literals
+      case 82:
+        return [w[s + 3], w[s + 4]];
+      // OpCompositeInsert: object, composite, then literals
+      case 245 /* Phi */: {
+        const values = [];
+        for (let k = s + 3; k + 1 < end; k += 2) values.push(w[k]);
+        return values;
+      }
+      default:
+        break;
+    }
+    if (ins.op >= 87 && ins.op <= 98) {
+      const fixed = ins.op === 89 || ins.op === 90 || ins.op === 93 || ins.op === 94 || ins.op === 96 || ins.op === 97 ? 3 : 2;
+      if (ins.op === 99 /* ImageWrite */) return [w[s + 1], w[s + 2], w[s + 3], ...Array.from(w.subarray(Math.min(s + 5, end), end))];
+      return [...Array.from(w.subarray(s + 3, Math.min(s + 3 + fixed, end))), ...Array.from(w.subarray(Math.min(s + 4 + fixed, end), end))];
+    }
+    if (!definesValue(ins.op)) return [];
+    return from(3);
+  }
+  /**
+   * The stores whose values a read of a variable at `at` can see: going back from it in its function,
+   * every store up to and including the first that writes the whole variable outside any branch or loop
+   * the read is not in (it hides the ones before); the stores later in a loop around both (they reach
+   * it through the back edge); and where nothing in the function hides them, what reaches the calls of
+   * a parameter's function, or any store of a variable other functions write. Values an engine's
+   * generated shaders keep in a few reused temporaries stay apart this way.
+   */
+  reachingStores(variable, at, depth = 0) {
+    const w = this.words;
+    const out = [];
+    const stores = this.storesTo.get(variable) ?? [];
+    const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
+    let hidden = false;
+    for (let k = stores.length - 1; k >= 0; k--) {
+      const s = stores[k];
+      if (s.fn !== at.fn || s.start >= at.start) continue;
+      out.push(s);
+      if (w[s.start + 1] === variable && prefix(s.nest, at.nest)) {
+        hidden = true;
+        break;
+      }
+    }
+    for (const s of stores) {
+      if (s.fn === at.fn && s.start > at.start && s.loops.some((l) => at.loops.includes(l))) out.push(s);
+    }
+    if (!hidden && depth < 8) {
+      const def = this.defs.get(variable);
+      if (def?.op === 55 /* FunctionParameter */) {
+        const index = this.parameters.get(def.fn)?.indexOf(variable) ?? -1;
+        for (const call of this.calls) {
+          if (w[call.start + 3] !== def.fn || call.len <= 4 + index || index < 0) continue;
+          out.push(...this.reachingStores(this.baseVariable(w[call.start + 4 + index]), call, depth + 1));
+        }
+      } else {
+        for (const s of stores) if (s.fn !== at.fn) out.push(s);
+      }
+    }
+    return out;
+  }
+  /** The stores a load sees (reachingStores), once per load. */
+  storesSeenBy(load) {
+    let list = this._reaching.get(load);
+    if (!list) this._reaching.set(load, list = this.reachingStores(this.baseVariable(this.words[load.start + 3]), load));
+    return list;
+  }
+  /**
+   * The ids control flow depends on: conditions and selectors, and everything they are computed from,
+   * followed through operands, the stores a load sees, function parameters (the arguments of every
+   * call) and call results (the values the callee returns).
+   */
+  controlSlice() {
+    const w = this.words;
+    const slice = /* @__PURE__ */ new Set();
+    const work = [];
+    const add = (id) => {
+      if (!slice.has(id)) {
+        slice.add(id);
+        work.push(id);
+      }
+    };
+    const returns = /* @__PURE__ */ new Map();
+    const paramIndex = /* @__PURE__ */ new Map();
+    for (const [fn, params] of this.parameters) params.forEach((p, index) => paramIndex.set(p, { fn, index }));
+    for (const ins of this.instructions) {
+      if (!ins.fn) continue;
+      if (ins.op === 250 /* BranchConditional */ || ins.op === 251 /* Switch */) add(w[ins.start + 1]);
+      else if (ins.op === 254 /* ReturnValue */) {
+        let list = returns.get(ins.fn);
+        if (!list) returns.set(ins.fn, list = []);
+        list.push(w[ins.start + 1]);
+      }
+    }
+    while (work.length) {
+      const id = work.pop();
+      const d = this.defs.get(id);
+      if (!d || !d.fn || d.op === 54 /* Function */) continue;
+      if (d.op === 55 /* FunctionParameter */) {
+        const p = paramIndex.get(id);
+        if (p) {
+          for (const call of this.calls) if (w[call.start + 3] === p.fn && call.len > 4 + p.index) add(w[call.start + 4 + p.index]);
+        }
+      } else if (d.op === 57 /* FunctionCall */) {
+        for (const v of returns.get(w[d.start + 3]) ?? []) add(v);
+        for (const o of this.operandWords(d)) add(o);
+      } else {
+        for (const o of this.operandWords(d)) add(o);
+        if (d.op === 61 /* Load */) for (const store of this.storesSeenBy(d)) {
+          add(w[store.start + 2]);
+          add(w[store.start + 1]);
+        }
+      }
+    }
+    return slice;
+  }
+};
+function sourceBuiltIn(stage) {
+  if (stage === "fragment") return { builtIn: 15 /* FragCoord */, kind: "vec4" };
+  if (stage === "vertex") return { builtIn: 42 /* VertexIndex */, kind: "int" };
+  if (stage === "compute") return { builtIn: 28 /* GlobalInvocationId */, kind: "uvec3" };
+  return null;
+}
+function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ */ new Set()) {
+  const w = m.words;
+  let bound = w[3];
+  const annotations = [];
+  const declarations = [];
+  const typeIds = /* @__PURE__ */ new Map();
+  const type = (op, operands) => {
+    const key = `${op}:${operands.join(",")}`;
+    let id = typeIds.get(key) ?? m.findType(op, operands);
+    if (id === void 0) {
+      id = bound++;
+      declarations.push(2 + operands.length << 16 | op, id, ...operands);
+    }
+    typeIds.set(key, id);
+    return id;
+  };
+  const constants = /* @__PURE__ */ new Map();
+  const constantOf = (t) => {
+    const existing = constants.get(t);
+    if (existing !== void 0) return existing;
+    const ti = m.types.get(t);
+    let id;
+    if (ti.op === 20 /* TypeBool */) {
+      id = bound++;
+      declarations.push(3 << 16 | 42 /* ConstantFalse */, t, id);
+    } else if (ti.op === 22 /* TypeFloat */) {
+      const width = w[ti.start + 2];
+      const literal = width === 64 ? [0, 1071644672] : width === 16 ? [14336] : [1056964608];
+      id = bound++;
+      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
+    } else if (ti.op === 21 /* TypeInt */) {
+      const literal = w[ti.start + 2] === 64 ? [1, 0] : [1];
+      id = bound++;
+      declarations.push(3 + literal.length << 16 | 43 /* Constant */, t, id, ...literal);
+    } else {
+      let parts2;
+      if (ti.op === 23 /* TypeVector */ || ti.op === 24 /* TypeMatrix */) parts2 = new Array(w[ti.start + 3]).fill(w[ti.start + 2]);
+      else if (ti.op === 28 /* TypeArray */) parts2 = new Array(m.constants.get(w[ti.start + 3]) ?? 0).fill(w[ti.start + 2]);
+      else parts2 = Array.from(w.subarray(ti.start + 2, ti.start + ti.len));
+      const components = parts2.map(constantOf);
+      id = bound++;
+      declarations.push(3 + components.length << 16 | 44 /* ConstantComposite */, t, id, ...components);
+    }
+    constants.set(t, id);
+    return id;
+  };
+  const source = sourceBuiltIn(stage);
+  let input = 0;
+  let inputType = 0;
+  let addToInterface = false;
+  const float32 = () => type(22 /* TypeFloat */, [32]);
+  if (source && [...replace].some((ins) => m.scalarBuilt(w[ins.start + 1]))) {
+    for (const [id, builtIn] of m.builtIns) {
+      if (builtIn === source.builtIn && m.variableClass.get(id) === 1 /* Input */) input = id;
+    }
+    const valueType2 = source.kind === "vec4" ? type(23 /* TypeVector */, [float32(), 4]) : source.kind === "int" ? type(21 /* TypeInt */, [32, 1]) : type(23 /* TypeVector */, [type(21 /* TypeInt */, [32, 0]), 3]);
+    if (input) {
+      inputType = valueType2;
+    } else {
+      const pointer = type(32 /* TypePointer */, [1 /* Input */, valueType2]);
+      input = bound++;
+      declarations.push(4 << 16 | 59 /* Variable */, pointer, input, 1 /* Input */);
+      annotations.push(4 << 16 | 71 /* Decorate */, input, 11 /* BuiltIn */, source.builtIn);
+      inputType = valueType2;
+    }
+    addToInterface = !m.entryPoints.find((e) => e.index === entryIndex)?.interface.includes(input);
+  }
+  const scalarSource = (out2) => {
+    const loaded = bound++;
+    out2.push(4 << 16 | 61 /* Load */, inputType, loaded, input);
+    const f = float32();
+    const x = bound++;
+    if (source.kind === "vec4") {
+      out2.push(5 << 16 | 81 /* CompositeExtract */, f, x, loaded, 0);
+    } else if (source.kind === "int") {
+      out2.push(4 << 16 | 111 /* ConvertSToF */, f, x, loaded);
+    } else {
+      const u = bound++;
+      out2.push(5 << 16 | 81 /* CompositeExtract */, type(21 /* TypeInt */, [32, 0]), u, loaded, 0);
+      out2.push(4 << 16 | 112 /* ConvertUToF */, f, x, u);
+    }
+    return x;
+  };
+  const build = (out2, t, x, result) => {
+    const ti = m.types.get(t);
+    switch (ti.op) {
+      case 22 /* TypeFloat */:
+        if (w[ti.start + 2] === 32) out2.push(4 << 16 | 83 /* CopyObject */, t, result, x);
+        else out2.push(4 << 16 | 115 /* FConvert */, t, result, x);
+        return;
+      case 21 /* TypeInt */:
+        out2.push(4 << 16 | (w[ti.start + 3] ? 110 /* ConvertFToS */ : 109 /* ConvertFToU */), t, result, x);
+        return;
+      case 20 /* TypeBool */:
+        out2.push(5 << 16 | 184 /* FOrdLessThan */, t, result, x, constantOf(float32()));
+        return;
+      default: {
+        const component = w[ti.start + 2];
+        const count2 = w[ti.start + 3];
+        const part = bound++;
+        build(out2, component, x, part);
+        out2.push(3 + count2 << 16 | 80 /* CompositeConstruct */, t, result, ...new Array(count2).fill(part));
+      }
+    }
+  };
+  const loopScalar = (out2, ins) => {
+    if (!ins.loops.length) return null;
+    const innermost2 = ins.loops[ins.loops.length - 1];
+    for (const o of m.operandWords(ins)) {
+      const d = m.defs.get(o);
+      if (!d || !d.fn || d.op === 59 /* Variable */ || d.op === 55 /* FunctionParameter */ || replace.has(d) || !d.loops.includes(innermost2) || !definesValue(d.op)) continue;
+      if (d.op === 61 /* Load */ && written.has(m.baseVariable(w[d.start + 3]))) continue;
+      const t = w[d.start + 1];
+      const ti = m.types.get(t);
+      const scalarType = ti?.op === 23 /* TypeVector */ ? w[ti.start + 2] : t;
+      const scalar = m.types.get(scalarType);
+      if (!scalar || scalar.op !== 22 /* TypeFloat */ && scalar.op !== 21 /* TypeInt */) continue;
+      let id = o;
+      if (ti?.op === 23 /* TypeVector */) {
+        id = bound++;
+        out2.push(5 << 16 | 81 /* CompositeExtract */, scalarType, id, o, 0);
+      }
+      if (scalar.op === 22 /* TypeFloat */ && w[scalar.start + 2] === 32) return id;
+      const x = bound++;
+      const convert2 = scalar.op === 22 /* TypeFloat */ ? 115 /* FConvert */ : w[scalar.start + 3] ? 111 /* ConvertSToF */ : 112 /* ConvertUToF */;
+      out2.push(4 << 16 | convert2, float32(), x, id);
+      return x;
+    }
+    return null;
+  };
+  const replacement = /* @__PURE__ */ new Map();
+  for (const ins of replace) {
+    const t = w[ins.start + 1];
+    const result = w[ins.start + 2];
+    const out2 = [];
+    const varying = m.scalarBuilt(t) ? loopScalar(out2, ins) : null;
+    if (varying !== null) build(out2, t, varying, result);
+    else if (input && m.scalarBuilt(t)) build(out2, t, scalarSource(out2), result);
+    else out2.push(4 << 16 | 83 /* CopyObject */, t, result, constantOf(t));
+    replacement.set(ins, out2);
+  }
+  const out = Array.from(w.subarray(0, 5));
+  m.instructions.forEach((ins, index) => {
+    if (index === m.annotationEnd) out.push(...annotations);
+    if (index === m.firstFunction) out.push(...declarations);
+    if (remove.has(ins)) return;
+    const replaced = replacement.get(ins);
+    if (replaced) {
+      out.push(...replaced);
+      return;
+    }
+    if (index === entryIndex && addToInterface) {
+      out.push(ins.len + 1 << 16 | 15 /* EntryPoint */, ...w.subarray(ins.start + 1, ins.start + ins.len), input);
+      return;
+    }
+    for (let k = ins.start; k < ins.start + ins.len; k++) out.push(w[k]);
+  });
+  out[3] = bound;
+  return new Uint8Array(new Uint32Array(out).buffer);
+}
+function upstreamParts(m, parts2) {
+  const w = m.words;
+  const taint = /* @__PURE__ */ new Map();
+  const variables = /* @__PURE__ */ new Map();
+  const returns = /* @__PURE__ */ new Map();
+  const get = (map, id) => map.get(id) ?? 0n;
+  const or = (map, id, bits) => {
+    const before = get(map, id);
+    const after = before | bits;
+    if (after === before) return false;
+    map.set(id, after);
+    return true;
+  };
+  parts2.forEach((p, i) => {
+    for (const id of p.results) or(taint, id, 1n << BigInt(i));
+  });
+  const calledFunction = /* @__PURE__ */ new Map();
+  parts2.forEach((p, i) => {
+    if (p.calls !== void 0) calledFunction.set(p.calls, i);
+  });
+  for (let pass = 0; pass < 16; pass++) {
+    let changed = false;
+    for (const ins of m.instructions) {
+      if (!ins.fn || ins.op === 54 /* Function */) continue;
+      let bits = 0n;
+      for (const o of m.operandWords(ins)) bits |= get(taint, o);
+      if (ins.op === 62 /* Store */) {
+        changed = or(variables, m.baseVariable(w[ins.start + 1]), get(taint, w[ins.start + 2])) || changed;
+      } else if (ins.op === 254 /* ReturnValue */) {
+        changed = or(returns, ins.fn, bits) || changed;
+      } else if (definesValue(ins.op) && ins.op !== 55 /* FunctionParameter */) {
+        if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+        if (ins.op === 57 /* FunctionCall */) {
+          bits = get(returns, w[ins.start + 3]);
+          const part = calledFunction.get(w[ins.start + 3]);
+          if (part !== void 0) bits |= 1n << BigInt(part);
+        }
+        changed = or(taint, w[ins.start + 2], bits) || changed;
+      }
+    }
+    if (!changed) break;
+  }
+  return parts2.map((p, i) => {
+    let bits = 0n;
+    for (const ins of p.instructions) {
+      for (const o of m.operandWords(ins)) bits |= get(taint, o);
+      if (ins.op === 61 /* Load */) bits |= get(variables, m.baseVariable(w[ins.start + 3]));
+      if (ins.op === 57 /* FunctionCall */) bits |= get(returns, w[ins.start + 3]) | (calledFunction.has(w[ins.start + 3]) ? 1n << BigInt(calledFunction.get(w[ins.start + 3])) : 0n);
+    }
+    bits &= ~(1n << BigInt(i));
+    const out = [];
+    for (let k = 0; k < parts2.length; k++) if (bits & 1n << BigInt(k)) out.push(k);
+    return out;
+  });
+}
+function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
+  const plan = { variants: [], skipped: [] };
+  let m;
+  try {
+    m = new Module(spirv);
+  } catch {
+    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the module could not be parsed" });
+    return plan;
+  }
+  const w = m.words;
+  const entry = analysis.entryPoints.find((e) => e.name === entryPoint && e.stage === stage) ?? analysis.entryPoints.find((e) => e.stage === stage);
+  const moduleEntry = entry ? m.entryPoints.find((e) => e.functionId === entry.functionId) : void 0;
+  if (!entry || !moduleEntry) {
+    plan.skipped.push({ kind: "stage", name: `${stage}: ${entryPoint}`, reason: "the entry point is not in the module" });
+    return plan;
+  }
+  const reachable = new Set(entry.functions.map((f) => f.id));
+  const slice = m.controlSlice();
+  const why = (ins) => {
+    const t = w[ins.start + 1];
+    if (slice.has(w[ins.start + 2])) return "control flow depends on it";
+    if (m.isVoid(t)) return "void";
+    if (!m.replaceable(t)) return "its type cannot be replaced";
+    return null;
+  };
+  const candidates = [];
+  let stageVariant = null;
+  {
+    const part = { kind: "stage", name: `${stage}: ${entry.name}` };
+    const outputs = /* @__PURE__ */ new Set();
+    for (const v of moduleEntry.interface) {
+      if (m.variableClass.get(v) !== 3 /* Output */) continue;
+      const builtIn = m.builtIns.get(v);
+      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */ || builtIn === 0 /* Position */) continue;
+      outputs.add(v);
+    }
+    const remove = /* @__PURE__ */ new Set();
+    for (const ins of m.instructions) {
+      if (!ins.fn || !reachable.has(ins.fn)) continue;
+      if (ins.op === 62 /* Store */) {
+        const base = m.baseVariable(w[ins.start + 1]);
+        const cls = m.variableClass.get(base);
+        if (outputs.has(base) || stage === "compute" && (cls === 12 /* StorageBuffer */ || cls === 5349 /* PhysicalStorageBuffer */)) remove.add(ins);
+      } else if (ins.op === 99 /* ImageWrite */ && stage === "compute") {
+        remove.add(ins);
+      }
+    }
+    if (stage !== "fragment" && stage !== "compute") plan.skipped.push({ ...part, reason: "only fragment and compute stages are measured whole: a vertex shader's outputs decide what is rasterized" });
+    else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
+    else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, /* @__PURE__ */ new Set(), remove), edits: remove.size, upstream: [] };
+  }
+  for (const f of entry.functions.filter((fn) => fn.id !== entry.functionId).slice(0, limits.functions ?? 16)) {
+    const part = { kind: "function", name: f.name, functionId: f.id, functionName: f.name };
+    const replace = /* @__PURE__ */ new Set();
+    const remove = /* @__PURE__ */ new Set();
+    let reason = null;
+    for (const call of m.calls) {
+      if (w[call.start + 3] !== f.id || !reachable.has(call.fn)) continue;
+      if (m.isVoid(w[call.start + 1])) {
+        if ((m.uses.get(w[call.start + 2]) ?? 0) > 0) reason = "a call's result id is used";
+        else remove.add(call);
+        continue;
+      }
+      const r = why(call);
+      if (r) reason = r === "control flow depends on it" ? "control flow depends on what it returns" : "it returns a value that cannot be replaced";
+      else replace.add(call);
+    }
+    if (reason) plan.skipped.push({ ...part, reason });
+    else if (!replace.size && !remove.size) plan.skipped.push({ ...part, reason: "nothing calls it" });
+    else candidates.push({ part, replace, remove, results: /* @__PURE__ */ new Set(), instructions: [], calls: f.id, written: /* @__PURE__ */ new Set() });
+  }
+  const debug = analysis.hasLines ? parseSpirvDebugInfo(spirv) : null;
+  if (debug) {
+    const baseName = (file) => debug.files[file]?.name.replace(/^.*[\\/]/, "") ?? "";
+    const lineOf = (ins) => {
+      const loc = debug.locations[ins.ordinal];
+      return loc ? `${loc.file}:${loc.line}` : "";
+    };
+    const loopLoads = /* @__PURE__ */ new Map();
+    const users = /* @__PURE__ */ new Map();
+    const backEdges = /* @__PURE__ */ new Map();
+    m.instructions.forEach((ins) => {
+      if (!ins.fn) return;
+      if (ins.op === 61 /* Load */ && ins.loops.length) {
+        const v = m.baseVariable(w[ins.start + 3]);
+        let list = loopLoads.get(v);
+        if (!list) loopLoads.set(v, list = []);
+        list.push(ins);
+      }
+      for (const o of m.operandWords(ins)) {
+        let list = users.get(o);
+        if (!list) users.set(o, list = []);
+        list.push(ins);
+      }
+      if (ins.op === 245 /* Phi */) {
+        for (let k = ins.start + 3; k + 1 < ins.start + ins.len; k += 2) {
+          const def = m.defs.get(w[k]);
+          if (!def || def.start <= ins.start) continue;
+          let list = backEdges.get(w[k]);
+          if (!list) backEdges.set(w[k], list = []);
+          list.push(ins);
+        }
+      }
+    });
+    const recurrence = (instructions, here) => instructions.some((ins) => {
+      if (ins.op === 62 /* Store */ && ins.loops.length) {
+        const loop = ins.loops[ins.loops.length - 1];
+        return (loopLoads.get(m.baseVariable(w[ins.start + 1])) ?? []).some((load) => load.loops.includes(loop) && load.start < ins.start && lineOf(load) !== here);
+      }
+      if (!definesValue(ins.op)) return false;
+      return (backEdges.get(w[ins.start + 2]) ?? []).some((phi) => (users.get(w[phi.start + 2]) ?? []).some((u) => lineOf(u) !== here && lineOf(u) !== ""));
+    });
+    const lines = entry.functions.flatMap((f) => f.lines.map((l) => ({ f, l }))).sort((x, y) => y.l.weighted - x.l.weighted).slice(0, limits.lines ?? 32);
+    for (const { f, l } of lines) {
+      const part = { kind: "line", name: `${l.file ? `${l.file}:` : "line "}${l.line}`, functionId: f.id, functionName: f.name, file: l.file, line: l.line };
+      const replace = /* @__PURE__ */ new Set();
+      const remove = /* @__PURE__ */ new Set();
+      const instructions = [];
+      let controlled = 0;
+      for (const ins of m.instructions) {
+        if (ins.fn !== f.id) continue;
+        const loc = debug.locations[ins.ordinal];
+        if (!loc || loc.line !== l.line || baseName(loc.file) !== l.file) continue;
+        instructions.push(ins);
+        if (!isValueOp(ins.op)) continue;
+        if (ins.op === 57 /* FunctionCall */ && m.isVoid(w[ins.start + 1])) {
+          if (!(m.uses.get(w[ins.start + 2]) ?? 0)) remove.add(ins);
+          continue;
+        }
+        const r = why(ins);
+        if (!r) replace.add(ins);
+        else if (r === "control flow depends on it") controlled++;
+      }
+      const replacedOperands = /* @__PURE__ */ new Set();
+      for (const ins of replace) if (ins.op !== 61 /* Load */) for (const o of m.operandWords(ins)) replacedOperands.add(o);
+      for (const ins of [...replace]) if (ins.op === 61 /* Load */ && replacedOperands.has(w[ins.start + 2])) replace.delete(ins);
+      const here = instructions.length ? lineOf(instructions[0]) : "";
+      if (!replace.size && !remove.size) {
+        plan.skipped.push({ ...part, reason: controlled ? "control flow depends on what the line computes" : "the line computes nothing that can be replaced" });
+      } else if (recurrence(instructions, here)) {
+        plan.skipped.push({ ...part, reason: "it updates a value that other lines of its loop read every iteration: taking it out would let the compiler hoist the loop's work, and charge that to the line" });
+      } else {
+        const results = new Set([...replace].map((ins) => w[ins.start + 2]));
+        const written = new Set(instructions.filter((ins) => ins.op === 62 /* Store */).map((ins) => m.baseVariable(w[ins.start + 1])));
+        candidates.push({ part, replace, remove, results, instructions, written });
+      }
+    }
+  } else {
+    plan.skipped.push({ kind: "line", name: "source lines", reason: "the module has no line information" });
+  }
+  const textureOf2 = (id) => {
+    for (let depth = 0; depth < 16; depth++) {
+      const d = m.defs.get(id);
+      if (!d) return null;
+      if (d.op === 59 /* Variable */) return m.variableClass.get(id) === 0 ? id : null;
+      if (d.op === 61 /* Load */) id = m.baseVariable(w[d.start + 3]);
+      else if (d.op === 86 || d.op === 100) id = w[d.start + 3];
+      else return null;
+    }
+    return null;
+  };
+  const textures = /* @__PURE__ */ new Map();
+  for (const ins of m.instructions) {
+    if (!ins.fn || !reachable.has(ins.fn) || !(ins.op >= 87 && ins.op <= 98 && ins.op !== 99 /* ImageWrite */ || ins.op >= 305 && ins.op <= 320)) continue;
+    const texture = textureOf2(w[ins.start + 3]);
+    if (texture === null) continue;
+    let list = textures.get(texture);
+    if (!list) textures.set(texture, list = []);
+    list.push(ins);
+  }
+  const rankedTextures = [...textures.entries()].sort((x, y) => y[1].length - x[1].length).slice(0, limits.textures ?? 16);
+  for (const [texture, uses] of rankedTextures) {
+    const set = m.sets.get(texture);
+    const binding = m.bindings.get(texture);
+    const name = m.names.get(texture) || (set !== void 0 && binding !== void 0 ? `set ${set}, binding ${binding}` : `texture ${texture}`);
+    const part = { kind: "texture", name, ...set !== void 0 ? { set } : {}, ...binding !== void 0 ? { binding } : {} };
+    const replace = new Set(uses.filter((ins) => !why(ins)));
+    if (!replace.size) plan.skipped.push({ ...part, reason: "control flow depends on what is read from it" });
+    else candidates.push({ part, replace, remove: /* @__PURE__ */ new Set(), results: /* @__PURE__ */ new Set(), instructions: [], written: /* @__PURE__ */ new Set() });
+  }
+  const upstream = upstreamParts(m, candidates);
+  const offset = stageVariant ? 1 : 0;
+  if (stageVariant) plan.variants.push(stageVariant);
+  candidates.forEach((c2, i) => {
+    plan.variants.push({
+      ...c2.part,
+      spirv: rewrite(m, stage, moduleEntry.index, c2.replace, c2.remove, c2.written),
+      edits: c2.replace.size + c2.remove.size,
+      upstream: upstream[i].map((k) => k + offset)
+    });
+  });
+  return plan;
+}
+
+// src/main/shader_ablation_run.ts
+function ablationRepeat(drawMs) {
+  if (!drawMs || drawMs <= 0) return 8;
+  return Math.min(64, Math.max(4, Math.ceil(2 / drawMs)));
+}
+async function measureStageByAblation(run2, req) {
+  const analysis = analyzeSpirvCached(req.spirv);
+  if (!analysis) throw new Error("The stage's SPIR-V could not be analyzed.");
+  const plan = planAblation(req.spirv, req.stage, req.entryPoint, analysis, { functions: req.functions, lines: req.lines, textures: req.textures });
+  const notes = [];
+  const original = await validateSpirv(req.spirv);
+  if (original === void 0) {
+    notes.push("spirv-val was not found (Vulkan SDK), so the variants were not validated before the driver compiled them.");
+  } else if (original !== null) {
+    notes.push(`The captured module itself does not pass spirv-val (${original}), so its variants were not validated.`);
+  } else {
+    const checked = await Promise.all(plan.variants.map(async (v) => ({ v, verdict: await validateSpirv(v.spirv) })));
+    const kept = /* @__PURE__ */ new Map();
+    checked.forEach((c2, i) => {
+      if (!c2.verdict) kept.set(i, kept.size);
+      else {
+        const { spirv: _spirv, edits: _edits, upstream: _upstream, ...part } = c2.v;
+        plan.skipped.push({ ...part, reason: `the variant does not validate: ${c2.verdict}` });
+      }
+    });
+    plan.variants = checked.filter((_, i) => kept.has(i)).map((c2) => ({ ...c2.v, upstream: c2.v.upstream.filter((k) => kept.has(k)).map((k) => kept.get(k)) }));
+  }
+  if (!plan.variants.length) {
+    const reasons = plan.skipped.map((s) => `${s.name}: ${s.reason}`).slice(0, 8).join("; ");
+    throw new Error(`Nothing in the ${req.stage} stage can be measured${reasons ? ` (${reasons})` : ""}.`);
+  }
+  const repeat = req.repeat ?? ablationRepeat(req.drawMs);
+  const request = encodeAblationRequest(
+    [{ command: req.command, stage: req.stage, repeat, variants: plan.variants.map((v) => ({ name: v.name, spirv: v.spirv })) }],
+    Math.max(1, Math.min(32, req.rounds ?? 5))
+  );
+  const result = await run2({ kind: "ablate", request });
+  if (!result.data) throw new Error(`The replay could not time the variants: ${result.error ?? "no data"}`);
+  const file = parseAblationResult(result.data);
+  const target = file.targets.find((t) => t.command === req.command);
+  if (!target) throw new Error("The replay did not answer for the command.");
+  if (!target.baseline.measured) throw new Error(`The replay did not time the command: ${target.note ?? "no timings"}.`);
+  const measured = measuredAblation(req.pipeline, req.stage, req.entryPoint, plan, target, file.device);
+  measured.repeat = repeat;
+  if (notes.length) measured.notes = [...measured.notes ?? [], ...notes];
+  return measured;
+}
+
 // src/renderer/frame_cost_tree.ts
 var MAX_LINE_FRAMES = 16;
 function node(kind, name, totalCost = 0, children = []) {
@@ -23800,6 +24837,7 @@ function entryOf(model) {
 }
 function functionTree(fn, byId, factor, path11, depth) {
   const n = node("function", fn.name || `function ${fn.id}`);
+  n.functionId = fn.id;
   n.totalCost = weighCost(fn.inclusive) * factor;
   n.selfCost = weighCost(fn.cost) * factor;
   n.dimension = dominantDimension(fn.inclusive);
@@ -23829,11 +24867,37 @@ function functionTree(fn, byId, factor, path11, depth) {
   if (sum > n.totalCost && sum > 0) for (const c2 of n.children) scaleSubtree(c2, n.totalCost / sum);
   return n;
 }
+function applyAblation(stageNode, a, entryFunctionId) {
+  if (a.stageMs === null || a.stageMs <= a.noiseMs || a.stageMs <= 0) return false;
+  const parts2 = /* @__PURE__ */ new Map();
+  for (const p of a.parts) parts2.set(p.kind === "function" ? `f${p.functionId}` : `l${p.functionId}|${p.file}|${p.line}`, p);
+  const width = stageNode.totalCost;
+  const visit = (n, functionId) => {
+    for (const c2 of n.children) {
+      const part = c2.kind === "function" ? parts2.get(`f${c2.functionId}`) : c2.kind === "line" ? parts2.get(`l${functionId}|${c2.file}|${c2.line}`) : void 0;
+      const share = part ? partShare(a, part) : null;
+      if (part && share !== null) {
+        const before = c2.totalCost;
+        c2.totalCost = share * width;
+        c2.measured = { savedMs: part.savedMs ?? 0, ownMs: part.ownMs ?? 0, share };
+        if (c2.kind === "line") c2.selfCost = c2.totalCost;
+        else if (before > 0) for (const cc of c2.children) scaleSubtree(cc, c2.totalCost / before);
+      }
+      visit(c2, c2.kind === "function" ? c2.functionId : functionId);
+    }
+    const sum = n.children.reduce((acc, c2) => acc + c2.totalCost, 0);
+    if (sum > n.totalCost && sum > 0) for (const c2 of n.children) scaleSubtree(c2, n.totalCost / sum);
+    if (n.kind === "function") n.selfCost = Math.max(0, n.totalCost - n.children.reduce((acc, c2) => acc + c2.totalCost, 0));
+  };
+  visit(stageNode, entryFunctionId);
+  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs };
+  return true;
+}
 function buildFrameCostTree(o) {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
   const { passes, notes, measuredFragmentPasses } = collectPasses2(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0 };
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0, measuredStages: 0 };
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
   const units = allMeasured ? "ms" : "ops";
@@ -23930,6 +24994,7 @@ function buildFrameCostTree(o) {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
+        n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root2) {
           const tree = functionTree(root2, byId, s.invocations, /* @__PURE__ */ new Set(), 0);
@@ -23943,6 +25008,11 @@ function buildFrameCostTree(o) {
           n.selfCost = tree.selfCost;
           const sum = n.children.reduce((acc, c2) => acc + c2.totalCost, 0);
           if (sum > n.totalCost && sum > 0) for (const c2 of n.children) scaleSubtree(c2, n.totalCost / sum);
+          const ablation = o.data.ablation(bucket.pipelineId, s.model.stage, s.model.entryPoint);
+          if (ablation && applyAblation(n, ablation, root2.id)) {
+            stats.measuredStages++;
+            n.selfCost = Math.max(0, n.totalCost - n.children.reduce((acc, c2) => acc + c2.totalCost, 0));
+          }
         }
         stageNodes.push(n);
       }
@@ -23986,6 +25056,9 @@ function buildFrameCostTree(o) {
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
   if (stats.measuredDrawPasses > 0) {
     notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+  }
+  if (stats.measuredStages > 0) {
+    notes.push(`The functions and lines of ${stats.measuredStages} shader stage frame(s) are sized by ablation: the replay timed a draw with each function or line made constant, and each takes the share of the stage's time that saved. Parts overlap (taking one out takes what only feeds it too), so where they add up to more than their parent they are squeezed to fit.`);
   }
   if (stats.measuredFragmentPasses > 0) {
     notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);
@@ -24241,6 +25314,7 @@ var COST_MODEL = "Modeled cost of one invocation, not a measurement: instruction
 var FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 var FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+var ABLATION_MEANING = "Measured on this machine's GPU, per draw: drawMs is the draw as captured (the median of the rounds), stageMs what it saved with the stage's outputs left out, and savedMs what it saved with that function's calls or that line's values replaced. Taking a part out takes along the work that only feeds it, so a line's ownMs is what it saved beyond the costliest measured part feeding it: what the line does itself. share is a function's savedMs, or a line's ownMs, over stageMs. Savings within noiseMs are noise.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
 var CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"];
 var SCALAR_BYTES2 = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 };
@@ -24552,8 +25626,12 @@ function flameFrame(v, n, level) {
     out.invocations = n.invocations;
     out.invocationCount = n.confidence;
     out.unweighted = n.reason;
+    if (n.ablation) out.measuredByAblation = { command: n.ablation.command, stageMs: round(n.ablation.stageMs), drawMs: round(n.ablation.drawMs) };
   } else if (n.kind === "function") {
     out.own = round(n.selfCost) || void 0;
+  }
+  if (n.measured) {
+    out.measured = n.kind === "line" ? { savedMs: round(n.measured.savedMs), ownMs: round(n.measured.ownMs), shareOfStage: round(n.measured.share) } : { savedMs: round(n.measured.savedMs), shareOfStage: round(n.measured.share) };
   }
   out.dominant = n.dimension;
   if (!n.children.length) return out;
@@ -25017,6 +26095,119 @@ function resourceTools(store) {
           graph: flameFrame(view, root, 0),
           ...flameHotspots(c2, root, total, intArg(args, "top", 15, 0, 100), codeOf),
           notes: [...drawNote ? [drawNote] : [], ...result.notes].length ? [...drawNote ? [drawNote] : [], ...result.notes] : void 0
+        });
+      }
+    },
+    {
+      name: "measure_shader_cost",
+      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued again, right before it runs, with variants of one stage of its pipeline: each has one function or one source line made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "The stage to measure (default fragment for a draw, compute for a dispatch)." },
+        rounds: { type: "integer", minimum: 1, maximum: 32, description: "Timed rounds, each timing every variant once (default 5); more rounds, less noise." },
+        functions: { type: "integer", minimum: 0, maximum: 64, description: "Functions measured, the costliest by the model first (default 16)." },
+        lines: { type: "integer", minimum: 0, maximum: 128, description: "Source lines measured, the costliest by the model first (default 32; modules with line information)." },
+        textures: { type: "integer", minimum: 0, maximum: 64, description: "Bound textures measured, each with every read of it replaced, the most read first (default 16). They need no debug information, so they are what an engine's generated shaders are measured by." },
+        top: { type: "integer", minimum: 1, maximum: 200, description: "Parts listed, the most costly first (default 30)." }
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api === "metal") {
+          return jsonResult({ capture: c2.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);
+        const { models, spirv } = stageModels(c2);
+        const sets = c2.data.sets;
+        let command = optionalInt(args, "command");
+        let stage = stringArg(args, "stage");
+        if (command === void 0) {
+          const tree = buildFrameCostTree({ data: c2.data, db: c2.db, models, perDraw: true, estimateFragments: true });
+          let best = null;
+          const walk = (n) => {
+            if (n.kind === "stage" && n.command && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
+            for (const ch2 of n.children) walk(ch2);
+          };
+          walk(tree.root);
+          const found = best;
+          if (!found || !found.command) throw new Error("No shader stage of the frame is weighed in the flame graph: pass a command.");
+          command = found.command.index;
+          stage = found.stage;
+        }
+        const cmd = c2.data.commands[command];
+        if (!cmd) throw new Error(`The capture has no command ${command}.`);
+        const isDispatch = sets.DISPATCH.has(cmd.method);
+        if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
+        const state = drawState(c2.data, c2.db, cmd);
+        if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
+        const stages = models.get(state.pipeline.id) ?? [];
+        const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");
+        const model = stages.find((s) => s.stage === wanted);
+        if (!model) throw new Error(`${refText(c2.db, state.pipeline.id)} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
+        const bytes = spirv.get(`${model.objectId}|${model.stage}`);
+        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${refText(c2.db, state.pipeline.id)}.`);
+        const drawMs = c2.data.drawStats?.find((d) => d.command === command && d.timed)?.ms ?? null;
+        const measured = await measureStageByAblation((analysis) => replayServers.run(tool, c2.path, analysis), {
+          command,
+          pipeline: state.pipeline.id,
+          stage: model.stage,
+          entryPoint: model.entryPoint,
+          spirv: bytes,
+          drawMs,
+          rounds: intArg(args, "rounds", 5, 1, 32),
+          functions: intArg(args, "functions", 16, 0, 64),
+          lines: intArg(args, "lines", 32, 0, 128),
+          textures: intArg(args, "textures", 16, 0, 64)
+        });
+        c2.setAblation(measured);
+        const entry = model.analysis.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? model.analysis.entryPoints[0];
+        const byId = new Map(model.analysis.functions.map((f) => [f.id, f]));
+        const texts = sourceLineTexts(debugInfoWithSources(bytes).info);
+        const modeledShare = (p) => {
+          const f = byId.get(p.functionId ?? -1);
+          if (!f || !entry || entry.weighted <= 0) return void 0;
+          const w = p.kind === "function" ? weighCost(f.inclusive) : f.lines.find((l) => l.line === p.line && l.file === p.file)?.weighted ?? 0;
+          return round(Math.min(1, w / entry.weighted));
+        };
+        const top = intArg(args, "top", 30, 1, 200);
+        const describe = (p) => ({
+          name: p.name,
+          function: p.kind === "line" ? p.functionName : void 0,
+          code: p.kind === "line" ? codeAt(texts, p.file, p.line) : void 0,
+          savedMs: p.savedMs === null ? void 0 : round(p.savedMs),
+          ownMs: p.kind === "line" && p.ownMs !== null ? round(p.ownMs) : void 0,
+          share: partShare(measured, p) ?? void 0,
+          belowNoise: p.savedMs !== null && Math.abs(p.kind === "line" ? p.ownMs ?? 0 : p.savedMs) <= measured.noiseMs ? true : void 0,
+          modeledShare: modeledShare(p),
+          note: p.note
+        });
+        const byMs = (key) => (x, y) => (y[key] ?? -Infinity) - (x[key] ?? -Infinity);
+        const functionParts = measured.parts.filter((p) => p.kind === "function").sort(byMs("savedMs")).slice(0, top);
+        const lineParts = measured.parts.filter((p) => p.kind === "line").sort(byMs("ownMs")).slice(0, top);
+        const textureParts = measured.parts.filter((p) => p.kind === "texture").sort(byMs("savedMs")).slice(0, top);
+        return jsonResult({
+          capture: c2.id,
+          command,
+          method: cmd.method,
+          pipeline: refText(c2.db, state.pipeline.id),
+          stage: model.stage,
+          entryPoint: model.entryPoint,
+          shader: refText(c2.db, model.objectId),
+          device: measured.device,
+          rounds: measured.rounds,
+          drawsPerTimedSpan: measured.repeat,
+          meaning: ABLATION_MEANING,
+          drawMs: round(measured.baselineMs),
+          noiseMs: round(measured.noiseMs),
+          stageMs: measured.stageMs === null ? void 0 : round(measured.stageMs),
+          stageShareOfDraw: measured.stageMs !== null && measured.baselineMs > 0 ? round(Math.min(1, Math.max(0, measured.stageMs / measured.baselineMs))) : void 0,
+          functions: functionParts.length ? functionParts.map(describe) : void 0,
+          lines: lineParts.length ? lineParts.map(describe) : void 0,
+          textures: textureParts.length ? textureParts.map((p) => ({ ...describe(p), set: p.set, binding: p.binding })) : void 0,
+          notMeasured: measured.skipped.length ? measured.skipped.slice(0, 30).map((s) => `${s.name}: ${s.reason}`) : void 0,
+          notes: [...measured.note ? [measured.note] : [], ...measured.notes ?? []].length ? [...measured.note ? [measured.note] : [], ...measured.notes ?? []] : void 0
         });
       }
     }

@@ -26,6 +26,7 @@ import type { ShaderStage } from "./vulkan/spirv_reflect.js";
 import { dominantDimension, weighCost, type CostDimension, type CostVec, type FunctionAnalysis, type ShaderAnalysis } from "./vulkan/spirv_analysis.js";
 import { isAction } from "./command_sets.js";
 import { drawStatsByCommand } from "./draw_stats.js";
+import { partShare, type MeasuredPart, type ShaderAblation } from "./shader_ablation.js";
 import { isObject, num, refId, str } from "./vulkan/vulkan_object.js";
 import type { FlameGraphNodeBase } from "./widget/flamegraph.js";
 
@@ -40,6 +41,8 @@ export interface StageModel {
   objectId: number;
   analysis: ShaderAnalysis | null;
   workgroupSize: [number, number, number] | null;
+  /** The stage's SPIR-V, where it can be measured by ablation. */
+  spirv?: Uint8Array | null;
 }
 
 /** Line frames kept per function in the flame graph; the rest fold into one frame. */
@@ -59,8 +62,9 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   objectId?: number;
   /** Stage, function and line frames: the stage the code runs in. */
   stage?: ShaderStage;
-  /** Stage frames: the entry point. */
+  /** Stage frames: the entry point, and the pipeline bound for the draws. */
   entryPoint?: string;
+  pipelineId?: number;
   invocations?: number;
   confidence?: Confidence;
   /** Pass frames: the measured GPU duration, null without. */
@@ -70,6 +74,15 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   /** Line frames: the source line (and file) the cost belongs to. */
   line?: number;
   file?: string;
+  /** Function frames: the function's id in its module (what an ablation names it by). */
+  functionId?: number;
+  /**
+   * Function and line frames of a measured stage: what the draw saved without this part, what the part
+   * does itself (a line: beyond what feeds it), and the share of the stage the frame is sized by.
+   */
+  measured?: { savedMs: number; ownMs: number; share: number };
+  /** Stage frames sized by an ablation: where it was measured and what the stage took there. */
+  ablation?: { command: number; stageMs: number; drawMs: number; noiseMs: number };
 }
 
 export interface CostTreeOptions {
@@ -93,7 +106,9 @@ export interface CostTreeResult {
            /** Render passes whose fragment stages are weighted by measured invocations, not by area. */
            measuredFragmentPasses: number;
            /** Passes whose draws were timed one by one by the replay, which sets the split between them. */
-           measuredDrawPasses: number };
+           measuredDrawPasses: number;
+           /** Stage frames whose functions and lines are sized by an ablation rather than the model. */
+           measuredStages: number };
 }
 
 export function formatCostValue(value: number, units: CostUnits): string {
@@ -386,6 +401,7 @@ function entryOf(model: StageModel) {
 /** The call tree under a function, costs in ops per invocation (scaled later), recursion cut. */
 function functionTree(fn: FunctionAnalysis, byId: Map<number, FunctionAnalysis>, factor: number, path: Set<number>, depth: number): FlameNode {
   const n = node("function", fn.name || `function ${fn.id}`);
+  n.functionId = fn.id;
   n.totalCost = weighCost(fn.inclusive) * factor;
   n.selfCost = weighCost(fn.cost) * factor;
   n.dimension = dominantDimension(fn.inclusive);
@@ -420,13 +436,47 @@ function functionTree(fn: FunctionAnalysis, byId: Map<number, FunctionAnalysis>,
   return n;
 }
 
+/**
+ * Sizes a stage's function and line frames by what a replay measured taking each out (shader_ablation.ts):
+ * a measured frame is its share of the stage's own time, the rest keep their modeled share, and children
+ * are squeezed into their parent where they add up to more (ablations overlap: a part takes what only
+ * feeds it along). False when the measurement cannot size anything (the stage's time is within noise).
+ */
+function applyAblation(stageNode: FlameNode, a: ShaderAblation, entryFunctionId: number): boolean {
+  if (a.stageMs === null || a.stageMs <= a.noiseMs || a.stageMs <= 0) return false;
+  const parts = new Map<string, MeasuredPart>();
+  for (const p of a.parts) parts.set(p.kind === "function" ? `f${p.functionId}` : `l${p.functionId}|${p.file}|${p.line}`, p);
+  const width = stageNode.totalCost;
+  const visit = (n: FlameNode, functionId: number | undefined): void => {
+    for (const c of n.children) {
+      const part = c.kind === "function" ? parts.get(`f${c.functionId}`) : c.kind === "line" ? parts.get(`l${functionId}|${c.file}|${c.line}`) : undefined;
+      const share = part ? partShare(a, part) : null;
+      if (part && share !== null) {
+        const before = c.totalCost;
+        c.totalCost = share * width;
+        c.measured = { savedMs: part.savedMs ?? 0, ownMs: part.ownMs ?? 0, share };
+        if (c.kind === "line") c.selfCost = c.totalCost;
+        else if (before > 0) for (const cc of c.children) scaleSubtree(cc, c.totalCost / before);
+      }
+      visit(c, c.kind === "function" ? c.functionId : functionId);
+    }
+    const sum = n.children.reduce((acc, c) => acc + c.totalCost, 0);
+    if (sum > n.totalCost && sum > 0) for (const c of n.children) scaleSubtree(c, n.totalCost / sum);
+    if (n.kind === "function") n.selfCost = Math.max(0, n.totalCost - n.children.reduce((acc, c) => acc + c.totalCost, 0));
+  };
+  // The stage frame's children are its entry point's: its callees and its own lines.
+  visit(stageNode, entryFunctionId);
+  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs };
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 
 export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   const { db } = o;
   const maxFramesPerPass = o.maxFramesPerPass ?? 32;
   const { passes, notes, measuredFragmentPasses } = collectPasses(o);
-  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0 };
+  const stats = { passes: passes.length, items: 0, unknownStages: 0, estimatedStages: 0, collapsed: 0, measuredFragmentPasses, measuredDrawPasses: 0, measuredStages: 0 };
 
   const measured = passes.filter((p) => p.durationMs !== null && p.durationMs > 0);
   const allMeasured = passes.length > 0 && measured.length === passes.length;
@@ -526,6 +576,7 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
+        n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root) {
           const tree = functionTree(root, byId, s.invocations, new Set(), 0);
@@ -536,6 +587,12 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
           // The entry's own cost is the stage cost; its subtree must not exceed it.
           const sum = n.children.reduce((acc, c) => acc + c.totalCost, 0);
           if (sum > n.totalCost && sum > 0) for (const c of n.children) scaleSubtree(c, n.totalCost / sum);
+          // Measured by ablation: the functions and lines take their measured shares of the stage.
+          const ablation = o.data.ablation(bucket.pipelineId, s.model.stage, s.model.entryPoint);
+          if (ablation && applyAblation(n, ablation, root.id)) {
+            stats.measuredStages++;
+            n.selfCost = Math.max(0, n.totalCost - n.children.reduce((acc, c) => acc + c.totalCost, 0));
+          }
         }
         stageNodes.push(n);
       }
@@ -581,6 +638,9 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
   if (stats.measuredDrawPasses > 0) {
     notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+  }
+  if (stats.measuredStages > 0) {
+    notes.push(`The functions and lines of ${stats.measuredStages} shader stage frame(s) are sized by ablation: the replay timed a draw with each function or line made constant, and each takes the share of the stage's time that saved. Parts overlap (taking one out takes what only feeds it too), so where they add up to more than their parent they are squeezed to fit.`);
   }
   if (stats.measuredFragmentPasses > 0) {
     notes.push(`Fragment stages in ${stats.measuredFragmentPasses} pass(es) are weighted by the fragment shader invocations the capture's GPU counters measured; a pass that draws more than once splits its measured total between its draws by scissor area.`);

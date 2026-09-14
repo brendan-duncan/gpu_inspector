@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { CaptureData, isRenderTarget, type CapturedOverdraw } from "../renderer/capture_data.js";
 import type { DrawStat } from "../renderer/draw_stats.js";
+import type { ShaderAblation } from "../renderer/shader_ablation.js";
 import { parseCaptureFile, type CaptureFileManifest } from "../renderer/capture_format.js";
 import { CaptureStatistics } from "../renderer/capture_statistics.js";
 import { labelNameOf } from "../renderer/command_sets.js";
@@ -75,6 +76,11 @@ export class Capture {
     // The pass metrics take depth rejection from these where the capture's own counter is missing.
     this._metrics = null;
     this._analysis = null;
+  }
+
+  /** A shader stage measured by ablation (renderer/shader_ablation.ts), which the flame graph sizes that stage's functions and lines by. */
+  setAblation(a: ShaderAblation): void {
+    this.data.addAblation(a);
   }
 
   get statistics(): CaptureStatistics {

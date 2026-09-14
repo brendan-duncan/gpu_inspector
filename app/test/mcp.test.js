@@ -336,6 +336,28 @@ test("per-draw measurements weigh the flame graph's draws and fragment stages", 
   assert.equal(stage.invocationCount, "exact");
 });
 
+test("a stage measured by ablation sizes its line frames by what they measured", async () => {
+  // The capture keeps what measure_shader_cost found: the stage took 0.008 ms of the draw, and its one
+  // line did 0.002 ms itself (it saved 0.006 ms, 0.004 of it through a part feeding it).
+  const ablations = [{
+    pipeline: 14, stage: "vertex", entryPoint: "main", command: FIRST_DRAW, device: "Test GPU", rounds: 5, repeat: 8,
+    baselineMs: 0.01, noiseMs: 0.0001, stageMs: 0.008, skipped: [],
+    parts: [{ kind: "line", name: "shader.frag:3", functionId: 4, functionName: "main", file: "shader.frag", line: 3, savedMs: 0.006, ownMs: 0.002 }],
+  }];
+  const withShader = objects.map((o) => (o.id === 14 ? { ...o, blobs: [{ name: "vertex:main", size: spirv.byteLength, payload: [100, spirv.byteLength] }] } : o));
+  const file = join(dir, "ablated.gpucap");
+  writeFileSync(file, encodeCaptureFile({ ...manifest(withShader, 2.5), ablations }, [pixels, vertices, spirv]));
+
+  const { json, text } = await call("get_shader_flame_graph", { capture: file, depth: 5, minShare: 0 });
+  assert.ok(json, text);
+  const stage = json.graph.children[0].children[0].children[0];
+  assert.deepEqual(stage.measuredByAblation, { command: FIRST_DRAW, stageMs: 0.008, drawMs: 0.01 });
+  const line = stage.children.find((n) => n.kind === "line");
+  assert.ok(line, JSON.stringify(stage));
+  assert.deepEqual(line.measured, { savedMs: 0.006, ownMs: 0.002, shareOfStage: 0.25 });
+  assert.ok(Math.abs(line.cost - 2.5 * 0.25) < 1e-3, `a quarter of the stage's 2.5 ms: ${line.cost}`);
+});
+
 test("a shader's source file named by its line information is found under the source roots", async () => {
   const missing = (await call("get_shader", { capture: before, object: 14, view: "source" })).json.stages[0];
   assert.match(missing.note, /names shader\.frag.*set_search_paths/);

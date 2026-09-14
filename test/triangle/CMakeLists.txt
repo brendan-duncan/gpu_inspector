@@ -13,7 +13,7 @@ if(NOT GLSLC)
 endif()
 
 set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
-set(SHADERS cube.vert cube.frag wave.comp)
+set(SHADERS cube.vert cube.frag heavy.frag wave.comp)
 set(SPV_FILES)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 foreach(s ${SHADERS})

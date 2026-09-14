@@ -2,6 +2,7 @@ import type {
   AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
   CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus,
 } from "../shared/protocol.js";
+import type { ShaderAblation, ShaderMeasureTarget } from "./shader_ablation.js";
 
 export interface InspectorApi {
   getConfig(): Promise<AppConfig>;
@@ -52,6 +53,8 @@ export interface InspectorApi {
   meshOutput(opts: { key: string; data?: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** One pixel of an image followed through the frame (--pixel-data; renderer/pixel_history.ts parses it). */
   pixelHistory(opts: { key: string; data?: Uint8Array; name?: string; pixel: { image: number; x: number; y: number; mip?: number; layer?: number } }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** A shader stage measured by ablation at a draw (--ablate-data, main/shader_ablation_run.ts); `ablation` when it was. */
+  measureShader(opts: { key: string; data?: Uint8Array; name?: string; stage: ShaderMeasureTarget & { drawMs?: number | null } }): Promise<{ ablation?: ShaderAblation; error?: string; needData?: boolean }>;
   /** Stops the replay kept for a capture key and removes its file. */
   releaseReplay(key: string): Promise<void>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */

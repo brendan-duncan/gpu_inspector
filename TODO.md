@@ -217,7 +217,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       from running the draw's own vertex shader rather than from a replay, since Metal has none.
 - [ ] Shader debugger, the rest: tessellation and geometry stages (Metal: object, mesh and tile),
       per-sample shading, watch expressions, and editing a value and running on.
-- [ ] Shader flame graph / statement cost via ablation once per-draw replay timing exists.
+- [x] Shader cost by ablation (`renderer/vulkan/spirv_ablate.ts`, `replay/src/ablation.cpp`,
+      **Measure shader**, `measure_shader_cost`): a draw replayed with SPIR-V variants that leave out
+      a function, a line or a texture, sizing the flame graph's measured stages.
+- [ ] Ablation, the rest:
+  - Vertex stages, which decide what is rasterized: time them with the fragment stage off.
+  - Parts inside control flow: measure a branch's arms by forcing the condition, rather than
+    skipping everything a branch depends on.
+  - More than one draw of a pipeline: several targets per request exist, but nothing sends them.
+  - Metal, which has no replay to time variants in.
+  - Engine shaders with no line information: steps through GLSL decompiled by spirv-cross, the
+    way the shader debugger does.
 
 ## Vulkan-specific
 - [ ] Implicit layer: a "Set for my account" button for the environment variables (setx /

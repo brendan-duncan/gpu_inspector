@@ -75,6 +75,58 @@ struct ReplayOptions {
         bool enabled = false;
         std::vector<uint32_t> commands;
     } mesh;
+    /**
+     * Time draws or dispatches again with variants of one shader stage, each with a part of the shader
+     * taken out (AblationResult, ablation.cpp). The variants' SPIR-V comes with the request
+     * (app/src/renderer/vulkan/spirv_ablate.ts writes it).
+     */
+    struct AblationVariant {
+        std::string name;
+        std::vector<uint32_t> words;
+    };
+    struct AblationTarget {
+        uint32_t command = 0;
+        /** "vertex", "fragment", "compute"... as StageName writes them. */
+        std::string stage;
+        /** Times the draw is issued between one pair of timestamps, so a cheap draw takes long enough to time; results are per draw. */
+        uint32_t repeat = 1;
+        std::vector<AblationVariant> variants;
+    };
+    struct {
+        bool enabled = false;
+        /** Timed rounds per target, each issuing the draw once with every variant; one more round warms up first. */
+        uint32_t rounds = 5;
+        std::vector<AblationTarget> targets;
+    } ablation;
+};
+
+/** One pipeline issued at an ablation target: the draw's times with it, one per round. */
+struct AblationTiming {
+    std::string name;
+    bool measured = false;
+    /** The median of the rounds, and every round. */
+    double ms = 0;
+    std::vector<double> samples;
+    std::string note;
+};
+
+/**
+ * A draw or dispatch timed with variants of one of its shader stages. Each round issues the draw with
+ * the unchanged shader (the baseline) and with every variant, between a pair of timestamps, right
+ * before the draw itself runs; the variant's cost is the baseline's time less its own.
+ */
+struct AblationResult {
+    uint32_t command = 0;
+    std::string stage;
+    uint64_t pipeline = 0;
+    uint32_t frame = 0;
+    uint64_t commandBuffer = 0;
+    uint32_t passIndex = 0;
+    uint32_t rounds = 0;
+    uint32_t repeat = 1;
+    AblationTiming baseline;
+    std::vector<AblationTiming> variants;
+    std::string note;
 };
 
 /**
@@ -289,6 +341,8 @@ struct ReplayReport {
     std::vector<OverlayResult> overlays;
     /** With ReplayOptions::mesh: each named draw's vertex shader outputs, in the same order. */
     std::vector<MeshResult> meshes;
+    /** With ReplayOptions::ablation: each target's timings, in frame order; targets the replay did not reach last. */
+    std::vector<AblationResult> ablations;
 };
 
 class Replayer {
@@ -527,6 +581,28 @@ private:
     /** Reads the submission's results; `submitted` false drops them (a submission that never ran). */
     void CompleteDrawStats(bool submitted);
     void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to);
+
+    /** What a command buffer (or a secondary) has bound so far, which an ablation issues its draw again with. */
+    struct StreamState {
+        uint64_t graphicsPipeline = 0;
+        uint64_t computePipeline = 0;
+        /** The commands that set the depth write enable and the stencil write mask, restored after an ablation changes them. */
+        std::vector<uint32_t> depthWriteCommands;
+        std::vector<uint32_t> stencilWriteCommands;
+    };
+    static void NoteStreamCommand(StreamState& stream, const std::string& method, const JValue& args, uint32_t index);
+
+    // Ablation (ablation.cpp): a draw issued again with variants of a shader stage, timed.
+    bool PrepareAblation();
+    /** Resets the query ranges of the targets a command buffer holds (resets are not allowed inside a pass). */
+    void ResetAblationQueries(VkCommandBuffer cb, const CommandGroup& group);
+    /** At a draw or dispatch the request names: every variant issued and timed, then the command buffer's state put back. */
+    void IssueAblation(VkCommandBuffer cb, uint32_t index, const std::string& method, const JValue& args, uint32_t frame, uint64_t commandBuffer,
+                       uint32_t passIndex, const StreamState& stream);
+    VkPipeline AblationPipeline(uint64_t pipelineId, size_t target, int variant, bool compute);
+    void CompleteAblation(bool submitted);
+    void DestroyAblation();
+
     /** `frame`, `commandBuffer` and `passIndex` are the primary's, for the draws measured inside. */
     void RecordSecondaries(size_t executeIndex, const JValue& execute, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
     void ApplyBufferData(const CommandGroup& group);
@@ -659,6 +735,23 @@ private:
     uint32_t _passViews = 1;
     /** Queries the capture's own commands have open: a statistics query cannot nest inside one. */
     uint32_t _appQueryDepth = 0;
+
+    // Ablation
+    VkQueryPool _ablationPool = VK_NULL_HANDLE;
+    /** Per target of the request: its first query, and the command index it is at. */
+    std::vector<uint32_t> _ablationBase;
+    std::unordered_map<uint32_t, size_t> _ablationTargets;
+    /** Copies by captured pipeline, target and variant (-1 the baseline), kept between frames. */
+    std::map<std::tuple<uint64_t, size_t, int>, VkPipeline> _ablationPipelines;
+    /** Whether a captured pipeline sets its depth write enable and stencil write mask dynamically. */
+    std::unordered_map<uint64_t, std::pair<bool, bool>> _ablationDynamic;
+    /** The submission's ablations: the report's entry, and which pipeline of each round was issued. */
+    struct PendingAblation {
+        size_t result = 0;
+        uint32_t base = 0;
+        std::vector<bool> issued;
+    };
+    std::vector<PendingAblation> _pendingAblations;
 
     // Pixel history
     std::map<std::pair<uint64_t, int>, VkPipeline> _historyPipelines;

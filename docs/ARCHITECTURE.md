@@ -450,8 +450,10 @@ capture by a key: the main process asks for the serialized bytes the first time 
 writes them to a temporary file, and keeps the replay and the file until the view releases the key
 (its tab closed, or the capture rebuilt). Each analysis is a request line; the data file it writes
 is parsed by `renderer/overdraw.ts`, `pixel_history.ts`, `draw_overlay.ts`, `mesh_output.ts` or
-`draw_stats.ts`. The MCP server uses the same pool from `get_overdraw`, `get_pixel_history`,
-`get_mesh_output`, `debug_shader` (a pixel's inputs) and `get_shader_flame_graph`. `app/tools/stage_layer.mjs` ships the tool beside
+`draw_stats.ts`, or by `shader_ablation.ts` for the shader variants `vulkan/spirv_ablate.ts` wrote
+(the request's SPIR-V goes in an input file). The MCP server uses the same pool from `get_overdraw`,
+`get_pixel_history`, `get_mesh_output`, `debug_shader` (a pixel's inputs), `get_shader_flame_graph`
+and `measure_shader_cost`. `app/tools/stage_layer.mjs` ships the tool beside
 the layer.
 
 See [REPLAY.md](REPLAY.md).
@@ -1010,7 +1012,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake

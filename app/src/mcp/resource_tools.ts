@@ -1,7 +1,9 @@
 // The MCP server's resource tools: the images and buffer ranges a capture read back, the vertices
 // a draw read, and shaders (reflection, embedded source, cross-compiled text, static analysis).
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
+import { measureStageByAblation } from "../main/shader_ablation_run.js";
 import { shaderText } from "../main/shader_tools.js";
+import { partShare, type MeasuredPart } from "../renderer/shader_ablation.js";
 import { drawStatsSummary, parseDrawStats } from "../renderer/draw_stats.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
 import { buildFrameCostTree, type FlameNode, type StageModel } from "../renderer/frame_cost_tree.js";
@@ -29,6 +31,7 @@ const COST_MODEL = "Modeled cost of one invocation, not a measurement: instructi
 const FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 const FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 const FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+const ABLATION_MEANING = "Measured on this machine's GPU, per draw: drawMs is the draw as captured (the median of the rounds), stageMs what it saved with the stage's outputs left out, and savedMs what it saved with that function's calls or that line's values replaced. Taking a part out takes along the work that only feeds it, so a line's ownMs is what it saved beyond the costliest measured part feeding it: what the line does itself. share is a function's savedMs, or a line's ownMs, over stageMs. Savings within noiseMs are noise.";
 const SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"] as const;
 const CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"] as const;
 const SCALAR_BYTES = { float32: 4, uint32: 4, int32: 4, uint16: 2, int16: 2, uint8: 1 } as const;
@@ -324,8 +327,14 @@ function flameFrame(v: FlameView, n: FlameNode, level: number): Record<string, u
     out.invocations = n.invocations;
     out.invocationCount = n.confidence;
     out.unweighted = n.reason;
+    if (n.ablation) out.measuredByAblation = { command: n.ablation.command, stageMs: round(n.ablation.stageMs), drawMs: round(n.ablation.drawMs) };
   } else if (n.kind === "function") {
     out.own = round(n.selfCost) || undefined;
+  }
+  if (n.measured) {
+    out.measured = n.kind === "line"
+      ? { savedMs: round(n.measured.savedMs), ownMs: round(n.measured.ownMs), shareOfStage: round(n.measured.share) }
+      : { savedMs: round(n.measured.savedMs), shareOfStage: round(n.measured.share) };
   }
   out.dominant = n.dimension;
   if (!n.children.length) return out;
@@ -776,6 +785,110 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           graph: flameFrame(view, root, 0),
           ...flameHotspots(c, root, total, intArg(args, "top", 15, 0, 100), codeOf),
           notes: [...(drawNote ? [drawNote] : []), ...result.notes].length ? [...(drawNote ? [drawNote] : []), ...result.notes] : undefined,
+        });
+      },
+    },
+    {
+      name: "measure_shader_cost",
+      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where " +
+        "analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued " +
+        "again, right before it runs, with variants of one stage of its pipeline: each has one function or one source line " +
+        "made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. " +
+        "Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the " +
+        "stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work " +
+        "that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and " +
+        "get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "The stage to measure (default fragment for a draw, compute for a dispatch)." },
+        rounds: { type: "integer", minimum: 1, maximum: 32, description: "Timed rounds, each timing every variant once (default 5); more rounds, less noise." },
+        functions: { type: "integer", minimum: 0, maximum: 64, description: "Functions measured, the costliest by the model first (default 16)." },
+        lines: { type: "integer", minimum: 0, maximum: 128, description: "Source lines measured, the costliest by the model first (default 32; modules with line information)." },
+        textures: { type: "integer", minimum: 0, maximum: 64, description: "Bound textures measured, each with every read of it replaced, the most read first (default 16). They need no debug information, so they are what an engine's generated shaders are measured by." },
+        top: { type: "integer", minimum: 1, maximum: 200, description: "Parts listed, the most costly first (default 30)." },
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        if (c.data.api === "metal") {
+          return jsonResult({ capture: c.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);
+        const { models, spirv } = stageModels(c);
+        const sets = c.data.sets;
+        let command = optionalInt(args, "command");
+        let stage = stringArg(args, "stage");
+        if (command === undefined) {
+          // The costliest weighed stage frame of the frame, one frame per draw.
+          const tree = buildFrameCostTree({ data: c.data, db: c.db, models, perDraw: true, estimateFragments: true });
+          let best: FlameNode | null = null;
+          const walk = (n: FlameNode): void => {
+            if (n.kind === "stage" && n.command && !n.reason && (!stage || n.stage === stage) && (!best || n.totalCost > best.totalCost)) best = n;
+            for (const ch of n.children) walk(ch);
+          };
+          walk(tree.root);
+          const found = best as FlameNode | null;
+          if (!found || !found.command) throw new Error("No shader stage of the frame is weighed in the flame graph: pass a command.");
+          command = found.command.index;
+          stage = found.stage;
+        }
+        const cmd = c.data.commands[command];
+        if (!cmd) throw new Error(`The capture has no command ${command}.`);
+        const isDispatch = sets.DISPATCH.has(cmd.method);
+        if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
+        const state = drawState(c.data, c.db, cmd);
+        if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
+        const stages = models.get(state.pipeline.id) ?? [];
+        const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");
+        const model = stages.find((s) => s.stage === wanted);
+        if (!model) throw new Error(`${refText(c.db, state.pipeline.id)} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
+        const bytes = spirv.get(`${model.objectId}|${model.stage}`);
+        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${refText(c.db, state.pipeline.id)}.`);
+        const drawMs = c.data.drawStats?.find((d) => d.command === command && d.timed)?.ms ?? null;
+        const measured = await measureStageByAblation((analysis) => replayServers.run(tool, c.path, analysis), {
+          command, pipeline: state.pipeline.id, stage: model.stage, entryPoint: model.entryPoint, spirv: bytes, drawMs,
+          rounds: intArg(args, "rounds", 5, 1, 32), functions: intArg(args, "functions", 16, 0, 64), lines: intArg(args, "lines", 32, 0, 128),
+          textures: intArg(args, "textures", 16, 0, 64),
+        });
+        c.setAblation(measured);
+
+        const entry = model.analysis.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? model.analysis.entryPoints[0];
+        const byId = new Map(model.analysis.functions.map((f) => [f.id, f]));
+        const texts = sourceLineTexts(debugInfoWithSources(bytes).info);
+        const modeledShare = (p: MeasuredPart): number | undefined => {
+          const f = byId.get(p.functionId ?? -1);
+          if (!f || !entry || entry.weighted <= 0) return undefined;
+          const w = p.kind === "function" ? weighCost(f.inclusive) : f.lines.find((l) => l.line === p.line && l.file === p.file)?.weighted ?? 0;
+          return round(Math.min(1, w / entry.weighted));
+        };
+        const top = intArg(args, "top", 30, 1, 200);
+        const describe = (p: MeasuredPart): Record<string, unknown> => ({
+          name: p.name, function: p.kind === "line" ? p.functionName : undefined,
+          code: p.kind === "line" ? codeAt(texts, p.file, p.line) : undefined,
+          savedMs: p.savedMs === null ? undefined : round(p.savedMs),
+          ownMs: p.kind === "line" && p.ownMs !== null ? round(p.ownMs) : undefined,
+          share: partShare(measured, p) ?? undefined,
+          belowNoise: p.savedMs !== null && Math.abs(p.kind === "line" ? p.ownMs ?? 0 : p.savedMs) <= measured.noiseMs ? true : undefined,
+          modeledShare: modeledShare(p), note: p.note,
+        });
+        const byMs = (key: "savedMs" | "ownMs") => (x: MeasuredPart, y: MeasuredPart): number => (y[key] ?? -Infinity) - (x[key] ?? -Infinity);
+        const functionParts = measured.parts.filter((p) => p.kind === "function").sort(byMs("savedMs")).slice(0, top);
+        const lineParts = measured.parts.filter((p) => p.kind === "line").sort(byMs("ownMs")).slice(0, top);
+        const textureParts = measured.parts.filter((p) => p.kind === "texture").sort(byMs("savedMs")).slice(0, top);
+        return jsonResult({
+          capture: c.id, command, method: cmd.method, pipeline: refText(c.db, state.pipeline.id), stage: model.stage, entryPoint: model.entryPoint,
+          shader: refText(c.db, model.objectId), device: measured.device, rounds: measured.rounds, drawsPerTimedSpan: measured.repeat,
+          meaning: ABLATION_MEANING,
+          drawMs: round(measured.baselineMs), noiseMs: round(measured.noiseMs),
+          stageMs: measured.stageMs === null ? undefined : round(measured.stageMs),
+          stageShareOfDraw: measured.stageMs !== null && measured.baselineMs > 0 ? round(Math.min(1, Math.max(0, measured.stageMs / measured.baselineMs))) : undefined,
+          functions: functionParts.length ? functionParts.map(describe) : undefined,
+          lines: lineParts.length ? lineParts.map(describe) : undefined,
+          textures: textureParts.length ? textureParts.map((p) => ({ ...describe(p), set: p.set, binding: p.binding })) : undefined,
+          notMeasured: measured.skipped.length ? measured.skipped.slice(0, 30).map((s) => `${s.name}: ${s.reason}`) : undefined,
+          notes: [...(measured.note ? [measured.note] : []), ...(measured.notes ?? [])].length ? [...(measured.note ? [measured.note] : []), ...(measured.notes ?? [])] : undefined,
         });
       },
     },

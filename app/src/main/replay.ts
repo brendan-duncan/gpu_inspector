@@ -52,17 +52,38 @@ export interface PixelRequest {
   layer?: number;
 }
 
-/** What to replay for: every pass's overdraw, every draw's timing, some draws' overlays or vertex outputs, or one pixel's history. */
+/**
+ * What to replay for: every pass's overdraw, every draw's timing, some draws' overlays or vertex outputs, one pixel's
+ * history, or draws timed with variants of a shader (`request`: encodeAblationRequest in renderer/shader_ablation.ts).
+ */
 export type ReplayAnalysis =
   | { kind: "overdraw" } | { kind: "draws" } | { kind: "overlay"; commands: number[] } | { kind: "mesh"; commands: number[] }
-  | ({ kind: "pixel" } & PixelRequest);
+  | ({ kind: "pixel" } & PixelRequest) | { kind: "ablate"; request: Uint8Array };
 
 /** The last lines of the tool's output, for an error message. */
 function tail(text: string, lines = 12): string {
   return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
 
-function analysisArgs(analysis: ReplayAnalysis, out: string): string[] {
+/** An analysis's input written to a temporary file (an ablation's variants), or null; the caller removes it. */
+function inputFile(analysis: ReplayAnalysis): string | null {
+  if (analysis.kind !== "ablate") return null;
+  const file = tempOutput("ablate_request");
+  fs.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
+  return file;
+}
+
+function removeFile(file: string | null): void {
+  if (!file) return;
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    // gone already
+  }
+}
+
+function analysisArgs(analysis: ReplayAnalysis, out: string, input: string | null): string[] {
+  if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
@@ -80,7 +101,8 @@ export function runReplay(tool: string, capturePath: string, analysis: ReplayAna
     let output = "";
     let done = false;
     let timedOut = false;
-    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const input = inputFile(analysis);
+    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
@@ -95,6 +117,7 @@ export function runReplay(tool: string, capturePath: string, analysis: ReplayAna
       if (done) return;
       done = true;
       clearTimeout(timer);
+      removeFile(input);
       let data: Uint8Array | null = null;
       try {
         data = new Uint8Array(fs.readFileSync(out));
@@ -130,10 +153,11 @@ interface ServeAnswer {
 }
 
 /** The request line for an analysis. */
-function serveRequest(id: number, analysis: ReplayAnalysis, out: string): Record<string, unknown> {
+function serveRequest(id: number, analysis: ReplayAnalysis, out: string, input: string | null): Record<string, unknown> {
   if (analysis.kind === "pixel") {
     return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
   }
+  if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
   return { id, ...analysis, out };
 }
 
@@ -193,6 +217,7 @@ export class ReplayServer {
     if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
     const id = this._nextId++;
     const out = tempOutput(analysis.kind);
+    const input = inputFile(analysis);
     const answer = await new Promise<ServeAnswer>((resolve) => {
       const timer = setTimeout(() => {
         this._pending.delete(id);
@@ -203,8 +228,9 @@ export class ReplayServer {
         clearTimeout(timer);
         resolve(a);
       });
-      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out)) + "\n");
+      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out, input)) + "\n");
     });
+    removeFile(input);
     this.lastUsed = Date.now();
     let data: Uint8Array | null = null;
     try {

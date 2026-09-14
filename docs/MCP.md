@@ -65,6 +65,8 @@ about a capture takes a moment while its replay starts; the replay is kept for t
   Vulkan pixel does, and a Metal one does not. `decompiled` steps SPIR-V without debug information
   by line, through GLSL decompiled from it, and says whether that agrees with the original.
 - `get_shader_flame_graph` — measures every draw the first time it is asked
+- `measure_shader_cost` — what a draw's fragment or compute shader spends in each function, source
+  line and texture, timed with each taken out; the flame graph then sizes that stage by it
 
 They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout
 builds it (`cmake --build build --target vkinsp_replay`). See [Capture replay](REPLAY.md).

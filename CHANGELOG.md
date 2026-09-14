@@ -1,6 +1,13 @@
 ## Unreleased
 
 ### Added
+- Shader cost by ablation (Vulkan): **Measure shader** in the Shader Flame Graph replays a draw
+  with variants of its fragment or compute shader, each with one function, source line or texture
+  taken out, and sizes the stage's frames by the time each saved on this GPU. A line is charged only
+  what it does beyond the parts feeding it. Values that decide a branch or a loop are left in, and
+  every variant is checked with spirv-val first. The measurements are saved with the capture.
+  `measure_shader_cost` in the MCP server, `vkinsp_replay --ablate`, and the test application's
+  `--heavy` option draws with a deliberately costly fragment shader.
 - Shader debugger: step through a draw's vertex or fragment shader, or a dispatch's compute
   shader, line by line on the capture's inputs, with breakpoints and every variable's value.
   Opened from a draw's or dispatch's details, a pixel history or the mesh view. `debug_shader` in

@@ -18,6 +18,7 @@ import {
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
+import { measureStageByAblation, type StageAblationRequest } from "./shader_ablation_run.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
 import {
   DEFAULT_PORT, findFreePort as findFreePortFrom, findLayerDir as findLayerDirIn, findValidationLayerDir, parseEnvLines, splitArgs, terminate,
@@ -1144,6 +1145,23 @@ ipcMain.handle("inspector:meshOutput", (_e, opts: ReplayRequest & { commands: nu
 // Vulkan pixel history: one pixel followed through the replayed frame (replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", (_e, opts: ReplayRequest & { pixel: PixelRequest }): Promise<ReplayRun> =>
   replayFor(opts, { kind: "pixel", ...opts.pixel }));
+// Vulkan shader cost by ablation: a stage's variants timed at one draw (replay/src/ablation.cpp).
+ipcMain.handle("inspector:measureShader", async (_e, opts: ReplayRequest & { stage: StageAblationRequest }) => {
+  let needData = false;
+  try {
+    const ablation = await measureStageByAblation(async (analysis) => {
+      const run = await replayFor(opts, analysis);
+      if (run.needData) {
+        needData = true;
+        throw new Error("the replay needs the capture");
+      }
+      return run;
+    }, { ...opts.stage, spirv: new Uint8Array(opts.stage.spirv) });
+    return { ablation };
+  } catch (e) {
+    return needData ? { needData: true } : { error: (e as Error).message };
+  }
+});
 // A capture window's "Move to Main Window": the main window opens the file and this one closes.
 ipcMain.handle("inspector:openCaptureInMain", (e, filePath: string) => {
   if (!mainWin || mainWin.isDestroyed()) return false;
