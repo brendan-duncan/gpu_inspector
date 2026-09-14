@@ -25,6 +25,17 @@ export interface DrawState {
   bindPoint: string;
   pipelineCmd: CaptureCommand | null;
   pipeline: VulkanObject | null;
+  /**
+   * Vulkan: the shader objects bound instead of a pipeline (vkCmdBindShadersEXT, VK_EXT_shader_object),
+   * one per stage in the order they were found, and the latest command that bound one.
+   */
+  shaders: VulkanObject[];
+  shadersCmd: CaptureCommand | null;
+  /**
+   * Vulkan dynamic state, which a draw with shader objects always sets and a pipeline may leave
+   * dynamic: null where no command set it.
+   */
+  dynamic: { cullMode: ArgValue | null; frontFace: ArgValue | null; topology: ArgValue | null; depthTest: ArgValue | null; depthCompare: ArgValue | null };
   sets: Map<number, BoundSet>;
   vertexBuffers: Map<number, BoundVertexBuffer>;
   /** Metal: buffers bound to a stage by index, keyed "stage:index". */
@@ -46,6 +57,25 @@ export interface DrawState {
   cullMode: ArgValue | null;
   frontFace: ArgValue | null;
   depthStencil: VulkanObject | null;
+}
+
+/** The VkDynamicState each of DrawState.dynamic's values is. */
+const DYNAMIC_STATES: Record<keyof DrawState["dynamic"], string> = {
+  cullMode: "VK_DYNAMIC_STATE_CULL_MODE", frontFace: "VK_DYNAMIC_STATE_FRONT_FACE", topology: "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY",
+  depthTest: "VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE", depthCompare: "VK_DYNAMIC_STATE_DEPTH_COMPARE_OP",
+};
+
+/**
+ * A Vulkan dynamic state value in effect at a draw: what was set, where nothing else could set it
+ * (shader objects, or a pipeline declaring that state dynamic), else `baked`, the pipeline's own.
+ */
+export function dynamicValue(state: DrawState, key: keyof DrawState["dynamic"], baked: ArgValue | undefined): ArgValue | undefined {
+  const value = state.dynamic[key];
+  if (value === null) return baked;
+  if (!state.pipeline) return value;
+  const d = state.pipeline.descriptor;
+  const declared = isObject(d?.pDynamicState) && Array.isArray(d!.pDynamicState.pDynamicStates) ? d!.pDynamicState.pDynamicStates : [];
+  return declared.some((s) => str(s) === DYNAMIC_STATES[key]) ? value : baked;
 }
 
 /** The vertex layout of one binding: stride, input rate and the attributes read from it. */
@@ -74,7 +104,9 @@ export function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: Capture
 
 export function emptyDrawState(bindPoint: string): DrawState {
   return {
-    bindPoint, pipelineCmd: null, pipeline: null, sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(),
+    bindPoint, pipelineCmd: null, pipeline: null, shaders: [], shadersCmd: null,
+    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null },
+    sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(),
     stageTextures: new Map(), stageSamplers: new Map(), indexBuffer: null,
     vertexInput: null, viewports: null, scissors: null, pushConstants: [],
     cullMode: null, frontFace: null, depthStencil: null,
@@ -100,6 +132,7 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
   // An API without an index-buffer binding command names it in the draw itself (Metal).
   // indexBufferOf answers null for a command that declares none, so this is safe to ask always.
   state.indexBuffer = cmdSets.indexBufferOf(cmd);
+  const shaderStages = new Set<string>();   // stages whose shader object (or its absence) was found
   for (let i = cmd.index - 1; i >= 0; i--) {
     const c = commands[i];
     if (!c || !sameStream(cmdSets, cmd, c)) break;
@@ -111,10 +144,27 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
     const a = c.args;
     if (!a) continue;
     if (cmdSets.BIND_PIPELINE.has(c.method)) {
-      if (!state.pipelineCmd && cmdSets.pipelineBindPointOf(c.method, a) === bindPoint) {
+      // A pipeline bound after the shader objects found so far (walking back: before them) is
+      // replaced by them, so it only counts when no shader object was bound since.
+      if (!state.pipelineCmd && !state.shadersCmd && cmdSets.pipelineBindPointOf(c.method, a) === bindPoint) {
         state.pipelineCmd = c;
         state.pipeline = db.getObject(refId(a.pipeline));
       }
+      continue;
+    }
+    if (c.method === "vkCmdBindShadersEXT") {
+      if (state.pipelineCmd) continue;   // a pipeline bound since replaced these
+      const stages = Array.isArray(a.pStages) ? a.pStages : [];
+      const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+      stages.forEach((flag, k) => {
+        const stage = str(flag);
+        const compute = stage.includes("COMPUTE");
+        if (compute !== (bindPoint === "VK_PIPELINE_BIND_POINT_COMPUTE") || shaderStages.has(stage)) return;
+        shaderStages.add(stage);
+        state.shadersCmd ??= c;
+        const shader = db.getObject(refId(shaders[k]));
+        if (shader) state.shaders.push(shader);
+      });
       continue;
     }
     if (cmdSets.BIND_STAGE_BUFFER?.has(c.method) && cmdSets.stageBuffersOf) {
@@ -148,6 +198,26 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
     switch (c.method) {
       case "vkCmdSetVertexInputEXT":
         if (!state.vertexInput) state.vertexInput = a;
+        break;
+      case "vkCmdSetCullMode":
+      case "vkCmdSetCullModeEXT":
+        state.dynamic.cullMode ??= a.cullMode ?? null;
+        break;
+      case "vkCmdSetFrontFace":
+      case "vkCmdSetFrontFaceEXT":
+        state.dynamic.frontFace ??= a.frontFace ?? null;
+        break;
+      case "vkCmdSetPrimitiveTopology":
+      case "vkCmdSetPrimitiveTopologyEXT":
+        state.dynamic.topology ??= a.primitiveTopology ?? null;
+        break;
+      case "vkCmdSetDepthTestEnable":
+      case "vkCmdSetDepthTestEnableEXT":
+        state.dynamic.depthTest ??= a.depthTestEnable ?? null;
+        break;
+      case "vkCmdSetDepthCompareOp":
+      case "vkCmdSetDepthCompareOpEXT":
+        state.dynamic.depthCompare ??= a.depthCompareOp ?? null;
         break;
       case "vkCmdSetViewport":
       case "vkCmdSetViewportWithCount":

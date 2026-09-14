@@ -268,9 +268,16 @@ application with injected state. Route (a) is the general one and is the prerequ
       linked pipelines show and edit their libraries' stages (the libraries made again from their
       records), shader objects are replaced at `vkCmdBindShadersEXT` (a linked set made again
       unlinked), and the replay makes both (triangle `--pipeline-library`, `--shader-object`).
-- [ ] Shader objects in captures: a draw bound with `vkCmdBindShadersEXT` has no pipeline, so
-      Analyze Shaders, the Shader Flame Graph, the shader debugger and per-draw state do not see its
-      shaders yet; the replay's overdraw and overlay copies only replace pipelines.
+- [x] Shader objects in captures: a draw bound with `vkCmdBindShadersEXT` carries its shader
+      objects and the dynamic state standing in for a pipeline's (`DrawState.shaders`,
+      `DrawState.dynamic`), and reports that group by pipeline group these by a program key
+      (`ShaderProgram`): the command details, Analyze Shaders, the Shader Flame Graph, the shader
+      debugger, frame statistics and `get_command` all see them. The replay's VS Out issues such a
+      draw in dynamic rendering with a feedback copy of its vertex shader object (triangle
+      `--shader-object`).
+- [ ] Shader objects, the rest: the replay's overdraw, draw-call overlays, pixel history and
+      per-stage ablation (**Measure shader**, `measure_shader_cost`) copy pipelines, so draws with
+      shader objects are left out of them.
 - [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
       replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
 - [x] Ray tracing pipelines: every stage's code (payloads named with their index in pStages), shader

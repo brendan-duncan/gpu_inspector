@@ -302,6 +302,17 @@ export class FrameAnalysis {
         const id = refId(a.pipeline) ?? 0;
         if (boundPipeline.get(key) === id) redundantBinds.add(cmd);
         boundPipeline.set(key, id);
+      } else if (method === "vkCmdBindShadersEXT" && a) {
+        // Shader objects replace the pipeline's stages. The fragment shader object stands for the
+        // draws' "pipeline" here: its reads are what the subpass rule looks at.
+        const stages = Array.isArray(a.pStages) ? a.pStages.map(str) : [];
+        const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+        if (stages.some((st) => st !== "VK_SHADER_STAGE_COMPUTE_BIT")) {
+          const fragment = stages.indexOf("VK_SHADER_STAGE_FRAGMENT_BIT");
+          const key = `${cb}:VK_PIPELINE_BIND_POINT_GRAPHICS`;
+          if (fragment >= 0) boundPipeline.set(key, refId(shaders[fragment]) ?? 0);
+          else if (!this._db.getObject(boundPipeline.get(key))?.type.startsWith("VkShaderEXT")) boundPipeline.set(key, 0);
+        }
       } else if ((method === "vkCmdBindDescriptorSets" || method === "vkCmdBindDescriptorSets2" || method === "vkCmdBindDescriptorSets2KHR") && a) {
         const info = isObject(a.pBindDescriptorSetsInfo) ? a.pBindDescriptorSetsInfo : a;
         const sets = Array.isArray(info.pDescriptorSets) ? info.pDescriptorSets : [];

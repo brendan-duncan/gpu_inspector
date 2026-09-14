@@ -6,7 +6,7 @@ import { isObject, refId, str, type ObjectLookup, type VulkanObject } from "./vu
 import { isAction } from "./command_sets.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
-import type { ArgObject, UiRequest } from "../shared/protocol.js";
+import type { ArgObject, CaptureCommand, UiRequest } from "../shared/protocol.js";
 
 /** Where a pipeline stage's code comes from: a blob of the pipeline or of its shader module. */
 export interface StageSource {
@@ -121,23 +121,119 @@ export function pipelineStages(pipeline: VulkanObject, db: ObjectLookup): StageS
   return out;
 }
 
-/** Uses per pipeline: the pipeline bound on the stream and bind point of each draw or dispatch. */
+/**
+ * What a draw or dispatch runs: a pipeline, or the shader objects bound in its place with
+ * vkCmdBindShadersEXT (VK_EXT_shader_object). Reports that group work by pipeline id group shader
+ * objects by a program key instead: the pipeline's id, or a negative key standing for one set of
+ * shader objects, the same for every draw of the capture that binds that set.
+ */
+export interface ShaderProgram {
+  key: number;
+  pipeline: VulkanObject | null;
+  shaders: VulkanObject[];
+  name: string;
+}
+
+const programKeys = new WeakMap<CaptureData, { byIds: Map<string, number>; ids: Map<number, number[]> }>();
+
+/** The program key of a set of shader objects of a capture. */
+export function shaderProgramKey(data: CaptureData, shaderIds: number[]): number {
+  let keys = programKeys.get(data);
+  if (!keys) programKeys.set(data, keys = { byIds: new Map(), ids: new Map() });
+  const ids = [...new Set(shaderIds)].sort((x, y) => x - y);
+  const text = ids.join(",");
+  let key = keys.byIds.get(text);
+  if (key === undefined) {
+    key = -(keys.byIds.size + 1);
+    keys.byIds.set(text, key);
+    keys.ids.set(key, ids);
+  }
+  return key;
+}
+
+/** The program a key stands for; null when the key is unknown or its objects are not in the database. */
+export function shaderProgram(data: CaptureData, db: ObjectLookup, key: number): ShaderProgram | null {
+  if (key > 0) {
+    const pipeline = db.getObject(key);
+    return pipeline ? { key, pipeline, shaders: [], name: pipeline.name } : null;
+  }
+  const shaders = (programKeys.get(data)?.ids.get(key) ?? []).map((id) => db.getObject(id)).filter((o): o is VulkanObject => !!o);
+  if (!shaders.length) return null;
+  return { key, pipeline: null, shaders, name: shaders.map((s) => s.name).join(" + ") };
+}
+
+/** The stages of a program: its pipeline's, or one per shader object. */
+export function programStages(program: { pipeline: VulkanObject | null; shaders: VulkanObject[] }, db: ObjectLookup): StageSource[] {
+  if (program.pipeline) return pipelineStages(program.pipeline, db);
+  return program.shaders.flatMap((s) => pipelineStages(s, db));
+}
+
+/**
+ * Follows the pipelines and shader objects bound on each command stream and bind point, so a
+ * forward walk over a capture can ask which program a draw or dispatch runs.
+ */
+export class ProgramTracker {
+  private _data: CaptureData;
+  private _bound = new Map<string, number>();                       // "stream:bindPoint" -> program key
+  private _shaders = new Map<string, Map<string, number | null>>();  // "stream:bindPoint" -> stage -> shader id
+
+  constructor(data: CaptureData) {
+    this._data = data;
+  }
+
+  /** Follows a binding command; true when it bound a pipeline or shader objects. */
+  note(c: CaptureCommand): boolean {
+    const sets = this._data.sets;
+    const a = c.args;
+    if (!a) return false;
+    const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
+    if (sets.BIND_PIPELINE.has(c.method)) {
+      const id = refId(a.pipeline);
+      const at = `${stream}:${sets.pipelineBindPointOf(c.method, a)}`;
+      this._shaders.delete(at);
+      if (id !== null) this._bound.set(at, id);
+      else this._bound.delete(at);
+      return true;
+    }
+    if (c.method !== "vkCmdBindShadersEXT") return false;
+    const stages = Array.isArray(a.pStages) ? a.pStages : [];
+    const shaders = Array.isArray(a.pShaders) ? a.pShaders : [];
+    stages.forEach((flag, k) => {
+      const stage = str(flag);
+      const at = `${stream}:${stage.includes("COMPUTE") ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS"}`;
+      let bound = this._shaders.get(at);
+      if (!bound) this._shaders.set(at, bound = new Map());
+      bound.set(stage, refId(shaders[k]));
+      const ids = [...bound.values()].filter((id): id is number => id !== null);
+      if (ids.length) this._bound.set(at, shaderProgramKey(this._data, ids));
+      else this._bound.delete(at);
+    });
+    return true;
+  }
+
+  /** The program key of a draw or dispatch; undefined when nothing is bound. */
+  at(c: CaptureCommand): number | undefined {
+    return this._bound.get(`${c.object?.__id ?? 0}:${c.secondary ?? 0}:${this._data.sets.bindPointOf(c.method)}`);
+  }
+}
+
+/** Uses per program (see ShaderProgram): what is bound on the stream and bind point of each draw or dispatch. */
 export function pipelineUses(data: CaptureData): Map<number, number> {
   const sets = data.sets;
-  const bound = new Map<string, number>();
+  const tracker = new ProgramTracker(data);
   const uses = new Map<number, number>();
   for (const c of data.commands) {
     if (!c || sets.SUBMIT.has(c.method)) continue;
-    const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
-    if (sets.BIND_PIPELINE.has(c.method) && c.args) {
-      const id = refId(c.args.pipeline);
-      if (id !== null) bound.set(`${stream}:${sets.pipelineBindPointOf(c.method, c.args)}`, id);
-    } else if (isAction(sets, c.method)) {
-      const id = bound.get(`${stream}:${sets.bindPointOf(c.method)}`);
-      if (id !== undefined) uses.set(id, (uses.get(id) ?? 0) + 1);
-    }
+    if (tracker.note(c) || !isAction(sets, c.method)) continue;
+    const key = tracker.at(c);
+    if (key !== undefined) uses.set(key, (uses.get(key) ?? 0) + 1);
   }
   return uses;
+}
+
+/** The stages a draw state runs: its pipeline's, or its shader objects'. */
+export function stateStages(state: { pipeline: VulkanObject | null; shaders: VulkanObject[] }, db: ObjectLookup): StageSource[] {
+  return programStages(state, db);
 }
 
 export class ShaderReflectionCache {
@@ -178,7 +274,15 @@ export class ShaderReflectionCache {
 
   /** Reflection of every stage of a pipeline, in stage order (null entries for failures). */
   async stages(pipeline: VulkanObject): Promise<{ source: StageSource; reflection: ShaderReflection | null }[]> {
-    const sources = pipelineStages(pipeline, this._db);
+    return this._reflect(pipelineStages(pipeline, this._db));
+  }
+
+  /** Reflection of every stage a draw state runs, from its pipeline or its shader objects. */
+  async stagesOf(state: { pipeline: VulkanObject | null; shaders: VulkanObject[] }): Promise<{ source: StageSource; reflection: ShaderReflection | null }[]> {
+    return this._reflect(stateStages(state, this._db));
+  }
+
+  private async _reflect(sources: StageSource[]): Promise<{ source: StageSource; reflection: ShaderReflection | null }[]> {
     const reflections = await Promise.all(sources.map((s) => this.get(s.object, s.blobIndex)));
     return sources.map((source, i) => ({ source, reflection: reflections[i] }));
   }

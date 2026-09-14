@@ -5,7 +5,7 @@ import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVerte
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
-import { bindingTableRegions, pipelineStages, shaderGroups, stageFromFlag } from "../renderer/shader_cache.js";
+import { bindingTableRegions, shaderGroups, stageFromFlag, stateStages } from "../renderer/shader_cache.js";
 import type { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { imageOfView } from "../renderer/vulkan/pass_info.js";
 import type { ReflType, ShaderReflection, ShaderResource, ShaderVariable, StructMember, StructType } from "../renderer/vulkan/spirv_reflect.js";
@@ -42,10 +42,10 @@ export function vertexStruct(layout: VertexLayout, inputs: ShaderVariable[]): St
   };
 }
 
-/** The inputs of a Vulkan pipeline's vertex shader, from its SPIR-V. */
-export function vertexInputs(c: Capture, pipeline: VulkanObject | null): ShaderVariable[] {
-  if (!pipeline || pipeline.type.startsWith("MTL")) return [];
-  const vs = pipelineStages(pipeline, c.db).find((s) => s.stage === "vertex");
+/** The inputs of a Vulkan draw's vertex shader, from its SPIR-V: its pipeline's, or its vertex shader object's. */
+export function vertexInputs(c: Capture, state: Pick<DrawState, "pipeline" | "shaders">): ShaderVariable[] {
+  if (state.pipeline?.type.startsWith("MTL")) return [];
+  const vs = stateStages(state, c.db).find((s) => s.stage === "vertex");
   return (vs && c.reflection(vs.object, vs.blobIndex)?.entryPoint(vs.entryPoint)?.inputs) ?? [];
 }
 
@@ -110,8 +110,8 @@ class StateReader {
   private get stages(): StageInfo[] {
     if (!this._stages) {
       const p = this.state.pipeline;
-      this._stages = p && !p.type.startsWith("MTL")
-        ? pipelineStages(p, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex }))
+      this._stages = !p?.type.startsWith("MTL")
+        ? stateStages(this.state, this.c.db).map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, object: s.object, blobIndex: s.blobIndex, reflection: this.c.reflection(s.object, s.blobIndex), stageIndex: s.stageIndex }))
         : [];
     }
     return this._stages;
@@ -140,8 +140,17 @@ class StateReader {
 
   pipeline(): Record<string, unknown> | undefined {
     const p = this.state.pipeline;
-    if (!p) return undefined;
     const db = this.c.db;
+    if (!p && this.state.shaders.length) {
+      // VK_EXT_shader_object: shaders bound in place of a pipeline, with every other state dynamic.
+      const dynamic = Object.fromEntries(Object.entries(this.state.dynamic).filter(([, v]) => v !== null));
+      return {
+        shaderObjects: this.state.shaders.map((o) => refText(db, o.id)), boundAt: this.state.shadersCmd?.index,
+        stages: this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
+        dynamicState: Object.keys(dynamic).length ? dynamic : undefined,
+      };
+    }
+    if (!p) return undefined;
     const metal = p.type.startsWith("MTL");
     return {
       pipeline: refText(db, p.id), boundAt: this.state.pipelineCmd?.index, summary: p.summary(db) || undefined,
@@ -356,6 +365,13 @@ function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record
     const state = emptyDrawState(sets.pipelineBindPointOf(m, cmd.args));
     state.pipelineCmd = cmd;
     state.pipeline = db.getObject(refId(cmd.args?.pipeline));
+    out.pipeline = new StateReader(c, state, values).pipeline();
+  } else if (m === "vkCmdBindShadersEXT") {
+    const stages = Array.isArray(cmd.args?.pStages) ? cmd.args.pStages : [];
+    const state = emptyDrawState(stages.some((f) => str(f).includes("COMPUTE")) ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
+    state.shadersCmd = cmd;
+    const shaders = Array.isArray(cmd.args?.pShaders) ? cmd.args.pShaders : [];
+    state.shaders = shaders.map((h) => db.getObject(refId(h))).filter((o): o is VulkanObject => !!o);
     out.pipeline = new StateReader(c, state, values).pipeline();
   } else if (sets.BIND_DESCRIPTOR.has(m) && cmd.descriptors) {
     const reader = new StateReader(c, bindingState(d, db, cmd, cmd.descriptors.bindPoint), values);

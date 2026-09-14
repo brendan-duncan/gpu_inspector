@@ -241,7 +241,10 @@ is much smaller:
   left out.
 - **The draw** is issued after the replay has executed its pass, like the overlays: the pass's
   state again, then the draw alone with a pipeline copy that uses the edited shader, has no fragment
-  stage and discards rasterization.
+  stage and discards rasterization. A draw with shader objects (`VK_EXT_shader_object`) binds a copy
+  of its vertex shader object made from the edited SPIR-V instead, no fragment shader, and rasterizer
+  discard as dynamic state; it is issued in dynamic rendering, which shader objects need, where a
+  pipeline copy is made for a render pass. The topology is the one the draw's dynamic state set.
 - **The buffer** is sized from the draw's arguments (three vertices per primitive for strips and
   fans, a million vertices for an indirect draw, 256 MB at most), and the counter buffer says how
   much was written. A draw that fills it is marked truncated.
@@ -268,6 +271,8 @@ Limits:
 - In a multiview pass the draw runs in a single-view pass, so a shader that reads `gl_ViewIndex`
   gives the first view's vertices.
 - A GPU without `VK_EXT_transform_feedback` (most mobile GPUs, MoltenVK) cannot capture VS Out.
+- Overdraw, draw-call overlays, pixel history and ablation copy pipelines, so they leave draws with
+  shader objects out.
 
 ## Pixel history
 

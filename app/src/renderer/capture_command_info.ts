@@ -193,7 +193,7 @@ export class CommandInfoView {
         if (state.pipeline) renderShaderGroups(container, state.pipeline);
         renderBindingTable(container, cmd.args);
       }
-      this._renderShaders(container, state.pipeline, token);
+      this._renderShaders(container, state, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
       if (graphics) {
         if (cmdSets.DRAW.has(method)) {
@@ -226,7 +226,15 @@ export class CommandInfoView {
       state.pipelineCmd = cmd;
       state.pipeline = pipeline;
       this._renderPipelineState(container, state);
-      this._renderShaders(container, pipeline, token);
+      this._renderShaders(container, state, token);
+    } else if (method === "vkCmdBindShadersEXT") {
+      const stages = Array.isArray(cmd.args?.pStages) ? cmd.args.pStages : [];
+      const state = emptyDrawState(stages.some((f) => str(f).includes("COMPUTE")) ? "VK_PIPELINE_BIND_POINT_COMPUTE" : "VK_PIPELINE_BIND_POINT_GRAPHICS");
+      state.shadersCmd = cmd;
+      const shaders = Array.isArray(cmd.args?.pShaders) ? cmd.args.pShaders : [];
+      state.shaders = shaders.map((h) => db.getObject(refId(h))).filter((o): o is VulkanObject => !!o);
+      this._renderPipelineState(container, state);
+      this._renderShaders(container, state, token);
     } else if (cmdSets.BIND_DESCRIPTOR.has(method) && cmd.descriptors) {
       const state = bindingState(this.panel.data, db, cmd,cmd.descriptors.bindPoint);
       this._renderDescriptorSets(container, state, cmd.descriptors.sets.map((set) => ({ cmd, set })), token);
@@ -313,9 +321,25 @@ export class CommandInfoView {
     };
 
     const pipeline = state.pipeline;
-    const r = line("Pipeline");
-    if (pipeline) objectLink(r, pipeline, this._link); else new Span(r, { text: "(none bound)", class: "text-muted" });
-    new Span(r, { text: `  ${fmt(state.bindPoint)}`, class: "text-muted" });
+    if (!pipeline && state.shaders.length) {
+      // VK_EXT_shader_object: a shader per stage in place of a pipeline, and all other state dynamic.
+      const r = line("Shaders");
+      new Span(r, { text: `shader objects  ${fmt(state.bindPoint)}`, class: "text-muted" });
+      for (const shader of state.shaders) {
+        const info = shader.descriptor;
+        const row = line(`  ${fmt(info?.stage)}`);
+        objectLink(row, shader, this._link);
+        new Span(row, { text: ` ${str(info?.pName) || "main"}`, class: "text-muted" });
+      }
+      const dyn = state.dynamic;
+      if (dyn.topology !== null) new Span(line("Topology"), { text: fmt(dyn.topology) });
+      if (dyn.cullMode !== null || dyn.frontFace !== null) new Span(line("Raster"), { text: `cull ${fmt(dyn.cullMode)} ${fmt(dyn.frontFace)}` });
+      if (dyn.depthTest !== null) new Span(line("Depth"), { text: `test ${dyn.depthTest ? "on" : "off"}${dyn.depthTest && dyn.depthCompare !== null ? ` ${fmt(dyn.depthCompare)}` : ""}` });
+    } else {
+      const r = line("Pipeline");
+      if (pipeline) objectLink(r, pipeline, this._link); else new Span(r, { text: "(none bound)", class: "text-muted" });
+      new Span(r, { text: `  ${fmt(state.bindPoint)}`, class: "text-muted" });
+    }
 
     const d = pipeline?.descriptor;
     if (d) {
@@ -372,10 +396,10 @@ export class CommandInfoView {
   // ---------------------------------------------------------------------------------------
   // Shaders
 
-  private _renderShaders(container: Widget, pipeline: VulkanObject | null, token: number): void {
-    if (!pipeline) return;
+  private _renderShaders(container: Widget, state: DrawState, token: number): void {
+    if (!state.pipeline && !state.shaders.length) return;
     const host = new Div(container);
-    void this.panel.window.shaders.stages(pipeline).then((stages) => {
+    void this.panel.window.shaders.stagesOf(state).then((stages) => {
       if (token !== this._token) return;
       for (const { source, reflection } of stages) this._renderShader(host, source, reflection);
     });
@@ -439,8 +463,8 @@ export class CommandInfoView {
     const build = (stages: StageReflection[]): void => {
       for (const bound of sets) this._renderDescriptorSet(host, state, bound, stages);
     };
-    if (state.pipeline) {
-      void this.panel.window.shaders.stages(state.pipeline).then((stages) => {
+    if (state.pipeline || state.shaders.length) {
+      void this.panel.window.shaders.stagesOf(state).then((stages) => {
         if (token === this._token) build(stages);
       });
     } else {
@@ -844,8 +868,8 @@ export class CommandInfoView {
     const build = (vertexReflection: ShaderReflection | null): void => {
       for (const vb of buffers) this._renderVertexBuffer(host, state, vb, vertexReflection);
     };
-    if (state.pipeline) {
-      void this.panel.window.shaders.stages(state.pipeline).then((stages) => {
+    if (state.pipeline || state.shaders.length) {
+      void this.panel.window.shaders.stagesOf(state).then((stages) => {
         if (token !== this._token) return;
         build(stages.find((s) => s.source.stage === "vertex")?.reflection ?? null);
       });
@@ -1090,8 +1114,8 @@ export class CommandInfoView {
         this._renderBufferContents(host, `${key}:${sig}`, "uniform", b.res, captured);
       }
     };
-    if (state.pipeline) {
-      void this.panel.window.shaders.stages(state.pipeline).then((refl) => {
+    if (state.pipeline || state.shaders.length) {
+      void this.panel.window.shaders.stagesOf(state).then((refl) => {
         if (token !== this._token) return;
         const blocks: { res: ShaderResource; stage: ShaderStage }[] = [];
         for (const r of refl) for (const pc of r.reflection?.pushConstants ?? []) blocks.push({ res: pc, stage: r.source.stage });
