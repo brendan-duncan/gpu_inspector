@@ -268,6 +268,9 @@ application with injected state. Route (a) is the general one and is the prerequ
       linked pipelines show and edit their libraries' stages (the libraries made again from their
       records), shader objects are replaced at `vkCmdBindShadersEXT` (a linked set made again
       unlinked), and the replay makes both (triangle `--pipeline-library`, `--shader-object`).
+- [x] Pipelines linked from libraries in the replay's copies and the app's state views: a copy is
+      made whole from the libraries' records (`Replayer::MergeLibraries`), and a linked pipeline's
+      descriptor fills in what its libraries hold (`withLibraries`).
 - [x] Shader objects in captures: a draw bound with `vkCmdBindShadersEXT` carries its shader
       objects and the dynamic state standing in for a pipeline's (`DrawState.shaders`,
       `DrawState.dynamic`), and reports that group by pipeline group these by a program key

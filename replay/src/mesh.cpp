@@ -38,15 +38,9 @@ std::string Replayer::PipelineTopology(uint64_t pipelineId, bool& dynamic) const
     const JValue* object = _capture->Object(pipelineId);
     // Shader objects have no topology of their own: the draw's is the dynamic state it set.
     if (object && Str(object->Get("type")) == "VkShaderEXT") return _overlayDrawnTopology;
-    const JValue* args = object ? object->Get("args") : nullptr;
-    const JValue* infos = args ? args->Get("pCreateInfos") : nullptr;
-    const uint32_t index = object && object->Get("index") ? (uint32_t)object->Get("index")->Uint() : 0;
-    if (!infos || !infos->IsArray() || index >= infos->count) return "";
-    const JValue& info = infos->items[index];
-    if (const JValue* states = info.Get("pDynamicState") ? info.Get("pDynamicState")->Get("pDynamicStates") : nullptr; states && states->IsArray())
-        for (uint32_t i = 0; i < states->count; ++i)
-            if (Str(&states->items[i]) == "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY") dynamic = true;
-    const JValue* assembly = info.Get("pInputAssemblyState");
+    // A pipeline linked from libraries has its topology in the vertex input library's create info.
+    dynamic = PipelineDynamic(pipelineId, "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY");
+    const JValue* assembly = PipelineState(pipelineId, "pInputAssemblyState", "VERTEX_INPUT_INTERFACE");
     return assembly ? Str(assembly->Get("topology")) : "";
 }
 

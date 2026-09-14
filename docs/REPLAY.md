@@ -194,7 +194,14 @@ pass again right after the application ends its encoder, with the application's 
 
 The pipeline copies of overdraw and pixel history are made by `pipeline_copy.cpp`: the captured
 create info is decoded, its shader stages rebuilt from the capture's SPIR-V, and an edit changes
-the state before the copy is created.
+the state before the copy is created. A pipeline linked from graphics pipeline libraries holds none
+of their stages or state, so its copy is made whole instead of linked (`MergeLibraries`): the stages
+and the state members of the parts each library's flags name, every library's dynamic states, and
+their dynamic rendering formats. The copy's code comes from the linked pipeline's payloads. What
+reads a pipeline's state from its record (the mesh output's topology, pixel history's scissor) finds
+it in the library holding that part (`PipelineState`, `PipelineDynamic`). Checked on
+test/triangle `--pipeline-library` with the validation layer: overdraw, a draw overlay, VS Out,
+pixel history and ablation, no messages.
 
 ## Draw-call overlays
 

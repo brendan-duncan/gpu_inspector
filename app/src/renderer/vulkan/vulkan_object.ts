@@ -10,6 +10,64 @@ export interface ObjectLookup {
   getObject(id: number | undefined | null): VulkanObject | null;
 }
 
+/** The members of a graphics pipeline create info each graphics pipeline library part holds (VK_GRAPHICS_PIPELINE_LIBRARY_*). */
+const LIBRARY_PARTS: [string, string[]][] = [
+  ["VERTEX_INPUT_INTERFACE", ["pVertexInputState", "pInputAssemblyState"]],
+  ["PRE_RASTERIZATION_SHADERS", ["pViewportState", "pRasterizationState", "pTessellationState"]],
+  ["FRAGMENT_SHADER", ["pDepthStencilState", "pMultisampleState"]],
+  ["FRAGMENT_OUTPUT_INTERFACE", ["pColorBlendState", "pMultisampleState"]],
+];
+
+function pNextEntry(info: ArgObject, sType: string): ArgObject | null {
+  const chain = info.pNext;
+  const list = Array.isArray(chain) ? chain : isObject(chain) ? [chain] : [];
+  return (list.find((e) => isObject(e) && e.sType === sType) as ArgObject | undefined) ?? null;
+}
+
+/**
+ * A graphics pipeline create info with what the pipeline libraries it links hold filled in (libraries
+ * linked from libraries included): the stages, the state members of the parts each library holds,
+ * and every library's dynamic states. A linked pipeline's own create info names none of that, so
+ * everything that reads a pipeline's state reads this. Null when the create info links no libraries,
+ * or a library is not in `db`.
+ */
+export function withLibraries(info: ArgObject, db: ObjectLookup, depth = 0): ArgObject | null {
+  const link = pNextEntry(info, "VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR");
+  const libraries = link && Array.isArray(link.pLibraries) ? link.pLibraries : null;
+  if (!libraries || depth > 8) return null;
+  const out: ArgObject = { ...info };
+  const stages: ArgValue[] = Array.isArray(info.pStages) ? [...info.pStages] : [];
+  const dynamic: ArgValue[] = isObject(info.pDynamicState) && Array.isArray(info.pDynamicState.pDynamicStates) ? [...info.pDynamicState.pDynamicStates] : [];
+  for (const ref of libraries) {
+    const library = db.getObject(isObject(ref) && typeof ref.__id === "number" ? ref.__id : null);
+    const raw = library?.args && Array.isArray(library.args.pCreateInfos) ? library.args.pCreateInfos[library.index] : null;
+    if (!isObject(raw)) return null;
+    const own = withLibraries(raw, db, depth + 1) ?? raw;
+    const flags = String(pNextEntry(raw, "VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT")?.flags ?? "");
+    // A library linked from others holds what they hold; one made directly holds the parts its flags name.
+    const holds = (part: string): boolean => (own !== raw ? true : flags.includes(part));
+    for (const [part, members] of LIBRARY_PARTS) {
+      if (!holds(part)) continue;
+      for (const m of members) if (!isObject(out[m]) && isObject(own[m])) out[m] = own[m];
+    }
+    for (const s of Array.isArray(own.pStages) ? own.pStages : []) {
+      if (!isObject(s)) continue;
+      const fragment = s.stage === "VK_SHADER_STAGE_FRAGMENT_BIT";
+      if (!holds(fragment ? "FRAGMENT_SHADER" : "PRE_RASTERIZATION_SHADERS")) continue;
+      if (!stages.some((x) => isObject(x) && x.stage === s.stage)) stages.push(s);
+    }
+    if (isObject(own.pDynamicState) && Array.isArray(own.pDynamicState.pDynamicStates)) {
+      for (const d of own.pDynamicState.pDynamicStates) if (!dynamic.includes(d)) dynamic.push(d);
+    }
+    if (!out.layout && own.layout) out.layout = own.layout;
+    if (!out.renderPass && own.renderPass) out.renderPass = own.renderPass;
+  }
+  out.stageCount = stages.length;
+  out.pStages = stages;
+  if (dynamic.length) out.pDynamicState = { ...(isObject(info.pDynamicState) ? info.pDynamicState : {}), dynamicStateCount: dynamic.length, pDynamicStates: dynamic };
+  return out;
+}
+
 export class VulkanObject {
   readonly id: number;
   readonly type: string;        // "VkImage"
@@ -29,6 +87,9 @@ export class VulkanObject {
   isDeleted = false;
   /** A shader of this pipeline / this module has been replaced by the shader editor. */
   edited = false;
+  /** Where a pipeline linked from libraries finds them (set by the object database), and its create info with theirs filled in. */
+  libraryLookup: ObjectLookup | null = null;
+  private _linkedDescriptor: ArgObject | null = null;
 
   constructor(msg: AddObjectMessage) {
     this.id = msg.id;
@@ -77,7 +138,13 @@ export class VulkanObject {
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
     if (Array.isArray(a.pCreateInfos)) {
       const d = a.pCreateInfos[this.index];
-      return isObject(d) ? d : null;
+      if (!isObject(d)) return null;
+      // A pipeline linked from graphics pipeline libraries: its state is what they hold.
+      if (this.libraryLookup && this.type === "VkPipeline") {
+        this._linkedDescriptor ??= withLibraries(d, this.libraryLookup);
+        if (this._linkedDescriptor) return this._linkedDescriptor;
+      }
+      return d;
     }
     if (isObject(a.pBeginInfo)) return a.pBeginInfo;
     return null;

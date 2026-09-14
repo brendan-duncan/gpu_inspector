@@ -530,6 +530,20 @@ private:
     // Pipeline copies (pipeline_copy.cpp)
     /** Copies a captured graphics pipeline through `edit` (false: no copy); null, with a problem naming `purpose`, when it cannot. */
     VkPipeline CopyGraphicsPipeline(uint64_t pipelineId, const std::string& purpose, const std::function<bool(PipelineCopy&)>& edit);
+    /**
+     * Adds to a copy what the graphics pipeline libraries a create info links hold (libraries linked from
+     * libraries included): their stages, with code from `linked`'s payloads or the library's own, and the
+     * state each library's flags say it holds. False when the create info links none, or one is missing.
+     */
+    bool MergeLibraries(const JValue& linked, const JValue& info, PipelineCopy& p, std::vector<VkShaderModule>& temporary, int depth = 0);
+    /**
+     * A state member of a captured graphics pipeline's create info ("pInputAssemblyState"), from the pipeline or,
+     * for one linked from libraries, the library holding `part` (VK_GRAPHICS_PIPELINE_LIBRARY_*: "VERTEX_INPUT_INTERFACE",
+     * "PRE_RASTERIZATION_SHADERS", "FRAGMENT_SHADER_BIT", "FRAGMENT_OUTPUT_INTERFACE"); null when none sets it.
+     */
+    const JValue* PipelineState(uint64_t pipelineId, std::string_view member, std::string_view part) const;
+    /** Whether a captured graphics pipeline, or a library it links, declares a dynamic state ("VK_DYNAMIC_STATE_SCISSOR"). */
+    bool PipelineDynamic(uint64_t pipelineId, std::string_view state) const;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
 

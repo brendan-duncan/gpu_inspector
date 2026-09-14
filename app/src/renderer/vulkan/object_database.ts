@@ -383,6 +383,7 @@ export class ObjectDatabase implements ObjectLookup {
 
   private _addObject(msg: AddObjectMessage): void {
     const o = new VulkanObject(msg);
+    if (o.type === "VkPipeline") o.libraryLookup = this;
     this.allObjects.set(o.id, o);
     let map = this.objectsByType.get(o.type);
     if (!map) {
