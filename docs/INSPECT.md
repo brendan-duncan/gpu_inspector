@@ -78,6 +78,11 @@ compiles as it did in your build.
 This works for Vulkan on the desktop and on [Android](ANDROID.md), where the shader is compiled
 here and sent to the device. It does not apply to [Metal](METAL.md).
 
+A pipeline linked from graphics pipeline libraries shows and edits the stages its libraries hold.
+An application drawing with shader objects (`VK_EXT_shader_object`) edits a **VkShaderEXT** the
+same way, unless it was created from a binary. A shader object created linked to others is
+replaced along with its whole set, each made again unlinked.
+
 ## Validation messages
 
 With **Validation layer** ticked at launch, the errors and warnings it reports are listed in a

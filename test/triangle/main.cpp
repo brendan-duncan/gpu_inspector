@@ -143,6 +143,39 @@ struct App {
     // template (vkCmdPushDescriptorSetWithTemplateKHR) instead of a bound set, whose data the
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
+    // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
+    // input and pre-rasterization with the vertex shader; fragment shader and output), which live
+    // as long as the pipeline linked from them (VK_EXT_graphics_pipeline_library).
+    bool pipelineLibrary = false;
+    VkPipeline pipelineLibraries[2]{};
+    // --shader-object: the cube is drawn with linked vertex and fragment shader objects
+    // (VK_EXT_shader_object) and every piece of state set dynamically, instead of its pipeline.
+    bool shaderObject = false;
+    VkShaderEXT shaders[2]{};
+    struct ShaderObjectFns {
+        PFN_vkCreateShadersEXT create;
+        PFN_vkDestroyShaderEXT destroy;
+        PFN_vkCmdBindShadersEXT bind;
+        PFN_vkCmdSetViewportWithCount viewport;
+        PFN_vkCmdSetScissorWithCount scissor;
+        PFN_vkCmdSetRasterizerDiscardEnable rasterizerDiscard;
+        PFN_vkCmdSetCullMode cull;
+        PFN_vkCmdSetFrontFace frontFace;
+        PFN_vkCmdSetDepthTestEnable depthTest;
+        PFN_vkCmdSetDepthWriteEnable depthWrite;
+        PFN_vkCmdSetDepthCompareOp depthCompare;
+        PFN_vkCmdSetDepthBiasEnable depthBias;
+        PFN_vkCmdSetStencilTestEnable stencilTest;
+        PFN_vkCmdSetPrimitiveTopology topology;
+        PFN_vkCmdSetPrimitiveRestartEnable primitiveRestart;
+        PFN_vkCmdSetVertexInputEXT vertexInput;
+        PFN_vkCmdSetPolygonModeEXT polygonMode;
+        PFN_vkCmdSetRasterizationSamplesEXT samples;
+        PFN_vkCmdSetSampleMaskEXT sampleMask;
+        PFN_vkCmdSetAlphaToCoverageEnableEXT alphaToCoverage;
+        PFN_vkCmdSetColorBlendEnableEXT blendEnable;
+        PFN_vkCmdSetColorWriteMaskEXT writeMask;
+    } so{};
     // --second-device / --second-queue: a second stream of work each frame, a 256x256 offscreen
     // target cleared in a render pass of its own, on a VkDevice of its own (same GPU) or on a second
     // queue of the main device, so a capture has passes, timings and read-backs from both.
@@ -406,7 +439,8 @@ struct App {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "vkinsp_triangle";
         ai.pEngineName = "none";
-        ai.apiVersion = VK_API_VERSION_1_1;
+        // --shader-object draws in dynamic rendering, core in 1.3.
+        ai.apiVersion = shaderObject ? VK_API_VERSION_1_3 : VK_API_VERSION_1_1;
         std::vector<const char*> instExts = {VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(_WIN32)
                                              VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
@@ -483,12 +517,36 @@ struct App {
             }
             qci.queueCount = 2;
         }
-        const char* devExts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+        std::vector<const char*> devExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        if (pushTemplate) devExts.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
-        dci.enabledExtensionCount = pushTemplate ? 2 : 1;
-        dci.ppEnabledExtensionNames = devExts;
+        VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+        if (pipelineLibrary) {
+            devExts.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+            devExts.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+            gpl.graphicsPipelineLibrary = VK_TRUE;
+            dci.pNext = &gpl;
+        }
+        VkPhysicalDeviceShaderObjectFeaturesEXT soFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
+        VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+        if (shaderObject) {
+            // The extension brings the dynamic state commands it needs with it; its draws need
+            // dynamic rendering (core in the 1.3 instance this mode asks for).
+            if (samples != VK_SAMPLE_COUNT_1_BIT) {
+                fprintf(stderr, "--shader-object does not combine with --msaa\n");
+                exit(1);
+            }
+            devExts.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+            soFeatures.shaderObject = VK_TRUE;
+            dynamicRendering.dynamicRendering = VK_TRUE;
+            dynamicRendering.pNext = (void*)dci.pNext;
+            soFeatures.pNext = &dynamicRendering;
+            dci.pNext = &soFeatures;
+        }
+        dci.enabledExtensionCount = (uint32_t)devExts.size();
+        dci.ppEnabledExtensionNames = devExts.data();
         CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
         if (side == Side::Device) {
@@ -503,6 +561,35 @@ struct App {
         } else if (side == Side::Queue) {
             sideWork.device = device;
             vkGetDeviceQueue(device, queueFamily, 1, &sideWork.queue);
+        }
+        if (shaderObject) {
+            auto fn = [&](const char* name) { return vkGetDeviceProcAddr(device, name); };
+            so.create = (PFN_vkCreateShadersEXT)fn("vkCreateShadersEXT");
+            so.destroy = (PFN_vkDestroyShaderEXT)fn("vkDestroyShaderEXT");
+            so.bind = (PFN_vkCmdBindShadersEXT)fn("vkCmdBindShadersEXT");
+            so.viewport = (PFN_vkCmdSetViewportWithCount)fn("vkCmdSetViewportWithCountEXT");
+            so.scissor = (PFN_vkCmdSetScissorWithCount)fn("vkCmdSetScissorWithCountEXT");
+            so.rasterizerDiscard = (PFN_vkCmdSetRasterizerDiscardEnable)fn("vkCmdSetRasterizerDiscardEnableEXT");
+            so.cull = (PFN_vkCmdSetCullMode)fn("vkCmdSetCullModeEXT");
+            so.frontFace = (PFN_vkCmdSetFrontFace)fn("vkCmdSetFrontFaceEXT");
+            so.depthTest = (PFN_vkCmdSetDepthTestEnable)fn("vkCmdSetDepthTestEnableEXT");
+            so.depthWrite = (PFN_vkCmdSetDepthWriteEnable)fn("vkCmdSetDepthWriteEnableEXT");
+            so.depthCompare = (PFN_vkCmdSetDepthCompareOp)fn("vkCmdSetDepthCompareOpEXT");
+            so.depthBias = (PFN_vkCmdSetDepthBiasEnable)fn("vkCmdSetDepthBiasEnableEXT");
+            so.stencilTest = (PFN_vkCmdSetStencilTestEnable)fn("vkCmdSetStencilTestEnableEXT");
+            so.topology = (PFN_vkCmdSetPrimitiveTopology)fn("vkCmdSetPrimitiveTopologyEXT");
+            so.primitiveRestart = (PFN_vkCmdSetPrimitiveRestartEnable)fn("vkCmdSetPrimitiveRestartEnableEXT");
+            so.vertexInput = (PFN_vkCmdSetVertexInputEXT)fn("vkCmdSetVertexInputEXT");
+            so.polygonMode = (PFN_vkCmdSetPolygonModeEXT)fn("vkCmdSetPolygonModeEXT");
+            so.samples = (PFN_vkCmdSetRasterizationSamplesEXT)fn("vkCmdSetRasterizationSamplesEXT");
+            so.sampleMask = (PFN_vkCmdSetSampleMaskEXT)fn("vkCmdSetSampleMaskEXT");
+            so.alphaToCoverage = (PFN_vkCmdSetAlphaToCoverageEnableEXT)fn("vkCmdSetAlphaToCoverageEnableEXT");
+            so.blendEnable = (PFN_vkCmdSetColorBlendEnableEXT)fn("vkCmdSetColorBlendEnableEXT");
+            so.writeMask = (PFN_vkCmdSetColorWriteMaskEXT)fn("vkCmdSetColorWriteMaskEXT");
+            if (!so.create || !so.bind || !so.vertexInput || !so.writeMask || !so.viewport) {
+                fprintf(stderr, "--shader-object: the device has no VK_EXT_shader_object\n");
+                exit(1);
+            }
         }
         if (pushTemplate) {
             pushWithTemplate = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
@@ -1263,10 +1350,80 @@ struct App {
         gpci.pDynamicState = &dsci;
         gpci.layout = pipelineLayout;
         gpci.renderPass = renderPass;
-        CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline));
+        if (pipelineLibrary) {
+            // Library 1: vertex input interface and pre-rasterization shaders (the vertex stage).
+            VkGraphicsPipelineLibraryCreateInfoEXT vertexParts{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT};
+            vertexParts.flags = VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT | VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT;
+            VkGraphicsPipelineCreateInfo vlib{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            vlib.pNext = &vertexParts;
+            vlib.flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR;
+            vlib.stageCount = 1;
+            vlib.pStages = &stages[0];
+            vlib.pVertexInputState = &vi;
+            vlib.pInputAssemblyState = &ia;
+            vlib.pViewportState = &vp;
+            vlib.pRasterizationState = &rs;
+            vlib.pDynamicState = &dsci;
+            vlib.layout = pipelineLayout;
+            vlib.renderPass = renderPass;
+            // Library 2: the fragment shader and the fragment output interface.
+            VkGraphicsPipelineLibraryCreateInfoEXT fragmentParts{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT};
+            fragmentParts.flags = VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT | VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
+            VkGraphicsPipelineCreateInfo flib{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            flib.pNext = &fragmentParts;
+            flib.flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR;
+            flib.stageCount = 1;
+            flib.pStages = &stages[1];
+            flib.pMultisampleState = &ms;
+            flib.pDepthStencilState = &ds;
+            flib.pColorBlendState = &blend;
+            flib.layout = pipelineLayout;
+            flib.renderPass = renderPass;
+            CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &vlib, nullptr, &pipelineLibraries[0]));
+            CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &flib, nullptr, &pipelineLibraries[1]));
+            Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipelineLibraries[0], "Cube vertex library");
+            Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipelineLibraries[1], "Cube fragment library");
+            VkPipelineLibraryCreateInfoKHR link{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
+            link.libraryCount = 2;
+            link.pLibraries = pipelineLibraries;
+            VkGraphicsPipelineCreateInfo linked{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            linked.pNext = &link;
+            linked.layout = pipelineLayout;
+            linked.renderPass = renderPass;
+            CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &linked, nullptr, &pipeline));
+        } else {
+            CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline));
+        }
         Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline, "Cube pipeline");
         vkDestroyShaderModule(device, vs, nullptr);
         vkDestroyShaderModule(device, fs, nullptr);
+        if (shaderObject) {
+            // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
+            std::vector<char> vcode = ReadFile(ExeDir() + "cube.vert.spv");
+            std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : "cube.frag.spv"));
+            VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
+            VkShaderCreateInfoEXT sci[2]{};
+            for (int i = 0; i < 2; ++i) {
+                sci[i].sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT;
+                sci[i].flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
+                sci[i].codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
+                sci[i].pName = "main";
+                sci[i].setLayoutCount = 1;
+                sci[i].pSetLayouts = &setLayout;
+                sci[i].pushConstantRangeCount = 1;
+                sci[i].pPushConstantRanges = &range;
+            }
+            sci[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            sci[0].nextStage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            sci[0].codeSize = vcode.size();
+            sci[0].pCode = vcode.data();
+            sci[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            sci[1].codeSize = fcode.size();
+            sci[1].pCode = fcode.data();
+            CHECK(so.create(device, 2, sci, nullptr, shaders));
+            Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)shaders[0], "Cube vertex shader");
+            Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)shaders[1], "Cube fragment shader");
+        }
     }
 
     void CreatePersistImage(PersistImage& p, uint32_t mips, const char* name) {
@@ -1503,14 +1660,98 @@ struct App {
             hsi.pCommandBuffers = &hb;
             CHECK(vkQueueSubmit(queue, 1, &hsi, VK_NULL_HANDLE));
         }
-        vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        // Shader objects can only draw in dynamic rendering: the same targets and clears, with the
+        // layout transitions the render pass would have made.
+        const VkImageView colorView = offscreen ? offView : swapViews[imageIndex];
+        const VkImage colorImage = offscreen ? offImage : swapImages[imageIndex];
+        if (shaderObject) {
+            VkImageMemoryBarrier toTargets[2]{};
+            for (auto& b : toTargets) {
+                b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            }
+            toTargets[0].image = colorImage;
+            toTargets[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toTargets[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toTargets[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            toTargets[1].image = depthImage;
+            toTargets[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            toTargets[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            toTargets[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                                 0, 0, nullptr, 0, nullptr, 2, toTargets);
+            VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            color.imageView = colorView;
+            color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color.clearValue = clears[0];
+            VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            depth.imageView = depthView;
+            depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth.clearValue = clears[1];
+            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            ri.renderArea = {{0, 0}, {width, height}};
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 1;
+            ri.pColorAttachments = &color;
+            ri.pDepthAttachment = &depth;
+            vkCmdBeginRendering(cb, &ri);
+        } else {
+            vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+        }
         VkViewport viewport{0, 0, (float)width, (float)height, 0, 1};
         // --bad-scissor: a negative offset is a validation error (VUID-vkCmdSetScissor-x-00595),
         // used to exercise the inspector's validation message reporting.
         VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
-        vkCmdSetViewport(cb, 0, 1, &viewport);
-        vkCmdSetScissor(cb, 0, 1, &scissor);
+        if (shaderObject) {
+            // Shader objects: the shaders, and all the state a pipeline would have carried.
+            const VkShaderStageFlagBits stageBits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+            so.bind(cb, 2, stageBits, shaders);
+            so.viewport(cb, 1, &viewport);
+            so.scissor(cb, 1, &scissor);
+            so.rasterizerDiscard(cb, VK_FALSE);
+            so.cull(cb, VK_CULL_MODE_BACK_BIT);
+            so.frontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            so.depthTest(cb, VK_TRUE);
+            so.depthWrite(cb, VK_TRUE);
+            so.depthCompare(cb, VK_COMPARE_OP_LESS);
+            so.depthBias(cb, VK_FALSE);
+            so.stencilTest(cb, VK_FALSE);
+            so.topology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            so.primitiveRestart(cb, VK_FALSE);
+            VkVertexInputBindingDescription2EXT binding{VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT};
+            binding.binding = 0;
+            binding.stride = sizeof(Vertex);
+            binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+            binding.divisor = 1;
+            VkVertexInputAttributeDescription2EXT attrs[3]{};
+            const VkFormat formats[3] = {VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32_SFLOAT};
+            const uint32_t offsets[3] = {offsetof(Vertex, pos), offsetof(Vertex, color), offsetof(Vertex, uv)};
+            for (uint32_t i = 0; i < 3; ++i) {
+                attrs[i].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+                attrs[i].location = i;
+                attrs[i].format = formats[i];
+                attrs[i].offset = offsets[i];
+            }
+            so.vertexInput(cb, 1, &binding, 3, attrs);
+            so.polygonMode(cb, VK_POLYGON_MODE_FILL);
+            so.samples(cb, samples);
+            const VkSampleMask mask = 0xFFFFFFFF;
+            so.sampleMask(cb, samples, &mask);
+            so.alphaToCoverage(cb, VK_FALSE);
+            const VkBool32 blendOff = VK_FALSE;
+            so.blendEnable(cb, 0, 1, &blendOff);
+            const VkColorComponentFlags all = 0xF;
+            so.writeMask(cb, 0, 1, &all);
+        } else {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdSetViewport(cb, 0, 1, &viewport);
+            vkCmdSetScissor(cb, 0, 1, &scissor);
+        }
         if (pushTemplate) pushWithTemplate(cb, pushUpdateTemplate, pipelineLayout, 0, &pushData);
         else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         VkDeviceSize offset = 0;
@@ -1520,7 +1761,19 @@ struct App {
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
         if (occluded) vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
-        vkCmdEndRenderPass(cb);
+        if (shaderObject) {
+            vkCmdEndRendering(cb);
+            VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            toPresent.srcQueueFamilyIndex = toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toPresent.image = colorImage;
+            toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toPresent.newLayout = offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
+        } else {
+            vkCmdEndRenderPass(cb);
+        }
         if (endLabel) endLabel(cb);
         CHECK(vkEndCommandBuffer(cb));
     }
@@ -1675,6 +1928,8 @@ struct App {
         if (overlayPass) vkDestroyRenderPass(device, overlayPass, nullptr);
         if (pushUpdateTemplate) vkDestroyDescriptorUpdateTemplate(device, pushUpdateTemplate, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
+        for (VkPipeline lib : pipelineLibraries) if (lib) vkDestroyPipeline(device, lib, nullptr);
+        for (VkShaderEXT s : shaders) if (s) so.destroy(device, s, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
@@ -1734,6 +1989,8 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
+        else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
+        else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
         else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
         else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;
         else if (!strcmp(argv[i], "--persistent")) app.persistent = true;

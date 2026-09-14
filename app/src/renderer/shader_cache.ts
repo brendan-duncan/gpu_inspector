@@ -64,6 +64,14 @@ export function pipelineStages(pipeline: VulkanObject, db: ObjectLookup): StageS
     if (blobIndex >= 0) out.push({ stage, stageFlag, entryPoint, object: pipeline, blobIndex, module });
     else if (module && module.blobs.length) out.push({ stage, stageFlag, entryPoint, object: module, blobIndex: 0, module });
   }
+  // A pipeline linked from graphics pipeline libraries names none of their stages in its own create
+  // info: the layer attaches their code to it ("fragment:main"), so those payloads are its stages too.
+  pipeline.blobs.forEach((b, blobIndex) => {
+    const [stage, entryPoint = "main"] = b.name.split(":");
+    const stageFlag = Object.keys(STAGE_FLAGS).find((f) => STAGE_FLAGS[f] === stage);
+    if (!stageFlag || out.some((s) => s.stage === stage)) return;
+    out.push({ stage: stage as ShaderStage, stageFlag, entryPoint, object: pipeline, blobIndex, module: null });
+  });
   return out;
 }
 

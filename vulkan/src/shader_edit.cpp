@@ -5,6 +5,7 @@
 #include "transport.h"
 #include "vk_serialize.gen.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace vkinsp {
@@ -92,11 +93,15 @@ const void* CopyChain(Arena& a, const void* pNext, std::string& note, bool& unsu
             case VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO:
             case VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO:
                 break;   // inline code is kept separately; creation feedback is output only
-            case VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR:
-            case VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT:
-                unsupported = true;
-                note += "graphics pipeline libraries are not supported; ";
+            case VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR: {
+                // The libraries are made again at a rebuild (ShaderEditor::Create), which points
+                // pLibraries at those.
+                auto* s = a.Copy(reinterpret_cast<const VkPipelineLibraryCreateInfoKHR*>(n));
+                s->pLibraries = a.Copy(s->pLibraries, s->libraryCount);
+                c = reinterpret_cast<VkBaseOutStructure*>(s);
                 break;
+            }
+            case VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT: c = Plain<VkGraphicsPipelineLibraryCreateInfoEXT>(a, n); break;
             default: {
                 const char* name = ToString_VkStructureType(n->sType);
                 note += "dropped ";
@@ -156,10 +161,6 @@ VkGraphicsPipelineCreateInfo* CopyGraphics(Arena& a, const VkGraphicsPipelineCre
                                            std::vector<const VkShaderModuleCreateInfo*>& inlineCode) {
     VkGraphicsPipelineCreateInfo* g = a.Copy(&src);
     g->pNext = CopyChain(a, src.pNext, note, unsupported);
-    if (g->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) {
-        unsupported = true;
-        note += "pipeline library; ";
-    }
     g->flags &= ~(VkPipelineCreateFlags)(VK_PIPELINE_CREATE_DERIVATIVE_BIT | VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT);
     g->basePipelineHandle = VK_NULL_HANDLE;
     g->basePipelineIndex = -1;
@@ -276,13 +277,23 @@ const char* StageName(VkShaderStageFlagBits stage) {
     }
 }
 
-// A module holding the SPIR-V the tracker keeps with a pipeline for one of its stages (the
-// "<stage>:<entry point>" payloads), or VK_NULL_HANDLE when it keeps none. A rebuild cannot give the
+// The library list of a (copied) create info chain, or null.
+VkPipelineLibraryCreateInfoKHR* LibraryInfo(const void* pNext) {
+    for (auto* n = static_cast<const VkBaseInStructure*>(pNext); n; n = n->pNext)
+        if (n->sType == VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR)
+            return const_cast<VkPipelineLibraryCreateInfoKHR*>(reinterpret_cast<const VkPipelineLibraryCreateInfoKHR*>(n));
+    return nullptr;
+}
+
+// A module holding the SPIR-V the tracker kept with a pipeline for one of its stages (the
+// "<stage>:<entry point>" payloads), or VK_NULL_HANDLE when it kept none. A rebuild cannot give the
 // stages it leaves alone the application's own modules: an application may destroy a module as
 // soon as the pipeline exists, and most do.
-VkShaderModule StageModule(DeviceData* dev, VkDevice device, const TrackedObject& pipeline, VkShaderStageFlagBits stage) {
+VkShaderModule StageModule(DeviceData* dev, VkDevice device,
+                           const std::vector<std::pair<std::string, std::shared_ptr<std::vector<uint8_t>>>>& blobs,
+                           VkShaderStageFlagBits stage) {
     const std::string prefix = std::string(StageName(stage)) + ":";
-    for (auto& [name, data] : pipeline.blobs) {
+    for (auto& [name, data] : blobs) {
         if (name.compare(0, prefix.size(), prefix) != 0) continue;
         if (!data || data->size() < 20 || data->size() % 4) return VK_NULL_HANDLE;
         VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -307,12 +318,26 @@ ShaderEditor& ShaderEditor::Get() {
 void ShaderEditor::OnCreateGraphicsPipelines(VkDevice device, uint32_t count, const VkGraphicsPipelineCreateInfo* infos,
                                              const VkPipeline* pipelines) {
     if (!infos || !pipelines) return;
+    Tracker& t = Tracker::Get();
     std::unique_lock lock(_mutex);
     for (uint32_t i = 0; i < count; ++i) {
         if (!pipelines[i]) continue;
-        auto rec = std::make_unique<Record>();
+        auto rec = std::make_shared<Record>();
         rec->device = device;
         rec->graphics = CopyGraphics(rec->arena, infos[i], rec->note, rec->unsupported, rec->inlineCode);
+        rec->library = (infos[i].flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) != 0;
+        rec->blobs = t.GetBlobs(HT_VkPipeline, (uint64_t)(uintptr_t)pipelines[i]);
+        if (const VkPipelineLibraryCreateInfoKHR* libs = LibraryInfo(rec->graphics->pNext)) {
+            for (uint32_t l = 0; l < libs->libraryCount; ++l) {
+                auto it = libs->pLibraries ? _records.find(libs->pLibraries[l]) : _records.end();
+                if (it == _records.end()) {
+                    rec->unsupported = true;
+                    rec->note += "a library's creation was not recorded; ";
+                    break;
+                }
+                rec->libraries.push_back(it->second);
+            }
+        }
         _records[pipelines[i]] = std::move(rec);
     }
 }
@@ -323,9 +348,10 @@ void ShaderEditor::OnCreateComputePipelines(VkDevice device, uint32_t count, con
     std::unique_lock lock(_mutex);
     for (uint32_t i = 0; i < count; ++i) {
         if (!pipelines[i]) continue;
-        auto rec = std::make_unique<Record>();
+        auto rec = std::make_shared<Record>();
         rec->device = device;
         rec->compute = CopyCompute(rec->arena, infos[i], rec->note, rec->unsupported, rec->inlineCode);
+        rec->blobs = Tracker::Get().GetBlobs(HT_VkPipeline, (uint64_t)(uintptr_t)pipelines[i]);
         _records[pipelines[i]] = std::move(rec);
     }
 }
@@ -333,6 +359,176 @@ void ShaderEditor::OnCreateComputePipelines(VkDevice device, uint32_t count, con
 void ShaderEditor::OnDestroyPipeline(uint64_t handle) {
     std::lock_guard lock(_retiredMutex);
     _destroyed.push_back((VkPipeline)(uintptr_t)handle);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shader objects
+
+void ShaderEditor::OnCreateShaders(VkDevice device, uint32_t count, const VkShaderCreateInfoEXT* infos, const VkShaderEXT* shaders) {
+    if (!infos || !shaders) return;
+    std::vector<VkShaderEXT> linked;
+    for (uint32_t i = 0; i < count; ++i)
+        if (shaders[i] && (infos[i].flags & VK_SHADER_CREATE_LINK_STAGE_BIT_EXT)) linked.push_back(shaders[i]);
+    std::unique_lock lock(_mutex);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!shaders[i]) continue;
+        auto rec = std::make_unique<ShaderRecord>();
+        rec->device = device;
+        Arena& a = rec->arena;
+        const VkShaderCreateInfoEXT& src = infos[i];
+        VkShaderCreateInfoEXT* c = a.Copy(&src);
+        bool unsupported = false;
+        c->pNext = CopyChain(a, src.pNext, rec->note, unsupported);
+        c->pCode = src.pCode && src.codeSize ? a.Copy(static_cast<const uint8_t*>(src.pCode), src.codeSize) : nullptr;
+        c->pName = a.CopyString(src.pName);
+        c->pSetLayouts = a.Copy(src.pSetLayouts, src.setLayoutCount);
+        c->pPushConstantRanges = a.Copy(src.pPushConstantRanges, src.pushConstantRangeCount);
+        if (src.pSpecializationInfo) {
+            auto* spec = a.Copy(src.pSpecializationInfo);
+            spec->pMapEntries = a.Copy(spec->pMapEntries, spec->mapEntryCount);
+            if (spec->pData && spec->dataSize) {
+                void* data = a.Alloc(spec->dataSize);
+                memcpy(data, spec->pData, spec->dataSize);
+                spec->pData = data;
+            }
+            c->pSpecializationInfo = spec;
+        }
+        rec->info = c;
+        rec->blobName = std::string(StageName(src.stage)) + ":" + (src.pName ? src.pName : "main");
+        if (src.flags & VK_SHADER_CREATE_LINK_STAGE_BIT_EXT) rec->linked = linked;
+        _shaderRecords[shaders[i]] = std::move(rec);
+    }
+}
+
+void ShaderEditor::OnDestroyShader(uint64_t handle) {
+    std::lock_guard lock(_retiredMutex);
+    _destroyedShaders.push_back((VkShaderEXT)(uintptr_t)handle);
+}
+
+const VkShaderEXT* ShaderEditor::ResolveShadersSlow(uint32_t count, const VkShaderEXT* shaders, std::vector<VkShaderEXT>& storage) {
+    std::shared_lock lock(_mutex);
+    bool any = false;
+    for (uint32_t i = 0; i < count && !any; ++i) any = shaders[i] && _activeShaders.count(shaders[i]);
+    if (!any) return shaders;
+    storage.assign(shaders, shaders + count);
+    for (VkShaderEXT& s : storage) {
+        auto it = s ? _activeShaders.find(s) : _activeShaders.end();
+        if (it != _activeShaders.end()) s = it->second;
+    }
+    return storage.data();
+}
+
+bool ShaderEditor::RebuildShaders(VkShaderEXT shader, std::string& error) {
+    auto it = _shaderRecords.find(shader);
+    if (it == _shaderRecords.end()) { error = "the shader's creation was not recorded"; return false; }
+    // The set is made again together: every member the original set had that is still recorded.
+    std::vector<VkShaderEXT> members;
+    for (VkShaderEXT m : it->second->linked.empty() ? std::vector<VkShaderEXT>{shader} : it->second->linked)
+        if (_shaderRecords.count(m)) members.push_back(m);
+    ShaderRecord& first = *_shaderRecords[members[0]];
+    DeviceData* dev = GetDeviceData(first.device);
+    if (!dev || !dev->dispatch.CreateShadersEXT) { error = "device not found"; return false; }
+    Tracker& t = Tracker::Get();
+    const bool edited = std::any_of(members.begin(), members.end(), [&](VkShaderEXT m) { return _shaderRecords[m]->editCode != nullptr; });
+
+    std::vector<VkShaderEXT> created(members.size(), VK_NULL_HANDLE);
+    if (edited) {
+        std::vector<VkShaderCreateInfoEXT> infos;
+        for (VkShaderEXT m : members) {
+            ShaderRecord& r = *_shaderRecords[m];
+            if (r.info->codeType != VK_SHADER_CODE_TYPE_SPIRV_EXT) { error = "the shader was created from a binary, not SPIR-V"; return false; }
+            VkShaderCreateInfoEXT ci = *r.info;
+            // Unlinked: a replacement is bound in place of each original, alone or beside others.
+            ci.flags &= ~(VkShaderCreateFlagsEXT)VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
+            if (r.editCode) {
+                ci.pCode = r.editCode->data();
+                ci.codeSize = r.editCode->size();
+            }
+            infos.push_back(ci);
+        }
+        VkResult res = dev->dispatch.CreateShadersEXT(first.device, (uint32_t)infos.size(), infos.data(), nullptr, created.data());
+        if (res != VK_SUCCESS) {
+            for (VkShaderEXT s : created) if (s) dev->dispatch.DestroyShaderEXT(first.device, s, nullptr);
+            error = "vkCreateShadersEXT failed (VkResult " + std::to_string((int)res) + ")";
+            if (!first.note.empty()) error += "; " + first.note;
+            return false;
+        }
+    }
+    for (size_t i = 0; i < members.size(); ++i) {
+        ShaderRecord& r = *_shaderRecords[members[i]];
+        if (r.replacement) {
+            std::lock_guard retired(_retiredMutex);
+            _retiredShaders.emplace_back(r.device, r.replacement);
+        }
+        if (r.replacementId) t.OnDestroy(HT_VkShaderEXT, (uint64_t)(uintptr_t)r.replacement);
+        r.replacement = created[i];
+        r.replacementId = 0;
+        if (!created[i]) {
+            _activeShaders.erase(members[i]);
+            continue;
+        }
+        _activeShaders[members[i]] = created[i];
+        // The replacement is an object of its own, with the original's arguments and its code.
+        TrackedObject tracked;
+        if (t.Find(HT_VkShaderEXT, (uint64_t)(uintptr_t)members[i], tracked)) {
+            r.replacementId = t.OnCreate(HT_VkShaderEXT, (uint64_t)(uintptr_t)created[i], HT_VkDevice, (uint64_t)(uintptr_t)r.device,
+                                         tracked.cmd, tracked.index, tracked.args);
+            std::string label = (tracked.label.empty() ? "Shader " + std::to_string(tracked.id) : tracked.label) + " (edited)";
+            t.SetLabel(HT_VkShaderEXT, (uint64_t)(uintptr_t)created[i], label.c_str());
+            auto code = r.editCode ? r.editCode
+                                   : std::make_shared<std::vector<uint8_t>>(static_cast<const uint8_t*>(r.info->pCode),
+                                                                            static_cast<const uint8_t*>(r.info->pCode) + r.info->codeSize);
+            t.AddBlob(HT_VkShaderEXT, (uint64_t)(uintptr_t)created[i], r.blobName, code);
+        }
+    }
+    _anyShaderActive.store(!_activeShaders.empty(), std::memory_order_relaxed);
+    return true;
+}
+
+void ShaderEditor::ReplaceShaderObject(uint64_t id, VkShaderEXT original, VkShaderStageFlagBits stage, std::vector<uint32_t> spirv) {
+    std::unique_lock lock(_mutex);
+    auto it = _shaderRecords.find(original);
+    if (it == _shaderRecords.end()) {
+        Reply(id, stage, false, "the shader's creation was not recorded", 0);
+        return;
+    }
+    ShaderRecord& rec = *it->second;
+    if (rec.info->stage != stage) {
+        Reply(id, stage, false, std::string("the shader is a ") + StageName(rec.info->stage) + " shader", 0);
+        return;
+    }
+    if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
+        Reply(id, stage, false, "not a SPIR-V module", 0);
+        return;
+    }
+    auto previous = rec.editCode;
+    rec.editCode = std::make_shared<std::vector<uint8_t>>(reinterpret_cast<const uint8_t*>(spirv.data()),
+                                                          reinterpret_cast<const uint8_t*>(spirv.data()) + spirv.size() * sizeof(uint32_t));
+    std::string error;
+    if (!RebuildShaders(original, error)) {
+        rec.editCode = previous;
+        Reply(id, stage, false, error, 0);
+        return;
+    }
+    std::string note = rec.note;
+    if (rec.linked.size() > 1) note += "its linked set of " + std::to_string(rec.linked.size()) + " shaders is made again unlinked; ";
+    Reply(id, stage, true, note, rec.replacementId);
+}
+
+void ShaderEditor::RestoreShaderObject(uint64_t id, VkShaderEXT original, VkShaderStageFlagBits stage) {
+    std::unique_lock lock(_mutex);
+    auto it = _shaderRecords.find(original);
+    if (it == _shaderRecords.end() || !it->second->editCode) {
+        Reply(id, stage, true, "", 0);
+        return;
+    }
+    it->second->editCode = nullptr;
+    std::string error;
+    if (!RebuildShaders(original, error)) {
+        Reply(id, stage, false, error, 0);
+        return;
+    }
+    Reply(id, stage, true, "", 0);
 }
 
 VkPipeline ShaderEditor::ResolveSlow(VkPipeline pipeline) {
@@ -349,10 +545,30 @@ void ShaderEditor::Retire(VkDevice device, VkPipeline pipeline, VkShaderModule m
 
 void ShaderEditor::OnPresent(DeviceData* dev) {
     std::vector<VkPipeline> destroyed;
+    std::vector<VkShaderEXT> destroyedShaders;
     {
         std::lock_guard lock(_retiredMutex);
         destroyed.swap(_destroyed);
+        destroyedShaders.swap(_destroyedShaders);
     }
+    // Shader objects the application destroyed: their records go, and their replacements retire.
+    std::vector<VkShaderEXT> shadersToUntrack;
+    if (!destroyedShaders.empty()) {
+        std::unique_lock lock(_mutex);
+        for (VkShaderEXT s : destroyedShaders) {
+            auto it = _shaderRecords.find(s);
+            if (it == _shaderRecords.end()) continue;
+            if (it->second->replacement) {
+                std::lock_guard retired(_retiredMutex);
+                _retiredShaders.emplace_back(it->second->device, it->second->replacement);
+                if (it->second->replacementId) shadersToUntrack.push_back(it->second->replacement);
+            }
+            _activeShaders.erase(s);
+            _shaderRecords.erase(it);
+        }
+        _anyShaderActive.store(!_activeShaders.empty(), std::memory_order_relaxed);
+    }
+    for (VkShaderEXT s : shadersToUntrack) Tracker::Get().OnDestroy(HT_VkShaderEXT, (uint64_t)(uintptr_t)s);
     // Pipelines the application destroyed: drop their records and retire their replacements.
     std::vector<VkPipeline> replacementsToUntrack;
     if (!destroyed.empty()) {
@@ -365,6 +581,7 @@ void ShaderEditor::OnPresent(DeviceData* dev) {
                 Retire(rec.device, rec.replacement, VK_NULL_HANDLE);
                 replacementsToUntrack.push_back(rec.replacement);
             }
+            for (VkPipeline lib : rec.replacementLibraries) Retire(rec.device, lib, VK_NULL_HANDLE);
             for (auto& [stage, module] : rec.edits) Retire(rec.device, VK_NULL_HANDLE, module);
             _active.erase(p);
             _records.erase(it);
@@ -375,11 +592,13 @@ void ShaderEditor::OnPresent(DeviceData* dev) {
 
     std::vector<std::pair<VkDevice, VkPipeline>> pipelines;
     std::vector<std::pair<VkDevice, VkShaderModule>> modules;
+    std::vector<std::pair<VkDevice, VkShaderEXT>> shaders;
     {
         std::lock_guard lock(_retiredMutex);
-        if (_retiredPipelines.empty() && _retiredModules.empty()) return;
+        if (_retiredPipelines.empty() && _retiredModules.empty() && _retiredShaders.empty()) return;
         pipelines.swap(_retiredPipelines);
         modules.swap(_retiredModules);
+        shaders.swap(_retiredShaders);
     }
     // Replacements may still be referenced by command buffers in flight.
     dev->dispatch.DeviceWaitIdle(dev->device);
@@ -390,6 +609,10 @@ void ShaderEditor::OnPresent(DeviceData* dev) {
     for (auto& [device, m] : modules) {
         DeviceData* d = GetDeviceData(device);
         if (d) d->dispatch.DestroyShaderModule(device, m, nullptr);
+    }
+    for (auto& [device, s] : shaders) {
+        DeviceData* d = GetDeviceData(device);
+        if (d && d->dispatch.DestroyShaderEXT) d->dispatch.DestroyShaderEXT(device, s, nullptr);
     }
 }
 
@@ -410,23 +633,28 @@ void ShaderEditor::Reply(uint64_t pipelineId, VkShaderStageFlagBits stage, bool 
 
 // Creates (or recreates) the replacement pipeline of `original` from its record and current
 // edits, registers it with the tracker and activates it. Called with _mutex held exclusively.
-bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error) {
-    DeviceData* dev = GetDeviceData(rec.device);
-    if (!dev) { error = "device not found"; return false; }
-    if (rec.unsupported) { error = "cannot rebuild this pipeline: " + rec.note; return false; }
+bool ShaderEditor::HasStage(const Record& rec, VkShaderStageFlagBits stage) {
+    if (rec.compute) return rec.compute->stage.stage == stage;
+    if (rec.graphics) {
+        for (uint32_t i = 0; rec.graphics->pStages && i < rec.graphics->stageCount; ++i)
+            if (rec.graphics->pStages[i].stage == stage) return true;
+    }
+    for (const auto& lib : rec.libraries)
+        if (HasStage(*lib, stage)) return true;
+    return false;
+}
 
+VkPipeline ShaderEditor::Create(DeviceData* dev, Record& rec, const std::map<VkShaderStageFlagBits, VkShaderModule>& edits,
+                                std::vector<VkPipeline>& libraries, VkResult& result) {
+    result = VK_ERROR_INITIALIZATION_FAILED;
     Arena scratch;
     VkPipeline created = VK_NULL_HANDLE;
-    VkResult res = VK_ERROR_INITIALIZATION_FAILED;
-    // The stages left alone get modules of their own from the tracked code (see StageModule),
-    // destroyed again once the pipeline exists; without tracked code they keep the original module.
-    Tracker& t = Tracker::Get();
-    TrackedObject tracked;
-    const bool isTracked = t.Find(HT_VkPipeline, (uint64_t)(uintptr_t)original, tracked);
+    // The stages left alone get modules of their own from the recorded code (see StageModule),
+    // destroyed again once the pipeline exists; without recorded code they keep the original module.
     std::vector<VkShaderModule> temporary;
     auto ownModule = [&](VkPipelineShaderStageCreateInfo& s, const VkShaderModuleCreateInfo* inlineCode) {
-        if (!isTracked || inlineCode || rec.edits.count(s.stage)) return;
-        if (VkShaderModule m = StageModule(dev, rec.device, tracked, s.stage)) {
+        if (inlineCode || edits.count(s.stage)) return;
+        if (VkShaderModule m = StageModule(dev, rec.device, rec.blobs, s.stage)) {
             s.module = m;
             temporary.push_back(m);
         }
@@ -437,22 +665,51 @@ bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error)
         for (uint32_t i = 0; stages && i < ci.stageCount; ++i) {
             const VkShaderModuleCreateInfo* inlineCode = i < rec.inlineCode.size() ? rec.inlineCode[i] : nullptr;
             ownModule(stages[i], inlineCode);
-            PrepareStage(scratch, stages[i], inlineCode, rec.edits);
+            PrepareStage(scratch, stages[i], inlineCode, edits);
         }
         ci.pStages = stages;
-        res = dev->dispatch.CreateGraphicsPipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
+        // Linked from libraries: each is made again (with the edits in whichever holds the stage), and
+        // the copied library list points at those while this pipeline is created.
+        VkPipelineLibraryCreateInfoKHR* libs = LibraryInfo(rec.graphics->pNext);
+        std::vector<VkPipeline> made;
+        bool librariesMade = true;
+        for (const auto& lib : rec.libraries) {
+            VkPipeline p = Create(dev, *lib, edits, libraries, result);
+            if (!p) { librariesMade = false; break; }
+            made.push_back(p);
+            libraries.push_back(p);
+        }
+        if (librariesMade) {
+            const VkPipeline* recorded = libs ? libs->pLibraries : nullptr;
+            if (libs && made.size() == libs->libraryCount) libs->pLibraries = made.data();
+            result = dev->dispatch.CreateGraphicsPipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
+            if (libs) libs->pLibraries = recorded;
+        }
     } else if (rec.compute) {
         VkComputePipelineCreateInfo ci = *rec.compute;
         const VkShaderModuleCreateInfo* inlineCode = rec.inlineCode.empty() ? nullptr : rec.inlineCode[0];
         ownModule(ci.stage, inlineCode);
-        PrepareStage(scratch, ci.stage, inlineCode, rec.edits);
-        res = dev->dispatch.CreateComputePipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
-    } else {
-        error = "no create info recorded";
-        return false;
+        PrepareStage(scratch, ci.stage, inlineCode, edits);
+        result = dev->dispatch.CreateComputePipelines(rec.device, VK_NULL_HANDLE, 1, &ci, nullptr, &created);
     }
     for (VkShaderModule m : temporary) dev->dispatch.DestroyShaderModule(rec.device, m, nullptr);
+    return result == VK_SUCCESS ? created : VK_NULL_HANDLE;
+}
+
+bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error) {
+    DeviceData* dev = GetDeviceData(rec.device);
+    if (!dev) { error = "device not found"; return false; }
+    if (rec.unsupported) { error = "cannot rebuild this pipeline: " + rec.note; return false; }
+    if (!rec.graphics && !rec.compute) { error = "no create info recorded"; return false; }
+
+    Tracker& t = Tracker::Get();
+    TrackedObject tracked;
+    const bool isTracked = t.Find(HT_VkPipeline, (uint64_t)(uintptr_t)original, tracked);
+    std::vector<VkPipeline> libraries;
+    VkResult res = VK_ERROR_INITIALIZATION_FAILED;
+    VkPipeline created = Create(dev, rec, rec.edits, libraries, res);
     if (res != VK_SUCCESS || !created) {
+        for (VkPipeline lib : libraries) dev->dispatch.DestroyPipeline(rec.device, lib, nullptr);
         error = "pipeline creation failed (VkResult " + std::to_string((int)res) + ")";
         if (!rec.note.empty()) error += "; " + rec.note;
         return false;
@@ -480,7 +737,9 @@ bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error)
         Retire(rec.device, rec.replacement, VK_NULL_HANDLE);
         if (rec.replacementId) t.OnDestroy(HT_VkPipeline, (uint64_t)(uintptr_t)rec.replacement);
     }
+    for (VkPipeline lib : rec.replacementLibraries) Retire(rec.device, lib, VK_NULL_HANDLE);
     rec.replacement = created;
+    rec.replacementLibraries = std::move(libraries);
     rec.replacementId = newId;
     _active[original] = created;
     _anyActive.store(true, std::memory_order_relaxed);
@@ -489,7 +748,11 @@ bool ShaderEditor::Rebuild(VkPipeline original, Record& rec, std::string& error)
 
 void ShaderEditor::Replace(uint64_t pipelineId, VkShaderStageFlagBits stage, std::vector<uint32_t> spirv) {
     TrackedObject obj;
-    if (!Tracker::Get().FindById(pipelineId, obj) || obj.type != HT_VkPipeline) {
+    if (Tracker::Get().FindById(pipelineId, obj) && obj.type == HT_VkShaderEXT) {
+        ReplaceShaderObject(pipelineId, (VkShaderEXT)(uintptr_t)obj.handle, stage, std::move(spirv));
+        return;
+    }
+    if (obj.type != HT_VkPipeline) {
         Reply(pipelineId, stage, false, "pipeline not found", 0);
         return;
     }
@@ -508,6 +771,14 @@ void ShaderEditor::Replace(uint64_t pipelineId, VkShaderStageFlagBits stage, std
     }
     if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
         Reply(pipelineId, stage, false, "not a SPIR-V module", 0);
+        return;
+    }
+    if (rec.library) {
+        Reply(pipelineId, stage, false, "a pipeline library is never bound: edit a pipeline linked from it", 0);
+        return;
+    }
+    if (!HasStage(rec, stage)) {
+        Reply(pipelineId, stage, false, std::string("the pipeline has no ") + StageName(stage) + " stage", 0);
         return;
     }
 
@@ -550,7 +821,11 @@ void ShaderEditor::Replace(uint64_t pipelineId, VkShaderStageFlagBits stage, std
 
 void ShaderEditor::Restore(uint64_t pipelineId, VkShaderStageFlagBits stage) {
     TrackedObject obj;
-    if (!Tracker::Get().FindById(pipelineId, obj) || obj.type != HT_VkPipeline) {
+    if (Tracker::Get().FindById(pipelineId, obj) && obj.type == HT_VkShaderEXT) {
+        RestoreShaderObject(pipelineId, (VkShaderEXT)(uintptr_t)obj.handle, stage);
+        return;
+    }
+    if (obj.type != HT_VkPipeline) {
         Reply(pipelineId, stage, false, "pipeline not found", 0);
         return;
     }
@@ -578,6 +853,8 @@ void ShaderEditor::Restore(uint64_t pipelineId, VkShaderStageFlagBits stage) {
             rec.replacement = VK_NULL_HANDLE;
             rec.replacementId = 0;
         }
+        for (VkPipeline lib : rec.replacementLibraries) Retire(rec.device, lib, VK_NULL_HANDLE);
+        rec.replacementLibraries.clear();
         _active.erase(original);
         _anyActive.store(!_active.empty(), std::memory_order_relaxed);
         Reply(pipelineId, stage, true, "", 0);

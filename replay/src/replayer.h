@@ -513,6 +513,8 @@ private:
     uint64_t CreateBuffer(uint64_t id, const VkBufferCreateInfo& info);
     VkShaderModule ModuleFromBlob(const JValue& object, const std::string& blobName);
     uint64_t CreatePipeline(const JValue& object, std::string_view cmd, uint32_t index, const JValue& args, size_t unresolvedBefore);
+    /** A VkShaderEXT (VK_EXT_shader_object), from its payload's SPIR-V, made unlinked. */
+    uint64_t CreateShaderObject(const JValue& object, uint32_t index, const JValue& args, size_t unresolvedBefore);
 
     void ComputeInitialLayouts();
     /** Sampled images, then what images held when the frame first read them. */

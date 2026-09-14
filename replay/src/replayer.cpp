@@ -623,6 +623,40 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
     return (uint64_t)pipeline;
 }
 
+uint64_t Replayer::CreateShaderObject(const JValue& object, uint32_t index, const JValue& args, size_t unresolvedBefore) {
+    const std::string id = std::to_string(object.Get("id")->Uint());
+    if (!_fns.CreateShadersEXT) {
+        Problem("shader " + id + ": vkCreateShadersEXT is not available on this device");
+        return 0;
+    }
+    Args_vkCreateShadersEXT a{};
+    DecodeArgs(_ctx, args, a);
+    if (!a.pCreateInfos || index >= a.createInfoCount || _ctx.unresolved != unresolvedBefore) return 0;
+    VkShaderCreateInfoEXT info = a.pCreateInfos[index];
+    // Made one at a time, so a shader created linked with others is made unlinked.
+    info.flags &= ~(VkShaderCreateFlagsEXT)VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
+    // The code from the shader's payload, which the arguments may only summarize.
+    const std::string name = std::string(StageName(info.stage)) + ":" + (info.pName ? info.pName : "main");
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    if (info.codeType == VK_SHADER_CODE_TYPE_SPIRV_EXT && _capture->Blob(object, name, data, size) && size >= 20) {
+        auto* code = _arena.Make<uint8_t>(size);
+        std::memcpy(code, data, size);
+        info.pCode = code;
+        info.codeSize = size;
+    } else if (info.codeType == VK_SHADER_CODE_TYPE_SPIRV_EXT) {
+        Problem("shader " + id + ": no code for its " + name + " stage");
+        return 0;
+    }
+    VkShaderEXT shader = VK_NULL_HANDLE;
+    const VkResult r = _fns.CreateShadersEXT(_device, 1, &info, nullptr, &shader);
+    if (r != VK_SUCCESS || !shader) {
+        Problem("shader " + id + ": vkCreateShadersEXT failed (" + std::to_string(r) + ")");
+        return 0;
+    }
+    return (uint64_t)shader;
+}
+
 void Replayer::CreateObject(const JValue& o) {
     const uint64_t id = o.Get("id") ? o.Get("id")->Uint() : 0;
     const std::string type = Str(o.Get("type"));
@@ -855,6 +889,8 @@ void Replayer::CreateObject(const JValue& o) {
         if (!m) _skipped.insert(id);
     } else if (type == "VkPipeline") {
         if (args) handle = CreatePipeline(o, cmd, index, *args, unresolvedBefore);
+    } else if (type == "VkShaderEXT") {
+        if (args) handle = CreateShaderObject(o, index, *args, unresolvedBefore);
     } else {
         known = false;
     }
@@ -902,6 +938,7 @@ void Replayer::DestroyAll() {
             else if (t == "VkFramebuffer") _fns.DestroyFramebuffer(_device, (VkFramebuffer)h, nullptr);
             else if (t == "VkShaderModule") _fns.DestroyShaderModule(_device, (VkShaderModule)h, nullptr);
             else if (t == "VkPipeline") _fns.DestroyPipeline(_device, (VkPipeline)h, nullptr);
+            else if (t == "VkShaderEXT" && _fns.DestroyShaderEXT) _fns.DestroyShaderEXT(_device, (VkShaderEXT)h, nullptr);
             // Command buffers and descriptor sets go with their pools.
         }
         for (VkDeviceMemory m : _memories) _fns.FreeMemory(_device, m, nullptr);

@@ -45,7 +45,7 @@ import type { CaptureDescriptorBinding, HandleRef, LeakReportMessage, ShaderLang
 // Vulkan one. Each runs device-first, since that is what everything else hangs off.
 const TYPE_ORDER = [
   "VkInstance", "VkPhysicalDevice", "VkDevice", "VkQueue", "VkSurfaceKHR", "VkSwapchainKHR",
-  "VkPipeline", "VkShaderModule", "VkPipelineLayout", "VkRenderPass", "VkFramebuffer",
+  "VkPipeline", "VkShaderModule", "VkShaderEXT", "VkPipelineLayout", "VkRenderPass", "VkFramebuffer",
   "VkImage", "VkImageView", "VkSampler", "VkBuffer", "VkBufferView", "VkDeviceMemory",
   "VkDescriptorSet", "VkDescriptorSetLayout", "VkDescriptorPool",
   "VkCommandBuffer", "VkCommandPool", "VkFence", "VkSemaphore", "VkEvent", "VkQueryPool",
@@ -747,7 +747,10 @@ export class InspectPanel {
       }
     };
     if (object.type === "VkPipeline") addPipeline(object, null);
+    else if (object.type === "VkShaderEXT") out.add(str(object.descriptor?.stage));
     else for (const dep of object.dependents) if (dep.type === "VkPipeline") addPipeline(dep, object);
+    // Stages a linked pipeline has from its libraries are only in its payloads ("fragment:main").
+    if (object.type === "VkPipeline") for (const b of object.blobs) if (STAGE_FLAG[b.name.split(":")[0] as ShaderStage]) out.add(STAGE_FLAG[b.name.split(":")[0] as ShaderStage]);
     return out;
   }
 
@@ -785,6 +788,7 @@ export class InspectPanel {
       case "VkBuffer":
         return this._bufferMatches(object);
       case "VkShaderModule":
+      case "VkShaderEXT":
       case "VkPipeline": {
         if (!f.shader.size) return true;
         const stages = this._stagesOf(object);
@@ -1014,7 +1018,7 @@ export class InspectPanel {
       }
     }
 
-    if (object.type === "VkShaderModule" || object.type === "VkPipeline") this._buildShaderSection(object);
+    if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
@@ -1495,8 +1499,8 @@ export class InspectPanel {
     if (!view.data) return null;
     const reflection = reflectSpirv(view.data);
     const spirvVersion = reflection?.version ?? "1.5";
-    if (object.type === "VkPipeline") {
-      // Pipeline payloads are named "<stage>:<entry point>".
+    if (object.type === "VkPipeline" || object.type === "VkShaderEXT") {
+      // Pipeline and shader object payloads are named "<stage>:<entry point>"; the edit goes to the object itself.
       const sep = view.blobName.indexOf(":");
       const stage = (sep > 0 ? view.blobName.substring(0, sep) : view.blobName) as ShaderStage;
       const entryPoint = sep > 0 ? view.blobName.substring(sep + 1) : "main";
@@ -1539,7 +1543,8 @@ export class InspectPanel {
     const fromSource = view.mode === "source" && view.debug;
     new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${LANGUAGE_LABEL[language]}` : `Editing as ${LANGUAGE_LABEL[language]}`, class: "font-md" });
     if (targets) {
-      const where = object.type === "VkPipeline" ? "this pipeline" : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
+      const where = object.type === "VkPipeline" ? "this pipeline" : object.type === "VkShaderEXT" ? "this shader object"
+        : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
       new Span(head, { text: `  ${stageLabel(targets.stage)} stage, entry ${targets.entryPoint}, applies to ${where}`, class: "text-muted font-sm" });
     } else {
       new Span(head, { text: "  Cannot determine the stage of this code; edits cannot be applied.", class: "inspect_info_error" });

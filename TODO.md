@@ -264,7 +264,13 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Several devices, the rest: devices on different GPUs replay on one (their formats and
       features may not all be there), and a second device's own frame counter can disagree with the
       presenting device's, so its submissions are numbered from the frame it joined at.
-- [ ] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor.
+- [x] Graphics pipeline libraries and shader objects (`VK_EXT_shader_object`) in the shader editor:
+      linked pipelines show and edit their libraries' stages (the libraries made again from their
+      records), shader objects are replaced at `vkCmdBindShadersEXT` (a linked set made again
+      unlinked), and the replay makes both (triangle `--pipeline-library`, `--shader-object`).
+- [ ] Shader objects in captures: a draw bound with `vkCmdBindShadersEXT` has no pipeline, so
+      Analyze Shaders, the Shader Flame Graph, the shader debugger and per-draw state do not see its
+      shaders yet; the replay's overdraw and overlay copies only replace pipelines.
 - [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
       replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
 - [ ] Ray tracing pipelines: shader groups in pipeline state, acceleration structure objects.

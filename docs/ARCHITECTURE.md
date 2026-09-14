@@ -683,8 +683,21 @@ may still reference them. The stages an edit leaves alone are not given the appl
 modules, which it may have destroyed as soon as the pipeline existed. They get temporary modules
 made from the SPIR-V the tracker keeps with the pipeline, and those are destroyed once the
 replacement exists. Editing a module applies to every pipeline that uses it. Command
-buffers recorded before the edit keep binding the original until they are re-recorded, and
-graphics pipeline libraries are not supported. The editor (`renderer/code_editor.ts`) is a
+buffers recorded before the edit keep binding the original until they are re-recorded.
+
+- **Graphics pipeline libraries.** A pipeline linked from libraries shows their stages: the
+  creation hook attaches the libraries' stage payloads to it. Its record holds its libraries'
+  records, so an edit can make every library again, with the edited stage in whichever library
+  holds it, and link the replacement from those. The rebuilt libraries live as long as the
+  replacement, which the spec requires of a library.
+- **Shader objects** (`VK_EXT_shader_object`). Each `VkShaderEXT` gets its SPIR-V as a
+  `<stage>:<entry>` payload, and its create info is recorded. An edit makes a replacement shader
+  object, and a `vkCmdBindShadersEXT` pre-hook binds it instead of the original. A shader created
+  linked to others must be bound with the rest of its set, so the whole set is made again,
+  unlinked, and every member is substituted. The protocol is unchanged: `ReplaceShader` carries
+  the shader object's id in `pipeline`. Shaders created from a binary cannot be edited.
+
+The editor (`renderer/code_editor.ts`) is a
 textarea over a highlighted copy of its text with a line-number gutter and a find bar; a failed
 compile marks the offending lines (`parseCompileErrors` reads glslangValidator's
 `file:line:`, dxc's `file:line:col: error:` and spirv-as's `error: line: col:` forms), the
@@ -1044,7 +1057,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake
