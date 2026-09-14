@@ -1,4 +1,4 @@
-## Unreleased
+## v0.11.0
 
 ### Added
 - Draws with shader objects (`VK_EXT_shader_object`) in Vulkan captures:
