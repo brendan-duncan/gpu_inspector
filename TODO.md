@@ -331,13 +331,14 @@ vendor's driver is listed at the end so nobody spends time on it.
 - [x] Hardware unit counters per pass and per draw (Nsight's GPU Trace and Range Profiler: SM
       throughput, L2 hit rate, VRAM bandwidth, texture unit load): `vkinsp_replay --counters`
       (`src/replay/src/hw_counters.cpp`, docs/REPLAY.md "Hardware counters") reads the GPU's own
-      counters around each pass and draw, replaying the frame once per collection pass. Two backends:
+      counters around each render pass, and around each draw with `--counter-draws`, replaying the
+      frame once per collection pass (a `pct_of_peak` metric needs dozens). Two backends:
       NVIDIA's Nsight Perf SDK (`src/replay/src/nvperf.cpp`, headers vendored in `third_party/nvperf`,
       per pass and per draw) and `VK_KHR_performance_query` (per draw). `get_hw_counters` in the MCP
       server, `--list-counters` for what a GPU offers. docs/PROFILING.md's "the limiters" are now
-      reachable on Vulkan. Verified on an RTX 4080 up to the profiling session: `--list-counters`
-      enumerates 1414 AD103 counters; collection itself needs GPU counter access enabled
-      (`ERR_NVGPUCTRPERM`; NVIDIA Control Panel > Developer > Manage GPU Performance Counters).
+      reachable on Vulkan. Verified on an RTX 4080 against the triangle and a 34-pass Unity frame;
+      collection needs GPU counter access enabled (`ERR_NVGPUCTRPERM`; NVIDIA Control Panel >
+      Developer > Manage GPU Performance Counters).
 - [ ] Hardware counters, the rest: fold them into GPU Bottlenecks' bound-stage verdict and its app
       report (a "Measure hardware counters" action, columns per limiter); a portable default counter
       set for the `VK_KHR_performance_query` path (it takes the first command-scoped counters now);

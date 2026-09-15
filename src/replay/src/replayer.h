@@ -109,6 +109,12 @@ struct ReplayOptions {
         std::vector<std::string> names;
         /** Only list every counter the device offers, without replaying. */
         bool list = false;
+        /**
+         * Also measure each draw, not only each render pass. A range per draw needs a second nesting
+         * level (so about twice the collection passes) and profiling thousands of ranges is slow,
+         * so a frame with many draws takes far longer; off by default.
+         */
+        bool perDraw = false;
     } counters;
 };
 
@@ -685,6 +691,8 @@ private:
     bool PrepareCounters();
     /** The KHR path of PrepareCounters: a performance query pool over the frame's draws. */
     bool PrepareKhrCounters(uint32_t draws);
+    /** Collection passes the configured counters need, so the round loop knows where to stop. */
+    uint32_t CounterRounds() const;
     /** The limiter metrics collected when the request names none (NvPerf's spelling). */
     std::vector<std::string> DefaultCounterNames() const;
     /** Lists what the device offers into the report (ReplayOptions::counters.list). */

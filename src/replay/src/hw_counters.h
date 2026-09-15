@@ -59,7 +59,8 @@ public:
      * Configures the metrics to collect. Names the evaluator does not know, or that cannot be
      * scheduled, are left out with a note; `chosen` lists the rest, in `names` order.
      */
-    bool Configure(const std::vector<std::string>& names, std::vector<HwCounterInfo>& chosen, std::vector<std::string>& notes);
+    bool Configure(const std::vector<std::string>& names, uint16_t nestingLevels, std::vector<HwCounterInfo>& chosen,
+                   std::vector<std::string>& notes);
     /** Collection passes the configuration needs at one nesting level; each replay of the frame is one. */
     size_t Passes() const;
     bool BeginPass();

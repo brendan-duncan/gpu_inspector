@@ -410,6 +410,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         capture: CAPTURE_PARAM,
         counters: { type: "array", items: { type: "string" }, description: "Counter names to collect (list=true shows what the GPU offers). Default: a limiter set (SM, memory, cache, occupancy, ALU, FMA)." },
         list: { type: "boolean", description: "Only list every counter the GPU offers, without collecting (no replay of the frame's work)." },
+        perDraw: { type: "boolean", description: "Also measure each draw, not only each render pass. The profiler serializes work at every range, so a frame with thousands of draws takes far longer; default false." },
         ...PAGE_PARAMS,
       }),
       readOnly: true,
@@ -436,8 +437,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           });
         }
         // Collect: replayed once and kept with the open capture, unless a different set is asked for.
-        if (!c.hwCounters || requested.length) {
-          const run = await replayServers.run(tool, c.path, { kind: "counters", counters: requested.length ? requested : undefined });
+        const perDraw = boolArg(args, "perDraw", false);
+        if (!c.hwCounters || requested.length || perDraw) {
+          const run = await replayServers.run(tool, c.path, { kind: "counters", counters: requested.length ? requested : undefined, perDraw });
           if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not read hardware counters: ${run.error ?? "no data"}` });
           c.hwCounters = parseHwCounters(run.data);
         }

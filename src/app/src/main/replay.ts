@@ -59,7 +59,7 @@ export interface PixelRequest {
 export type ReplayAnalysis =
   | { kind: "overdraw" } | { kind: "draws" } | { kind: "overlay"; commands: number[] } | { kind: "mesh"; commands: number[] }
   | ({ kind: "pixel" } & PixelRequest) | { kind: "ablate"; request: Uint8Array }
-  | { kind: "counters"; counters?: string[] } | { kind: "list-counters" };
+  | { kind: "counters"; counters?: string[]; perDraw?: boolean } | { kind: "list-counters" };
 
 /** The last lines of the tool's output, for an error message. */
 function tail(text: string, lines = 12): string {
@@ -87,7 +87,10 @@ function analysisArgs(analysis: ReplayAnalysis, out: string, input: string | nul
   if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
-  if (analysis.kind === "counters") return [...(analysis.counters ?? []).flatMap((c) => ["--counter", c]), "--counter-data", out];
+  if (analysis.kind === "counters") {
+    return [...(analysis.counters ?? []).flatMap((c) => ["--counter", c]),
+            ...(analysis.perDraw ? ["--counter-draws"] : []), "--counter-data", out];
+  }
   if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;

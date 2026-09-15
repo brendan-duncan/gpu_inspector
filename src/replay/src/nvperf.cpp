@@ -203,18 +203,9 @@ struct Session::Impl {
     nv::perf::MetricsEvaluator evaluator;
     nv::perf::profiler::RangeProfilerVulkan profiler;
     bool inSession = false;
-    NVPW_RawCounterConfig* rawConfig = nullptr;
     nv::perf::CounterConfiguration configuration;
     std::vector<NVPW_MetricEvalRequest> requests;
     std::vector<uint8_t> counterData;
-
-    ~Impl() {
-        if (rawConfig) {
-            NVPW_RawCounterConfig_Destroy_Params destroy{NVPW_RawCounterConfig_Destroy_Params_STRUCT_SIZE};
-            destroy.pRawCounterConfig = rawConfig;
-            NVPW_RawCounterConfig_Destroy(&destroy);
-        }
-    }
 
     /** A metric's description, hardware unit and unit, by its evaluation request. */
     HwCounterInfo Describe(const std::string& name, const NVPW_MetricEvalRequest& request) {
@@ -325,15 +316,24 @@ void Session::ListMetrics(std::vector<HwCounterInfo>& out) {
     g_log.clear();
 }
 
-bool Session::Configure(const std::vector<std::string>& names, std::vector<HwCounterInfo>& chosen, std::vector<std::string>& notes) {
+bool Session::Configure(const std::vector<std::string>& names, uint16_t nestingLevels, std::vector<HwCounterInfo>& chosen,
+                        std::vector<std::string>& notes) {
     Impl& s = *_impl;
     if (!s.inSession) return false;
     g_log.clear();
-    s.rawConfig = nv::perf::profiler::VulkanCreateRawCounterConfig(s.chip.c_str());
-    if (!s.rawConfig) {
+    // The config builder below takes ownership of this and destroys it with itself
+    // (NvPerfMetricsConfigBuilder.h, "Transfer ownership of pRawCounterConfig"), so it must not be
+    // destroyed here as well. Only the bytes CreateConfiguration copies out of it outlive this call.
+    NVPW_RawCounterConfig* rawConfig = nv::perf::profiler::VulkanCreateRawCounterConfig(s.chip.c_str());
+    if (!rawConfig) {
         notes.push_back("the Nsight Perf SDK could not create a counter configuration for chip " + s.chip + ": " + TakeLog("no details"));
         return false;
     }
+    auto destroyRawConfig = [&] {
+        NVPW_RawCounterConfig_Destroy_Params destroy{NVPW_RawCounterConfig_Destroy_Params_STRUCT_SIZE};
+        destroy.pRawCounterConfig = rawConfig;
+        NVPW_RawCounterConfig_Destroy(&destroy);
+    };
     // Which raw counters this GPU can actually collect, so a metric that needs one it cannot is left out.
     {
         NVPW_VK_Profiler_Queue_GetCounterAvailability_Params params{NVPW_VK_Profiler_Queue_GetCounterAvailability_Params_STRUCT_SIZE};
@@ -349,7 +349,7 @@ bool Session::Configure(const std::vector<std::string>& names, std::vector<HwCou
             params.pCounterAvailabilityImage = image.data();
             if (NVPW_VK_Profiler_Queue_GetCounterAvailability(&params) == NVPA_STATUS_SUCCESS) {
                 NVPW_RawCounterConfig_SetCounterAvailability_Params set{NVPW_RawCounterConfig_SetCounterAvailability_Params_STRUCT_SIZE};
-                set.pRawCounterConfig = s.rawConfig;
+                set.pRawCounterConfig = rawConfig;
                 set.pCounterAvailabilityImage = image.data();
                 NVPW_RawCounterConfig_SetCounterAvailability(&set);
             }
@@ -357,7 +357,9 @@ bool Session::Configure(const std::vector<std::string>& names, std::vector<HwCou
         g_log.clear();
     }
     nv::perf::MetricsConfigBuilder builder;
-    if (!builder.Initialize(s.evaluator, s.rawConfig, s.chip.c_str())) {
+    if (!builder.Initialize(s.evaluator, rawConfig, s.chip.c_str())) {
+        // Ownership only transfers once Initialize succeeds, so an early failure frees it here.
+        destroyRawConfig();
         notes.push_back("the Nsight Perf SDK could not initialise its configuration builder: " + TakeLog("no details"));
         return false;
     }
@@ -383,8 +385,9 @@ bool Session::Configure(const std::vector<std::string>& names, std::vector<HwCou
         notes.push_back("the Nsight Perf SDK could not build the counter configuration: " + TakeLog("no details"));
         return false;
     }
-    // Two nesting levels: a pass's range with its draws' ranges inside.
-    if (!s.profiler.EnqueueCounterCollection(s.configuration, 2, 1)) {
+    // One nesting level for a range per pass; two when each pass's draws are ranges inside it,
+    // which costs about twice the collection passes.
+    if (!s.profiler.EnqueueCounterCollection(s.configuration, nestingLevels, 1)) {
         notes.push_back("the Nsight Perf SDK refused the counter configuration: " + TakeLog("no details"));
         return false;
     }
@@ -486,7 +489,7 @@ bool Session::Begin(uint32_t, std::string& note) {
     return Load(note);
 }
 void Session::ListMetrics(std::vector<HwCounterInfo>&) {}
-bool Session::Configure(const std::vector<std::string>&, std::vector<HwCounterInfo>&, std::vector<std::string>&) { return false; }
+bool Session::Configure(const std::vector<std::string>&, uint16_t, std::vector<HwCounterInfo>&, std::vector<std::string>&) { return false; }
 size_t Session::Passes() const { return 0; }
 bool Session::BeginPass() { return false; }
 bool Session::EndPass() { return false; }
