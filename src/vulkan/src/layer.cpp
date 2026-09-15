@@ -122,7 +122,13 @@ namespace {
 std::shared_mutex g_registryMutex;
 std::unordered_map<void*, std::unique_ptr<InstanceData>> g_instances;
 std::unordered_map<void*, std::unique_ptr<DeviceData>> g_devices;
+/** Devices created or being created through the layer, for vkinspDeviceCount. */
+std::atomic<uint32_t> g_deviceCount{0};
 } // namespace
+
+uint32_t DeviceCount() {
+    return g_deviceCount.load(std::memory_order_relaxed);
+}
 
 InstanceData* FindInstance(void* key) {
     std::shared_lock lock(g_registryMutex);
@@ -506,6 +512,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     PipelineStatisticsSetup pipelineStats;
     PlanPipelineStatistics(instance, physicalDevice, createInfo, pipelineStats);
 
+    // Counted from before the driver's vkCreateDevice, which may make a D3D12 device of its own
+    // (vkinspDeviceCount).
+    g_deviceCount.fetch_add(1, std::memory_order_relaxed);
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
     if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added)) {
         // The driver refused the additions: create the device as the application asked.
@@ -515,7 +524,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
         pipelineStats = PipelineStatisticsSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
-    if (res != VK_SUCCESS) return res;
+    if (res != VK_SUCCESS) {
+        g_deviceCount.fetch_sub(1, std::memory_order_relaxed);
+        return res;
+    }
 
     auto data = std::make_unique<DeviceData>();
     data->device = *pDevice;
@@ -573,6 +585,7 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAlloca
     PFN_vkDestroyDevice next = data->dispatch.DestroyDevice;
     next(device, pAllocator);
     UnregisterDevice(key);
+    g_deviceCount.fetch_sub(1, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -877,6 +890,16 @@ VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkI
 
 VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     return vkinsp::layer_vkGetDeviceProcAddr(device, pName);
+}
+
+/**
+ * The Vulkan devices the layer has in this process, created or being created. For the D3D12 capture
+ * library, launched into the same process when the application's API is not known in advance: a
+ * Vulkan driver that presents through DXGI makes a D3D12 device of its own, which is not the
+ * application's to inspect (src/d3d12/src/hooks_device.cpp, Hook_D3D12CreateDevice).
+ */
+VKINSP_EXPORT uint32_t vkinspDeviceCount(void) {
+    return vkinsp::DeviceCount();
 }
 
 #if defined(__ANDROID__)

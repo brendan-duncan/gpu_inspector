@@ -108,6 +108,16 @@
   they are timed but not counted. A query of the application's own no longer ends the layer's
   early either: the first occlusion or pipeline statistics query the application begins turns
   the layer's counter of that type off.
+- Launching a Vulkan application on an NVIDIA GPU froze GPU Inspector's window within seconds, so
+  captures, overdraw, pixel history and every other analysis never finished. The driver presents
+  through a D3D12 device of its own, which the D3D12 capture library (launched into every Windows
+  target) tracked and logged call by call, and the session log redrew itself for each line. The
+  library now leaves a D3D12 device alone when GPU Inspector's Vulkan layer already has a device in
+  the process, and the log draws new lines in batches.
+- A Vulkan launch ran the layer of an installed GPU Inspector instead of its own once the installer
+  (or **Set for my account**) had registered that layer as an implicit layer: the loader enabled
+  the registered layer of the same name. A checkout's build, or a second installed version, now
+  loads the layer the launch names.
 
 ## v0.11.0
 
