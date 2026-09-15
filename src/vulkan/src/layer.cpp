@@ -527,6 +527,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->dynamicRendering = dynamicRendering.enabled;
     data->pipelineStatistics = pipelineStats.enabled;
     data->occlusionPrecise = pipelineStats.occlusion;
+    data->inheritedQueries = pipelineStats.inheritedQueries;
     {
         // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
         const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");

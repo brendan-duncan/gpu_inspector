@@ -97,6 +97,17 @@
 - Quitting GPU Inspector left the application it had launched running. The kill of the process
   tree was left to a callback that never ran once Electron was on its way out; it is synchronous
   on that path now.
+- A Vulkan capture of an application that records its draws into secondary command buffers (a
+  Unity player) raised validation errors of the layer's own making: 24 in a Unity URP frame
+  (`VUID-vkCmdExecuteCommands-commandBuffer-00101` and `-00104`, `VUID-vkCmdEndQuery-None-07007`,
+  `VUID-vkCmdEndQuery-commandBuffer-recording`). The pass counters' queries were active across
+  `vkCmdExecuteCommands`, and the occlusion query was then ended inside the render pass it had
+  begun outside of. The layer now enables `inheritedQueries` beside the counters' other features
+  and begins secondary command buffers able to inherit its queries, so those passes run cleanly
+  and gain the depth rejection rate they used to go without. On a device without the feature
+  they are timed but not counted. A query of the application's own no longer ends the layer's
+  early either: the first occlusion or pipeline statistics query the application begins turns
+  the layer's counter of that type off.
 
 ## v0.11.0
 

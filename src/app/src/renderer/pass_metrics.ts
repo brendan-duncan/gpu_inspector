@@ -251,9 +251,10 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
   }
 
   // Depth rejection from the replay's per-draw occlusion queries, for a pass whose own query the
-  // layer could not run: a query cannot span vkCmdExecuteCommands, so a pass that records its draws
-  // into secondary command buffers goes unmeasured, while the replay's queries sit inside the
-  // secondary around one draw each (src/replay/src/draw_stats.cpp).
+  // layer could not run: a query spans vkCmdExecuteCommands only on a device with inheritedQueries,
+  // so elsewhere a pass that records its draws into secondary command buffers goes unmeasured (as
+  // do captures from layers before that), while the replay's queries sit inside the secondary
+  // around one draw each (src/replay/src/draw_stats.cpp).
   if (data.drawStats?.length) {
     const sums = drawSumsByPass(data.drawStats);
     for (const p of passes) {

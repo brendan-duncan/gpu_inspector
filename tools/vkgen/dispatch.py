@@ -79,8 +79,11 @@ EXTRA_HOOKS = {
     # the layer's store-everything copy of a render pass dies with the original
     "vkDestroyRenderPass",
     # frame capture
+    "vkAllocateCommandBuffers",
     "vkEndCommandBuffer",
     "vkFreeCommandBuffers",
+    # pass counters: which query types the application uses itself
+    "vkCreateQueryPool",
     "vkQueueSubmit",
     "vkQueueSubmit2",
     "vkQueueSubmit2KHR",
@@ -190,13 +193,10 @@ PRE_HOOKS = {
     "vkCmdWaitEvents2",
     "vkCmdWaitEvents2KHR",
     "vkCmdExecuteCommands",
-    # depth rejection: the layer's occlusion query over a pass must not nest inside the
-    # application's own queries, and a secondary executed while it is active would need
-    # occlusionQueryEnable (see CaptureManager::DropOcclusion)
+    # pass counters: the layer's queries over a pass must not share a type with the application's
+    # own (see NoteAppQuery in hooks.cpp)
     "vkCmdBeginQuery",
     "vkCmdBeginQueryIndexedEXT",
-    "vkCmdEndQuery",
-    "vkCmdEndQueryIndexedEXT",
     "vkEndCommandBuffer",
     "vkCmdBeginDebugUtilsLabelEXT",
     "vkCmdEndDebugUtilsLabelEXT",

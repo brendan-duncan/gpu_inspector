@@ -13,17 +13,20 @@ samples Metal's counter sets around every pass, the Vulkan layer a pipeline stat
 its timestamps, and the D3D12 library the same through a `PIPELINE_STATISTICS` query heap, so
 overdraw, fragments per primitive and the geometry counts come out of any of them. Depth rejection needs
 the fragments that survived the depth and stencil tests: Metal's statistic set has that, and the
-Vulkan and D3D12 libraries count it with an occlusion query around each pass. That query cannot stay open across
-a pass that executes secondary command buffers — an engine that records its draws into secondaries,
-as Unity does — or one where the application has a query of its own, so the layer leaves those
-passes unmeasured and logs how many. **Measure draws** fills them in: the replay's per-draw
-occlusion queries sit inside the secondary, and a pass's draws add up to its rejection rate
-(docs/REPLAY.md). One measurement is
+Vulkan and D3D12 libraries count it with an occlusion query around each pass. On Vulkan that query,
+and the pipeline statistics one, stay open across a pass that executes secondary command buffers
+(an engine that records its draws into secondaries, as Unity does) only with the
+`inheritedQueries` device feature: the layer enables it and begins every secondary able to inherit
+its queries. A device without it leaves those passes uncounted, and an application that begins
+occlusion or pipeline statistics queries of its own gets no counter of that type from the layer.
+**Measure draws** fills them in: the replay's per-draw occlusion queries sit inside the secondary,
+and a pass's draws add up to its rejection rate (docs/REPLAY.md). One measurement is
 Metal only and is marked where it appears: the vertex and fragment spans of a pass, which need
 timestamps at its stage boundaries and have no portable Vulkan equivalent.
 
-On Vulkan the counters need the `pipelineStatisticsQuery` device feature, which an application
-that does not profile itself has no reason to enable. The layer adds it at device creation, and
+On Vulkan the counters need the `pipelineStatisticsQuery` device feature (and `occlusionQueryPrecise`
+and `inheritedQueries` beside it), which an application that does not profile itself has no reason
+to enable. The layer adds them at device creation, and
 falls back to creating the device exactly as the application asked if the driver refuses.
 `VKINSP_NO_PIPELINE_STATISTICS=1` turns that off.
 

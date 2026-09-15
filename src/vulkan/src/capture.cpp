@@ -531,6 +531,8 @@ uint32_t CaptureManager::BeginPipelineStatistics(DeviceData* dev, CommandRecorde
     DeviceCapture* dc = CaptureFor(dev);
     if (!dc || !dc->statsPool) return UINT32_MAX;
     if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
+    // Two pipeline statistics queries cannot be active at once, and the application's come first.
+    if (dev->appStatisticsQueries.load(std::memory_order_relaxed)) return UINT32_MAX;
     uint32_t q = dc->statsUsed.fetch_add(1, std::memory_order_relaxed);
     if (q >= dc->statsCount) return UINT32_MAX;         // pool exhausted: later passes go uncounted
     VkCommandBuffer cb = rec->commandBuffer();
@@ -547,7 +549,7 @@ uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
     if (!dc || !dc->occlusionPool) return UINT32_MAX;
     if (rec->renderPassContinue()) return UINT32_MAX;   // the primary brackets the pass
     // Two occlusion queries cannot be active at once, and the application's come first.
-    if (rec->appQueryDepth) return UINT32_MAX;
+    if (dev->appOcclusionQueries.load(std::memory_order_relaxed)) return UINT32_MAX;
     uint32_t q = dc->occlusionUsed.fetch_add(1, std::memory_order_relaxed);
     if (q >= dc->occlusionCount) return UINT32_MAX;     // pool exhausted: later passes go uncounted
     VkCommandBuffer cb = rec->commandBuffer();
@@ -557,23 +559,15 @@ uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
     return q;
 }
 
-void CaptureManager::DropOcclusion(DeviceData* dev, CommandRecorder* rec) {
-    if (rec->pendingOcclusionQuery == UINT32_MAX) return;
-    DeviceCapture* dc = FindCapture(dev->device);
-    if (!dc || !dc->occlusionPool) return;
-    _occlusionDropped.fetch_add(1, std::memory_order_relaxed);
-    dev->dispatch.CmdEndQuery(rec->commandBuffer(), dc->occlusionPool, rec->pendingOcclusionQuery);
-    rec->pendingOcclusionQuery = UINT32_MAX;
-    rec->pass().occlusionQuery = UINT32_MAX;   // the pass reports no count rather than a partial one
-}
-
-void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview) {
+void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview, bool secondaries) {
     OnEndComputePass(dev, rec);
     rec->pendingQuery = BeginTimestamp(dev, rec);
     // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
     // report shows the counters against the pass's duration. A multiview pass writes one result
     // per view, which would need that many consecutive indices, so it is timed but not counted.
-    const bool counted = rec->pendingQuery != UINT32_MAX && !multiview;
+    // A pass that may execute secondary command buffers can only do so with queries active when
+    // the secondaries inherit them, which needs inheritedQueries (hooks.cpp, InheritPassQueries).
+    const bool counted = rec->pendingQuery != UINT32_MAX && !multiview && (!secondaries || dev->inheritedQueries);
     rec->pendingStatsQuery = counted ? BeginPipelineStatistics(dev, rec) : UINT32_MAX;
     if (counted) BeginOcclusion(dev, rec);
 }
@@ -686,8 +680,7 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     }
     rec->passes().push_back({p.attachments, p.layouts, p.resolveViews, p.resolveLayouts, p.passIndex, p.layerCount, readBack});
     p.active = false;
-    // The pass's end timestamp: after every command of the pass has completed.
-    // The occlusion query, unless it was dropped when the application opened one of its own.
+    // The pass's end timestamp: after every command of the pass has completed, and its counters' queries end.
     const uint32_t occlusion = rec->pendingOcclusionQuery;
     const bool queried = occlusion != UINT32_MAX || p.query != UINT32_MAX || p.statsQuery != UINT32_MAX;
     DeviceCapture* dc = queried ? FindCapture(dev->device) : nullptr;
@@ -1644,12 +1637,6 @@ void CaptureManager::SendPassTimings() {
     Transport::Get().SendJson(std::move(w.str()));
     Log("pass profiling: %u of %zu passes timed, %u with counters%s", sent, total, counted,
         captures.size() > 1 ? " (several devices)" : "");
-    if (const uint32_t dropped = _occlusionDropped.exchange(0, std::memory_order_relaxed)) {
-        // An occlusion query cannot stay active across vkCmdExecuteCommands unless the secondaries
-        // were recorded with occlusionQueryEnable, which an engine that records its draws into
-        // secondaries (Unity, Unreal) does not do. Those passes keep everything but depth rejection.
-        Log("depth rejection: %u pass(es) went unmeasured (secondary command buffers, or a query of the application's)", dropped);
-    }
 }
 
 void CaptureManager::SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total) {
