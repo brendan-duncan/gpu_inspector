@@ -6,7 +6,7 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import { isD3D12Texture } from "../d3d12/d3d12_object.js";
-import type { AddObjectMessage, ArgValue, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, DeviceLostMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -63,6 +63,8 @@ export class ObjectDatabase implements ObjectLookup {
   validationDropped = 0;
   /** Leak reports (objects alive when their device or instance was destroyed), in arrival order. */
   leaks: LeakReportMessage[] = [];
+  /** Set once the GPU has stopped responding; it never recovers within the session. */
+  deviceLost: DeviceLostMessage | null = null;
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -80,6 +82,8 @@ export class ObjectDatabase implements ObjectLookup {
   /** A validation message arrived (isNew) or its repeat count changed. */
   readonly onValidationMessage = new Signal<(entry: ValidationEntry, isNew: boolean) => void>();
   readonly onLeakReport = new Signal<(report: LeakReportMessage) => void>();
+  /** The GPU stopped responding, with the command it was running when it did. */
+  readonly onDeviceLost = new Signal<(report: DeviceLostMessage) => void>();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = new Map<number, StackFrame[]>();
   stacksAvailable: boolean | null = null;
@@ -340,6 +344,12 @@ export class ObjectDatabase implements ObjectLookup {
       case "LeakReport":
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
+        break;
+      case "DeviceLost":
+        // The GPU stopped responding. The layer has already worked out which command it was on;
+        // this only has to make sure the answer is not lost (src/vulkan/src/device_lost.h).
+        this.deviceLost = msg;
+        this.onDeviceLost.emit(msg);
         break;
       case "ValidationCount":
         for (const [key, count] of msg.counts ?? []) {

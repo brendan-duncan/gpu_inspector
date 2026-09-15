@@ -138,6 +138,14 @@ export class SessionPanel extends Div implements SessionContext {
       this.appendLog(`leak report: ${owner ? owner.name : `${r.ownerClass} ${r.owner}`} destroyed with ${r.count} live objects: ${summary}`);
       this._updateValidationLabel();
     });
+    // A lost device ends the session's usefulness, so the diagnosis goes at the top of the log
+    // rather than scrolling past with everything else (src/vulkan/src/device_lost.h).
+    this.database.onDeviceLost.addListener((r) => {
+      this.appendLog(`GPU device lost (${r.call}): ${r.message}`);
+      if (!r.breadcrumbs) {
+        this.appendLog("Launch with \"Device-lost breadcrumbs\" on to learn which command the GPU was running.");
+      }
+    });
     const spacer = new Span(row, { class: "launch-spacer" });
     spacer.style.flexGrow = "1";
     this._recordAlwaysCheck = new Checkbox(row, { label: "Record all command buffers", checked: this.info.recordAlways,

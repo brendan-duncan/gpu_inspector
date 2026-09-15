@@ -65,6 +65,8 @@ export interface VulkanLayerOptions {
   port: number;
   log: boolean;
   recordAlways: boolean;
+  /** Have the GPU record which command it is running, so a hang can be traced to one (device_lost.h). */
+  breadcrumbs?: boolean;
   stacktraces: boolean;
   /** "Validation layer" was asked for: its settings apply even when no validation layer was found. */
   validation: boolean;
@@ -95,6 +97,7 @@ export function vulkanLayerEnvironment(o: VulkanLayerOptions): NodeJS.ProcessEnv
     VKINSP_LOG: o.log ? "1" : "0",
     ...(o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {}),
     VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    ...(o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {}),
     VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
     // The validation layer stops reporting a message after a few repeats (its
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and

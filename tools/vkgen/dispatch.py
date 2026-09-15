@@ -46,6 +46,24 @@ RESET_COMMANDS = {
     "vkResetDescriptorPool": ("VkDescriptorPool", "descriptorPool"),
 }
 
+# Device-lost breadcrumbs (src/device_lost.h). The actions bracketed by a GPU marker: what a hang
+# happens inside. Every one takes a VkCommandBuffer first, which the marker is written into.
+BREADCRUMB_COMMANDS = {
+    "vkCmdDraw", "vkCmdDrawIndexed", "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect",
+    "vkCmdDrawIndirectCount", "vkCmdDrawIndexedIndirectCount",
+    "vkCmdDrawMeshTasksEXT", "vkCmdDrawMeshTasksIndirectEXT", "vkCmdDrawMeshTasksIndirectCountEXT",
+    "vkCmdDispatch", "vkCmdDispatchIndirect", "vkCmdDispatchBase",
+    "vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR",
+}
+
+# Calls that can report VK_ERROR_DEVICE_LOST, where the diagnosis is read (src/device_lost.h).
+DEVICE_LOST_CALLS = {
+    "vkQueueSubmit", "vkQueueSubmit2", "vkQueueSubmit2KHR", "vkQueueBindSparse",
+    "vkQueueWaitIdle", "vkDeviceWaitIdle",
+    "vkWaitForFences", "vkGetFenceStatus", "vkGetQueryPoolResults",
+    "vkAcquireNextImageKHR", "vkAcquireNextImage2KHR", "vkQueuePresentKHR",
+}
+
 # Hand-written post-call hooks (declared in hooks.h), called with the command's arguments after
 # the downstream call and after object registration. Signature: void Hook_<cmd>(<params>).
 EXTRA_HOOKS = {
@@ -329,6 +347,7 @@ def emit_entry_cpp(reg, cmds, out):
         '#include "command_recorder.h"',
         '#include "tracker.h"',
         '#include "hooks.h"',
+        '#include "device_lost.h"',
         "#include <cstring>",
         "",
         "namespace vkinsp {",
@@ -398,11 +417,24 @@ def emit_entry_cpp(reg, cmds, out):
         if reset:
             body.append(f"    Tracker::Get().OnDestroyChildren(HT_{reset[0]}, (uint64_t)(uintptr_t){reset[1]});")
 
+        # Device-lost breadcrumbs (src/device_lost.h): the GPU writes a marker before and after each
+        # action, so a hang can be traced to the command that caused it. Both calls are a single
+        # branch when breadcrumbs are off, which they are unless asked for.
+        crumb = c.name in BREADCRUMB_COMMANDS
+        if crumb:
+            body.append(f"    const uint32_t vkinsp_crumb = BeginBreadcrumb(vkinsp_dev, {first.name}, (uint32_t)VkCmdId::{short(c.name)});")
+
         has_result = c.ret != "void"
         if has_result:
             body.append(f"    {c.ret} result = {call};")
         else:
             body.append(f"    {call};")
+
+        if crumb:
+            body.append(f"    EndBreadcrumb(vkinsp_dev, {first.name}, vkinsp_crumb);")
+        # A call that can report the device has gone: read the breadcrumbs and say what it was on.
+        if c.name in DEVICE_LOST_CALLS:
+            body.append(f"    if (result == VK_ERROR_DEVICE_LOST) OnDeviceLost(vkinsp_dev, \"{c.name}\");")
 
         if first.type == "VkCommandBuffer":
             body.append(f"    if (CommandRecorder* rec = vkinsp_dev->RecorderFor({first.name})) {{")

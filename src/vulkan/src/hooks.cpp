@@ -3,6 +3,7 @@
 #include "hooks.h"
 
 #include "capture.h"
+#include "device_lost.h"
 #include "descriptors.h"
 #include "format_info.h"
 #include "image_readback.h"
@@ -1433,6 +1434,12 @@ static void NoteRenderingLayouts(VkCommandBuffer commandBuffer, const VkRenderin
 
 void Hook_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
     SubmitEnd(queue);
+    // VKINSP_SIMULATE_DEVICE_LOST: exercise the diagnosis without hanging the GPU. The queue is
+    // deliberately not drained first, so the markers are read with work still in flight, which is
+    // the state a real loss leaves them in.
+    bool vkinsp_pretendHung = false;
+    if (DeviceData* dev = GetDeviceData(queue); SimulateDeviceLost(dev, &vkinsp_pretendHung))
+        OnDeviceLost(dev, "vkQueueSubmit (simulated)", vkinsp_pretendHung);
     // A split submission (PreHook_vkQueueSubmit) is recorded as the application made it.
     SplitSubmit split = std::move(t_split);
     t_split = SplitSubmit{};

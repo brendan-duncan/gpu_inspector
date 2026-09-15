@@ -1,6 +1,14 @@
 ## v0.13.0
 
 ### Added
+- Device-lost diagnostics for Vulkan (`src/vulkan/src/device_lost.h`, docs/TROUBLESHOOTING.md):
+  **Device-lost breadcrumbs** in the launch dialog (`VKINSP_BREADCRUMBS=1`, `breadcrumbs` for
+  `launch_app`) has the GPU write a marker before and after every draw and dispatch, so when it
+  stops responding the session log names the command it was executing rather than only reporting
+  `VK_ERROR_DEVICE_LOST`. It says whether that command also finished, which separates a hang inside
+  it from a hang in what came next. Through `VK_AMD_buffer_marker`, which NVIDIA implements too; the
+  layer now checks every call that can report a lost device. Off by default: two GPU writes per
+  action.
 - Hardware counters for Vulkan captures (`vkinsp_replay --counters`, docs/REPLAY.md): the GPU's own
   counters for which unit inside the shader core a pass saturates, per render pass and, with
   `--counter-draws`, per draw. From NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query`, with
