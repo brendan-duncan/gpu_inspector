@@ -9157,6 +9157,8 @@ var Capture = class {
   _labels = null;
   _validationCommands = null;
   _reflections = /* @__PURE__ */ new Map();
+  /** Hardware counters from a replay (`vkinsp_replay --counters`), cached for the open capture. */
+  hwCounters = null;
   get graph() {
     return this._graph ??= frameRenderGraph(this.data, this.db);
   }
@@ -10972,6 +10974,8 @@ function analysisArgs(analysis, out, input) {
   if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
+  if (analysis.kind === "counters") return [...(analysis.counters ?? []).flatMap((c2) => ["--counter", c2]), "--counter-data", out];
+  if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;
     return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
@@ -28754,6 +28758,95 @@ function texelValues(format, bytes, depth = false) {
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
+// src/renderer/hw_counters.ts
+var NO_PASS2 = 4294967295;
+function counterInfo(raw) {
+  const r = raw ?? {};
+  return {
+    name: typeof r.name === "string" ? r.name : "",
+    description: typeof r.description === "string" ? r.description : "",
+    category: typeof r.category === "string" ? r.category : "",
+    unit: typeof r.unit === "string" ? r.unit : "count"
+  };
+}
+function counterRange(raw) {
+  const r = raw ?? {};
+  const num4 = (v) => typeof v === "number" ? v : 0;
+  const pass = num4(r.passIndex);
+  return {
+    command: num4(r.command),
+    frame: num4(r.frame),
+    commandBuffer: num4(r.commandBuffer),
+    ...pass === NO_PASS2 ? {} : { passIndex: pass },
+    values: Array.isArray(r.values) ? r.values.map((v) => typeof v === "number" ? v : null) : []
+  };
+}
+function parseHwCounters(input) {
+  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`The hardware counters are not valid JSON: ${e.message}`);
+  }
+  if (json.format !== "gpu-inspector-hw-counters") throw new Error("Not hardware counters from vkinsp_replay.");
+  const str3 = (v) => typeof v === "string" ? v : "";
+  const list = (v) => Array.isArray(v) ? v : [];
+  return {
+    device: str3(json.device),
+    backend: str3(json.backend),
+    chip: str3(json.chip),
+    rounds: typeof json.rounds === "number" ? json.rounds : 0,
+    counters: list(json.counters).map(counterInfo),
+    passes: list(json.passes).map(counterRange),
+    draws: list(json.draws).map(counterRange),
+    available: list(json.available).map(counterInfo),
+    notes: list(json.notes).filter((n) => typeof n === "string"),
+    problems: list(json.problems).filter((p) => typeof p === "string")
+  };
+}
+function counterValue(file, range, name) {
+  const i = file.counters.findIndex((c2) => c2.name === name);
+  if (i < 0 || i >= range.values.length) return null;
+  return range.values[i];
+}
+function hwCountersByPass(file) {
+  const out = /* @__PURE__ */ new Map();
+  for (const r of file.passes) {
+    if (r.passIndex === void 0) continue;
+    out.set(`${r.frame}:${r.commandBuffer}:${r.passIndex}`, r);
+  }
+  return out;
+}
+function formatCounter(value, unit) {
+  if (value === null) return "\u2014";
+  switch (unit) {
+    case "percent":
+      return `${value.toFixed(1)}%`;
+    case "ns":
+      return value >= 1e6 ? `${(value / 1e6).toFixed(3)} ms` : value >= 1e3 ? `${(value / 1e3).toFixed(2)} \xB5s` : `${value.toFixed(0)} ns`;
+    case "bytes":
+      return formatBytes5(value);
+    case "bytes/s":
+      return `${formatBytes5(value)}/s`;
+    case "cycles":
+      return value.toLocaleString(void 0, { maximumFractionDigits: 0 });
+    case "ratio":
+      return value.toFixed(3);
+    default:
+      return value.toLocaleString(void 0, { maximumFractionDigits: value < 10 ? 2 : 0 });
+  }
+}
+function formatBytes5(v) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
+}
+
 // src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
@@ -29148,6 +29241,80 @@ function captureTools(store) {
           nextOffset: p.nextOffset,
           passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
           notes
+        });
+      }
+    },
+    {
+      name: "get_hw_counters",
+      description: "The GPU's own hardware counters per pass and per draw \u2014 what Nsight Graphics calls the limiters and docs/PROFILING.md lists as out of reach through the pipeline-statistics path: which unit inside the shader core a pass saturates (SM throughput, VRAM bandwidth, L1/L2 cache, achieved occupancy, ALU and FMA pipes). A Vulkan capture is replayed on this machine's GPU with vkinsp_replay the first time this is called; the frame is replayed once per collection pass the counters need (seconds), and the result is kept with the open capture. Needs NVIDIA's Nsight Perf SDK (per pass and per draw) or VK_KHR_performance_query (per draw), and GPU performance-counter access enabled. Not Metal or D3D12. With `list`: every counter the GPU offers, to pass in `counters`. Without `counters`: a default limiter set.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        counters: { type: "array", items: { type: "string" }, description: "Counter names to collect (list=true shows what the GPU offers). Default: a limiter set (SM, memory, cache, occupancy, ALU, FMA)." },
+        list: { type: "boolean", description: "Only list every counter the GPU offers, without collecting (no replay of the frame's work)." },
+        ...PAGE_PARAMS
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, note: `Hardware counters are read by replaying the capture, and ${c2.data.api === "metal" ? "Metal captures do not replay; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c2.id, note: `Hardware counters need the capture replayed, and ${NO_REPLAY_TOOL}` });
+        const wantList = boolArg(args, "list", false);
+        const requested = Array.isArray(args.counters) ? args.counters.filter((n) => typeof n === "string") : [];
+        if (wantList) {
+          const run2 = await replayServers.run(tool, c2.path, { kind: "list-counters" });
+          if (!run2.data) return jsonResult({ capture: c2.id, note: `Could not list counters: ${run2.error ?? "no data"}` });
+          const file2 = parseHwCounters(run2.data);
+          if (!file2.backend) return jsonResult({ capture: c2.id, note: file2.notes[0] ?? "This GPU exposes no hardware counters the replay can read." });
+          const pg2 = page(file2.available, args, 100, 500);
+          return jsonResult({
+            capture: c2.id,
+            backend: file2.backend,
+            chip: file2.chip || void 0,
+            device: file2.device,
+            total: pg2.total,
+            offset: pg2.offset,
+            nextOffset: pg2.nextOffset,
+            counters: pg2.items.map((x) => ({ name: x.name, unit: x.unit, category: x.category, description: x.description || void 0 })),
+            notes: file2.notes.length ? file2.notes : void 0
+          });
+        }
+        if (!c2.hwCounters || requested.length) {
+          const run2 = await replayServers.run(tool, c2.path, { kind: "counters", counters: requested.length ? requested : void 0 });
+          if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not read hardware counters: ${run2.error ?? "no data"}` });
+          c2.hwCounters = parseHwCounters(run2.data);
+        }
+        const file = c2.hwCounters;
+        if (!file.backend || !file.passes.length && !file.draws.length) {
+          return jsonResult({ capture: c2.id, note: file.notes[0] ?? "No hardware counters were collected.", notes: file.notes.length > 1 ? file.notes : void 0 });
+        }
+        const byPass = hwCountersByPass(file);
+        const metrics = c2.metrics.passes;
+        const rows = metrics.map((p, i) => ({ p, i, r: byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) })).filter((x) => x.r);
+        rows.sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
+        const pg = page(rows, args, 30, 200);
+        const cell = (r, name) => formatCounter(counterValue(file, r, name), file.counters.find((cc) => cc.name === name)?.unit ?? "count");
+        return jsonResult({
+          capture: c2.id,
+          backend: file.backend,
+          chip: file.chip || void 0,
+          device: file.device,
+          collectionPasses: file.rounds,
+          counters: file.counters.map((cc) => ({ name: cc.name, unit: cc.unit, category: cc.category })),
+          total: pg.total,
+          offset: pg.offset,
+          nextOffset: pg.nextOffset,
+          passes: pg.items.map((x) => ({
+            pass: x.i,
+            label: c2.passName(x.i),
+            command: x.p.commandIndex,
+            ms: round(x.p.durationMs),
+            counters: Object.fromEntries(file.counters.map((cc) => [cc.name, cell(x.r, cc.name)]))
+          })),
+          draws: file.draws.length,
+          notes: file.notes.length ? file.notes : void 0
         });
       }
     },
