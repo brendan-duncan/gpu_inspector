@@ -137,7 +137,24 @@ bool Replayer::PrepareCounters() {
         return false;
     }
 
-    if (_nvperfReady) {
+    // Which backend to run. Naming one the device cannot use is not an error: its path still runs
+    // as far as it can and says what stopped it, which is the only way to exercise the portable
+    // path on a driver that does not offer VK_KHR_performance_query (NVIDIA's does not).
+    const std::string& want = _options.counters.backend;
+    if (!want.empty() && want != "nvperf" && want != "khr") {
+        _report->counters.notes.push_back("unknown counter backend \"" + want + "\": it is \"nvperf\" or \"khr\"");
+        return false;
+    }
+    const bool forceNvperf = want == "nvperf";
+    const bool forceKhr = want == "khr";
+
+    if (forceNvperf && !_nvperfReady) {
+        _report->counters.notes.push_back("the nvperf backend was asked for but is not available here"
+                                          + (_nvperfNote.empty() ? std::string() : ": " + _nvperfNote));
+        return false;
+    }
+
+    if (_nvperfReady && !forceKhr) {
         std::string note;
         auto gdpa = (PFN_vkGetDeviceProcAddr)_fns.GetInstanceProcAddr(_instance, "vkGetDeviceProcAddr");
         if (hw.session.Init(_instance, _physical, _device, _queue, _queueFamily, _fns.GetInstanceProcAddr, gdpa, note)) {
@@ -171,7 +188,7 @@ bool Replayer::PrepareCounters() {
         // Fall through to KHR if the device has it.
     }
 
-    if (_perfQueryAvailable) {
+    if (!forceNvperf && (_perfQueryAvailable || forceKhr)) {
         hw.khr = true;
         _report->counters.backend = "khr";
         return PrepareKhrCounters(draws);
@@ -202,6 +219,16 @@ std::vector<std::string> Replayer::DefaultCounterNames() const {
 
 bool Replayer::PrepareKhrCounters(uint32_t draws) {
     HwCounterState& hw = *_hw;
+    // The extension has to have been enabled on the device. A null check is not enough: the loader
+    // returns a working-looking pointer for an extension function it knows, and calling one the
+    // driver does not implement takes the process down ("ICD associated with VkPhysicalDevice does
+    // not support ..."). NVIDIA's desktop driver does not offer this extension at all.
+    if (!_perfQueryAvailable) {
+        _report->counters.notes.push_back(
+            "VK_KHR_performance_query is not enabled on this device, so the portable backend cannot run here. "
+            "Mesa's AMD (RADV, which may need RADV_PERFTEST=perfcounters) and Intel (ANV) drivers do offer it");
+        return false;
+    }
     if (!_fns.EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR || !_fns.GetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR) {
         _report->counters.notes.push_back("this build's Vulkan loader has no VK_KHR_performance_query entry points");
         return false;

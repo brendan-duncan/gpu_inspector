@@ -60,6 +60,9 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
   without any, a default limiter set is collected.
 - **`--counter-draws`:** measures each draw as well as each pass. A frame with thousands of draws
   takes far longer this way, so it is off by default.
+- **`--counter-backend nvperf|khr`:** forces one backend instead of picking whichever the device
+  supports. Naming one the device cannot use reports how far it got and why, which is how the
+  portable backend is exercised on a driver that does not offer it.
 - **`--list-counters`:** lists every counter the GPU offers, without replaying the frame's work.
 - **`--counter-data <file>`:** with `--counters` or `--list-counters`, writes the result as JSON.
   GPU Inspector and the MCP server's `get_hw_counters` run the tool this way.
@@ -475,8 +478,12 @@ Two backends supply the counters:
   run time from beside the tool, from `VKINSP_NVPERF_DIR`, or from an Nsight Graphics, Systems or
   Compute install on the machine. Build it in with `-DVKINSP_NVPERF=ON` (the default when the
   headers are present).
-- **`VK_KHR_performance_query`**, the portable path (AMD, Intel, Arm, Qualcomm). Its counters are
-  command-scoped and a pool's queries cannot nest, so this path measures **draws, not passes**.
+- **`VK_KHR_performance_query`**, the portable path. `KHR` marks an extension ratified by Khronos,
+  the body behind Vulkan, so this is Vulkan's own vendor-neutral way to read counters rather than a
+  vendor's SDK. Mesa's AMD (RADV, which may want `RADV_PERFTEST=perfcounters`) and Intel (ANV)
+  drivers offer it, as do Arm and Qualcomm mobile drivers; **NVIDIA's desktop driver does not**, so
+  on NVIDIA the Nsight Perf SDK above is the only route. Its counters are command-scoped and a
+  pool's queries cannot nest, so this path measures **draws, not passes**.
 
 Both need the driver to allow GPU performance-counter access. On NVIDIA that is off for
 non-administrators by default: enable it in the NVIDIA Control Panel under *Developer > Manage GPU
@@ -495,8 +502,9 @@ the counters collected, then each pass's and each draw's value of every one. GPU
 MCP server's `get_hw_counters` run the tool this way, keeping the result with the open capture.
 
 **What is left:** the counters are not yet folded into the GPU Bottlenecks report's own bound-stage
-verdict, and the KHR path has no portable default counter set (it takes the first command-scoped
-counters). Metal and D3D12 captures do not replay, so this is Vulkan only; on Metal, the capture
+verdict; the `VK_KHR_performance_query` path has no portable default counter set (it takes the first
+command-scoped counters) and has not yet been run against a driver that offers the extension, only
+as far as its precondition check. Metal and D3D12 captures do not replay, so this is Vulkan only; on Metal, the capture
 bar's **Xcode Trace** writes a `.gputrace` whose counter sets are Apple's equivalent.
 
 ## Where it stands

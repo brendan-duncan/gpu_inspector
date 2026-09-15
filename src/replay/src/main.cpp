@@ -43,7 +43,7 @@ void PrintUsage() {
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
                          "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
-                         "                     [--counters [--counter <name>]... [--counter-draws] [--counter-data <file>]]\n"
+                         "                     [--counters [--counter <name>]... [--counter-draws] [--counter-backend nvperf|khr] [--counter-data <file>]]\n"
                          "                     [--list-counters [--counter-data <file>]]\n"
                          "                     [--trace] | --check | --serve [--validate]\n");
 }
@@ -1065,6 +1065,7 @@ int Serve(const CaptureFile& capture, bool validation) {
             options.counters.enabled = true;
             options.counters.list = kind == "list-counters";
             options.counters.perDraw = request.Get("perDraw") && request.Get("perDraw")->boolean;
+            if (const JValue* b = request.Get("backend")) options.counters.backend = std::string(b->Str());
             if (const JValue* list = request.Get("counters"); list && list->IsArray())
                 for (uint32_t k = 0; k < list->count; ++k) options.counters.names.push_back(std::string(list->items[k].Str()));
         } else if (kind == "pixel") {
@@ -1170,6 +1171,10 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--counter") && i + 1 < argc) {
             options.counters.enabled = true;
             options.counters.names.push_back(argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--counter-backend") && i + 1 < argc) {
+            options.counters.enabled = true;
+            options.counters.backend = argv[++i];
         }
         else if (!std::strcmp(argv[i], "--counter-draws")) {
             options.counters.enabled = true;
