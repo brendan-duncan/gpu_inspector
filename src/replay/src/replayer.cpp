@@ -737,6 +737,8 @@ void Replayer::CreateObject(const JValue& o) {
     auto resolved = [&] { return _ctx.unresolved == unresolvedBefore; };
     uint64_t handle = 0;
     bool known = true;
+    /** Set where an object is meant to be left out, so its absence is not reported as a failure. */
+    bool quiet = false;
     VkDevice d = _device;
 
     if (type == "VkInstance") {
@@ -941,16 +943,31 @@ void Replayer::CreateObject(const JValue& o) {
         }
     } else if (type == "VkShaderModule") {
         VkShaderModule m = ModuleFromBlob(o, "SPIR-V");
-        if (!m && args) {
-            // Code the capture summarized decodes to zeros, which is no module: pipelines take theirs from their own payloads.
-            Args_vkCreateShaderModule a{};
-            DecodeArgs(_ctx, *args, a);
-            if (a.pCreateInfo && a.pCreateInfo->pCode && a.pCreateInfo->codeSize >= 20 && a.pCreateInfo->pCode[0] == 0x07230203)
-                _fns.CreateShaderModule(d, a.pCreateInfo, nullptr, &m);
+        // Whether the capture holds this module's code at all. A module created before the capture
+        // started has no payload, and the layer summarizes an oversized pCode away (json_writer.h,
+        // maxScalarArray), which every real shader exceeds — so there is nothing to build it from.
+        const uint8_t* code = nullptr;
+        size_t codeSize = 0;
+        const bool hasCode = _capture->Blob(o, "SPIR-V", code, codeSize) && codeSize >= 4;
+        if (!m && !hasCode && args) {
+            // Only a shader small enough to have escaped the summary is still in the arguments;
+            // decoding a summary would both report a problem and yield zeros, which is no module.
+            const JValue* create = args->Get("pCreateInfo");
+            const JValue* words = create ? create->Get("pCode") : nullptr;
+            if (words && words->IsArray()) {
+                Args_vkCreateShaderModule a{};
+                DecodeArgs(_ctx, *args, a);
+                if (a.pCreateInfo && a.pCreateInfo->pCode && a.pCreateInfo->codeSize >= 20 && a.pCreateInfo->pCode[0] == 0x07230203)
+                    _fns.CreateShaderModule(d, a.pCreateInfo, nullptr, &m);
+            }
         }
         handle = (uint64_t)m;
-        // Left out without a problem for what names it: a pipeline is created from its own stages' payloads.
-        if (!m) _skipped.insert(id);
+        if (!m) {
+            // A pipeline is created from its own stages' payloads, so a module the capture has no
+            // code for is left out quietly. One whose code the driver rejected is worth reporting.
+            _skipped.insert(id);
+            quiet = !hasCode;
+        }
     } else if (type == "VkPipeline") {
         if (args) handle = CreatePipeline(o, cmd, index, *args, unresolvedBefore);
     } else if (type == "VkShaderEXT") {
@@ -966,8 +983,9 @@ void Replayer::CreateObject(const JValue& o) {
         return;
     }
     if (!handle) {
-        Problem(type + " " + std::to_string(id) + " (" + cmd + ") " +
-                (resolved() ? "could not be created" : "was not created: it names objects the replay does not have"));
+        if (!quiet)
+            Problem(type + " " + std::to_string(id) + " (" + cmd + ") " +
+                    (resolved() ? "could not be created" : "was not created: it names objects the replay does not have"));
         _report->objectsSkipped++;
         return;
     }
