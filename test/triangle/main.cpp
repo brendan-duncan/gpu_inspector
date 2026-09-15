@@ -152,6 +152,11 @@ struct App {
     // (VK_EXT_shader_object) and every piece of state set dynamically, instead of its pipeline.
     bool shaderObject = false;
     VkShaderEXT shaders[2]{};
+    // --suspend: the cube's pass is dynamic rendering split across two command buffers, suspended
+    // at the end of the frame's buffer and resumed in a second one submitted right after it
+    // (VK_RENDERING_SUSPENDING_BIT / VK_RENDERING_RESUMING_BIT). Nothing may be recorded between
+    // the two parts, so the layer's per-pass timestamps, queries and read-back copies must not be.
+    bool suspend = false;
     // --ray-tracing: each frame rebuilds a top-level acceleration structure over one triangle's
     // bottom-level structure and traces a 256x256 storage image with a raygen, miss and closest hit
     // pipeline (VK_KHR_ray_tracing_pipeline), so a capture has a ray tracing pipeline, its shader
@@ -324,6 +329,7 @@ struct App {
     void* persistStagingMapped[kFramesInFlight]{};
     VkCommandBuffer commandBuffers[kFramesInFlight]{};
     VkCommandBuffer hazardBuffers[kFramesInFlight]{};   // --hazard: the vertex update, submitted first
+    VkCommandBuffer suspendBuffers[kFramesInFlight]{};  // --suspend: the resumed half of the pass, submitted second
     std::vector<VkCommandBuffer> prerecorded;            // --prerecord: one per swapchain image
     std::vector<VkCommandBuffer> overlays;               // --prerecord: the overlay pass, one per image
     std::vector<VkFramebuffer> overlayFramebuffers;
@@ -472,9 +478,9 @@ struct App {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "vkinsp_triangle";
         ai.pEngineName = "none";
-        // --shader-object draws in dynamic rendering, core in 1.3; --ray-tracing needs 1.2's buffer
-        // device addresses and SPIR-V 1.4.
-        ai.apiVersion = shaderObject ? VK_API_VERSION_1_3 : rayTracing ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
+        // --shader-object and --suspend draw in dynamic rendering, core in 1.3; --ray-tracing needs
+        // 1.2's buffer device addresses and SPIR-V 1.4.
+        ai.apiVersion = shaderObject || suspend ? VK_API_VERSION_1_3 : rayTracing ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
         std::vector<const char*> instExts = {VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(_WIN32)
                                              VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
@@ -565,18 +571,23 @@ struct App {
         }
         VkPhysicalDeviceShaderObjectFeaturesEXT soFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
-        if (shaderObject) {
-            // The extension brings the dynamic state commands it needs with it; its draws need
-            // dynamic rendering (core in the 1.3 instance this mode asks for).
-            if (samples != VK_SAMPLE_COUNT_1_BIT) {
-                fprintf(stderr, "--shader-object does not combine with --msaa\n");
+        if (shaderObject || suspend) {
+            // Dynamic rendering (core in the 1.3 instance these modes ask for): what shader objects
+            // draw in, and what a pass can be suspended and resumed in. Its targets here are
+            // single-sampled, and the split pass is recorded every frame.
+            if (samples != VK_SAMPLE_COUNT_1_BIT || (suspend && prerecord)) {
+                fprintf(stderr, "--shader-object and --suspend do not combine with --msaa, nor --suspend with --prerecord\n");
                 exit(1);
             }
-            devExts.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-            soFeatures.shaderObject = VK_TRUE;
             dynamicRendering.dynamicRendering = VK_TRUE;
             dynamicRendering.pNext = (void*)dci.pNext;
-            soFeatures.pNext = &dynamicRendering;
+            dci.pNext = &dynamicRendering;
+        }
+        if (shaderObject) {
+            // The extension brings the dynamic state commands it needs with it.
+            devExts.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+            soFeatures.shaderObject = VK_TRUE;
+            soFeatures.pNext = (void*)dci.pNext;
             dci.pNext = &soFeatures;
         }
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferAddress{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
@@ -679,6 +690,7 @@ struct App {
         cbai.commandBufferCount = kFramesInFlight;
         CHECK(vkAllocateCommandBuffers(device, &cbai, commandBuffers));
         if (hazard) CHECK(vkAllocateCommandBuffers(device, &cbai, hazardBuffers));
+        if (suspend) CHECK(vkAllocateCommandBuffers(device, &cbai, suspendBuffers));
         for (int i = 0; i < kFramesInFlight; ++i) {
             VkSemaphoreCreateInfo sci2{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             CHECK(vkCreateSemaphore(device, &sci2, nullptr, &imageAvailable[i]));
@@ -1678,6 +1690,16 @@ struct App {
         gpci.pDynamicState = &dsci;
         gpci.layout = pipelineLayout;
         gpci.renderPass = renderPass;
+        // --suspend draws with this pipeline in dynamic rendering: the targets' formats stand in
+        // for the render pass.
+        VkPipelineRenderingCreateInfo dynamicTargets{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        dynamicTargets.colorAttachmentCount = 1;
+        dynamicTargets.pColorAttachmentFormats = &colorFormat;
+        dynamicTargets.depthAttachmentFormat = depthFormat;
+        if (suspend) {
+            gpci.pNext = &dynamicTargets;
+            gpci.renderPass = VK_NULL_HANDLE;
+        }
         if (pipelineLibrary) {
             // Library 1: vertex input interface and pre-rasterization shaders (the vertex stage).
             VkGraphicsPipelineLibraryCreateInfoEXT vertexParts{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT};
@@ -1989,11 +2011,15 @@ struct App {
             hsi.pCommandBuffers = &hb;
             CHECK(vkQueueSubmit(queue, 1, &hsi, VK_NULL_HANDLE));
         }
-        // Shader objects can only draw in dynamic rendering: the same targets and clears, with the
-        // layout transitions the render pass would have made.
+        // Shader objects can only draw in dynamic rendering, and a pass is only suspended there:
+        // the same targets and clears, with the layout transitions the render pass would have made.
+        const bool dynamic = shaderObject || suspend;
         const VkImageView colorView = offscreen ? offView : swapViews[imageIndex];
         const VkImage colorImage = offscreen ? offImage : swapImages[imageIndex];
-        if (shaderObject) {
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        if (dynamic) {
             VkImageMemoryBarrier toTargets[2]{};
             for (auto& b : toTargets) {
                 b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -2010,24 +2036,22 @@ struct App {
             toTargets[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                                  0, 0, nullptr, 0, nullptr, 2, toTargets);
-            VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             color.imageView = colorView;
             color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             color.clearValue = clears[0];
-            VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             depth.imageView = depthView;
             depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             depth.clearValue = clears[1];
-            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
             ri.renderArea = {{0, 0}, {width, height}};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &color;
             ri.pDepthAttachment = &depth;
+            if (suspend) ri.flags = VK_RENDERING_SUSPENDING_BIT;
             vkCmdBeginRendering(cb, &ri);
         } else {
             vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
@@ -2036,6 +2060,40 @@ struct App {
         // --bad-scissor: a negative offset is a validation error (VUID-vkCmdSetScissor-x-00595),
         // used to exercise the inspector's validation message reporting.
         VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
+        RecordCubeDraw(cb, viewport, scissor, t);
+        if (suspend) {
+            // The pass is suspended with the frame's buffer, and resumed in the second buffer with
+            // the same rendering info, where the cube is drawn again (in place, so the depth test
+            // rejects it), before the pass ends for good. The debug label spans both.
+            vkCmdEndRendering(cb);
+            CHECK(vkEndCommandBuffer(cb));
+            cb = suspendBuffers[frameSlot];
+            CHECK(vkResetCommandBuffer(cb, 0));
+            CHECK(vkBeginCommandBuffer(cb, &bi));
+            ri.flags = VK_RENDERING_RESUMING_BIT;
+            vkCmdBeginRendering(cb, &ri);
+            RecordCubeDraw(cb, viewport, scissor, t);
+        }
+        if (dynamic) {
+            vkCmdEndRendering(cb);
+            VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            toPresent.srcQueueFamilyIndex = toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toPresent.image = colorImage;
+            toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toPresent.newLayout = offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
+        } else {
+            vkCmdEndRenderPass(cb);
+        }
+        if (endLabel) endLabel(cb);
+        CHECK(vkEndCommandBuffer(cb));
+    }
+
+    // The cube's draw inside the main pass: its pipeline or shader objects, state, bindings and the draw
+    // (a second, identical draw with --occluded).
+    void RecordCubeDraw(VkCommandBuffer cb, const VkViewport& viewport, const VkRect2D& scissor, float t) {
         if (shaderObject) {
             // Shader objects: the shaders, and all the state a pipeline would have carried.
             const VkShaderStageFlagBits stageBits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
@@ -2090,21 +2148,6 @@ struct App {
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
         if (occluded) vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
-        if (shaderObject) {
-            vkCmdEndRendering(cb);
-            VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            toPresent.srcQueueFamilyIndex = toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toPresent.image = colorImage;
-            toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            toPresent.newLayout = offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
-        } else {
-            vkCmdEndRenderPass(cb);
-        }
-        if (endLabel) endLabel(cb);
-        CHECK(vkEndCommandBuffer(cb));
     }
 
     // --------------------------------------------------------------------------------- frame
@@ -2137,6 +2180,7 @@ struct App {
         VkCommandBuffer cb = cbs[0];
         if (!prerecord) Record(cb, imageIndex, t);
         if (prerecord && !overlays.empty()) cbs[1] = overlays[imageIndex];
+        if (suspend) cbs[1] = suspendBuffers[frameSlot];   // the resumed half of the pass, in the same submission
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -2322,6 +2366,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
+        else if (!strcmp(argv[i], "--suspend")) app.suspend = true;
         else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
         else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
         else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;

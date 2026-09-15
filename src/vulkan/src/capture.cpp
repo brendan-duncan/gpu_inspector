@@ -293,6 +293,7 @@ void CaptureManager::Finish(DeviceData* dev) {
         (unsigned long long)(_bufferBytes >> 10));
     if (uint32_t n = _storeAllPasses.exchange(0, std::memory_order_relaxed)) Log("capture: %u render passes ran with their DONT_CARE store ops forced to STORE, so those attachments read back", n);
     if (uint32_t n = _postSubmitReadbacks.exchange(0, std::memory_order_relaxed)) Log("capture: %u attachments of command buffers recorded before the capture were read back after their submission", n);
+    if (uint32_t n = _suspendedPasses.exchange(0, std::memory_order_relaxed)) Log("capture: %u render pass(es) suspended and resumed across command buffers: neither timed nor counted, and read back where they resumed", n);
 
     // Everything recorded in the frame has been submitted; wait for it so staging data is valid,
     // on every device that took part.
@@ -559,15 +560,23 @@ uint32_t CaptureManager::BeginOcclusion(DeviceData* dev, CommandRecorder* rec) {
     return q;
 }
 
-void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview, bool secondaries) {
+void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, const PassShape& shape) {
+    rec->pendingQuery = UINT32_MAX;
+    rec->pendingStatsQuery = UINT32_MAX;
+    // A pass resumed from a part suspended earlier in the submission (in another command buffer,
+    // usually): nothing may be recorded between the two, so not even the compute pass's end.
+    if (shape.resuming) return;
     OnEndComputePass(dev, rec);
+    // A pass suspended here can have nothing recorded after it either, so it would have no end
+    // timestamp, and its queries could not be ended: untimed and uncounted, like its resumption.
+    if (shape.suspending) return;
     rec->pendingQuery = BeginTimestamp(dev, rec);
     // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
     // report shows the counters against the pass's duration. A multiview pass writes one result
     // per view, which would need that many consecutive indices, so it is timed but not counted.
     // A pass that may execute secondary command buffers can only do so with queries active when
     // the secondaries inherit them, which needs inheritedQueries (hooks.cpp, InheritPassQueries).
-    const bool counted = rec->pendingQuery != UINT32_MAX && !multiview && (!secondaries || dev->inheritedQueries);
+    const bool counted = rec->pendingQuery != UINT32_MAX && !shape.multiview && (!shape.secondaries || dev->inheritedQueries);
     rec->pendingStatsQuery = counted ? BeginPipelineStatistics(dev, rec) : UINT32_MAX;
     if (counted) BeginOcclusion(dev, rec);
 }
@@ -640,6 +649,8 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
     p = ActivePass{};
     p.active = true;
     p.dynamic = true;
+    p.suspending = (info->flags & VK_RENDERING_SUSPENDING_BIT) != 0;
+    p.resuming = (info->flags & VK_RENDERING_RESUMING_BIT) != 0;
     p.renderArea = info->renderArea;
     p.layerCount = info->layerCount;
     for (uint32_t bit = 0; bit < 32; ++bit)
@@ -667,6 +678,37 @@ void CaptureManager::OnBeginRendering(DeviceData* dev, CommandRecorder* rec, con
 void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec) {
     ActivePass& p = rec->pass();
     if (!p.active) return;
+    DeviceCapture* suspended = p.suspending || p.resuming ? FindCapture(dev->device) : nullptr;
+    if (p.suspending) {
+        // Suspended, to be resumed later in the submission: nothing may be recorded between the
+        // two parts, in this command buffer or the next, so this end gets no read-back, no
+        // timestamp (OnBeforePass took none) and no flush of the copies queued inside it. Those
+        // wait for the part that resumes the pass, whose end records them (below). The pass's
+        // attachments are read back there too, once the whole pass has run.
+        p.active = false;
+        _suspendedPasses.fetch_add(1, std::memory_order_relaxed);
+        if (suspended) {
+            std::lock_guard lock(suspended->suspendedMutex);
+            auto& copies = rec->pendingCopies();
+            suspended->suspendedCopies.insert(suspended->suspendedCopies.end(), copies.begin(), copies.end());
+            copies.clear();
+            auto& images = rec->pendingImages();
+            suspended->suspendedImages.insert(suspended->suspendedImages.end(), images.begin(), images.end());
+            images.clear();
+        }
+        return;
+    }
+    if (suspended) {
+        // The part that ends a suspended pass: the copies of every part before it are recorded
+        // here, after it, with this part's own.
+        std::lock_guard lock(suspended->suspendedMutex);
+        auto& copies = rec->pendingCopies();
+        copies.insert(copies.begin(), suspended->suspendedCopies.begin(), suspended->suspendedCopies.end());
+        suspended->suspendedCopies.clear();
+        auto& images = rec->pendingImages();
+        images.insert(images.begin(), suspended->suspendedImages.begin(), suspended->suspendedImages.end());
+        suspended->suspendedImages.clear();
+    }
     // Readback copies are only injected while a capture is in progress.
     const bool readBack = IsCapturing() && _options.captureTextures;
     if (readBack) {
@@ -1067,7 +1109,7 @@ void CaptureManager::SendBuffers(DeviceData* dev) {
         if (bc.failed) continue;
         if (!bc.recorded) {
             bc.failed = true;
-            bc.note = "copy was never recorded (secondary command buffer not executed)";
+            bc.note = "copy was never recorded (secondary command buffer not executed, or a suspended render pass never resumed)";
         } else if (bc.frame == UINT32_MAX) {
             bc.failed = true;
             bc.note = "command buffer was not submitted during the capture";
@@ -1542,7 +1584,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
     for (auto& tc : textures) {
         if (!tc.recorded && !tc.failed) {
             tc.failed = true;
-            tc.note = "copy was never recorded (secondary command buffer not executed)";
+            tc.note = "copy was never recorded (secondary command buffer not executed, or a suspended render pass never resumed)";
         }
         if (tc.frame == UINT32_MAX) {
             tc.frame = 0;

@@ -44,6 +44,10 @@ struct RecordedPass {
 struct ActivePass {
     bool active = false;
     bool dynamic = false;                    // vkCmdBeginRendering
+    // Dynamic rendering split across command buffers (VK_RENDERING_SUSPENDING_BIT / RESUMING_BIT):
+    // nothing may be recorded after a suspended part or before the part that resumes it.
+    bool suspending = false;
+    bool resuming = false;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     std::vector<VkImageView> attachments;    // framebuffer or imageless/dynamic attachments
