@@ -457,8 +457,10 @@ Every capture replayed so far, with its result:
 | XR triangle captured on an Adreno 740, replayed on an RTX 4080 | visually identical; 0.4% of texels differ slightly (shader precision and rasterization of two GPUs) |
 
 These cases differ for known reasons:
-- **A frame captured while `replace_shader` was active** reads back the edited shader's output.
-  The capture keeps the original pipeline, which is what the replay draws.
+- **A frame captured while `replace_shader` was active, by a layer from before v0.12** reads back
+  the edited shader's output while its bind names the original pipeline, which is what the replay
+  draws. The layer now records the bind as the replacement (an object with the edited code, the
+  original beside it as `replaced`), so such a frame replays with the edit.
 - **Captures older than sampled-image read-back** have no texture contents to upload.
 - **Captures older than frame-start contents** start images the frame loads or copies from at zero,
   and copy zeros from staging buffers the host wrote.

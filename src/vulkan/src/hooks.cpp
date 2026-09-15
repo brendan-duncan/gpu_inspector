@@ -142,6 +142,48 @@ void PreHook_vkCmdBindShadersEXT(VkCommandBuffer& commandBuffer, uint32_t& stage
     pShaders = ShaderEditor::Get().ResolveShaders(stageCount, pShaders, t_boundShaders);
 }
 
+// Live shader editing in captures: the generated forwarder records the application's arguments,
+// but what ran was the replacement the pre-hooks above bound, an object of its own in the tracker
+// with the edited code as its shader payloads. The record is rewritten to name it, with the
+// original it stood in for as "replaced", so a capture and its replay carry what the frame drew
+// rather than what the application asked for.
+void Hook_vkCmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev ? dev->RecorderFor(commandBuffer) : nullptr;
+    if (!rec) return;
+    VkPipeline original = ShaderEditor::Get().OriginalOf(pipeline);
+    if (!original) return;
+    JsonWriter args(&Tracker::Get());
+    ArgsToJson_vkCmdBindPipeline(args, commandBuffer, pipelineBindPoint, pipeline);
+    rec->ReplaceLastArgs(std::move(args.str()));
+    JsonWriter replaced(&Tracker::Get());
+    replaced.Handle(HT_VkPipeline, "VkPipeline", (uint64_t)(uintptr_t)original);
+    rec->SetExtraOnLast(",\"replaced\":" + replaced.str());
+}
+
+void Hook_vkCmdBindShadersEXT(VkCommandBuffer commandBuffer, uint32_t stageCount, const VkShaderStageFlagBits* pStages,
+                              const VkShaderEXT* pShaders) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev ? dev->RecorderFor(commandBuffer) : nullptr;
+    if (!rec || !pShaders) return;
+    // One entry per bound shader: the original of a replacement, null for the application's own.
+    std::vector<VkShaderEXT> originals(stageCount, VK_NULL_HANDLE);
+    bool any = false;
+    for (uint32_t i = 0; i < stageCount; ++i) {
+        originals[i] = ShaderEditor::Get().OriginalShaderOf(pShaders[i]);
+        any |= originals[i] != VK_NULL_HANDLE;
+    }
+    if (!any) return;
+    JsonWriter args(&Tracker::Get());
+    ArgsToJson_vkCmdBindShadersEXT(args, commandBuffer, stageCount, pStages, pShaders);
+    rec->ReplaceLastArgs(std::move(args.str()));
+    JsonWriter replaced(&Tracker::Get());
+    replaced.BeginArray();
+    for (VkShaderEXT original : originals) replaced.Handle(HT_VkShaderEXT, "VkShaderEXT", (uint64_t)(uintptr_t)original);
+    replaced.EndArray();
+    rec->SetExtraOnLast(",\"replaced\":" + replaced.str());
+}
+
 // What about the pass about to begin limits what the capture records around it (PassShape in
 // capture.h). A multiview pass's query would need one index per view, so it goes uncounted while
 // the rest of an application that merely enables multiview keeps its counters. A render pass says

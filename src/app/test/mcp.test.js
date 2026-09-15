@@ -62,6 +62,8 @@ const objects = [
     pRasterizationState: { polygonMode: "VK_POLYGON_MODE_FILL", cullMode: "VK_CULL_MODE_BACK_BIT" },
   }] }, "Opaque"),
   object(15, "VkBuffer", "vkCreateBuffer", { pCreateInfo: { size: 36, usage: "VK_BUFFER_USAGE_VERTEX_BUFFER_BIT" } }, "Triangle"),
+  // The application's own pipeline, which a live shader edit replaced with 14 for the frame (the second bind's `replaced`).
+  object(17, "VkPipeline", "vkCreateGraphicsPipelines", { pCreateInfos: [{ stageCount: 1, pStages: [{ stage: "VK_SHADER_STAGE_VERTEX_BIT", pName: "main" }] }] }, "Opaque original"),
   object(CB, "VkCommandBuffer", "vkAllocateCommandBuffers", { pAllocateInfo: { level: "VK_COMMAND_BUFFER_LEVEL_PRIMARY", commandBufferCount: 1 } }),
 ];
 
@@ -74,7 +76,7 @@ add("vkCmdBeginDebugUtilsLabelEXT", { pLabelInfo: { pLabelName: "Opaque" } });
 add("vkCmdBeginRenderPass", { pRenderPassBegin: { renderPass: ref(12, "VkRenderPass"), framebuffer: ref(13, "VkFramebuffer"), renderArea: { offset: { x: 0, y: 0 }, extent: { width: 4, height: 4 } } } }, { imageData: [2] });
 const PIPELINE_BIND = commands.length;
 add("vkCmdBindPipeline", bindPipeline);
-add("vkCmdBindPipeline", bindPipeline);
+add("vkCmdBindPipeline", bindPipeline, { replaced: ref(17, "VkPipeline") });
 add("vkCmdBindVertexBuffers", { firstBinding: 0, bindingCount: 1, pBuffers: [ref(15, "VkBuffer")], pOffsets: [0] }, { bufferData: [1] });
 const FIRST_DRAW = commands.length;
 for (let i = 0; i < 40; i++) add("vkCmdDraw", { vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 });
@@ -214,6 +216,10 @@ test("a draw shows the state it read", async () => {
   const { json } = await call("get_command", { index: FIRST_DRAW });
   assert.equal(json.state.pipeline.pipeline, 'VkPipeline#14 "Opaque"');
   assert.equal(json.state.pipeline.boundAt, PIPELINE_BIND + 1);
+  // The bind ran a live shader edit's replacement: the state is the replacement's, the original named beside it.
+  assert.equal(json.state.pipeline.replaces, 'VkPipeline#17 "Opaque original"');
+  assert.equal((await call("get_command", { index: PIPELINE_BIND + 1 })).json.replaced, 'VkPipeline#17 "Opaque original"');
+  assert.equal((await call("get_command", { index: PIPELINE_BIND })).json.replaced, undefined);
   assert.equal(json.state.pipeline.fixedFunction.rasterization.cullMode, "VK_CULL_MODE_BACK_BIT");
   const vb = json.state.vertexBuffers[0];
   assert.equal(vb.stride, 12);

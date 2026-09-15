@@ -713,7 +713,10 @@ structs included, unknown ones dropped with a note), and `ReplaceShader {pipelin
 spirv}` creates a new module and a replacement pipeline from that copy with the stage swapped.
 From then on `vkCmdBindPipeline` (a pre-hook) binds the replacement instead of the original;
 `RestoreShader` drops it. The replacement is registered as an object of its own ("<name>
-(edited)", with the new code as its stage payload) so captures and reflection see it. Retired
+(edited)", with the new code as its stage payload) so captures and reflection see it: a
+`vkCmdBindPipeline` (or `vkCmdBindShadersEXT`) recorded while the edit is active names the
+replacement in its arguments, with the application's original as `replaced` (a post-hook rewrites
+the record), so the capture, its analyses and its replay carry what the frame drew. Retired
 replacements are destroyed at a later present after `vkDeviceWaitIdle`, since command buffers
 may still reference them. The stages an edit leaves alone are not given the application's own
 modules, which it may have destroyed as soon as the pipeline existed. They get temporary modules

@@ -114,6 +114,13 @@
   target) tracked and logged call by call, and the session log redrew itself for each line. The
   library now leaves a D3D12 device alone when GPU Inspector's Vulkan layer already has a device in
   the process, and the log draws new lines in batches.
+- A Vulkan frame captured while `replace_shader` (or the shader editor) had a stage replaced
+  recorded the application's original pipeline at every bind, so the capture's draw state, its
+  shader views and its replay showed the original code while the read-back targets showed the
+  edit's. The bind now records the replacement pipeline (or shader objects) that ran, with the
+  original beside it as `replaced` (a "Replaces" line in the draw's Pipeline State, and in
+  `get_command`), so everything built on the capture uses the edited code and such a frame replays
+  identical.
 - A dynamic rendering pass suspended at the end of one command buffer and resumed in another
   (`VK_RENDERING_SUSPENDING_BIT` / `RESUMING_BIT`) had the layer's timestamps, queries and
   read-back copies recorded between its parts, where the specification allows no command at all

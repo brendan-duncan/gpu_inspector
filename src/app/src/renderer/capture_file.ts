@@ -50,6 +50,7 @@ function referencedObjects(session: LayerSession, data: CaptureData): VulkanObje
     if (c.secondary) ids.add(c.secondary);
     db.collectReferences(c.args, ids);
     db.collectReferences(c.descriptors, ids);
+    db.collectReferences(c.replaced, ids);
   }
   for (const t of data.textures) {
     ids.add(t.info.id);

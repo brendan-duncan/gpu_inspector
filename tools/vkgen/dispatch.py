@@ -112,6 +112,10 @@ EXTRA_HOOKS = {
     "vkCreateDescriptorUpdateTemplateKHR",
     "vkUpdateDescriptorSetWithTemplate",
     "vkUpdateDescriptorSetWithTemplateKHR",
+    # live shader editing: a bind of an edited pipeline or shader object is recorded as the
+    # replacement that ran (see Hook_vkCmdBindPipeline)
+    "vkCmdBindPipeline",
+    "vkCmdBindShadersEXT",
     # bound resources captured with the binding command
     "vkCmdBindDescriptorSets",
     "vkCmdBindDescriptorSets2",
