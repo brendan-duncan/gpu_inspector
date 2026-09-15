@@ -2,3 +2,4 @@ EXPORTS
     vkNegotiateLoaderLayerInterfaceVersion
     vkGetInstanceProcAddr
     vkGetDeviceProcAddr
+    vkinspDeviceCount

@@ -37,6 +37,8 @@ export interface SessionContext {
 }
 
 const MAX_LOG_LINES = 2000;
+/** How long new log lines wait to be drawn, with whatever else arrives meanwhile. */
+const LOG_RENDER_MS = 100;
 
 // Session bar icons (inline SVG in the button's text color).
 const ICON_STOP = '<svg viewBox="0 0 16 16" aria-label="Stop"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>';
@@ -53,6 +55,7 @@ export class SessionPanel extends Div implements SessionContext {
   private _tabs: TabWidget;
   private _log: Widget;
   private _logLines: string[] = [];
+  private _logRender: ReturnType<typeof setTimeout> | null = null;
   private _nameLabel!: Span;
   private _statusLabel!: Span;
   private _frameLabel!: Span;
@@ -255,11 +258,15 @@ export class SessionPanel extends Div implements SessionContext {
 
   appendLog(line: string): void {
     this._logLines.push(line);
-    if (this._logLines.length > MAX_LOG_LINES) this._logLines.splice(0, this._logLines.length - MAX_LOG_LINES);
-    this._renderLog();
+    // Lines can arrive by the thousand a second (a capture library logging every call), and
+    // rebuilding the text with a layout for each one starves the renderer: they are drawn together.
+    this._logRender ??= setTimeout(() => this._renderLog(), LOG_RENDER_MS);
   }
 
   private _renderLog(): void {
+    if (this._logRender) clearTimeout(this._logRender);
+    this._logRender = null;
+    if (this._logLines.length > MAX_LOG_LINES) this._logLines.splice(0, this._logLines.length - MAX_LOG_LINES);
     this._log.text = this._logLines.join("\n");
     this._log.element.scrollTop = this._log.element.scrollHeight;
   }

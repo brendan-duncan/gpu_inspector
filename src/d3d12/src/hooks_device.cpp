@@ -26,6 +26,7 @@
 #include "ui_messages.h"
 #include "validation.h"
 
+#include <atomic>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -1057,8 +1058,28 @@ PFN_CreateFactory g_CreateDXGIFactory = nullptr;
 PFN_CreateFactory g_CreateDXGIFactory1 = nullptr;
 PFN_CreateFactory2 g_CreateDXGIFactory2 = nullptr;
 
+/**
+ * Whether GPU Inspector's Vulkan layer has a device in this process. The launcher puts this library
+ * into every Windows target alongside the layer, and a Vulkan driver that presents through DXGI makes
+ * a D3D12 device of its own (NVIDIA's does). That device is the driver's,
+ * and the layer is the one inspecting the application: tracking it could not be served anyway (the
+ * port is the layer's), and hooking and logging every call of the driver's present path buried the
+ * session log under a thousand lines a second. A layer from before the export reads as none.
+ */
+static bool VulkanLayerHasDevice() {
+    HMODULE layer = GetModuleHandleW(L"VkLayer_inspector_capture.dll");
+    if (!layer) return false;
+    auto count = reinterpret_cast<uint32_t (*)()>(GetProcAddress(layer, "vkinspDeviceCount"));
+    return count && count() > 0;
+}
+
 HRESULT WINAPI Hook_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
     if (Internal()) return g_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+    if (VulkanLayerHasDevice()) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true)) LogAlways("a D3D12 device created while the Vulkan layer has a device in this process (the Vulkan driver presenting through DXGI): left to the driver, not tracked");
+        return g_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+    }
     // Before the device exists, or the layer cannot attach to it.
     ValidationLog::Get().EnableDebugLayer();
     HRESULT hr = g_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);

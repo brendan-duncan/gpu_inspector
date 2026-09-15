@@ -1398,6 +1398,15 @@ async function writeScreenshots(file: string): Promise<void> {
   }
 }
 
+// Testing aid: a run that takes screenshots (tools/ui_tests.py) keeps rendering while other windows
+// cover it. Chromium stops the rendering steps of a window it finds occluded (requestAnimationFrame,
+// ResizeObserver), so a tab that fits its image once its pane has a size never refitted, and a
+// scripted click missed the image: whether a case passed depended on what was in front of the window.
+if (cliOption("screenshot")) {
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+}
+
 void app.whenReady().then(() => {
   migrateSettings();
   if (canUpdate) {

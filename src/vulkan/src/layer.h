@@ -164,6 +164,8 @@ void RegisterInstance(void* key, std::unique_ptr<InstanceData> data);
 void RegisterDevice(void* key, std::unique_ptr<DeviceData> data);
 void UnregisterInstance(void* key);
 void UnregisterDevice(void* key);
+/** Devices created or being created through the layer (the vkinspDeviceCount export). */
+uint32_t DeviceCount();
 
 template <typename H>
 inline InstanceData* GetInstanceData(H handle) {

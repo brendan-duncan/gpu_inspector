@@ -133,16 +133,16 @@ interpreter and re-created pipelines.
 
 ## Replay-based features **(RenderDoc)**
 
-- [ ] **Broken: every replay-based analysis of a live Vulkan capture hangs in the app.** The
-      `overdraw`, `mesh`, `overlay`, `debug-pixel` and `debug-vertex` cases of `tools/ui_tests.py`
-      all fail with no measurements, the capture's status left at "replaying the capture...". Not
-      the replay: `vkinsp_replay` answers an `overdraw` request over `--serve` in 20 ms and writes
-      its data, and the same request from the command line is correct. It is the app side, between
-      `CaptureView._replay`'s `needData` handshake (`renderer/capture_panel.ts`) and the temporary
-      capture `replayKeyed` writes (`main/replay.ts`): no temporary capture appears at all now, and
-      the ones left from an earlier run are 1109 bytes and have a bad header, so serializing a live
-      capture for replay looks like the place to start. Present at a3b0415, so it is not from the
-      D3D12 work. Opening a saved `.gpucap` and replaying that is worth checking as a comparison.
+- [x] Replay-based analyses of a live Vulkan capture seemed to hang in the app (the `overdraw`,
+      `mesh`, `overlay`, `debug-pixel` and `debug-vertex` UI cases). Nothing was wrong with the
+      replay: the renderer was frozen within seconds of launching. NVIDIA's Vulkan driver makes a
+      D3D12 device to present through DXGI, the D3D12 library launched alongside the layer tracked
+      it and logged every call, and the session log redrew itself for each of ~1,400 lines a second.
+      The library now leaves a D3D12 device made while the layer has a Vulkan device alone, and the
+      log draws its lines in batches. Two things hid it: the launch's `VK_LOADER_LAYERS_ENABLE` ran
+      the *installed* GPU Inspector's implicit layer instead of the build's (the launch now adds its
+      layer to `VK_ADD_IMPLICIT_LAYER_PATH`), and an occluded test window stopped `ResizeObserver`,
+      so the overdraw tab's image stayed at 10% and the scripted click missed it.
 
 These need the capture to be re-executed. WebGPU Inspector does it on the DevTools GPU device with
 re-created pipelines plus a CPU WGSL interpreter; for Vulkan the equivalent is RenderDoc's replay

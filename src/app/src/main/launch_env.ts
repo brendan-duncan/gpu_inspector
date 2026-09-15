@@ -81,6 +81,12 @@ export function vulkanLayerEnvironment(o: VulkanLayerOptions): NodeJS.ProcessEnv
   const layerPaths = [o.layerDir, ...(o.validationDir ? [o.validationDir] : [])];
   return {
     VK_ADD_LAYER_PATH: layerPaths.join(path.delimiter),
+    // The layer's manifest among the implicit layers as well, ahead of the registered ones. Once a
+    // GPU Inspector is installed (or "Set for my account" ran), its layer is registered as an
+    // implicit layer of the same name, and VK_LOADER_LAYERS_ENABLE force-enables that one rather
+    // than the one in VK_ADD_LAYER_PATH: a launch from any other build silently ran the installed
+    // layer. The implicit search is added to, not replaced, so the driver's own layers stay.
+    VK_ADD_IMPLICIT_LAYER_PATH: [o.layerDir, ...(process.env.VK_ADD_IMPLICIT_LAYER_PATH ? [process.env.VK_ADD_IMPLICIT_LAYER_PATH] : [])].join(path.delimiter),
     VK_LOADER_LAYERS_ENABLE: layers.join(","),
     // Older loaders:
     VK_LAYER_PATH: [...layerPaths, ...(process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : [])].join(path.delimiter),
