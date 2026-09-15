@@ -126,6 +126,13 @@ public:
         if (!_commands->empty()) _commands->back().extra += extra;
     }
 
+    // Replaces the arguments of the most recently recorded command: a post-call hook that knows
+    // the command ran with other arguments than the application's (a live shader edit's
+    // replacement pipeline) records those instead.
+    void ReplaceLastArgs(std::string args) {
+        if (!_commands->empty()) _commands->back().args = std::move(args);
+    }
+
     void SetCaptureStacks(bool on) { _captureStacks = on; }
 
     // Frozen snapshot of the commands recorded so far (shared; the recorder starts a new list

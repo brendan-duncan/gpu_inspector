@@ -359,6 +359,15 @@ export class CommandInfoView {
       if (pipeline) objectLink(r, pipeline, this._link); else new Span(r, { text: "(none bound)", class: "text-muted" });
       new Span(r, { text: `  ${fmt(state.bindPoint)}`, class: "text-muted" });
     }
+    // A live shader edit: the bind ran the replacement, which the capture names, in place of the original.
+    const replaced = state.pipelineCmd?.replaced;
+    for (const ref of Array.isArray(replaced) ? replaced : replaced ? [replaced] : []) {
+      const original = db.getObject(refId(ref));
+      if (!original) continue;
+      const row = line("Replaces");
+      objectLink(row, original, this._link);
+      new Span(row, { text: "  (live shader edit: the frame drew with the edited code)", class: "text-muted" });
+    }
 
     const d = pipeline?.descriptor;
     if (d && pipeline && isD3D12Type(pipeline.type)) {

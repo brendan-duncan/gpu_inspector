@@ -531,6 +531,20 @@ void ShaderEditor::RestoreShaderObject(uint64_t id, VkShaderEXT original, VkShad
     Reply(id, stage, true, "", 0);
 }
 
+VkPipeline ShaderEditor::OriginalOf(VkPipeline bound) {
+    if (!_anyActive.load(std::memory_order_relaxed)) return VK_NULL_HANDLE;
+    std::shared_lock lock(_mutex);
+    for (auto& [original, replacement] : _active) if (replacement == bound) return original;
+    return VK_NULL_HANDLE;
+}
+
+VkShaderEXT ShaderEditor::OriginalShaderOf(VkShaderEXT bound) {
+    if (!_anyShaderActive.load(std::memory_order_relaxed)) return VK_NULL_HANDLE;
+    std::shared_lock lock(_mutex);
+    for (auto& [original, replacement] : _activeShaders) if (replacement == bound) return original;
+    return VK_NULL_HANDLE;
+}
+
 VkPipeline ShaderEditor::ResolveSlow(VkPipeline pipeline) {
     std::shared_lock lock(_mutex);
     auto it = _active.find(pipeline);

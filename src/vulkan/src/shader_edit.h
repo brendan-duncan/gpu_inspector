@@ -76,6 +76,10 @@ public:
         if (!_anyActive.load(std::memory_order_relaxed)) return pipeline;
         return ResolveSlow(pipeline);
     }
+    // The original a bound pipeline is the active replacement of, VK_NULL_HANDLE when it is not one
+    // (a capture records a bind of the replacement with the original beside it, hooks.cpp).
+    VkPipeline OriginalOf(VkPipeline bound);
+    VkShaderEXT OriginalShaderOf(VkShaderEXT bound);
 
     // Shader objects: remember how each was made; a destroyed one is forgotten at the next present.
     void OnCreateShaders(VkDevice device, uint32_t count, const VkShaderCreateInfoEXT* infos, const VkShaderEXT* shaders);

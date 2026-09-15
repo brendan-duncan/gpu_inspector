@@ -609,8 +609,10 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
       description: "Replace one stage of a running Vulkan or D3D12 pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled " +
         "with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline " +
         "with it, binding the replacement wherever the application binds the original. get_shader with view \"glsl\" on a " +
-        "capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader " +
-        "undoes it. Command buffers recorded before the edit keep the original until the application records them again. " +
+        "capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect: a capture taken " +
+        "while the edit is active records the replacement at each bind (get_command shows the original as `replaced`), so its " +
+        "shaders, analyses and replay use the edited code; restore_shader undoes it. Command buffers recorded before the edit " +
+        "keep the original until the application records them again. " +
         "A D3D12 pipeline (ID3D12PipelineState) takes HLSL only, compiled to DXIL with dxc for the stage's own shader model; " +
         "get_shader with view \"source\" has the HLSL dxc embedded in the original.",
       inputSchema: schema({

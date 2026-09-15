@@ -185,9 +185,9 @@ application with injected state. Route (a) is the general one and is the prerequ
       replay now runs a precise occlusion query around each draw, inside the secondary, and the
       pass metrics sum them where the capture's own counter is missing. A Unity frame's 11 draws
       are all measured.
-- [ ] Record live shader replacements in captures. A frame captured during `replace_shader` keeps
-      the original pipeline, so its replay draws what the application asked for, not what the
-      frame showed.
+- [x] Record live shader replacements in captures: a bind recorded during `replace_shader` names
+      the replacement pipeline (or shader objects), the original beside it as `replaced`, so the
+      draw's state, `get_shader`, the shader debugger and the replay all use the edited code.
 - [x] Pixel history (`vkinsp_replay --pixel`, docs/REPLAY.md): every pass start, draw and clear
       that touched a pixel, with what each draw's fragments met (outside the scissor, culled,
       discarded, depth, stencil), measured with occlusion queries on pipeline copies, and the

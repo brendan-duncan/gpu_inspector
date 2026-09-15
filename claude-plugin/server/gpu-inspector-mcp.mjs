@@ -10452,6 +10452,8 @@ var StateReader = class {
       return {
         shaderObjects: this.state.shaders.map((o) => refText(db, o.id)),
         boundAt: this.state.shadersCmd?.index,
+        // The bind ran a live shader edit's replacements: per bound shader, the application's own it stood in for.
+        replaces: Array.isArray(this.state.shadersCmd?.replaced) ? this.state.shadersCmd.replaced.map((r) => r ? refText(db, r) : null) : void 0,
         stages: this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
         dynamicState: Object.keys(dynamic).length ? dynamic : void 0
       };
@@ -10462,6 +10464,8 @@ var StateReader = class {
       pipeline: refText(db, p.id),
       boundAt: this.state.pipelineCmd?.index,
       summary: p.summary(db) || void 0,
+      // The bind ran a live shader edit's replacement (the pipeline above, with the edited code) in place of this one.
+      replaces: this.state.pipelineCmd?.replaced && !Array.isArray(this.state.pipelineCmd.replaced) ? refText(db, this.state.pipelineCmd.replaced) : void 0,
       stages: metal ? metalStages(p).map((s) => ({ stage: s.stage, buffers: s.buffers.size, textures: s.textures.size, samplers: s.samplers.size })) : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex, index: s.stageIndex })),
       functions: metal ? [...p.dependencies].filter((o) => o.type === "MTLFunction").map((o) => refText(db, o.id)) : void 0,
       fixedFunction: fixedFunctionState(p),
@@ -10666,6 +10670,8 @@ function commandDetail(c2, cmd, values) {
     pass: pass ? { pass: passIndex, label: c2.passName(passIndex), begin: pass.commandIndex, end: pass.endIndex, ms: round(pass.durationMs) } : void 0,
     result: cmd.result || void 0,
     args: compact(cmd.args, db),
+    // A bind recorded while replace_shader was active: what ran is in args, the application's own here.
+    replaced: cmd.replaced ? Array.isArray(cmd.replaced) ? cmd.replaced.map((r) => r ? refText(db, r) : null) : refText(db, cmd.replaced) : void 0,
     issues: issues?.map((f) => ({ rule: f.rule, severity: f.severity, confidence: f.confidence, message: f.message })),
     validation: validation.length ? validation.map((v) => validationBrief(c2, v)) : void 0,
     stack: cmd.stack?.length ? stackLines(cmd.stack.map((a) => db.symbols.get(a) ?? { address: a, offset: 0 })) : void 0
@@ -25820,6 +25826,7 @@ function referencedObjects(session, data) {
     if (c2.secondary) ids.add(c2.secondary);
     db.collectReferences(c2.args, ids);
     db.collectReferences(c2.descriptors, ids);
+    db.collectReferences(c2.replaced, ids);
   }
   for (const t of data.textures) {
     ids.add(t.info.id);
@@ -30075,7 +30082,7 @@ function liveTools(sessions2, store) {
     },
     {
       name: "replace_shader",
-      description: `Replace one stage of a running Vulkan or D3D12 pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again. A D3D12 pipeline (ID3D12PipelineState) takes HLSL only, compiled to DXIL with dxc for the stage's own shader model; get_shader with view "source" has the HLSL dxc embedded in the original.`,
+      description: `Replace one stage of a running Vulkan or D3D12 pipeline: the source (GLSL, HLSL or SPIR-V assembly) is compiled with the Vulkan SDK's compilers for the stage's entry point and SPIR-V version, and the layer rebuilds the pipeline with it, binding the replacement wherever the application binds the original. get_shader with view "glsl" on a capture gives editable source for a pipeline; capture again (and compare_captures) to see the effect: a capture taken while the edit is active records the replacement at each bind (get_command shows the original as \`replaced\`), so its shaders, analyses and replay use the edited code; restore_shader undoes it. Command buffers recorded before the edit keep the original until the application records them again. A D3D12 pipeline (ID3D12PipelineState) takes HLSL only, compiled to DXIL with dxc for the stage's own shader model; get_shader with view "source" has the HLSL dxc embedded in the original.`,
       inputSchema: schema({
         session: SESSION_PARAM,
         pipeline: { type: "integer", minimum: 1, description: "The VkPipeline's object id (the same in the live session and its captures), a VkShaderEXT's for an application using shader objects, or an ID3D12PipelineState's." },

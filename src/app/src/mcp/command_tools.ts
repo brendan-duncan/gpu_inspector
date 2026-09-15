@@ -146,6 +146,8 @@ class StateReader {
       const dynamic = Object.fromEntries(Object.entries(this.state.dynamic).filter(([, v]) => v !== null));
       return {
         shaderObjects: this.state.shaders.map((o) => refText(db, o.id)), boundAt: this.state.shadersCmd?.index,
+        // The bind ran a live shader edit's replacements: per bound shader, the application's own it stood in for.
+        replaces: Array.isArray(this.state.shadersCmd?.replaced) ? this.state.shadersCmd.replaced.map((r) => (r ? refText(db, r) : null)) : undefined,
         stages: this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex })),
         dynamicState: Object.keys(dynamic).length ? dynamic : undefined,
       };
@@ -154,6 +156,8 @@ class StateReader {
     const metal = p.type.startsWith("MTL");
     return {
       pipeline: refText(db, p.id), boundAt: this.state.pipelineCmd?.index, summary: p.summary(db) || undefined,
+      // The bind ran a live shader edit's replacement (the pipeline above, with the edited code) in place of this one.
+      replaces: this.state.pipelineCmd?.replaced && !Array.isArray(this.state.pipelineCmd.replaced) ? refText(db, this.state.pipelineCmd.replaced) : undefined,
       stages: metal
         ? metalStages(p).map((s) => ({ stage: s.stage, buffers: s.buffers.size, textures: s.textures.size, samplers: s.samplers.size }))
         : this.stages.map((s) => ({ stage: s.stage, entryPoint: s.entryPoint, shader: refText(db, s.object.id), blob: s.blobIndex, index: s.stageIndex })),
@@ -354,6 +358,8 @@ function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record
     pass: pass ? { pass: passIndex, label: c.passName(passIndex), begin: pass.commandIndex, end: pass.endIndex, ms: round(pass.durationMs) } : undefined,
     result: cmd.result || undefined,
     args: compact(cmd.args, db),
+    // A bind recorded while replace_shader was active: what ran is in args, the application's own here.
+    replaced: cmd.replaced ? (Array.isArray(cmd.replaced) ? cmd.replaced.map((r) => (r ? refText(db, r) : null)) : refText(db, cmd.replaced)) : undefined,
     issues: issues?.map((f) => ({ rule: f.rule, severity: f.severity, confidence: f.confidence, message: f.message })),
     validation: validation.length ? validation.map((v) => validationBrief(c, v)) : undefined,
     stack: cmd.stack?.length ? stackLines(cmd.stack.map((a) => db.symbols.get(a) ?? { address: a, offset: 0 })) : undefined,

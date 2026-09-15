@@ -231,6 +231,12 @@ export interface CaptureCommand {
    * shape as `bufferData`). Vulkan reaches a sampled image through its descriptor instead.
    */
   textureData?: number[];
+  /**
+   * vkCmdBindPipeline / vkCmdBindShadersEXT recorded while a live shader edit was active: `args` name the
+   * replacement that ran (its own object, with the edited code), and this the application's original
+   * (per bound shader for shader objects, null where the application's own was bound).
+   */
+  replaced?: HandleRef | (HandleRef | null)[];
   /** Position in its command buffer's recording (what a ValidationMessage's `command` refers to). */
   slot?: number;
   /** Return addresses ("0x...", innermost first) of the call that recorded it (the "Stack traces" capture option). */
