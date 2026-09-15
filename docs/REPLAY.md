@@ -55,9 +55,11 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
   [Shader cost by ablation](#shader-cost-by-ablation)) and prints each variant's time.
 - **`--ablate-data <file>`:** with `--ablate`, writes the timings as JSON. GPU Inspector's
   **Measure shader** and the MCP server's `measure_shader_cost` run the tool this way.
-- **`--counters`:** reads the GPU's own hardware counters around every render pass and every draw
-  (see [Hardware counters](#hardware-counters)). `--counter <name>` (repeatable) picks the counters;
+- **`--counters`:** reads the GPU's own hardware counters around every render pass (see
+  [Hardware counters](#hardware-counters)). `--counter <name>` (repeatable) picks the counters;
   without any, a default limiter set is collected.
+- **`--counter-draws`:** measures each draw as well as each pass. A frame with thousands of draws
+  takes far longer this way, so it is off by default.
 - **`--list-counters`:** lists every counter the GPU offers, without replaying the frame's work.
 - **`--counter-data <file>`:** with `--counters` or `--list-counters`, writes the result as JSON.
   GPU Inspector and the MCP server's `get_hw_counters` run the tool this way.
@@ -456,11 +458,19 @@ The pipeline statistics say *how much* work a pass did; these say *which unit it
 
 The frame is replayed once per collection pass the chosen counters need: the hardware has a fixed
 number of counter slots, so a metric set that does not fit in one go is split over several replays,
-and each range's counters are summed across them. Two backends supply the counters:
+and each range's counters are summed across them. A single `pct_of_peak` throughput metric already
+spans enough raw counters to need dozens of passes, so asking for more of them costs little extra;
+the tool prints its progress, since nothing else is printed until the replays finish.
+
+By default a range is opened around each render pass. `--counter-draws` opens one around each draw
+as well, which is what gives per-draw numbers, but the profiler serializes work at every range: on a
+frame with thousands of draws that turns minutes into much longer, so it is opt-in.
+
+Two backends supply the counters:
 
 - **NVIDIA's Nsight Perf SDK** (`src/replay/src/nvperf.cpp`), the same one RenderDoc uses. It
-  profiles named ranges, so the replay pushes a range around each render pass and, nested inside it,
-  each draw — counters **per pass and per draw**. The SDK's redistributable headers are vendored in
+  profiles named ranges, so the replay pushes a range around each render pass and, with
+  `--counter-draws`, a nested one around each draw. The SDK's redistributable headers are vendored in
   `third_party/nvperf`; its host library (`nvperf_grfx_host`) is **not** shipped and is loaded at
   run time from beside the tool, from `VKINSP_NVPERF_DIR`, or from an Nsight Graphics, Systems or
   Compute install on the machine. Build it in with `-DVKINSP_NVPERF=ON` (the default when the

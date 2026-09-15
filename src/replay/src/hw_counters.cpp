@@ -76,6 +76,8 @@ double KhrValue(const VkPerformanceCounterResultKHR& r, VkPerformanceCounterStor
 struct HwCounterState {
     bool nvperf = false;
     bool khr = false;
+    /** Whether each draw gets a range of its own, not only each render pass. */
+    bool perDraw = false;
     nvperf::Session session;
 
     // What each range is, filled on the first round (the frame is the same every round).
@@ -136,15 +138,19 @@ bool Replayer::PrepareCounters() {
             _report->counters.backend = "nvperf";
             _report->counters.chip = hw.session.Chip();
             if (_options.counters.list) return true;   // listing needs the evaluator only, not a session
+            // A range per pass, and per draw as well only when asked: profiling thousands of ranges
+            // is slow, and the extra nesting level roughly doubles the collection passes.
+            hw.perDraw = _options.counters.perDraw;
+            const uint32_t ranges = passes + (hw.perDraw ? draws : 0) + 2;
             // The session itself needs GPU performance-counter access enabled (ERR_NVGPUCTRPERM).
-            if (!hw.session.Begin(draws + passes + 2, note)) {
+            if (!hw.session.Begin(ranges, note)) {
                 _report->counters.notes.push_back(note);
                 return false;
             }
             std::vector<std::string> names = _options.counters.names;
             if (names.empty()) names = DefaultCounterNames();
             std::vector<std::string> notes;
-            if (!hw.session.Configure(names, hw.counters, notes)) {
+            if (!hw.session.Configure(names, hw.perDraw ? 2 : 1, hw.counters, notes)) {
                 for (auto& n : notes) _report->counters.notes.push_back(n);
                 _report->counters.notes.push_back("no NVIDIA counters could be configured");
                 return false;
@@ -340,6 +346,7 @@ void Replayer::EndCounterPass(VkCommandBuffer cb) {
 int Replayer::BeginCounterDraw(VkCommandBuffer cb, uint32_t command, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex) {
     HwCounterState& hw = *_hw;
     if (hw.nvperf) {
+        if (!hw.perDraw) return -1;   // passes only: a range per draw is opt-in
         hw.session.PushRange(cb, DrawRangeName(command).c_str());
     } else if (hw.khr) {
         _fns.CmdBeginQuery(cb, hw.khrPool, hw.nextQuery, 0);
@@ -364,6 +371,10 @@ void Replayer::EndCounterDraw(VkCommandBuffer cb, int range) {
     HwCounterState& hw = *_hw;
     if (hw.nvperf) hw.session.PopRange(cb);
     else if (hw.khr) _fns.CmdEndQuery(cb, hw.khrPool, (uint32_t)range);
+}
+
+uint32_t Replayer::CounterRounds() const {
+    return _hw ? (uint32_t)_hw->passes : 0;
 }
 
 void Replayer::CompleteCounters() {
