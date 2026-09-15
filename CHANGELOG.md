@@ -80,6 +80,12 @@
   `claude-plugin/.claude-plugin/plugin.json` at startup and is byte-identical whatever the app
   version says.
 
+- Stencil read-back on Vulkan. A depth-stencil attachment's stencil is read back as a texture of
+  its own beside its depth (through the resolve pass when multisampled), shown in the render target
+  tab as "Stencil" with its values; the frame-start contents take a loaded stencil apart from the
+  depth; and the replay uploads and compares it. `test/triangle --stencil` records one, and
+  `tools/ui_tests.py` has `stencil` and `stencil-msaa` cases.
+
 ### Fixed
 - A Direct3D 12 application could die of a stack overflow a few seconds in, which a Unity player
   did reliably. Something in the process copies an already patched vtable into heap memory; a call

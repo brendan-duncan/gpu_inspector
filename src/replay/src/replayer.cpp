@@ -1108,7 +1108,7 @@ void Replayer::UploadImageContents() {
         const uint32_t mips = info->Get("mips") ? (uint32_t)info->Get("mips")->Uint() : 1;
         const uint32_t layers = std::max<uint32_t>(1, (uint32_t)info->Get("layers")->Uint());
         const uint32_t baseLayer = info->Get("baseLayer") ? (uint32_t)info->Get("baseLayer")->Uint() : 0;
-        const VkImageAspectFlags aspect = Str(info->Get("aspect")) == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        const VkImageAspectFlags aspect = AspectOf(Str(info->Get("aspect")));
         const vkinsp::FormatBlock block = vkinsp::FormatBlockInfo(image.format, aspect);
         if (!block.bytes) {
             Problem(std::string(initial ? "image " : "sampled image ") + std::to_string(info->Get("id")->Uint()) + ": its format cannot be uploaded");
@@ -1407,7 +1407,7 @@ void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::v
         auto iit = _images.find(vit->second.image);
         if (iit == _images.end()) { skip("the attachment's image was not replayed"); continue; }
         const ImageRecord& image = iit->second;
-        const VkImageAspectFlags aspect = cmp.aspect == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        const VkImageAspectFlags aspect = AspectOf(cmp.aspect);
         const VkDeviceSize size = info->Get("size")->Uint();
         const VkImageLayout layout = cmp.attachment < layouts.size() ? layouts[cmp.attachment] : VK_IMAGE_LAYOUT_UNDEFINED;
         const uint32_t mip = vit->second.range.baseMipLevel;
@@ -1566,7 +1566,7 @@ void Replayer::CompareReadbacks(std::vector<PendingReadback>& readbacks) {
             cmp.note = "the capture has no pixels for this target";
         } else {
             VkFormat format = (VkFormat)DecodeEnum_VkFormat(_ctx, p.texture->Get("info")->Get("format"));
-            const VkImageAspectFlags aspect = cmp.aspect == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+            const VkImageAspectFlags aspect = AspectOf(cmp.aspect);
             const uint32_t texel = std::max<uint32_t>(1, vkinsp::FormatBlockInfo(format, aspect).bytes);
             const size_t size = std::min<size_t>(capturedSize, (size_t)p.staging.size);
             const auto* replayed = static_cast<const uint8_t*>(p.staging.mapped);

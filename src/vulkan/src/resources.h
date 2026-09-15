@@ -58,6 +58,7 @@ struct RenderPassAttachment {
     // What the pass starts from: a loaded attachment's contents are taken while capturing
     // (CaptureManager::OnAttachmentBegin), in the layout the pass requires.
     VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // the stencil aspect's, taken apart from the depth's
     VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 

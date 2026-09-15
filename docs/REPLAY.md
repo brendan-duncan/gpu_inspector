@@ -470,8 +470,8 @@ These cases differ for known reasons:
 1. **Replayable captures, the rest.** The capture holds what the frame reads before writing it
    through passes and transfers, and the replay starts every subresource in its own layout. Still
    missing:
-   - Stencil contents, and the contents of multisampled images a frame loads (neither can be read
-     back into something a replay could upload yet).
+   - The contents of multisampled images a frame loads (they cannot be read back into something a
+     replay could upload yet).
    - Memory the frame reads with no command naming it: buffer device addresses, descriptor buffers,
      and buffers bound in command buffers recorded before the capture. RenderDoc diffs mapped ranges
      at each submit; here a copy is taken where a command reads, which is when the GPU sees what the

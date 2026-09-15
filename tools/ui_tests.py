@@ -187,6 +187,19 @@ def triangle_msaa(state, log):
         expect("resolve" in log or (c.get("textures") or 0) >= 2, "no multisampled read-back")
 
 
+def triangle_stencil(textures):
+    # The depth buffer has a stencil aspect: the pass's target list gains a stencil read-back
+    # beside the depth one (both aspects through the resolve with --msaa), stored though the
+    # application's stencilStoreOp is DONT_CARE, with no validation error from any of it.
+    def check(state, log):
+        c = capture(state)
+        s = session(state)
+        return check_connected(state, log) + check_capture_basic(state, log, textures=textures) + \
+            expect((c.get("textures") or 0) == textures, f"{c.get('textures')} textures (expected {textures}, the stencil read-back among them)") + \
+            expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
+    return check
+
+
 def triangle_suspend(state, log):
     c = capture(state)
     s = session(state)
@@ -543,6 +556,8 @@ def triangle_cases(triangle):
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
         Case("suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], triangle_suspend, delay_ms=16000),
+        Case("stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], triangle_stencil(4), delay_ms=16000),
+        Case("stencil-msaa", launch + ["--args=--stencil --msaa", "--validation", "--debug-capture"], triangle_stencil(5), delay_ms=16000),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
         Case("hazard", launch + ["--args=--hazard", "--validation", "--sync-validation", "--debug-capture"], triangle_hazard, delay_ms=18000),

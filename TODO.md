@@ -102,8 +102,11 @@ interpreter and re-created pipelines.
       replay's own per-pass instrumentation (overdraw, pixel history: `PrepareOverdraw` /
       `PrepareHistory` before each `vkCmdBeginRendering`) still treats each part as a pass, so those
       analyses of a split-pass capture inject commands between the parts; a plain replay is fine.
-- [ ] Read back the stencil aspect of a depth-stencil image (only depth is read back today), which
-      is what would put the stencil resolve above to use.
+- [x] Read back the stencil aspect of a depth-stencil image: a render target's stencil is a texture
+      of its own beside its depth (through the resolve when multisampled), the frame-start contents
+      take a loaded stencil apart from the depth, and the replay uploads and compares it.
+      `test/triangle --stencil` (with or without `--msaa`) exercises it. Metal and D3D12 still read
+      depth only (their own items below).
 - [ ] Multisampled read-back on Vulkan 1.0 devices: the depth/stencil resolve needs dynamic
       rendering (core 1.3, `VK_KHR_dynamic_rendering` on 1.2), so a 1.0 device would need a
       shader-based resolve of sample zero instead.

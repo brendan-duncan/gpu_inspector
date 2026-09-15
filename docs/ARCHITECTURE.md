@@ -241,7 +241,9 @@ much slower than on the desktop.
    `VK_KHR_dynamic_rendering` below 1.3 and its `VK_KHR_depth_stencil_resolve` /
    `VK_KHR_create_renderpass2` dependencies below 1.2 (a device the application created with
    its own `VkPhysicalDeviceVulkan13Features` or dynamic rendering feature struct is left as is
-   and used when the flag is on). Stencil is not resolved.
+   and used when the flag is on). A depth-stencil attachment is read back as two textures, its
+   depth (`aspect: "depth"`) and its stencil (`"stencil"`, one byte per texel), each its own copy;
+   the resolve pass resolves both aspects, so a multisampled stencil goes the way depth does.
 4. Bound buffers are read back too, like WebGPU Inspector captures the buffers of each bind group
    and vertex/index binding. `vkCmdBindDescriptorSets` (and push descriptors) gets a
    `descriptors` snapshot of every bound set, taken from the descriptor tracker: per binding the
@@ -270,7 +272,9 @@ much slower than on the desktop.
    texture entry of `kind: "initial"`, recorded outside the pass in the pre-hook, under the
    `maxImageTotal` budget with the sampled images), and the command carries the capture ids in
    `imageData`. Reads of what the frame wrote itself take nothing: a Unity frame, whose one loading
-   pass loads the depth the pass before it cleared, takes no copies at all. Stencil and multisampled contents are not taken, and the state follows recording order, so
+   pass loads the depth the pass before it cleared, takes no copies at all. A depth-stencil image's
+   stencil is tracked and taken apart from its depth (a render pass's `stencilLoadOp`, dynamic
+   rendering's `pStencilAttachment`). Multisampled contents are not taken, and the state follows recording order, so
    command buffers recorded in another order than they run can take a copy after a write.
 5. `vkQueueSubmit` records which command buffers ran in which order; the command buffer's record
    is frozen at submit so later re-recording does not disturb the capture.
@@ -1113,7 +1117,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --suspend, --ray-tracing
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --suspend, --stencil, --ray-tracing
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake

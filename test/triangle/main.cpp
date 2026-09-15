@@ -157,6 +157,9 @@ struct App {
     // (VK_RENDERING_SUSPENDING_BIT / VK_RENDERING_RESUMING_BIT). Nothing may be recorded between
     // the two parts, so the layer's per-pass timestamps, queries and read-back copies must not be.
     bool suspend = false;
+    // --stencil: the depth buffer has a stencil aspect (D24S8 or D32S8), cleared by the pass and
+    // written with 1 wherever the cube draws, so a capture reads a stencil target back too.
+    bool stencil = false;
     // --ray-tracing: each frame rebuilds a top-level acceleration structure over one triangle's
     // bottom-level structure and traces a 256x256 storage image with a raygen, miss and closest hit
     // pipeline (VK_KHR_ray_tracing_pipeline), so a capture has a ray tracing pipeline, its shader
@@ -575,8 +578,8 @@ struct App {
             // Dynamic rendering (core in the 1.3 instance these modes ask for): what shader objects
             // draw in, and what a pass can be suspended and resumed in. Its targets here are
             // single-sampled, and the split pass is recorded every frame.
-            if (samples != VK_SAMPLE_COUNT_1_BIT || (suspend && prerecord)) {
-                fprintf(stderr, "--shader-object and --suspend do not combine with --msaa, nor --suspend with --prerecord\n");
+            if (samples != VK_SAMPLE_COUNT_1_BIT || stencil || (suspend && prerecord)) {
+                fprintf(stderr, "--shader-object and --suspend do not combine with --msaa or --stencil, nor --suspend with --prerecord\n");
                 exit(1);
             }
             dynamicRendering.dynamicRendering = VK_TRUE;
@@ -609,6 +612,17 @@ struct App {
         dci.ppEnabledExtensionNames = devExts.data();
         CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
+        if (stencil) {
+            // A depth-stencil format: every device offers one of these two as an attachment.
+            for (VkFormat f : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT}) {
+                VkFormatProperties props{};
+                vkGetPhysicalDeviceFormatProperties(gpu, f, &props);
+                if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+                    depthFormat = f;
+                    break;
+                }
+            }
+        }
         if (side == Side::Device) {
             // Its own device on the same GPU, with the same single queue and no extensions.
             VkDeviceCreateInfo sdci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -777,7 +791,7 @@ struct App {
         dvci.image = depthImage;
         dvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         dvci.format = depthFormat;
-        dvci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        dvci.subresourceRange = {(VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u), 0, 1, 0, 1};
         CHECK(vkCreateImageView(device, &dvci, nullptr, &depthView));
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
 
@@ -863,8 +877,8 @@ struct App {
         atts[1].samples = samples;
         atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         atts[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;   // nothing reads the depth buffer after the pass
-        atts[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[1].stencilLoadOp = stencil ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;   // --stencil: the capture has to store it for its read-back
         atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -1668,6 +1682,17 @@ struct App {
         ds.depthTestEnable = VK_TRUE;
         ds.depthWriteEnable = VK_TRUE;
         ds.depthCompareOp = VK_COMPARE_OP_LESS;
+        if (stencil) {
+            // Every fragment that passes writes 1 into the stencil buffer.
+            VkStencilOpState op{};
+            op.failOp = op.depthFailOp = VK_STENCIL_OP_KEEP;
+            op.passOp = VK_STENCIL_OP_REPLACE;
+            op.compareOp = VK_COMPARE_OP_ALWAYS;
+            op.compareMask = op.writeMask = 0xFF;
+            op.reference = 1;
+            ds.stencilTestEnable = VK_TRUE;
+            ds.front = ds.back = op;
+        }
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = 0xF;
         VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -2367,6 +2392,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
         else if (!strcmp(argv[i], "--suspend")) app.suspend = true;
+        else if (!strcmp(argv[i], "--stencil")) app.stencil = true;
         else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
         else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
         else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;
