@@ -115,6 +115,12 @@ struct ReplayOptions {
          * so a frame with many draws takes far longer; off by default.
          */
         bool perDraw = false;
+        /**
+         * Which backend to use: "nvperf", "khr", or empty to pick whichever the device supports.
+         * Naming one that the device cannot use still runs its path far enough to say why, which is
+         * how the portable path is exercised on a machine whose driver does not offer it.
+         */
+        std::string backend;
     } counters;
 };
 
