@@ -339,10 +339,16 @@ vendor's driver is listed at the end so nobody spends time on it.
       reachable on Vulkan. Verified on an RTX 4080 against the triangle and a 34-pass Unity frame;
       collection needs GPU counter access enabled (`ERR_NVGPUCTRPERM`; NVIDIA Control Panel >
       Developer > Manage GPU Performance Counters).
-- [ ] Hardware counters, the rest: fold them into GPU Bottlenecks' bound-stage verdict and its app
-      report (a "Measure hardware counters" action, columns per limiter); a portable default counter
-      set for the `VK_KHR_performance_query` path (it takes the first command-scoped counters now);
-      per-draw counters in the Shader Flame Graph beside the ablation costs.
+- [x] Hardware counters in the app: **Measure hardware counters** in the GPU Bottlenecks report
+      (`renderer/bottleneck_report.ts`) replays the capture and shows a column per counter beside
+      each pass, kept with the capture and saved into its file.
+- [ ] Hardware counters, the rest: feed them into the bound-stage verdict, which still infers the
+      bound stage from overdraw and triangle size while the counters name the saturated unit
+      outright (the report shows them, but `pass_metrics.ts` does not read them); a portable default
+      counter set for the `VK_KHR_performance_query` path (it takes the first command-scoped
+      counters now), which has only ever run as far as its precondition check, never against a
+      driver that offers the extension; per-draw counters in the Shader Flame Graph beside the
+      ablation costs.
 - [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
       Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
       `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED

@@ -438,18 +438,20 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         }
         // Collect: replayed once and kept with the open capture, unless a different set is asked for.
         const perDraw = boolArg(args, "perDraw", false);
-        if (!c.hwCounters || requested.length || perDraw) {
+        if (!c.data.hwCounters || requested.length || perDraw) {
           const run = await replayServers.run(tool, c.path, { kind: "counters", counters: requested.length ? requested : undefined, perDraw });
           if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not read hardware counters: ${run.error ?? "no data"}` });
-          c.hwCounters = parseHwCounters(run.data);
+          c.setHwCounters(parseHwCounters(run.data));
         }
-        const file = c.hwCounters;
-        if (!file.backend || (!file.passes.length && !file.draws.length)) {
-          return jsonResult({ capture: c.id, note: file.notes[0] ?? "No hardware counters were collected.", notes: file.notes.length > 1 ? file.notes : undefined });
+        const file = c.data.hwCounters;
+        if (!file || !file.backend || (!file.passes.length && !file.draws.length)) {
+          return jsonResult({ capture: c.id, note: file?.notes[0] ?? "No hardware counters were collected.", notes: file && file.notes.length > 1 ? file.notes : undefined });
         }
         const byPass = hwCountersByPass(file);
         const metrics = c.metrics.passes;
-        const rows = metrics.map((p, i) => ({ p, i, r: byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) })).filter((x) => x.r);
+        // Render passes only: a compute pass shares its neighbour's key, and no counter range wraps one.
+        const rows = metrics.map((p, i) => ({ p, i, r: p.compute ? undefined : byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) }))
+          .filter((x) => x.r);
         // Slowest first where the pass was timed, else in frame order.
         rows.sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
         const pg = page(rows, args, 30, 200);

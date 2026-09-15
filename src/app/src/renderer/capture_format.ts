@@ -14,6 +14,7 @@
 // yet from the layer, is capture_file.ts.
 import { passKey, type CapturedBuffer, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
 import type { DrawStat } from "./draw_stats.js";
+import type { HwCounters } from "./hw_counters.js";
 import type { ShaderAblation } from "./shader_ablation.js";
 import type { ArgObject, ArgValue, BlobInfo, CaptureApi, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, OverdrawMeasurement, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
 
@@ -77,6 +78,8 @@ export interface CaptureFileManifest {
   pixelHistory?: Record<string, unknown>;
   /** Per-draw timings and counters, when the capture has been replayed for them. */
   drawStats?: DrawStat[];
+  /** The GPU's own hardware counters, when a replay has read them (renderer/hw_counters.ts). */
+  hwCounters?: HwCounters;
   /** Shader stages measured by ablation (renderer/shader_ablation.ts), when any were. */
   ablations?: ShaderAblation[];
   /** Validation messages the session had received when the capture was saved. */
@@ -101,6 +104,7 @@ export interface LoadedCapture {
   overdraw: CapturedOverdraw[];
   pixelHistory: Record<string, unknown> | null;
   drawStats: DrawStat[] | null;
+  hwCounters: HwCounters | null;
   ablations: ShaderAblation[];
   /** Files written before the field was real say "vulkan"; so does an absent one. */
   api: CaptureApi;
@@ -174,6 +178,6 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
-         overdraw, pixelHistory: manifest.pixelHistory ?? null, drawStats: manifest.drawStats ?? null, ablations: manifest.ablations ?? [],
+         overdraw, pixelHistory: manifest.pixelHistory ?? null, drawStats: manifest.drawStats ?? null, hwCounters: manifest.hwCounters ?? null, ablations: manifest.ablations ?? [],
          api: manifest.api ?? "vulkan" };
 }
