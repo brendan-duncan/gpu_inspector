@@ -142,20 +142,11 @@ void PreHook_vkCmdBindShadersEXT(VkCommandBuffer& commandBuffer, uint32_t& stage
     pShaders = ShaderEditor::Get().ResolveShaders(stageCount, pShaders, t_boundShaders);
 }
 
-/**
- * What about the pass about to begin limits the counters its queries can take (see
- * CaptureManager::OnBeforePass). `multiview`: it renders several views at once, and a query active
- * across it writes one result per view, so needs that many consecutive query indices; those passes go
- * without counters, while the rest of an application that merely enables multiview keeps them.
- * `secondaries`: it may execute secondary command buffers, which it can only do with its queries
- * active when the device inherits queries. A render pass says so for its first subpass; a later
- * subpass could too, which vkCmdNextSubpass says only once the queries have begun.
- */
-struct PassShape {
-    bool multiview = false;
-    bool secondaries = false;
-};
-
+// What about the pass about to begin limits what the capture records around it (PassShape in
+// capture.h). A multiview pass's query would need one index per view, so it goes uncounted while
+// the rest of an application that merely enables multiview keeps its counters. A render pass says
+// whether its first subpass executes secondaries; a later subpass could too, which vkCmdNextSubpass
+// says only once the queries have begun.
 static PassShape RenderPassShape(const VkRenderPassBeginInfo* begin, VkSubpassContents contents) {
     PassShape shape;
     shape.secondaries = contents != VK_SUBPASS_CONTENTS_INLINE;
@@ -172,14 +163,15 @@ static PassShape RenderingShape(const VkRenderingInfo* info) {
     if (!info) return shape;
     shape.multiview = info->viewMask != 0;
     shape.secondaries = (info->flags & (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT | VK_RENDERING_CONTENTS_INLINE_BIT_KHR)) != 0;
+    shape.suspending = (info->flags & VK_RENDERING_SUSPENDING_BIT) != 0;
+    shape.resuming = (info->flags & VK_RENDERING_RESUMING_BIT) != 0;
     return shape;
 }
 
 // Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
-static void BeforePass(VkCommandBuffer commandBuffer, PassShape shape) {
+static void BeforePass(VkCommandBuffer commandBuffer, const PassShape& shape) {
     DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer))
-        CaptureManager::Get().OnBeforePass(dev, rec, shape.multiview, shape.secondaries);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec, shape);
 }
 
 // Store ops while capturing: an attachment with storeOp DONT_CARE has undefined contents after

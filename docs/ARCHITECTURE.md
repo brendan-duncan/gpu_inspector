@@ -251,8 +251,13 @@ much slower than on the desktop.
    (`CaptureManager::QueueBufferCapture`), truncated to `maxBufferSize` (64 KB by default). The
    copy is recorded at once outside a render pass and at the end of the pass otherwise (transfers
    are not allowed inside one); secondary command buffers hand their pending copies to the primary
-   that executes them. The binding command references each capture by id (`data` in the snapshot,
-   `bufferData` for vertex/index/indirect bindings).
+   that executes them. A dynamic rendering pass suspended at the end of one command buffer and
+   resumed in another (`VK_RENDERING_SUSPENDING_BIT` / `RESUMING_BIT`) may have nothing recorded
+   between its parts, so the suspended part gets no copies, timestamps, queries or attachment
+   read-back at all: its pending copies go to the device's capture record and the part that resumes
+   the pass records them after it ends, with its own and the attachment read-back; such a pass is
+   neither timed nor counted. The binding command references each capture by id (`data` in the
+   snapshot, `bufferData` for vertex/index/indirect bindings).
    The contents the frame starts from are read back too, since a replay needs them and the read-backs
    above only see what the frame shows on its way. The transfer commands get pre-call hooks: the
    source of `vkCmdCopyBuffer` and `vkCmdCopyBufferToImage` (and their `2` forms) is queued whole
@@ -1105,7 +1110,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --ray-tracing
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --suspend, --ray-tracing
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake

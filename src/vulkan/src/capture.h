@@ -130,6 +130,20 @@ bool CreateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uin
 // to the image's layout and for host reads of the buffer.
 void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy& p);
 
+/**
+ * What about a render pass about to begin limits what the capture can record around it (the
+ * pre-hooks of hooks.cpp work it out from the begin info). `multiview`: a query active across it
+ * writes one result per view. `secondaries`: it may execute secondary command buffers, which it can
+ * only do with queries active when the device inherits queries. `suspending` / `resuming`: dynamic
+ * rendering split across command buffers, between whose parts nothing may be recorded at all.
+ */
+struct PassShape {
+    bool multiview = false;
+    bool secondaries = false;
+    bool suspending = false;
+    bool resuming = false;
+};
+
 class CaptureManager {
 public:
     static CaptureManager& Get();
@@ -172,9 +186,8 @@ public:
 
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
-    // pass's begin timestamp, which must happen outside the render pass. `multiview` and
-    // `secondaries` describe the pass (PassShape in hooks.cpp).
-    void OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview = false, bool secondaries = false);
+    // pass's begin timestamp, which must happen outside the render pass.
+    void OnBeforePass(DeviceData* dev, CommandRecorder* rec, const PassShape& shape = {});
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
@@ -281,6 +294,11 @@ private:
         std::vector<StagingChunk> staging;          // guarded by _mutex
         std::vector<ResolveImage> resolveImages;    // guarded by _mutex
         std::vector<VkImageView> resolveViews;      // guarded by _mutex (depth_resolve.h)
+        // The copies queued inside passes suspended at the end of their command buffer, which
+        // nothing may follow: recorded by the part that resumes them, once it has ended.
+        std::mutex suspendedMutex;
+        std::vector<PendingBufferCopy> suspendedCopies;
+        std::vector<PendingImageCopy> suspendedImages;
     };
     void CreateQueryPools(DeviceCapture& dc);
     // Maps every device's staging chunks, once the GPU is done, for SendTextures and SendBuffers.
@@ -314,6 +332,7 @@ private:
     std::atomic<bool> _capturing{false};
     std::atomic<uint32_t> _storeAllPasses{0};
     std::atomic<uint32_t> _postSubmitReadbacks{0};
+    std::atomic<uint32_t> _suspendedPasses{0};
     std::atomic<bool> _recordAlways{false};
     // Some device of the process has presented: frames are the presents', not another device's
     // substitute boundaries.

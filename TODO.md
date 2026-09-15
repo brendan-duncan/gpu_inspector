@@ -97,6 +97,11 @@ interpreter and re-created pipelines.
 - [x] Multisampled stencil read-back: the resolve carries both aspects of a depth-stencil image,
       with the same resolve mode so a device without `independentResolve` can still do it. Untested:
       no test application has a multisampled stencil attachment.
+- [x] Dynamic rendering passes suspended and resumed across command buffers: the layer records
+      nothing between the parts (the resumed part reads back for both; neither is timed). The
+      replay's own per-pass instrumentation (overdraw, pixel history: `PrepareOverdraw` /
+      `PrepareHistory` before each `vkCmdBeginRendering`) still treats each part as a pass, so those
+      analyses of a split-pass capture inject commands between the parts; a plain replay is fine.
 - [ ] Read back the stencil aspect of a depth-stencil image (only depth is read back today), which
       is what would put the stencil resolve above to use.
 - [ ] Multisampled read-back on Vulkan 1.0 devices: the depth/stencil resolve needs dynamic

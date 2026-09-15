@@ -114,6 +114,13 @@
   target) tracked and logged call by call, and the session log redrew itself for each line. The
   library now leaves a D3D12 device alone when GPU Inspector's Vulkan layer already has a device in
   the process, and the log draws new lines in batches.
+- A dynamic rendering pass suspended at the end of one command buffer and resumed in another
+  (`VK_RENDERING_SUSPENDING_BIT` / `RESUMING_BIT`) had the layer's timestamps, queries and
+  read-back copies recorded between its parts, where the specification allows no command at all
+  (the Khronos validation layer has no check for it, so it never said so). The suspended part now
+  gets nothing after it: the part that resumes the pass reads the attachments back and records the
+  bound buffers' copies of both, and such a pass is neither timed nor counted. `test/triangle
+  --suspend` records one, and `tools/ui_tests.py` has a `suspend` case.
 - A Vulkan launch ran the layer of an installed GPU Inspector instead of its own once the installer
   (or **Set for my account**) had registered that layer as an implicit layer: the loader enabled
   the registered layer of the same name. A checkout's build, or a second installed version, now

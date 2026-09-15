@@ -187,6 +187,23 @@ def triangle_msaa(state, log):
         expect("resolve" in log or (c.get("textures") or 0) >= 2, "no multisampled read-back")
 
 
+def triangle_suspend(state, log):
+    c = capture(state)
+    s = session(state)
+    # The cube's pass is suspended at the end of the frame's command buffer and resumed in a second
+    # one. Nothing may be recorded between the two parts, so the layer reads the attachments back
+    # and records the bound buffers' copies (both parts', 7 ranges) after the resumed part only, and
+    # times neither part; the compute pass before it still is. The Khronos layer has no check for
+    # the rule, so a clean validation log is necessary but not sufficient: the counts are the test.
+    return check_connected(state, log) + check_capture_basic(state, log, textures=2, timings=False) + \
+        expect((c.get("passes") or 0) >= 2, f"{c.get('passes')} passes (expected the suspended and the resumed part)") + \
+        expect((c.get("textures") or 0) == 3, f"{c.get('textures')} textures (expected the resumed part's 2 attachments and the sampled texture)") + \
+        expect((c.get("buffers") or 0) >= 7, f"{c.get('buffers')} buffer ranges (the suspended part's must be recorded by the resumed part)") + \
+        expect((c.get("passTimings") or 0) == 1, f"{c.get('passTimings')} pass timings (expected the compute pass only)") + \
+        expect("suspended and resumed" in log, "the layer did not report the suspended pass") + \
+        expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
+
+
 def triangle_offscreen(state, log):
     s = session(state)
     # Nothing presents in this mode, so the render pass stores a colour attachment the capture
@@ -525,6 +542,7 @@ def triangle_cases(triangle):
                                   "--debug-expand=Compute Shader"], triangle_sources, delay_ms=14000),
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
+        Case("suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], triangle_suspend, delay_ms=16000),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
         Case("hazard", launch + ["--args=--hazard", "--validation", "--sync-validation", "--debug-capture"], triangle_hazard, delay_ms=18000),
