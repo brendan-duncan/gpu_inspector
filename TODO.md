@@ -328,13 +328,20 @@ Measured against Nsight Graphics, with the Nsight Systems and Aftermath pieces u
 Ordered by value per effort. Everything here is reachable through public APIs; what needs the
 vendor's driver is listed at the end so nobody spends time on it.
 
-- [ ] Hardware unit counters per pass and per draw (Nsight's GPU Trace and Range Profiler: SM
-      throughput, L2 hit rate, VRAM bandwidth, texture unit load). docs/PROFILING.md calls these
-      "the limiters" and says Metal cannot expose them, but Vulkan can: `VK_KHR_performance_query`
-      on AMD, Intel, Arm and Qualcomm, and NVIDIA's Nsight Perf SDK (free) on NVIDIA. The replay
-      already brackets every draw with queries (`src/replay/src/draw_stats.cpp`), so the plumbing
-      exists. GPU Bottlenecks would measure the unit directly instead of through overdraw and
-      fragments per primitive as proxies.
+- [x] Hardware unit counters per pass and per draw (Nsight's GPU Trace and Range Profiler: SM
+      throughput, L2 hit rate, VRAM bandwidth, texture unit load): `vkinsp_replay --counters`
+      (`src/replay/src/hw_counters.cpp`, docs/REPLAY.md "Hardware counters") reads the GPU's own
+      counters around each pass and draw, replaying the frame once per collection pass. Two backends:
+      NVIDIA's Nsight Perf SDK (`src/replay/src/nvperf.cpp`, headers vendored in `third_party/nvperf`,
+      per pass and per draw) and `VK_KHR_performance_query` (per draw). `get_hw_counters` in the MCP
+      server, `--list-counters` for what a GPU offers. docs/PROFILING.md's "the limiters" are now
+      reachable on Vulkan. Verified on an RTX 4080 up to the profiling session: `--list-counters`
+      enumerates 1414 AD103 counters; collection itself needs GPU counter access enabled
+      (`ERR_NVGPUCTRPERM`; NVIDIA Control Panel > Developer > Manage GPU Performance Counters).
+- [ ] Hardware counters, the rest: fold them into GPU Bottlenecks' bound-stage verdict and its app
+      report (a "Measure hardware counters" action, columns per limiter); a portable default counter
+      set for the `VK_KHR_performance_query` path (it takes the first command-scoped counters now);
+      per-draw counters in the Shader Flame Graph beside the ablation costs.
 - [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
       Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
       `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED

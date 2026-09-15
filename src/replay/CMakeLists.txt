@@ -49,6 +49,9 @@ add_executable(vkinsp_replay
     src/history.cpp
     src/draw_stats.cpp
     src/ablation.cpp
+    src/hw_counters.h
+    src/hw_counters.cpp
+    src/nvperf.cpp
     src/pipeline_copy.cpp
     src/util.h
     ${GEN_OUTPUTS})
@@ -61,6 +64,23 @@ target_include_directories(vkinsp_replay PRIVATE
     "${VKINSP_ROOT}/src/vulkan/src")
 
 target_compile_definitions(vkinsp_replay PRIVATE VK_NO_PROTOTYPES)
+
+# Hardware counters through NVIDIA's Nsight Perf SDK (docs/REPLAY.md, "Hardware counters"). The SDK's
+# redistributable headers live in third_party/nvperf; its host library is loaded at run time, not
+# linked, so nothing extra is needed to link. On by default when those headers are present; the
+# portable VK_KHR_performance_query path is always compiled in.
+set(NVPERF_DIR "${VKINSP_ROOT}/third_party/nvperf")
+option(VKINSP_NVPERF "Build hardware counters with NVIDIA's Nsight Perf SDK" ON)
+if(VKINSP_NVPERF AND EXISTS "${NVPERF_DIR}/NvPerfUtility/include/NvPerfVulkan.h")
+    target_compile_definitions(vkinsp_replay PRIVATE VKINSP_NVPERF)
+    target_include_directories(vkinsp_replay PRIVATE
+        "${NVPERF_DIR}/NvPerfUtility/include"
+        "${NVPERF_DIR}/include")
+    message(STATUS "vkinsp_replay: hardware counters with the Nsight Perf SDK (third_party/nvperf)")
+else()
+    message(STATUS "vkinsp_replay: hardware counters via VK_KHR_performance_query only (no Nsight Perf SDK headers)")
+endif()
+
 if(WIN32)
     target_compile_definitions(vkinsp_replay PRIVATE VK_USE_PLATFORM_WIN32_KHR NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_compile_options(vkinsp_replay PRIVATE /W3 /bigobj)

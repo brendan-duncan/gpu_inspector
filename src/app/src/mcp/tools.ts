@@ -14,6 +14,7 @@ import {
   OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
 } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
+import { counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -393,6 +394,75 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           total: p.total, offset: p.offset, nextOffset: p.nextOffset,
           passes: p.items.map((x) => passMeasurements(c, x.p, x.i, m.gpuMs)),
           notes,
+        });
+      },
+    },
+    {
+      name: "get_hw_counters",
+      description: "The GPU's own hardware counters per pass and per draw — what Nsight Graphics calls the limiters and " +
+        "docs/PROFILING.md lists as out of reach through the pipeline-statistics path: which unit inside the shader core a " +
+        "pass saturates (SM throughput, VRAM bandwidth, L1/L2 cache, achieved occupancy, ALU and FMA pipes). A Vulkan capture " +
+        "is replayed on this machine's GPU with vkinsp_replay the first time this is called; the frame is replayed once per " +
+        "collection pass the counters need (seconds), and the result is kept with the open capture. Needs NVIDIA's Nsight Perf " +
+        "SDK (per pass and per draw) or VK_KHR_performance_query (per draw), and GPU performance-counter access enabled. Not " +
+        "Metal or D3D12. With `list`: every counter the GPU offers, to pass in `counters`. Without `counters`: a default limiter set.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        counters: { type: "array", items: { type: "string" }, description: "Counter names to collect (list=true shows what the GPU offers). Default: a limiter set (SM, memory, cache, occupancy, ALU, FMA)." },
+        list: { type: "boolean", description: "Only list every counter the GPU offers, without collecting (no replay of the frame's work)." },
+        ...PAGE_PARAMS,
+      }),
+      readOnly: true,
+      handler: async (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        if (c.data.api !== "vulkan") {
+          return jsonResult({ capture: c.id, note: `Hardware counters are read by replaying the capture, and ${c.data.api === "metal" ? "Metal captures do not replay; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c.id, note: `Hardware counters need the capture replayed, and ${NO_REPLAY_TOOL}` });
+        const wantList = boolArg(args, "list", false);
+        const requested = Array.isArray(args.counters) ? (args.counters as unknown[]).filter((n): n is string => typeof n === "string") : [];
+        if (wantList) {
+          const run = await replayServers.run(tool, c.path, { kind: "list-counters" });
+          if (!run.data) return jsonResult({ capture: c.id, note: `Could not list counters: ${run.error ?? "no data"}` });
+          const file = parseHwCounters(run.data);
+          if (!file.backend) return jsonResult({ capture: c.id, note: file.notes[0] ?? "This GPU exposes no hardware counters the replay can read." });
+          const pg = page(file.available, args, 100, 500);
+          return jsonResult({
+            capture: c.id, backend: file.backend, chip: file.chip || undefined, device: file.device,
+            total: pg.total, offset: pg.offset, nextOffset: pg.nextOffset,
+            counters: pg.items.map((x) => ({ name: x.name, unit: x.unit, category: x.category, description: x.description || undefined })),
+            notes: file.notes.length ? file.notes : undefined,
+          });
+        }
+        // Collect: replayed once and kept with the open capture, unless a different set is asked for.
+        if (!c.hwCounters || requested.length) {
+          const run = await replayServers.run(tool, c.path, { kind: "counters", counters: requested.length ? requested : undefined });
+          if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not read hardware counters: ${run.error ?? "no data"}` });
+          c.hwCounters = parseHwCounters(run.data);
+        }
+        const file = c.hwCounters;
+        if (!file.backend || (!file.passes.length && !file.draws.length)) {
+          return jsonResult({ capture: c.id, note: file.notes[0] ?? "No hardware counters were collected.", notes: file.notes.length > 1 ? file.notes : undefined });
+        }
+        const byPass = hwCountersByPass(file);
+        const metrics = c.metrics.passes;
+        const rows = metrics.map((p, i) => ({ p, i, r: byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) })).filter((x) => x.r);
+        // Slowest first where the pass was timed, else in frame order.
+        rows.sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
+        const pg = page(rows, args, 30, 200);
+        const cell = (r: typeof rows[number]["r"], name: string): string => formatCounter(counterValue(file, r!, name), file.counters.find((cc) => cc.name === name)?.unit ?? "count");
+        return jsonResult({
+          capture: c.id, backend: file.backend, chip: file.chip || undefined, device: file.device,
+          collectionPasses: file.rounds,
+          counters: file.counters.map((cc) => ({ name: cc.name, unit: cc.unit, category: cc.category })),
+          total: pg.total, offset: pg.offset, nextOffset: pg.nextOffset,
+          passes: pg.items.map((x) => ({
+            pass: x.i, label: c.passName(x.i), command: x.p.commandIndex, ms: round(x.p.durationMs),
+            counters: Object.fromEntries(file.counters.map((cc) => [cc.name, cell(x.r, cc.name)])),
+          })),
+          draws: file.draws.length,
+          notes: file.notes.length ? file.notes : undefined,
         });
       },
     },

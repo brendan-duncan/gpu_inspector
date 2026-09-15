@@ -98,6 +98,57 @@ struct ReplayOptions {
         uint32_t rounds = 5;
         std::vector<AblationTarget> targets;
     } ablation;
+    /**
+     * Hardware counters per pass and per draw (HwCounterReport, hw_counters.cpp): the GPU vendor's own
+     * counters, read through NVIDIA's Nsight Perf SDK or VK_KHR_performance_query. The frame is replayed
+     * once per collection pass the counters need.
+     */
+    struct {
+        bool enabled = false;
+        /** The counters wanted, by the names `list` prints; empty for the backend's default set. */
+        std::vector<std::string> names;
+        /** Only list every counter the device offers, without replaying. */
+        bool list = false;
+    } counters;
+};
+
+/** One hardware counter: the name the backend knows it by, and what it measures. */
+struct HwCounterInfo {
+    std::string name;
+    std::string description;
+    /** The unit the backend groups it under (NvPerf: the hardware unit; KHR: the counter's category). */
+    std::string category;
+    /** "percent", "ns", "bytes", "count", "ratio", "cycles", "hertz", "watts", "volts", "amps", "kelvin", "bytes/s". */
+    std::string unit;
+    /** Whether a draw's query may carry it (a KHR counter with render pass scope cannot). */
+    bool perDraw = true;
+};
+
+/** The counters of one range: a render pass (`pass`), or a draw or dispatch. */
+struct HwCounterRange {
+    bool pass = false;
+    uint32_t command = 0;          // the draw, or the pass's begin
+    uint32_t frame = 0;
+    uint64_t commandBuffer = 0;
+    uint32_t passIndex = 0;        // UINT32_MAX for a dispatch outside a pass
+    /** One per HwCounterReport::counters; NaN where the counter was not collected for this range. */
+    std::vector<double> values;
+};
+
+struct HwCounterReport {
+    bool requested = false;
+    /** "nvperf" or "khr"; empty when no backend could run. */
+    std::string backend;
+    /** NvPerf: the chip the counters are for ("AD103"). */
+    std::string chip;
+    /** Times the frame was replayed to collect everything. */
+    uint32_t rounds = 0;
+    std::vector<HwCounterInfo> counters;
+    std::vector<HwCounterRange> passes;
+    std::vector<HwCounterRange> draws;
+    /** With ReplayOptions::counters.list: everything the device offers. */
+    std::vector<HwCounterInfo> available;
+    std::vector<std::string> notes;
 };
 
 /** One pipeline issued at an ablation target: the draw's times with it, one per round. */
@@ -343,6 +394,8 @@ struct ReplayReport {
     std::vector<MeshResult> meshes;
     /** With ReplayOptions::ablation: each target's timings, in frame order; targets the replay did not reach last. */
     std::vector<AblationResult> ablations;
+    /** With ReplayOptions::counters: the vendor's counters per pass and per draw. */
+    HwCounterReport counters;
 };
 
 class Replayer {
@@ -626,6 +679,28 @@ private:
     void CompleteAblation(bool submitted);
     void DestroyAblation();
 
+    // Hardware counters (hw_counters.cpp): the vendor's counters around every pass and every draw,
+    // collected over as many replays of the frame as they need.
+    /** Sets the backend up for the frame; false (with the report's notes saying why) when none can run. */
+    bool PrepareCounters();
+    /** The KHR path of PrepareCounters: a performance query pool over the frame's draws. */
+    bool PrepareKhrCounters(uint32_t draws);
+    /** The limiter metrics collected when the request names none (NvPerf's spelling). */
+    std::vector<std::string> DefaultCounterNames() const;
+    /** Lists what the device offers into the report (ReplayOptions::counters.list). */
+    void ListCounters();
+    /** Starts a collection round: false when the backend failed (the report says why). */
+    bool BeginCounterRound();
+    /** Ends the round after its submissions completed; true when another round is needed. */
+    bool EndCounterRound();
+    void BeginCounterPass(VkCommandBuffer cb, const PassState& pass);
+    void EndCounterPass(VkCommandBuffer cb);
+    int BeginCounterDraw(VkCommandBuffer cb, uint32_t command, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
+    void EndCounterDraw(VkCommandBuffer cb, int range);
+    /** Turns what the rounds collected into the report. */
+    void CompleteCounters();
+    void DestroyCounters();
+
     /** `frame`, `commandBuffer` and `passIndex` are the primary's, for the draws measured inside. */
     void RecordSecondaries(size_t executeIndex, const JValue& execute, uint32_t frame, uint64_t commandBuffer, uint32_t passIndex);
     void ApplyBufferData(const CommandGroup& group);
@@ -800,6 +875,19 @@ private:
         std::vector<bool> issued;
     };
     std::vector<PendingAblation> _pendingAblations;
+
+    // Hardware counters
+    /** The backend's state while counters are collected (hw_counters.cpp owns the type). */
+    struct HwCounterState* _hw = nullptr;
+    /** The device has VK_KHR_performance_query with performanceCounterQueryPools enabled. */
+    bool _perfQueryAvailable = false;
+    /** NVIDIA's Nsight Perf SDK loaded, and its extensions enabled on the instance and device. */
+    bool _nvperfReady = false;
+    std::string _nvperfNote;
+    /** Chained into each of the frame's submissions during a collection round (the KHR pass index). */
+    const void* _submitNext = nullptr;
+    /** Rounds are only counters': the report's other results come from the first replay. */
+    uint32_t _hwRound = 0;
 
     // Pixel history
     std::map<std::pair<uint64_t, int>, VkPipeline> _historyPipelines;

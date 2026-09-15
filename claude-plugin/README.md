@@ -98,6 +98,7 @@ capture.
 | `get_capture_summary` | Counts, frame timing and Frame Bound verdict, slowest passes, issues, validation, notes |
 | `get_frame_issues` | Frame Issues rules, each naming its command |
 | `get_bottlenecks` | Per-pass GPU time, overdraw, fragments per primitive, depth rejection, bound stage, problems |
+| `get_hw_counters` | The GPU's own hardware counters per pass and per draw (the limiters: SM throughput, VRAM bandwidth, cache, occupancy, ALU/FMA), what Nsight Graphics shows — a Vulkan capture replayed with `vkinsp_replay`; needs NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query` and GPU counter access; not Metal or D3D12 |
 | `get_overdraw` | Overdraw measured per pixel (Metal captures taken with `overdraw`; Vulkan captures replayed with `vkinsp_replay`; not D3D12): every pass's figures, or one pass's heatmap as PNG |
 | `get_pixel_history` | Every clear and draw that touched one pixel, what each draw's fragments met (culled, discarded, depth, stencil, written) and the value after each (a Vulkan capture replayed; a Metal capture taken with `capture_frames` `pixelHistory`; not D3D12) |
 | `get_mesh_output` | What a draw's vertex shader wrote (VS Out): every output, vertices behind the eye, primitives outside the view volume, triangles with no area, NaN positions (a Vulkan capture replayed; not Metal or D3D12) |

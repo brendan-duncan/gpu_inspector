@@ -67,6 +67,10 @@ about a capture takes a moment while its replay starts; the replay is kept for t
 - `get_shader_flame_graph` — measures every draw the first time it is asked
 - `measure_shader_cost` — what a draw's fragment or compute shader spends in each function, source
   line and texture, timed with each taken out; the flame graph then sizes that stage by it
+- `get_hw_counters` — the GPU's own hardware counters per pass and per draw (the limiters: SM
+  throughput, memory bandwidth, cache, occupancy), what Nsight Graphics shows. Needs NVIDIA's
+  Nsight Perf SDK or `VK_KHR_performance_query`, and GPU counter access enabled; `list: true` names
+  what the GPU offers
 
 They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout
 builds it (`cmake --build build --target vkinsp_replay`). See [Capture replay](REPLAY.md).

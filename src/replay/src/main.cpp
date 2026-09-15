@@ -43,6 +43,7 @@ void PrintUsage() {
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
                          "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
+                         "                     [--counters [--counter <name>]... [--counter-data <file>]] [--list-counters [--counter-data <file>]]\n"
                          "                     [--trace] | --check | --serve [--validate]\n");
 }
 
@@ -269,6 +270,82 @@ bool WriteDrawData(const ReplayReport& report, const std::string& path) {
     if (!out) return false;
     out.write(json.data(), (std::streamsize)json.size());
     return (bool)out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// --counter-data: the GPU's own hardware counters per pass and per draw (hw_counters.cpp), for GPU
+// Inspector's GPU Bottlenecks report (parseHwCounters in src/app/src/renderer/hw_counters.ts).
+
+/** A double as JSON: a finite number, or null for NaN (a counter that did not evaluate) or infinity. */
+std::string JsonNumber(double v) {
+    if (std::isnan(v) || std::isinf(v)) return "null";
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return buf;
+}
+
+std::string CounterInfoJson(const HwCounterInfo& c) {
+    return "{\"name\":" + JsonString(c.name) + ",\"description\":" + JsonString(c.description) +
+           ",\"category\":" + JsonString(c.category) + ",\"unit\":" + JsonString(c.unit) +
+           ",\"perDraw\":" + (c.perDraw ? "true" : "false") + "}";
+}
+
+std::string CounterRangeJson(const HwCounterRange& r) {
+    std::string values;
+    for (size_t i = 0; i < r.values.size(); ++i) values += (i ? "," : "") + JsonNumber(r.values[i]);
+    std::string out = "{\"command\":" + std::to_string(r.command) + ",\"frame\":" + std::to_string(r.frame) +
+                      ",\"commandBuffer\":" + std::to_string(r.commandBuffer) + ",\"passIndex\":" + std::to_string(r.passIndex) +
+                      ",\"values\":[" + values + "]}";
+    return out;
+}
+
+bool WriteCounterData(const ReplayReport& report, const std::string& path) {
+    const HwCounterReport& h = report.counters;
+    std::string json = "{\"format\":\"gpu-inspector-hw-counters\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"backend\":" + JsonString(h.backend) + ",\"chip\":" + JsonString(h.chip) +
+                       ",\"rounds\":" + std::to_string(h.rounds) + ",\"counters\":[";
+    for (size_t i = 0; i < h.counters.size(); ++i) json += (i ? "," : "") + CounterInfoJson(h.counters[i]);
+    json += "],\"passes\":[";
+    for (size_t i = 0; i < h.passes.size(); ++i) json += (i ? "," : "") + CounterRangeJson(h.passes[i]);
+    json += "],\"draws\":[";
+    for (size_t i = 0; i < h.draws.size(); ++i) json += (i ? "," : "") + CounterRangeJson(h.draws[i]);
+    json += "],\"available\":[";
+    for (size_t i = 0; i < h.available.size(); ++i) json += (i ? "," : "") + CounterInfoJson(h.available[i]);
+    json += "],\"notes\":[";
+    for (size_t i = 0; i < h.notes.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(h.notes[i]);
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
+void PrintCounters(const ReplayReport& report) {
+    const HwCounterReport& h = report.counters;
+    if (h.backend.empty()) {
+        std::printf("hardware counters: none available\n");
+    } else {
+        std::printf("hardware counters (%s%s%s): %zu counters over %u collection pass%s, %zu passes and %zu draws measured\n",
+                    h.backend.c_str(), h.chip.empty() ? "" : ", ", h.chip.c_str(), h.counters.size(), h.rounds,
+                    h.rounds == 1 ? "" : "es", h.passes.size(), h.draws.size());
+    }
+    if (!h.available.empty()) {
+        std::printf("counters this GPU offers: %zu\n", h.available.size());
+        for (size_t i = 0; i < h.available.size(); ++i)
+            std::printf("  %-56s %-10s %s\n", h.available[i].name.c_str(), h.available[i].unit.c_str(), h.available[i].category.c_str());
+        return;
+    }
+    // The slowest few passes' counters, as the tool's own quick look.
+    for (size_t i = 0; i < h.passes.size() && i < 8; ++i) {
+        const HwCounterRange& r = h.passes[i];
+        std::printf("  pass %u:", r.passIndex);
+        for (size_t c = 0; c < h.counters.size() && c < r.values.size(); ++c)
+            std::printf(" %s=%s%s", h.counters[c].name.c_str(), JsonNumber(r.values[c]).c_str(), h.counters[c].unit == "percent" ? "%" : "");
+        std::printf("\n");
+    }
+    for (const std::string& note : h.notes) std::printf("  note: %s\n", note.c_str());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -799,7 +876,7 @@ int Check(const CaptureFile& capture) {
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
            const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
-           const std::string& meshData, const std::string& ablationData) {
+           const std::string& meshData, const std::string& ablationData, const std::string& counterData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -883,6 +960,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
             else std::printf("  could not write %s\n", ablationData.c_str());
         }
     }
+    if (options.counters.enabled) {
+        PrintCounters(report);
+        if (!counterData.empty()) {
+            if (WriteCounterData(report, counterData)) std::printf("  wrote %s\n", counterData.c_str());
+            else std::printf("  could not write %s\n", counterData.c_str());
+        }
+    }
     if (report.history.requested) {
         PrintHistory(report.history);
         if (!pixelData.empty()) {
@@ -911,6 +995,7 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
 //   {"id": 2, "kind": "overdraw" | "draws", "out": "<file>"}
 //   {"id": 3, "kind": "overlay" | "mesh", "commands": [17, 18], "out": "<file>"}
 //   {"id": 6, "kind": "ablate", "in": "<request file>", "out": "<file>"}
+//   {"id": 7, "kind": "counters" | "list-counters", "counters": ["sm__throughput..."], "out": "<file>"}
 //   {"id": 4, "kind": "replay"}          the frame alone, comparing its render targets
 //   {"kind": "quit"}
 // Answers are lines on stdout beginning "@replay " (anything else a driver prints is not one):
@@ -975,6 +1060,11 @@ int Serve(const CaptureFile& capture, bool validation) {
                 fail(error);
                 continue;
             }
+        } else if (kind == "counters" || kind == "list-counters") {
+            options.counters.enabled = true;
+            options.counters.list = kind == "list-counters";
+            if (const JValue* list = request.Get("counters"); list && list->IsArray())
+                for (uint32_t k = 0; k < list->count; ++k) options.counters.names.push_back(std::string(list->items[k].Str()));
         } else if (kind == "pixel") {
             options.history.enabled = true;
             options.history.image = request.Get("image") ? request.Get("image")->Uint() : 0;
@@ -1000,6 +1090,7 @@ int Serve(const CaptureFile& capture, bool validation) {
         else if (kind == "overlay") wrote = WriteOverlayData(report, out);
         else if (kind == "mesh") wrote = WriteMeshData(report, out);
         else if (kind == "ablate") wrote = WriteAblationData(report, out);
+        else if (kind == "counters" || kind == "list-counters") wrote = WriteCounterData(report, out);
         else if (kind == "pixel") wrote = WritePixelHistoryData(report, out);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         if (!wrote) {
@@ -1038,6 +1129,7 @@ int main(int argc, char** argv) {
     std::string meshData;
     std::string ablationRequest;
     std::string ablationData;
+    std::string counterData;
     bool check = false;
     bool serve = false;
     ReplayOptions options;
@@ -1072,6 +1164,19 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--mesh-data") && i + 1 < argc) meshData = argv[++i];
         else if (!std::strcmp(argv[i], "--ablate") && i + 1 < argc) ablationRequest = argv[++i];
         else if (!std::strcmp(argv[i], "--ablate-data") && i + 1 < argc) ablationData = argv[++i];
+        else if (!std::strcmp(argv[i], "--counters")) options.counters.enabled = true;
+        else if (!std::strcmp(argv[i], "--counter") && i + 1 < argc) {
+            options.counters.enabled = true;
+            options.counters.names.push_back(argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--list-counters")) {
+            options.counters.enabled = true;
+            options.counters.list = true;
+        }
+        else if (!std::strcmp(argv[i], "--counter-data") && i + 1 < argc) {
+            options.counters.enabled = true;
+            counterData = argv[++i];
+        }
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -1122,5 +1227,5 @@ int main(int argc, char** argv) {
         return 2;
     }
     return check ? Check(capture)
-                 : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData);
+                 : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData, counterData);
 }

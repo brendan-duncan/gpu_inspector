@@ -191,10 +191,21 @@ primitive.
 Save both captures (the capture bar's save button, `.gpucap`) and reopen them side by side in two
 tabs if you want the before and after in front of you at once.
 
+## The limiters: which unit inside the shader core is saturated
+
+The counters above say *how much* work a pass did. They do not say *which unit* it waited on — the
+ALU, the texture cache, memory bandwidth, or none of them because occupancy is too low. Those are
+the hardware counters Nsight Graphics shows, and on **Vulkan** they are now reachable: replaying the
+capture reads the GPU's own counters around each pass and draw (`vkinsp_replay --counters`,
+docs/REPLAY.md; `get_hw_counters` in the MCP server). It needs NVIDIA's Nsight Perf SDK (per pass
+and per draw) or `VK_KHR_performance_query` (per draw), and GPU performance-counter access enabled.
+Use the pass timings and the pipeline-statistics counters to find the slow pass and its symptom,
+then the hardware counters to name the unit it is bound on.
+
 ## What cannot be measured here
 
-GPU Inspector reads what Metal exposes publicly. Three families of counter that Xcode shows have
-no public API, and no amount of work on this tool will produce them:
+On **Metal**, GPU Inspector reads what Metal exposes publicly, and three families of counter that
+Xcode shows have no public API — no amount of work on this tool will produce them:
 
 - **Shader occupancy** against the theoretical maximum.
 - **The limiters**: ALU, buffer read, texture read cache, texture filtering, texture write. These
@@ -204,7 +215,8 @@ no public API, and no amount of work on this tool will produce them:
 For those, the capture bar's **Xcode Trace** button writes the next frame as a `.gputrace`
 document. Open it in Xcode and you have the full Metal debugger, on the same frame you were just
 looking at. The two tools are complementary: use this one to find the pass and the cause, and
-Xcode when you need to know which unit inside a shader is the limit.
+Xcode when you need to know which unit inside a shader is the limit. (On Vulkan the limiters are
+measured here, above; this gap is Metal's, where the public API does not expose them.)
 
 There is also a hardware limit to be aware of. Metal's statistic and stage-utilization counter
 sets are exposed by some GPUs and not others; through public Metal, Apple Silicon exposes only

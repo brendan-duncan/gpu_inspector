@@ -1,3 +1,11 @@
+## v0.13.0
+
+### Added
+- Hardware counters per pass and per draw for Vulkan captures (`vkinsp_replay --counters`,
+  docs/REPLAY.md): the GPU's own counters for which unit inside the shader core a pass saturates,
+  from NVIDIA's Nsight Perf SDK (per pass and per draw) or `VK_KHR_performance_query` (per draw),
+  with `get_hw_counters` in the MCP server. Needs GPU performance-counter access enabled.
+
 ## v0.12.0
 
 ### Added
