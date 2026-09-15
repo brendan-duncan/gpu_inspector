@@ -6,7 +6,7 @@
 // barriers and presents.
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
-//                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer]
+//                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -159,6 +159,10 @@ struct App {
     // WebGPU device does. The inspector's frame boundary falls back to the per-frame submit.
     bool offscreen = false;
     bool leak = false;         // one buffer is never released (the inspector's leak report)
+    // --stencil: the depth buffer is D24S8, cleared with the depth and written with 1 wherever the
+    // cube draws, so a capture reads a stencil target back beside the depth.
+    bool stencil = false;
+    DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
 
@@ -483,11 +487,11 @@ struct App {
         rd.Height = height;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
-        rd.Format = kDepthFormat;
+        rd.Format = depthFormat;
         rd.SampleDesc.Count = msaa ? 4 : 1;
         rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         D3D12_CLEAR_VALUE clear{};
-        clear.Format = kDepthFormat;
+        clear.Format = depthFormat;
         clear.DepthStencil.Depth = 1.0f;
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
                                               IID_PPV_ARGS(&depthBuffer)));
@@ -600,11 +604,18 @@ struct App {
         pd.DepthStencilState.DepthEnable = TRUE;
         pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        if (stencil) {
+            // Every fragment that passes writes the stencil reference (1, OMSetStencilRef) into the stencil buffer.
+            D3D12_DEPTH_STENCILOP_DESC op{D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_REPLACE, D3D12_COMPARISON_FUNC_ALWAYS};
+            pd.DepthStencilState.StencilEnable = TRUE;
+            pd.DepthStencilState.StencilReadMask = pd.DepthStencilState.StencilWriteMask = 0xFF;
+            pd.DepthStencilState.FrontFace = pd.DepthStencilState.BackFace = op;
+        }
         pd.InputLayout = {layout, 3};
         pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pd.NumRenderTargets = 1;
         pd.RTVFormats[0] = kColorFormat;
-        pd.DSVFormat = kDepthFormat;
+        pd.DSVFormat = depthFormat;
         pd.SampleDesc.Count = msaa ? 4 : 1;
         CHECK(device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pipeline)));
         pipeline->SetName(L"Cube pipeline");
@@ -858,17 +869,19 @@ struct App {
             D3D12_RENDER_PASS_DEPTH_STENCIL_DESC ds{};
             ds.cpuDescriptor = dsv;
             ds.DepthBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
-            ds.DepthBeginningAccess.Clear.ClearValue.Format = kDepthFormat;
+            ds.DepthBeginningAccess.Clear.ClearValue.Format = depthFormat;
             ds.DepthBeginningAccess.Clear.ClearValue.DepthStencil.Depth = 1.0f;
-            ds.StencilBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS;
+            ds.StencilBeginningAccess.Type = stencil ? D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR : D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS;
+            ds.StencilBeginningAccess.Clear.ClearValue = ds.DepthBeginningAccess.Clear.ClearValue;
             ds.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
-            ds.StencilEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
+            ds.StencilEndingAccess.Type = stencil ? D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE : D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
             list4->BeginRenderPass(1, &rt, &ds, D3D12_RENDER_PASS_FLAG_NONE);
         } else {
             list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
             list->ClearRenderTargetView(rtv, kClearColor, 0, nullptr);
-            list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+            list->ClearDepthStencilView(dsv, stencil ? D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL : D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         }
+        if (stencil) list->OMSetStencilRef(1);
 
         D3D12_VIEWPORT viewport{0, 0, (float)width, (float)height, 0, 1};
         D3D12_RECT scissor{0, 0, (LONG)width, (LONG)height};
@@ -970,6 +983,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
+        else if (!strcmp(argv[i], "--stencil")) { app.stencil = true; app.depthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT; }
         else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 1;

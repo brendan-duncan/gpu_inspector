@@ -191,6 +191,7 @@ struct TextureEntry {
     uint32_t attachment = 0;
     const char* format = "VK_FORMAT_UNDEFINED";
     bool depthAspect = false;
+    bool stencilAspect = false;   // plane 1 of a depth-stencil target, one byte per texel
     uint32_t width = 0, height = 0, depth = 1, layers = 1, mip = 0, mips = 1;
     uint32_t samples = 1;
     uint64_t size = 0;        // tight bytes
@@ -838,10 +839,11 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
         i.timings.push_back(te);
     }
 
-    // Then every target, slice by slice, into staging.
+    // Then every target, slice by slice, into staging. A depth-stencil target is read back twice:
+    // its depth plane, then its stencil plane (`asStencil`: plane 1, one byte per texel), each an
+    // entry of its own under the same attachment index.
     if (dc && captureTextures && !rec->bundle()) {
-        for (const BoundTarget& t : pass.targets) {
-            if (!t.resource) continue;
+        auto readBack = [&](const BoundTarget& t, bool asStencil) {
             TextureEntry e;
             e.resourceId = Tracker::Get().IdOf(t.resource);
             e.list = list;
@@ -858,24 +860,28 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                 std::lock_guard lock(i.mutex);
                 i.textures.push_back(e);
             };
-            if (!DescOf(t.resource, desc, &info)) { fail("resource is not tracked"); continue; }
+            if (!DescOf(t.resource, desc, &info)) return fail("resource is not tracked");
             const bool volume = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-            const ProtocolFormat pf = ProtocolFormatOf(t.format, t.depth);
+            ProtocolFormat pf = ProtocolFormatOf(t.format, t.depth);
+            if (asStencil) pf.texelBytes = 1;
             e.width = MipDim(desc.Width, t.mip);
             e.height = MipDim(desc.Height, t.mip);
             e.samples = desc.SampleDesc.Count;
-            e.depthAspect = pf.depth;
+            e.depthAspect = pf.depth && !asStencil;
+            e.stencilAspect = asStencil;
             // A 3D render target: its slices are the depth slices of the mip, copied whole.
             const uint32_t slices = volume ? MipDim(desc.DepthOrArraySize, t.mip) : std::min(std::max(1u, t.sliceCount), kMaxAttachmentSlices);
             e.layers = slices;
-            if (!pf.name) { fail(std::string("format ") + FormatName(t.format) + " cannot be decoded"); continue; }
+            if (!pf.name) return fail(std::string("format ") + FormatName(t.format) + " cannot be decoded");
             e.format = pf.name;
             const uint64_t rowBytes = TightRowBytes(pf, e.width);
             const uint32_t rows = TightRows(pf, e.height);
             e.size = rowBytes * rows * slices;
-            if (e.size > maxTextureSize) { fail("exceeds max texture size"); continue; }
-            if (t.depth && e.samples > 1) { fail("multisampled depth is not read back"); continue; }
-            if (t.mip >= desc.MipLevels) { fail("mip level out of range"); continue; }
+            if (e.size > maxTextureSize) return fail("exceeds max texture size");
+            if (t.depth && e.samples > 1) return fail(asStencil ? "multisampled stencil is not read back" : "multisampled depth is not read back");
+            if (t.mip >= desc.MipLevels) return fail("mip level out of range");
+            // The stencil plane's subresources follow every mip of every slice of the depth plane.
+            const uint32_t planeOffset = asStencil ? desc.MipLevels * (uint32_t)desc.DepthOrArraySize : 0;
 
             // A multisampled color target resolves into a single-sampled texture of the capture's
             // first; the copies then read that.
@@ -886,7 +892,7 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             if (e.samples > 1) {
                 ResolveKey key{list, typed, e.width, e.height, slices};
                 resolve = i.ResolveTextureFor(*dc, key);
-                if (!resolve) { fail("resolve texture could not be created"); continue; }
+                if (!resolve) return fail("resolve texture could not be created");
                 source = resolve;
                 {
                     ScopedInternal internal;
@@ -902,7 +908,7 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                 ScopedInternal internal;
                 for (uint32_t s = 0; s < slices; ++s) {
                     const uint32_t slice = volume ? 0 : t.firstSlice + s;
-                    const uint32_t sub = resolve ? s : (volume ? t.mip : t.mip + slice * desc.MipLevels);
+                    const uint32_t sub = resolve ? s : (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
                     sourceSubresources[s] = sub;
                     UINT numRows = 0;
                     UINT64 rowSize = 0, bytes = 0;
@@ -914,12 +920,12 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             }
             uint64_t spanOffset = 0;
             ID3D12Resource* staging = nullptr;
-            if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging)) { fail("staging allocation failed"); continue; }
+            if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging)) return fail("staging allocation failed");
 
             const uint32_t copies = volume ? 1 : slices;
             for (uint32_t s = 0; s < copies; ++s) {
                 const uint32_t slice = volume ? 0 : t.firstSlice + s;
-                const uint32_t origSub = volume ? t.mip : t.mip + slice * desc.MipLevels;
+                const uint32_t origSub = (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
                 bool known = false;
                 D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, t.resource, origSub, &known);
                 if (!known) {
@@ -949,6 +955,11 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             }
             std::lock_guard lock(i.mutex);
             i.textures.push_back(std::move(e));
+        };
+        for (const BoundTarget& t : pass.targets) {
+            if (!t.resource) continue;
+            readBack(t, false);
+            if (t.depth && FormatOf(TypedFormat(t.format, true)).stencil) readBack(t, true);
         }
     }
 
@@ -1787,7 +1798,7 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
         w.Key("passIndex"); w.Uint(e.passIndex);
         w.Key("attachment"); w.Uint(e.attachment);
         w.Key("format"); w.String(e.format);
-        w.Key("aspect"); w.String(e.depthAspect ? "depth" : "color");
+        w.Key("aspect"); w.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil" : "color");
         w.Key("width"); w.Uint(e.width);
         w.Key("height"); w.Uint(e.height);
         w.Key("depth"); w.Uint(e.depth);
@@ -1834,6 +1845,8 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
         h.Key("commandBuffer"); h.Uint(e.listId);
         h.Key("passIndex"); h.Uint(e.passIndex);
         h.Key("attachment"); h.Uint(e.attachment);
+        // A depth-stencil target has an entry per aspect under the same attachment index.
+        h.Key("aspect"); h.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil" : "color");
         if (e.sampled) { h.Key("capture"); h.Uint(e.captureId); }
         h.Key("size"); h.Uint(e.size);
         h.EndObject();

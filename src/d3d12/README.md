@@ -278,7 +278,9 @@ in. The state each resource was in comes from `resources.h`, which follows the a
 what it must be to be bound. A multisampled target is resolved (`ResolveSubresource`) into a
 single-sampled texture of the capture's first; depth is resolved by copying sample zero through a
 compute shader the library compiles once per device (D3D12 cannot resolve depth with
-`ResolveSubresource`), and stencil is not read back. Pixel data travels under the protocol's format
+`ResolveSubresource`). A depth-stencil target is read back twice, its depth plane and its stencil
+plane (plane 1, one byte per texel, `aspect: "stencil"`), each an entry of its own; a multisampled
+stencil is not resolved. Pixel data travels under the protocol's format
 names: `formats.cpp` maps each `DXGI_FORMAT` to the `VK_FORMAT_*` spelling the UI's decoders read,
 so an identical memory layout reuses all of them; the DXGI name stays in the descriptors. A target
 larger than `maxTextureSize`, or of a format with no mapping, is reported with the reason.
@@ -556,7 +558,8 @@ Limits:
 
 ## Not done
 
-Stencil is not read back. Sampler feedback, video, the work graph and mesh shader nodes, and the
+A multisampled stencil is not read back (nor a multisampled depth, outside the measurements'
+compute resolve). Sampler feedback, video, the work graph and mesh shader nodes, and the
 raytracing state objects are recorded as commands and objects but their contents are not read
 back. Enhanced barriers (`Barrier`) are tracked for state only as far as their layouts map to
 legacy states. Bundles inherit the caller's root signature but the snapshot on a table bound

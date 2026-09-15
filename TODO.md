@@ -105,8 +105,8 @@ interpreter and re-created pipelines.
 - [x] Read back the stencil aspect of a depth-stencil image: a render target's stencil is a texture
       of its own beside its depth (through the resolve when multisampled), the frame-start contents
       take a loaded stencil apart from the depth, and the replay uploads and compares it.
-      `test/triangle --stencil` (with or without `--msaa`) exercises it. Metal and D3D12 still read
-      depth only (their own items below).
+      `test/triangle --stencil` (with or without `--msaa`) exercises it. D3D12 reads its stencil
+      plane back too (below); Metal still reads depth only (its own item).
 - [ ] Multisampled read-back on Vulkan 1.0 devices: the depth/stencil resolve needs dynamic
       rendering (core 1.3, `VK_KHR_dynamic_rendering` on 1.2), so a 1.0 device would need a
       shader-based resolve of sample zero instead.
@@ -322,6 +322,56 @@ application with injected state. Route (a) is the general one and is the prerequ
   - Editing a ray tracing stage.
   - Ray queries in the shader debugger.
 
+## What Nsight Graphics has **(Nsight)**
+
+Measured against Nsight Graphics, with the Nsight Systems and Aftermath pieces used beside it.
+Ordered by value per effort. Everything here is reachable through public APIs; what needs the
+vendor's driver is listed at the end so nobody spends time on it.
+
+- [ ] Hardware unit counters per pass and per draw (Nsight's GPU Trace and Range Profiler: SM
+      throughput, L2 hit rate, VRAM bandwidth, texture unit load). docs/PROFILING.md calls these
+      "the limiters" and says Metal cannot expose them, but Vulkan can: `VK_KHR_performance_query`
+      on AMD, Intel, Arm and Qualcomm, and NVIDIA's Nsight Perf SDK (free) on NVIDIA. The replay
+      already brackets every draw with queries (`src/replay/src/draw_stats.cpp`), so the plumbing
+      exists. GPU Bottlenecks would measure the unit directly instead of through overdraw and
+      fragments per primitive as proxies.
+- [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
+      Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
+      `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED
+      (`ID3D12DeviceRemovedExtendedData`: breadcrumbs and page-fault addresses) on D3D12, which is
+      fully public. Neither layer handles `VK_ERROR_DEVICE_LOST` / `DXGI_ERROR_DEVICE_REMOVED`
+      today; a capture ending with "the last command reached" is the deliverable.
+- [ ] CPU and GPU timeline across frames (Nsight Systems: every thread's API calls with durations,
+      where the CPU blocks in fence waits and acquire, when each submission ran on the GPU). The
+      layer records submit time and the refresh rate but not per-call CPU durations or a
+      multi-frame queue timeline. Timing the hook entry points and pairing them with the pass
+      timestamps answers docs/PROFILING.md's "is the GPU even the problem" step directly rather
+      than by inference.
+- [ ] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader).
+      `VK_KHR_pipeline_executable_properties` returns exactly that from the driver, with internal
+      representations on drivers that expose them. Not used anywhere yet; it would ground the
+      static Shader Cost model in the driver's numbers.
+- [ ] Acceleration structure viewer (the TLAS and BLAS drawn with overlap heatmaps and
+      per-instance flags). The ray tracing item above already needs the build inputs captured
+      by device address; once they are, the boxes and geometry belong in the mesh view.
+- [ ] Memory heap view over time (Nsight's resource view: allocations per heap, residency,
+      fragmentation). Inspect has memory totals; a per-heap allocation map with
+      `VK_EXT_memory_budget` pressure, and the D3D12 budget equivalent, closes it.
+- [ ] Export to C++: a frame serialized into a standalone compilable project, mainly for driver
+      bug reports. The replay engine already recreates every object, so emitting source from the
+      same walk is feasible; lower priority.
+- [ ] In-app HUD and live pause (frame time drawn over the target, the paused frame scrubbed in
+      the app itself). The served replay is close to the second half; the overlay is small work
+      through the swapchain hook on Vulkan and Present on D3D12.
+
+Out of reach without the vendor's driver, so ablation stays the honest substitute and the docs
+should say so:
+- Instruction-level shader profiling (Nsight's Shader Profiler samples the program counter to
+  rank SASS lines). No public API on any vendor exposes PC sampling.
+- Warp-state and occupancy stall reasons, for the same reason.
+
+Nsight Graphics has no shader debugger and no LLM-facing surface, both of which this project has.
+
 ## Metal
 
 The Metal capture library (`src/metal/`) reaches the Inspect and Capture panels through the same
@@ -432,8 +482,10 @@ library does not read back yet.
 - [ ] The rest of the replay-based analyses — draw overlays, mesh output, per-draw timings and
       counters (**Measure draws**), shader cost by ablation (**Measure shader**) — which
       `vkinsp_replay` does for Vulkan captures only. The same in-application route fits them.
-- [ ] Stencil read-back, and the contents of sampler feedback, video, work graph and raytracing
-      objects; enhanced barriers (`Barrier`) beyond the layouts that map to legacy states.
+- [x] Stencil read-back: plane 1 of a depth-stencil target, beside its depth (`--stencil` in
+      `test/d3d12_triangle`, the `d3d12-stencil` UI case). A multisampled stencil is not resolved.
+- [ ] The contents of sampler feedback, video, work graph and raytracing objects; enhanced
+      barriers (`Barrier`) beyond the layouts that map to legacy states.
 - [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded
       without contents (bundles inherit the caller's root signature).
 - [ ] 32-bit targets: only x64 processes are injected.
