@@ -258,7 +258,8 @@ export class CaptureData {
       case "CaptureTextureData": {
         const tex = msg.capture
           ? this.textures.find((t) => !isRenderTarget(t.info) && t.info.capture === msg.capture)
-          : this.textures.find((t) => isRenderTarget(t.info) && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment);
+          : this.textures.find((t) => isRenderTarget(t.info) && t.info.frame === (msg.frame ?? 0) && t.info.commandBuffer === msg.commandBuffer && t.info.passIndex === msg.passIndex && t.info.attachment === msg.attachment
+            && (!msg.aspect || t.info.aspect === msg.aspect));
         if (tex) {
           tex.data = msg.__binary ?? null;
           this.onTextureLoaded.emit(tex);

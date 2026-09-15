@@ -314,13 +314,19 @@ private:
     void ReleaseDevice(DeviceCapture& dc);
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
                          VkBuffer* bufferOut = nullptr);
+    // A render target's read-back: one texture per aspect (ReadBackAspects: colour, or depth and
+    // then stencil, each its own copy and texture entry).
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
                            VkImageLayout layout, bool resolveTarget = false);
-    // The capture record and the copy for one attachment (staging, resolve image); false with the
-    // failed record already listed. The copy is recorded by the caller into its command buffer.
+    static std::vector<VkImageAspectFlagBits> ReadBackAspects(VkImageView view);
+    // The capture record and the copy for one aspect of one attachment (staging, resolve image);
+    // false with the failed record already listed. The copy is recorded by the caller into its
+    // command buffer.
     bool PrepareAttachment(DeviceData* dev, uint64_t commandBufferId, uint32_t passIndex, uint32_t layerCount,
                            uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
-                           TextureCapture& tc, PendingImageCopy& p);
+                           VkImageAspectFlagBits aspect, TextureCapture& tc, PendingImageCopy& p);
+    // The frame-start state of one aspect of one subresource (_imageStates; called with _mutex held).
+    uint8_t& SubresourceState(VkImage image, const ImageInfo& img, VkImageAspectFlagBits aspect, uint32_t mip, uint32_t layer);
     // Attachments of the passes a submitted command buffer recorded before the capture began,
     // copied by a command buffer of the layer's submitted right after the application's.
     void ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, CommandRecorder* rec, uint64_t commandBufferId, uint32_t frame);
@@ -354,8 +360,8 @@ private:
     // Sampled image captures: one per image view per capture, and the bytes taken so far.
     std::unordered_map<uint64_t, uint32_t> _imageCaptureByView;
     uint64_t _imageBytes = 0;
-    // Frame-start contents: per image, per subresource (mip * layers + layer), whether the capture
-    // has read it (and taken its contents) or written it whole first.
+    // Frame-start contents: per image, per aspect and subresource (SubresourceState), whether the
+    // capture has read it (and taken its contents) or written it whole first.
     enum SubresourceState : uint8_t { kUntouched = 0, kRead = 1, kWritten = 2 };
     std::unordered_map<uint64_t, std::vector<uint8_t>> _imageStates;
 

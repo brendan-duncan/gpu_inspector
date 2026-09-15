@@ -43,6 +43,11 @@ inline uint32_t ViewCount(uint32_t mask) {
 
 inline bool IsBeginRendering(std::string_view m) { return m == "vkCmdBeginRendering" || m == "vkCmdBeginRenderingKHR"; }
 
+/** A capture texture's "aspect" ("color", "depth", "stencil") as the aspect its bytes were copied from. */
+inline VkImageAspectFlags AspectOf(std::string_view aspect) {
+    return aspect == "depth" ? VK_IMAGE_ASPECT_DEPTH_BIT : aspect == "stencil" ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
 /** A command that does GPU work of its own: what per-draw timing and counters measure. */
 inline bool IsAction(std::string_view m) { return StartsWith(m, "vkCmdDraw") || StartsWith(m, "vkCmdDispatch"); }
 

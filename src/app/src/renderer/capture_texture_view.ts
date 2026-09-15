@@ -145,7 +145,7 @@ export class CaptureTextureView {
   /** The tab's label: the pass and the attachment. */
   get label(): string {
     const info = this._target.texture.info;
-    return `Pass ${this._target.key.passIndex} ${info.aspect === "depth" ? "Depth" : `Target ${info.attachment}`}`;
+    return `Pass ${this._target.key.passIndex} ${info.aspect === "depth" ? "Depth" : info.aspect === "stencil" ? "Stencil" : `Target ${info.attachment}`}`;
   }
 
   get target(): CaptureTarget {
@@ -245,7 +245,7 @@ export class CaptureTextureView {
     this._overlayRow = null;
 
     new Div(this.root, { class: "capture-texture-head", text: `${this.host.passLabelOf(this._target.key)} — `
-      + `${info.aspect === "depth" ? "depth attachment" : `colour attachment ${info.attachment}`}${info.resolve ? " (resolve)" : ""}: `
+      + `${info.aspect === "depth" ? "depth attachment" : info.aspect === "stencil" ? "stencil attachment" : `colour attachment ${info.attachment}`}${info.resolve ? " (resolve)" : ""}: `
       + `${this.host.objectName(info.id)} ${fmt(info.format).replace(/^VK_FORMAT_/, "")} ${info.width}x${info.height}` });
 
     const split = new Div(this.root, { class: "capture-texture-split" });

@@ -338,11 +338,13 @@ static void SnapshotPassLoads(VkCommandBuffer cb, const VkRenderPassBeginInfo* i
     CaptureManager::Get().OnEndComputePass(dev, rec);
     const std::vector<VkImageView> views = PassAttachmentViews(info, fb);
     for (size_t i = 0; i < views.size() && i < rp.attachments.size(); ++i) {
-        // A depth/stencil attachment's loadOp is its depth's; stencil contents are not taken.
+        // A depth/stencil attachment's loadOp is its depth's; its stencil has a load op of its own.
         const RenderPassAttachment& a = rp.attachments[i];
-        const VkImageAspectFlags aspects = FormatAspects(a.format) & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT);
-        if (aspects)
-            CaptureManager::Get().OnAttachmentBegin(dev, rec, views[i], aspects, a.loadOp, a.initialLayout, info->renderArea, rec->pendingImageData);
+        const VkImageAspectFlags aspects = FormatAspects(a.format);
+        if (aspects & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))
+            CaptureManager::Get().OnAttachmentBegin(dev, rec, views[i], aspects & ~VK_IMAGE_ASPECT_STENCIL_BIT, a.loadOp, a.initialLayout, info->renderArea, rec->pendingImageData);
+        if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
+            CaptureManager::Get().OnAttachmentBegin(dev, rec, views[i], VK_IMAGE_ASPECT_STENCIL_BIT, a.stencilLoadOp, a.initialLayout, info->renderArea, rec->pendingImageData);
     }
 }
 
@@ -358,6 +360,7 @@ static void SnapshotRenderingLoads(VkCommandBuffer cb, const VkRenderingInfo* in
     };
     for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) begin(&info->pColorAttachments[i], VK_IMAGE_ASPECT_COLOR_BIT);
     begin(info->pDepthAttachment, VK_IMAGE_ASPECT_DEPTH_BIT);
+    begin(info->pStencilAttachment, VK_IMAGE_ASPECT_STENCIL_BIT);
 }
 
 /** Whether offset + extent covers all of an image's mip level. */
@@ -851,10 +854,22 @@ static uint32_t ViewMaskLayers(uint32_t viewMask) {
 // The store-everything copy of a render pass (see the store-op notes above the begin pre-hooks):
 // the same create info with every storeOp DONT_CARE turned into STORE, created straight through
 // the dispatch table so it stays out of the object list. VK_NULL_HANDLE when nothing to change.
+/** Turns an attachment's DONT_CARE store ops into STORE (the stencil one only where the format has stencil); whether any changed. */
+template <typename Attachment>
+static bool StoreAll(Attachment& a) {
+    bool changed = false;
+    if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) { a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; changed = true; }
+    if ((FormatAspects(a.format) & VK_IMAGE_ASPECT_STENCIL_BIT) && a.stencilStoreOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) {
+        a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        changed = true;
+    }
+    return changed;
+}
+
 static VkRenderPass StoreAllRenderPass(VkDevice device, const VkRenderPassCreateInfo* ci) {
     std::vector<VkAttachmentDescription> atts(ci->pAttachments, ci->pAttachments + ci->attachmentCount);
     bool needed = false;
-    for (auto& a : atts) if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) { a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; needed = true; }
+    for (auto& a : atts) needed |= StoreAll(a);
     DeviceData* dev = GetDeviceData(device);
     if (!needed || !dev || !dev->dispatch.CreateRenderPass) return VK_NULL_HANDLE;
     VkRenderPassCreateInfo copy = *ci;
@@ -866,7 +881,7 @@ static VkRenderPass StoreAllRenderPass(VkDevice device, const VkRenderPassCreate
 static VkRenderPass StoreAllRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* ci) {
     std::vector<VkAttachmentDescription2> atts(ci->pAttachments, ci->pAttachments + ci->attachmentCount);
     bool needed = false;
-    for (auto& a : atts) if (a.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) { a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; needed = true; }
+    for (auto& a : atts) needed |= StoreAll(a);
     DeviceData* dev = GetDeviceData(device);
     if (!needed || !dev) return VK_NULL_HANDLE;
     PFN_vkCreateRenderPass2 create = dev->dispatch.CreateRenderPass2 ? dev->dispatch.CreateRenderPass2 : dev->dispatch.CreateRenderPass2KHR;
@@ -893,7 +908,7 @@ void Hook_vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* pCre
     info.storeAll = StoreAllRenderPass(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription& a = pCreateInfo->pAttachments[i];
-        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.initialLayout});
+        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.stencilLoadOp, a.initialLayout});
     }
     for (uint32_t s = 0; s < pCreateInfo->subpassCount; ++s) {
         const VkSubpassDescription& sp = pCreateInfo->pSubpasses[s];
@@ -918,7 +933,7 @@ void Hook_vkCreateRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* pC
     info.storeAll = StoreAllRenderPass2(device, pCreateInfo);
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i) {
         const VkAttachmentDescription2& a = pCreateInfo->pAttachments[i];
-        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.initialLayout});
+        info.attachments.push_back({a.format, a.samples, a.finalLayout, a.storeOp, a.loadOp, a.stencilLoadOp, a.initialLayout});
     }
     for (uint32_t s = 0; s < pCreateInfo->subpassCount; ++s) {
         const VkSubpassDescription2& sp = pCreateInfo->pSubpasses[s];

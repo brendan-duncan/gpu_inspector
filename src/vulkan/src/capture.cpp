@@ -910,52 +910,64 @@ void CaptureManager::SnapshotImageRead(DeviceData* dev, CommandRecorder* rec, Vk
                                        uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount, VkImageLayout layout,
                                        std::vector<uint32_t>& ids) {
     if (!rec || !image || !IsCapturing() || !_options.captureImages || rec->InsidePass()) return;
-    if (!(aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) return;   // stencil is not read back
     ImageInfo img;
     if (!ResourceRegistry::Get().GetImage(image, img) || img.samples != VK_SAMPLE_COUNT_1_BIT) return;
     if (baseMip >= img.mipLevels || baseLayer >= img.arrayLayers) return;
     if (mipCount == VK_REMAINING_MIP_LEVELS || baseMip + mipCount > img.mipLevels) mipCount = img.mipLevels - baseMip;
     if (layerCount == VK_REMAINING_ARRAY_LAYERS || baseLayer + layerCount > img.arrayLayers) layerCount = img.arrayLayers - baseLayer;
-    for (uint32_t m = baseMip; m < baseMip + mipCount; ++m) {
-        {
-            std::lock_guard lock(_mutex);
-            auto& states = _imageStates[(uint64_t)(uintptr_t)image];
-            states.resize((size_t)img.mipLevels * img.arrayLayers, kUntouched);
-            bool untouched = false;
-            for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
-                uint8_t& s = states[(size_t)m * img.arrayLayers + l];
-                if (s == kUntouched) {
-                    s = kRead;
-                    untouched = true;
+    // Each aspect of the image the read names is its own texture: a depth-stencil image's depth
+    // and stencil are read, and written, apart.
+    for (VkImageAspectFlagBits one : {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT}) {
+        if (!(aspect & one) || !(FormatAspects(img.format) & one)) continue;
+        for (uint32_t m = baseMip; m < baseMip + mipCount; ++m) {
+            {
+                std::lock_guard lock(_mutex);
+                bool untouched = false;
+                for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
+                    uint8_t& s = SubresourceState(image, img, one, m, l);
+                    if (s == kUntouched) {
+                        s = kRead;
+                        untouched = true;
+                    }
                 }
+                if (!untouched) continue;
             }
-            if (!untouched) continue;
+            TextureCapture tc;
+            tc.initial = true;
+            tc.mip = m;
+            tc.baseLayer = baseLayer;
+            tc.layers = layerCount;
+            tc.aspect = one;
+            ids.push_back(QueueImageCopy(dev, rec, image, img, tc, 1, layout));
         }
-        TextureCapture tc;
-        tc.initial = true;
-        tc.mip = m;
-        tc.baseLayer = baseLayer;
-        tc.layers = layerCount;
-        tc.aspect = aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
-        ids.push_back(QueueImageCopy(dev, rec, image, img, tc, 1, layout));
     }
+}
+
+uint8_t& CaptureManager::SubresourceState(VkImage image, const ImageInfo& img, VkImageAspectFlagBits aspect, uint32_t mip, uint32_t layer) {
+    // Per image: every subresource's state for its colour or depth aspect, then the same again for
+    // its stencil aspect, which a depth-stencil image loads, clears and copies apart from its depth.
+    auto& states = _imageStates[(uint64_t)(uintptr_t)image];
+    const size_t perAspect = (size_t)img.mipLevels * img.arrayLayers;
+    states.resize(perAspect * 2, kUntouched);
+    return states[(aspect == VK_IMAGE_ASPECT_STENCIL_BIT ? perAspect : 0) + (size_t)mip * img.arrayLayers + layer];
 }
 
 void CaptureManager::NoteImageWrite(VkImage image, VkImageAspectFlags aspect, uint32_t baseMip, uint32_t mipCount, uint32_t baseLayer,
                                     uint32_t layerCount) {
-    if (!image || !IsCapturing() || !(aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) return;
+    if (!image || !IsCapturing()) return;
     ImageInfo img;
     if (!ResourceRegistry::Get().GetImage(image, img) || baseMip >= img.mipLevels || baseLayer >= img.arrayLayers) return;
     if (mipCount == VK_REMAINING_MIP_LEVELS || baseMip + mipCount > img.mipLevels) mipCount = img.mipLevels - baseMip;
     if (layerCount == VK_REMAINING_ARRAY_LAYERS || baseLayer + layerCount > img.arrayLayers) layerCount = img.arrayLayers - baseLayer;
     std::lock_guard lock(_mutex);
-    auto& states = _imageStates[(uint64_t)(uintptr_t)image];
-    states.resize((size_t)img.mipLevels * img.arrayLayers, kUntouched);
-    for (uint32_t m = baseMip; m < baseMip + mipCount; ++m)
-        for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
-            uint8_t& s = states[(size_t)m * img.arrayLayers + l];
-            if (s == kUntouched) s = kWritten;
-        }
+    for (VkImageAspectFlagBits one : {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT}) {
+        if (!(aspect & one) || !(FormatAspects(img.format) & one)) continue;
+        for (uint32_t m = baseMip; m < baseMip + mipCount; ++m)
+            for (uint32_t l = baseLayer; l < baseLayer + layerCount; ++l) {
+                uint8_t& s = SubresourceState(image, img, one, m, l);
+                if (s == kUntouched) s = kWritten;
+            }
+    }
 }
 
 void CaptureManager::OnAttachmentBegin(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageAspectFlags aspects,
@@ -1407,20 +1419,35 @@ bool CaptureManager::PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p) {
     return true;
 }
 
+std::vector<VkImageAspectFlagBits> CaptureManager::ReadBackAspects(VkImageView view) {
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    ImageViewInfo vi;
+    ImageInfo img;
+    std::vector<VkImageAspectFlagBits> out;
+    if (!reg.GetImageView(view, vi) || !reg.GetImage(vi.image, img)) return out;
+    const VkImageAspectFlags aspects = FormatAspects(img.format);
+    if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) out.push_back(VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) out.push_back(VK_IMAGE_ASPECT_STENCIL_BIT);
+    if (out.empty()) out.push_back(VK_IMAGE_ASPECT_COLOR_BIT);
+    return out;
+}
+
 void CaptureManager::CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex,
                                        VkImageView view, VkImageLayout layout, bool resolveTarget) {
-    TextureCapture tc;
-    PendingImageCopy p;
     const uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)rec->commandBuffer());
-    if (!PrepareAttachment(dev, cbId, rec->pass().passIndex, rec->pass().layerCount, attachmentIndex, view, layout, resolveTarget, tc, p)) return;
-    RecordImageCopy(dev, rec->commandBuffer(), p);
-    std::lock_guard lock(_mutex);
-    _textures.push_back(tc);
+    for (VkImageAspectFlagBits aspect : ReadBackAspects(view)) {
+        TextureCapture tc;
+        PendingImageCopy p;
+        if (!PrepareAttachment(dev, cbId, rec->pass().passIndex, rec->pass().layerCount, attachmentIndex, view, layout, resolveTarget, aspect, tc, p)) continue;
+        RecordImageCopy(dev, rec->commandBuffer(), p);
+        std::lock_guard lock(_mutex);
+        _textures.push_back(tc);
+    }
 }
 
 bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId, uint32_t passIndex, uint32_t layerCount,
                                        uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
-                                       TextureCapture& tc, PendingImageCopy& p) {
+                                       VkImageAspectFlagBits aspect, TextureCapture& tc, PendingImageCopy& p) {
     ResourceRegistry& reg = ResourceRegistry::Get();
     ImageViewInfo vi;
     ImageInfo img;
@@ -1441,8 +1468,8 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
     tc.layers = vi.range.layerCount == VK_REMAINING_ARRAY_LAYERS ? img.arrayLayers - vi.range.baseArrayLayer
                                                                   : vi.range.layerCount;
     tc.layers = std::max(1u, std::min(tc.layers, layerCount));
-    tc.aspect = FormatAspects(img.format) & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
-                                                                      : VK_IMAGE_ASPECT_COLOR_BIT;
+    tc.aspect = aspect;
+    const bool depthStencil = aspect == VK_IMAGE_ASPECT_DEPTH_BIT || aspect == VK_IMAGE_ASPECT_STENCIL_BIT;
 
     auto fail = [&](const char* why) {
         tc.failed = true;
@@ -1452,13 +1479,15 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
         return false;
     };
     if (!img.transferSrc) return fail("image lacks TRANSFER_SRC usage");
-    if (img.samples != VK_SAMPLE_COUNT_1_BIT && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !CanResolveDepth(dev))
-        return fail("multisampled depth attachment (the depth resolve needs dynamic rendering, Vulkan 1.2+)");
+    // Both aspects of a multisampled depth-stencil image resolve through the same render pass
+    // (depth_resolve.h), so stencil goes the way depth does.
+    if (img.samples != VK_SAMPLE_COUNT_1_BIT && depthStencil && !CanResolveDepth(dev))
+        return fail("multisampled depth or stencil attachment (the resolve needs dynamic rendering, Vulkan 1.2+)");
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED) return fail("unknown final layout");
 
     uint32_t bpp = FormatBytesPerTexel(img.format, tc.aspect);
     if (bpp == 0) return fail("unsupported format for readback");
-    // Depth aspect copies use the depth-only packed size (D24 -> 4 bytes, D16 -> 2, D32 -> 4).
+    // Depth aspect copies use the depth-only packed size (D24 -> 4 bytes, D16 -> 2, D32 -> 4); stencil is one byte.
     tc.size = (VkDeviceSize)tc.width * tc.height * tc.depth * tc.layers * bpp;
     if (tc.size > _options.maxTextureSize) return fail("exceeds max texture size");
 
@@ -1476,9 +1505,8 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
     p = PendingImageCopy{};
     p.image = vi.image;
     p.layout = layout;
-    p.range = {tc.aspect, tc.mip, 1, vi.range.baseArrayLayer, tc.layers};
-    if (tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && (FormatAspects(img.format) & VK_IMAGE_ASPECT_STENCIL_BIT))
-        p.range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;  // barriers must cover both aspects
+    // The barriers cover both aspects of a depth-stencil image; the copy takes one.
+    p.range = {depthStencil ? FormatAspects(img.format) : tc.aspect, tc.mip, 1, vi.range.baseArrayLayer, tc.layers};
     p.copyAspect = tc.aspect;
     p.extent = {tc.width, tc.height, tc.depth};
     p.staging = staging;
@@ -1486,7 +1514,7 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
     p.size = tc.size;
     p.resolve = resolve;
     p.format = img.format;
-    if (resolve && tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && !PrepareDepthResolve(dev, p)) return fail("depth resolve views could not be created");
+    if (resolve && depthStencil && !PrepareDepthResolve(dev, p)) return fail("depth resolve views could not be created");
     return true;
 }
 
@@ -1503,11 +1531,13 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
             VkImageLayout layout = recordedLayout;
             VkImageLayout tracked = VK_IMAGE_LAYOUT_UNDEFINED;
             if (ResourceRegistry::Get().GetImageView(view, vi) && LayoutTracker::Get().GetLayout(vi.image, tracked) && tracked != VK_IMAGE_LAYOUT_UNDEFINED) layout = tracked;
-            TextureCapture tc;
-            PendingImageCopy p;
-            if (PrepareAttachment(dev, commandBufferId, pass.passIndex, pass.layerCount, i, view, layout, resolveTarget, tc, p)) {
-                tc.frame = frame;
-                copies.emplace_back(tc, p);
+            for (VkImageAspectFlagBits aspect : ReadBackAspects(view)) {
+                TextureCapture tc;
+                PendingImageCopy p;
+                if (PrepareAttachment(dev, commandBufferId, pass.passIndex, pass.layerCount, i, view, layout, resolveTarget, aspect, tc, p)) {
+                    tc.frame = frame;
+                    copies.emplace_back(tc, p);
+                }
             }
         };
         for (uint32_t i = 0; i < pass.attachments.size(); ++i) {
@@ -1608,7 +1638,7 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         w.Key("passIndex"); w.Uint(tc.passIndex);
         w.Key("attachment"); w.Uint(tc.attachment);
         w.Key("format"); w.Enum(ToString_VkFormat(tc.format), (int64_t)tc.format);
-        w.Key("aspect"); w.String(tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "color");
+        w.Key("aspect"); w.String(tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : tc.aspect == VK_IMAGE_ASPECT_STENCIL_BIT ? "stencil" : "color");
         w.Key("width"); w.Uint(tc.width);
         w.Key("height"); w.Uint(tc.height);
         w.Key("depth"); w.Uint(tc.depth);
@@ -1643,6 +1673,8 @@ void CaptureManager::SendTextures(DeviceData* dev) {
         h.Key("commandBuffer"); h.Uint(tc.commandBufferId);
         h.Key("passIndex"); h.Uint(tc.passIndex);
         h.Key("attachment"); h.Uint(tc.attachment);
+        // A depth-stencil attachment has an entry per aspect under the same attachment index.
+        h.Key("aspect"); h.String(tc.aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : tc.aspect == VK_IMAGE_ASPECT_STENCIL_BIT ? "stencil" : "color");
         if (tc.sampled || tc.initial) { h.Key("capture"); h.Uint(tc.captureId); }
         h.Key("size"); h.Uint(tc.size);
         h.EndObject();

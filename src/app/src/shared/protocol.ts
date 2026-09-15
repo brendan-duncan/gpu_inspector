@@ -257,7 +257,7 @@ export interface CaptureTextureInfo {
   passIndex: number;      // pass counter within that command buffer
   attachment: number;
   format: string;         // "VK_FORMAT_..."
-  aspect: "color" | "depth";
+  aspect: "color" | "depth" | "stencil";   // a depth-stencil attachment is two entries, one per aspect
   width: number;
   height: number;
   depth: number;
@@ -313,6 +313,8 @@ export interface CaptureTextureDataMessage {
   commandBuffer: number;
   passIndex: number;
   attachment: number;
+  /** Which of a depth-stencil attachment's two entries (Vulkan; libraries that read depth only send none). */
+  aspect?: "color" | "depth" | "stencil";
   /** Sampled images: the capture id (see CaptureTextureInfo.capture). */
   capture?: number;
   size: number;
