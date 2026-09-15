@@ -615,6 +615,15 @@ def d3d12_render_pass(state, log):
     return check_connected(state, log) +         expect(bool(c), "no capture tab") +         expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") +         expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws") +         expect((c.get("textures") or 0) >= 2, f"{c.get('textures')} render targets read back") +         expect((c.get("textureErrors") or 0) == 1, f"{c.get('textureErrors')} render targets failed to read back (the multisampled depth target is expected to)") +         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0) - 1, "not every readable render target's data arrived") +         expect((c.get("passTimings") or 0) >= 1, "no pass timings") +         expect("multisampled depth" in log, "the multisampled depth target's read-back was not reported")
 
 
+def d3d12_stencil(state, log):
+    # A D24S8 depth buffer: the pass's targets gain the stencil plane's read-back beside the depth's.
+    c = capture(state)
+    s = session(state)
+    return check_connected(state, log) + check_capture_basic(state, log, textures=4) + \
+        expect((c.get("textures") or 0) == 4, f"{c.get('textures')} textures (expected the colour, depth and stencil targets and the sampled texture)") + \
+        expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
+
+
 def d3d12_bundle(state, log):
     # The draw sits in a bundle recorded at start-up: only record-always from launch sees it.
     return check_connected(state, log) + check_capture_basic(state, log)
@@ -639,6 +648,7 @@ def d3d12_cases(triangle):
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
         Case("d3d12-bundle", launch + ["--args=--bundle", "--record-always", "--debug-capture"], d3d12_bundle),
+        Case("d3d12-stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], d3d12_stencil, delay_ms=16000),
         Case("d3d12-offscreen", launch + ["--args=--offscreen --compute", "--debug-capture"], d3d12_offscreen, delay_ms=14000),
         Case("d3d12-open", [f"--debug-open={saved}", "--debug-command=22"], d3d12_open, delay_ms=9000),
     ]
