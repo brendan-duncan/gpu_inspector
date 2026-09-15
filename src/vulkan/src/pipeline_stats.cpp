@@ -47,19 +47,24 @@ void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
     // feature: a Unity player enables multiview and renders almost every pass with one view.
     if (EnablesMultiview(info)) Log("pass counters: multiview is enabled; passes that render several views go uncounted");
 
-    // Two features, each wanted and each maybe already on: `pipelineStatisticsQuery` for the pass
-    // counters, `occlusionQueryPrecise` for the samples that passed the depth and stencil tests.
+    // Three features, each wanted and each maybe already on: `pipelineStatisticsQuery` for the pass
+    // counters, `occlusionQueryPrecise` for the samples that passed the depth and stencil tests, and
+    // `inheritedQueries` so both can stay active across vkCmdExecuteCommands.
     const VkPhysicalDeviceFeatures* appFeatures = nullptr;
     const VkBaseInStructure* found = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
     if (found) appFeatures = &((const VkPhysicalDeviceFeatures2*)found)->features;
     else if (info.pEnabledFeatures) appFeatures = info.pEnabledFeatures;
     const bool hasStats = appFeatures && appFeatures->pipelineStatisticsQuery;
     const bool hasOcclusion = appFeatures && appFeatures->occlusionQueryPrecise;
+    const bool hasInherited = appFeatures && appFeatures->inheritedQueries;
     const bool wantStats = supported.pipelineStatisticsQuery && !hasStats;
     const bool wantOcclusion = supported.occlusionQueryPrecise && !hasOcclusion;
+    const bool wantInherited = supported.inheritedQueries && !hasInherited;
     setup.enabled = hasStats || wantStats;
     setup.occlusion = hasOcclusion || wantOcclusion;
-    if (!wantStats && !wantOcclusion) return;   // the application already enables what is wanted
+    setup.inheritedQueries = hasInherited || wantInherited;
+    if (!setup.inheritedQueries) Log("pass counters: the device does not support inheritedQueries; passes that execute secondary command buffers go uncounted");
+    if (!wantStats && !wantOcclusion && !wantInherited) return;   // the application already enables what is wanted
 
     // An application that chains VkPhysicalDeviceFeatures2 must not also pass pEnabledFeatures,
     // so the two cases below are exclusive.
@@ -70,20 +75,24 @@ void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
             Log("pass counters: VkPhysicalDeviceFeatures2 is not at the head of the chain; skipped");
             setup.enabled = hasStats;
             setup.occlusion = hasOcclusion;
+            setup.inheritedQueries = hasInherited;
             return;
         }
         setup.features2 = *(const VkPhysicalDeviceFeatures2*)found;
         if (wantStats) setup.features2.features.pipelineStatisticsQuery = VK_TRUE;
         if (wantOcclusion) setup.features2.features.occlusionQueryPrecise = VK_TRUE;
+        if (wantInherited) setup.features2.features.inheritedQueries = VK_TRUE;
         info.pNext = &setup.features2;
     } else {
         if (info.pEnabledFeatures) setup.features = *info.pEnabledFeatures;
         if (wantStats) setup.features.pipelineStatisticsQuery = VK_TRUE;
         if (wantOcclusion) setup.features.occlusionQueryPrecise = VK_TRUE;
+        if (wantInherited) setup.features.inheritedQueries = VK_TRUE;
         info.pEnabledFeatures = &setup.features;
     }
     setup.added = true;
-    Log("pass counters: enabling%s%s", wantStats ? " pipelineStatisticsQuery" : "", wantOcclusion ? " occlusionQueryPrecise" : "");
+    Log("pass counters: enabling%s%s%s", wantStats ? " pipelineStatisticsQuery" : "", wantOcclusion ? " occlusionQueryPrecise" : "",
+        wantInherited ? " inheritedQueries" : "");
 }
 
 } // namespace vkinsp

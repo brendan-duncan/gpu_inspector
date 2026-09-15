@@ -12,6 +12,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "vk_dispatch.gen.h"
@@ -66,6 +67,22 @@ struct DeviceData {
     bool pipelineStatistics = false;
     /** occlusionQueryPrecise is enabled, so a pass can count the samples that passed its tests. */
     bool occlusionPrecise = false;
+    /**
+     * inheritedQueries is enabled: secondary command buffers are begun able to run inside the pass
+     * counters' queries (`secondaries` lists them), so a pass that executes them keeps its counters.
+     */
+    bool inheritedQueries = false;
+    std::shared_mutex secondariesMutex;
+    std::unordered_set<VkCommandBuffer> secondaries;
+    /**
+     * The application's own occlusion and pipeline statistics query pools, and whether it has begun
+     * a query of either type. Two queries of one type cannot be active in a command buffer at once,
+     * so from then on the layer's counter of that type is left out of every pass.
+     */
+    std::shared_mutex queryPoolsMutex;
+    std::unordered_map<VkQueryPool, VkQueryType> appQueryPools;
+    std::atomic<bool> appOcclusionQueries{false};
+    std::atomic<bool> appStatisticsQueries{false};
 
     // Frame boundaries (EndFrame in layer.cpp): a swapchain present ends a frame. An application
     // that never presents (OpenXR: the runtime composites) gets its frames from its own

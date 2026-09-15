@@ -6,6 +6,7 @@
 #include "descriptors.h"
 #include "format_info.h"
 #include "image_readback.h"
+#include "pipeline_stats.h"
 #include "refresh_rate.h"
 #include "shader_edit.h"
 #include "layer.h"
@@ -66,9 +67,63 @@ void PreHook_vkCreateSwapchainKHR(VkDevice& device, const VkSwapchainCreateInfoK
     if (changed) pCreateInfo = &copy;
 }
 
+// Pass counters across secondary command buffers: a pass's pipeline statistics and occlusion
+// queries are active while it runs, and vkCmdExecuteCommands inside it is only valid when each
+// secondary was begun inheriting queries of those kinds. With inheritedQueries on the device, every
+// secondary is begun so (the application's inheritance info plus the layer's query kinds); the
+// record keeps what the application passed. pInheritanceInfo is only read for a secondary, since a
+// primary's may be anything.
+static thread_local VkCommandBufferBeginInfo t_inheritingBegin;
+static thread_local VkCommandBufferInheritanceInfo t_inheritance;
+
+static const VkCommandBufferBeginInfo* InheritPassQueries(DeviceData* dev, VkCommandBuffer cb, const VkCommandBufferBeginInfo* info) {
+    if (!dev || !dev->inheritedQueries || !info) return info;
+    {
+        std::shared_lock lock(dev->secondariesMutex);
+        if (!dev->secondaries.count(cb)) return info;
+    }
+    if (!info->pInheritanceInfo) return info;
+    t_inheritance = *info->pInheritanceInfo;
+    if (dev->occlusionPrecise) {
+        t_inheritance.occlusionQueryEnable = VK_TRUE;
+        t_inheritance.queryFlags |= VK_QUERY_CONTROL_PRECISE_BIT;
+    }
+    if (dev->pipelineStatistics) t_inheritance.pipelineStatistics |= kPipelineStatistics;
+    t_inheritingBegin = *info;
+    t_inheritingBegin.pInheritanceInfo = &t_inheritance;
+    return &t_inheritingBegin;
+}
+
 void PreHook_vkBeginCommandBuffer(VkCommandBuffer& commandBuffer, const VkCommandBufferBeginInfo*& pBeginInfo) {
-    CaptureManager::Get().OnBeginCommandBuffer(GetDeviceData(commandBuffer), commandBuffer, pBeginInfo ? pBeginInfo->flags : 0);
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CaptureManager::Get().OnBeginCommandBuffer(dev, commandBuffer, pBeginInfo ? pBeginInfo->flags : 0);
     LayoutTracker::Get().OnBeginCommandBuffer(commandBuffer);
+    pBeginInfo = InheritPassQueries(dev, commandBuffer, pBeginInfo);
+}
+
+void Hook_vkAllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo, VkCommandBuffer* pCommandBuffers) {
+    DeviceData* dev = GetDeviceData(device);
+    if (!dev || !dev->inheritedQueries || !pAllocateInfo || !pCommandBuffers) return;
+    // A handle is noted or forgotten at every allocation, so one reused from a freed buffer of the
+    // other level (or a destroyed pool's) is never taken for what it was.
+    const bool secondary = pAllocateInfo->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    std::unique_lock lock(dev->secondariesMutex);
+    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; ++i) {
+        if (!pCommandBuffers[i]) continue;
+        if (secondary) dev->secondaries.insert(pCommandBuffers[i]);
+        else dev->secondaries.erase(pCommandBuffers[i]);
+    }
+}
+
+void Hook_vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator,
+                            VkQueryPool* pQueryPool) {
+    DeviceData* dev = GetDeviceData(device);
+    if (!dev || !(dev->pipelineStatistics || dev->occlusionPrecise) || !pCreateInfo || !pQueryPool || !*pQueryPool) return;
+    std::unique_lock lock(dev->queryPoolsMutex);
+    if (pCreateInfo->queryType == VK_QUERY_TYPE_OCCLUSION || pCreateInfo->queryType == VK_QUERY_TYPE_PIPELINE_STATISTICS)
+        dev->appQueryPools[*pQueryPool] = pCreateInfo->queryType;
+    else
+        dev->appQueryPools.erase(*pQueryPool);   // a handle reused from a pool of either type
 }
 
 void PreHook_vkResetCommandBuffer(VkCommandBuffer& commandBuffer, VkCommandBufferResetFlags& flags) {
@@ -87,24 +142,44 @@ void PreHook_vkCmdBindShadersEXT(VkCommandBuffer& commandBuffer, uint32_t& stage
     pShaders = ShaderEditor::Get().ResolveShaders(stageCount, pShaders, t_boundShaders);
 }
 
-// Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
-static void BeforePass(VkCommandBuffer commandBuffer, bool multiview) {
-    DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().OnBeforePass(dev, rec, multiview);
-}
-
 /**
- * Whether the pass about to begin renders several views at once. A query active across such a pass
- * writes one result per view and so needs that many consecutive query indices; those passes go
+ * What about the pass about to begin limits the counters its queries can take (see
+ * CaptureManager::OnBeforePass). `multiview`: it renders several views at once, and a query active
+ * across it writes one result per view, so needs that many consecutive query indices; those passes go
  * without counters, while the rest of an application that merely enables multiview keeps them.
+ * `secondaries`: it may execute secondary command buffers, which it can only do with its queries
+ * active when the device inherits queries. A render pass says so for its first subpass; a later
+ * subpass could too, which vkCmdNextSubpass says only once the queries have begun.
  */
-static bool MultiviewPass(const VkRenderPassBeginInfo* begin) {
+struct PassShape {
+    bool multiview = false;
+    bool secondaries = false;
+};
+
+static PassShape RenderPassShape(const VkRenderPassBeginInfo* begin, VkSubpassContents contents) {
+    PassShape shape;
+    shape.secondaries = contents != VK_SUBPASS_CONTENTS_INLINE;
     RenderPassInfo rp;
-    return begin && ResourceRegistry::Get().GetRenderPass(begin->renderPass, rp) && rp.viewLayers > 1;
+    if (begin && ResourceRegistry::Get().GetRenderPass(begin->renderPass, rp)) {
+        shape.multiview = rp.viewLayers > 1;
+        shape.secondaries |= rp.subpassColor.size() > 1;
+    }
+    return shape;
 }
 
-static bool MultiviewRendering(const VkRenderingInfo* info) {
-    return info && info->viewMask != 0;
+static PassShape RenderingShape(const VkRenderingInfo* info) {
+    PassShape shape;
+    if (!info) return shape;
+    shape.multiview = info->viewMask != 0;
+    shape.secondaries = (info->flags & (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT | VK_RENDERING_CONTENTS_INLINE_BIT_KHR)) != 0;
+    return shape;
+}
+
+// Pass profiling: the begin timestamp goes before the pass (see CaptureManager::OnBeforePass).
+static void BeforePass(VkCommandBuffer commandBuffer, PassShape shape) {
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer))
+        CaptureManager::Get().OnBeforePass(dev, rec, shape.multiview, shape.secondaries);
 }
 
 // Store ops while capturing: an attachment with storeOp DONT_CARE has undefined contents after
@@ -407,22 +482,20 @@ void PreHook_vkCmdCopyBufferToImage2KHR(VkCommandBuffer& commandBuffer, const Vk
 
 void PreHook_vkCmdBeginRenderPass(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, VkSubpassContents& contents) {
     SnapshotPassLoads(commandBuffer, pRenderPassBegin);
-    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
+    BeforePass(commandBuffer, RenderPassShape(pRenderPassBegin, contents));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
     SnapshotPassLoads(commandBuffer, pRenderPassBegin);
-    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
+    BeforePass(commandBuffer, RenderPassShape(pRenderPassBegin, pSubpassBeginInfo ? pSubpassBeginInfo->contents : VK_SUBPASS_CONTENTS_INLINE));
     pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
 }
 void PreHook_vkCmdBeginRenderPass2KHR(VkCommandBuffer& commandBuffer, const VkRenderPassBeginInfo*& pRenderPassBegin, const VkSubpassBeginInfo*& pSubpassBeginInfo) {
-    SnapshotPassLoads(commandBuffer, pRenderPassBegin);
-    BeforePass(commandBuffer, MultiviewPass(pRenderPassBegin));
-    pRenderPassBegin = StoreAllBegin(commandBuffer, pRenderPassBegin);
+    PreHook_vkCmdBeginRenderPass2(commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
 }
 void PreHook_vkCmdBeginRendering(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
     SnapshotRenderingLoads(commandBuffer, pRenderingInfo);
-    BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
+    BeforePass(commandBuffer, RenderingShape(pRenderingInfo));
     pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
 }
 // Compute pass timing: a dispatch outside a render pass opens a compute pass; barriers, event
@@ -452,35 +525,34 @@ void PreHook_vkCmdWaitEvents(VkCommandBuffer& commandBuffer, uint32_t&, const Vk
 }
 void PreHook_vkCmdWaitEvents2(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdWaitEvents2KHR(VkCommandBuffer& commandBuffer, uint32_t&, const VkEvent*&, const VkDependencyInfo*&) { EndComputePass(commandBuffer); }
-// Depth rejection: the layer's occlusion query over a pass (capture.h) cannot stay active while
-// the application opens a query of its own, and a secondary command buffer executed while it is
-// active would have to have been recorded with occlusionQueryEnable. Either way ours ends early
-// and that pass reports no count; the application's commands are left exactly as they were.
-static void DropOcclusion(VkCommandBuffer commandBuffer) {
+// The application's own queries: two queries of one type cannot be active in a command buffer at
+// once, and the layer's queries over a pass begin outside it, so they cannot be ended early inside
+// it to make way. Instead the first query the application begins of an occlusion or pipeline
+// statistics pool turns the layer's counter of that type off for the device. An application that
+// uses such queries does so from its first frames, well before a capture; only a query begun for
+// the first time inside a captured pass still overlaps the layer's.
+static void NoteAppQuery(VkCommandBuffer commandBuffer, VkQueryPool pool) {
     DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) CaptureManager::Get().DropOcclusion(dev, rec);
+    if (!dev || (dev->appOcclusionQueries.load(std::memory_order_relaxed) && dev->appStatisticsQueries.load(std::memory_order_relaxed))) return;
+    VkQueryType type;
+    {
+        std::shared_lock lock(dev->queryPoolsMutex);
+        auto it = dev->appQueryPools.find(pool);
+        if (it == dev->appQueryPools.end()) return;
+        type = it->second;
+    }
+    const bool occlusion = type == VK_QUERY_TYPE_OCCLUSION;
+    std::atomic<bool>& used = occlusion ? dev->appOcclusionQueries : dev->appStatisticsQueries;
+    if (!used.exchange(true, std::memory_order_relaxed))
+        Log("pass counters: the application begins %s queries of its own; passes go without the layer's", occlusion ? "occlusion" : "pipeline statistics");
 }
 
-static void AppQueryBegan(VkCommandBuffer commandBuffer) {
-    DropOcclusion(commandBuffer);
-    DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer)) rec->appQueryDepth++;
+void PreHook_vkCmdBeginQuery(VkCommandBuffer& commandBuffer, VkQueryPool& queryPool, uint32_t&, VkQueryControlFlags&) { NoteAppQuery(commandBuffer, queryPool); }
+void PreHook_vkCmdBeginQueryIndexedEXT(VkCommandBuffer& commandBuffer, VkQueryPool& queryPool, uint32_t&, VkQueryControlFlags&, uint32_t&) {
+    NoteAppQuery(commandBuffer, queryPool);
 }
 
-static void AppQueryEnded(VkCommandBuffer commandBuffer) {
-    DeviceData* dev = GetDeviceData(commandBuffer);
-    if (CommandRecorder* rec = dev->RecorderFor(commandBuffer); rec && rec->appQueryDepth) rec->appQueryDepth--;
-}
-
-void PreHook_vkCmdBeginQuery(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, VkQueryControlFlags&) { AppQueryBegan(commandBuffer); }
-void PreHook_vkCmdBeginQueryIndexedEXT(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, VkQueryControlFlags&, uint32_t&) { AppQueryBegan(commandBuffer); }
-void PreHook_vkCmdEndQuery(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&) { AppQueryEnded(commandBuffer); }
-void PreHook_vkCmdEndQueryIndexedEXT(VkCommandBuffer& commandBuffer, VkQueryPool&, uint32_t&, uint32_t&) { AppQueryEnded(commandBuffer); }
-
-void PreHook_vkCmdExecuteCommands(VkCommandBuffer& commandBuffer, uint32_t&, const VkCommandBuffer*&) {
-    EndComputePass(commandBuffer);
-    DropOcclusion(commandBuffer);
-}
+void PreHook_vkCmdExecuteCommands(VkCommandBuffer& commandBuffer, uint32_t&, const VkCommandBuffer*&) { EndComputePass(commandBuffer); }
 void PreHook_vkEndCommandBuffer(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdBeginDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer, const VkDebugUtilsLabelEXT*&) { EndComputePass(commandBuffer); }
 void PreHook_vkCmdEndDebugUtilsLabelEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
@@ -488,9 +560,7 @@ void PreHook_vkCmdDebugMarkerBeginEXT(VkCommandBuffer& commandBuffer, const VkDe
 void PreHook_vkCmdDebugMarkerEndEXT(VkCommandBuffer& commandBuffer) { EndComputePass(commandBuffer); }
 
 void PreHook_vkCmdBeginRenderingKHR(VkCommandBuffer& commandBuffer, const VkRenderingInfo*& pRenderingInfo) {
-    SnapshotRenderingLoads(commandBuffer, pRenderingInfo);
-    BeforePass(commandBuffer, MultiviewRendering(pRenderingInfo));
-    pRenderingInfo = StoreAllRendering(commandBuffer, pRenderingInfo);
+    PreHook_vkCmdBeginRendering(commandBuffer, pRenderingInfo);
 }
 
 // CPU submit time: the wall-clock time the application spends inside vkQueueSubmit*, accumulated
@@ -1243,6 +1313,10 @@ void Hook_vkFreeCommandBuffers(VkDevice device, VkCommandPool commandPool, uint3
     for (uint32_t i = 0; pCommandBuffers && i < commandBufferCount; ++i) {
         CaptureManager::Get().OnFreeCommandBuffer(dev, pCommandBuffers[i]);
         LayoutTracker::Get().OnFreeCommandBuffer(pCommandBuffers[i]);
+    }
+    if (dev && dev->inheritedQueries && pCommandBuffers) {
+        std::unique_lock lock(dev->secondariesMutex);
+        for (uint32_t i = 0; i < commandBufferCount; ++i) dev->secondaries.erase(pCommandBuffers[i]);
     }
 }
 

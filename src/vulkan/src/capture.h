@@ -172,14 +172,9 @@ public:
 
     // Render pass boundaries (recording time): note attachments, and at end inject readback copies.
     // OnBeforePass runs before the begin command (pre-hook): it resets a query pair and writes the
-    // pass's begin timestamp, which must happen outside the render pass.
-    void OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview = false);
-    /**
-     * Ends the pass's occlusion query early and throws its result away: the application is about to
-     * begin a query of its own, or to execute secondary command buffers, neither of which is valid
-     * while ours is active. The pass keeps its timing and its other counters.
-     */
-    void DropOcclusion(DeviceData* dev, CommandRecorder* rec);
+    // pass's begin timestamp, which must happen outside the render pass. `multiview` and
+    // `secondaries` describe the pass (PassShape in hooks.cpp).
+    void OnBeforePass(DeviceData* dev, CommandRecorder* rec, bool multiview = false, bool secondaries = false);
     void OnBeginRenderPass(DeviceData* dev, CommandRecorder* rec, const VkRenderPassBeginInfo* info);
     void OnBeginRendering(DeviceData* dev, CommandRecorder* rec, const VkRenderingInfo* info);
     void OnEndPass(DeviceData* dev, CommandRecorder* rec);
@@ -350,8 +345,6 @@ private:
     std::mutex _devicesMutex;
     std::unordered_map<VkDevice, std::unique_ptr<DeviceCapture>> _devices;
     VkDevice _homeDevice = VK_NULL_HANDLE;
-    /** Passes whose occlusion query had to end early (an application query, or secondaries). */
-    std::atomic<uint32_t> _occlusionDropped{0};
     std::vector<PassTiming> _passTimings;
     uint64_t _commandTotal = 0;
 };

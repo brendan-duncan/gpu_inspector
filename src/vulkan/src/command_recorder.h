@@ -141,6 +141,7 @@ public:
         _pendingImages.clear();
         pendingImageData.clear();
         pendingBufferData.clear();
+        pendingQuery = pendingStatsQuery = pendingOcclusionQuery = UINT32_MAX;
     }
 
     // True while transfer commands cannot be recorded: inside a render pass, or in a secondary
@@ -154,8 +155,6 @@ public:
     uint32_t pendingStatsQuery = UINT32_MAX;
     /** The pass's occlusion query while it is active (capture.h), UINT32_MAX once ended. */
     uint32_t pendingOcclusionQuery = UINT32_MAX;
-    /** Queries the application has open in this buffer: ours must not nest inside one. */
-    uint32_t appQueryDepth = 0;
     /**
      * Captures a pre-call hook took for the command about to be recorded, attached to it by the
      * post-call hook once it is: frame-start image contents ("imageData") and the buffer ranges a

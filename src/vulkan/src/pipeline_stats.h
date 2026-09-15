@@ -49,12 +49,19 @@ struct PipelineStatisticsSetup {
      * that passed its depth and stencil tests rather than answering "any" (`fragmentsPassed`).
      */
     bool occlusion = false;
+    /**
+     * The device will have inheritedQueries, so a pass's queries can stay active across
+     * vkCmdExecuteCommands: an engine that records its draws into secondary command buffers
+     * (Unity) keeps its counters.
+     */
+    bool inheritedQueries = false;
     bool added = false;     // the layer changed the create info
 };
 
 /**
- * Enables `pipelineStatisticsQuery` and `occlusionQueryPrecise` on a device being created, or notes
- * that the application enables them itself. `info` is the layer's copy of its create info.
+ * Enables `pipelineStatisticsQuery`, `occlusionQueryPrecise` and `inheritedQueries` on a device being
+ * created, or notes that the application enables them itself. `info` is the layer's copy of its
+ * create info.
  */
 void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
                             VkDeviceCreateInfo& info, PipelineStatisticsSetup& setup);

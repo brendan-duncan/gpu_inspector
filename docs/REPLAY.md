@@ -346,9 +346,10 @@ action issued between a pair of timestamps and inside a pipeline statistics quer
   invocations — per draw, indirect arguments included, which nothing in a capture itself reports.
   They need the `pipelineStatisticsQuery` feature, which the replay adds to the device it creates.
 - **Samples passed** comes from a precise occlusion query around each draw, which is how a pass that
-  executes secondary command buffers gets a depth rejection rate at all: the layer's own query
-  cannot span `vkCmdExecuteCommands`, the replay's sits inside the secondary. `pass_metrics.ts` sums
-  a pass's draws and uses that where the capture's own counter is missing.
+  executes secondary command buffers gets a depth rejection rate on a device without
+  `inheritedQueries`: there the layer's own query cannot span `vkCmdExecuteCommands`, while the
+  replay's sits inside the secondary. `pass_metrics.ts` sums a pass's draws and uses that where the
+  capture's own counter is missing.
 - **The times are not what a draw costs alone.** The GPU pipelines consecutive draws, so their
   spans overlap and add up to more than the pass takes. What they are good for is the share of a
   pass a draw accounts for.
