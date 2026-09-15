@@ -17,6 +17,7 @@ import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_ob
 import type { ArgObject, ArgValue, CaptureCommand, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 import type { CaptureData } from "./capture_data.js";
 import { drawSumsByPass, passSumKey } from "./draw_stats.js";
+import { LIMITER_ADVICE, hwCountersByPass, passLimiter, type PassLimiter } from "./hw_counters.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
 export const HEALTHY_OVERDRAW = 1.2;
@@ -81,6 +82,12 @@ export interface PassMetrics {
   /** Which stage the pass is limited by, and why that was concluded. */
   bound: Bound | null;
   boundReason: string;
+  /**
+   * Which hardware unit the pass saturates, from the GPU's own counters (renderer/hw_counters.ts),
+   * when a replay has read them. `bound` infers a stage from overdraw and triangle size; this is
+   * measured, and names the unit rather than the stage.
+   */
+  limiter: PassLimiter | null;
 }
 
 export interface FrameMetrics {
@@ -250,6 +257,19 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
     decideBound(p);
   }
 
+  // What the GPU's own counters say each render pass saturates, where a replay has read them
+  // (renderer/hw_counters.ts). This is measured rather than inferred, so it stands beside `bound`
+  // rather than replacing it: `bound` names a stage, this names the unit. Render passes only, since
+  // a compute pass shares its neighbour's key and no counter range wraps one.
+  if (data.hwCounters) {
+    const byPass = hwCountersByPass(data.hwCounters);
+    for (const p of passes) {
+      if (p.compute) continue;
+      const range = byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`);
+      if (range) p.limiter = passLimiter(data.hwCounters, range);
+    }
+  }
+
   // Depth rejection from the replay's per-draw occlusion queries, for a pass whose own query the
   // layer could not run: a query spans vkCmdExecuteCommands only on a device with inheritedQueries,
   // so elsewhere a pass that records its draws into secondary command buffers goes unmeasured (as
@@ -338,7 +358,7 @@ function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: num
     timing: null, durationMs: null, vertexMs: null, fragmentMs: null,
     overdraw: null, overdrawSource: null, measuredOverdraw: null, fragmentsPerPrimitive: null, depthRejectRate: null,
     depthRejectSource: null,
-    nsPerVertex: null, nsPerFragment: null, cycleShare: null, bound: null, boundReason: "",
+    nsPerVertex: null, nsPerFragment: null, cycleShare: null, bound: null, boundReason: "", limiter: null,
   };
 }
 
@@ -449,6 +469,20 @@ export function passAdvice(p: PassMetrics): PassAdvice[] {
       severity: "medium",
       title: "Most of the pass is spent writing the render target",
       body: "Fewer or smaller attachments, or a store action of DontCare on the ones nothing reads afterwards. On a tile-based GPU a target that is only read by the pass that follows never has to reach memory at all.",
+    });
+  }
+  // Measured, so it outranks the inferences above: the GPU's counters name the unit at its limit
+  // rather than guessing a stage from overdraw and triangle size.
+  if (p.limiter && p.limiter.kind !== "unsaturated") {
+    const l = p.limiter;
+    out.unshift({
+      severity: l.saturated ? "high" : "low",
+      title: l.saturated
+        ? `${l.label[0].toUpperCase()}${l.label.slice(1)} is at ${l.percent.toFixed(0)}% of peak`
+        : l.kind === "occupancy"
+          ? `Only ${l.percent.toFixed(0)}% of the GPU's warps were active`
+          : `${l.label[0].toUpperCase()}${l.label.slice(1)} is the busiest unit, at ${l.percent.toFixed(0)}% of peak`,
+      body: LIMITER_ADVICE[l.kind],
     });
   }
   return out;

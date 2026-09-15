@@ -14,7 +14,7 @@ import {
   OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
 } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
-import { counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
+import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -121,6 +121,11 @@ function passMeasurements(c: Capture, p: PassMetrics, i: number, gpuMs: number):
     nsPerVertex: round(p.nsPerVertex), nsPerFragment: round(p.nsPerFragment),
     cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : undefined,
     bound: p.bound ?? undefined, boundReason: p.boundReason || undefined,
+    // Measured by the GPU's own counters, where a replay read them: names the saturated unit
+    // rather than inferring a stage (get_hw_counters collects them).
+    limiter: p.limiter && p.limiter.kind !== "unsaturated"
+      ? { verdict: LIMITER_LABEL[p.limiter.kind], unit: p.limiter.label, percentOfPeak: round(p.limiter.percent), saturated: p.limiter.saturated, counter: p.limiter.counter }
+      : undefined,
     problems: problems.length ? problems : undefined,
   };
 }

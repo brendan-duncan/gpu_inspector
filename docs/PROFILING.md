@@ -202,6 +202,20 @@ and per draw) or `VK_KHR_performance_query` (per draw), and GPU performance-coun
 Use the pass timings and the pipeline-statistics counters to find the slow pass and its symptom,
 then the hardware counters to name the unit it is bound on.
 
+Once they are read, each pass's **Verdict** in GPU Bottlenecks becomes one of these, measured:
+
+| Verdict | What it means | First thing to try |
+|---|---|---|
+| Shader bound | The shader core is at or near its sustainable rate | Cut work per invocation |
+| Bandwidth bound | Memory cannot feed the pass fast enough | Smaller or better compressed data |
+| Cache bound | Cache traffic, not arithmetic, is the limit | Sampling that stays local; mips |
+| Latency bound | No unit is busy and few warps are in flight | Dependency chains, register pressure, or too little work |
+| Nothing saturated | Nothing measured is near its limit | The pass is too small to fill the GPU; merge it |
+
+A frame rendering at a modest resolution on a fast GPU comes out mostly latency bound, which is the
+honest answer: the passes are not big enough to saturate anything, and merging or removing them
+beats optimising their shaders.
+
 ## What cannot be measured here
 
 On **Metal**, GPU Inspector reads what Metal exposes publicly, and three families of counter that

@@ -15,7 +15,7 @@ const load = async (entry, name) => {
   buildSync({ entryPoints: [join(here, "..", "src", entry)], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
   return import(pathToFileURL(out).href);
 };
-const { parseHwCounters, counterValue, hwCountersByPass, formatCounter, hwCountersSummary, counterLabel } = await load("renderer/hw_counters.ts", "hw_counters");
+const { parseHwCounters, counterValue, hwCountersByPass, formatCounter, hwCountersSummary, counterLabel, passLimiter, LIMITER_LABEL } = await load("renderer/hw_counters.ts", "hw_counters");
 const { encodeCaptureFile, parseCaptureFile, CAPTURE_FORMAT } = await load("renderer/capture_format.ts", "capture_format");
 
 const file = {
@@ -110,6 +110,76 @@ test("a capture file without counters reads back as none", () => {
   const manifest = { format: CAPTURE_FORMAT, version: 1, frame: 0, frames: 1, api: "vulkan", objects: [], commands: [], textures: [], buffers: [], passTimings: [] };
   const round = parseCaptureFile(encodeCaptureFile(manifest, []));
   assert.equal(round.hwCounters, null);
+});
+
+// The verdict the counters give: which unit a pass saturates, measured, rather than which stage it
+// is inferred to wait on (pass_metrics.ts reads this into PassMetrics.limiter).
+const limiterFile = (values) => parseHwCounters(JSON.stringify({
+  format: "gpu-inspector-hw-counters", version: 1, device: "d", backend: "nvperf", chip: "AD103", rounds: 1,
+  counters: [
+    { name: "sm__throughput.avg.pct_of_peak_sustained_elapsed", description: "", category: "sm", unit: "percent" },
+    { name: "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed", description: "", category: "dram", unit: "percent" },
+    { name: "lts__throughput.avg.pct_of_peak_sustained_elapsed", description: "", category: "lts", unit: "percent" },
+    { name: "sm__warps_active.avg.pct_of_peak_sustained_active", description: "", category: "sm", unit: "percent" },
+  ],
+  passes: [{ command: 1, frame: 0, commandBuffer: 1, passIndex: 0, values }],
+  draws: [], available: [], notes: [], problems: [],
+}));
+
+test("a unit at its limit is named as the bottleneck", () => {
+  const f = limiterFile([78, 10, 12, 60]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "shader");
+  assert.equal(l.saturated, true);
+  assert.equal(Math.round(l.percent), 78);
+  assert.equal(LIMITER_LABEL[l.kind], "Shader bound");
+});
+
+test("bandwidth is named when it is the unit at the limit, not the shader core", () => {
+  // The case the inferred stage verdict cannot see: little shader work, memory saturated.
+  const f = limiterFile([8, 82, 20, 55]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "memory");
+  assert.equal(l.saturated, true);
+  assert.equal(LIMITER_LABEL[l.kind], "Bandwidth bound");
+});
+
+test("the busiest unit is named even when nothing is saturated", () => {
+  const f = limiterFile([12, 9, 41, 70]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "cache");
+  assert.equal(l.saturated, false, "busy is not the same as at its limit");
+});
+
+test("a busy unit outranks low occupancy, since it is the thing to act on", () => {
+  // Shader core doing real work and few warps in flight: the busy unit is the useful answer.
+  const f = limiterFile([45, 10, 12, 20]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "shader");
+  assert.equal(Math.round(l.percent), 45);
+});
+
+test("low occupancy with nothing busy reads as waiting, not working", () => {
+  const f = limiterFile([9, 6, 7, 11]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "occupancy");
+  assert.equal(LIMITER_LABEL[l.kind], "Latency bound");
+});
+
+test("a pass with healthy occupancy and no busy unit saturates nothing", () => {
+  const f = limiterFile([10, 8, 9, 75]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.kind, "unsaturated");
+});
+
+test("counters that are not percentages of peak give no verdict", () => {
+  const raw = parseHwCounters(JSON.stringify({
+    format: "gpu-inspector-hw-counters", version: 1, device: "d", backend: "khr", chip: "", rounds: 1,
+    counters: [{ name: "dram__bytes.sum", description: "", category: "dram", unit: "bytes" }],
+    passes: [{ command: 1, frame: 0, commandBuffer: 1, passIndex: 0, values: [123456] }],
+    draws: [], available: [], notes: [], problems: [],
+  }));
+  assert.equal(passLimiter(raw, raw.passes[0]), null, "a raw total says how much, not how close to the limit");
 });
 
 test("non-counter JSON is rejected", () => {

@@ -933,4 +933,6 @@ button.btn-menu { display: inline-flex; align-items: center; gap: 5px; }
 .bottleneck-tag-vertex { background: #4a8db8; color: var(--fg-on-accent); }
 .bottleneck-tag-fragment { background: #c08040; color: #000; }
 .bottleneck-tag-target { background: var(--accent-warning); color: #000; }
+/* A verdict measured from the GPU's own hardware counters, rather than inferred from a stage split. */
+.bottleneck-tag-limiter { background: var(--accent-primary); color: var(--fg-on-accent); }
 .bottleneck-tag-balanced { background: var(--bg-hover); color: var(--fg-primary); }

@@ -93,6 +93,11 @@ Each number is shown with what normally causes it. The counters come from a pipe
 query on Vulkan and from Metal's counter sets on macOS; which of them are available depends on the
 API and the GPU.
 
+Once the hardware counters below have been read, the **Verdict** column shows what they measured
+instead of what the rest of the report infers: the unit at its limit rather than a stage deduced
+from overdraw and triangle size. On Vulkan this is usually the only verdict available at all, since
+the vertex and fragment spans a stage verdict needs are Metal's.
+
 **Hardware counters** at the foot of the report answer the question the rest of it can only infer:
 which unit inside the shader core a pass actually saturates — shader throughput, memory bandwidth,
 cache, occupancy, the ALU and FMA pipes. **Measure hardware counters** replays a Vulkan capture on
