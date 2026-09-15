@@ -34,6 +34,8 @@ export class Capture {
   private _labels: string[] | null = null;
   private _validationCommands: Map<string, number> | null = null;
   private _reflections = new Map<string, ShaderReflection | null>();
+  /** Hardware counters from a replay (`vkinsp_replay --counters`), cached for the open capture. */
+  hwCounters: import("../renderer/hw_counters.js").HwCounters | null = null;
 
   constructor(readonly id: string, readonly path: string, readonly mtimeMs: number, bytes: Uint8Array) {
     const capture = parseCaptureFile(bytes);

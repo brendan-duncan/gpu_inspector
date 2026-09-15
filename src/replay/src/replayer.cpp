@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "format_info.h"
+#include "hw_counters.h"
 #include "util.h"
 
 #ifdef _WIN32
@@ -100,6 +101,19 @@ bool Replayer::CreateInstance() {
     if (hasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     // VK_KHR_swapchain on the device (for PRESENT_SRC_KHR layouts) requires the surface extension.
     if (hasExtension(VK_KHR_SURFACE_EXTENSION_NAME)) extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+    // Hardware counters through NVIDIA's Nsight Perf SDK need extensions on the instance; ask for them
+    // when the SDK is present and the analysis (or a served replay) may want them (hw_counters.cpp).
+    if (_options.counters.enabled || _options.allFeatures) {
+        if (nvperf::Load(_nvperfNote)) {
+            uint32_t version = VK_API_VERSION_1_0;
+            if (_fns.EnumerateInstanceVersion) _fns.EnumerateInstanceVersion(&version);
+            std::vector<const char*> perf;
+            nvperf::InstanceExtensions(version, perf);
+            for (const char* name : perf)
+                if (hasExtension(name) && std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return !std::strcmp(e, name); }))
+                    extensions.push_back(name);
+        }
+    }
 
     std::vector<const char*> layers;
     if (_options.validation) {
@@ -307,6 +321,47 @@ bool Replayer::CreateDevice() {
         }
     }
 
+    // Hardware counters: NVIDIA's Nsight Perf SDK needs its device extensions; the portable path
+    // needs VK_KHR_performance_query with its feature (hw_counters.cpp). Either only when asked.
+    VkPhysicalDevicePerformanceQueryFeaturesKHR perfFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR};
+    const bool wantCounters = _options.counters.enabled || _options.allFeatures;
+    if (wantCounters) {
+        if (nvperf::Load(_nvperfNote)) {
+            std::vector<const char*> perf;
+            nvperf::DeviceExtensions(_instance, _physical, _fns.GetInstanceProcAddr, perf);
+            bool all = true;
+            for (const char* name : perf) {
+                if (!hasExtension(name)) { all = false; continue; }
+                if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return !std::strcmp(e, name); })) extensions.push_back(name);
+            }
+            _nvperfReady = all;   // an NVIDIA device with every extension the SDK asked for
+            if (!perf.empty() && !all) _nvperfNote = "this device is missing an extension the Nsight Perf SDK needs";
+        }
+        // The portable path, when the SDK is not the one (a non-NVIDIA GPU, or it did not load).
+        if (!_nvperfReady && hasExtension(VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME) && _fns.GetPhysicalDeviceFeatures2) {
+            VkPhysicalDevicePerformanceQueryFeaturesKHR supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            query.pNext = &supported;
+            _fns.GetPhysicalDeviceFeatures2(_physical, &query);
+            if (supported.performanceCounterQueryPools) {
+                extensions.push_back(VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME);
+                VkPhysicalDevicePerformanceQueryFeaturesKHR* existing = nullptr;
+                for (auto* s = (VkBaseOutStructure*)const_cast<void*>(info.pNext); s; s = s->pNext)
+                    if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR) existing = (VkPhysicalDevicePerformanceQueryFeaturesKHR*)s;
+                if (existing) {
+                    existing->performanceCounterQueryPools = VK_TRUE;
+                } else {
+                    perfFeatures.performanceCounterQueryPools = VK_TRUE;
+                    perfFeatures.pNext = const_cast<void*>(info.pNext);
+                    info.pNext = &perfFeatures;
+                }
+                _perfQueryAvailable = true;
+            }
+        }
+    }
+    info.enabledExtensionCount = (uint32_t)extensions.size();
+    info.ppEnabledExtensionNames = extensions.data();
+
     VkResult r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     if (r != VK_SUCCESS && (info.pNext || info.pEnabledFeatures)) {
         Problem("vkCreateDevice with the captured features failed (" + std::to_string(r) + "); retrying without them");
@@ -314,6 +369,7 @@ bool Replayer::CreateDevice() {
         info.pEnabledFeatures = nullptr;
         // Nothing that needed a feature can be used now.
         _drawCountersAvailable = _drawSamplesAvailable = _wireframeAvailable = _xfbAvailable = false;
+        _nvperfReady = _perfQueryAvailable = false;
         r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     }
     _arena.Reset();
@@ -1638,7 +1694,11 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 // (a Unity player records every one) has them measured here rather than above.
                 const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
                 const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, commandBuffer, passIndex) : -1;
+                // Hardware counters: a draw's range, here too (a Unity player records every draw in a secondary).
+                const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
+                const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, commandBuffer, passIndex) : -1;
                 IssueCommand(fn, c, *args, cb);
+                if (countDraw) EndCounterDraw(cb, counterRange);
                 if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
                 if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
                 else if (StartsWith(m, "vkCmdEndQuery") && _appQueryDepth) --_appQueryDepth;
@@ -1823,6 +1883,9 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                     if (_options.overdraw || overlay) PrepareOverdraw(cb, pass);
                     if (_options.history.enabled) PrepareHistory(cb, pass, histories);
                 }
+                // Hardware counters: the pass's range wraps its draws (hw_counters.cpp); pushed before
+                // the pass begins so it stays outside the render pass instance.
+                if (_options.counters.enabled && _hw) BeginCounterPass(cb, pass);
                 _fns.CmdBeginRendering(cb, &info);
                 _report->commandsRecorded++;
             }
@@ -1840,12 +1903,19 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             continue;
         }
         NoteStreamCommand(stream, m, *args, i);
+        // Hardware counters: this render pass's range is pushed before its begin command runs, so it
+        // stays outside the render pass instance (hw_counters.cpp).
+        if (_options.counters.enabled && _hw && IsBeginRenderPass(m) && pass.active) BeginCounterPass(cb, pass);
         if (_options.ablation.enabled && IsAction(m) && _ctx.unresolved == unresolvedBefore && ArgsResolve(m, *args))
             IssueAblation(cb, i, m, *args, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX, stream);
         // Per-draw timing and counters: the action is issued between the queries (draw_stats.cpp).
         const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
         const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
+        // Hardware counters: each draw's range, nested inside its pass's (hw_counters.cpp).
+        const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
+        const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
         IssueCommand(fn, c, *args, cb);
+        if (countDraw) EndCounterDraw(cb, counterRange);
         if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
         // The capture's own queries: a statistics query of ours must not begin inside one.
         if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
@@ -1861,6 +1931,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         _report->commandsRecorded++;
 
         if (IsEndPass(m) && pass.active) {
+            // Hardware counters: the pass's range closes after its end command, outside the render pass.
+            if (_options.counters.enabled && _hw) EndCounterPass(cb);
             if (_options.compareTargets) InjectReadbacks(cb, pass, readbacks);
             // Before the overdraw, which draws into the copy of the pass's starting depth the overlays copy from.
             if (_options.overlay.enabled && pass.extent.width) RecordOverlay(cb, group, pass, i);
@@ -1886,6 +1958,8 @@ void Replayer::ReplayCommands() {
         if (!args) continue;
         VkQueue queue = (VkQueue)(uintptr_t)Handle(IdOf(args->Get("queue")));
         if (!queue) queue = _queue;
+        // Hardware counters: every submission goes to the profiler's queue, the one its session is on.
+        if (_options.counters.enabled && _hw) queue = _queue;
         std::vector<PendingReadback> readbacks;
         std::vector<PendingOverdraw> overdraws;
         std::vector<PendingHistory> histories;
@@ -1924,6 +1998,8 @@ void Replayer::ReplayCommands() {
         }
         // One submission for the call's command buffers, without the application's semaphores and fence.
         VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        // Hardware counters, KHR path: the counter pass index for this round is chained in (hw_counters.cpp).
+        info.pNext = _submitNext;
         info.commandBufferCount = (uint32_t)cbs.size();
         info.pCommandBuffers = cbs.data();
         VkResult r = _fns.QueueSubmit(queue, 1, &info, VK_NULL_HANDLE);
@@ -2000,6 +2076,35 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
 
     UploadImageContents();
     TransitionToInitialLayouts();
+
+    // Hardware counters are their own analysis: the frame is replayed once per collection pass the
+    // counters need, and nothing else runs (hw_counters.cpp).
+    if (options.counters.enabled) {
+        _options.compareTargets = false;   // the counter ranges are all this replay does
+        if (PrepareCounters()) {
+            if (options.counters.list) {
+                ListCounters();
+            } else {
+                for (uint32_t round = 0; round < 4096; ++round) {
+                    if (round > 0) {
+                        ResetFrameState();
+                        UploadImageContents();
+                        TransitionToInitialLayouts();
+                    }
+                    _hwRound = round;
+                    if (!BeginCounterRound()) break;
+                    ReplayCommands();
+                    if (!EndCounterRound()) break;
+                }
+                CompleteCounters();
+            }
+        }
+        DestroyCounters();
+        for (auto& p : _ctx.problems) report.problems.push_back(p);
+        _ctx.problems.clear();
+        return;
+    }
+
     if (options.drawStats) PrepareDrawStats();
     const bool ablating = options.ablation.enabled && PrepareAblation();
     ReplayCommands();

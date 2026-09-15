@@ -22,6 +22,11 @@ Files that contain adapted code carry a header comment naming their origin.
 - License: Apache-2.0 OR MIT
 - Used for: code generation of the Vulkan dispatch tables and serializers from `vk.xml`.
 
+## NVIDIA Nsight Perf SDK
+- Source: https://developer.nvidia.com/nsight-perf-sdk (the redistributable headers under `third_party/nvperf`, the same set RenderDoc ships)
+- License: the header-only utility library (`NvPerfUtility/include`) is Apache-2.0, Copyright 2021-2025 NVIDIA Corporation (`third_party/nvperf/NvPerfUtility/LICENSE`); the API headers (`third_party/nvperf/include`) are under the NVIDIA Nsight Perf SDK License (`third_party/nvperf/NVIDIA Nsight Perf SDK License (28Sept2022).pdf`), which permits redistributing this portion of the SDK.
+- Used for: reading the GPU's hardware counters per pass and per draw when replaying a Vulkan capture (`src/replay/src/nvperf.cpp`, `docs/REPLAY.md`). The SDK's host library (`nvperf_grfx_host`) is not shipped: it is loaded at run time from an Nsight install or from beside the tool, so end users obtain the binary from NVIDIA. Building without it (`-DVKINSP_NVPERF=OFF`) leaves only the portable `VK_KHR_performance_query` path.
+
 ## MinHook
 - Source: https://github.com/TsudaKageyu/minhook (the `third_party/minhook` submodule, built into `dxinsp_capture.dll`)
 - License: BSD-2-Clause, Copyright (C) 2009-2017 Tsuda Kageyu. Its Hacker Disassembler Engine (`src/hde`) is Copyright (c) 2008-2009 Vyacheslav Patkov, under the same terms.

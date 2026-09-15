@@ -11,7 +11,8 @@ debugger's pixels are rasterized from), per-draw timing and shader cost by ablat
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
               [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]
               [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]
-              [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]] [--trace]
+              [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]
+              [--counters [--counter <name>]... [--counter-data <file>]] [--list-counters [--counter-data <file>]] [--trace]
 vkinsp_replay <capture.gpucap> --check
 vkinsp_replay <capture.gpucap> --serve [--validate]
 ```
@@ -54,6 +55,12 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
   [Shader cost by ablation](#shader-cost-by-ablation)) and prints each variant's time.
 - **`--ablate-data <file>`:** with `--ablate`, writes the timings as JSON. GPU Inspector's
   **Measure shader** and the MCP server's `measure_shader_cost` run the tool this way.
+- **`--counters`:** reads the GPU's own hardware counters around every render pass and every draw
+  (see [Hardware counters](#hardware-counters)). `--counter <name>` (repeatable) picks the counters;
+  without any, a default limiter set is collected.
+- **`--list-counters`:** lists every counter the GPU offers, without replaying the frame's work.
+- **`--counter-data <file>`:** with `--counters` or `--list-counters`, writes the result as JSON.
+  GPU Inspector and the MCP server's `get_hw_counters` run the tool this way.
 - **`--serve`:** keeps the replay alive for many analyses of the capture (see
   [Kept alive](#kept-alive)). GPU Inspector and its MCP server run the tool this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
@@ -437,6 +444,50 @@ Two limits:
 
 - The times come from one GPU and driver.
 - A part the driver's optimizer had already made free measures as free.
+
+## Hardware counters
+
+`--counters` reads the GPU's own hardware counters around every render pass and every draw
+(`src/replay/src/hw_counters.cpp`). These are the counterpart of what Nsight Graphics shows, and
+what docs/PROFILING.md calls **the limiters**: which unit inside the shader core a pass saturates —
+SM (shader core) throughput, VRAM bandwidth, L1/texture and L2 cache, achieved occupancy, the ALU
+and FMA pipes — rather than the vertex/primitive/fragment tallies a pipeline statistics query gives.
+The pipeline statistics say *how much* work a pass did; these say *which unit it waited on*.
+
+The frame is replayed once per collection pass the chosen counters need: the hardware has a fixed
+number of counter slots, so a metric set that does not fit in one go is split over several replays,
+and each range's counters are summed across them. Two backends supply the counters:
+
+- **NVIDIA's Nsight Perf SDK** (`src/replay/src/nvperf.cpp`), the same one RenderDoc uses. It
+  profiles named ranges, so the replay pushes a range around each render pass and, nested inside it,
+  each draw — counters **per pass and per draw**. The SDK's redistributable headers are vendored in
+  `third_party/nvperf`; its host library (`nvperf_grfx_host`) is **not** shipped and is loaded at
+  run time from beside the tool, from `VKINSP_NVPERF_DIR`, or from an Nsight Graphics, Systems or
+  Compute install on the machine. Build it in with `-DVKINSP_NVPERF=ON` (the default when the
+  headers are present).
+- **`VK_KHR_performance_query`**, the portable path (AMD, Intel, Arm, Qualcomm). Its counters are
+  command-scoped and a pool's queries cannot nest, so this path measures **draws, not passes**.
+
+Both need the driver to allow GPU performance-counter access. On NVIDIA that is off for
+non-administrators by default: enable it in the NVIDIA Control Panel under *Developer > Manage GPU
+Performance Counters > Allow access to all users* (it persists across reboots), or run the tool as
+administrator; without it the profiler returns `ERR_NVGPUCTRPERM` and the note says so.
+
+```
+vkinsp_replay frame.gpucap --list-counters          # every counter the GPU offers
+vkinsp_replay frame.gpucap --counters               # the default limiter set, per pass and per draw
+vkinsp_replay frame.gpucap --counter sm__throughput.avg.pct_of_peak_sustained_elapsed \
+                           --counter dram__throughput.avg.pct_of_peak_sustained_elapsed
+```
+
+`--counter-data <file>` writes the result as JSON (`src/app/src/renderer/hw_counters.ts` reads it):
+the counters collected, then each pass's and each draw's value of every one. GPU Inspector and the
+MCP server's `get_hw_counters` run the tool this way, keeping the result with the open capture.
+
+**What is left:** the counters are not yet folded into the GPU Bottlenecks report's own bound-stage
+verdict, and the KHR path has no portable default counter set (it takes the first command-scoped
+counters). Metal and D3D12 captures do not replay, so this is Vulkan only; on Metal, the capture
+bar's **Xcode Trace** writes a `.gputrace` whose counter sets are Apple's equivalent.
 
 ## Where it stands
 
