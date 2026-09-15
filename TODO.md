@@ -346,14 +346,18 @@ vendor's driver is listed at the end so nobody spends time on it.
       `renderer/hw_counters.ts`): shader, bandwidth, cache or latency bound, naming the unit at its
       limit, shown in GPU Bottlenecks' Verdict column and its advice and reported by
       `get_bottlenecks`. On Vulkan it is the only per-pass verdict there has been, the inferred one
-      needing Metal's stage spans. A Unity frame at 800x600 on an RTX 4080 comes out 20 passes
-      latency bound, 5 shader, 4 cache, 5 saturating nothing.
+      needing Metal's stage spans. Checked against three real frames on an RTX 4080: a Unity frame
+      at 800x600 (20 passes latency bound, 5 shader, 4 cache, 5 saturating nothing),
+      `vkinsp_triangle --heavy --width 2560 --height 1440` (shader bound, SM at 90% of peak) and
+      `vkinsp_triangle --msaa --width 3840 --height 2160` (cache bound, L2 at 48% against SM's 13%,
+      a pass the stage verdict would have called fragment bound). The bandwidth verdict has only
+      synthetic coverage: nothing here drives DRAM above L2.
 - [ ] Hardware counters, the rest: a portable default counter set for the
       `VK_KHR_performance_query` path (it takes the first command-scoped counters now), which has
       only ever run as far as its precondition check, never against a driver that offers the
       extension; per-draw counters in the Shader Flame Graph beside the ablation costs; the
-      thresholds the verdict uses (60% saturated, 30% busy, 30% occupancy) are starting points and
-      have only been judged against one frame.
+      thresholds the verdict uses (60% saturated, 30% busy, 30% occupancy) are starting points,
+      judged against the three frames above.
 - [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
       Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
       `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED
