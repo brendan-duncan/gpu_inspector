@@ -2103,12 +2103,12 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
             if (options.counters.list) {
                 ListCounters();
             } else {
-                // The counters need a fixed number of collection passes, each one replay of the
-                // frame; one spare round covers a backend that reports completion a pass late.
-                const uint32_t rounds = std::max(1u, CounterRounds()) + 1;
+                // Replays the backend may need before it has decoded every collection pass; it stops
+                // the loop itself as soon as it has (EndCounterRound), so this is only a bound.
+                const uint32_t rounds = std::max(2u, CounterRounds());
                 // Each round re-uploads the frame's contents, so a large capture takes a while and
                 // the report is only printed at the end: say where it is on the way.
-                std::fprintf(stderr, "hardware counters: %u collection passes over the frame\n", rounds - 1);
+                std::fprintf(stderr, "hardware counters: up to %u replays of the frame\n", rounds);
                 for (uint32_t round = 0; round < rounds; ++round) {
                     if (round > 0) {
                         ResetFrameState();
@@ -2117,7 +2117,7 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
                     }
                     _hwRound = round;
                     if (!BeginCounterRound()) break;
-                    std::fprintf(stderr, "  collection pass %u of %u\n", round + 1, rounds - 1);
+                    std::fprintf(stderr, "  replay %u of at most %u\n", round + 1, rounds);
                     std::fflush(stderr);
                     ReplayCommands();
                     if (!EndCounterRound()) break;

@@ -98,6 +98,13 @@ struct HwCounterState {
 
     // NvPerf: how many collection passes the configuration needs.
     size_t passes = 1;
+    /**
+     * Replays of the frame to allow for. A nesting level's ranges are collected in their own sweep,
+     * so a configuration of `passes` needs `nesting * passes` of them, plus one to settle
+     * (RenderDoc's NVCounterEnumerator::GetMaxNumReplayPasses computes the same bound). Stopping at
+     * `passes` alone leaves a two-level run undecoded and collecting nothing.
+     */
+    size_t maxRounds = 2;
 
     // KHR
     VkQueryPool khrPool = VK_NULL_HANDLE;
@@ -157,6 +164,7 @@ bool Replayer::PrepareCounters() {
             }
             for (auto& n : notes) _report->counters.notes.push_back(n);
             hw.passes = std::max<size_t>(1, hw.session.Passes());
+            hw.maxRounds = (hw.perDraw ? 2 : 1) * hw.passes + 1;
             return true;
         }
         _report->counters.notes.push_back(note);
@@ -268,6 +276,7 @@ bool Replayer::PrepareKhrCounters(uint32_t draws) {
     }
     hw.lockHeld = true;
     hw.passes = hw.khrPasses;
+    hw.maxRounds = hw.khrPasses;   // one replay per counter pass index, exactly
     _report->counters.notes.push_back("VK_KHR_performance_query measures draws, not passes");
     return true;
 }
@@ -374,7 +383,7 @@ void Replayer::EndCounterDraw(VkCommandBuffer cb, int range) {
 }
 
 uint32_t Replayer::CounterRounds() const {
-    return _hw ? (uint32_t)_hw->passes : 0;
+    return _hw ? (uint32_t)_hw->maxRounds : 0;
 }
 
 void Replayer::CompleteCounters() {
