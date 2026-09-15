@@ -492,7 +492,28 @@ export interface LeakReportMessage {
   objects: LeakedObject[];
 }
 
+/**
+ * The GPU stopped responding (VK_ERROR_DEVICE_LOST) and the layer read its breadcrumbs to say which
+ * command it was running (src/vulkan/src/device_lost.h). Sent once per device.
+ */
+export interface DeviceLostMessage {
+  action: "DeviceLost";
+  /** The entry point that reported the loss. */
+  call: string;
+  /** Whether breadcrumbs were on; without them only `message` is meaningful. */
+  breadcrumbs: boolean;
+  /** Ordinals of the last action the GPU began and the last it finished. */
+  lastBegun?: number;
+  lastCompleted?: number;
+  /** The command it was running when it stopped, empty when it had finished everything it began. */
+  hungCommand?: string;
+  lastCompletedCommand?: string;
+  /** The diagnosis in words, ready to show. */
+  message: string;
+}
+
 export type LayerMessage =
+  | DeviceLostMessage
   | SnapshotMessage
   | ValidationMessage
   | ValidationCountMessage
@@ -627,6 +648,8 @@ export interface LaunchConfig {
   port: number;
   log: boolean;
   recordAlways: boolean;
+  /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running (device_lost.h). */
+  breadcrumbs?: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
   /** Directories holding the application's debug files (";"-separated): the unstripped libraries, for stack

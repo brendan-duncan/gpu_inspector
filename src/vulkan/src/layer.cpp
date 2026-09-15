@@ -13,6 +13,7 @@
 #include "tracker.h"
 #include "transport.h"
 #include "depth_resolve.h"
+#include "device_lost.h"
 #include "pipeline_stats.h"
 #include "refresh_rate.h"
 #include "stacktrace.h"
@@ -511,17 +512,21 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // Pipeline statistics for the per-pass counters (see pipeline_stats.h).
     PipelineStatisticsSetup pipelineStats;
     PlanPipelineStatistics(instance, physicalDevice, createInfo, pipelineStats);
+    // Device-lost breadcrumbs: the marker extension, when asked for (see device_lost.h).
+    BreadcrumbSetup breadcrumbs;
+    PlanBreadcrumbs(instance, physicalDevice, createInfo, breadcrumbs);
 
     // Counted from before the driver's vkCreateDevice, which may make a D3D12 device of its own
     // (vkinspDeviceCount).
     g_deviceCount.fetch_add(1, std::memory_order_relaxed);
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
-    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added)) {
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added)) {
         // The driver refused the additions: create the device as the application asked.
         Log("vkCreateDevice with the layer's extensions failed (%d); retrying without", (int)res);
         refresh = RefreshDeviceSetup{};
         dynamicRendering = DynamicRenderingSetup{};
         pipelineStats = PipelineStatisticsSetup{};
+        breadcrumbs = BreadcrumbSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
     if (res != VK_SUCCESS) {
@@ -554,6 +559,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
 
     Log("vkCreateDevice '%s' queues=%u extensions=%u", data->properties.deviceName,
         pCreateInfo->queueCreateInfoCount, pCreateInfo->enabledExtensionCount);
+    // The breadcrumb buffer needs the dispatch table and the memory properties read just above.
+    CreateBreadcrumbs(data.get(), breadcrumbs);
 
     DeviceData* dev = data.get();
     RegisterDevice(DispatchKey(*pDevice), std::move(data));
@@ -580,6 +587,7 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAlloca
     Log("vkDestroyDevice frames=%llu", (unsigned long long)data->frameIndex);
     // A capture's query pools and staging on the device go before the device does.
     CaptureManager::Get().OnDestroyDevice(data);
+    DestroyBreadcrumbs(data);
     Tracker::Get().SendLeakReport(HT_VkDevice, (uint64_t)(uintptr_t)device);
     Tracker::Get().OnDestroy(HT_VkDevice, (uint64_t)(uintptr_t)device);
     PFN_vkDestroyDevice next = data->dispatch.DestroyDevice;
@@ -826,6 +834,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     ImageReadback::Get().OnPresent(data, queue);
     ShaderEditor::Get().OnPresent(data);
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+    // This entry point is hand-written, so the generated device-lost check does not reach it.
+    if (res == VK_ERROR_DEVICE_LOST) OnDeviceLost(data, "vkQueuePresentKHR");
     // A present always ends the frame; it also settles the frame boundary for good.
     data->presentSeen.store(true, std::memory_order_relaxed);
     data->frameBoundary = DeviceData::FrameBoundary::Present;

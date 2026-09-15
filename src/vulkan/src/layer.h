@@ -68,6 +68,11 @@ struct DeviceData {
     /** occlusionQueryPrecise is enabled, so a pass can count the samples that passed its tests. */
     bool occlusionPrecise = false;
     /**
+     * Device-lost breadcrumbs (device_lost.h), or null when they are off: the GPU writes a marker as
+     * it passes each action, so a hang can be traced to the command that caused it.
+     */
+    struct Breadcrumbs* breadcrumbs = nullptr;
+    /**
      * inheritedQueries is enabled: secondary command buffers are begun able to run inside the pass
      * counters' queries (`secondaries` lists them), so a pass that executes them keeps its counters.
      */

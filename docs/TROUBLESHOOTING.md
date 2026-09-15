@@ -13,6 +13,23 @@ the launch dialog to see the layer's own output in the session's **Log** tab.
 directory is somewhere else, point `INSPECTOR_LAYER_DIR` at the directory holding the manifest and
 the layer library.
 
+**The GPU stops responding (`VK_ERROR_DEVICE_LOST`).** By itself that result says nothing about the
+cause: by the time the driver reports it the queue is gone. Launch again with **Device-lost
+breadcrumbs** (`VKINSP_BREADCRUMBS=1`, or `breadcrumbs: true` for `launch_app`) and the GPU writes a
+marker before and after every draw and dispatch, so when the loss happens the session log names the
+command it was running:
+
+```
+GPU device lost (vkQueueSubmit): The GPU stopped responding while running vkCmdDrawIndexed
+(action #231 in command buffer 0x19e80a070d0). It last finished vkCmdDispatch (action #230 ...).
+```
+
+"while running" means that command is where the GPU stopped, which is the usual case for a shader
+that loops forever or reads far out of bounds. "after finishing" means everything the GPU began also
+completed, so the hang is in whatever came next rather than in the command named. Breadcrumbs cost
+two GPU writes per action, so they are off unless asked for. They need `VK_AMD_buffer_marker`, which
+AMD and NVIDIA both implement; without it the layer says so and reports only which call failed.
+
 **`vulkaninfo` reports no devices.** The Vulkan driver for your GPU is missing. Install it
 (`mesa-vulkan-drivers` for AMD and Intel on Linux, NVIDIA's proprietary driver for NVIDIA; the
 normal graphics driver on Windows). Nothing in the inspector works until a driver is present.

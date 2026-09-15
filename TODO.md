@@ -358,12 +358,20 @@ vendor's driver is listed at the end so nobody spends time on it.
       extension; per-draw counters in the Shader Flame Graph beside the ablation costs; the
       thresholds the verdict uses (60% saturated, 30% busy, 30% occupancy) are starting points,
       judged against the three frames above.
-- [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
-      Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
-      `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED
-      (`ID3D12DeviceRemovedExtendedData`: breadcrumbs and page-fault addresses) on D3D12, which is
-      fully public. Neither layer handles `VK_ERROR_DEVICE_LOST` / `DXGI_ERROR_DEVICE_REMOVED`
-      today; a capture ending with "the last command reached" is the deliverable.
+- [x] Device-lost diagnostics on Vulkan (Nsight Aftermath's answer to "what was the GPU running when
+      it hung"): `src/vulkan/src/device_lost.h`, breadcrumbs through `VK_AMD_buffer_marker` written
+      before and after every draw and dispatch, read back when any call reports
+      `VK_ERROR_DEVICE_LOST`. The session log names the command and says whether it also finished,
+      which separates a hang inside it from a hang in what came next. **Device-lost breadcrumbs** in
+      the launch dialog, `breadcrumbs` for `launch_app`, `VKINSP_BREADCRUMBS=1`; off by default (two
+      GPU writes per action). Verified on an RTX 4080 with `VKINSP_SIMULATE_DEVICE_LOST=<n>[:hung]`,
+      which reports a loss without hanging the GPU.
+- [ ] Device-lost diagnostics, the rest: DRED on D3D12 (`ID3D12DeviceRemovedExtendedData`:
+      breadcrumbs and page-fault addresses), which is fully public and which the D3D12 library has
+      nothing of today; `VK_NV_device_diagnostic_checkpoints`, which reports every checkpoint still
+      in flight rather than the last two markers; the faulting address through `VK_EXT_device_fault`;
+      a dialog rather than only a log line; and a real hang, which has not been tried because it
+      trips a TDR reset on the machine running it (`test/triangle --hang` would be the way).
 - [ ] CPU and GPU timeline across frames (Nsight Systems: every thread's API calls with durations,
       where the CPU blocks in fence waits and acquire, when each submission ran on the GPU). The
       layer records submit time and the refresh rate but not per-call CPU durations or a

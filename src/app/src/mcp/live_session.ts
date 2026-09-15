@@ -52,6 +52,8 @@ export interface LaunchOptions {
   syncValidation?: boolean;
   stacktraces?: boolean;
   recordAlways?: boolean;
+  /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
+  breadcrumbs?: boolean;
   /** The directory holding VK_LAYER_INSPECTOR_capture.json, when it is not found by itself. */
   layerDir?: string;
 }
@@ -127,6 +129,8 @@ export interface WatchOptions {
   validation?: boolean;
   stacktraces?: boolean;
   recordAlways?: boolean;
+  /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
+  breadcrumbs?: boolean;
 }
 
 export interface AndroidLaunchOptions {
@@ -138,6 +142,8 @@ export interface AndroidLaunchOptions {
   port?: number;
   stacktraces?: boolean;
   recordAlways?: boolean;
+  /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
+  breadcrumbs?: boolean;
 }
 
 /** The application name a Vulkan application gave its instance, when it gave one. */
@@ -184,6 +190,7 @@ export class LiveSession {
       if (isNew) this.appendLog(`validation ${entry.severity}${entry.idName ? ` ${entry.idName}` : ""}: ${entry.message.split("\n")[0].slice(0, 300)}`);
     });
     db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
+    db.onDeviceLost.addListener((r) => this.appendLog(`GPU device lost (${r.call}): ${r.message}`));
     db.onOtherMessage.addListener((msg) => {
       if (msg.action === "ShaderReplaced") {
         this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? (msg.replacement ? `applied as object ${msg.replacement}` : "restored") : `failed: ${msg.error ?? "unknown error"}`}`);
@@ -574,7 +581,7 @@ export class SessionManager {
       }
       const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
       const vulkan = layerDir ? {
-        layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
+        layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, breadcrumbs: !!o.breadcrumbs, stacktraces: o.stacktraces ?? true,
         validation: !!o.validation, syncValidation: !!o.syncValidation,
       } : null;
       const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;
