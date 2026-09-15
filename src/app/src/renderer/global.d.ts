@@ -50,6 +50,8 @@ export interface InspectorApi {
   measureOverdraw(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Every draw measured (--draw-data). */
   measureDraws(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** The GPU's own hardware counters per render pass, and per draw with `perDraw` (--counter-data). */
+  measureHwCounters(opts: { key: string; data?: Uint8Array; name?: string; perDraw?: boolean }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Each named draw drawn on its own (--overlay-data). */
   drawOverlay(opts: { key: string; data?: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** What each named draw's vertex shader wrote (--mesh-data). */

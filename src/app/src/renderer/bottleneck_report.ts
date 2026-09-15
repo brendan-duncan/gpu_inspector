@@ -10,12 +10,14 @@
 // command stream, and a pass whose counters the GPU does not expose shows what is known and says
 // so, with a pointer at the Xcode trace for the rest. docs/PROFILING.md is the how-to that walks
 // through using it.
+import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
+import { counterLabel, formatCounter, hwCountersByPass } from "./hw_counters.js";
 import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, MICROTRIANGLE_LIMIT,
-  collectPassMetrics, formatPercent, formatRatio, frameStageVerdict, passAdvice,
+  collectPassMetrics, formatPercent, formatRatio, frameStageVerdict, passAdvice, type FrameMetrics,
 } from "./pass_metrics.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
@@ -41,10 +43,99 @@ function cell(row: Widget, text: string, tooltip?: string): Div {
 }
 
 /**
- * Renders the report. `onJump` selects a command in the list, so every pass and every piece of
- * advice can be followed back to what raised it.
+ * The hardware counters section: the GPU's own counters per render pass, which say which unit
+ * inside the shader core the pass saturates rather than inferring it from overdraw and triangle
+ * size. A Vulkan capture is replayed to read them (renderer/hw_counters.ts); until it has been,
+ * this offers to do it.
  */
-export function renderBottleneckReport(container: Widget, data: CaptureData, db: ObjectLookup, onJump: (commandIndex: number) => void): void {
+function renderHwCounters(root: Widget, data: CaptureData, m: FrameMetrics, onJump: (commandIndex: number) => void,
+                          measure?: () => Promise<boolean>): void {
+  const section = new Div(root, { class: "frame-stats-section" });
+  new Div(section, { text: "Hardware counters", class: "frame-stats-heading" });
+  const file = data.hwCounters;
+
+  if (!file) {
+    if (data.api !== "vulkan") {
+      new Div(section, {
+        text: data.api === "metal"
+          ? "Apple's own instrumentation has these and no public Metal API exposes them; \"Xcode Trace\" in the capture bar writes a .gputrace that does."
+          : "The GPU's own counters are read by replaying the capture, which only Vulkan captures can be.",
+        class: "text-muted",
+      });
+      return;
+    }
+    new Div(section, {
+      text: "Which unit inside the shader core each pass saturates — shader throughput, memory bandwidth, cache, occupancy — read from the GPU's own counters by replaying the capture. The frame is replayed once per collection pass the counters need, so this takes a while.",
+      class: "text-muted",
+    });
+    if (measure) {
+      const button = new Button(section, {
+        label: "Measure hardware counters", class: "btn btn-sm",
+        tooltip: "Replay the capture on this machine's GPU reading its hardware counters around each render pass. Needs NVIDIA's Nsight Perf SDK or VK_KHR_performance_query, and GPU performance-counter access enabled.",
+        callback: () => {
+          button.disabled = true;
+          button.text = "Replaying...";
+          void measure().finally(() => {
+            button.disabled = false;
+            button.text = "Measure hardware counters";
+          });
+        },
+      });
+    }
+    return;
+  }
+
+  if (!file.counters.length || (!file.passes.length && !file.draws.length)) {
+    new Div(section, { text: file.notes[0] ?? "No hardware counters were collected.", class: "text-muted" });
+    return;
+  }
+
+  const where = file.backend === "nvperf" ? `NVIDIA ${file.chip}` : "VK_KHR_performance_query";
+  new Div(section, {
+    text: `${file.counters.length} counters from ${where}, collected over ${file.rounds} replay${file.rounds === 1 ? "" : "s"} of the frame.`,
+    class: "text-muted",
+  });
+
+  const byPass = hwCountersByPass(file);
+  // Render passes only: a compute pass shares its neighbour's key, and no counter range wraps one.
+  const rows = m.passes.map((p, i) => ({ p, i, r: p.compute ? undefined : byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) }))
+    .filter((x) => x.r).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
+  if (!rows.length) {
+    new Div(section, { text: "No replayed render pass matched a pass of this capture.", class: "text-muted" });
+    return;
+  }
+
+  // One column per counter, named by its hardware unit so the header stays readable; the full
+  // counter name and what it measures are in each header's tooltip.
+  const grid = new Div(section, { class: "bottleneck-table hw-counter-table" });
+  grid.element.style.gridTemplateColumns = `minmax(140px, 2fr) minmax(64px, 0.8fr) repeat(${file.counters.length}, minmax(76px, 1fr))`;
+  const header = new Div(grid, { class: "bottleneck-row bottleneck-header" });
+  cell(header, "Pass");
+  cell(header, "GPU ms");
+  for (const c of file.counters) cell(header, counterLabel(c.name), `${c.name}${c.description ? ` — ${c.description}` : ""}`);
+  for (const { p, r } of rows) {
+    const row = new Div(grid, { class: "bottleneck-row" });
+    const name = new Div(row, { text: p.label, class: "bottleneck-cell bottleneck-pass-name" });
+    name.tooltip = "Select this pass in the command list";
+    name.element.onclick = () => onJump(p.commandIndex);
+    cell(row, p.durationMs === null ? "—" : p.durationMs.toFixed(3));
+    for (let i = 0; i < file.counters.length; ++i) {
+      cell(row, formatCounter(r!.values[i] ?? null, file.counters[i].unit), file.counters[i].name);
+    }
+  }
+  if (file.draws.length) {
+    new Div(section, { text: `${file.draws.length} draws were measured as well; get_hw_counters in the MCP server lists them.`, class: "text-muted" });
+  }
+  for (const note of file.notes) new Div(section, { text: note, class: "text-muted" });
+}
+
+/**
+ * Renders the report. `onJump` selects a command in the list, so every pass and every piece of
+ * advice can be followed back to what raised it. `measureHwCounters` replays the capture for the
+ * GPU's own counters, when the view can run one.
+ */
+export function renderBottleneckReport(container: Widget, data: CaptureData, db: ObjectLookup, onJump: (commandIndex: number) => void,
+                                       measureHwCounters?: () => Promise<boolean>): void {
   const m = collectPassMetrics(data, db);
   const root = new Div(container, { class: "frame-stats bottleneck-report" });
   new Div(root, { text: "GPU Bottlenecks", class: "frame-stats-title" });
@@ -158,6 +249,9 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
     if (p.bound) new Span(verdict, { text: BOUND_LABEL[p.bound], class: `bottleneck-tag bottleneck-tag-${p.bound}`, tooltip: p.boundReason });
     else new Span(verdict, { text: "—", class: "text-muted" });
   }
+
+  // ---- The GPU's own counters, which name the saturated unit instead of inferring it.
+  renderHwCounters(root, data, m, onJump, measureHwCounters);
 
   // ---- What this cannot measure, and where to get it.
   const limits = new Div(root, { class: "frame-stats-section" });

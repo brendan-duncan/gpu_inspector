@@ -1261,6 +1261,10 @@ ipcMain.handle("inspector:releaseReplay", (_e, key: string) => releaseReplayKey(
 // Vulkan per-draw timing and counters: the frame replayed with queries around each draw
 // (src/replay/src/draw_stats.cpp), for the Shader Flame Graph.
 ipcMain.handle("inspector:measureDraws", (_e, opts: ReplayRequest): Promise<ReplayRun> => replayFor(opts, { kind: "draws" }));
+// Vulkan hardware counters: the GPU's own counters around each render pass, collected by replaying
+// the frame once per collection pass (src/replay/src/hw_counters.cpp).
+ipcMain.handle("inspector:measureHwCounters", (_e, opts: ReplayRequest & { perDraw?: boolean }): Promise<ReplayRun> =>
+  replayFor(opts, { kind: "counters", perDraw: opts.perDraw }));
 // Vulkan draw-call overlays: where some draws landed, drawn again on their own (src/replay/src/overlay.cpp).
 ipcMain.handle("inspector:drawOverlay", (_e, opts: ReplayRequest & { commands: number[] }): Promise<ReplayRun> =>
   replayFor(opts, { kind: "overlay", commands: opts.commands }));

@@ -99,7 +99,11 @@ export function counterValue(file: HwCounters, range: HwCounterRange, name: stri
   return range.values[i];
 }
 
-/** The counters by the render pass they measured, keyed as pass_metrics.ts keys passes. */
+/**
+ * The counters by the render pass they measured, keyed as pass_metrics.ts keys passes. A compute
+ * pass carries the same (frame, command buffer, pass index) triple as the render pass beside it, so
+ * a caller must look up only render passes; counter ranges wrap render passes alone.
+ */
 export function hwCountersByPass(file: HwCounters): Map<string, HwCounterRange> {
   const out = new Map<string, HwCounterRange>();
   for (const r of file.passes) {
@@ -107,6 +111,17 @@ export function hwCountersByPass(file: HwCounters): Map<string, HwCounterRange> 
     out.set(`${r.frame}:${r.commandBuffer}:${r.passIndex}`, r);
   }
   return out;
+}
+
+/**
+ * A short column heading for a counter. The vendor's names are long and share prefixes
+ * ("sm__throughput", "sm__warps_active", "sm__pipe_alu_cycles_active" would all shorten to "sm"),
+ * so this keeps the unit and what it measures and drops the submetric and the "cycles active"
+ * tail: "sm throughput", "sm warps active", "sm pipe alu".
+ */
+export function counterLabel(name: string): string {
+  const base = (name.split(".")[0] || name).replace(/_cycles_active$/, "");
+  return base.replace(/__/g, " ").replace(/_/g, " ").trim() || name;
 }
 
 /** A value formatted with its unit, for a table cell or tooltip. */

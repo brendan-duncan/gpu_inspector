@@ -93,6 +93,15 @@ Each number is shown with what normally causes it. The counters come from a pipe
 query on Vulkan and from Metal's counter sets on macOS; which of them are available depends on the
 API and the GPU.
 
+**Hardware counters** at the foot of the report answer the question the rest of it can only infer:
+which unit inside the shader core a pass actually saturates — shader throughput, memory bandwidth,
+cache, occupancy, the ALU and FMA pipes. **Measure hardware counters** replays a Vulkan capture on
+this machine's GPU reading its own counters around each render pass, and the numbers appear as a
+column per counter beside each pass's GPU time. The frame is replayed once per collection pass the
+counters need, so it takes a while on a large capture, and the result is kept with the capture and
+saved into its file. It needs NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query`, and GPU
+performance-counter access enabled; [Capture replay](REPLAY.md#hardware-counters) has the detail.
+
 ![The GPU Bottlenecks report: per-pass GPU time, overdraw and fragments per primitive, with what to look at](images/bottlenecks.png)
 
 [Finding GPU bottlenecks](PROFILING.md) is the walkthrough, including the thresholds each number

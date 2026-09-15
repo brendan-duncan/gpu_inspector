@@ -43,6 +43,7 @@ import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
 import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
+import { hwCountersSummary, parseHwCounters } from "./hw_counters.js";
 import type { ShaderMeasureTarget } from "./shader_ablation.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
@@ -653,6 +654,8 @@ export class CaptureView implements CaptureHost {
   private _overdrawRun: { running: boolean; error?: string } | null = null;
   /** Vulkan: the replay measuring the frame's draws, while it runs or after it failed. */
   private _drawRun: { running: boolean; error?: string } | null = null;
+  /** Vulkan: the replay reading the GPU's hardware counters, while it runs or after it failed. */
+  private _hwCounterRun: { running: boolean; error?: string } | null = null;
   /** Replays under way for draw overlays, by each draw they will answer for. */
   private _overlayRuns = new Map<number, Promise<void>>();
   /** Vertex shader outputs replayed so far, by draw, and the replays under way. */
@@ -1390,7 +1393,8 @@ export class CaptureView implements CaptureHost {
       new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
-    renderBottleneckReport(this._infoPanel, this.data, this.window.database, (index) => this.selectCommand(index));
+    renderBottleneckReport(this._infoPanel, this.data, this.window.database, (index) => this.selectCommand(index),
+      this.data.api === "vulkan" ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
   }
 
   /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
@@ -1795,6 +1799,36 @@ export class CaptureView implements CaptureHost {
       const message = e instanceof Error ? e.message : String(e);
       this._drawRun = { running: false, error: message };
       this._setStatus(`draws not measured: ${message.split("\n")[0]}`);
+      return false;
+    }
+  }
+
+  /**
+   * Vulkan: reads the GPU's own hardware counters around each render pass by replaying the capture
+   * (src/replay/src/hw_counters.cpp), for the GPU Bottlenecks report's limiters. The frame is
+   * replayed once per collection pass the counters need, so this takes a while on a large capture.
+   */
+  async measureHwCounters(perDraw = false): Promise<boolean> {
+    if (this._hwCounterRun?.running) return false;
+    if (this.data.api !== "vulkan") {
+      this._setStatus(`hardware counters need the capture replayed, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay yet`);
+      return false;
+    }
+    this._hwCounterRun = { running: true };
+    this._setStatus("reading hardware counters: replaying the capture once per collection pass...");
+    try {
+      const result = await this._replay((r) => window.inspector.measureHwCounters({ ...r, perDraw }));
+      if (!result.data) throw new Error(result.error ?? "the replay read no hardware counters");
+      const file = parseHwCounters(result.data);
+      this._hwCounterRun = null;
+      this.data.hwCounters = file;
+      this.data.onHwCounters.emit();
+      this._setStatus(hwCountersSummary(file));
+      return file.passes.length > 0 || file.draws.length > 0;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this._hwCounterRun = { running: false, error: message };
+      this._setStatus(`hardware counters not read: ${message.split("\n")[0]}`);
       return false;
     }
   }

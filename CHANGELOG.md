@@ -5,6 +5,8 @@
   counters for which unit inside the shader core a pass saturates, per render pass and, with
   `--counter-draws`, per draw. From NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query`, with
   `get_hw_counters` in the MCP server. Needs GPU performance-counter access enabled.
+  **Measure hardware counters** in the GPU Bottlenecks report reads them for an open capture and
+  shows a column per counter beside each pass; they are saved into the capture file with it.
 
 ## v0.12.0
 

@@ -7,6 +7,7 @@ import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { DrawOverlay } from "./draw_overlay.js";
 import type { DrawStat } from "./draw_stats.js";
+import type { HwCounters } from "./hw_counters.js";
 import { ablationKey, type ShaderAblation } from "./shader_ablation.js";
 import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
@@ -88,6 +89,8 @@ export class CaptureData {
   pixelHistory: Record<string, unknown> | null = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats: DrawStat[] | null = null;
+  /** The GPU's own hardware counters per pass from a replay (renderer/hw_counters.ts). */
+  hwCounters: HwCounters | null = null;
   /** Shader stages whose functions and lines a replay measured by ablation (renderer/shader_ablation.ts), one per pipeline stage. */
   ablations: ShaderAblation[] = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
@@ -110,6 +113,8 @@ export class CaptureData {
   readonly onPixelHistory = new Signal<() => void>();
   /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
   readonly onDrawStats = new Signal<() => void>();
+  /** The GPU's hardware counters arrived from a replay. */
+  readonly onHwCounters = new Signal<() => void>();
   /** Draw-call overlays arrived from a replay. */
   readonly onDrawOverlays = new Signal<() => void>();
   /** A shader stage was measured by ablation. */
@@ -131,6 +136,7 @@ export class CaptureData {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.hwCounters = null;
     this.ablations = [];
     this.drawOverlays = new Map();
     this._expectedCommands = 0;
@@ -219,6 +225,7 @@ export class CaptureData {
     this.overdraw = c.overdraw;
     this.pixelHistory = c.pixelHistory;
     this.drawStats = c.drawStats;
+    this.hwCounters = c.hwCounters;
     this.ablations = c.ablations;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
@@ -230,6 +237,7 @@ export class CaptureData {
     if (this.overdraw.length) this.onOverdraw.emit();
     if (this.pixelHistory) this.onPixelHistory.emit();
     if (this.drawStats) this.onDrawStats.emit();
+    if (this.hwCounters) this.onHwCounters.emit();
   }
 
   handleMessage(msg: LayerMessage): void {

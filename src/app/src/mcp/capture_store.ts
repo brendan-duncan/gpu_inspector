@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { CaptureData, isRenderTarget, type CapturedOverdraw } from "../renderer/capture_data.js";
 import type { DrawStat } from "../renderer/draw_stats.js";
+import type { HwCounters } from "../renderer/hw_counters.js";
 import type { ShaderAblation } from "../renderer/shader_ablation.js";
 import { parseCaptureFile, type CaptureFileManifest } from "../renderer/capture_format.js";
 import { CaptureStatistics } from "../renderer/capture_statistics.js";
@@ -34,8 +35,6 @@ export class Capture {
   private _labels: string[] | null = null;
   private _validationCommands: Map<string, number> | null = null;
   private _reflections = new Map<string, ShaderReflection | null>();
-  /** Hardware counters from a replay (`vkinsp_replay --counters`), cached for the open capture. */
-  hwCounters: import("../renderer/hw_counters.js").HwCounters | null = null;
 
   constructor(readonly id: string, readonly path: string, readonly mtimeMs: number, bytes: Uint8Array) {
     const capture = parseCaptureFile(bytes);
@@ -79,6 +78,11 @@ export class Capture {
     // The pass metrics take depth rejection from these where the capture's own counter is missing.
     this._metrics = null;
     this._analysis = null;
+  }
+
+  /** The GPU's own hardware counters read by replaying the capture (renderer/hw_counters.ts). */
+  setHwCounters(counters: HwCounters): void {
+    this.data.hwCounters = counters;
   }
 
   /** A shader stage measured by ablation (renderer/shader_ablation.ts), which the flame graph sizes that stage's functions and lines by. */
