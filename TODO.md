@@ -342,13 +342,18 @@ vendor's driver is listed at the end so nobody spends time on it.
 - [x] Hardware counters in the app: **Measure hardware counters** in the GPU Bottlenecks report
       (`renderer/bottleneck_report.ts`) replays the capture and shows a column per counter beside
       each pass, kept with the capture and saved into its file.
-- [ ] Hardware counters, the rest: feed them into the bound-stage verdict, which still infers the
-      bound stage from overdraw and triangle size while the counters name the saturated unit
-      outright (the report shows them, but `pass_metrics.ts` does not read them); a portable default
-      counter set for the `VK_KHR_performance_query` path (it takes the first command-scoped
-      counters now), which has only ever run as far as its precondition check, never against a
-      driver that offers the extension; per-draw counters in the Shader Flame Graph beside the
-      ablation costs.
+- [x] The counters decide each pass's verdict (`PassMetrics.limiter`, `passLimiter` in
+      `renderer/hw_counters.ts`): shader, bandwidth, cache or latency bound, naming the unit at its
+      limit, shown in GPU Bottlenecks' Verdict column and its advice and reported by
+      `get_bottlenecks`. On Vulkan it is the only per-pass verdict there has been, the inferred one
+      needing Metal's stage spans. A Unity frame at 800x600 on an RTX 4080 comes out 20 passes
+      latency bound, 5 shader, 4 cache, 5 saturating nothing.
+- [ ] Hardware counters, the rest: a portable default counter set for the
+      `VK_KHR_performance_query` path (it takes the first command-scoped counters now), which has
+      only ever run as far as its precondition check, never against a driver that offers the
+      extension; per-draw counters in the Shader Flame Graph beside the ablation costs; the
+      thresholds the verdict uses (60% saturated, 30% busy, 30% occupancy) are starting points and
+      have only been judged against one frame.
 - [ ] Device-lost diagnostics (Nsight Aftermath: the command the GPU was executing when it hung).
       Vendor-neutral: breadcrumb markers through `VK_AMD_buffer_marker` /
       `VK_NV_device_diagnostic_checkpoints` on Vulkan, and DRED

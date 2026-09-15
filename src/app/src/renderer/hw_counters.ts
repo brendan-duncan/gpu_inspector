@@ -145,6 +145,90 @@ function formatBytes(v: number): string {
   return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
 }
 
+// ---------------------------------------------------------------------------------------------
+// What the counters say limits a pass. The rest of GPU Bottlenecks answers "which stage", inferred
+// from overdraw and triangle size; these answer "which unit", measured. A throughput counter is a
+// percentage of what that unit can sustain, so the highest one is the unit closest to its limit.
+
+/** How hard a unit has to be working before it is called the limit. */
+export const SATURATED_PERCENT = 60;
+/** Below `SATURATED_PERCENT` but still the busiest unit worth naming. */
+export const BUSY_PERCENT = 30;
+/** Occupancy under this, with nothing else busy, means the pass is waiting rather than working. */
+export const LOW_OCCUPANCY_PERCENT = 30;
+
+export type LimiterKind = "shader" | "memory" | "cache" | "occupancy" | "unsaturated";
+
+/** What the counters concluded about one pass. */
+export interface PassLimiter {
+  kind: LimiterKind;
+  /** The unit in words: "the shader core", "memory bandwidth", "the L2 cache". */
+  label: string;
+  /** The counter it was read from, and its value; empty and 0 for "unsaturated". */
+  counter: string;
+  percent: number;
+  /** Whether the unit is at or near its sustainable limit, rather than merely the busiest. */
+  saturated: boolean;
+}
+
+/** Which unit a counter measures, and how to say it. */
+function unitOfCounter(name: string): { kind: LimiterKind; label: string } {
+  if (/warps_active/.test(name)) return { kind: "occupancy", label: "occupancy" };
+  if (/dram/.test(name)) return { kind: "memory", label: "memory bandwidth" };
+  if (/^lts__/.test(name)) return { kind: "cache", label: "the L2 cache" };
+  if (/^l1tex__/.test(name)) return { kind: "cache", label: "the L1 and texture cache" };
+  const pipe = /^sm__pipe_([a-z0-9]+)_/.exec(name);
+  if (pipe) return { kind: "shader", label: `the ${pipe[1].toUpperCase()} pipe` };
+  if (/^sm__|^smsp__/.test(name)) return { kind: "shader", label: "the shader core" };
+  return { kind: "shader", label: counterLabel(name) };
+}
+
+/**
+ * What the counters say limits one pass, or null when none of them is a percentage of peak (a
+ * counter set of raw totals says how much happened, not how close to the limit it came).
+ */
+export function passLimiter(file: HwCounters, range: HwCounterRange): PassLimiter | null {
+  const percents = file.counters
+    .map((c, i) => ({ c, value: range.values[i] }))
+    .filter((x): x is { c: HwCounterInfo; value: number } => x.c.unit === "percent" && typeof x.value === "number");
+  if (!percents.length) return null;
+
+  const occupancy = percents.find((x) => /warps_active/.test(x.c.name));
+  const units = percents.filter((x) => !/warps_active/.test(x.c.name));
+  if (!units.length) return null;
+  const top = units.reduce((a, b) => (b.value > a.value ? b : a));
+  const { kind, label } = unitOfCounter(top.c.name);
+
+  if (top.value >= SATURATED_PERCENT) return { kind, label, counter: top.c.name, percent: top.value, saturated: true };
+  // A unit doing real work is the more useful answer than low occupancy, so it is checked first:
+  // a pass can be both meaningfully busy somewhere and short of warps, and the busy unit is what
+  // there is to act on.
+  if (top.value >= BUSY_PERCENT) return { kind, label, counter: top.c.name, percent: top.value, saturated: false };
+  // Nothing even moderately busy: a pass with few warps in flight is waiting, not working.
+  if (occupancy && occupancy.value < LOW_OCCUPANCY_PERCENT) {
+    return { kind: "occupancy", label: "occupancy", counter: occupancy.c.name, percent: occupancy.value, saturated: false };
+  }
+  return { kind: "unsaturated", label: "no unit", counter: "", percent: top.value, saturated: false };
+}
+
+/** The verdict in words, for a table cell or a card. */
+export const LIMITER_LABEL: Record<LimiterKind, string> = {
+  shader: "Shader bound",
+  memory: "Bandwidth bound",
+  cache: "Cache bound",
+  occupancy: "Latency bound",
+  unsaturated: "Nothing saturated",
+};
+
+/** What to try first for a pass each unit limits. */
+export const LIMITER_ADVICE: Record<LimiterKind, string> = {
+  shader: "The shader core is the limit, so the work per invocation is what to cut: simpler maths, fewer instructions on the hot path, and anything that can move to a cheaper stage or be precomputed.",
+  memory: "The pass is moving more data than the memory system can feed it. Smaller or better compressed textures, fewer or narrower render targets, and fewer full-resolution passes over memory.",
+  cache: "The pass is limited by cache traffic rather than by arithmetic. Sampling that stays local (mips, smaller textures, better texture layout) and fewer scattered reads help more than cheaper shader maths.",
+  occupancy: "No unit is near its limit and few warps are in flight, so the pass is waiting rather than working: long dependency chains, register pressure limiting occupancy, or too little work to fill the GPU.",
+  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbour usually beats optimising it.",
+};
+
 /** One line summarising what was collected, for a status line. */
 export function hwCountersSummary(file: HwCounters): string {
   if (!file.backend) return `no hardware counters (${file.notes[0] ?? "none available"})`;

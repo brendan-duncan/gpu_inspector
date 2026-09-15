@@ -6,7 +6,10 @@
   `--counter-draws`, per draw. From NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query`, with
   `get_hw_counters` in the MCP server. Needs GPU performance-counter access enabled.
   **Measure hardware counters** in the GPU Bottlenecks report reads them for an open capture and
-  shows a column per counter beside each pass; they are saved into the capture file with it.
+  shows a column per counter beside each pass; they are saved into the capture file with it. Each
+  pass's verdict is then measured rather than inferred — shader, bandwidth, cache or latency bound,
+  naming the unit at its limit — which on Vulkan is the only per-pass verdict there has been, since
+  the vertex and fragment spans the inferred one needs are Metal's. `get_bottlenecks` reports it too.
 
 ## v0.12.0
 

@@ -14,7 +14,7 @@ import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
-import { counterLabel, formatCounter, hwCountersByPass } from "./hw_counters.js";
+import { LIMITER_ADVICE, LIMITER_LABEL, counterLabel, formatCounter, hwCountersByPass } from "./hw_counters.js";
 import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, MICROTRIANGLE_LIMIT,
   collectPassMetrics, formatPercent, formatRatio, frameStageVerdict, passAdvice, type FrameMetrics,
@@ -196,15 +196,25 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
   }
   // The slowest pass is worth naming whether or not a rule fired: it is where any win is largest.
   const slowest = ranked[0];
-  if (slowest && slowest.pass.bound) {
+  if (slowest && (slowest.pass.bound || slowest.pass.limiter)) {
     const card = new Div(actions, { class: "bottleneck-advice bottleneck-advice-info" });
     const head = new Div(card, { class: "bottleneck-advice-head" });
     new Span(head, { text: `Slowest pass: ${slowest.pass.label}`, class: "bottleneck-advice-title" });
     new Span(head, { text: `${(slowest.pass.durationMs ?? 0).toFixed(3)} ms`, class: "text-muted" });
     const link = new Span(head, { text: "go to pass", class: "perf-line-link dependency_link" });
     link.element.onclick = () => onJump(slowest.pass.commandIndex);
-    new Div(card, { text: `${BOUND_LABEL[slowest.pass.bound]}: ${slowest.pass.boundReason}.`, class: "bottleneck-advice-body" });
-    new Div(card, { text: BOUND_ADVICE[slowest.pass.bound], class: "bottleneck-advice-body text-muted" });
+    // Measured first: the counters name the unit, where the stage verdict only infers one.
+    const l = slowest.pass.limiter;
+    if (l && l.kind !== "unsaturated") {
+      new Div(card, {
+        text: `${LIMITER_LABEL[l.kind]}: ${l.label} ${l.saturated ? "is at" : "is the busiest unit, at"} ${l.percent.toFixed(0)}% of peak, measured.`,
+        class: "bottleneck-advice-body",
+      });
+      new Div(card, { text: LIMITER_ADVICE[l.kind], class: "bottleneck-advice-body text-muted" });
+    } else if (slowest.pass.bound) {
+      new Div(card, { text: `${BOUND_LABEL[slowest.pass.bound]}: ${slowest.pass.boundReason}.`, class: "bottleneck-advice-body" });
+      new Div(card, { text: BOUND_ADVICE[slowest.pass.bound], class: "bottleneck-advice-body text-muted" });
+    }
   }
   for (const { pass, advice } of withAdvice) {
     for (const a of advice) {
@@ -246,8 +256,19 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
     cell(row, formatRatio(p.fragmentsPerPrimitive, 1));
     cell(row, formatPercent(p.depthRejectRate));
     const verdict = new Div(row, { class: "bottleneck-cell" });
-    if (p.bound) new Span(verdict, { text: BOUND_LABEL[p.bound], class: `bottleneck-tag bottleneck-tag-${p.bound}`, tooltip: p.boundReason });
-    else new Span(verdict, { text: "—", class: "text-muted" });
+    // The measured verdict where the GPU's counters gave one, since it names the unit rather than
+    // inferring a stage; the inferred one otherwise.
+    if (p.limiter && p.limiter.kind !== "unsaturated") {
+      new Span(verdict, {
+        text: LIMITER_LABEL[p.limiter.kind], class: `bottleneck-tag bottleneck-tag-limiter`,
+        tooltip: `${p.limiter.label} at ${p.limiter.percent.toFixed(0)}% of peak (${p.limiter.counter}), measured from the GPU's own counters`
+          + (p.bound ? `. By stage timing alone: ${BOUND_LABEL[p.bound]}, ${p.boundReason}` : ""),
+      });
+    } else if (p.bound) {
+      new Span(verdict, { text: BOUND_LABEL[p.bound], class: `bottleneck-tag bottleneck-tag-${p.bound}`, tooltip: p.boundReason });
+    } else {
+      new Span(verdict, { text: "—", class: "text-muted" });
+    }
   }
 
   // ---- The GPU's own counters, which name the saturated unit instead of inferring it.
