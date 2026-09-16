@@ -664,6 +664,9 @@ export class CommandInfoView {
         } else if (d.bufferView !== undefined) {
           const bv = db.getObject(refId(d.bufferView));
           resourceText = bv ? bv.name : "(destroyed buffer view)";
+        } else if (d.accelerationStructure !== undefined) {
+          const as = db.getObject(refId(d.accelerationStructure));
+          resourceText = as ? as.name : "(destroyed acceleration structure)";
         }
       }
       const isBuffer = !!d && d.buffer !== undefined;

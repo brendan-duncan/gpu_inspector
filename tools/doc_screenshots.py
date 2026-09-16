@@ -75,6 +75,16 @@ SHOTS = [
     Shot("bottlenecks", ["--launch={triangle}", "--debug-capture", "--debug-view=bottlenecks"],
          delay_ms=15000, launch=True),
     Shot("render-graph", ["--debug-open={capture}", "--debug-view=graph"], capture="unity.gpucap"),
+    # The Timeline card. Wants a real frame: the test application's GPU work is a tenth of a
+    # millisecond, which is sub-pixel against an axis wide enough to hold the CPU calls. It also
+    # needs a capture taken by a layer new enough to send the CPU timeline, which the older saved
+    # captures are not — unity-live.gpucap is a Unity player captured with the current one.
+    Shot("timeline", ["--debug-open={capture}", "--debug-view=stats:Timeline"], delay_ms=12000,
+         capture="unity-live.gpucap"),
+    # Frame Bound reporting the capture's own cost rather than a bottleneck, which wants a frame
+    # short enough that capturing it dominates — a player running far above its display's rate.
+    Shot("frame-bound-capture-cost", ["--debug-open={capture}", "--debug-view=stats:Frame Bound"],
+         delay_ms=12000, capture="unity-live.gpucap"),
     # Overdraw and pixel history replay the capture on this machine's GPU: slower. Both open on
     # the first colour target, and pixel history follows its centre pixel, so they want a frame
     # whose first target is small enough to see whole and has something at the middle of it —
@@ -103,6 +113,16 @@ SHOTS = [
     # A shader with its embedded source, in a captured draw.
     Shot("shader-source", ["--debug-open={capture}", "--debug-command=4", "--debug-expand=Fragment Shader"],
          delay_ms=12000, capture="xrstack.gpucap"),
+    # The acceleration structure viewer: a top level's instances and the scene they make. Wants a
+    # capture whose top level was built while watching, which rt.gpucap is (test/triangle
+    # --ray-tracing rebuilds both levels every frame).
+    # Named rather than taking the first structure: Instances is a top level's view, and the bottom
+    # level sorts first.
+    Shot("acceleration-structures", ["--debug-open={capture}", "--debug-select=VkAccelerationStructureKHR:TLAS"],
+         delay_ms=12000, capture="rt.gpucap"),
+    # The shader binding table of a trace (rt.gpucap, command 13 is the vkCmdTraceRaysKHR).
+    Shot("binding-table", ["--debug-open={capture}", "--debug-command=13", "--debug-expand=Shader Binding Table"],
+         delay_ms=12000, capture="rt.gpucap"),
     # The launch dialog, in its desktop and Android forms.
     Shot("launch-dialog", ["--debug-launch-dialog"], delay_ms=5000, crop="dialog"),
     Shot("launch-android", ["--debug-launch-dialog=android"], delay_ms=7000, crop="dialog"),

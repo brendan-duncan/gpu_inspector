@@ -1178,6 +1178,7 @@ export class InspectPanel {
           if (d.immutable) new Span(li, { text: " (immutable)", class: "text-muted" });
         }
         if (d.bufferView !== undefined) link(d.bufferView, "(destroyed buffer view)");
+        if (d.accelerationStructure !== undefined) link(d.accelerationStructure, "(destroyed acceleration structure)");
         if (b.stages) new Span(li, { text: `  ${fmtFlags(b.stages)}`, class: "text-muted font-sm" });
       });
     }

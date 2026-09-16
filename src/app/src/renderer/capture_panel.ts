@@ -1462,7 +1462,20 @@ export class CaptureView implements CaptureHost {
   showView(name: string): void {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
     else if (name === "bottlenecks") this._showBottlenecks();
-    else if (name === "stats") this._showStats();
+    else if (name === "stats" || name.startsWith("stats:")) {
+      // Testing aid (--debug-view=stats[:<card>]): Frame Stats, scrolled to the card whose heading
+      // contains the text, since a screenshot otherwise only ever shows the top of the report.
+      this._showStats();
+      const heading = name.split(":")[1];
+      if (heading) {
+        const needle = heading.toLowerCase();
+        for (const h of this._infoPanel.element.querySelectorAll(".frame-stats-heading")) {
+          if (!(h.textContent ?? "").toLowerCase().includes(needle)) continue;
+          h.scrollIntoView({ block: "start" });
+          break;
+        }
+      }
+    }
     else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
     else if (name === "overdraw") void this.openOverdraw();
     else if (name.startsWith("mesh")) {

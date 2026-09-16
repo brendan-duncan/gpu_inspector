@@ -970,3 +970,13 @@ experiment `src/metal/README.md` records for macOS signing; put the resulting ta
 - [ ] UI tests: cases for the Unity player and Android devices when attached (the saved-capture
       mode covers their captures), image comparison of the screenshots against references.
 - [ ] Help links to docs from the panels.
+- [ ] A screenshot of **Memory Use / Over time**, the one v0.14.0 feature the documentation still
+      describes without a picture. It needs a session whose memory actually moves: the shot has to
+      come from a live run rather than a capture file, because the series is the session's, and the
+      test application's is flat, so a chart of it would illustrate none of the four shapes the
+      text names. A player that streams, or `test/triangle` given something that allocates and
+      frees per frame, would.
+- [ ] `tools/doc_screenshots.py` skips any shot whose capture is missing, and two of its captures
+      (`unity-ui.gpucap` for the flame graph and the draw overlay) are no longer anywhere on this
+      machine, so those two images cannot be regenerated. Worth keeping the capture set the
+      screenshots are taken from somewhere durable rather than in a temp directory.

@@ -54,6 +54,17 @@ Selecting a command fills the right side with everything that was true at that p
 - **Vertex and index buffers** — decoded into the attributes the pipeline declares, with their
   values.
 - **Push constants**.
+- **Shader Groups** (a ray tracing pipeline) — the groups the pipeline was made with, each naming
+  the shaders in it.
+- **Shader Binding Table** (a trace) — which shader group each record of the table runs. A trace
+  does not name the shaders it runs: it names four regions of memory whose records each begin with
+  an opaque handle the driver gave out for a group. The layer keeps those handles on the pipeline
+  and reads the table back from the addresses the trace points at, so each record is matched to its
+  group, and the bytes after the handle are reported as the application's own shader record data.
+  A record whose handle this pipeline never gave out is called out: a table filled from another
+  pipeline, or from handles fetched before the pipeline was rebuilt, sends rays to the wrong shader
+  or to none, and nothing else in a capture would show it. The structures a trace runs against are
+  in the [Inspect tab](INSPECT.md#acceleration-structures).
 - **Render targets** — the pass's attachments as they were at the end of the pass. Clicking one
   opens the image viewer, with zoom, mip and layer selection, and the value of the texel under the
   pointer. **Open in Tab** shows the target in the
@@ -64,6 +75,8 @@ Selecting a command fills the right side with everything that was true at that p
 - Commands recorded into a secondary command buffer say so, and link to it.
 
 ![A draw's fragment shader in a capture, showing the source the compiler embedded in the SPIR-V, with its cost and analysis](images/shader-source.png)
+
+![A trace in a capture: the pipeline's shader groups, and each shader binding table record matched to the group it runs](images/binding-table.png)
 
 Anything the frame's analysis flagged about a command is shown with it, linked to the full list in
 [Frame Stats](REPORTS.md#frame-stats).
