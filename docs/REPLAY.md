@@ -576,8 +576,16 @@ captured handle named — matched through the handle blob the layer keeps on the
 after the handle are the application's own shader record data and are copied unchanged. A record
 whose handle this pipeline never gave out is reported as a problem and left as it was.
 
-What a trace *writes* is not compared. The replay compares render targets, and a trace writes a
-storage image, so a trace that runs and one that produces the wrong pixels look the same here.
+What a frame computes into an image is compared too, not only what it draws into a target: every
+image the capture read back that a shader could have written (STORAGE usage) is read back again at
+the end of its command buffer and compared, listed with a pass index of `-` because it belongs to
+no pass. Without that, a trace that runs and a trace that produces the wrong pixels look alike.
+
+A traced image will differ when the bottom level it traces against was built *before* the capture
+began, which is the usual thing: an engine builds its bottom levels once at load. The replay
+creates the structure but has nothing to build it from, so the rays miss. On `test/triangle
+--ray-tracing` that is exactly 12.5% of the traced image — the triangle's share of it. A capture
+that holds the bottom level's own build replays it and the rays hit.
 
 Not replayed yet: `vkCmdTraceRaysIndirect*`, the NV ray tracing commands, acceleration structure
 copies, queries whose results the frame reads back, and Metal captures. Shader objects are made one at a time from their payloads, so a linked set replays

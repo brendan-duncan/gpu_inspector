@@ -335,10 +335,21 @@ application with injected state. Route (a) is the general one and is the prerequ
       group the captured handle named, matched through the handle blob the layer keeps on the
       pipeline. Verified on an RTX 4080: the ray tracing capture replays with no problems and no
       validation messages, and the triangle and Unity captures are unaffected.
+- [x] The replay compares what a frame computed into an image, not only what it drew into a
+      target (`Replayer::InjectStorageReadbacks`). It found a real gap at once: on the ray
+      tracing capture exactly 12.5% of the traced image differs, the triangle's share of it,
+      because the bottom level is unbuilt in the replay. Checked for false positives on the
+      triangle and Unity captures, which have no storage read-backs and are unchanged.
 - [ ] Ray tracing, the rest:
-  - What a trace writes is never checked: the replay compares render targets, and a trace writes a
-    storage image, so a trace that runs and one that produces the wrong pixels look alike. The
-    capture reads that image back, so comparing it is a matter of dumping it beside the others.
+  - An instance's `accelerationStructureReference` is the *captured* bottom level's device address,
+    and the replay uploads the instance buffer as it was, so a replayed top level references
+    structures that do not exist here. The references have to be rewritten the way the binding
+    table's handles are — captured address to object id (the layer records one on every
+    structure) to the replay's own address. Not yet visible on the test capture, whose bottom
+    level is unbuilt anyway, but it would break any capture that holds a bottom level's build.
+  - A bottom level built before the capture cannot be rebuilt by the replay, so its rays miss
+    (docs/REPLAY.md). Reading the structure back with `vkCmdCopyAccelerationStructureToMemoryKHR`
+    at capture time is the only way to carry one that was never built while watching.
   - `vkCmdTraceRaysIndirect*`, the NV ray tracing commands and the acceleration structure copies
     (`vkCmdCopyAccelerationStructure*`) are still left out.
   - Editing a ray tracing stage.
