@@ -401,6 +401,15 @@ vendor's driver is listed at the end so nobody spends time on it.
       stall. Two things the real capture caught: the tick values are past 2^53 and so arrive as
       JSON strings, and counting the axis either side of the GPU lane as idle reported a 96% idle
       GPU on a frame whose GPU was simply not the limit.
+- [x] Frame Bound no longer names a bottleneck from numbers measured under different conditions
+      (`renderer/capture_statistics.ts`, `CAPTURE_DISTORTION`): the GPU figure comes from a capture
+      and the budget from the application running without one. Checked against the real Unity
+      player, which runs at 1475 fps (0.68 ms a frame) and whose captured passes span 9.2 ms — 12x
+      the whole frame — and was being called "GPU bound".
+- [ ] What a capture costs, measured rather than only flagged: the captured frame's own wall-clock
+      interval would let the card compare like with like instead of refusing, and would say how
+      much of the captured frame was the library's own work (queries, read-backs). The Unity player
+      is the target that shows it — 12x on a 7-pass frame.
 - [ ] The timeline as a drawing, the rest: the lanes zoomable and scrollable rather than fitted to
       the card (a 4,000-draw frame's spans are sub-pixel at frame scale, and `MAX_SPANS_PER_TRACK`
       drops the rest); clicking a span to select the pass or call it names; the CPU timeline live in

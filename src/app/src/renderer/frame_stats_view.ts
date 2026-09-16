@@ -45,6 +45,15 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
   bar("GPU (pass span)", bound.gpuMs, "#4a8db8");
   bar("CPU (submit)", t.submitMs, "#5fd08a");
   if (bound.vsync) bar("Frame interval", t.frameMs, "#a0a0a0");
+  if (bound.distorted) {
+    new Div(body, {
+      text: "The GPU bar is the captured passes and the frame interval is the application running normally, "
+        + "without a capture. Capturing adds queries around every pass and reads every render target back, so "
+        + "the captured frame is the more expensive one; the two bars are not on the same footing here.",
+      class: "text-muted font-sm",
+    });
+    return;
+  }
   new Div(body, {
     text: bound.vsync
       ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, ${REFRESH_SOURCE_NOTE[t.refreshSource ?? ""] ?? "estimated from the frame intervals while vsync is on"}). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.`

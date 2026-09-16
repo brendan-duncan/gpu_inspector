@@ -399,7 +399,16 @@ export const REFRESH_SOURCE_NOTE: Record<string, string> = {
   estimate: "estimated from the frame intervals while vsync is on",
 };
 
-export type FrameBoundKind = "gpu" | "cpu" | "idle";
+export type FrameBoundKind = "gpu" | "cpu" | "idle" | "distorted";
+
+/**
+ * How far the captured passes may exceed the frame interval before the two are treated as having
+ * been measured under different conditions. An application that is genuinely GPU bound cannot have
+ * a frame shorter than its GPU work — the frame waits for the GPU — so a GPU span above the
+ * interval is not a worse bottleneck, it is a sign the capture itself made the frame more
+ * expensive. A little over is measurement noise; far over is the capture.
+ */
+export const CAPTURE_DISTORTION = 1.25;
 
 /** What a frame waits on, and the budget that was measured against. */
 export interface FrameBound {
@@ -410,6 +419,11 @@ export interface FrameBound {
   /** GPU span of the captured passes, per frame. */
   gpuMs: number;
   vsync: boolean;
+  /**
+   * The captured passes take longer than the whole frame did, so the capture's own cost is in
+   * them and the comparison says nothing about the application (see CAPTURE_DISTORTION).
+   */
+  distorted: boolean;
 }
 
 /**
@@ -424,7 +438,19 @@ export function frameBound(t: { frameMs: number; refreshMs: number; submitMs: nu
   const gpu = t.frames > 1 ? t.gpuSpanMs / t.frames : t.gpuSpanMs;
   let verdict: string;
   let kind: FrameBoundKind;
-  if (gpu / budget > 0.8) {
+  // Checked before anything else: when the GPU span is longer than the frame itself the two were
+  // not measured under the same conditions, and every verdict below would be read off numbers
+  // that cannot both be true of the same frame.
+  const distorted = gpu > budget * CAPTURE_DISTORTION;
+  if (distorted) {
+    verdict = "The captured passes take longer than the frame did, so the capture's own work — the "
+      + "timestamp, statistics and occlusion queries around every pass, and the render targets read "
+      + "back at the end of each — is most of what was measured. A frame cannot be shorter than the GPU "
+      + "work it waits for, so these two numbers cannot both describe the same frame and no bottleneck "
+      + "can be named from them. Compare passes against each other instead (GPU Bottlenecks), which is "
+      + "unaffected, and read the frame interval from the live meter.";
+    kind = "distorted";
+  } else if (gpu / budget > 0.8) {
     verdict = "GPU bound";
     kind = "gpu";
   } else if (t.submitMs / budget > 0.8) {
@@ -440,5 +466,5 @@ export function frameBound(t: { frameMs: number; refreshMs: number; submitMs: nu
     verdict = "Present / CPU bound outside submit: the GPU has headroom";
     kind = "idle";
   }
-  return { verdict, kind, budgetMs: budget, gpuMs: gpu, vsync };
+  return { verdict, kind, budgetMs: budget, gpuMs: gpu, vsync, distorted };
 }
