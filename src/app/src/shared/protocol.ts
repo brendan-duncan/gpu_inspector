@@ -211,6 +211,13 @@ export interface CaptureCommand {
   args: ArgObject | null;
   result?: number;
   children?: CaptureChildBuffer[]; // secondary command buffers of vkCmdExecuteCommands
+  /**
+   * vkCmdBuildAccelerationStructures*: the contents the layer read back for the addresses the
+   * build named, as `{info, geometry, field, capture}` per resolved address
+   * (src/vulkan/src/hooks.cpp). On the command rather than on the structure because a structure's
+   * update is last-write-wins and an application that rebuilds every frame would overwrite it.
+   */
+  buildData?: ArgObject[];
   /** Set on commands the UI inlined from a secondary command buffer: that buffer's object id. */
   secondary?: number;
   /** vkCmdBindDescriptorSets / vkCmdPushDescriptorSet: what the bound sets contained. */

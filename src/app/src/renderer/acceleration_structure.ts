@@ -13,6 +13,7 @@
 // this nothing referenced them.
 import type { ArgObject, ArgValue } from "../shared/protocol.js";
 import { isObject, num, str } from "./vulkan/vulkan_object.js";
+import { vertexFormat } from "./vulkan/vk_format.js";
 
 /** Bytes of one VkAccelerationStructureInstanceKHR. Fixed by the specification. */
 export const INSTANCE_STRIDE = 64;
@@ -198,4 +199,108 @@ function capturedData(g: ArgObject): Partial<AccelerationGeometry> {
     transformData: pick(triangles, "transformData"),
     instanceData: pick(instances, "data"),
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drawing what was built.
+//
+// The preview takes a flat list of positions, one per vertex, already expanded into primitives
+// (renderer/mesh_preview.ts) — so everything here ends at a Float32Array and nothing here knows
+// about WebGL.
+
+/** A unit cube's 12 edges, as pairs of corners, for drawing an instance whose geometry is absent. */
+const CUBE_EDGES: [number, number, number][] = (() => {
+  const corner = (i: number): [number, number, number] =>
+    [(i & 1) ? 0.5 : -0.5, (i & 2) ? 0.5 : -0.5, (i & 4) ? 0.5 : -0.5];
+  const pairs: [number, number, number][] = [];
+  for (let a = 0; a < 8; a++) {
+    for (const bit of [1, 2, 4]) {
+      const b = a ^ bit;
+      if (b > a) pairs.push(corner(a), corner(b));
+    }
+  }
+  return pairs;
+})();
+
+/** A point through an instance's row-major 3x4 transform. */
+export function transformPoint(m: number[], x: number, y: number, z: number): [number, number, number] {
+  return [
+    m[0] * x + m[1] * y + m[2] * z + m[3],
+    m[4] * x + m[5] * y + m[6] * z + m[7],
+    m[8] * x + m[9] * y + m[10] * z + m[11],
+  ];
+}
+
+/**
+ * The triangles a bottom-level geometry was built from, as one position per vertex in triangle
+ * order. Null when the build's vertices were not captured, or the format is not one that can be
+ * read as positions.
+ *
+ * `maxVertex` is the highest index the build may read, so the vertex array holds one more than it.
+ */
+export function triangleMesh(g: AccelerationGeometry, vertices: Uint8Array | null,
+                             indices: Uint8Array | null): Float32Array | null {
+  if (g.kind !== "triangles" || !vertices || !g.vertexStride) return null;
+  const format = vertexFormat(`VK_FORMAT_${g.vertexFormat ?? ""}`);
+  if (!format) return null;
+  const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
+  const count = Math.min((g.maxVertex ?? 0) + 1, Math.floor(vertices.byteLength / g.vertexStride));
+  const positions: number[] = [];
+  const at = (vertex: number): void => {
+    const offset = vertex * g.vertexStride!;
+    if (vertex >= count || offset + format.size > vertices.byteLength) {
+      positions.push(0, 0, 0);
+      return;
+    }
+    const v = format.read(view, offset);
+    positions.push(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0);
+  };
+
+  const wanted = g.primitiveCount * 3;
+  if (g.indexType && g.indexType !== "NONE" && indices) {
+    const size = g.indexType === "UINT16" ? 2 : 4;
+    const iv = new DataView(indices.buffer, indices.byteOffset, indices.byteLength);
+    const available = Math.floor(indices.byteLength / size);
+    for (let i = 0; i < wanted && i < available; i++) {
+      at(size === 2 ? iv.getUint16(i * size, true) : iv.getUint32(i * size, true));
+    }
+  } else {
+    for (let i = 0; i < wanted; i++) at(i);
+  }
+  return positions.length ? new Float32Array(positions) : null;
+}
+
+/**
+ * The scene a top level describes: each instance's bottom level placed by its transform, and a box
+ * where the geometry of one is not in the capture. A bottom level is usually built once, before any
+ * capture, so the boxes are the common case rather than the fallback — and they still say how many
+ * instances there are and where they sit, which is what a top level is for.
+ *
+ * `meshOf` gives the triangles of a bottom level by object id, or null when they were not captured.
+ */
+export function instanceScene(instances: AccelerationInstance[],
+                              meshOf: (blas: number) => Float32Array | null): { mesh: Float32Array; kind: "triangles" | "lines"; placed: number } {
+  const triangles: number[] = [];
+  const lines: number[] = [];
+  let placed = 0;
+  for (const i of instances) {
+    const geometry = i.blas !== undefined ? meshOf(i.blas) : null;
+    if (geometry) {
+      placed++;
+      for (let v = 0; v + 2 < geometry.length; v += 3) {
+        const p = transformPoint(i.transform, geometry[v], geometry[v + 1], geometry[v + 2]);
+        triangles.push(p[0], p[1], p[2]);
+      }
+    } else {
+      for (const [x, y, z] of CUBE_EDGES) {
+        const p = transformPoint(i.transform, x, y, z);
+        lines.push(p[0], p[1], p[2]);
+      }
+    }
+  }
+  // Triangles win when any geometry was captured: a box drawn around known geometry says less than
+  // the geometry does, and the preview draws one primitive kind at a time.
+  return triangles.length
+    ? { mesh: new Float32Array(triangles), kind: "triangles", placed }
+    : { mesh: new Float32Array(lines), kind: "lines", placed };
 }

@@ -13,6 +13,15 @@
   `currentAllocatedSize` against `recommendedMaxWorkingSetSize`: Metal has no heap table to break
   down and no separate residency figure, so the series is what it reports and the Memory Use
   section shows that alone.
+- The acceleration structure viewer (**Instances** on a top level in Inspect,
+  `renderer/acceleration_structure.ts`, `renderer/acceleration_scene.ts`): the instances a top
+  level was built from, each with the bottom level it names, where its transform puts it, its
+  visibility mask, custom index, hit group offset and flags — and the scene they make, drawn in the
+  mesh preview. An instance whose bottom level's geometry is in the capture is drawn with that
+  geometry, placed by its transform; one whose is not is drawn as a box where it sits, which is the
+  common case because a bottom level is usually built once, before anything is capturing. An
+  instance's reference to its bottom level is a device address, resolved through the addresses the
+  layer now records on every structure.
 - Ray tracing builds say what they were built from (`src/vulkan/src/resources.h`,
   `renderer/acceleration_structure.ts`). An acceleration structure is opaque — the driver owns its
   layout and nothing reads it back — so the only view of one is what it was built out of, and a

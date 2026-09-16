@@ -28,6 +28,8 @@ import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
 import { defaultPassLabel, type LabelledPass } from "./timeline_tracks.js";
+import { accelerationScene } from "./acceleration_scene.js";
+import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
@@ -167,6 +169,20 @@ export class CapturePanel {
   /** The most recent capture's data. */
   get data(): CaptureData | null {
     return this._live?.data ?? this.activeView?.data ?? null;
+  }
+
+  /**
+   * The scene a top level describes, from whichever open capture holds its build
+   * (renderer/acceleration_structure.ts). A structure is opaque, so the instances its build read are
+   * the only view of it there is.
+   */
+  accelerationScene(structureId: number): AccelerationScene | null {
+    const views = this.activeView ? [this.activeView, ...this._views] : this._views;
+    for (const v of views) {
+      const scene = accelerationScene(v.data, this.window.database, structureId);
+      if (scene) return scene;
+    }
+    return null;
   }
 
   /** Captured contents of an image from the active tab, else the most recent capture that has it. */

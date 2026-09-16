@@ -1082,7 +1082,9 @@ export class InspectPanel {
 
     if (object.type === "VkPipeline") renderShaderGroups(this.inspectPanel, object);
     if (object.updates.executables) this._buildCompilerStatistics(object);
-    if (object.type === "VkAccelerationStructureKHR") renderAccelerationStructure(this.inspectPanel, object, db, onLink);
+    if (object.type === "VkAccelerationStructureKHR") {
+      renderAccelerationStructure(this.inspectPanel, object, db, onLink, this.window.accelerationScene(object.id));
+    }
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     if (object.type === "ID3D12PipelineState") this._buildD3D12ShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
