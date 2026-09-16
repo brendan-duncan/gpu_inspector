@@ -110,7 +110,18 @@ interpreter and re-created pipelines.
 - [ ] Multisampled read-back on Vulkan 1.0 devices: the depth/stencil resolve needs dynamic
       rendering (core 1.3, `VK_KHR_dynamic_rendering` on 1.2), so a 1.0 device would need a
       shader-based resolve of sample zero instead.
-- [ ] Sampled images bound through descriptor buffers / shader objects.
+- [x] Descriptor buffers (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`): the
+      layer keeps every descriptor it saw `vkGetDescriptorEXT` make, resolves a bound descriptor
+      buffer's device address to a buffer, reads the set's memory through the application's own
+      mapping and decodes it into an ordinary descriptor set snapshot, so a draw bound that way
+      shows its bindings and their contents like any other. `test/triangle --descriptor-buffer`.
+- [ ] Descriptor buffers the layer cannot read: memory with no host mapping (a device-local
+      descriptor buffer filled by a staging copy) and descriptors made before it attached. Both are
+      reported as unread rather than guessed at. Reading the first needs the buffer copied back the
+      way a captured buffer range is, and then decoded once the copy has landed rather than at
+      record time; the second cannot be recovered at all, since the bytes say nothing about what
+      they name.
+- [ ] Sampled images bound through shader objects.
 
 ### Inspect
 - [ ] GPU-assisted validation messages attached to the commands they name (submit-time

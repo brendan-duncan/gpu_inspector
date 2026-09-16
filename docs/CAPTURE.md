@@ -46,7 +46,10 @@ Selecting a command fills the right side with everything that was true at that p
   in the [Inspect tab](INSPECT.md#shaders).
 - **Descriptor sets** — every set bound at the draw and what each binding held, with buffers
   decoded into the types the shader declares. **Format** lets you override the type, and
-  **Radix** the base.
+  **Radix** the base. A set bound through a descriptor buffer (`VK_EXT_descriptor_buffer`) reads the
+  same way: the descriptors are driver-defined bytes in the application's own memory, and the layer
+  decodes them by keeping every descriptor it saw the application ask the driver to make. One it
+  never saw made — built before the inspector attached — is shown as unread rather than guessed at.
 - **View Mesh** (a draw) — the draw's mesh in a tab of its own, as a wireframe and a table: the
   vertices it read, and what its vertex shader wrote. See [Mesh view](REPORTS.md#mesh-view).
 - **Debug Vertex**, **Debug Pixel** (a draw) and **Debug Invocation** (a dispatch) — step through

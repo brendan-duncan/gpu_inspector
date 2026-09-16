@@ -61,10 +61,16 @@ const BARRIER_METHODS = new Set([
 /** Transfer verbs that replace the whole destination, so nothing before them is depended on. */
 const FULL_WRITE_VERBS = new Set(["clear", "fill", "update"]);
 
-/** Binding through memory the capture does not snapshot: every action after one reads the unknown. */
+/**
+ * Binding through memory rather than through a set object. The layer reads a descriptor buffer's
+ * contents back where it can (src/vulkan/src/descriptor_buffer.h), so these usually arrive with the
+ * same snapshot a bound set has; one that could not be read arrives with no bindings, and only then
+ * is the stream reading something the graph cannot name. Binding the buffers themselves says
+ * nothing either way — it is the offsets that say which descriptors a draw uses.
+ */
 const DESCRIPTOR_BUFFER_METHODS = new Set([
-  "vkCmdBindDescriptorBuffersEXT", "vkCmdSetDescriptorBufferOffsetsEXT",
-  "vkCmdSetDescriptorBufferOffsets2EXT", "vkCmdBindDescriptorBufferEmbeddedSamplersEXT",
+  "vkCmdSetDescriptorBufferOffsetsEXT", "vkCmdSetDescriptorBufferOffsets2EXT",
+  "vkCmdBindDescriptorBufferEmbeddedSamplersEXT",
 ]);
 
 /** The sets a draw or dispatch reads, per stream and bind point: stream -> bind point -> set -> contents. */
@@ -90,6 +96,11 @@ export class VulkanResourceSource implements ResourceSource {
       let sets = byPoint.get(cmd.descriptors.bindPoint);
       if (!sets) byPoint.set(cmd.descriptors.bindPoint, (sets = new Map()));
       for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      // A set bound through a descriptor buffer whose snapshot has no bindings is one the layer
+      // could not read: memory it had no host mapping for, or descriptors made before it attached.
+      if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method) && cmd.descriptors.sets.some((s) => !s.bindings.length)) {
+        this._descriptorBuffers.add(stream);
+      }
       return;
     }
     const a = cmd.args;

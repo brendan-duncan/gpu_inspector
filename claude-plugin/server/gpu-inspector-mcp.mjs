@@ -3716,7 +3716,6 @@ var BARRIER_METHODS2 = /* @__PURE__ */ new Set([
 ]);
 var FULL_WRITE_VERBS = /* @__PURE__ */ new Set(["clear", "fill", "update"]);
 var DESCRIPTOR_BUFFER_METHODS = /* @__PURE__ */ new Set([
-  "vkCmdBindDescriptorBuffersEXT",
   "vkCmdSetDescriptorBufferOffsetsEXT",
   "vkCmdSetDescriptorBufferOffsets2EXT",
   "vkCmdBindDescriptorBufferEmbeddedSamplersEXT"
@@ -3739,6 +3738,9 @@ var VulkanResourceSource = class {
       let sets = byPoint.get(cmd.descriptors.bindPoint);
       if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
       for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method) && cmd.descriptors.sets.some((s) => !s.bindings.length)) {
+        this._descriptorBuffers.add(stream);
+      }
       return;
     }
     const a = cmd.args;

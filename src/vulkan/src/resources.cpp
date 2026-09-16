@@ -101,6 +101,7 @@ void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
                              _addresses.end());
             break;
         }
+        case HT_VkDeviceMemory: _memory.erase(handle); break;
         case HT_VkFramebuffer: _framebuffers.erase(handle); break;
         case HT_VkRenderPass: _renderPasses.erase(handle); break;
         case HT_VkSwapchainKHR: _swapchains.erase(handle); break;
@@ -166,6 +167,58 @@ VkAccelerationStructureKHR ResourceRegistry::StructureAt(VkDeviceAddress address
     std::shared_lock lock(_mutex);
     auto it = _structureAddresses.find((uint64_t)address);
     return it == _structureAddresses.end() ? VK_NULL_HANDLE : it->second;
+}
+
+void ResourceRegistry::NoteMemory(VkDeviceMemory memory, VkDeviceSize size, bool hostVisible) {
+    if (!memory) return;
+    std::unique_lock lock(_mutex);
+    MemoryInfo& m = _memory[(uint64_t)(uintptr_t)memory];
+    m.size = size;
+    m.hostVisible = hostVisible;
+}
+
+void ResourceRegistry::NoteBufferMemory(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset) {
+    if (!buffer) return;
+    std::unique_lock lock(_mutex);
+    auto it = _buffers.find((uint64_t)(uintptr_t)buffer);
+    if (it == _buffers.end()) return;
+    it->second.memory = memory;
+    it->second.memoryOffset = offset;
+}
+
+void ResourceRegistry::NoteMemoryMapped(VkDeviceMemory memory, void* pointer, VkDeviceSize offset, VkDeviceSize size) {
+    if (!memory) return;
+    std::unique_lock lock(_mutex);
+    MemoryInfo& m = _memory[(uint64_t)(uintptr_t)memory];
+    m.mapped = pointer;
+    m.mappedOffset = offset;
+    m.mappedSize = size == VK_WHOLE_SIZE ? (m.size > offset ? m.size - offset : 0) : size;
+}
+
+void ResourceRegistry::NoteMemoryUnmapped(VkDeviceMemory memory) {
+    if (!memory) return;
+    std::unique_lock lock(_mutex);
+    auto it = _memory.find((uint64_t)(uintptr_t)memory);
+    if (it == _memory.end()) return;
+    it->second.mapped = nullptr;
+    it->second.mappedOffset = 0;
+    it->second.mappedSize = 0;
+}
+
+const uint8_t* ResourceRegistry::HostPointer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) const {
+    if (!buffer || !size) return nullptr;
+    std::shared_lock lock(_mutex);
+    auto b = _buffers.find((uint64_t)(uintptr_t)buffer);
+    if (b == _buffers.end() || !b->second.memory) return nullptr;
+    if (offset > b->second.size || b->second.size - offset < size) return nullptr;
+    auto m = _memory.find((uint64_t)(uintptr_t)b->second.memory);
+    if (m == _memory.end() || !m->second.mapped) return nullptr;
+    // Where the range sits in the allocation, and then in the mapping, which need not start at 0.
+    const VkDeviceSize inMemory = b->second.memoryOffset + offset;
+    if (inMemory < m->second.mappedOffset) return nullptr;
+    const VkDeviceSize inMapping = inMemory - m->second.mappedOffset;
+    if (inMapping > m->second.mappedSize || m->second.mappedSize - inMapping < size) return nullptr;
+    return (const uint8_t*)m->second.mapped + inMapping;
 }
 
 } // namespace vkinsp

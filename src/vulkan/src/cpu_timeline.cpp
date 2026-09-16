@@ -11,6 +11,7 @@
 #include "capture.h"
 #include "json_writer.h"
 #include "layer.h"
+#include "resources.h"
 #include "tracker.h"
 #include "transport.h"
 
@@ -298,6 +299,11 @@ void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAlloca
     if (!dev || !memory || !info) return;
     const uint32_t type = info->memoryTypeIndex;
     if (type >= dev->memoryProperties.memoryTypeCount) return;
+    // Kept apart from the per-heap totals below: reading a descriptor buffer means finding the
+    // allocation a buffer sits in and whether the application has it mapped (descriptor_buffer.h).
+    ResourceRegistry::Get().NoteMemory(
+        memory, info->allocationSize,
+        (dev->memoryProperties.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0);
     const uint32_t heap = dev->memoryProperties.memoryTypes[type].heapIndex;
     if (heap >= VK_MAX_MEMORY_HEAPS) return;
     std::lock_guard lock(g_memoryMutex);

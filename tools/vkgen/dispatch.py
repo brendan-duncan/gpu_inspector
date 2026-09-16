@@ -101,6 +101,19 @@ EXTRA_HOOKS = {
     "vkCmdBuildAccelerationStructuresKHR",
     "vkCmdBuildAccelerationStructuresIndirectKHR",
     "vkBuildAccelerationStructuresKHR",
+    # descriptor buffers: a draw names its sets by an offset into memory rather than by handle, so
+    # what it read is only knowable from the descriptors the application asked the driver to make
+    # and from where it then pointed each set (src/vulkan/src/descriptor_buffer.h)
+    "vkGetDescriptorEXT",
+    "vkCreatePipelineLayout",
+    "vkCmdBindDescriptorBuffersEXT",
+    "vkCmdSetDescriptorBufferOffsetsEXT",
+    "vkCmdSetDescriptorBufferOffsets2EXT",
+    # ...which is read through the application's own mapping of that memory
+    "vkMapMemory",
+    "vkMapMemory2",
+    "vkMapMemory2KHR",
+    "vkUnmapMemory",
     "vkBindBufferMemory",
     "vkBindImageMemory",
     "vkBindBufferMemory2",

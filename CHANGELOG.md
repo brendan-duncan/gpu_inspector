@@ -1,3 +1,25 @@
+## Unreleased
+
+### Added
+- Descriptor buffers are read (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`).
+  A descriptor buffer replaces descriptor sets with plain memory: the application asks the driver
+  for a descriptor's bytes, puts them in a buffer of its own, and a draw names a set by an offset
+  into that buffer rather than by a handle. Nothing about those bytes is defined — their size and
+  layout belong to the implementation — so a capture of an engine using them showed draws reading
+  memory it could say nothing about, and the render graph could only mark the whole stream unknown.
+  What makes them readable is that `vkGetDescriptorEXT` is the *only* way to produce a descriptor:
+  whatever the application does with the bytes afterwards, it had to ask for them first, naming the
+  buffer, image view or sampler it wanted one for. The layer keeps what it saw go past — the bytes,
+  and the resource they were made from — resolves the descriptor buffer's device address back to a
+  buffer the way a ray tracing build's geometry is resolved, reads the set's memory through the
+  application's own mapping, and looks its contents up in that table. The result is an ordinary
+  descriptor set snapshot, so a draw bound this way shows its bindings, their contents and their
+  images exactly as one that bound a set does, and the render graph, the reports and the replay
+  needed no changes to understand it. A descriptor whose bytes were never seen made, or a set in
+  memory with no host mapping, is reported as unread rather than guessed at, and the graph still
+  counts that stream as hiding something. `test/triangle --descriptor-buffer` exercises it, on a
+  Vulkan 1.2 instance, since taking a buffer's device address is core only from there.
+
 ## v0.14.0
 
 ### Added

@@ -593,12 +593,17 @@ export class CommandInfoView {
     const db = this.db;
     const set = bound.set;
     const setObj = db.getObject(refId(set.descriptorSet));
+    // Neither a pushed set nor one in a descriptor buffer has a set object; the command that bound
+    // it is what tells them apart, and calling a descriptor buffer's set "push descriptors" would
+    // name the one path it is not.
     const pushed = !set.descriptorSet;
+    const fromBuffer = pushed && bound.cmd.method.includes("DescriptorBufferOffsets");
     const d3d12 = this.panel.data.api === "d3d12";
     // D3D12: a set is a root parameter — a descriptor table into a heap, or a root view (no heap).
     const label = d3d12
       ? `Root parameter ${set.set}: ${pushed ? "root view" : `table in ${setObj?.name ?? "(destroyed heap)"}`}  (${set.bindings.length} range${set.bindings.length === 1 ? "" : "s"})`
-      : `Descriptor Set ${set.set}: ${pushed ? "push descriptors" : setObj?.name ?? "(destroyed)"}  (${set.bindings.length} bindings)`;
+      : `Descriptor Set ${set.set}: ${fromBuffer ? "in a descriptor buffer" : pushed ? "push descriptors" : setObj?.name ?? "(destroyed)"}`
+        + `  (${set.bindings.length} bindings)`;
     const grp = new collapsible(container, { label, collapsed: false });
     const head = new Div(grp.body, { class: "font-md text-muted descriptor-set-head" });
     if (setObj) {
