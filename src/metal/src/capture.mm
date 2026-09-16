@@ -1,5 +1,7 @@
 #include "capture.h"
 
+#include "cpu_timeline.h"
+
 #include "formats.h"
 #include "frame_stats.h"
 #include "gpu_trace.h"
@@ -453,9 +455,15 @@ void SendTimings(std::vector<PassTiming> &timings, Timing &timing) {
         }
         w.EndArray();
         w.Key("count"); w.Uint(sent);
+        // The tick every pass start is measured from: with the clock calibration below this is
+        // what places a pass beside the CPU calls that committed it (cpu_timeline.h).
+        if (earliest != UINT64_MAX) { w.Key("originTicks"); w.Uint(earliest); }
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
         Log("pass timings: %u of %zu passes timed", sent, timings.size());
+        // The GPU clock related to the host's, while the device is still alive, then the CPU
+        // events the capture timed.
+        SampleCalibration(timing.device, nsPerTick);
     }
     ReleaseTiming(timing);
 }
@@ -682,6 +690,9 @@ void Finish() {
     SendBuffers(buffers);
     SendTextures(textures);
     SendTimings(timings, timing);
+    // After the timings, which sample the clock calibration; sent even when there were none,
+    // since the CPU events stand on their own (cpu_timeline.h).
+    SendCpuTimeline();
     SendOverdraw();
     SendPixelHistory();
     // The end of the capture's stream, whichever sections it had (the empty ones are not sent): a
@@ -737,6 +748,9 @@ void AdvanceFrame() {
             StartPixelHistoryCapture(g_options.pixelHistory);
             StartOverdrawCapture(g_options.overdraw, g_options.pixelHistory.enabled, g_options.maxTextureSize);
             g_recording = true;
+            // The host calls the frame spends its time in, from here until Finish
+            // (cpu_timeline.h).
+            BeginCpuTimeline();
             Log("capture started");
             return;
         } else {

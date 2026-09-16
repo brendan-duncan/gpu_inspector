@@ -23,6 +23,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/hooks_encoders.mm
     src/capture.h
     src/capture.mm
+    src/cpu_timeline.h
+    src/cpu_timeline.mm
     src/formats.h
     src/formats.mm
     src/function_constants.mm

@@ -35,7 +35,7 @@ import { hlslStub } from "./d3d12/hlsl_stub.js";
 import { isD3D12Texture } from "./d3d12/d3d12_object.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
-import { renderD3D12DeviceSections, renderDeviceSections, renderDxgiAdapterSections, renderInstanceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
+import { renderD3D12DeviceSections, renderDeviceSections, renderDxgiAdapterSections, renderInstanceSections, renderMetalDeviceSections, renderPhysicalDeviceSections } from "./device_info_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
@@ -1093,6 +1093,7 @@ export class InspectPanel {
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
     if (object.type === "ID3D12Device") renderD3D12DeviceSections(this.inspectPanel, object, db);
     if (object.type === "IDXGIAdapter") renderDxgiAdapterSections(this.inspectPanel, object, db);
+    if (object.type === "MTLDevice") renderMetalDeviceSections(this.inspectPanel, db);
     if (object.type === "VkDescriptorSet" || object.type === "ID3D12DescriptorHeap") this._buildDescriptorSetSection(object);
     this._imageView = null;
     // A D3D12 texture is an ID3D12Resource whose description is not a buffer's; the live read-back

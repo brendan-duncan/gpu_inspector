@@ -469,6 +469,24 @@ Nsight Graphics has no shader debugger and no LLM-facing surface, both of which 
 
 ## Metal
 
+- [ ] **Untested on a Mac.** The CPU timeline and memory series below were written on Windows,
+      where `src/metal/` does not compile: they need a build and a run before they are trusted.
+      What to check first — that `nextDrawable` shows as *Waiting for a swapchain image* on a
+      vsynced app (the verdict reads it as display pacing), that the GPU lane lands beside the
+      commits rather than offset (the calibration relates `sampleTimestamps` to `steady_clock`,
+      which assumes nothing about Metal's host domain but does assume the two reads bracket the
+      same instant), and that `MTLDevice` in Inspect shows a Memory Use section with the series.
+- [x] The CPU timeline and memory over time (`src/metal/src/cpu_timeline.h`), so **Where the CPU
+      went**, the **Timeline** card and memory as a shape work on a Metal capture. Submit is
+      `commit`, waiting for the GPU is `waitUntilCompleted`/`waitUntilScheduled`, waiting for the
+      display is `nextDrawable`; there is no present span, because `presentDrawable:` does not
+      block. `sampleTimestamps:gpuTimestamp:` gives the clock relation and the pass timings now
+      carry `originTicks`.
+- [ ] Metal memory per heap: there is no heap table to enumerate and no residency figure separate
+      from `currentAllocatedSize`, so Memory Use shows the series alone. Totalling the tracked
+      MTLBuffer/MTLTexture/MTLHeap `allocatedSize` would give a breakdown by object, which is a
+      different shape from the other two backends' heaps and needs its own view.
+
 The Metal capture library (`src/metal/`) reaches the Inspect and Capture panels through the same
 protocol as the Vulkan layer. What it lacks falls into two groups: what the UI already does for
 Vulkan and only needs the library to send, and what Xcode's Metal Debugger has that neither

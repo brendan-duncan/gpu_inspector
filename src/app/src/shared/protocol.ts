@@ -577,9 +577,13 @@ export interface DeviceRemovedMessage {
 
 /** One heap in a memory sample. `usage` and `budget` are absent where the driver reports neither. */
 export interface MemorySampleHeap {
-  /** Bytes this application holds from the heap, and in how many allocations. */
+  /** Bytes this application holds from the heap. */
   allocated: number;
-  allocations: number;
+  /**
+   * How many allocations that is. Absent on Metal, which reports the total directly
+   * (`currentAllocatedSize`) and has nothing to count.
+   */
+  allocations?: number;
   /** The driver's view, counting every process: what is resident, and what this one may have. */
   usage?: number;
   budget?: number;

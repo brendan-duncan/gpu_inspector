@@ -2,6 +2,7 @@
 // where frames end. See hooks_common.h for the shape every hook has.
 #include "hooks.h"
 #include "hooks_common.h"
+#include "cpu_timeline.h"
 #include "frame_stats.h"
 #include "overdraw.h"
 #include "transport.h"
@@ -380,9 +381,12 @@ void CB_commit(id self, SEL _cmd) {
     // Records the commit, drives the capture state machine: arms, counts a frame, or finishes
     // and sends.
     OnCommit(self);
-    // The commit's own CPU time is the frame report's submit time, as vkQueueSubmit's is.
+    // The commit's own CPU time is the frame report's submit time, as vkQueueSubmit's is, and
+    // one span of the capture's CPU timeline (cpu_timeline.h).
     const auto begin = std::chrono::steady_clock::now();
+    const uint64_t cpuEvent = CpuEventBegin();
     ORIG(void (*)(id, SEL))(self, _cmd);
+    CpuEventEnd(cpuEvent, CpuCategory::Submit);
     AddSubmitTime((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                       std::chrono::steady_clock::now() - begin).count());
 }
@@ -396,13 +400,18 @@ void CB_enqueue(id self, SEL _cmd) {
 void CB_waitUntilScheduled(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("waitUntilScheduled", self, {});
+    const uint64_t cpuEvent = reentry.outermost() ? CpuEventBegin() : 0;
     ORIG(void (*)(id, SEL))(self, _cmd);
+    CpuEventEnd(cpuEvent, CpuCategory::WaitFences);
 }
 
 void CB_waitUntilCompleted(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) RecordCommand("waitUntilCompleted", self, {});
+    // Blocked until the GPU catches up: the span that says a frame is GPU bound.
+    const uint64_t cpuEvent = reentry.outermost() ? CpuEventBegin() : 0;
     ORIG(void (*)(id, SEL))(self, _cmd);
+    CpuEventEnd(cpuEvent, CpuCategory::WaitFences);
 }
 
 void CB_encodeWaitForEvent(id self, SEL _cmd, id event, uint64_t value) {
