@@ -651,7 +651,7 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
         reported = EmitBoundary(d, now, "present", synced ? d.displayRefreshMs : 0, presentMode);
     }
     lock.unlock();
-    if (reported) SendMemoryBudget(device);
+    if (reported) { SendMemoryBudget(device); SendMemorySample(device); }
 }
 
 void OnFrameNoPresent(ID3D12Device* device) {
@@ -661,7 +661,7 @@ void OnFrameNoPresent(ID3D12Device* device) {
     std::unique_lock<std::mutex> lock(g_mutex);
     const bool reported = EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
     lock.unlock();
-    if (reported) SendMemoryBudget(device);
+    if (reported) { SendMemoryBudget(device); SendMemorySample(device); }
 }
 
 void AddSubmitTime(ID3D12Device* device, double milliseconds) {

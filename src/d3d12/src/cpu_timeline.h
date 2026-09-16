@@ -107,4 +107,27 @@ void SendMemoryBudget(ID3D12Device* device);
 void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc,
                              D3D12_HEAP_TYPE heapType);
 
+// ---------------------------------------------------------------------------------------------
+// Memory over time.
+//
+// The updates above are an instant: they say what is held now and overwrite what they said
+// before. What that cannot show is the shape — memory climbing frame after frame is a leak,
+// sawtoothing is a pool being refilled, flat is neither, and all three look identical at any one
+// moment. So the library keeps a running total per segment and reports it with each frame report.
+//
+/** An explicit heap the application created, added to its segment's running total. */
+void NoteHeapAllocation(ID3D12Heap* heap, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType);
+
+/** A committed resource's implicit heap, added the same way (NoteCommittedAllocation calls it). */
+void NoteHeldAllocation(void* object, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType);
+
+/** A released heap or committed resource, subtracted from it. Quiet for one that was never noted. */
+void NoteMemoryReleased(void* object);
+
+/**
+ * One sample of the memory series: what this application holds per segment, and what the driver
+ * says is resident and allowed. Called with the frame report.
+ */
+void SendMemorySample(ID3D12Device* device);
+
 }  // namespace dxinsp

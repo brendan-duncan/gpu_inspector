@@ -26,6 +26,16 @@
   memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
   registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
   light the report rules register pressure out instead.
+- Memory over time (**Over time** in the Memory Use section, `renderer/memory_timeline.ts`): both
+  capture libraries keep a running total per heap and send a sample with each frame report, so
+  memory reads as a shape rather than an instant. A renderer that has leaked a gigabyte and one
+  that legitimately holds a gigabyte are identical at any single moment; only the direction tells
+  them apart, and the verdict names which of the four it is — climbing without giving it back (a
+  leak, with the bytes per frame), rising and falling (a pool being emptied and refilled, where the
+  peak is what has to fit), steady, or releasing. The shape is read from how far the series moves
+  each way rather than from its endpoints, since a pool can stop anywhere in its cycle. The totals
+  are kept as the application allocates rather than counted on demand, so a renderer with tens of
+  thousands of allocations is not walked ten times a second.
 - D3D12 reaches the Vulkan backend's profiling features (`src/d3d12/src/cpu_timeline.h`,
   docs/D3D12.md): the CPU timeline, so **Where the CPU went** and the **Timeline** card work on a
   D3D12 capture, with `GetClockCalibration` putting the passes on the same axis as the calls that

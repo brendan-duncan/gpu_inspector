@@ -3,6 +3,7 @@
 // the Inspect panel shows. One replacement serves every vtable, since IUnknown's and
 // ID3D12Object's slots are the same in every D3D12 interface (IDXGIObject's differ, so DXGI
 // objects get their own).
+#include "cpu_timeline.h"
 #include "hooks.h"
 
 #include "capture.h"
@@ -87,6 +88,9 @@ void OnObjectNamed(void* object, const std::string& name) {
 
 void OnObjectDestroyed(void* object, const std::string& type) {
     // Every module that keeps state under the object, then the tracker (which streams the delete).
+    // Whatever it held comes off the memory series' running total (cpu_timeline.h); quiet for an
+    // object that held none.
+    NoteMemoryReleased(object);
     if (type == "ID3D12Resource") {
         ResourceTracker::Get().OnReleased((ID3D12Resource*)object);
         AddressMap::Get().Remove((ID3D12Resource*)object);
