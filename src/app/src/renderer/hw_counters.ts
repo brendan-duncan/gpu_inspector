@@ -169,7 +169,16 @@ export interface PassLimiter {
   percent: number;
   /** Whether the unit is at or near its sustainable limit, rather than merely the busiest. */
   saturated: boolean;
+  /**
+   * The heaviest shader stage of the pass by register count, where a capture carries the driver's
+   * compiler statistics (src/vulkan/src/shader_statistics.h). Registers are what usually holds
+   * occupancy down, so a latency-bound pass can say not just that few warps ran but why.
+   */
+  registers?: { stage: string; count: number };
 }
+
+/** Registers a pass's heaviest stage uses, above which occupancy is worth blaming on them. */
+export const HIGH_REGISTER_COUNT = 32;
 
 /** Which unit a counter measures, and how to say it. */
 function unitOfCounter(name: string): { kind: LimiterKind; label: string } {
@@ -211,6 +220,29 @@ export function passLimiter(file: HwCounters, range: HwCounterRange): PassLimite
   return { kind: "unsaturated", label: "no unit", counter: "", percent: top.value, saturated: false };
 }
 
+/**
+ * The heaviest stage of a pipeline by register count, from the driver's compiler statistics as the
+ * layer attached them (`updates.executables`). Null when the capture was taken without them, or the
+ * driver reported no register count — the names are the driver's, so this matches loosely.
+ */
+export function heaviestStage(executables: unknown): { stage: string; count: number } | null {
+  if (!Array.isArray(executables)) return null;
+  let best: { stage: string; count: number } | null = null;
+  for (const raw of executables) {
+    const e = raw as Record<string, unknown>;
+    const stats = Array.isArray(e.statistics) ? e.statistics : [];
+    for (const s of stats) {
+      const st = s as Record<string, unknown>;
+      if (typeof st.name !== "string" || !/register/i.test(st.name)) continue;
+      const count = typeof st.value === "number" ? st.value : Number.NaN;
+      if (!Number.isFinite(count)) continue;
+      const stage = Array.isArray(e.stages) && e.stages.length ? String(e.stages[0]) : String(e.name ?? "stage");
+      if (!best || count > best.count) best = { stage, count };
+    }
+  }
+  return best;
+}
+
 /** The verdict in words, for a table cell or a card. */
 export const LIMITER_LABEL: Record<LimiterKind, string> = {
   shader: "Shader bound",
@@ -226,8 +258,31 @@ export const LIMITER_ADVICE: Record<LimiterKind, string> = {
   memory: "The pass is moving more data than the memory system can feed it. Smaller or better compressed textures, fewer or narrower render targets, and fewer full-resolution passes over memory.",
   cache: "The pass is limited by cache traffic rather than by arithmetic. Sampling that stays local (mips, smaller textures, better texture layout) and fewer scattered reads help more than cheaper shader maths.",
   occupancy: "No unit is near its limit and few warps are in flight, so the pass is waiting rather than working: long dependency chains, register pressure limiting occupancy, or too little work to fill the GPU.",
+  // Filled in per pass by limiterAdvice when the compiler statistics name the stage responsible.
   unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbour usually beats optimising it.",
 };
+
+/**
+ * What to try for a pass, with the register count folded in where it explains the verdict. A pass
+ * short of warps whose shader is register-heavy has a cause, not just a symptom, and that changes
+ * the advice from "find more work" to "cut the registers this stage holds".
+ */
+export function limiterAdvice(limiter: PassLimiter): string {
+  const base = LIMITER_ADVICE[limiter.kind];
+  const r = limiter.registers;
+  if (!r) return base;
+  if (limiter.kind === "occupancy" && r.count >= HIGH_REGISTER_COUNT) {
+    return `Its ${r.stage} stage uses ${r.count} registers, which is what is holding occupancy down: `
+      + "the more registers a stage holds, the fewer of its threads the GPU can keep in flight. Shorter live "
+      + "ranges, fewer variables held across a long computation, and less aggressive unrolling all free registers up. "
+      + base;
+  }
+  if (limiter.kind === "occupancy") {
+    return `${base} Its heaviest stage (${r.stage}) uses only ${r.count} registers, so register pressure is not the `
+      + "cause: look at dependency chains and at whether the pass has enough work to fill the GPU.";
+  }
+  return base;
+}
 
 /** One line summarising what was collected, for a status line. */
 export function hwCountersSummary(file: HwCounters): string {

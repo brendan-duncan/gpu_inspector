@@ -124,7 +124,9 @@ function passMeasurements(c: Capture, p: PassMetrics, i: number, gpuMs: number):
     // Measured by the GPU's own counters, where a replay read them: names the saturated unit
     // rather than inferring a stage (get_hw_counters collects them).
     limiter: p.limiter && p.limiter.kind !== "unsaturated"
-      ? { verdict: LIMITER_LABEL[p.limiter.kind], unit: p.limiter.label, percentOfPeak: round(p.limiter.percent), saturated: p.limiter.saturated, counter: p.limiter.counter }
+      ? { verdict: LIMITER_LABEL[p.limiter.kind], unit: p.limiter.label, percentOfPeak: round(p.limiter.percent), saturated: p.limiter.saturated, counter: p.limiter.counter,
+          // Why occupancy is what it is, where the capture carries the driver's compiler statistics.
+          registers: p.limiter.registers ? { stage: p.limiter.registers.stage, count: p.limiter.registers.count } : undefined }
       : undefined,
     problems: problems.length ? problems : undefined,
   };

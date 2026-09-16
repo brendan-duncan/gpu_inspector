@@ -15,7 +15,7 @@ const load = async (entry, name) => {
   buildSync({ entryPoints: [join(here, "..", "src", entry)], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
   return import(pathToFileURL(out).href);
 };
-const { parseHwCounters, counterValue, hwCountersByPass, formatCounter, hwCountersSummary, counterLabel, passLimiter, LIMITER_LABEL } = await load("renderer/hw_counters.ts", "hw_counters");
+const { parseHwCounters, counterValue, hwCountersByPass, formatCounter, hwCountersSummary, counterLabel, passLimiter, LIMITER_LABEL, heaviestStage, limiterAdvice } = await load("renderer/hw_counters.ts", "hw_counters");
 const { encodeCaptureFile, parseCaptureFile, CAPTURE_FORMAT } = await load("renderer/capture_format.ts", "capture_format");
 
 const file = {
@@ -180,6 +180,55 @@ test("counters that are not percentages of peak give no verdict", () => {
     draws: [], available: [], notes: [], problems: [],
   }));
   assert.equal(passLimiter(raw, raw.passes[0]), null, "a raw total says how much, not how close to the limit");
+});
+
+// The compiler statistics the layer attaches to a pipeline (shader_statistics.h), which say why
+// occupancy is what it is rather than only that it is low.
+const executables = (regs) => regs.map(([stage, count]) => ({
+  name: stage.toUpperCase(), stages: [stage],
+  statistics: [{ name: "Register Count", description: "", value: count }, { name: "Binary Size", description: "", value: 640 }],
+}));
+
+test("the heaviest stage by register count is the one reported", () => {
+  const s = heaviestStage(executables([["vertex", 16], ["fragment", 40]]));
+  assert.equal(s.stage, "fragment");
+  assert.equal(s.count, 40);
+});
+
+test("a pipeline with no register statistic gives no stage", () => {
+  assert.equal(heaviestStage([{ name: "VS", stages: ["vertex"], statistics: [{ name: "Binary Size", value: 640 }] }]), null);
+  assert.equal(heaviestStage(undefined), null, "a capture taken without compiler statistics");
+});
+
+test("a register-heavy stage is named as what holds occupancy down", () => {
+  const f = limiterFile([9, 6, 7, 11]);
+  const l = { ...passLimiter(f, f.passes[0]), registers: { stage: "fragment", count: 40 } };
+  assert.equal(l.kind, "occupancy");
+  const advice = limiterAdvice(l);
+  assert.match(advice, /fragment stage uses 40 registers/);
+  assert.match(advice, /holding occupancy down/);
+});
+
+test("a light stage rules register pressure out instead of blaming it", () => {
+  const f = limiterFile([9, 6, 7, 11]);
+  const l = { ...passLimiter(f, f.passes[0]), registers: { stage: "vertex", count: 16 } };
+  const advice = limiterAdvice(l);
+  assert.match(advice, /only 16 registers/);
+  assert.match(advice, /not the cause/);
+});
+
+test("without compiler statistics the advice is unchanged", () => {
+  const f = limiterFile([9, 6, 7, 11]);
+  const l = passLimiter(f, f.passes[0]);
+  assert.equal(l.registers, undefined);
+  assert.match(limiterAdvice(l), /waiting rather than working/);
+});
+
+test("registers only explain an occupancy verdict, not a saturated unit", () => {
+  const f = limiterFile([78, 10, 12, 60]);
+  const l = { ...passLimiter(f, f.passes[0]), registers: { stage: "fragment", count: 40 } };
+  assert.equal(l.kind, "shader");
+  assert.equal(limiterAdvice(l), limiterAdvice({ ...l, registers: undefined }), "a shader-bound pass says the same either way");
 });
 
 test("non-counter JSON is rejected", () => {
