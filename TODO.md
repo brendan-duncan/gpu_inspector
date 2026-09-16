@@ -566,9 +566,26 @@ library does not read back yet.
       application (`src/d3d12/src/overdraw.*`, `pixel_history.cpp`, `pass_record.h`). The pass is
       issued again on the application's own command list with a counting pixel shader, and one
       pixel is followed draw by draw under occlusion queries.
+- [x] The CPU timeline and memory per heap (`src/d3d12/src/cpu_timeline.h`), so **Where the CPU
+      went**, the **Timeline** card and **Memory Use** work on a D3D12 capture. Submit and present
+      are timed in their hooks; the two waits are not D3D12 calls at all, so the library notes the
+      event a fence was given (`SetEventOnCompletion`) and the swapchain's frame-latency object and
+      hooks `WaitForSingleObject(Ex)` / `WaitForMultipleObjectsEx` to time a wait on either — which
+      is the only way a D3D12 frame can be called GPU-bound. `GetClockCalibration` (core, unlike
+      Vulkan's extension) and a new `originTicks` on the pass timings put the passes on the CPU
+      axis. Memory comes from the adapter's two segments plus `QueryVideoMemoryInfo`, with committed
+      resources sized by `GetResourceAllocationInfo` and placed ones deliberately not counted.
+      Checked on an RTX 4080: a 1-frame triangle capture reads submit 0.09 ms, present 11.97 ms,
+      a 16.9 ms fence wait, and the pass 28.6 ms after its submission; memory reads 1.44 MB
+      device-local against the driver's 21.9 MB resident.
+- [ ] Compiler statistics per pipeline on D3D12. Vulkan asks the driver through
+      `VK_KHR_pipeline_executable_properties`; D3D12 has no portable equivalent, so register
+      counts, spills and occupancy are unavailable and the occupancy verdict stays Vulkan-only.
+      `D3DReflect`'s `InstructionCount` is DXBC (SM 5) only and reports 0 for DXIL; the real numbers
+      need a vendor API (NVAPI, AMD GPUOpen) or the driver's own cached blob, neither portable.
 - [ ] The rest of the replay-based analyses — draw overlays, mesh output, per-draw timings and
-      counters (**Measure draws**), shader cost by ablation (**Measure shader**) — which
-      `vkinsp_replay` does for Vulkan captures only. The same in-application route fits them.
+      counters (**Measure draws**), shader cost by ablation (**Measure shader**), hardware counters
+      — which `vkinsp_replay` does for Vulkan captures only. The same in-application route fits them.
 - [x] Stencil read-back: plane 1 of a depth-stencil target, beside its depth (`--stencil` in
       `test/d3d12_triangle`, the `d3d12-stencil` UI case). A multisampled stencil is not resolved.
 - [ ] The contents of sampler feedback, video, work graph and raytracing objects; enhanced

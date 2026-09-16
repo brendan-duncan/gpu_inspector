@@ -9,6 +9,7 @@
 // is sent or the device goes away. Application objects are never AddRef'd: a device or list the
 // application released is forgotten through OnDeviceReleased / OnListReleased.
 #include "capture.h"
+#include "cpu_timeline.h"
 
 #include "d3d12_enums.gen.h"
 #include "formats.h"
@@ -377,6 +378,7 @@ struct CaptureManager::Impl {
     void SendTextures(std::vector<TextureEntry>& textures);
     void SendBuffers(std::vector<BufferEntry>& buffers);
     void SendPassTimings(const std::vector<TimingEntry>& timings, ID3D12Device* home);
+    ID3D12CommandQueue* CalibrationQueue(ID3D12Device* device);
     /** The last captured frame ended: waits for the GPU, streams everything, releases the capture's objects. */
     void Finish(CaptureManager& cm, ID3D12Device* device);
 };
@@ -1615,6 +1617,9 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 i.bufferIds.clear();
                 i.textureIds.clear();
                 i.bufferBytes = i.imageBytes = i.commandTotal = 0;
+                // The host calls the frame spends its time in, from here until Finish
+                // (cpu_timeline.h).
+                BeginCpuTimeline();
                 _capturing.store(true, std::memory_order_release);
                 _recordActive.store(true, std::memory_order_relaxed);
                 started = true;
@@ -1897,6 +1902,28 @@ void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers) {
     }
 }
 
+/**
+ * A direct queue of the device, for GetClockCalibration. Any queue can calibrate, but the pass
+ * timestamps were resolved on a direct one and a copy queue may run on a different clock.
+ */
+ID3D12CommandQueue* CaptureManager::Impl::CalibrationQueue(ID3D12Device* device) {
+    std::vector<DeviceCapture*> captures;
+    {
+        std::lock_guard lock(deviceMutex);
+        for (auto& [d, dc] : devices) captures.push_back(dc.get());
+    }
+    ID3D12CommandQueue* fallback = nullptr;
+    for (DeviceCapture* dc : captures) {
+        std::lock_guard lock(dc->mutex);
+        for (ID3D12CommandQueue* q : dc->queues) {
+            if (!q) continue;
+            if (dc->device == device) return q;
+            if (!fallback) fallback = q;
+        }
+    }
+    return fallback;
+}
+
 void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timings, ID3D12Device* home) {
     if (timings.empty()) return;
     std::vector<DeviceCapture*> captures;
@@ -1920,6 +1947,10 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
     w.Key("timestampPeriodNs"); w.Double(frequency ? 1e9 / (double)frequency : 0.0);
     w.Key("passes"); w.BeginArray();
     uint32_t sent = 0, counted = 0;
+    // The tick every pass start is measured from, on the home device: with the clock
+    // calibration (cpu_timeline.h) this is what places a pass beside the CPU events that
+    // submitted it. Only the home device has a calibrated clock, so only its origin is sent.
+    uint64_t originTicks = 0;
     for (DeviceCapture* dc : captures) {
         const double freq = (double)(dc->frequency ? dc->frequency : frequency);
         if (freq <= 0) continue;
@@ -1936,6 +1967,7 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
             uint64_t b, e;
             if (stamps(te, b, e)) earliest = std::min(earliest, b);
         }
+        if (dc->device == home && earliest != UINT64_MAX) originTicks = earliest;
         for (const TimingEntry& te : timings) {
             uint64_t begin, end;
             if (!stamps(te, begin, end)) continue;
@@ -1974,6 +2006,7 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
     }
     w.EndArray();
     w.Key("count"); w.Uint(sent);
+    if (originTicks) { w.Key("originTicks"); w.Uint(originTicks); }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
     Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
@@ -2041,6 +2074,9 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     SendTextures(data.textures);
     SendBuffers(data.buffers);
     SendPassTimings(data.timings, device);
+    // The GPU clock related to the host's, while the queue is still alive, then the CPU events.
+    SampleCalibration(CalibrationQueue(device));
+    SendCpuTimeline();
     // The measurements taken while the frames were recorded, between the timings and
     // CaptureComplete (docs/ARCHITECTURE.md, "Frame capture").
     SendOverdraw();

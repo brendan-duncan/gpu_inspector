@@ -61,9 +61,18 @@ export interface MemoryHeaps {
 /** A heap holding more than this share of itself is worth pointing at. */
 export const HEAP_PRESSURE_SHARE = 0.8;
 
+/**
+ * The object a backend hangs its memory properties on: Vulkan's physical device, and on D3D12 the
+ * adapter, which is the same thing — what the GPU offers, as opposed to what was made from it
+ * (src/d3d12/src/cpu_timeline.h).
+ */
+function isMemoryDevice(type: string): boolean {
+  return type === "VkPhysicalDevice" || type === "IDXGIAdapter";
+}
+
 function memoryPropertiesOf(db: MemoryDatabase): { heaps: { size: number; flags: string }[]; types: { heapIndex: number; propertyFlags: string }[] } | null {
   for (const o of db.allObjects.values()) {
-    if (o.type !== "VkPhysicalDevice") continue;
+    if (!isMemoryDevice(o.type)) continue;
     const mp = o.updates.memoryProperties;
     if (!isObject(mp)) continue;
     const heapCount = num(mp.memoryHeapCount);
@@ -86,7 +95,7 @@ function memoryPropertiesOf(db: MemoryDatabase): { heaps: { size: number; flags:
 /** The driver's budget per heap, as the layer attached it (`memoryBudget` on the physical device). */
 function budgetOf(db: MemoryDatabase): { budget: number[]; usage: number[] } | null {
   for (const o of db.allObjects.values()) {
-    if (o.type !== "VkPhysicalDevice") continue;
+    if (!isMemoryDevice(o.type)) continue;
     const b = o.updates.memoryBudget;
     if (!isObject(b)) continue;
     const budget = Array.isArray(b.heapBudget) ? b.heapBudget.map((v) => num(v)) : [];
@@ -96,12 +105,42 @@ function budgetOf(db: MemoryDatabase): { budget: number[]; usage: number[] } | n
   return null;
 }
 
-/** The size and memory type of one allocation, or null when the object is not an allocation we can read. */
+/**
+ * The size and memory type of one allocation, or null when the object is not an allocation we can
+ * read.
+ *
+ * Vulkan has one kind: a VkDeviceMemory, whose creation arguments carry both. D3D12 has two — an
+ * ID3D12Heap the application allocated itself, and the implicit heap behind a committed resource,
+ * whose size only the runtime knows and which the library therefore attaches as an `allocation`
+ * update (src/d3d12/src/cpu_timeline.h). A placed resource is deliberately not one of them: it
+ * lives inside a heap already counted here.
+ */
 function allocationOf(o: VulkanObject): { bytes: number; typeIndex: number } | null {
-  if (o.type !== "VkDeviceMemory" || o.isDeleted) return null;
-  const info = isObject(o.args) ? o.args.pAllocateInfo : undefined;
-  if (!isObject(info)) return null;
-  return { bytes: num(info.allocationSize), typeIndex: num(info.memoryTypeIndex) };
+  if (o.isDeleted) return null;
+  if (o.type === "VkDeviceMemory") {
+    const info = isObject(o.args) ? o.args.pAllocateInfo : undefined;
+    if (!isObject(info)) return null;
+    return { bytes: num(info.allocationSize), typeIndex: num(info.memoryTypeIndex) };
+  }
+  if (o.type === "ID3D12Heap") {
+    const desc = isObject(o.args) ? o.args.pDesc : undefined;
+    if (!isObject(desc)) return null;
+    const props = isObject(desc.Properties) ? desc.Properties : undefined;
+    return { bytes: num(desc.SizeInBytes), typeIndex: d3d12HeapTypeIndex(props ? str(props.Type) : "") };
+  }
+  if (o.type === "ID3D12Resource") {
+    const a = o.updates.allocation;
+    if (!isObject(a)) return null;   // a placed or reserved resource, or a capture before this existed
+    return { bytes: num(a.sizeBytes), typeIndex: num(a.heapTypeIndex) };
+  }
+  return null;
+}
+
+/** The index of a D3D12 heap type in the order the library reports them (cpu_timeline.cpp). */
+function d3d12HeapTypeIndex(type: string): number {
+  if (type.includes("UPLOAD")) return 1;
+  if (type.includes("READBACK")) return 2;
+  return 0;   // DEFAULT, and a CUSTOM heap whose properties the library did not map
 }
 
 /**

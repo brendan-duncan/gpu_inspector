@@ -15,6 +15,7 @@
 #include "d3d12_vtables.gen.h"
 #include "descriptors.h"
 #include "device_info.h"
+#include "cpu_timeline.h"
 #include "device_removed.h"
 #include "formats.h"
 #include "image_readback.h"
@@ -164,6 +165,9 @@ void OnResourceCreated(ID3D12Device* device, ID3D12Resource* resource, const cha
         if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) address = resource->GetGPUVirtualAddress();
     }
     ResourceTracker::Get().OnCreated(resource, desc, heapType, initialState, heap, heapOffset);
+    // A committed resource allocates its own memory; a placed one lives in a heap whose size is
+    // already counted, so only the first is recorded (cpu_timeline.h).
+    if (!heap) NoteCommittedAllocation(device, resource, desc, heapType);
     if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && address) AddressMap::Get().Add(resource, address, desc.Width);
     Log("%s -> ID3D12Resource %p (%s, %llux%ux%u, %s)", cmd, (void*)resource,
         ToString_D3D12_RESOURCE_DIMENSION(desc.Dimension) ? ToString_D3D12_RESOURCE_DIMENSION(desc.Dimension) : "?",
@@ -1158,6 +1162,9 @@ bool InstallEntryPointHooks() {
     HookExport(dxgi, "CreateDXGIFactory", (void*)&Hook_CreateDXGIFactory, (void**)&g_CreateDXGIFactory);
     HookExport(dxgi, "CreateDXGIFactory1", (void*)&Hook_CreateDXGIFactory1, (void**)&g_CreateDXGIFactory1);
     HookExport(dxgi, "CreateDXGIFactory2", (void*)&Hook_CreateDXGIFactory2, (void**)&g_CreateDXGIFactory2);
+    // A D3D12 fence is waited on with a Win32 call, not a D3D12 one, so the only place to see the
+    // CPU waiting for the GPU is the wait itself (cpu_timeline.h).
+    InstallWaitHooks();
     if (!EnableFunctionHooks()) return false;
     Log("entry point hooks installed");
     return true;
@@ -1264,10 +1271,25 @@ void HookStateObject(ID3D12StateObject* stateObject) {
     HookD3D12Object(stateObject, "ID3D12StateObject", slot::ID3D12StateObject_Count, {});
 }
 
+/**
+ * A fence's event handle, noted so that a wait on it can be recognised as waiting for the GPU. The
+ * wait itself is a Win32 call and is timed there (cpu_timeline.h).
+ */
+HRESULT STDMETHODCALLTYPE Hook_SetEventOnCompletion(ID3D12Fence1* This, UINT64 Value, HANDLE hEvent) {
+    auto orig = Orig<PFN_ID3D12Fence1_SetEventOnCompletion>(This, slot::ID3D12Fence1_SetEventOnCompletion);
+    HRESULT hr = orig(This, Value, hEvent);
+    // A null event means "block until signalled" inside this call, which the runtime does itself;
+    // there is no handle to watch for, so the wait is timed here instead.
+    if (SUCCEEDED(hr) && hEvent) NoteFenceEvent(hEvent);
+    return hr;
+}
+
 void HookFence(ID3D12Fence* fence) {
     if (!fence || VtableHooked(fence)) return;
     uint32_t count = QueryAs<ID3D12Fence1>(fence) ? slot::ID3D12Fence1_Count : slot::ID3D12Fence1_GetCreationFlags;
-    HookD3D12Object(fence, "ID3D12Fence", count, {});
+    HookD3D12Object(fence, "ID3D12Fence", count, {
+        {slot::ID3D12Fence1_SetEventOnCompletion, (void*)&Hook_SetEventOnCompletion},
+    });
 }
 
 void HookQueryHeap(ID3D12QueryHeap* heap) {

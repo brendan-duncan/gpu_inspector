@@ -153,7 +153,8 @@ function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
     row(s, "Nearly full", `Heap ${h.index} is close to its limit; an allocation failure here is a device-lost or an out-of-memory away.`);
   }
   if (!m.hasBudget) {
-    new Div(container, { text: "This device has no VK_EXT_memory_budget, so how much is resident and how much the driver will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
+    // Both backends can fail to report it, for their own reasons, so the note names neither device.
+    new Div(container, { text: "The driver did not report residency (Vulkan needs VK_EXT_memory_budget; D3D12 needs an adapter new enough for QueryVideoMemoryInfo), so how much is resident and how much it will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
   }
 }
 
@@ -315,7 +316,7 @@ export function renderD3D12DeviceSections(container: Widget, object: VulkanObjec
   }
 }
 
-export function renderDxgiAdapterSections(container: Widget, object: VulkanObject): void {
+export function renderDxgiAdapterSections(container: Widget, object: VulkanObject, db: MemoryDatabase | null = null): void {
   const desc = isObject(object.updates.Desc) ? object.updates.Desc : isObject(object.args?.Desc) ? object.args.Desc : isObject(object.args?.pDesc) ? object.args.pDesc : null;
   if (!desc) {
     new Div(container, { text: "The library did not report this adapter's description.", class: "text-muted capture-note" });
@@ -336,6 +337,10 @@ export function renderDxgiAdapterSections(container: Widget, object: VulkanObjec
   if (desc.ComputePreemptionGranularity !== undefined) row(p, "Compute preemption", fmt(desc.ComputePreemptionGranularity).replace(/^COMPUTE_PREEMPTION_/, "").toLowerCase().replace(/_/g, " "));
   const luid = isObject(desc.AdapterLuid) ? desc.AdapterLuid : null;
   if (luid) row(p, "LUID", `${hex(num(luid.HighPart))}:${hex(num(luid.LowPart))}`);
+
+  // The adapter is where D3D12 reports its memory segments, as Vulkan does on the physical
+  // device (src/d3d12/src/cpu_timeline.h).
+  renderMemoryUse(container, db);
 }
 
 export function renderInstanceSections(container: Widget, object: VulkanObject): void {
