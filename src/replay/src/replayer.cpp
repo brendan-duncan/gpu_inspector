@@ -1345,6 +1345,16 @@ void Replayer::ApplyBufferData(const CommandGroup& group) {
         const JValue& c = commands->items[i];
         if (const JValue* list = c.Get("bufferData"); list && list->IsArray())
             for (uint32_t k = 0; k < list->count; ++k) apply(list->items[k].Uint());
+        // An acceleration structure build reads its geometry from buffers named by address, and the
+        // contents the layer read back for them are listed apart from bufferData because each entry
+        // also says which buffer and offset it came from (src/vulkan/src/hooks.cpp). Without this the
+        // replay builds a structure out of whatever those buffers happen to hold, and every ray misses.
+        if (const JValue* list = c.Get("buildData"); list && list->IsArray()) {
+            for (uint32_t k = 0; k < list->count; ++k) {
+                const JValue* capture = list->items[k].Get("capture");
+                if (capture) apply(capture->Uint());
+            }
+        }
         if (const JValue* d = c.Get("descriptors")) {
             const JValue* sets = d->Get("sets");
             for (uint32_t s = 0; sets && s < sets->count; ++s) {
@@ -1433,6 +1443,62 @@ static const JValue* ItemAt(const JValue* array, uint32_t i) {
     return array && array->IsArray() && i < array->count ? &array->items[i] : nullptr;
 }
 
+
+VkDeviceAddress Replayer::RemapStructureAddress(uint64_t capturedAddress) {
+    if (!capturedAddress || !_fns.GetAccelerationStructureDeviceAddressKHR) return 0;
+    if (!_structureAddressesBuilt) {
+        _structureAddressesBuilt = true;
+        // The layer records the address it handed out on every structure, which is the only way back
+        // from an instance's reference to the object it names (src/vulkan/src/hooks.cpp).
+        const JValue* objects = _capture->Objects();
+        for (uint32_t i = 0; objects && objects->IsArray() && i < objects->count; ++i) {
+            const JValue& o = objects->items[i];
+            if (Str(o.Get("type")) != "VkAccelerationStructureKHR") continue;
+            const JValue* updates = o.Get("updates");
+            const JValue* address = updates ? updates->Get("deviceAddress") : nullptr;
+            const JValue* id = o.Get("id");
+            if (address && id) _structureAddresses[address->Uint()] = id->Uint();
+        }
+    }
+    auto it = _structureAddresses.find(capturedAddress);
+    if (it == _structureAddresses.end()) return 0;
+    const uint64_t handle = Handle(it->second);
+    if (!handle) return 0;
+    VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    info.accelerationStructure = (VkAccelerationStructureKHR)(uintptr_t)handle;
+    return _fns.GetAccelerationStructureDeviceAddressKHR(_device, &info);
+}
+
+bool Replayer::PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances) {
+    // VkAccelerationStructureInstanceKHR: 64 bytes, the reference the last 8 of them.
+    constexpr size_t kStride = 64;
+    constexpr size_t kReferenceAt = 56;
+    auto it = _bufferData.find(captureId);
+    if (it == _bufferData.end()) return false;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    if (!_capture->Payload(it->second->Get("payload"), data, size) || size < kStride) return false;
+    auto buffer = _buffers.find(bufferId);
+    if (buffer == _buffers.end()) return false;
+
+    std::vector<uint8_t> patched(data, data + size);
+    const size_t held = size / kStride;
+    for (size_t i = 0; i < held && i < instances; ++i) {
+        uint64_t captured = 0;
+        memcpy(&captured, &patched[i * kStride + kReferenceAt], sizeof(captured));
+        const VkDeviceAddress here = RemapStructureAddress(captured);
+        if (!here) {
+            Problem("left out: instance " + std::to_string(i) + " of the build names a bottom level the replay does not have");
+            return false;
+        }
+        const uint64_t value = (uint64_t)here;
+        memcpy(&patched[i * kStride + kReferenceAt], &value, sizeof(value));
+    }
+    // After ApplyBufferData, which uploaded the buffer as captured at the start of this group.
+    UploadToBuffer(buffer->second.buffer, offset, patched.data(), patched.size());
+    return true;
+}
+
 void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb) {
     if (!_fns.CmdBuildAccelerationStructuresKHR || !_fns.GetAccelerationStructureBuildSizesKHR) {
         Problem("left out: this device has no acceleration structure builds");
@@ -1450,6 +1516,19 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     // (src/vulkan/src/hooks.cpp). The addresses in the arguments themselves are the captured
     // process's and are not translatable on their own.
     const JValue* resolved = command.Get("buildData");
+    auto entryFor = [&](uint32_t info, uint32_t geometry, std::string_view field) -> const JValue* {
+        if (!resolved || !resolved->IsArray()) return nullptr;
+        for (uint32_t k = 0; k < resolved->count; ++k) {
+            const JValue& e = resolved->items[k];
+            const JValue* f = e.Get("field");
+            if (!f || f->Str() != field) continue;
+            const JValue* ij = e.Get("info");
+            const JValue* gj = e.Get("geometry");
+            if ((ij ? ij->Uint() : 0) != info || (gj ? gj->Uint() : 0) != geometry) continue;
+            return &e;
+        }
+        return nullptr;
+    };
     auto addressFor = [&](uint32_t info, uint32_t geometry, std::string_view field) -> VkDeviceAddress {
         if (!resolved || !resolved->IsArray()) return 0;
         for (uint32_t k = 0; k < resolved->count; ++k) {
@@ -1481,6 +1560,12 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
             const VkAccelerationStructureGeometryKHR* source = info.pGeometries ? &info.pGeometries[g]
                                                              : info.ppGeometries ? info.ppGeometries[g] : nullptr;
             if (!source) continue;
+            // How many primitives this geometry holds, read first: rewriting the instances below
+            // needs it, and a count filled in afterwards would leave that loop with nothing to do.
+            const JValue* rangeList = ItemAt(ranges, i);
+            const JValue* range = rangeList && rangeList->IsArray() ? ItemAt(rangeList, g) : rangeList;
+            const JValue* count = range ? range->Get("primitiveCount") : nullptr;
+            counts[g] = count ? (uint32_t)count->Uint() : 0;
             VkAccelerationStructureGeometryKHR geometry = *source;
             if (geometry.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
                 geometry.geometry.triangles.vertexData.deviceAddress = addressFor(i, g, "vertexData");
@@ -1490,6 +1575,21 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
                 geometry.geometry.aabbs.data.deviceAddress = addressFor(i, g, "data");
             } else if (geometry.geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR) {
                 geometry.geometry.instances.data.deviceAddress = addressFor(i, g, "data");
+                // Every instance names its bottom level by the captured process's address, which
+                // means nothing here, so the buffer is rewritten before the build reads it.
+                const JValue* entry = entryFor(i, g, "data");
+                const JValue* captureValue = entry ? entry->Get("capture") : nullptr;
+                const JValue* bufferValue = entry ? entry->Get("buffer") : nullptr;
+                const JValue* offsetValue = entry ? entry->Get("offset") : nullptr;
+                if (!captureValue) {
+                    Problem("left out: the build's instances are not in this capture, so the bottom levels they name cannot be found");
+                    return;
+                }
+                if (!PatchInstanceReferences(bufferValue ? bufferValue->Uint() : 0,
+                                             offsetValue ? offsetValue->Uint() : 0,
+                                             (uint32_t)captureValue->Uint(), counts[g])) {
+                    return;
+                }
             }
             // An address the capture never resolved leaves the build reading nothing, which the
             // driver rejects: better to leave the build out than to issue one that cannot work.
@@ -1502,10 +1602,6 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
                 return;
             }
             geometries[i][g] = geometry;
-            const JValue* rangeList = ItemAt(ranges, i);
-            const JValue* range = rangeList && rangeList->IsArray() ? ItemAt(rangeList, g) : rangeList;
-            const JValue* count = range ? range->Get("primitiveCount") : nullptr;
-            counts[g] = count ? (uint32_t)count->Uint() : 0;
         }
         info.pGeometries = geometries[i].data();
         info.ppGeometries = nullptr;
