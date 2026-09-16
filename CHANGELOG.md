@@ -13,6 +13,16 @@
   `currentAllocatedSize` against `recommendedMaxWorkingSetSize`: Metal has no heap table to break
   down and no separate residency figure, so the series is what it reports and the Memory Use
   section shows that alone.
+- The shader binding table says which shader group each record runs (`renderer/binding_table.ts`,
+  **Shader Binding Table** on a trace command). A trace does not name the shaders it runs: it names
+  four regions of memory whose records begin with an opaque handle the driver gave for a shader
+  group. The layer now keeps those handles as a blob on the pipeline
+  (`vkGetRayTracingShaderGroupHandlesKHR`) and reads the table back from the addresses the trace
+  points at, so each record is matched to the group it holds and the bytes after the handle are
+  reported as the application's own shader record data. A record whose handle matches no group of
+  the pipeline is called out: a table filled from another pipeline, or from handles fetched before
+  this one was rebuilt, sends rays to the wrong shader or to none, and nothing else in a capture
+  would show it.
 - The acceleration structure viewer (**Instances** on a top level in Inspect,
   `renderer/acceleration_structure.ts`, `renderer/acceleration_scene.ts`): the instances a top
   level was built from, each with the bottom level it names, where its transform puts it, its
