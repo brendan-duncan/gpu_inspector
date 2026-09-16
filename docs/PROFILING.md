@@ -71,6 +71,11 @@ distinguishes:
 | Present and acquire | The display paces the frame. Neither processor is the limit at this rate. |
 | None of them | The time is in the application's own work between calls, which the layer does not time. |
 
+Metal names two of these differently, because its calls are different: waiting for the GPU is
+`waitUntilCompleted`, and waiting for the display is `CAMetalLayer.nextDrawable`, which blocks once
+every drawable is in flight. There is no present row for Metal — `presentDrawable:` schedules the
+present and returns at once, so it never waits for anything.
+
 Waiting in `vkQueuePresentKHR` is not the same as waiting on a fence, which is why they are counted
 apart: with vsync on, a frame that finishes early blocks in present, and that is headroom rather
 than a problem.

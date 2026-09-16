@@ -1,5 +1,6 @@
 #include "frame_stats.h"
 
+#include "cpu_timeline.h"
 #include "json_writer.h"
 #include "swizzle.h"
 #include "transport.h"
@@ -205,7 +206,11 @@ uint64_t OnFrameEnded() {
         }
         g_lastFrame = now;
     }
-    if (!message.empty()) Transport::Get().SendJson(std::move(message));
+    if (!message.empty()) {
+        Transport::Get().SendJson(std::move(message));
+        // One sample of the memory series, on the report's own interval (cpu_timeline.h).
+        SendMemorySample(device);
+    }
     return frame;
 }
 

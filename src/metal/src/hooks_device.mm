@@ -1,6 +1,7 @@
 // Hooks on the device and the objects it creates: CAMetalLayer, drawables, MTLDevice, MTLHeap,
 // MTLLibrary, MTLTexture and MTLBuffer. See hooks_common.h for the shape every hook has.
 #include "function_constants.h"
+#include "cpu_timeline.h"
 #include "hooks.h"
 #include "hooks_common.h"
 #include "frame_stats.h"
@@ -63,7 +64,11 @@ id Replaced_nextDrawable(id self, SEL _cmd) {
         // expect one.
         if (wasFramebufferOnly) layer.framebufferOnly = NO;
     }
+    // nextDrawable blocks once every drawable is in flight, which is where a display-paced
+    // Metal frame spends its time — Metal's vkAcquireNextImageKHR (cpu_timeline.h).
+    const uint64_t cpuEvent = reentry.outermost() ? CpuEventBegin() : 0;
     id drawable = ORIG(id (*)(id, SEL))(self, _cmd);
+    CpuEventEnd(cpuEvent, CpuCategory::Acquire);
     if (reentry.outermost() && drawable != nil) {
         HookDrawableClass(drawable);
         // Whether presents run in step with the display decides whether a refresh rate is

@@ -1,31 +1,18 @@
-## v0.13.0
+## v0.14.0
 
 ### Added
-- Memory per heap (**Memory Use** on the physical device in Inspect, `renderer/memory_heaps.ts`):
-  what the application has allocated from each memory heap, in how many allocations and how large
-  the largest is, as a share of that heap, broken down by memory type — and, where the device has
-  `VK_EXT_memory_budget`, what the driver says is resident and how much it will let this process
-  have. A single memory total cannot say whether it is a problem; a gigabyte in a 16 GB heap and a
-  gigabyte in a 256 MB one are different situations. Heaps close to their limit are flagged,
-  including ones another process is filling, which only the driver can see.
-- Where a captured frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, **Where the CPU went** in
-  Frame Stats): the layer times the host calls a frame spends its time in — submitting, presenting,
-  waiting on fences, acquiring a swapchain image — with the thread that made each, and the capture
-  carries them. It separates three cases the Frame Bound card could only infer from aggregates: the
-  CPU waiting on fences (the GPU sets the frame time), the CPU inside submission (submission is the
-  cost), and the CPU waiting in present (the display paces the frame and neither processor is the
-  limit). Where the device has `VK_KHR_calibrated_timestamps` the capture also carries the relation
-  between the GPU and CPU clocks, so pass timings can be placed on the same axis.
-- Compiler statistics per pipeline for Vulkan (`src/vulkan/src/shader_statistics.h`): **Compiler
-  statistics** in the launch dialog (`VKINSP_SHADER_STATISTICS=1`, `shaderStatistics` for
-  `launch_app`) asks the driver what its shader compiler made of each stage — registers used, code
-  size, spilled and shared memory, inputs and outputs — and the Inspect tab shows it on the
-  pipeline. Through `VK_KHR_pipeline_executable_properties`, the same data Nsight reports per
-  shader, and it explains the occupancy the hardware counters measure. The names are the driver's
-  own and are passed through as it reports them. Off by default: it costs compile time and driver
-  memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
-  registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
-  light the report rules register pressure out instead.
+- Metal reaches the other backends' profiling features (`src/metal/src/cpu_timeline.h`): the CPU
+  timeline, so **Where the CPU went** and the **Timeline** card work on a Metal capture, and the
+  memory series. Metal's categories are the shortest of the three — `commit` is the submit,
+  `waitUntilCompleted` / `waitUntilScheduled` is waiting for the GPU, and `CAMetalLayer`'s
+  `nextDrawable` is waiting for the display, which is where a display-paced Metal frame spends its
+  time. There is deliberately no present span: `presentDrawable:` only schedules and returns at
+  once, so timing it would record a call that never waits. `sampleTimestamps:gpuTimestamp:` relates
+  the two clocks, and the pass timings now carry the tick their starts are measured from, so the
+  passes sit on the same axis as the calls that committed them. Memory is the device's own
+  `currentAllocatedSize` against `recommendedMaxWorkingSetSize`: Metal has no heap table to break
+  down and no separate residency figure, so the series is what it reports and the Memory Use
+  section shows that alone.
 - Memory over time (**Over time** in the Memory Use section, `renderer/memory_timeline.ts`): both
   capture libraries keep a running total per heap and send a sample with each frame report, so
   memory reads as a shape rather than an instant. A renderer that has leaked a gigabyte and one
@@ -56,6 +43,48 @@
   the CPU calls, and time outside the timed passes is not measured idleness. `get_capture_summary`
   reports the same. Without `VK_KHR_calibrated_timestamps` the CPU lanes still draw and the GPU lane
   is left out rather than placed on a guessed origin.
+
+### Fixed
+- Most of a multi-frame capture's passes had no GPU time (`renderer/pass_metrics.ts`). A capture
+  library numbers a command buffer's passes from zero within each recording of it — the Vulkan
+  layer restarts at `vkBeginCommandBuffer`, the D3D12 library at a list's `Reset` — but the app
+  counted straight through the capture. From a buffer's second recording onwards every index was
+  shifted, and a shifted index matches no timing at all, so those passes showed no GPU time
+  anywhere: not in the pass list, GPU Bottlenecks, the counter rules, the hardware counters, the
+  overdraw lookup or `get_bottlenecks`. Since a frame is one recording of each buffer, a capture of
+  four frames lost three quarters of the passes of a single-buffer application and half of a
+  double-buffered one: the four-frame triangle capture reported 0.22 ms of GPU time where the
+  layer had measured 0.45 ms. Metal is unaffected — its command buffers are used once, so the next
+  frame's is a different object with a counter of its own.
+
+## v0.13.0
+
+### Added
+- Memory per heap (**Memory Use** on the physical device in Inspect, `renderer/memory_heaps.ts`):
+  what the application has allocated from each memory heap, in how many allocations and how large
+  the largest is, as a share of that heap, broken down by memory type — and, where the device has
+  `VK_EXT_memory_budget`, what the driver says is resident and how much it will let this process
+  have. A single memory total cannot say whether it is a problem; a gigabyte in a 16 GB heap and a
+  gigabyte in a 256 MB one are different situations. Heaps close to their limit are flagged,
+  including ones another process is filling, which only the driver can see.
+- Where a captured frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, **Where the CPU went** in
+  Frame Stats): the layer times the host calls a frame spends its time in — submitting, presenting,
+  waiting on fences, acquiring a swapchain image — with the thread that made each, and the capture
+  carries them. It separates three cases the Frame Bound card could only infer from aggregates: the
+  CPU waiting on fences (the GPU sets the frame time), the CPU inside submission (submission is the
+  cost), and the CPU waiting in present (the display paces the frame and neither processor is the
+  limit). Where the device has `VK_KHR_calibrated_timestamps` the capture also carries the relation
+  between the GPU and CPU clocks, so pass timings can be placed on the same axis.
+- Compiler statistics per pipeline for Vulkan (`src/vulkan/src/shader_statistics.h`): **Compiler
+  statistics** in the launch dialog (`VKINSP_SHADER_STATISTICS=1`, `shaderStatistics` for
+  `launch_app`) asks the driver what its shader compiler made of each stage — registers used, code
+  size, spilled and shared memory, inputs and outputs — and the Inspect tab shows it on the
+  pipeline. Through `VK_KHR_pipeline_executable_properties`, the same data Nsight reports per
+  shader, and it explains the occupancy the hardware counters measure. The names are the driver's
+  own and are passed through as it reports them. Off by default: it costs compile time and driver
+  memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
+  registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
+  light the report rules register pressure out instead.
 - Device-removed diagnostics for D3D12 (`src/d3d12/src/device_removed.h`, docs/TROUBLESHOOTING.md):
   the library turns on Device Removed Extended Data before it creates the device, so when the GPU
   stops responding the session log names the operation each command list stopped on rather than only
@@ -80,19 +109,6 @@
   pass's verdict is then measured rather than inferred — shader, bandwidth, cache or latency bound,
   naming the unit at its limit — which on Vulkan is the only per-pass verdict there has been, since
   the vertex and fragment spans the inferred one needs are Metal's. `get_bottlenecks` reports it too.
-
-### Fixed
-- Most of a multi-frame capture's passes had no GPU time (`renderer/pass_metrics.ts`). A capture
-  library numbers a command buffer's passes from zero within each recording of it — the Vulkan
-  layer restarts at `vkBeginCommandBuffer`, the D3D12 library at a list's `Reset` — but the app
-  counted straight through the capture. From a buffer's second recording onwards every index was
-  shifted, and a shifted index matches no timing at all, so those passes showed no GPU time
-  anywhere: not in the pass list, GPU Bottlenecks, the counter rules, the hardware counters, the
-  overdraw lookup or `get_bottlenecks`. Since a frame is one recording of each buffer, a capture of
-  four frames lost three quarters of the passes of a single-buffer application and half of a
-  double-buffered one: the four-frame triangle capture reported 0.22 ms of GPU time where the
-  layer had measured 0.45 ms. Metal is unaffected — its command buffers are used once, so the next
-  frame's is a different object with a counter of its own.
 
 ## v0.12.0
 

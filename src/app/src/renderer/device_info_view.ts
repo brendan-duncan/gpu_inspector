@@ -136,8 +136,20 @@ function shortSType(s: ArgValue | undefined): string {
  */
 function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
   const m = db ? memoryHeaps(db) : null;
-  if (!m || !m.allocations) return;
-  const s = section(container, `Memory Use (${m.allocations} allocations, ${formatBytes(m.totalBytes)})`);
+  const heaps = m && m.allocations ? m : null;
+  // Metal has no heap table to break down, but it does report a total over time, so the section
+  // appears for either (renderer/memory_timeline.ts).
+  const series = db?.memorySamples?.length ? db.memorySamples : null;
+  if (!heaps && !series) return;
+  const s = section(container, heaps
+    ? `Memory Use (${heaps.allocations} allocations, ${formatBytes(heaps.totalBytes)})`
+    : "Memory Use");
+  if (heaps) renderHeapRows(s, heaps);
+  renderMemoryOverTime(s, db);
+}
+
+/** The per-heap breakdown, for the backends that have one. */
+function renderHeapRows(s: Widget, m: NonNullable<ReturnType<typeof memoryHeaps>>): void {
   for (const h of usedHeaps(m)) {
     const share = h.share === null ? "" : `  ${(100 * h.share).toFixed(h.share < 0.01 ? 2 : 1)}% of the heap`;
     row(s, `Heap ${h.index}${h.deviceLocal ? " (device local)" : ""}`,
@@ -153,10 +165,9 @@ function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
   for (const h of heapPressure(m)) {
     row(s, "Nearly full", `Heap ${h.index} is close to its limit; an allocation failure here is a device-lost or an out-of-memory away.`);
   }
-  renderMemoryOverTime(s, db);
   if (!m.hasBudget) {
     // Both backends can fail to report it, for their own reasons, so the note names neither device.
-    new Div(container, { text: "The driver did not report residency (Vulkan needs VK_EXT_memory_budget; D3D12 needs an adapter new enough for QueryVideoMemoryInfo), so how much is resident and how much it will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
+    new Div(s, { text: "The driver did not report residency (Vulkan needs VK_EXT_memory_budget; D3D12 needs an adapter new enough for QueryVideoMemoryInfo), so how much is resident and how much it will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
   }
 }
 
@@ -373,6 +384,15 @@ export function renderDxgiAdapterSections(container: Widget, object: VulkanObjec
 
   // The adapter is where D3D12 reports its memory segments, as Vulkan does on the physical
   // device (src/d3d12/src/cpu_timeline.h).
+  renderMemoryUse(container, db);
+}
+
+/**
+ * What a Metal device reports about memory. Metal has no heap table to enumerate and no separate
+ * residency figure — `currentAllocatedSize` is both — so this is the series and nothing else
+ * (src/metal/src/cpu_timeline.h).
+ */
+export function renderMetalDeviceSections(container: Widget, db: MemoryDatabase | null = null): void {
   renderMemoryUse(container, db);
 }
 
