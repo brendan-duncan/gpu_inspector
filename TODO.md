@@ -443,9 +443,17 @@ vendor's driver is listed at the end so nobody spends time on it.
       (`VK_EXT_shader_object`), which have no pipeline to query; and the register count in the flame
       graph's modelled cost.
 
-- [ ] Acceleration structure viewer (the TLAS and BLAS drawn with overlap heatmaps and
-      per-instance flags). The ray tracing item above already needs the build inputs captured
-      by device address; once they are, the boxes and geometry belong in the mesh view.
+- [x] Acceleration structure viewer (`renderer/acceleration_structure.ts`,
+      `renderer/acceleration_scene.ts`, **Instances** on a top level): the instances with their
+      transforms, masks, custom indices, hit group offsets and per-instance flags, each linked to
+      the bottom level it names, and the scene drawn in the mesh preview — the geometry where the
+      bottom level's build is in the capture, a box where it is not. Verified on an RTX 4080 with
+      `vkinsp_triangle --ray-tracing`.
+- [ ] Acceleration structure viewer, the rest: overlap heatmaps (instances whose boxes intersect,
+      which is what makes a top level slow to traverse); AABB geometry drawn as boxes rather than
+      only counted; and a bottom level built before the capture, whose geometry no capture holds —
+      re-reading it would need the build re-run or the structure serialized
+      (`vkCmdCopyAccelerationStructureToMemoryKHR`).
 - [x] Memory per heap (`renderer/memory_heaps.ts`, **Memory Use** on the physical device): what the
       application allocated from each heap and type, its share of the heap, and the driver's own
       residency and budget through `VK_EXT_memory_budget` (added at device creation, sampled with

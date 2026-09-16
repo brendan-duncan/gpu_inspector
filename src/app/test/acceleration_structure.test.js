@@ -169,3 +169,86 @@ test("arguments that are not a build's give nothing rather than throwing", () =>
   assert.equal(parseBuild(null, null), null);
   assert.equal(parseBuild({}, null), null, "no destination structure");
 });
+
+// ---------------------------------------------------------------------------------------------
+// Drawing what was built.
+
+const { triangleMesh, instanceScene, transformPoint } = await import(pathToFileURL(out).href);
+
+/** Tightly packed R32G32B32_SFLOAT vertices. */
+function vertexBytes(...xyz) {
+  const f = new Float32Array(xyz);
+  return new Uint8Array(f.buffer.slice(0));
+}
+
+const TRI_GEOMETRY = {
+  index: 0, kind: "triangles", flags: "0", primitiveCount: 1,
+  vertexFormat: "R32G32B32_SFLOAT", vertexStride: 12, maxVertex: 2, indexType: "NONE",
+};
+
+test("a bottom level's triangles come out as one position per vertex", () => {
+  const v = vertexBytes(-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0);
+  const m = triangleMesh(TRI_GEOMETRY, v, null);
+  assert.equal(m.length, 9, "three vertices of three floats");
+  assert.deepEqual([...m], [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
+});
+
+test("an indexed build is expanded through its indices", () => {
+  const v = vertexBytes(0, 0, 0, 1, 0, 0, 0, 1, 0);
+  const idx = new Uint8Array(new Uint16Array([2, 1, 0]).buffer.slice(0));
+  const m = triangleMesh({ ...TRI_GEOMETRY, indexType: "UINT16" }, v, idx);
+  assert.deepEqual([...m], [0, 1, 0, 1, 0, 0, 0, 0, 0], "vertices in index order");
+});
+
+test("a build whose vertices were not captured draws nothing rather than guessing", () => {
+  assert.equal(triangleMesh(TRI_GEOMETRY, null, null), null);
+  assert.equal(triangleMesh({ ...TRI_GEOMETRY, kind: "instances" }, vertexBytes(0, 0, 0), null), null);
+  assert.equal(triangleMesh({ ...TRI_GEOMETRY, vertexFormat: "NOT_A_FORMAT" }, vertexBytes(0, 0, 0), null), null);
+});
+
+test("a read-back cut short does not read past what it holds", () => {
+  // One vertex captured of the three the build declares: the rest are origin rather than garbage.
+  const m = triangleMesh(TRI_GEOMETRY, vertexBytes(1, 2, 3), null);
+  assert.deepEqual([...m.slice(0, 3)], [1, 2, 3]);
+  assert.deepEqual([...m.slice(3)], [0, 0, 0, 0, 0, 0]);
+});
+
+test("a point goes through the row-major 3x4 the way Vulkan means it", () => {
+  // Translation by (10, 20, 30) with an identity rotation.
+  const t = [1, 0, 0, 10, 0, 1, 0, 20, 0, 0, 1, 30];
+  assert.deepEqual(transformPoint(t, 1, 2, 3), [11, 22, 33]);
+  // A 90-degree rotation about z: x becomes y.
+  const r = [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+  assert.deepEqual(transformPoint(r, 1, 0, 0), [0, 1, 0]);
+});
+
+test("an instance whose bottom level was captured is placed by its transform", () => {
+  const geometry = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const instances = parseInstances(instanceBytes({ transform: [1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0], reference: 7n }),
+                                   new Map([["7", 42]]));
+  const scene = instanceScene(instances, (id) => (id === 42 ? geometry : null));
+  assert.equal(scene.kind, "triangles");
+  assert.equal(scene.placed, 1);
+  assert.deepEqual([...scene.mesh.slice(0, 3)], [5, 0, 0], "moved along x by the transform");
+});
+
+test("an instance whose bottom level was not captured is drawn as a box where it sits", () => {
+  // The common case: a bottom level is built once, before any capture, so its geometry is absent —
+  // but where the instances are and how many there are is still worth showing.
+  const instances = parseInstances(instanceBytes({ transform: [1, 0, 0, 3, 0, 1, 0, 0, 0, 0, 1, 0] }));
+  const scene = instanceScene(instances, () => null);
+  assert.equal(scene.kind, "lines");
+  assert.equal(scene.placed, 0);
+  assert.equal(scene.mesh.length, 12 * 2 * 3, "twelve edges of a cube, two ends, three floats");
+  // Centred on the instance's position rather than the origin.
+  const xs = [...scene.mesh].filter((_, i) => i % 3 === 0);
+  assert.ok(Math.min(...xs) > 2 && Math.max(...xs) < 4);
+});
+
+test("geometry wins over boxes when any instance has it", () => {
+  const geometry = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const two = concat(instanceBytes({ reference: 7n }), instanceBytes({ reference: 8n }));
+  const scene = instanceScene(parseInstances(two, new Map([["7", 42]])), (id) => (id === 42 ? geometry : null));
+  assert.equal(scene.kind, "triangles");
+  assert.equal(scene.placed, 1, "one of the two had geometry");
+});

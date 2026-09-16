@@ -13,6 +13,7 @@ import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { CapturedTexture } from "./capture_data.js";
+import type { AccelerationScene } from "./ray_tracing_view.js";
 import type { LayerMessage, SessionInfo, StackFrame, StatusMessage, UiRequest } from "../shared/protocol.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
@@ -30,6 +31,12 @@ export interface SessionContext {
   showValidation(entry: ValidationEntry): void;
   /** Contents of an image read back by a capture (a sampled image or render target), when one has it. */
   capturedImage(imageId: number): CapturedTexture | null;
+  /**
+   * The instances a top level was built from and the geometry under them, where a capture read
+   * them back (renderer/acceleration_structure.ts). Null for a live session, which has no
+   * buffer contents, and for a structure whose build the capture does not hold.
+   */
+  accelerationScene(structureId: number): AccelerationScene | null;
   /** Directories with the application's unstripped libraries (launch configuration), for host-side symbolization. */
   readonly symbolDirs: string[];
   /** Directories with the shader sources (launch configuration), for modules without embedded text. */
@@ -240,6 +247,10 @@ export class SessionPanel extends Div implements SessionContext {
 
   capturedImage(imageId: number): CapturedTexture | null {
     return this.capturePanel.capturedImage(imageId);
+  }
+
+  accelerationScene(structureId: number): AccelerationScene | null {
+    return this.capturePanel.accelerationScene(structureId);
   }
 
   handleMessages(batch: LayerMessage[]): void {
