@@ -523,6 +523,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // Calibrated timestamps, so a capture's CPU and GPU times share an axis (see cpu_timeline.h).
     CpuTimelineSetup cpuTimeline;
     PlanCpuTimeline(instance, physicalDevice, createInfo, cpuTimeline);
+    // The driver's per-heap residency for the memory view (see cpu_timeline.h).
+    PlanMemoryBudget(instance, physicalDevice, createInfo, cpuTimeline);
 
     // Counted from before the driver's vkCreateDevice, which may make a D3D12 device of its own
     // (vkinspDeviceCount).
@@ -786,6 +788,8 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             data->frameTimeAccumMs = 0;
             data->frameTimeCount = 0;
             data->lastReport = now;
+            // The driver's per-heap residency, at the report's interval (see cpu_timeline.h).
+            SendMemoryBudget(data);
             ValidationLog::Get().Flush();
         }
     } else {

@@ -1,6 +1,13 @@
 ## v0.13.0
 
 ### Added
+- Memory per heap (**Memory Use** on the physical device in Inspect, `renderer/memory_heaps.ts`):
+  what the application has allocated from each memory heap, in how many allocations and how large
+  the largest is, as a share of that heap, broken down by memory type — and, where the device has
+  `VK_EXT_memory_budget`, what the driver says is resident and how much it will let this process
+  have. A single memory total cannot say whether it is a problem; a gigabyte in a 16 GB heap and a
+  gigabyte in a 256 MB one are different situations. Heaps close to their limit are flagged,
+  including ones another process is filling, which only the driver can see.
 - Where a captured frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, **Where the CPU went** in
   Frame Stats): the layer times the host calls a frame spends its time in — submitting, presenting,
   waiting on fences, acquiring a swapchain image — with the thread that made each, and the capture
