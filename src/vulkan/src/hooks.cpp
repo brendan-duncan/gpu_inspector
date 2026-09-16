@@ -1254,6 +1254,68 @@ void Hook_vkCreateRayTracingPipelinesKHR(VkDevice device, VkDeferredOperationKHR
 // Acceleration structures: what the last build of each put in it (its geometries and primitive
 // counts), as an update on the structure, so the object shows what it holds without its commands.
 
+
+// ---------------------------------------------------------------------------------------------
+// The shader binding table
+//
+// A trace does not name the shaders it runs. It names a table in memory, and each record of that
+// table holds an opaque handle the driver gave for one of the pipeline's shader groups. So saying
+// which group a record runs needs both halves: the handles, kept as a blob on the pipeline, and the
+// table's contents, read back from the addresses the trace points at.
+
+void Hook_vkGetRayTracingShaderGroupHandlesKHR(VkDevice device, VkPipeline pipeline, uint32_t firstGroup,
+                                               uint32_t groupCount, size_t dataSize, void* pData) {
+    (void)device;
+    if (!pipeline || !pData || !dataSize || !groupCount) return;
+    // Only the whole table from the start is kept: an application that asks for a slice would need
+    // the pieces stitched, and every one seen so far asks for all of them at once.
+    if (firstGroup != 0) return;
+    auto blob = std::make_shared<std::vector<uint8_t>>((const uint8_t*)pData, (const uint8_t*)pData + dataSize);
+    Tracker::Get().AddBlob(HT_VkPipeline, (uint64_t)(uintptr_t)pipeline, "group handles", std::move(blob));
+    // The handle size the records are laid out by, which the table's stride is a multiple of.
+    const uint64_t id = Tracker::Get().Resolve(HT_VkPipeline, (uint64_t)(uintptr_t)pipeline);
+    if (!id) return;
+    JsonWriter w(&Tracker::Get());
+    w.BeginObject();
+    w.Key("action"); w.String("ObjectUpdate");
+    w.Key("id"); w.Uint(id);
+    w.Key("shaderGroupHandles"); w.BeginObject();
+    w.Key("count"); w.Uint(groupCount);
+    w.Key("handleSize"); w.Uint(dataSize / groupCount);
+    w.EndObject();
+    w.EndObject();
+    Tracker::Get().Update(id, "shaderGroupHandles", w.str());
+}
+
+void Hook_vkCmdTraceRaysKHR(VkCommandBuffer commandBuffer, const VkStridedDeviceAddressRegionKHR* pRaygenShaderBindingTable,
+                            const VkStridedDeviceAddressRegionKHR* pMissShaderBindingTable,
+                            const VkStridedDeviceAddressRegionKHR* pHitShaderBindingTable,
+                            const VkStridedDeviceAddressRegionKHR* pCallableShaderBindingTable,
+                            uint32_t width, uint32_t height, uint32_t depth) {
+    (void)width; (void)height; (void)depth;
+    DeviceData* dev = GetDeviceData(commandBuffer);
+    CommandRecorder* rec = dev ? dev->RecorderFor(commandBuffer) : nullptr;
+    if (!rec || !CaptureManager::Get().IsCapturing()) return;
+    const struct { const char* name; const VkStridedDeviceAddressRegionKHR* region; } regions[] = {
+        {"raygen", pRaygenShaderBindingTable}, {"miss", pMissShaderBindingTable},
+        {"hit", pHitShaderBindingTable}, {"callable", pCallableShaderBindingTable},
+    };
+    std::string extra;
+    uint32_t captured = 0;
+    for (const auto& r : regions) {
+        if (!r.region || !r.region->deviceAddress || !r.region->size) continue;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0, remaining = 0;
+        if (!ResourceRegistry::Get().ResolveAddress(r.region->deviceAddress, buffer, offset, remaining)) continue;
+        const VkDeviceSize size = r.region->size < remaining ? r.region->size : remaining;
+        const uint32_t id = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
+        if (!id) continue;
+        extra += captured++ ? "," : "";
+        extra += std::string("{\"region\":\"") + r.name + "\",\"capture\":" + std::to_string(id) + "}";
+    }
+    if (captured) rec->SetExtraOnLast(",\"bindingTableData\":[" + extra + "]");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Device addresses (src/vulkan/src/resources.h)
 //

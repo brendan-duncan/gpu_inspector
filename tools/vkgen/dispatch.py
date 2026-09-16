@@ -93,6 +93,10 @@ EXTRA_HOOKS = {
     "vkCreateComputePipelines",
     "vkCreateShadersEXT",
     "vkCreateRayTracingPipelinesKHR",
+    # ray tracing: the shader group handles a binding table is filled from, and the table a trace
+    # reads, so a record can be said to hold a group rather than opaque bytes
+    "vkGetRayTracingShaderGroupHandlesKHR",
+    "vkCmdTraceRaysKHR",
     # acceleration structures: what each build put in the structure
     "vkCmdBuildAccelerationStructuresKHR",
     "vkCmdBuildAccelerationStructuresIndirectKHR",

@@ -59,11 +59,7 @@ function captureIdOf(command: CaptureCommand, info: number, geometry: number, fi
 
 /** The bytes of a capture's buffer read-back, or null when it holds none. */
 function bytesOf(data: CaptureData, captureId: number): Uint8Array | null {
-  if (!captureId) return null;
-  for (const b of data.buffers.values()) {
-    if (b.info.id === captureId) return b.data ?? null;
-  }
-  return null;
+  return data.buffer(captureId)?.data ?? null;
 }
 
 /** Addresses the layer recorded on the structures, so an instance's reference names an object. */

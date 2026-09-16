@@ -43,6 +43,7 @@ import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vert
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import { renderBindingTable, renderShaderGroups } from "./ray_tracing_view.js";
+import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
@@ -195,7 +196,21 @@ export class CommandInfoView {
       this._renderPipelineState(container, state);
       if (method.startsWith("vkCmdTraceRays")) {
         if (state.pipeline) renderShaderGroups(container, state.pipeline);
-        renderBindingTable(container, cmd.args);
+        // The table read back at the trace, matched to the pipeline's group handles, so a record
+        // names the shader it runs rather than the bytes it holds (renderer/binding_table.ts).
+        const data = this.panel.data;
+        const records = tableRecords({
+          captures: (Array.isArray(cmd.bindingTableData) ? cmd.bindingTableData : []).map((e) => (
+            { region: String((e as ArgObject).region ?? ""), capture: Number((e as ArgObject).capture ?? 0) })),
+          args: cmd.args,
+          bytesOf: (id) => data.buffer(id)?.data ?? null,
+          pipeline: state.pipeline,
+          blobOf: (o, name) => {
+            const index = o.blobs.findIndex((b) => b.name === name);
+            return index < 0 ? null : db.blobData.get(`${o.id}:${index}`) ?? null;
+          },
+        });
+        renderBindingTable(container, cmd.args, state.pipeline, records);
       }
       this._renderShaders(container, state, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);

@@ -321,11 +321,14 @@ application with injected state. Route (a) is the general one and is the prerequ
       `vkinsp_triangle --ray-tracing`: the instance decodes to the identity transform, mask 0xFF
       and TRIANGLE_FACING_CULL_DISABLE the application wrote, and its reference resolves to the
       bottom level's object — the link from a top level to what is under it, which did not exist.
+- [x] Which group each binding table record holds (`renderer/binding_table.ts`): the layer keeps
+      the pipeline's group handles and reads the table back at the trace, and each record is
+      matched to its group, with records whose handle matches none called out. Verified on an RTX
+      4080: raygen, miss and hit records resolve to groups 0, 1 and 2, none unresolved.
 - [ ] Ray tracing, the rest:
   - The replay makes no ray tracing pipelines or acceleration structures, and leaves their
     commands out. Building needs the geometry buffers the builds read by device address, and
     tracing needs the shader binding table copied with its handles made again.
-  - Which group each binding table record holds, which needs the table's contents read back.
   - Editing a ray tracing stage.
   - Ray queries in the shader debugger.
 

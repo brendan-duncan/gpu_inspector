@@ -218,6 +218,12 @@ export interface CaptureCommand {
    * update is last-write-wins and an application that rebuilds every frame would overwrite it.
    */
   buildData?: ArgObject[];
+  /**
+   * vkCmdTraceRays*: the shader binding table read back at the trace, as `{region, capture}` per
+   * region the layer could resolve (src/vulkan/src/hooks.cpp). Matching each record against the
+   * pipeline's group handles is what says which shader a record runs.
+   */
+  bindingTableData?: ArgObject[];
   /** Set on commands the UI inlined from a secondary command buffer: that buffer's object id. */
   secondary?: number;
   /** vkCmdBindDescriptorSets / vkCmdPushDescriptorSet: what the bound sets contained. */

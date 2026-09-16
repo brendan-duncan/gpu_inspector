@@ -12,6 +12,7 @@ import {
   type AccelerationInstance,
 } from "./acceleration_structure.js";
 import { bindingTableRegions, shaderGroups, stageFromFlag, stageLabel } from "./shader_cache.js";
+import { unresolvedRecords, type BindingTableRecord } from "./binding_table.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { ArgObject } from "../shared/protocol.js";
 
@@ -116,6 +117,15 @@ function renderInstances(parent: Widget, s: AccelerationScene, db: ObjectLookup,
   }
 }
 
+/** "closest hit Closest Hit #2 (main)": a pipeline shader group by its index, as the groups list names it. */
+function groupName(pipeline: VulkanObject, group: number): string {
+  const groups = shaderGroups(pipeline);
+  const g = groups[group];
+  if (!g) return `group ${group}`;
+  const stage = stageName(pipeline, g.general ?? g.closestHit ?? g.anyHit ?? g.intersection);
+  return `group ${group}: ${g.type}${stage ? ` (${stage})` : ""}`;
+}
+
 /** An acceleration structure: its type, size and storage, and the geometries its last build held. */
 export function renderAccelerationStructure(parent: Widget, object: VulkanObject, db: ObjectLookup, onLink: LinkHandler,
                                             scene?: AccelerationScene | null): void {
@@ -154,12 +164,37 @@ export function renderAccelerationStructure(parent: Widget, object: VulkanObject
 }
 
 /** A vkCmdTraceRays* command's shader binding table regions, as records of the table. */
-export function renderBindingTable(parent: Widget, args: ArgObject | null): void {
+export function renderBindingTable(parent: Widget, args: ArgObject | null, pipeline?: VulkanObject | null,
+                                   records?: BindingTableRecord[]): void {
   const regions = bindingTableRegions(args);
   if (!regions.length) return;
   const grp = new collapsible(parent, { label: "Shader Binding Table", collapsed: false });
   for (const r of regions) {
     row(grp.body, r.region, r.size ? `${r.records} record${r.records === 1 ? "" : "s"} (stride ${r.stride}, ${r.size} bytes)` : "none");
   }
-  new Div(grp.body, { text: "Which shader group each record holds is in the application's table, as opaque handles the capture does not read.", class: "text-muted font-sm" });
+  if (!records || !records.length) {
+    new Div(grp.body, {
+      text: "The table's contents are not in this capture, so which shader group each record holds is not known. "
+        + "Capture again to read it back.",
+      class: "text-muted font-sm",
+    });
+    return;
+  }
+  // What each record actually runs. A handle matching no group is the interesting case: those rays
+  // run the wrong shader or none, and nothing else in a capture would show it.
+  for (const r of records) {
+    const detail = r.group === null
+      ? `no group of this pipeline has this handle (${r.handle.slice(0, 16)}...)`
+      : `${pipeline ? groupName(pipeline, r.group) : `group ${r.group}`}${r.dataBytes ? `, ${r.dataBytes} bytes of record data` : ""}`;
+    row(grp.body, `${r.region} record ${r.index}`, detail);
+  }
+  const unresolved = unresolvedRecords(records);
+  if (unresolved.length) {
+    new Div(grp.body, {
+      text: `${unresolved.length} record${unresolved.length === 1 ? " holds a handle" : "s hold handles"} this pipeline `
+        + "never gave out — a table filled from another pipeline, or from handles fetched before this one was "
+        + "rebuilt. Rays reaching those records run the wrong shader or none.",
+      class: "text-muted font-sm",
+    });
+  }
 }
