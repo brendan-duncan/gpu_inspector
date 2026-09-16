@@ -2040,6 +2040,10 @@ var CaptureData = class {
   pixelHistory = null;
   /** Per-draw timings and counters from a replay of the capture (renderer/draw_stats.ts). */
   drawStats = null;
+  /** The GPU's own hardware counters per pass from a replay (renderer/hw_counters.ts). */
+  hwCounters = null;
+  /** Where the frame's CPU time went, and how to place GPU times on the same axis (cpu_timeline.h). */
+  cpuTimeline = null;
   /** Shader stages whose functions and lines a replay measured by ablation (renderer/shader_ablation.ts), one per pipeline stage. */
   ablations = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
@@ -2061,6 +2065,10 @@ var CaptureData = class {
   onPixelHistory = new Signal();
   /** Per-draw measurements arrived (a replay finished, or a capture file carried them). */
   onDrawStats = new Signal();
+  /** The GPU's hardware counters arrived from a replay. */
+  onHwCounters = new Signal();
+  /** The capture's CPU timeline arrived. */
+  onCpuTimeline = new Signal();
   /** Draw-call overlays arrived from a replay. */
   onDrawOverlays = new Signal();
   /** A shader stage was measured by ablation. */
@@ -2080,6 +2088,8 @@ var CaptureData = class {
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
+    this.hwCounters = null;
+    this.cpuTimeline = null;
     this.ablations = [];
     this.drawOverlays = /* @__PURE__ */ new Map();
     this._expectedCommands = 0;
@@ -2154,6 +2164,8 @@ var CaptureData = class {
     this.overdraw = c2.overdraw;
     this.pixelHistory = c2.pixelHistory;
     this.drawStats = c2.drawStats;
+    this.hwCounters = c2.hwCounters;
+    this.cpuTimeline = c2.cpuTimeline;
     this.ablations = c2.ablations;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
@@ -2165,6 +2177,8 @@ var CaptureData = class {
     if (this.overdraw.length) this.onOverdraw.emit();
     if (this.pixelHistory) this.onPixelHistory.emit();
     if (this.drawStats) this.onDrawStats.emit();
+    if (this.hwCounters) this.onHwCounters.emit();
+    if (this.cpuTimeline) this.onCpuTimeline.emit();
   }
   handleMessage(msg) {
     switch (msg.action) {
@@ -2211,6 +2225,10 @@ var CaptureData = class {
         this.passTimings = /* @__PURE__ */ new Map();
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
+        break;
+      case "CaptureCpuTimeline":
+        this.cpuTimeline = msg;
+        this.onCpuTimeline.emit();
         break;
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
@@ -2322,6 +2340,8 @@ function parseCaptureFile(bytes) {
     overdraw,
     pixelHistory: manifest.pixelHistory ?? null,
     drawStats: manifest.drawStats ?? null,
+    hwCounters: manifest.hwCounters ?? null,
+    cpuTimeline: manifest.cpuTimeline ?? null,
     ablations: manifest.ablations ?? [],
     api: manifest.api ?? "vulkan"
   };
@@ -4200,6 +4220,172 @@ function drawStatsSummary(file) {
   return `${file.draws.length} draws and dispatches measured (${timed} timed, ${counted} counted), ${fragments.toLocaleString()} fragment shader invocations${file.device ? `, replayed on ${file.device}` : ""}`;
 }
 
+// src/renderer/hw_counters.ts
+var NO_PASS2 = 4294967295;
+function counterInfo(raw) {
+  const r = raw ?? {};
+  return {
+    name: typeof r.name === "string" ? r.name : "",
+    description: typeof r.description === "string" ? r.description : "",
+    category: typeof r.category === "string" ? r.category : "",
+    unit: typeof r.unit === "string" ? r.unit : "count"
+  };
+}
+function counterRange(raw) {
+  const r = raw ?? {};
+  const num4 = (v) => typeof v === "number" ? v : 0;
+  const pass = num4(r.passIndex);
+  return {
+    command: num4(r.command),
+    frame: num4(r.frame),
+    commandBuffer: num4(r.commandBuffer),
+    ...pass === NO_PASS2 ? {} : { passIndex: pass },
+    values: Array.isArray(r.values) ? r.values.map((v) => typeof v === "number" ? v : null) : []
+  };
+}
+function parseHwCounters(input) {
+  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`The hardware counters are not valid JSON: ${e.message}`);
+  }
+  if (json.format !== "gpu-inspector-hw-counters") throw new Error("Not hardware counters from vkinsp_replay.");
+  const str3 = (v) => typeof v === "string" ? v : "";
+  const list = (v) => Array.isArray(v) ? v : [];
+  return {
+    device: str3(json.device),
+    backend: str3(json.backend),
+    chip: str3(json.chip),
+    rounds: typeof json.rounds === "number" ? json.rounds : 0,
+    counters: list(json.counters).map(counterInfo),
+    passes: list(json.passes).map(counterRange),
+    draws: list(json.draws).map(counterRange),
+    available: list(json.available).map(counterInfo),
+    notes: list(json.notes).filter((n) => typeof n === "string"),
+    problems: list(json.problems).filter((p) => typeof p === "string")
+  };
+}
+function counterValue(file, range, name) {
+  const i = file.counters.findIndex((c2) => c2.name === name);
+  if (i < 0 || i >= range.values.length) return null;
+  return range.values[i];
+}
+function hwCountersByPass(file) {
+  const out = /* @__PURE__ */ new Map();
+  for (const r of file.passes) {
+    if (r.passIndex === void 0) continue;
+    out.set(`${r.frame}:${r.commandBuffer}:${r.passIndex}`, r);
+  }
+  return out;
+}
+function counterLabel(name) {
+  const base = (name.split(".")[0] || name).replace(/_cycles_active$/, "");
+  return base.replace(/__/g, " ").replace(/_/g, " ").trim() || name;
+}
+function formatCounter(value, unit) {
+  if (value === null) return "\u2014";
+  switch (unit) {
+    case "percent":
+      return `${value.toFixed(1)}%`;
+    case "ns":
+      return value >= 1e6 ? `${(value / 1e6).toFixed(3)} ms` : value >= 1e3 ? `${(value / 1e3).toFixed(2)} \xB5s` : `${value.toFixed(0)} ns`;
+    case "bytes":
+      return formatBytes5(value);
+    case "bytes/s":
+      return `${formatBytes5(value)}/s`;
+    case "cycles":
+      return value.toLocaleString(void 0, { maximumFractionDigits: 0 });
+    case "ratio":
+      return value.toFixed(3);
+    default:
+      return value.toLocaleString(void 0, { maximumFractionDigits: value < 10 ? 2 : 0 });
+  }
+}
+function formatBytes5(v) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
+}
+var SATURATED_PERCENT = 60;
+var BUSY_PERCENT = 30;
+var LOW_OCCUPANCY_PERCENT = 30;
+var HIGH_REGISTER_COUNT = 32;
+function unitOfCounter(name) {
+  if (/warps_active/.test(name)) return { kind: "occupancy", label: "occupancy" };
+  if (/dram/.test(name)) return { kind: "memory", label: "memory bandwidth" };
+  if (/^lts__/.test(name)) return { kind: "cache", label: "the L2 cache" };
+  if (/^l1tex__/.test(name)) return { kind: "cache", label: "the L1 and texture cache" };
+  const pipe = /^sm__pipe_([a-z0-9]+)_/.exec(name);
+  if (pipe) return { kind: "shader", label: `the ${pipe[1].toUpperCase()} pipe` };
+  if (/^sm__|^smsp__/.test(name)) return { kind: "shader", label: "the shader core" };
+  return { kind: "shader", label: counterLabel(name) };
+}
+function passLimiter(file, range) {
+  const percents = file.counters.map((c2, i) => ({ c: c2, value: range.values[i] })).filter((x) => x.c.unit === "percent" && typeof x.value === "number");
+  if (!percents.length) return null;
+  const occupancy = percents.find((x) => /warps_active/.test(x.c.name));
+  const units = percents.filter((x) => !/warps_active/.test(x.c.name));
+  if (!units.length) return null;
+  const top = units.reduce((a, b) => b.value > a.value ? b : a);
+  const { kind, label } = unitOfCounter(top.c.name);
+  if (top.value >= SATURATED_PERCENT) return { kind, label, counter: top.c.name, percent: top.value, saturated: true };
+  if (top.value >= BUSY_PERCENT) return { kind, label, counter: top.c.name, percent: top.value, saturated: false };
+  if (occupancy && occupancy.value < LOW_OCCUPANCY_PERCENT) {
+    return { kind: "occupancy", label: "occupancy", counter: occupancy.c.name, percent: occupancy.value, saturated: false };
+  }
+  return { kind: "unsaturated", label: "no unit", counter: "", percent: top.value, saturated: false };
+}
+function heaviestStage(executables) {
+  if (!Array.isArray(executables)) return null;
+  let best = null;
+  for (const raw of executables) {
+    const e = raw;
+    const stats = Array.isArray(e.statistics) ? e.statistics : [];
+    for (const s of stats) {
+      const st = s;
+      if (typeof st.name !== "string" || !/register/i.test(st.name)) continue;
+      const count2 = typeof st.value === "number" ? st.value : Number.NaN;
+      if (!Number.isFinite(count2)) continue;
+      const stage = Array.isArray(e.stages) && e.stages.length ? String(e.stages[0]) : String(e.name ?? "stage");
+      if (!best || count2 > best.count) best = { stage, count: count2 };
+    }
+  }
+  return best;
+}
+var LIMITER_LABEL = {
+  shader: "Shader bound",
+  memory: "Bandwidth bound",
+  cache: "Cache bound",
+  occupancy: "Latency bound",
+  unsaturated: "Nothing saturated"
+};
+var LIMITER_ADVICE = {
+  shader: "The shader core is the limit, so the work per invocation is what to cut: simpler maths, fewer instructions on the hot path, and anything that can move to a cheaper stage or be precomputed.",
+  memory: "The pass is moving more data than the memory system can feed it. Smaller or better compressed textures, fewer or narrower render targets, and fewer full-resolution passes over memory.",
+  cache: "The pass is limited by cache traffic rather than by arithmetic. Sampling that stays local (mips, smaller textures, better texture layout) and fewer scattered reads help more than cheaper shader maths.",
+  occupancy: "No unit is near its limit and few warps are in flight, so the pass is waiting rather than working: long dependency chains, register pressure limiting occupancy, or too little work to fill the GPU.",
+  // Filled in per pass by limiterAdvice when the compiler statistics name the stage responsible.
+  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbour usually beats optimising it."
+};
+function limiterAdvice(limiter) {
+  const base = LIMITER_ADVICE[limiter.kind];
+  const r = limiter.registers;
+  if (!r) return base;
+  if (limiter.kind === "occupancy" && r.count >= HIGH_REGISTER_COUNT) {
+    return `Its ${r.stage} stage uses ${r.count} registers, which is what is holding occupancy down: the more registers a stage holds, the fewer of its threads the GPU can keep in flight. Shorter live ranges, fewer variables held across a long computation, and less aggressive unrolling all free registers up. ` + base;
+  }
+  if (limiter.kind === "occupancy") {
+    return `${base} Its heaviest stage (${r.stage}) uses only ${r.count} registers, so register pressure is not the cause: look at dependency chains and at whether the pass has enough work to fill the GPU.`;
+  }
+  return base;
+}
+
 // src/renderer/pass_metrics.ts
 var HEALTHY_OVERDRAW = 1.2;
 var OVERDRAW_LIMIT = 2;
@@ -4222,6 +4408,8 @@ function collectPassMetrics(data, db) {
   const sets = data.sets;
   const passes = [];
   const passIndexOf = /* @__PURE__ */ new Map();
+  const boundPipeline = /* @__PURE__ */ new Map();
+  const pipelinesOfPass = /* @__PURE__ */ new Map();
   const computeIndexOf = /* @__PURE__ */ new Map();
   let open = null;
   let computeRun = null;
@@ -4259,10 +4447,17 @@ function collectPassMetrics(data, db) {
       closeComputeRun();
     }
     if (!a) continue;
+    if (sets.BIND_PIPELINE.has(m)) {
+      const id = refId(boundPipelineOf(a));
+      if (id) boundPipeline.set(cmd.secondary || cb, id);
+      continue;
+    }
     if (sets.DRAW.has(m)) {
       if (open) {
         open.draws++;
         open.vertices += drawVertices(a);
+        const id = boundPipeline.get(cmd.secondary || cb);
+        if (id) (pipelinesOfPass.get(open) ?? pipelinesOfPass.set(open, /* @__PURE__ */ new Set()).get(open)).add(id);
       }
       continue;
     }
@@ -4329,6 +4524,23 @@ function collectPassMetrics(data, db) {
       };
     }
     decideBound(p);
+  }
+  if (data.hwCounters) {
+    const byPass = hwCountersByPass(data.hwCounters);
+    for (const p of passes) {
+      if (p.compute) continue;
+      const range = byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`);
+      if (!range) continue;
+      p.limiter = passLimiter(data.hwCounters, range);
+      if (p.limiter) {
+        let heaviest = null;
+        for (const id of pipelinesOfPass.get(p) ?? []) {
+          const s = heaviestStage(db.getObject(id)?.updates?.executables);
+          if (s && (!heaviest || s.count > heaviest.count)) heaviest = s;
+        }
+        if (heaviest) p.limiter = { ...p.limiter, registers: heaviest };
+      }
+    }
   }
   if (data.drawStats?.length) {
     const sums = drawSumsByPass(data.drawStats);
@@ -4423,7 +4635,8 @@ function blank(cmd, passIndex, compute, cb, target) {
     nsPerFragment: null,
     cycleShare: null,
     bound: null,
-    boundReason: ""
+    boundReason: "",
+    limiter: null
   };
 }
 function passLabel(cmd, passIndex) {
@@ -4506,6 +4719,14 @@ function passAdvice(p) {
       severity: "medium",
       title: "Most of the pass is spent writing the render target",
       body: "Fewer or smaller attachments, or a store action of DontCare on the ones nothing reads afterwards. On a tile-based GPU a target that is only read by the pass that follows never has to reach memory at all."
+    });
+  }
+  if (p.limiter && p.limiter.kind !== "unsaturated") {
+    const l = p.limiter;
+    out.unshift({
+      severity: l.saturated ? "high" : "low",
+      title: l.saturated ? `${l.label[0].toUpperCase()}${l.label.slice(1)} is at ${l.percent.toFixed(0)}% of peak` : l.kind === "occupancy" ? `Only ${l.percent.toFixed(0)}% of the GPU's warps were active` : `${l.label[0].toUpperCase()}${l.label.slice(1)} is the busiest unit, at ${l.percent.toFixed(0)}% of peak`,
+      body: limiterAdvice(l)
     });
   }
   return out;
@@ -8739,6 +8960,11 @@ var ObjectDatabase = class {
   validationDropped = 0;
   /** Leak reports (objects alive when their device or instance was destroyed), in arrival order. */
   leaks = [];
+  /**
+   * Set once the GPU has stopped responding; it never recovers within the session. Either backend's
+   * report, since what the UI does with them is the same and both carry a finished message.
+   */
+  deviceLost = null;
   _snapshotRemaining = 0;
   onReset = new Signal();
   onSnapshotBegin = new Signal();
@@ -8755,6 +8981,8 @@ var ObjectDatabase = class {
   /** A validation message arrived (isNew) or its repeat count changed. */
   onValidationMessage = new Signal();
   onLeakReport = new Signal();
+  /** The GPU stopped responding, with the command it was running when it did. */
+  onDeviceLost = new Signal();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = /* @__PURE__ */ new Map();
   stacksAvailable = null;
@@ -9015,6 +9243,11 @@ var ObjectDatabase = class {
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
         break;
+      case "DeviceRemoved":
+      case "DeviceLost":
+        this.deviceLost = msg;
+        this.onDeviceLost.emit(msg);
+        break;
       case "ValidationCount":
         for (const [key, count2] of msg.counts ?? []) {
           const e = this.validationByKey.get(key);
@@ -9157,8 +9390,6 @@ var Capture = class {
   _labels = null;
   _validationCommands = null;
   _reflections = /* @__PURE__ */ new Map();
-  /** Hardware counters from a replay (`vkinsp_replay --counters`), cached for the open capture. */
-  hwCounters = null;
   get graph() {
     return this._graph ??= frameRenderGraph(this.data, this.db);
   }
@@ -9180,6 +9411,10 @@ var Capture = class {
     this.data.drawStats = draws;
     this._metrics = null;
     this._analysis = null;
+  }
+  /** The GPU's own hardware counters read by replaying the capture (renderer/hw_counters.ts). */
+  setHwCounters(counters) {
+    this.data.hwCounters = counters;
   }
   /** A shader stage measured by ablation (renderer/shader_ablation.ts), which the flame graph sizes that stage's functions and lines by. */
   setAblation(a) {
@@ -10974,7 +11209,14 @@ function analysisArgs(analysis, out, input) {
   if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
-  if (analysis.kind === "counters") return [...(analysis.counters ?? []).flatMap((c2) => ["--counter", c2]), "--counter-data", out];
+  if (analysis.kind === "counters") {
+    return [
+      ...(analysis.counters ?? []).flatMap((c2) => ["--counter", c2]),
+      ...analysis.perDraw ? ["--counter-draws"] : [],
+      "--counter-data",
+      out
+    ];
+  }
   if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;
@@ -11300,6 +11542,8 @@ function vulkanLayerEnvironment(o) {
     VKINSP_LOG: o.log ? "1" : "0",
     ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
     VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
+    ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
     VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
     // The validation layer stops reporting a message after a few repeats (its
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
@@ -25941,6 +26185,8 @@ async function serializeCapture(session, data, options = {}) {
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
     ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
+    ...data.hwCounters ? { hwCounters: data.hwCounters } : {},
+    ...data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {},
     ...data.ablations.length ? { ablations: data.ablations } : {},
     validation: db.validation,
     ...symbols ? { symbols } : {},
@@ -25965,7 +26211,8 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
   "CapturePassTimings",
   "CaptureOverdraw",
   "CaptureOverdrawData",
-  "CapturePixelHistory"
+  "CapturePixelHistory",
+  "CaptureCpuTimeline"
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
@@ -26023,6 +26270,7 @@ var LiveSession = class {
       if (isNew) this.appendLog(`validation ${entry2.severity}${entry2.idName ? ` ${entry2.idName}` : ""}: ${entry2.message.split("\n")[0].slice(0, 300)}`);
     });
     db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
+    db.onDeviceLost.addListener((r) => this.appendLog(`GPU device lost (${r.call}): ${r.message}`));
     db.onOtherMessage.addListener((msg) => {
       if (msg.action === "ShaderReplaced") {
         this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
@@ -26416,6 +26664,8 @@ var SessionManager = class {
         port,
         log: true,
         recordAlways: !!o.recordAlways,
+        breadcrumbs: !!o.breadcrumbs,
+        shaderStatistics: !!o.shaderStatistics,
         stacktraces: o.stacktraces ?? true,
         validation: !!o.validation,
         syncValidation: !!o.syncValidation
@@ -28758,95 +29008,6 @@ function texelValues(format, bytes, depth = false) {
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
-// src/renderer/hw_counters.ts
-var NO_PASS2 = 4294967295;
-function counterInfo(raw) {
-  const r = raw ?? {};
-  return {
-    name: typeof r.name === "string" ? r.name : "",
-    description: typeof r.description === "string" ? r.description : "",
-    category: typeof r.category === "string" ? r.category : "",
-    unit: typeof r.unit === "string" ? r.unit : "count"
-  };
-}
-function counterRange(raw) {
-  const r = raw ?? {};
-  const num4 = (v) => typeof v === "number" ? v : 0;
-  const pass = num4(r.passIndex);
-  return {
-    command: num4(r.command),
-    frame: num4(r.frame),
-    commandBuffer: num4(r.commandBuffer),
-    ...pass === NO_PASS2 ? {} : { passIndex: pass },
-    values: Array.isArray(r.values) ? r.values.map((v) => typeof v === "number" ? v : null) : []
-  };
-}
-function parseHwCounters(input) {
-  const text = typeof input === "string" ? input : new TextDecoder().decode(input);
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (e) {
-    throw new Error(`The hardware counters are not valid JSON: ${e.message}`);
-  }
-  if (json.format !== "gpu-inspector-hw-counters") throw new Error("Not hardware counters from vkinsp_replay.");
-  const str3 = (v) => typeof v === "string" ? v : "";
-  const list = (v) => Array.isArray(v) ? v : [];
-  return {
-    device: str3(json.device),
-    backend: str3(json.backend),
-    chip: str3(json.chip),
-    rounds: typeof json.rounds === "number" ? json.rounds : 0,
-    counters: list(json.counters).map(counterInfo),
-    passes: list(json.passes).map(counterRange),
-    draws: list(json.draws).map(counterRange),
-    available: list(json.available).map(counterInfo),
-    notes: list(json.notes).filter((n) => typeof n === "string"),
-    problems: list(json.problems).filter((p) => typeof p === "string")
-  };
-}
-function counterValue(file, range, name) {
-  const i = file.counters.findIndex((c2) => c2.name === name);
-  if (i < 0 || i >= range.values.length) return null;
-  return range.values[i];
-}
-function hwCountersByPass(file) {
-  const out = /* @__PURE__ */ new Map();
-  for (const r of file.passes) {
-    if (r.passIndex === void 0) continue;
-    out.set(`${r.frame}:${r.commandBuffer}:${r.passIndex}`, r);
-  }
-  return out;
-}
-function formatCounter(value, unit) {
-  if (value === null) return "\u2014";
-  switch (unit) {
-    case "percent":
-      return `${value.toFixed(1)}%`;
-    case "ns":
-      return value >= 1e6 ? `${(value / 1e6).toFixed(3)} ms` : value >= 1e3 ? `${(value / 1e3).toFixed(2)} \xB5s` : `${value.toFixed(0)} ns`;
-    case "bytes":
-      return formatBytes5(value);
-    case "bytes/s":
-      return `${formatBytes5(value)}/s`;
-    case "cycles":
-      return value.toLocaleString(void 0, { maximumFractionDigits: 0 });
-    case "ratio":
-      return value.toFixed(3);
-    default:
-      return value.toLocaleString(void 0, { maximumFractionDigits: value < 10 ? 2 : 0 });
-  }
-}
-function formatBytes5(v) {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
-}
-
 // src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
@@ -28941,6 +29102,17 @@ function passMeasurements(c2, p, i, gpuMs) {
     cycleShare: p.cycleShare ? { vertex: round(p.cycleShare.vertex), fragment: round(p.cycleShare.fragment), target: round(p.cycleShare.target) } : void 0,
     bound: p.bound ?? void 0,
     boundReason: p.boundReason || void 0,
+    // Measured by the GPU's own counters, where a replay read them: names the saturated unit
+    // rather than inferring a stage (get_hw_counters collects them).
+    limiter: p.limiter && p.limiter.kind !== "unsaturated" ? {
+      verdict: LIMITER_LABEL[p.limiter.kind],
+      unit: p.limiter.label,
+      percentOfPeak: round(p.limiter.percent),
+      saturated: p.limiter.saturated,
+      counter: p.limiter.counter,
+      // Why occupancy is what it is, where the capture carries the driver's compiler statistics.
+      registers: p.limiter.registers ? { stage: p.limiter.registers.stage, count: p.limiter.registers.count } : void 0
+    } : void 0,
     problems: problems.length ? problems : void 0
   };
 }
@@ -29251,6 +29423,7 @@ function captureTools(store) {
         capture: CAPTURE_PARAM,
         counters: { type: "array", items: { type: "string" }, description: "Counter names to collect (list=true shows what the GPU offers). Default: a limiter set (SM, memory, cache, occupancy, ALU, FMA)." },
         list: { type: "boolean", description: "Only list every counter the GPU offers, without collecting (no replay of the frame's work)." },
+        perDraw: { type: "boolean", description: "Also measure each draw, not only each render pass. The profiler serializes work at every range, so a frame with thousands of draws takes far longer; default false." },
         ...PAGE_PARAMS
       }),
       readOnly: true,
@@ -29281,18 +29454,19 @@ function captureTools(store) {
             notes: file2.notes.length ? file2.notes : void 0
           });
         }
-        if (!c2.hwCounters || requested.length) {
-          const run2 = await replayServers.run(tool, c2.path, { kind: "counters", counters: requested.length ? requested : void 0 });
+        const perDraw = boolArg(args, "perDraw", false);
+        if (!c2.data.hwCounters || requested.length || perDraw) {
+          const run2 = await replayServers.run(tool, c2.path, { kind: "counters", counters: requested.length ? requested : void 0, perDraw });
           if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not read hardware counters: ${run2.error ?? "no data"}` });
-          c2.hwCounters = parseHwCounters(run2.data);
+          c2.setHwCounters(parseHwCounters(run2.data));
         }
-        const file = c2.hwCounters;
-        if (!file.backend || !file.passes.length && !file.draws.length) {
-          return jsonResult({ capture: c2.id, note: file.notes[0] ?? "No hardware counters were collected.", notes: file.notes.length > 1 ? file.notes : void 0 });
+        const file = c2.data.hwCounters;
+        if (!file || !file.backend || !file.passes.length && !file.draws.length) {
+          return jsonResult({ capture: c2.id, note: file?.notes[0] ?? "No hardware counters were collected.", notes: file && file.notes.length > 1 ? file.notes : void 0 });
         }
         const byPass = hwCountersByPass(file);
         const metrics = c2.metrics.passes;
-        const rows = metrics.map((p, i) => ({ p, i, r: byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) })).filter((x) => x.r);
+        const rows = metrics.map((p, i) => ({ p, i, r: p.compute ? void 0 : byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) })).filter((x) => x.r);
         rows.sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
         const pg = page(rows, args, 30, 200);
         const cell = (r, name) => formatCounter(counterValue(file, r, name), file.counters.find((cc) => cc.name === name)?.unit ?? "count");
@@ -29795,6 +29969,8 @@ function liveTools(sessions2, store) {
         syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
+        breadcrumbs: { type: "boolean", description: "Vulkan: have the GPU write a marker before and after every draw and dispatch, so if it stops responding (VK_ERROR_DEVICE_LOST) the session log names the command it was running. Costs two GPU writes per action; default false." },
+        shaderStatistics: { type: "boolean", description: "Vulkan: ask the driver what its shader compiler made of each pipeline stage (registers used, code size, spilled memory), shown on the pipeline object by get_live_object under updates.executables. Costs compile time and driver memory; default false." },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
         layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
         waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." }
@@ -29810,6 +29986,8 @@ function liveTools(sessions2, store) {
           syncValidation: boolArg(args, "syncValidation", false),
           stacktraces: boolArg(args, "stacktraces", true),
           recordAlways: boolArg(args, "recordAlways", false),
+          breadcrumbs: boolArg(args, "breadcrumbs", false),
+          shaderStatistics: boolArg(args, "shaderStatistics", false),
           port: optionalInt(args, "port"),
           layerDir: stringArg(args, "layerDir")
         }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
