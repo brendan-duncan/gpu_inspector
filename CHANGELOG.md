@@ -25,8 +25,14 @@
   the handle blob the layer keeps on the pipeline. On the ray tracing test capture that takes the
   replay from six problems to none, with no validation messages and the raster targets still
   identical. A record whose handle this pipeline never gave out is reported and replayed as it was.
-  The traced output itself is not compared: only render targets are, and a trace writes a storage
-  image.
+- The replay compares what a frame computed into an image, not only what it drew into a target
+  (`Replayer::InjectStorageReadbacks`). A trace or a dispatch writes a storage image, which is no
+  pass's attachment, so nothing the replay computed into one was ever checked — a trace that ran
+  and one that produced the wrong pixels looked alike. Every image the capture read back that a
+  shader could have written is now read back at the end of the command buffer and compared. It
+  found its first bug immediately: on the ray tracing capture exactly 12.5% of the traced image
+  differs, which is the triangle's share of it, because the bottom level the rays are traced
+  against was built before the capture began and the replay has nothing to build it from.
 - The shader binding table says which shader group each record runs (`renderer/binding_table.ts`,
   **Shader Binding Table** on a trace command). A trace does not name the shaders it runs: it names
   four regions of memory whose records begin with an opaque handle the driver gave for a shader

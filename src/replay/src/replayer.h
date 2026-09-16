@@ -439,6 +439,8 @@ private:
         uint32_t mips = 1;
         uint32_t layers = 1;
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+        /** STORAGE usage: a shader can write it, so what the frame left in it is worth comparing. */
+        bool storage = false;
         /** Per subresource, mip * layers + layer: the layout outside the frame's own command buffers. */
         std::vector<VkImageLayout> layouts;
     };
@@ -736,6 +738,12 @@ private:
     void BeginDynamicPass(const JValue& command, uint32_t index, uint64_t commandBuffer, VkCommandBuffer cb);
     /** Copies the pass's captured targets for comparison; with a reason, only reports them as not compared. */
     void InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::vector<PendingReadback>& readbacks, const char* skipReason = nullptr);
+    /**
+     * Reads back the images a shader may have written, at the end of a command buffer's recording.
+     * Render targets are compared at their pass's end; an image a trace or a dispatch wrote is not
+     * a target of any pass, so without this nothing the replay computes into one is ever checked.
+     */
+    void InjectStorageReadbacks(VkCommandBuffer cb, const CommandGroup& group, std::vector<PendingReadback>& readbacks);
     void CompareReadbacks(std::vector<PendingReadback>& readbacks);
 
     bool CreateStaging(VkDeviceSize size, Staging& staging, VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);

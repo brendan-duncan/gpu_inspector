@@ -593,6 +593,7 @@ uint64_t Replayer::CreateImage(uint64_t id, const VkImageCreateInfo& captured) {
     rec.mips = info.mipLevels;
     rec.layers = info.arrayLayers;
     rec.samples = info.samples;
+    rec.storage = (info.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
     rec.layouts.assign((size_t)rec.mips * rec.layers, VK_IMAGE_LAYOUT_UNDEFINED);
     _images[id] = rec;
     return (uint64_t)image;
@@ -1853,6 +1854,74 @@ void Replayer::BeginPass(const JValue& command, uint32_t index, uint64_t command
     (void)commandBuffer;
 }
 
+
+void Replayer::InjectStorageReadbacks(VkCommandBuffer cb, const CommandGroup& group, std::vector<PendingReadback>& readbacks) {
+    const JValue* textures = _capture->Textures();
+    if (!textures || !textures->IsArray()) return;
+    for (uint32_t i = 0; i < textures->count; ++i) {
+        const JValue& t = textures->items[i];
+        const JValue* info = t.Get("info");
+        // Only images a shader could have written, read back in this command buffer. A sampled image
+        // the frame only read is uploaded and would compare equal to itself, which says nothing.
+        if (!info || Str(info->Get("kind")) != "sampled") continue;
+        if (info->Get("error")) continue;
+        const JValue* owner = info->Get("commandBuffer");
+        if (!owner || owner->Uint() != group.commandBuffer) continue;
+        auto it = _images.find(info->Get("id")->Uint());
+        if (it == _images.end() || !it->second.storage) continue;
+        const ImageRecord& image = it->second;
+        if (image.samples != VK_SAMPLE_COUNT_1_BIT) continue;   // a multisampled storage image is not a thing
+
+        const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        const uint32_t width = (uint32_t)info->Get("width")->Uint();
+        const uint32_t height = (uint32_t)info->Get("height")->Uint();
+        const uint8_t* captured = nullptr;
+        size_t capturedSize = 0;
+        if (!_capture->Payload(t.Get("payload"), captured, capturedSize) || !capturedSize) continue;
+
+        TargetComparison cmp;
+        cmp.image = info->Get("id")->Uint();
+        cmp.commandBuffer = group.commandBuffer;
+        cmp.frame = info->Get("frame") ? (uint32_t)info->Get("frame")->Uint() : 0;
+        cmp.passIndex = UINT32_MAX;          // not a pass's target: what the frame computed into it
+        cmp.attachment = UINT32_MAX;
+        cmp.format = Str(info->Get("format"));
+        cmp.aspect = "storage";
+        cmp.width = width;
+        cmp.height = height;
+
+        PendingReadback pending;
+        pending.target = _report->targets.size();
+        pending.texture = &t;
+        if (!CreateStaging(capturedSize, pending.staging)) {
+            cmp.note = "no staging memory";
+            _report->targets.push_back(cmp);
+            continue;
+        }
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image.image;
+        b.subresourceRange = {aspect, 0, 1, 0, 1};
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;   // a storage image is written in GENERAL and left there
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                0, nullptr, 1, &b);
+        VkBufferImageCopy copy{};
+        copy.imageExtent = {std::max(1u, width), std::max(1u, height), 1};
+        copy.imageSubresource = {aspect, 0, 0, 1};
+        _fns.CmdCopyImageToBuffer(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.staging.buffer, 1, &copy);
+        std::swap(b.oldLayout, b.newLayout);
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
+                                0, nullptr, 1, &b);
+        _report->targets.push_back(cmp);
+        readbacks.push_back(pending);
+    }
+}
+
 void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::vector<PendingReadback>& readbacks, const char* skipReason) {
     const JValue* textures = _capture->Textures();
     if (!textures || !textures->IsArray()) return;
@@ -2370,6 +2439,9 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             _passViews = 1;
         }
     }
+    // What the frame computed into an image rather than drew into a target: a trace or a
+    // dispatch writes a storage image, which is no pass's attachment and so is compared here.
+    if (_options.compareTargets) InjectStorageReadbacks(cb, group, readbacks);
     _fns.EndCommandBuffer(cb);
 }
 
