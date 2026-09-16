@@ -361,7 +361,23 @@ export interface PassTiming {
   utilization?: Record<string, number>;
 }
 
-export interface CapturePassTimingsMessage { action: "CapturePassTimings"; timestampPeriodNs: number; count: number; passes: PassTiming[] }
+export interface CapturePassTimingsMessage {
+  action: "CapturePassTimings";
+  timestampPeriodNs: number;
+  count: number;
+  passes: PassTiming[];
+  /**
+   * The device tick `PassTiming.startMs` is measured from. With the CpuTimeline's calibration this
+   * places a pass on the host clock — `gpuTicksToCpuMs(timeline, originTicks) + startMs` — which is
+   * what lets the GPU lane be drawn beside the CPU lanes. Absent on a device whose clock was not
+   * calibrated, and on the devices of a multi-device capture that are not the captured one.
+   *
+   * A string when the tick is past 2^53, which it is on a real device: the layer's writer quotes an
+   * integer that a JSON number could not hold exactly (src/vulkan/src/json_writer.h). Pass it
+   * through Number() before arithmetic — never `+`, which would concatenate.
+   */
+  originTicks?: number | string;
+}
 
 /**
  * The overdraw of one render pass: how many fragments landed on each pixel when the pass was drawn
@@ -573,7 +589,8 @@ export interface CpuEvent {
 
 /** How to place a GPU timestamp on the CPU axis: hostMs + (ticks - deviceTicks) * period / 1e6. */
 export interface CpuGpuCalibration {
-  deviceTicks: number;
+  /** Like CapturePassTimings.originTicks, a string when past 2^53: Number() it before arithmetic. */
+  deviceTicks: number | string;
   hostMs: number;
   timestampPeriod: number;
 }

@@ -310,7 +310,9 @@ private:
     DeviceCapture* FindCapture(VkDevice device);
     // A submission's frame ordinal on its device.
     uint32_t FrameOf(DeviceData* dev);
-    void SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total);
+    /** `originTicks`, when given, receives the device tick this device's pass starts are measured from. */
+    void SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total,
+                         uint64_t* originTicks);
     void ReleaseDevice(DeviceCapture& dc);
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
                          VkBuffer* bufferOut = nullptr);

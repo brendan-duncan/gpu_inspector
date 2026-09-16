@@ -406,6 +406,18 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-bound-track { flex: 1 1 auto; height: 10px; background: var(--bg-primary); border-radius: 5px; overflow: hidden; }
 .frame-bound-fill { height: 100%; border-radius: 5px; }
 .frame-bound-value { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+/* CPU and GPU activity on one axis (renderer/timeline_tracks.ts) */
+.track-row { display: flex; align-items: center; gap: 10px; padding: 2px 0; font-size: 10pt; }
+.track-label { flex: 0 0 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-lane { position: relative; flex: 1 1 auto; height: 16px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
+.track-lane-gpu { height: 20px; }
+.track-span { position: absolute; top: 2px; bottom: 2px; min-width: 1px; border-radius: 2px; }
+/* An idle stretch of the GPU lane: drawn as an outline so it reads as absence, not as work. */
+.track-gap { position: absolute; top: 0; bottom: 0; border: 1px dashed var(--accent-warning, #c08040); border-radius: 2px; box-sizing: border-box; opacity: 0.8; }
+.track-busy { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; font-size: 9pt; }
+.track-axis { display: flex; justify-content: space-between; color: var(--fg-muted); font-size: 9pt; padding-left: 150px; font-variant-numeric: tabular-nums; }
+.track-legend { display: flex; gap: 14px; align-items: center; color: var(--fg-muted); font-size: 9pt; padding: 6px 0 0 150px; }
+.track-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .capture-left-row { display: flex; height: 100%; min-height: 0; }
 .capture-left { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1 1 auto; min-width: 0; }
 /* Render pass thumbnails beside the command list */

@@ -26,7 +26,8 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { pipelineUses, programStages, shaderProgram, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
-import { renderFrameStats, type FrameTimingInfo } from "./frame_stats_view.js";
+import { renderFrameStats, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
+import { defaultPassLabel, type LabelledPass } from "./timeline_tracks.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
@@ -816,6 +817,21 @@ export class CaptureView implements CaptureHost {
     return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
   }
 
+  /**
+   * The GPU half of the Timeline card: every timed pass with its label, and the device tick their
+   * starts are measured from. Unlike timingSummary() these keep their recorded order and are not
+   * sorted by cost, since the card draws them against a clock.
+   */
+  gpuTrack(): GpuTrackInput {
+    // Every timed pass, named from its command-list block where there is one. Driven by the timings
+    // rather than the blocks so that a pass with no block — a command buffer submitted again in a
+    // multi-frame capture — is still drawn (see defaultPassLabel).
+    const passes: LabelledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => ({
+      timing, label: this._passBlocks.get(key)?.label ?? defaultPassLabel(timing),
+    }));
+    return { passes, originTicks: this.data.passTimingOrigin };
+  }
+
   /** Tab label: the captured frame number(s) once known. */
   get label(): string {
     if (this.customLabel) return this.customLabel;
@@ -1320,7 +1336,8 @@ export class CaptureView implements CaptureHost {
     const db = this.window.database;
     if (!this._analysis) this._analysis = analyzeFrame(this.data, db, this.renderGraph());
     renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
-      { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) }, this.data.cpuTimeline);
+      { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) }, this.data.cpuTimeline,
+      this.gpuTrack());
   }
 
   /**

@@ -2034,6 +2034,8 @@ var CaptureData = class {
   buffers = /* @__PURE__ */ new Map();
   /** GPU pass timings (Profile passes), keyed "frame:commandBuffer:passIndex". */
   passTimings = /* @__PURE__ */ new Map();
+  /** The device tick those pass starts are measured from, for placing them on the CPU axis (protocol.ts). */
+  passTimingOrigin = null;
   /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
   overdraw = [];
   /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
@@ -2085,6 +2087,7 @@ var CaptureData = class {
     this.textures = [];
     this.buffers = /* @__PURE__ */ new Map();
     this.passTimings = /* @__PURE__ */ new Map();
+    this.passTimingOrigin = null;
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
@@ -2161,6 +2164,7 @@ var CaptureData = class {
     this.textures = c2.textures;
     this.buffers = c2.buffers;
     this.passTimings = c2.passTimings;
+    this.passTimingOrigin = c2.passTimingOrigin;
     this.overdraw = c2.overdraw;
     this.pixelHistory = c2.pixelHistory;
     this.drawStats = c2.drawStats;
@@ -2223,6 +2227,7 @@ var CaptureData = class {
         break;
       case "CapturePassTimings":
         this.passTimings = /* @__PURE__ */ new Map();
+        this.passTimingOrigin = msg.originTicks === void 0 ? null : Number(msg.originTicks);
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
         break;
@@ -2337,6 +2342,7 @@ function parseCaptureFile(bytes) {
     textures,
     buffers,
     passTimings,
+    passTimingOrigin: manifest.passTimingOrigin ?? null,
     overdraw,
     pixelHistory: manifest.pixelHistory ?? null,
     drawStats: manifest.drawStats ?? null,
@@ -26182,6 +26188,7 @@ async function serializeCapture(session, data, options = {}) {
     textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
     passTimings: [...data.passTimings.values()],
+    ...data.passTimingOrigin !== null ? { passTimingOrigin: data.passTimingOrigin } : {},
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
     ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
@@ -29008,6 +29015,174 @@ function texelValues(format, bytes, depth = false) {
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
+// src/renderer/cpu_timeline.ts
+var CPU_CATEGORY_LABEL = {
+  submit: "Submitting",
+  present: "Presenting",
+  waitFences: "Waiting on fences",
+  acquire: "Waiting for a swapchain image",
+  waitIdle: "Waiting for idle"
+};
+var CPU_CATEGORY_KIND = {
+  waitFences: "gpuWait",
+  waitIdle: "gpuWait",
+  present: "displayWait",
+  acquire: "displayWait",
+  submit: "work"
+};
+function cpuKindOf(category) {
+  return CPU_CATEGORY_KIND[category] ?? "work";
+}
+function gpuTicksToCpuMs(timeline, ticks) {
+  const c2 = timeline?.calibration;
+  if (!c2) return null;
+  return c2.hostMs + (Number(ticks) - Number(c2.deviceTicks)) * c2.timestampPeriod / 1e6;
+}
+
+// src/renderer/timeline_tracks.ts
+function defaultPassLabel(t) {
+  return `${t.kind === "compute" ? "Compute" : "Render"} pass ${t.passIndex} (frame ${t.frame})`;
+}
+var MAX_SPANS_PER_TRACK = 4e3;
+function threadLabel(tid, index, total) {
+  return total > 1 && index === 0 ? `Thread ${tid} (main)` : `Thread ${tid}`;
+}
+function buildTimelineTracks(input) {
+  const { timeline, passes, originTicks } = input;
+  if (!timeline?.events?.length) return null;
+  const gpuOriginMs = originTicks !== null ? gpuTicksToCpuMs(timeline, originTicks) : null;
+  const hasGpu = gpuOriginMs !== null && passes.length > 0;
+  const gpuNote = hasGpu ? null : !passes.length ? "No passes were timed in this capture, so there is no GPU track." : !timeline.calibration ? "This device has no calibrated-timestamps extension, so the GPU's clock cannot be related to the CPU's. The pass times are correct among themselves but cannot be placed beside these calls." : "This capture was taken before the layer recorded the GPU clock's origin, so the passes cannot be placed on this axis. Capture again to see the GPU track.";
+  const threads = timeline.threads ?? [];
+  const byThread = /* @__PURE__ */ new Map();
+  let min = Infinity;
+  let max = -Infinity;
+  for (const e of timeline.events) {
+    min = Math.min(min, e.startMs);
+    max = Math.max(max, e.startMs + e.durationMs);
+    let spans = byThread.get(e.thread);
+    if (!spans) byThread.set(e.thread, spans = []);
+    spans.push({
+      startMs: e.startMs,
+      durationMs: e.durationMs,
+      label: CPU_CATEGORY_LABEL[e.category] ?? e.category,
+      kind: cpuKindOf(e.category)
+    });
+  }
+  const gpuSpans = [];
+  if (hasGpu) {
+    for (const p of passes) {
+      const startMs = gpuOriginMs + p.timing.startMs;
+      min = Math.min(min, startMs);
+      max = Math.max(max, startMs + p.timing.durationMs);
+      gpuSpans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu" });
+    }
+  }
+  if (!(max > min)) return null;
+  const finish2 = (spans) => {
+    spans.sort((a, b) => a.startMs - b.startMs);
+    let busyMs = 0;
+    for (const s of spans) busyMs += s.durationMs;
+    const rebased = spans.slice(0, MAX_SPANS_PER_TRACK).map((s) => ({ ...s, startMs: s.startMs - min }));
+    return { spans: rebased, busyMs };
+  };
+  const tracks = [];
+  threads.forEach((tid, i) => {
+    const spans = byThread.get(i);
+    if (!spans?.length) return;
+    const { spans: out, busyMs } = finish2(spans);
+    tracks.push({ label: threadLabel(tid, i, threads.length), kind: "cpu", spans: out, busyMs });
+  });
+  for (const [index, spans] of byThread) {
+    if (index < threads.length) continue;
+    const { spans: out, busyMs } = finish2(spans);
+    tracks.push({ label: `Thread #${index}`, kind: "cpu", spans: out, busyMs });
+  }
+  if (hasGpu) {
+    const { spans: out, busyMs } = finish2(gpuSpans);
+    tracks.push({ label: "GPU", kind: "gpu", spans: out, busyMs });
+  }
+  if (!tracks.length) return null;
+  return { tracks, spanMs: max - min, hasGpu, gpuNote };
+}
+function gpuSpan(t) {
+  const gpu = t.tracks.find((x) => x.kind === "gpu");
+  if (!gpu?.spans.length) return null;
+  let startMs = Infinity;
+  let endMs = -Infinity;
+  for (const s of gpu.spans) {
+    startMs = Math.min(startMs, s.startMs);
+    endMs = Math.max(endMs, s.startMs + s.durationMs);
+  }
+  return { startMs, endMs };
+}
+function gpuGaps(t, minMs = 0.5) {
+  const gpu = t.tracks.find((x) => x.kind === "gpu");
+  if (!gpu?.spans.length) return [];
+  const gaps = [];
+  let frontier = gpu.spans[0].startMs;
+  for (const s of gpu.spans) {
+    if (s.startMs - frontier >= minMs) gaps.push({ startMs: frontier, durationMs: s.startMs - frontier });
+    frontier = Math.max(frontier, s.startMs + s.durationMs);
+  }
+  return gaps.sort((a, b) => b.durationMs - a.durationMs);
+}
+function submitToFirstPassMs(t) {
+  const span = gpuSpan(t);
+  if (!span) return null;
+  let latestEnd = -Infinity;
+  for (const track of t.tracks) {
+    if (track.kind !== "cpu") continue;
+    for (const s of track.spans) {
+      if (s.kind !== "work") continue;
+      const end = s.startMs + s.durationMs;
+      if (end <= span.startMs) latestEnd = Math.max(latestEnd, end);
+    }
+  }
+  return latestEnd > -Infinity ? span.startMs - latestEnd : null;
+}
+function attributeGaps(t, gaps) {
+  const out = { displayWaitMs: 0, gpuWaitMs: 0, workMs: 0, untimedMs: 0 };
+  let total = 0;
+  for (const g of gaps) {
+    total += g.durationMs;
+    const end = g.startMs + g.durationMs;
+    for (const track of t.tracks) {
+      if (track.kind !== "cpu") continue;
+      for (const s of track.spans) {
+        const overlap = Math.min(end, s.startMs + s.durationMs) - Math.max(g.startMs, s.startMs);
+        if (overlap <= 0) continue;
+        if (s.kind === "displayWait") out.displayWaitMs += overlap;
+        else if (s.kind === "gpuWait") out.gpuWaitMs += overlap;
+        else out.workMs += overlap;
+      }
+    }
+  }
+  out.untimedMs = Math.max(0, total - out.displayWaitMs - out.gpuWaitMs - out.workMs);
+  return out;
+}
+function tracksVerdict(t) {
+  if (!t.hasGpu) {
+    const busiest = [...t.tracks].sort((a2, b) => b.busyMs - a2.busyMs)[0];
+    const share = t.spanMs > 0 ? busiest.busyMs / t.spanMs : 0;
+    return `${t.tracks.length} thread${t.tracks.length === 1 ? "" : "s"} over ${t.spanMs.toFixed(2)} ms. ${busiest.label} spent ${(100 * share).toFixed(0)}% of it inside calls the layer times.`;
+  }
+  const gpu = t.tracks.find((x) => x.kind === "gpu");
+  const span = gpuSpan(t);
+  const gpuSpanMs = span.endMs - span.startMs;
+  const gaps = gpuGaps(t);
+  const idle = gaps.reduce((sum, g) => sum + g.durationMs, 0);
+  const head = `The GPU ran ${gpu.spans.length} pass${gpu.spans.length === 1 ? "" : "es"} over ${gpuSpanMs.toFixed(2)} ms, busy for ${(100 * (gpuSpanMs > 0 ? gpu.busyMs / gpuSpanMs : 0)).toFixed(0)}% of that. `;
+  const wait = submitToFirstPassMs(t);
+  const latency = wait !== null && wait >= 0.5 ? ` Its first pass began ${wait.toFixed(2)} ms after the submission before it, so the work waited that long between being handed over and starting \u2014 a swapchain image the display has not released yet is the usual reason, and it costs latency rather than frame time.` : "";
+  if (!gaps.length) {
+    return head + "Its passes ran back to back, so that time is the work itself rather than gaps in it." + latency;
+  }
+  const a = attributeGaps(t, gaps);
+  const why = a.displayWaitMs >= idle * 0.4 ? "The CPU was in present or acquire for most of that, so the frame is paced by the display and the idle GPU is headroom rather than a stall." : a.workMs >= idle * 0.4 ? "The CPU was inside submission for much of that, so the GPU is waiting on work the CPU had not finished handing it: fewer, larger submissions would close the gap." : a.gpuWaitMs >= idle * 0.4 ? "The CPU was waiting on a fence for most of that, which with an idle GPU means it is waiting on work already finished: the fence is being waited on later than it is signalled." : "The CPU was outside the calls the layer times for most of that \u2014 its own work between them: building command buffers, culling, simulation \u2014 so that is where the GPU's idle time is going.";
+  return head + `It went idle between passes for ${idle.toFixed(2)} ms across ${gaps.length} gap${gaps.length === 1 ? "" : "s"}, the longest ${gaps[0].durationMs.toFixed(2)} ms. ` + why + latency;
+}
+
 // src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
@@ -29033,7 +29208,34 @@ function frameTiming(c2) {
     profiled: timings.length > 0,
     gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
     gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
-    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0
+    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0,
+    ...timelineTiming(c2)
+  };
+}
+function timelineTiming(c2) {
+  const names = /* @__PURE__ */ new Map();
+  c2.metrics.passes.forEach((p, i) => {
+    const timing = c2.data.passTiming(p.frame, p.commandBuffer, p.passIndex, p.compute);
+    if (timing) names.set(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`, c2.passName(i));
+  });
+  const passes = [...c2.data.passTimings.values()].map((timing) => ({
+    timing,
+    label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`) ?? defaultPassLabel(timing)
+  }));
+  const t = buildTimelineTracks({ timeline: c2.data.cpuTimeline, passes, originTicks: c2.data.passTimingOrigin });
+  if (!t) return {};
+  const gaps = gpuGaps(t);
+  const wait = submitToFirstPassMs(t);
+  return {
+    timeline: {
+      verdict: tracksVerdict(t),
+      spanMs: round(t.spanMs),
+      threads: t.tracks.filter((x) => x.kind === "cpu").map((x) => ({ track: x.label, busyMs: round(x.busyMs) })),
+      gpuIdleMs: t.hasGpu ? round(gaps.reduce((sum, g) => sum + g.durationMs, 0)) : void 0,
+      longestGpuGapMs: gaps.length ? round(gaps[0].durationMs) : void 0,
+      submitToFirstPassMs: wait !== null ? round(wait) : void 0,
+      note: t.gpuNote ?? void 0
+    }
   };
 }
 function captureNotes(c2) {
@@ -29324,7 +29526,7 @@ function captureTools(store) {
     },
     {
       name: "get_capture_summary",
-      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
+      description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the CPU and GPU timeline (how long the GPU idled between passes and what the CPU was doing meanwhile, which no total can hold), the slowest passes, the Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on what the capture lacks. Start here.",
       inputSchema: schema({ capture: CAPTURE_PARAM }),
       readOnly: true,
       handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture"))))

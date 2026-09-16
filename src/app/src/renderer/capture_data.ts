@@ -83,6 +83,8 @@ export class CaptureData {
   buffers = new Map<number, CapturedBuffer>();
   /** GPU pass timings (Profile passes), keyed "frame:commandBuffer:passIndex". */
   passTimings = new Map<string, PassTiming>();
+  /** The device tick those pass starts are measured from, for placing them on the CPU axis (protocol.ts). */
+  passTimingOrigin: number | null = null;
   /** Overdraw measurements (a Metal capture with "Overdraw"): two per render pass. */
   overdraw: CapturedOverdraw[] = [];
   /** The pixel a Metal capture with "pixelHistory" followed, as it sent it (renderer/pixel_history.ts parses it). */
@@ -137,6 +139,7 @@ export class CaptureData {
     this.textures = [];
     this.buffers = new Map();
     this.passTimings = new Map();
+    this.passTimingOrigin = null;
     this.overdraw = [];
     this.pixelHistory = null;
     this.drawStats = null;
@@ -227,6 +230,7 @@ export class CaptureData {
     this.textures = c.textures;
     this.buffers = c.buffers;
     this.passTimings = c.passTimings;
+    this.passTimingOrigin = c.passTimingOrigin;
     this.overdraw = c.overdraw;
     this.pixelHistory = c.pixelHistory;
     this.drawStats = c.drawStats;
@@ -293,6 +297,8 @@ export class CaptureData {
         break;
       case "CapturePassTimings":
         this.passTimings = new Map();
+        // A string past 2^53 from a real device (protocol.ts); a number from here on.
+        this.passTimingOrigin = msg.originTicks === undefined ? null : Number(msg.originTicks);
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
         break;

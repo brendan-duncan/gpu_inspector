@@ -388,11 +388,24 @@ vendor's driver is listed at the end so nobody spends time on it.
       triangle reads as display-paced (65% in present and acquire), an offscreen one as spending its
       time outside timed calls. The fence-wait and submission verdicts have tests but no real
       capture that reaches them — nothing here is GPU-bound or submission-bound enough.
-- [ ] The timeline as a drawing, the rest: a track view with one lane per thread and a GPU lane,
-      laid on the shared axis the calibration already provides (`gpuTicksToCpuMs`), which is what
-      Nsight Systems shows and what makes a stall visible rather than merely counted; per-call
-      events rather than per-category totals in the UI; the CPU timeline live in the session bar
-      rather than only in a capture; and `get_capture_summary` reporting the verdict.
+- [x] The timeline as a drawing (**Timeline** in Frame Stats, `renderer/timeline_tracks.ts`): one
+      lane per thread with each timed call as its own span, and a GPU lane with the passes, on the
+      shared axis the calibration provides. The layer now sends `originTicks`, the device tick the
+      pass starts are measured from, without which the passes cannot be placed on the host clock.
+      The verdict names the longest gap between passes, attributes it to what the CPU lanes were
+      doing across it (display-paced, waiting on submission, or the application's own untimed work),
+      and reports the wait from a submission to the pass it queued. `get_capture_summary` carries
+      it. Checked on an RTX 4080: a 1-frame triangle capture places its passes 2.69 ms after the
+      submission (the swapchain image, not a stall) and reports its passes back to back; a 4-frame
+      one finds the 1.99 ms interframe gap and correctly calls it display pacing rather than a
+      stall. Two things the real capture caught: the tick values are past 2^53 and so arrive as
+      JSON strings, and counting the axis either side of the GPU lane as idle reported a 96% idle
+      GPU on a frame whose GPU was simply not the limit.
+- [ ] The timeline as a drawing, the rest: the lanes zoomable and scrollable rather than fitted to
+      the card (a 4,000-draw frame's spans are sub-pixel at frame scale, and `MAX_SPANS_PER_TRACK`
+      drops the rest); clicking a span to select the pass or call it names; the CPU timeline live in
+      the session bar rather than only in a capture; and per-queue GPU lanes rather than one, which
+      needs the layer to report the queue each pass ran on.
 
 - [x] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader):
       `src/vulkan/src/shader_statistics.h`, through `VK_KHR_pipeline_executable_properties`. The

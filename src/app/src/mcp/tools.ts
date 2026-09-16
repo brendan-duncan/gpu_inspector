@@ -15,6 +15,7 @@ import {
 } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
+import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabelledPass } from "../renderer/timeline_tracks.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -59,6 +60,44 @@ function frameTiming(c: Capture): Record<string, unknown> {
     gpuPassMs: timings.length ? round(c.metrics.gpuMs) : undefined,
     gpuSpanMs: timings.length ? round(gpuSpanMs) : undefined,
     frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : undefined,
+    ...timelineTiming(c),
+  };
+}
+
+/**
+ * The CPU and GPU tracks on one axis (renderer/timeline_tracks.ts): where the CPU went, and where
+ * the GPU idled between passes with what the CPU was doing meanwhile. The totals above cannot hold
+ * this — an idle GPU between passes is the space *between* spans, so it has no size in any of them.
+ */
+function timelineTiming(c: Capture): Record<string, unknown> {
+  // From the timings rather than the metrics: the metrics number a command buffer's passes
+  // cumulatively across the capture while the layer restarts them each frame, so a multi-frame
+  // capture has timed passes the metrics cannot be matched to. Names come from the metrics where
+  // they do match (see defaultPassLabel).
+  const names = new Map<string, string>();
+  c.metrics.passes.forEach((p, i) => {
+    const timing = c.data.passTiming(p.frame, p.commandBuffer, p.passIndex, p.compute);
+    if (timing) names.set(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`, c.passName(i));
+  });
+  const passes: LabelledPass[] = [...c.data.passTimings.values()].map((timing) => ({
+    timing,
+    label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`)
+      ?? defaultPassLabel(timing),
+  }));
+  const t = buildTimelineTracks({ timeline: c.data.cpuTimeline, passes, originTicks: c.data.passTimingOrigin });
+  if (!t) return {};
+  const gaps = gpuGaps(t);
+  const wait = submitToFirstPassMs(t);
+  return {
+    timeline: {
+      verdict: tracksVerdict(t),
+      spanMs: round(t.spanMs),
+      threads: t.tracks.filter((x) => x.kind === "cpu").map((x) => ({ track: x.label, busyMs: round(x.busyMs) })),
+      gpuIdleMs: t.hasGpu ? round(gaps.reduce((sum, g) => sum + g.durationMs, 0)) : undefined,
+      longestGpuGapMs: gaps.length ? round(gaps[0].durationMs) : undefined,
+      submitToFirstPassMs: wait !== null ? round(wait) : undefined,
+      note: t.gpuNote ?? undefined,
+    },
   };
 }
 
@@ -311,9 +350,10 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
     {
       name: "get_capture_summary",
       description: "Summarize a capture: counts (commands, draws, passes, objects, read-backs), the frame timing with the Frame " +
-        "Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the slowest passes, the Frame Issues " +
-        "by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and notes on " +
-        "what the capture lacks. Start here.",
+        "Bound verdict (GPU bound, CPU bound, vsync bound) when the passes were profiled, the CPU and GPU timeline (how long " +
+        "the GPU idled between passes and what the CPU was doing meanwhile, which no total can hold), the slowest passes, the " +
+        "Frame Issues by severity with the top ones, validation messages, the render graph in numbers, frame statistics, and " +
+        "notes on what the capture lacks. Start here.",
       inputSchema: schema({ capture: CAPTURE_PARAM }),
       readOnly: true,
       handler: (args) => jsonResult(captureSummary(store.resolve(stringArg(args, "capture")))),

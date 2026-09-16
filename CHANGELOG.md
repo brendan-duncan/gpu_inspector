@@ -26,6 +26,17 @@
   memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
   registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
   light the report rules register pressure out instead.
+- The CPU and GPU as tracks on one axis (**Timeline** in Frame Stats, `renderer/timeline_tracks.ts`,
+  docs/PROFILING.md): one lane per thread with the calls the layer timed, and a GPU lane with the
+  passes, laid on the shared axis the clock calibration provides. Every card above it reports a
+  total, and a total cannot show an idle GPU: that is the space *between* spans. The verdict names
+  the longest gap between passes and what the CPU lanes were doing across it, which separates a
+  frame paced by the display (headroom) from one whose GPU is waiting on work the CPU has not handed
+  over (a stall), and reports how long the first pass waited after the submission before it, which
+  is latency no total holds. Only gaps between passes count as idle; the axis reaches wider to cover
+  the CPU calls, and time outside the timed passes is not measured idleness. `get_capture_summary`
+  reports the same. Without `VK_KHR_calibrated_timestamps` the CPU lanes still draw and the GPU lane
+  is left out rather than placed on a guessed origin.
 - Device-removed diagnostics for D3D12 (`src/d3d12/src/device_removed.h`, docs/TROUBLESHOOTING.md):
   the library turns on Device Removed Extended Data before it creates the device, so when the GPU
   stops responding the session log names the operation each command list stopped on rather than only

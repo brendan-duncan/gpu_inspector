@@ -7,6 +7,7 @@ import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import { REFRESH_SOURCE_NOTE, frameBound, type CaptureStatistics } from "./capture_statistics.js";
 import { cpuVerdict, summarizeCpuTimeline } from "./cpu_timeline.js";
+import { MIN_SPAN_MS, buildTimelineTracks, gpuGaps, tracksVerdict, type LabelledPass, type TimelineInput } from "./timeline_tracks.js";
 import type { CpuTimelineMessage } from "../shared/protocol.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import { formatBytes } from "./vulkan/vulkan_object.js";
@@ -81,6 +82,82 @@ function renderCpuTimeline(root: Widget, timeline: CpuTimelineMessage | null): v
     : "This device has no calibrated-timestamps extension, so the GPU pass times keep their own origin and cannot be laid over these.");
   if (s.dropped) notes.push(`${s.dropped} later calls were not recorded: the capture's event limit was reached.`);
   new Div(body, { text: notes.join(" "), class: "text-muted font-sm" });
+}
+
+/** The GPU half of the Timeline card: the capture's timed passes and the tick they are measured from. */
+export interface GpuTrackInput {
+  passes: LabelledPass[];
+  originTicks: number | null;
+}
+
+/** The colour of a span, which is the colour "Where the CPU went" already uses for that kind. */
+const SPAN_COLOR: Record<string, string> = {
+  gpuWait: "#4a8db8", displayWait: "#a0a0a0", work: "#5fd08a", gpu: "#8a6fd0",
+};
+
+/**
+ * "Timeline": every thread's timed calls and every timed pass drawn against one axis
+ * (renderer/timeline_tracks.ts). The two cards above total time per category and per pass, which
+ * answers how much but never when — and a GPU left idle waiting for a late submission is a gap
+ * between spans, so it has no size in any total and only a drawing shows it.
+ */
+function renderTimelineTracks(root: Widget, input: TimelineInput): void {
+  const t = buildTimelineTracks(input);
+  if (!t) return;
+  const card = new Div(root, { class: "frame-stats-section" });
+  new Div(card, { text: "Timeline", class: "frame-stats-heading" });
+  const body = new Div(card, { class: "frame-stats-list" });
+  new Div(body, { text: tracksVerdict(t), class: "frame-bound-verdict" });
+
+  const pct = (ms: number): string => `${((ms / t.spanMs) * 100).toFixed(4)}%`;
+  const gaps = gpuGaps(t);
+  for (const track of t.tracks) {
+    const row = new Div(body, { class: "track-row" });
+    new Div(row, { text: track.label, class: "track-label" });
+    const lane = new Div(row, { class: `track-lane${track.kind === "gpu" ? " track-lane-gpu" : ""}` });
+    // The idle stretches go in first, so a span drawn over one still reads on top.
+    if (track.kind === "gpu") {
+      for (const g of gaps) {
+        const box = new Div(lane, { class: "track-gap" });
+        box.style.left = pct(g.startMs);
+        box.style.width = pct(g.durationMs);
+        box.element.title = `${g.durationMs.toFixed(2)} ms with no pass running`;
+      }
+    }
+    for (const s of track.spans) {
+      const box = new Div(lane, { class: "track-span" });
+      box.style.left = pct(s.startMs);
+      // A call lasting microseconds would otherwise be sub-pixel and vanish.
+      box.style.width = `max(1px, ${pct(Math.max(s.durationMs, MIN_SPAN_MS))})`;
+      box.style.background = SPAN_COLOR[s.kind] ?? "#5fd08a";
+      box.element.title = `${s.label}: ${s.durationMs.toFixed(3)} ms at ${s.startMs.toFixed(3)} ms`;
+    }
+    new Div(row, { text: `${((track.busyMs / t.spanMs) * 100).toFixed(0)}%`, class: "track-busy" });
+  }
+  const axis = new Div(body, { class: "track-axis" });
+  new Div(axis, { text: "0 ms" });
+  new Div(axis, { text: `${t.spanMs.toFixed(2)} ms` });
+
+  const legend = new Div(body, { class: "track-legend" });
+  const key = (color: string, label: string): void => {
+    const item = new Span(legend, {});
+    const swatch = new Span(item, { class: "track-key" });
+    swatch.style.background = color;
+    new Span(item, { text: label });
+  };
+  key(SPAN_COLOR.work, "Submitting");
+  key(SPAN_COLOR.gpuWait, "Waiting for the GPU");
+  key(SPAN_COLOR.displayWait, "Paced by the display");
+  if (t.hasGpu) key(SPAN_COLOR.gpu, "GPU pass");
+  if (t.gpuNote) new Div(body, { text: t.gpuNote, class: "text-muted font-sm" });
+  if (t.hasGpu) {
+    new Div(body, {
+      text: "The GPU lane holds only the passes this capture timed, while the axis reaches wider to cover the CPU "
+        + "calls. An empty stretch at either end of the lane is time outside the timed region — where the GPU may "
+        + "have been running the previous frame — not a measured idle GPU; only the gaps between passes are that.",
+      class: "text-muted font-sm",
+    });
+  }
 }
 
 function renderPassTimings(root: Widget, t: FrameTimingInfo): void {
@@ -158,12 +235,13 @@ function renderFrameIssues(root: Widget, issues: FrameIssues): void {
 
 /** Renders the statistics as WebGPU Inspector's Frame Stats view: one card per section. */
 export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null, issues: FrameIssues | null = null,
-                                 cpuTimeline: CpuTimelineMessage | null = null): void {
+                                 cpuTimeline: CpuTimelineMessage | null = null, gpuTrack: GpuTrackInput | null = null): void {
   const root = new Div(container, { class: "frame-stats" });
   new Div(root, { text: "Frame Statistics", class: "frame-stats-title" });
   if (stats.frames > 1) new Div(root, { text: `Totals over ${stats.frames} captured frames.`, class: "text-muted font-sm" });
   if (timing) renderFrameBound(root, timing);
   renderCpuTimeline(root, cpuTimeline);
+  renderTimelineTracks(root, { timeline: cpuTimeline, passes: gpuTrack?.passes ?? [], originTicks: gpuTrack?.originTicks ?? null });
   if (issues) renderFrameIssues(root, issues);
   if (timing) renderPassTimings(root, timing);
   for (const section of stats.sections()) {
