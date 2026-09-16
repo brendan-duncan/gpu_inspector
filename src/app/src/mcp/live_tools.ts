@@ -158,6 +158,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
         breadcrumbs: { type: "boolean", description: "Vulkan: have the GPU write a marker before and after every draw and dispatch, so if it stops responding (VK_ERROR_DEVICE_LOST) the session log names the command it was running. Costs two GPU writes per action; default false." },
+        shaderStatistics: { type: "boolean", description: "Vulkan: ask the driver what its shader compiler made of each pipeline stage (registers used, code size, spilled memory), shown on the pipeline object by get_live_object under updates.executables. Costs compile time and driver memory; default false." },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
         layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
         waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." },
@@ -167,7 +168,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const s = await sessions.launch({
           exe: requireString(args, "exe"), args: stringArg(args, "args"), cwd: stringArg(args, "cwd"), env,
           validation: boolArg(args, "validation", false), syncValidation: boolArg(args, "syncValidation", false),
-          stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), breadcrumbs: boolArg(args, "breadcrumbs", false),
+          stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), breadcrumbs: boolArg(args, "breadcrumbs", false), shaderStatistics: boolArg(args, "shaderStatistics", false),
           port: optionalInt(args, "port"), layerDir: stringArg(args, "layerDir"),
         }, (numberArg(args, "waitSeconds") ?? 60) * 1000);
         const result = jsonResult({

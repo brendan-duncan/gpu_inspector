@@ -54,6 +54,8 @@ export interface LaunchOptions {
   recordAlways?: boolean;
   /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
   breadcrumbs?: boolean;
+  /** Vulkan: the driver's compiler statistics per pipeline. */
+  shaderStatistics?: boolean;
   /** The directory holding VK_LAYER_INSPECTOR_capture.json, when it is not found by itself. */
   layerDir?: string;
 }
@@ -131,6 +133,8 @@ export interface WatchOptions {
   recordAlways?: boolean;
   /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
   breadcrumbs?: boolean;
+  /** Vulkan: the driver's compiler statistics per pipeline. */
+  shaderStatistics?: boolean;
 }
 
 export interface AndroidLaunchOptions {
@@ -144,6 +148,8 @@ export interface AndroidLaunchOptions {
   recordAlways?: boolean;
   /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
   breadcrumbs?: boolean;
+  /** Vulkan: the driver's compiler statistics per pipeline. */
+  shaderStatistics?: boolean;
 }
 
 /** The application name a Vulkan application gave its instance, when it gave one. */
@@ -581,7 +587,7 @@ export class SessionManager {
       }
       const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
       const vulkan = layerDir ? {
-        layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, breadcrumbs: !!o.breadcrumbs, stacktraces: o.stacktraces ?? true,
+        layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, breadcrumbs: !!o.breadcrumbs, shaderStatistics: !!o.shaderStatistics, stacktraces: o.stacktraces ?? true,
         validation: !!o.validation, syncValidation: !!o.syncValidation,
       } : null;
       const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;

@@ -72,6 +72,8 @@ struct DeviceData {
      * it passes each action, so a hang can be traced to the command that caused it.
      */
     struct Breadcrumbs* breadcrumbs = nullptr;
+    /** VK_KHR_pipeline_executable_properties is on, so pipelines carry compiler statistics. */
+    bool shaderStatistics = false;
     /**
      * inheritedQueries is enabled: secondary command buffers are begun able to run inside the pass
      * counters' queries (`secondaries` lists them), so a pass that executes them keeps its counters.

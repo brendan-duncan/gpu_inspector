@@ -4,6 +4,7 @@
 
 #include "capture.h"
 #include "device_lost.h"
+#include "shader_statistics.h"
 #include "descriptors.h"
 #include "format_info.h"
 #include "image_readback.h"
@@ -44,6 +45,28 @@ void PreHook_vkCreateBuffer(VkDevice& device, const VkBufferCreateInfo*& pCreate
     copy = *pCreateInfo;
     copy.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     pCreateInfo = &copy;
+}
+
+// Compiler statistics: the driver keeps what it made of a stage only when the pipeline asked it to
+// (shader_statistics.h). Adding the flag here means every pipeline carries them, including ones
+// created before a capture starts.
+void PreHook_vkCreateGraphicsPipelines(VkDevice& device, VkPipelineCache& pipelineCache, uint32_t& createInfoCount,
+                                       const VkGraphicsPipelineCreateInfo*& pCreateInfos,
+                                       const VkAllocationCallbacks*& pAllocator, VkPipeline*& pPipelines) {
+    pCreateInfos = CaptureStatisticsFlags(GetDeviceData(device), createInfoCount, pCreateInfos);
+}
+
+void PreHook_vkCreateComputePipelines(VkDevice& device, VkPipelineCache& pipelineCache, uint32_t& createInfoCount,
+                                      const VkComputePipelineCreateInfo*& pCreateInfos,
+                                      const VkAllocationCallbacks*& pAllocator, VkPipeline*& pPipelines) {
+    pCreateInfos = CaptureStatisticsFlags(GetDeviceData(device), createInfoCount, pCreateInfos);
+}
+
+void PreHook_vkCreateRayTracingPipelinesKHR(VkDevice& device, VkDeferredOperationKHR& deferredOperation,
+                                            VkPipelineCache& pipelineCache, uint32_t& createInfoCount,
+                                            const VkRayTracingPipelineCreateInfoKHR*& pCreateInfos,
+                                            const VkAllocationCallbacks*& pAllocator, VkPipeline*& pPipelines) {
+    pCreateInfos = CaptureStatisticsFlags(GetDeviceData(device), createInfoCount, pCreateInfos);
 }
 
 void PreHook_vkCreateSwapchainKHR(VkDevice& device, const VkSwapchainCreateInfoKHR*& pCreateInfo,
@@ -1155,8 +1178,11 @@ void Hook_vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCac
                                     const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {
     if (!pCreateInfos || !pPipelines) return;
     Tracker& t = Tracker::Get();
+    DeviceData* dev = GetDeviceData(device);
     for (uint32_t i = 0; i < createInfoCount; ++i) {
         if (!pPipelines[i]) continue;
+        // What the driver's compiler made of each stage (shader_statistics.h).
+        CollectShaderStatistics(dev, pPipelines[i]);
         const VkGraphicsPipelineCreateInfo& ci = pCreateInfos[i];
         for (uint32_t s = 0; s < ci.stageCount && ci.pStages; ++s) AttachStage(pPipelines[i], ci.pStages[s]);
         // A pipeline linked from graphics pipeline libraries has its shaders in them: their stages'
@@ -1184,8 +1210,11 @@ void Hook_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCach
                                    const VkComputePipelineCreateInfo* pCreateInfos,
                                    const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {
     if (!pCreateInfos || !pPipelines) return;
+    DeviceData* dev = GetDeviceData(device);
     for (uint32_t i = 0; i < createInfoCount; ++i) {
-        if (pPipelines[i]) AttachStage(pPipelines[i], pCreateInfos[i].stage);
+        if (!pPipelines[i]) continue;
+        AttachStage(pPipelines[i], pCreateInfos[i].stage);
+        CollectShaderStatistics(dev, pPipelines[i]);
     }
     ShaderEditor::Get().OnCreateComputePipelines(device, createInfoCount, pCreateInfos, pPipelines);
 }

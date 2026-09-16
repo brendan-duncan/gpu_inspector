@@ -130,6 +130,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
     breadcrumbs: c.breadcrumbs ?? false,
+    shaderStatistics: c.shaderStatistics ?? false,
     validation: c.validation ?? false,
     syncValidation: c.syncValidation ?? false,
     symbolDirs: c.symbolDirs ?? "",
@@ -496,7 +497,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   // usable stderr).
   const debugLog = cliOption("debug-log");
   const vulkan = layerDir ? {
-    layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, breadcrumbs: config.breadcrumbs, stacktraces: config.stacktraces,
+    layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, breadcrumbs: config.breadcrumbs, shaderStatistics: config.shaderStatistics, stacktraces: config.stacktraces,
     validation: config.validation, syncValidation: !!config.syncValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
   } : null;
   const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };

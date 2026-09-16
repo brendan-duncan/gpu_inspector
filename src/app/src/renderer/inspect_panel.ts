@@ -897,6 +897,41 @@ export class InspectPanel {
   }
 
   /**
+   * What the driver's shader compiler made of each stage of a pipeline: registers used, code size,
+   * spilled memory (src/vulkan/src/shader_statistics.h). The names are the driver's own, so they are
+   * shown as it reports them rather than mapped to names the inspector invented, and a driver that
+   * reports none leaves the section out entirely.
+   */
+  private _buildCompilerStatistics(object: VulkanObject): void {
+    const executables = object.updates.executables;
+    if (!Array.isArray(executables) || !executables.length) return;
+    const section = new Div(this.inspectPanel, { class: "inspect-section" });
+    new Div(section, { text: "Compiler statistics", class: "inspect-section-title" });
+    for (const raw of executables) {
+      const e = raw as Record<string, unknown>;
+      const stages = Array.isArray(e.stages) ? (e.stages as string[]).join(", ") : "";
+      const head = new Div(section, { class: "font-md" });
+      new Span(head, { text: String(e.name ?? "stage"), style: "font-weight: 600; margin-right: 6px;" });
+      if (stages) new Span(head, { text: stages, class: "text-muted" });
+      if (typeof e.subgroupSize === "number" && e.subgroupSize > 0) {
+        new Span(head, { text: ` · subgroup ${e.subgroupSize}`, class: "text-muted" });
+      }
+      if (e.description) new Div(section, { text: String(e.description), class: "text-muted font-sm" });
+      const stats = Array.isArray(e.statistics) ? e.statistics : [];
+      const list = new Div(section, { class: "frame-stats-list" });
+      for (const s of stats) {
+        const st = s as Record<string, unknown>;
+        const row = new Div(list, { class: "frame-stats-row" });
+        const label = new Div(row, { text: String(st.name ?? ""), class: "frame-stats-label" });
+        if (st.description) label.tooltip = String(st.description);
+        const v = st.value;
+        new Div(row, { text: typeof v === "boolean" ? (v ? "yes" : "no") : typeof v === "number" ? v.toLocaleString() : String(v ?? ""),
+          class: "frame-stats-value" });
+      }
+    }
+  }
+
+  /**
    * A Metal resource's memory: what the driver set aside, the heap it came from, and the state
    * the application put it in since (setPurgeableState:, makeAliasable). A heap's is its size
    * and what its sub-allocations use, kept current by the library's updates.
@@ -1046,6 +1081,7 @@ export class InspectPanel {
     }
 
     if (object.type === "VkPipeline") renderShaderGroups(this.inspectPanel, object);
+    if (object.updates.executables) this._buildCompilerStatistics(object);
     if (object.type === "VkAccelerationStructureKHR") renderAccelerationStructure(this.inspectPanel, object, db, onLink);
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     if (object.type === "ID3D12PipelineState") this._buildD3D12ShaderSection(object);

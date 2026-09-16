@@ -184,6 +184,10 @@ EXTRA_HOOKS = {
 PRE_HOOKS = {
     "vkCreateImage",
     "vkCreateBuffer",
+    # compiler statistics: the driver keeps them only for a pipeline created with the capture flag
+    "vkCreateGraphicsPipelines",
+    "vkCreateComputePipelines",
+    "vkCreateRayTracingPipelinesKHR",
     "vkCreateSwapchainKHR",
     "vkBeginCommandBuffer",
     "vkResetCommandBuffer",

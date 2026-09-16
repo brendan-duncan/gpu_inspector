@@ -650,6 +650,8 @@ export interface LaunchConfig {
   recordAlways: boolean;
   /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running (device_lost.h). */
   breadcrumbs?: boolean;
+  /** Vulkan: the driver's compiler statistics per pipeline (shader_statistics.h). */
+  shaderStatistics?: boolean;
   /** Also enable VK_LAYER_KHRONOS_validation (native targets), whose messages the Inspect tab lists. */
   validation: boolean;
   /** Directories holding the application's debug files (";"-separated): the unstripped libraries, for stack

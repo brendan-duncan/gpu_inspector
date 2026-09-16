@@ -378,10 +378,21 @@ vendor's driver is listed at the end so nobody spends time on it.
       multi-frame queue timeline. Timing the hook entry points and pairing them with the pass
       timestamps answers docs/PROFILING.md's "is the GPU even the problem" step directly rather
       than by inference.
-- [ ] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader).
-      `VK_KHR_pipeline_executable_properties` returns exactly that from the driver, with internal
-      representations on drivers that expose them. Not used anywhere yet; it would ground the
-      static Shader Cost model in the driver's numbers.
+- [x] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader):
+      `src/vulkan/src/shader_statistics.h`, through `VK_KHR_pipeline_executable_properties`. The
+      layer adds the capture flag to every pipeline and asks the driver what it made of each stage;
+      the Inspect tab shows it on the pipeline. **Compiler statistics** in the launch dialog,
+      `shaderStatistics` for `launch_app`, `VKINSP_SHADER_STATISTICS=1`; off by default, since the
+      driver has to keep the information. On an RTX 4080 the driver reports register count, binary
+      size, stack, local and shared memory, and input/output counts per stage. The names are the
+      driver's own, so they are passed through rather than mapped.
+- [ ] Compiler statistics, the rest: feed the register count into the flame graph's modelled cost
+      and into the occupancy verdict, which currently says "latency bound" without saying that
+      register pressure is why; the internal representations
+      (`VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR`, the driver's own disassembly)
+      beside the SPIR-V in the shader viewer; and statistics for shader objects
+      (`VK_EXT_shader_object`), which have no pipeline to query.
+
 - [ ] Acceleration structure viewer (the TLAS and BLAS drawn with overlap heatmaps and
       per-instance flags). The ray tracing item above already needs the build inputs captured
       by device address; once they are, the boxes and geometry belong in the mesh view.
