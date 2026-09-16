@@ -216,6 +216,13 @@ A frame rendering at a modest resolution on a fast GPU comes out mostly latency 
 honest answer: the passes are not big enough to saturate anything, and merging or removing them
 beats optimising their shaders.
 
+A latency-bound pass says why where the capture also carries [compiler
+statistics](INSPECT.md#compiler-statistics). Registers are the usual reason occupancy is low: the
+more of them a stage holds, the fewer of its threads the GPU can run at once. So the verdict reads
+either "its fragment stage uses 40 registers, which is what is holding occupancy down" or, when the
+shader is light, that register pressure is *not* the cause and the problem is dependency chains or
+too little work. Ruling registers out is worth as much as blaming them.
+
 ## What cannot be measured here
 
 On **Metal**, GPU Inspector reads what Metal exposes publicly, and three families of counter that

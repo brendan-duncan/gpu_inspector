@@ -16,8 +16,9 @@
 import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, CaptureCommand, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 import type { CaptureData } from "./capture_data.js";
+import { boundPipelineOf } from "./command_sets.js";
 import { drawSumsByPass, passSumKey } from "./draw_stats.js";
-import { LIMITER_ADVICE, hwCountersByPass, passLimiter, type PassLimiter } from "./hw_counters.js";
+import { heaviestStage, hwCountersByPass, limiterAdvice, passLimiter, type PassLimiter } from "./hw_counters.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
 export const HEALTHY_OVERDRAW = 1.2;
@@ -137,6 +138,9 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
   // counted separately (NextPassIndex / NextComputeIndex in src/vulkan/src/command_recorder.h). One
   // counter per command buffer for PASS_BEGIN, and a second for compute runs, does both.
   const passIndexOf = new Map<number, number>();
+  /** The pipeline last bound per command stream, and the pipelines each pass's draws used. */
+  const boundPipeline = new Map<number, number>();
+  const pipelinesOfPass = new Map<PassMetrics, Set<number>>();
   const computeIndexOf = new Map<number, number>();
   let open: PassMetrics | null = null;
   let computeRun: PassMetrics | null = null;
@@ -178,10 +182,19 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       closeComputeRun();
     }
     if (!a) continue;
+    // Which pipelines a pass runs, so the compiler statistics on them can be read back below. The
+    // last bind wins per stream, which is all a draw can have used.
+    if (sets.BIND_PIPELINE.has(m)) {
+      const id = refId(boundPipelineOf(a));
+      if (id) boundPipeline.set(cmd.secondary || cb, id);
+      continue;
+    }
     if (sets.DRAW.has(m)) {
       if (open) {
         open.draws++;
         open.vertices += drawVertices(a);
+        const id = boundPipeline.get(cmd.secondary || cb);
+        if (id) (pipelinesOfPass.get(open) ?? pipelinesOfPass.set(open, new Set()).get(open)!).add(id);
       }
       continue;
     }
@@ -266,7 +279,18 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
     for (const p of passes) {
       if (p.compute) continue;
       const range = byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`);
-      if (range) p.limiter = passLimiter(data.hwCounters, range);
+      if (!range) continue;
+      p.limiter = passLimiter(data.hwCounters, range);
+      // Why occupancy is what it is: the registers the pass's heaviest stage holds, where the
+      // capture carries the driver's compiler statistics (shader_statistics.h).
+      if (p.limiter) {
+        let heaviest: { stage: string; count: number } | null = null;
+        for (const id of pipelinesOfPass.get(p) ?? []) {
+          const s = heaviestStage(db.getObject(id)?.updates?.executables);
+          if (s && (!heaviest || s.count > heaviest.count)) heaviest = s;
+        }
+        if (heaviest) p.limiter = { ...p.limiter, registers: heaviest };
+      }
     }
   }
 
@@ -482,7 +506,7 @@ export function passAdvice(p: PassMetrics): PassAdvice[] {
         : l.kind === "occupancy"
           ? `Only ${l.percent.toFixed(0)}% of the GPU's warps were active`
           : `${l.label[0].toUpperCase()}${l.label.slice(1)} is the busiest unit, at ${l.percent.toFixed(0)}% of peak`,
-      body: LIMITER_ADVICE[l.kind],
+      body: limiterAdvice(l),
     });
   }
   return out;

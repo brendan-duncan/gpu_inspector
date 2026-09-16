@@ -8,7 +8,9 @@
   pipeline. Through `VK_KHR_pipeline_executable_properties`, the same data Nsight reports per
   shader, and it explains the occupancy the hardware counters measure. The names are the driver's
   own and are passed through as it reports them. Off by default: it costs compile time and driver
-  memory.
+  memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
+  registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
+  light the report rules register pressure out instead.
 - Device-lost diagnostics for Vulkan (`src/vulkan/src/device_lost.h`, docs/TROUBLESHOOTING.md):
   **Device-lost breadcrumbs** in the launch dialog (`VKINSP_BREADCRUMBS=1`, `breadcrumbs` for
   `launch_app`) has the GPU write a marker before and after every draw and dispatch, so when it

@@ -386,12 +386,17 @@ vendor's driver is listed at the end so nobody spends time on it.
       driver has to keep the information. On an RTX 4080 the driver reports register count, binary
       size, stack, local and shared memory, and input/output counts per stage. The names are the
       driver's own, so they are passed through rather than mapped.
-- [ ] Compiler statistics, the rest: feed the register count into the flame graph's modelled cost
-      and into the occupancy verdict, which currently says "latency bound" without saying that
-      register pressure is why; the internal representations
+- [x] The register count explains the occupancy verdict (`limiterAdvice` in
+      `renderer/hw_counters.ts`, `PassLimiter.registers`): a latency-bound pass names the stage whose
+      registers are holding occupancy down, or rules register pressure out when the shader is light.
+      `pass_metrics.ts` tracks the pipelines each pass's draws bind and reads the driver's register
+      count off them. Checked on an RTX 4080: the heavy shader at 96x96 is 8.6% occupancy with 40
+      registers (blamed), the plain one 9.5% with 16 (ruled out).
+- [ ] Compiler statistics, the rest: the internal representations
       (`VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR`, the driver's own disassembly)
-      beside the SPIR-V in the shader viewer; and statistics for shader objects
-      (`VK_EXT_shader_object`), which have no pipeline to query.
+      beside the SPIR-V in the shader viewer; statistics for shader objects
+      (`VK_EXT_shader_object`), which have no pipeline to query; and the register count in the flame
+      graph's modelled cost.
 
 - [ ] Acceleration structure viewer (the TLAS and BLAS drawn with overlap heatmaps and
       per-instance flags). The ray tracing item above already needs the build inputs captured
