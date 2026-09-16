@@ -1710,16 +1710,23 @@ void CaptureManager::SendPassTimings() {
     uint32_t sent = 0;
     uint32_t counted = 0;
     size_t total = 0;
-    for (DeviceCapture* dc : captures) SendPassTimings(*dc, w, sent, counted, total);
+    // The tick every pass start is measured from, on the home device: the calibration
+    // (cpu_timeline.h) relates device ticks to the host clock, so this is what lets a pass be placed
+    // beside the CPU events that submitted it. Only the home device's, since only that device's
+    // clock was calibrated; the others' starts stay relative to themselves.
+    uint64_t originTicks = 0;
+    for (DeviceCapture* dc : captures) SendPassTimings(*dc, w, sent, counted, total, dc == home ? &originTicks : nullptr);
     w.EndArray();
     w.Key("count"); w.Uint(sent);
+    if (originTicks) { w.Key("originTicks"); w.Uint(originTicks); }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
     Log("pass profiling: %u of %zu passes timed, %u with counters%s", sent, total, counted,
         captures.size() > 1 ? " (several devices)" : "");
 }
 
-void CaptureManager::SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total) {
+void CaptureManager::SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total,
+                                     uint64_t* originTicks) {
     DeviceData* dev = dc.dev;
     std::vector<PassTiming> timings;
     {
@@ -1785,6 +1792,7 @@ void CaptureManager::SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t&
             earliest = std::min(earliest, results[(size_t)pt.query * 2]);
         }
     }
+    if (originTicks && earliest != UINT64_MAX) *originTicks = earliest;
     for (auto& pt : timings) {
         if (pt.frame == UINT32_MAX || pt.query + 1 >= used) continue;
         uint64_t begin = results[(size_t)pt.query * 2];

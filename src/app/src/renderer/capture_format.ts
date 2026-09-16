@@ -73,6 +73,8 @@ export interface CaptureFileManifest {
   textures: { info: CaptureTextureInfo; payload?: Payload }[];
   buffers: { info: CaptureBufferInfo; payload?: Payload }[];
   passTimings: PassTiming[];
+  /** The device tick the pass starts are measured from, for the shared CPU/GPU axis (protocol.ts). */
+  passTimingOrigin?: number;
   /** Overdraw measurements with their per-pixel counts (absent when the capture did not measure overdraw). */
   overdraw?: { info: OverdrawMeasurement; payload?: Payload }[];
   /** The pixel a Metal capture followed (CapturePixelHistory's `history`), when it followed one. */
@@ -104,6 +106,7 @@ export interface LoadedCapture {
   textures: CapturedTexture[];
   buffers: Map<number, CapturedBuffer>;
   passTimings: Map<string, PassTiming>;
+  passTimingOrigin: number | null;
   overdraw: CapturedOverdraw[];
   pixelHistory: Record<string, unknown> | null;
   drawStats: DrawStat[] | null;
@@ -181,7 +184,7 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
   const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
-  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings,
+  return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings, passTimingOrigin: manifest.passTimingOrigin ?? null,
          overdraw, pixelHistory: manifest.pixelHistory ?? null, drawStats: manifest.drawStats ?? null, hwCounters: manifest.hwCounters ?? null, cpuTimeline: manifest.cpuTimeline ?? null, ablations: manifest.ablations ?? [],
          api: manifest.api ?? "vulkan" };
 }

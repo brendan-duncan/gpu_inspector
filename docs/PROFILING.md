@@ -75,6 +75,33 @@ Waiting in `vkQueuePresentKHR` is not the same as waiting on a fence, which is w
 apart: with vsync on, a frame that finishes early blocks in present, and that is headroom rather
 than a problem.
 
+### Step 1b: when, not how much
+
+Every number so far is a total, and a total cannot answer *when*. A frame whose CPU and GPU totals
+are both well inside the budget can still miss it, because the GPU sat with nothing to do while the
+CPU was elsewhere. That idle stretch is the space *between* the spans, so it has no size in any
+total and no card above can show it.
+
+The **Timeline** card draws them instead: one lane per thread with the calls the layer timed, and a
+GPU lane with the passes, on one axis. Both lanes sharing an axis needs the device clock related to
+the host clock, which the layer samples where the device has `VK_KHR_calibrated_timestamps`; without
+it the CPU lanes are still drawn and the GPU lane is left out rather than placed on a guessed origin.
+
+What to read from it:
+
+- **Gaps in the GPU lane** are the GPU idle between passes. The verdict names the longest and says
+  what the CPU lanes were doing across it, which is what separates the cases: the CPU in present or
+  acquire means the display is pacing the frame and the idle GPU is headroom; the CPU inside
+  submission means the GPU is waiting on work not yet handed over; the CPU in none of the timed
+  calls means the application's own work between them is what the GPU is waiting for.
+- **The distance from a submission to the pass it queued** is latency rather than frame time: work
+  handed over early can still start late, usually because the display has not released the swapchain
+  image yet. The verdict reports it when it is more than half a millisecond.
+
+Only the gaps *between* passes count as idle. The axis runs wider than the GPU lane so it can cover
+the CPU calls, and the empty stretch at either end is time outside the timed region — where the GPU
+may well have been running the previous frame, which the capture never timed.
+
 ## Step 2: which pass
 
 Open **Reports → GPU Bottlenecks**. The Passes table lists every pass, slowest first, with what

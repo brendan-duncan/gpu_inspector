@@ -143,8 +143,12 @@ export function eventsOfThread(timeline: CpuTimelineMessage, thread: number): Cp
  * without a calibration, which is a device with no calibrated-timestamps extension: the CPU events
  * and the GPU passes are then each correct on their own axis but cannot be laid over each other.
  */
-export function gpuTicksToCpuMs(timeline: CpuTimelineMessage | null, ticks: number): number | null {
+export function gpuTicksToCpuMs(timeline: CpuTimelineMessage | null, ticks: number | string): number | null {
   const c = timeline?.calibration;
   if (!c) return null;
-  return c.hostMs + (ticks - c.deviceTicks) * c.timestampPeriod / 1e6;
+  // Both ticks arrive as decimal strings on a real device, since a GPU tick counter is past 2^53
+  // and the layer quotes what a JSON number could not hold (protocol.ts). Number() rounds each to
+  // the nearest representable value — 256 ns apart at that magnitude — so their difference is off by
+  // at most half a microsecond, which is nothing beside the milliseconds this places things on.
+  return c.hostMs + (Number(ticks) - Number(c.deviceTicks)) * c.timestampPeriod / 1e6;
 }
