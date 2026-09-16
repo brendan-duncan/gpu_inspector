@@ -325,10 +325,16 @@ application with injected state. Route (a) is the general one and is the prerequ
       the pipeline's group handles and reads the table back at the trace, and each record is
       matched to its group, with records whose handle matches none called out. Verified on an RTX
       4080: raygen, miss and hit records resolve to groups 0, 1 and 2, none unresolved.
+- [x] The replay makes ray tracing pipelines and acceleration structures, and replays builds
+      (`Replayer::BuildAccelerationStructures`, `RemapAddress`): a build's addresses are turned
+      into this process's through the buffer and offset the layer recorded for each, and scratch
+      is the replay's own. Verified on an RTX 4080: six problems to one, no validation messages,
+      and the triangle and Unity captures still replay identically.
 - [ ] Ray tracing, the rest:
-  - The replay makes no ray tracing pipelines or acceleration structures, and leaves their
-    commands out. Building needs the geometry buffers the builds read by device address, and
-    tracing needs the shader binding table copied with its handles made again.
+  - Tracing: the shader binding table has to be copied into the replay's own buffer with each
+    record's handle replaced by the replay pipeline's handle for the same group, since a handle
+    is the captured driver's and names nothing here. The regions also need `buffer` and `offset`
+    on `bindingTableData`, as the builds have on `buildData`.
   - Editing a ray tracing stage.
   - Ray queries in the shader debugger.
 

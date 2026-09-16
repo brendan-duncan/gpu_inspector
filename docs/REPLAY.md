@@ -560,10 +560,18 @@ These cases differ for known reasons:
    ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
    `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
-Not replayed yet: ray tracing, queries whose results the frame reads back, and Metal captures.
-A ray tracing pipeline and acceleration structures are not made, and the builds and traces are
-left out and listed as problems. Those commands name the captured process's device addresses. The
-rest of the frame replays (test/triangle `--ray-tracing`: its raster targets are identical). Shader objects are made one at a time from their payloads, so a linked set replays
+Ray tracing replays as far as the build. Pipelines and acceleration structures are made, and
+`vkCmdBuildAccelerationStructuresKHR` is issued with its addresses remapped: a build names the
+geometry it reads by device address, and an address from the captured process means nothing here,
+so the replay uses the buffer and offset the layer recorded for each one to find its own buffer and
+ask the driver where it put it. Scratch is the replay's own, since scratch holds no input. A build
+reading memory the capture could not tie to a buffer is left out rather than issued, because the
+driver rejects a build whose geometry address is not one of its buffers.
+
+Not replayed yet: `vkCmdTraceRays*`, queries whose results the frame reads back, and Metal
+captures. A trace needs its shader binding table copied into the replay's own buffer with every
+record's handle replaced by the replay pipeline's handle for the same group — a handle is the
+captured driver's and names nothing here. Shader objects are made one at a time from their payloads, so a linked set replays
 unlinked. Descriptor update templates are not created:
 sets are written from the snapshots their binds carry, and a push through a template is pushed
 again as plain writes from its own.

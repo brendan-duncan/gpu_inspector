@@ -753,6 +753,13 @@ private:
                           VkImageLayout layout, std::string& why);
     void Problem(std::string message);
     uint64_t Handle(uint64_t id) const;
+
+    /** A device address the capture recorded, as one in this process (see the definition). */
+    VkDeviceAddress RemapAddress(uint64_t bufferId, uint64_t offset);
+    /** Working space for acceleration structure builds, grown as they need it. */
+    bool EnsureScratch(VkDeviceSize size);
+    /** Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped. */
+    void BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb);
     void Track(const std::string& type, uint64_t handle);
     void DestroyAll();
     /** Puts the frame's state back where the first frame found it (RunFrame, after the first). */
@@ -764,6 +771,10 @@ private:
 
     void* _library = nullptr;
     VkFunctions _fns{};
+    /** Build scratch, shared by every build of the frame (EnsureScratch). */
+    VkBuffer _scratch = VK_NULL_HANDLE;
+    VkDeviceMemory _scratchMemory = VK_NULL_HANDLE;
+    VkDeviceSize _scratchSize = 0;
     VkInstance _instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT _messenger = VK_NULL_HANDLE;
     VkPhysicalDevice _physical = VK_NULL_HANDLE;

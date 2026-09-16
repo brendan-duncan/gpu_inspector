@@ -673,12 +673,33 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
         info.basePipelineHandle = VK_NULL_HANDLE;
         info.basePipelineIndex = -1;
         r = _fns.CreateComputePipelines(_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    } else if (cmd == "vkCreateRayTracingPipelinesKHR") {
+        Args_vkCreateRayTracingPipelinesKHR a{};
+        DecodeArgs(_ctx, args, a);
+        if (!a.pCreateInfos || index >= a.createInfoCount || _ctx.unresolved != unresolvedBefore) return 0;
+        VkRayTracingPipelineCreateInfoKHR info = a.pCreateInfos[index];
+        std::vector<VkPipelineShaderStageCreateInfo> stages(info.pStages, info.pStages + info.stageCount);
+        for (auto& st : stages) stageModule(st);
+        info.pStages = stages.data();
+        info.flags &= ~VK_PIPELINE_CREATE_DERIVATIVE_BIT;
+        info.basePipelineHandle = VK_NULL_HANDLE;
+        info.basePipelineIndex = -1;
+        // A library the capture built from is not replayed, and a pipeline that only provides one
+        // is of no use here either: both would need the libraries recreated first.
+        info.pLibraryInfo = nullptr;
+        info.pLibraryInterface = nullptr;
+        if (!_fns.CreateRayTracingPipelinesKHR) {
+            Problem("pipeline " + std::to_string(object.Get("id")->Uint())
+                    + ": this device has no ray tracing pipelines");
+        } else {
+            r = _fns.CreateRayTracingPipelinesKHR(_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+        }
     } else {
         Problem("pipeline " + std::to_string(object.Get("id")->Uint()) + ": " + std::string(cmd) + " is not replayed yet");
     }
     for (VkShaderModule m : temporary) _fns.DestroyShaderModule(_device, m, nullptr);
     if (r != VK_SUCCESS && pipeline == VK_NULL_HANDLE) {
-        if (cmd == "vkCreateGraphicsPipelines" || cmd == "vkCreateComputePipelines")
+        if (cmd == "vkCreateGraphicsPipelines" || cmd == "vkCreateComputePipelines" || cmd == "vkCreateRayTracingPipelinesKHR")
             Problem("pipeline " + std::to_string(object.Get("id")->Uint()) + ": " + std::string(cmd) + " failed (" + std::to_string(r) + ")");
         return 0;
     }
@@ -755,11 +776,37 @@ void Replayer::CreateObject(const JValue& o) {
                type == "VkDebugUtilsMessengerEXT" || type == "VkDebugReportCallbackEXT" ||
                // Sets are written from their snapshots and template pushes pushed as writes (IssueCommand).
                type == "VkDescriptorUpdateTemplate" ||
-               // Ray tracing is not replayed (IssueCommand leaves its commands out).
-               type == "VkAccelerationStructureKHR" || type == "VkAccelerationStructureNV" || type == "VkDeferredOperationKHR") {
+               // A deferred operation is a host-side handle for work the replay does inline.
+               type == "VkAccelerationStructureNV" || type == "VkDeferredOperationKHR") {
         _skipped.insert(id);
         _report->objectsSkipped++;
         return;
+    } else if (type == "VkAccelerationStructureKHR") {
+        // The structure sits in a buffer the replay already made; only the handle is new. Its
+        // contents come from replaying the build that filled it, not from the capture — an
+        // acceleration structure is opaque and there is nothing to copy.
+        Args_vkCreateAccelerationStructureKHR a{};
+        if (args) DecodeArgs(_ctx, *args, a);
+        if (!a.pCreateInfo || !_fns.CreateAccelerationStructureKHR) {
+            _skipped.insert(id);
+            _report->objectsSkipped++;
+            return;
+        }
+        VkAccelerationStructureCreateInfoKHR info = *a.pCreateInfo;
+        // An address the capture asked for means nothing here, and asking for one again would need
+        // the same address to be free. The replay lets the driver place it.
+        info.createFlags &= ~VK_ACCELERATION_STRUCTURE_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT_KHR;
+        info.deviceAddress = 0;
+        VkAccelerationStructureKHR structure = VK_NULL_HANDLE;
+        VkResult r = _fns.CreateAccelerationStructureKHR(_device, &info, nullptr, &structure);
+        if (r != VK_SUCCESS || !structure) {
+            Problem("VkAccelerationStructureKHR " + std::to_string(id) + " could not be created");
+            _skipped.insert(id);
+            _report->objectsSkipped++;
+            return;
+        }
+        // Tracked by the common path below, with every other created object.
+        handle = (uint64_t)(uintptr_t)structure;
     } else if (type == "VkImage" && cmd == "vkGetSwapchainImagesKHR") {
         const JValue* swapchain = _capture->Object(o.Get("parent") ? o.Get("parent")->Uint() : 0);
         const JValue* sargs = swapchain ? swapchain->Get("args") : nullptr;
@@ -1021,8 +1068,16 @@ void Replayer::DestroyAll() {
             else if (t == "VkShaderModule") _fns.DestroyShaderModule(_device, (VkShaderModule)h, nullptr);
             else if (t == "VkPipeline") _fns.DestroyPipeline(_device, (VkPipeline)h, nullptr);
             else if (t == "VkShaderEXT" && _fns.DestroyShaderEXT) _fns.DestroyShaderEXT(_device, (VkShaderEXT)h, nullptr);
+            else if (t == "VkAccelerationStructureKHR" && _fns.DestroyAccelerationStructureKHR)
+                _fns.DestroyAccelerationStructureKHR(_device, (VkAccelerationStructureKHR)h, nullptr);
             // Command buffers and descriptor sets go with their pools.
         }
+        // The build scratch is the replay's own, not the capture's, so it is not in _created.
+        if (_scratch) _fns.DestroyBuffer(_device, _scratch, nullptr);
+        if (_scratchMemory) _fns.FreeMemory(_device, _scratchMemory, nullptr);
+        _scratch = VK_NULL_HANDLE;
+        _scratchMemory = VK_NULL_HANDLE;
+        _scratchSize = 0;
         for (VkDeviceMemory m : _memories) _fns.FreeMemory(_device, m, nullptr);
         if (_utilityPool) _fns.DestroyCommandPool(_device, _utilityPool, nullptr);
         _fns.DestroyDevice(_device, nullptr);
@@ -1317,6 +1372,163 @@ void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
     _arena.Reset();
 }
 
+
+/**
+ * A device address the capture recorded, as an address in *this* process.
+ *
+ * The number in the capture is the captured process's and means nothing here. What makes it
+ * translatable is that the layer also recorded which buffer held it and how far in
+ * (src/vulkan/src/hooks.cpp, WriteBuildAddress) — so the replay looks up its own buffer for that
+ * object and asks the driver where it put it. Returns 0 when the capture recorded no buffer, which
+ * is an address into memory the capture never resolved.
+ */
+VkDeviceAddress Replayer::RemapAddress(uint64_t bufferId, uint64_t offset) {
+    if (!bufferId || !_fns.GetBufferDeviceAddress) return 0;
+    const uint64_t id = bufferId;
+    const uint64_t handle = Handle(id);
+    if (!handle) return 0;
+    VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    info.buffer = (VkBuffer)(uintptr_t)handle;
+    const VkDeviceAddress base = _fns.GetBufferDeviceAddress(_device, &info);
+    if (!base) return 0;
+    return base + offset;
+}
+
+/**
+ * Scratch memory for a build, big enough for every build in the frame. The capture's scratch address
+ * is not remapped: scratch holds no input, only the driver's working space, so a fresh buffer of the
+ * size the driver asks for is equivalent and avoids depending on a buffer the capture may not hold.
+ */
+bool Replayer::EnsureScratch(VkDeviceSize size) {
+    if (size <= _scratchSize && _scratch) return true;
+    if (_scratch) {
+        _fns.DestroyBuffer(_device, _scratch, nullptr);
+        _fns.FreeMemory(_device, _scratchMemory, nullptr);
+        _scratch = VK_NULL_HANDLE;
+        _scratchMemory = VK_NULL_HANDLE;
+    }
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = size;
+    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (_fns.CreateBuffer(_device, &info, nullptr, &_scratch) != VK_SUCCESS) return false;
+    VkMemoryRequirements requirements{};
+    _fns.GetBufferMemoryRequirements(_device, _scratch, &requirements);
+    if (!AllocateBound(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, _scratchMemory, false, true)) return false;
+    if (_fns.BindBufferMemory(_device, _scratch, _scratchMemory, 0) != VK_SUCCESS) return false;
+    _scratchSize = size;
+    return true;
+}
+
+
+/** Element `i` of a JSON array, or null when it is not an array or is shorter than that. */
+static const JValue* ItemAt(const JValue* array, uint32_t i) {
+    return array && array->IsArray() && i < array->count ? &array->items[i] : nullptr;
+}
+
+void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb) {
+    if (!_fns.CmdBuildAccelerationStructuresKHR || !_fns.GetAccelerationStructureBuildSizesKHR) {
+        Problem("left out: this device has no acceleration structure builds");
+        return;
+    }
+    Args_vkCmdBuildAccelerationStructuresKHR a{};
+    const size_t unresolvedBefore = _ctx.unresolved;
+    DecodeArgs(_ctx, args, a);
+    if (!a.pInfos || !a.infoCount || _ctx.unresolved != unresolvedBefore) {
+        Problem("left out: the build names objects the replay does not have");
+        return;
+    }
+    const JValue* ranges = args.Get("ppBuildRangeInfos");
+    // Where the layer put what it resolved: one entry per address it could tie to a buffer
+    // (src/vulkan/src/hooks.cpp). The addresses in the arguments themselves are the captured
+    // process's and are not translatable on their own.
+    const JValue* resolved = command.Get("buildData");
+    auto addressFor = [&](uint32_t info, uint32_t geometry, std::string_view field) -> VkDeviceAddress {
+        if (!resolved || !resolved->IsArray()) return 0;
+        for (uint32_t k = 0; k < resolved->count; ++k) {
+            const JValue& e = resolved->items[k];
+            const JValue* f = e.Get("field");
+            if (!f || f->Str() != field) continue;
+            const JValue* ij = e.Get("info");
+            const JValue* gj = e.Get("geometry");
+            if ((ij ? ij->Uint() : 0) != info || (gj ? gj->Uint() : 0) != geometry) continue;
+            const JValue* b = e.Get("buffer");
+            const JValue* o = e.Get("offset");
+            return RemapAddress(b ? b->Uint() : 0, o ? o->Uint() : 0);
+        }
+        return 0;
+    };
+
+    // The decoded geometries point into the decoder's arena and are rewritten in place: every
+    // address in them is the captured process's and has to become one of this process's.
+    std::vector<VkAccelerationStructureBuildGeometryInfoKHR> built(a.pInfos, a.pInfos + a.infoCount);
+    std::vector<std::vector<VkAccelerationStructureGeometryKHR>> geometries(a.infoCount);
+    VkDeviceSize scratchNeeded = 0;
+    std::vector<VkDeviceSize> scratchAt(a.infoCount, 0);
+
+    for (uint32_t i = 0; i < a.infoCount; ++i) {
+        VkAccelerationStructureBuildGeometryInfoKHR& info = built[i];
+        geometries[i].assign(info.geometryCount, VkAccelerationStructureGeometryKHR{});
+        std::vector<uint32_t> counts(info.geometryCount, 0);
+        for (uint32_t g = 0; g < info.geometryCount; ++g) {
+            const VkAccelerationStructureGeometryKHR* source = info.pGeometries ? &info.pGeometries[g]
+                                                             : info.ppGeometries ? info.ppGeometries[g] : nullptr;
+            if (!source) continue;
+            VkAccelerationStructureGeometryKHR geometry = *source;
+            if (geometry.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
+                geometry.geometry.triangles.vertexData.deviceAddress = addressFor(i, g, "vertexData");
+                geometry.geometry.triangles.indexData.deviceAddress = addressFor(i, g, "indexData");
+                geometry.geometry.triangles.transformData.deviceAddress = addressFor(i, g, "transformData");
+            } else if (geometry.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR) {
+                geometry.geometry.aabbs.data.deviceAddress = addressFor(i, g, "data");
+            } else if (geometry.geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR) {
+                geometry.geometry.instances.data.deviceAddress = addressFor(i, g, "data");
+            }
+            // An address the capture never resolved leaves the build reading nothing, which the
+            // driver rejects: better to leave the build out than to issue one that cannot work.
+            const bool missing =
+                (geometry.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR && !geometry.geometry.triangles.vertexData.deviceAddress)
+                || (geometry.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR && !geometry.geometry.aabbs.data.deviceAddress)
+                || (geometry.geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR && !geometry.geometry.instances.data.deviceAddress);
+            if (missing) {
+                Problem("left out: the build reads memory this capture did not resolve to a buffer");
+                return;
+            }
+            geometries[i][g] = geometry;
+            const JValue* rangeList = ItemAt(ranges, i);
+            const JValue* range = rangeList && rangeList->IsArray() ? ItemAt(rangeList, g) : rangeList;
+            const JValue* count = range ? range->Get("primitiveCount") : nullptr;
+            counts[g] = count ? (uint32_t)count->Uint() : 0;
+        }
+        info.pGeometries = geometries[i].data();
+        info.ppGeometries = nullptr;
+        info.srcAccelerationStructure = VK_NULL_HANDLE;
+        info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;   // an update needs a source built here first
+
+        VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        _fns.GetAccelerationStructureBuildSizesKHR(_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info,
+                                                   counts.data(), &sizes);
+        // Each build gets its own stretch of the shared scratch, aligned generously.
+        constexpr VkDeviceSize kAlign = 256;
+        scratchAt[i] = (scratchNeeded + kAlign - 1) & ~(kAlign - 1);
+        scratchNeeded = scratchAt[i] + sizes.buildScratchSize;
+    }
+
+    if (scratchNeeded && !EnsureScratch(scratchNeeded)) {
+        Problem("left out: the build's scratch memory could not be allocated");
+        return;
+    }
+    VkDeviceAddress scratchBase = 0;
+    if (_scratch && _fns.GetBufferDeviceAddress) {
+        VkBufferDeviceAddressInfo bi{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        bi.buffer = _scratch;
+        scratchBase = _fns.GetBufferDeviceAddress(_device, &bi);
+    }
+    for (uint32_t i = 0; i < a.infoCount; ++i) built[i].scratchData.deviceAddress = scratchBase + scratchAt[i];
+
+    _fns.CmdBuildAccelerationStructuresKHR(cb, a.infoCount, built.data(), a.ppBuildRangeInfos);
+}
+
 void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb) {
     const std::string m = Str(command.Get("method"));
     // Ray tracing is not replayed: its pipelines and acceleration structures are not made, and
@@ -1327,6 +1539,10 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
         "vkCmdCopyAccelerationStructureKHR", "vkCmdCopyAccelerationStructureToMemoryKHR", "vkCmdCopyMemoryToAccelerationStructureKHR",
         "vkCmdCopyAccelerationStructureNV", "vkCmdSetRayTracingPipelineStackSizeKHR",
     };
+    if (m == "vkCmdBuildAccelerationStructuresKHR") {
+        BuildAccelerationStructures(command, args, cb);
+        return;
+    }
     if (kRayTracing.count(m)) {
         _ctx.Problem("left out: ray tracing is not replayed yet");
         return;
