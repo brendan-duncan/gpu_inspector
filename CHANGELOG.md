@@ -30,9 +30,15 @@
   pass's attachment, so nothing the replay computed into one was ever checked — a trace that ran
   and one that produced the wrong pixels looked alike. Every image the capture read back that a
   shader could have written is now read back at the end of the command buffer and compared. It
-  found its first bug immediately: on the ray tracing capture exactly 12.5% of the traced image
-  differs, which is the triangle's share of it, because the bottom level the rays are traced
-  against was built before the capture began and the replay has nothing to build it from.
+  found three real defects immediately, all of which left the replay tracing against nothing: the
+  contents the layer read back for a build's geometry were never uploaded (they are listed apart
+  from the ordinary buffer data, and only the ordinary list was walked); a top level's instances
+  named their bottom level by the *captured* device address, so a replayed top level referenced
+  structures that do not exist here; and the primitive count the instance rewriting works from was
+  read after it was needed rather than before, so it was always zero. `test/triangle
+  --ray-tracing` now rebuilds its bottom level every frame, as an engine with deforming geometry
+  does, so a capture holds the build of everything it traces against. The traced image still
+  differs after those fixes and is under investigation.
 - The shader binding table says which shader group each record runs (`renderer/binding_table.ts`,
   **Shader Binding Table** on a trace command). A trace does not name the shaders it runs: it names
   four regions of memory whose records begin with an opaque handle the driver gave for a shader

@@ -341,12 +341,16 @@ application with injected state. Route (a) is the general one and is the prerequ
       because the bottom level is unbuilt in the replay. Checked for false positives on the
       triangle and Unity captures, which have no storage read-backs and are unchanged.
 - [ ] Ray tracing, the rest:
-  - An instance's `accelerationStructureReference` is the *captured* bottom level's device address,
-    and the replay uploads the instance buffer as it was, so a replayed top level references
-    structures that do not exist here. The references have to be rewritten the way the binding
-    table's handles are — captured address to object id (the layer records one on every
-    structure) to the replay's own address. Not yet visible on the test capture, whose bottom
-    level is unbuilt anyway, but it would break any capture that holds a bottom level's build.
+  - **A replayed trace still finds no geometry**: every ray misses, so exactly the triangle's
+    12.5% of `test/triangle --ray-tracing`'s traced image differs. Three causes were found and
+    fixed (the build's geometry contents were never uploaded; instance references were the
+    captured addresses; the primitive count driving the rewrite was read too late) and the
+    symptom is unchanged, so at least one more remains. Ruled out: the contents are captured and
+    uploaded (`buildData` names buffer 56 for the vertices and 61 for the instances), the
+    references resolve (an unresolvable one leaves the build out and none is reported), the
+    patched upload precedes the frame's submission, and validation is silent. Worth checking
+    next: whether the descriptor set's acceleration structure write resolves to the replay's top
+    level, and whether the replay's buffers really carry the device-address allocate flag.
   - A bottom level built before the capture cannot be rebuilt by the replay, so its rays miss
     (docs/REPLAY.md). Reading the structure back with `vkCmdCopyAccelerationStructureToMemoryKHR`
     at capture time is the only way to carry one that was never built while watching.

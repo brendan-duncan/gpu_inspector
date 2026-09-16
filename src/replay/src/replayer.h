@@ -771,6 +771,15 @@ private:
     /** Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles. */
     void TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb);
     bool EnsureBindingTable(VkDeviceSize size);
+    /**
+     * Rewrites the bottom-level references in a top level's instance buffer to this process's.
+     * Every instance names its bottom level by the *captured* device address, which names nothing
+     * here, so a top level built from the buffer as captured references structures that do not
+     * exist. Returns false when the instances could not be patched, which leaves the build out.
+     */
+    bool PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances);
+    /** This process's address for the structure the captured address named, or 0. */
+    VkDeviceAddress RemapStructureAddress(uint64_t capturedAddress);
     void Track(const std::string& type, uint64_t handle);
     void DestroyAll();
     /** Puts the frame's state back where the first frame found it (RunFrame, after the first). */
@@ -793,6 +802,9 @@ private:
     VkDeviceSize _bindingTableSize = 0;
     /** The pipeline the last vkCmdBindPipeline bound at the ray tracing bind point. */
     uint64_t _boundRayTracingPipeline = 0;
+    /** Captured acceleration structure device address -> its object id (built on first use). */
+    std::unordered_map<uint64_t, uint64_t> _structureAddresses;
+    bool _structureAddressesBuilt = false;
     VkInstance _instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT _messenger = VK_NULL_HANDLE;
     VkPhysicalDevice _physical = VK_NULL_HANDLE;
