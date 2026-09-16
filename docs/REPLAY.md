@@ -568,10 +568,19 @@ ask the driver where it put it. Scratch is the replay's own, since scratch holds
 reading memory the capture could not tie to a buffer is left out rather than issued, because the
 driver rejects a build whose geometry address is not one of its buffers.
 
-Not replayed yet: `vkCmdTraceRays*`, queries whose results the frame reads back, and Metal
-captures. A trace needs its shader binding table copied into the replay's own buffer with every
-record's handle replaced by the replay pipeline's handle for the same group — a handle is the
-captured driver's and names nothing here. Shader objects are made one at a time from their payloads, so a linked set replays
+`vkCmdTraceRaysKHR` replays as well. Its shader binding table cannot be uploaded as it was
+captured: every record begins with an opaque handle the captured driver gave for a shader group,
+and that handle names nothing here. So the replay builds a table of its own, copies each region's
+bytes into it, and rewrites every record's handle with this driver's handle for the group the
+captured handle named — matched through the handle blob the layer keeps on the pipeline. The bytes
+after the handle are the application's own shader record data and are copied unchanged. A record
+whose handle this pipeline never gave out is reported as a problem and left as it was.
+
+What a trace *writes* is not compared. The replay compares render targets, and a trace writes a
+storage image, so a trace that runs and one that produces the wrong pixels look the same here.
+
+Not replayed yet: `vkCmdTraceRaysIndirect*`, the NV ray tracing commands, acceleration structure
+copies, queries whose results the frame reads back, and Metal captures. Shader objects are made one at a time from their payloads, so a linked set replays
 unlinked. Descriptor update templates are not created:
 sets are written from the snapshots their binds carry, and a push through a template is pushed
 again as plain writes from its own.

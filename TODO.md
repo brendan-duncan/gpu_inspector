@@ -330,11 +330,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       into this process's through the buffer and offset the layer recorded for each, and scratch
       is the replay's own. Verified on an RTX 4080: six problems to one, no validation messages,
       and the triangle and Unity captures still replay identically.
+- [x] The replay traces (`Replayer::TraceRays`): the shader binding table is rebuilt in the
+      replay's own buffer with every record's handle replaced by this driver's handle for the
+      group the captured handle named, matched through the handle blob the layer keeps on the
+      pipeline. Verified on an RTX 4080: the ray tracing capture replays with no problems and no
+      validation messages, and the triangle and Unity captures are unaffected.
 - [ ] Ray tracing, the rest:
-  - Tracing: the shader binding table has to be copied into the replay's own buffer with each
-    record's handle replaced by the replay pipeline's handle for the same group, since a handle
-    is the captured driver's and names nothing here. The regions also need `buffer` and `offset`
-    on `bindingTableData`, as the builds have on `buildData`.
+  - What a trace writes is never checked: the replay compares render targets, and a trace writes a
+    storage image, so a trace that runs and one that produces the wrong pixels look alike. The
+    capture reads that image back, so comparing it is a matter of dumping it beside the others.
+  - `vkCmdTraceRaysIndirect*`, the NV ray tracing commands and the acceleration structure copies
+    (`vkCmdCopyAccelerationStructure*`) are still left out.
   - Editing a ray tracing stage.
   - Ray queries in the shader debugger.
 
