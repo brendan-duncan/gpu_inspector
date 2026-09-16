@@ -232,6 +232,10 @@ export const METAL_SETS: CommandSets = {
   TRACE: new Set(),
   PASS_BEGIN,
   PASS_END,
+  // A Metal command buffer is used once, so the next frame's is a different object with a
+  // counter of its own: there is no recording to restart (command_sets.ts).
+  RECORD_BEGIN: new Set<string>(),
+  RECORD_END: new Set<string>(),
   LABEL_BEGIN: new Set(["pushDebugGroup:"]),
   LABEL_END: new Set(["popDebugGroup"]),
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:

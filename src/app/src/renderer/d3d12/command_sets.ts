@@ -15,6 +15,10 @@ const DISPATCH = new Set(["Dispatch", "DispatchGraph"]);
 const TRACE = new Set(["DispatchRays"]);
 const PASS_BEGIN = new Set(["OMSetRenderTargets", "BeginRenderPass"]);
 const PASS_END = new Set(["EndRenderTargets", "EndRenderPass"]);
+// The library restarts a list's pass numbering at Reset, as the Vulkan layer does at
+// vkBeginCommandBuffer (src/d3d12/src/capture.cpp, CaptureManager::OnListReset).
+const RECORD_BEGIN = new Set(["Reset"]);
+const RECORD_END = new Set(["Close"]);
 const SUBMIT = new Set(["ExecuteCommandLists", "Present", "Present1", "Signal", "Wait"]);
 const BIND_DESCRIPTOR = new Set([
   "SetGraphicsRootDescriptorTable", "SetComputeRootDescriptorTable",
@@ -198,6 +202,8 @@ export const D3D12_SETS: CommandSets = {
   TRACE,
   PASS_BEGIN,
   PASS_END,
+  RECORD_BEGIN,
+  RECORD_END,
   LABEL_BEGIN: new Set(["BeginEvent"]),
   LABEL_END: new Set(["EndEvent"]),
   SUBMIT,

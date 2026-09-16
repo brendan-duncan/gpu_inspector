@@ -890,6 +890,8 @@ var DISPATCH = /* @__PURE__ */ new Set(["Dispatch", "DispatchGraph"]);
 var TRACE = /* @__PURE__ */ new Set(["DispatchRays"]);
 var PASS_BEGIN = /* @__PURE__ */ new Set(["OMSetRenderTargets", "BeginRenderPass"]);
 var PASS_END = /* @__PURE__ */ new Set(["EndRenderTargets", "EndRenderPass"]);
+var RECORD_BEGIN = /* @__PURE__ */ new Set(["Reset"]);
+var RECORD_END = /* @__PURE__ */ new Set(["Close"]);
 var SUBMIT = /* @__PURE__ */ new Set(["ExecuteCommandLists", "Present", "Present1", "Signal", "Wait"]);
 var BIND_DESCRIPTOR = /* @__PURE__ */ new Set([
   "SetGraphicsRootDescriptorTable",
@@ -1075,6 +1077,8 @@ var D3D12_SETS = {
   TRACE,
   PASS_BEGIN,
   PASS_END,
+  RECORD_BEGIN,
+  RECORD_END,
   LABEL_BEGIN: /* @__PURE__ */ new Set(["BeginEvent"]),
   LABEL_END: /* @__PURE__ */ new Set(["EndEvent"]),
   SUBMIT,
@@ -1326,6 +1330,10 @@ var METAL_SETS = {
   TRACE: /* @__PURE__ */ new Set(),
   PASS_BEGIN: PASS_BEGIN2,
   PASS_END: PASS_END2,
+  // A Metal command buffer is used once, so the next frame's is a different object with a
+  // counter of its own: there is no recording to restart (command_sets.ts).
+  RECORD_BEGIN: /* @__PURE__ */ new Set(),
+  RECORD_END: /* @__PURE__ */ new Set(),
   LABEL_BEGIN: /* @__PURE__ */ new Set(["pushDebugGroup:"]),
   LABEL_END: /* @__PURE__ */ new Set(["popDebugGroup"]),
   // `commit` hands the command buffer to the GPU and `presentDrawable:` schedules the frame:
@@ -1500,6 +1508,8 @@ var PASS_BEGIN3 = /* @__PURE__ */ new Set(["vkCmdBeginRenderPass", "vkCmdBeginRe
 var PASS_END3 = /* @__PURE__ */ new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
 var LABEL_BEGIN = /* @__PURE__ */ new Set(["vkCmdBeginDebugUtilsLabelEXT", "vkCmdDebugMarkerBeginEXT"]);
 var LABEL_END = /* @__PURE__ */ new Set(["vkCmdEndDebugUtilsLabelEXT", "vkCmdDebugMarkerEndEXT"]);
+var RECORD_BEGIN2 = /* @__PURE__ */ new Set(["vkBeginCommandBuffer"]);
+var RECORD_END2 = /* @__PURE__ */ new Set(["vkEndCommandBuffer"]);
 var SUBMIT_METHODS = /* @__PURE__ */ new Set(["vkQueueSubmit", "vkQueueSubmit2", "vkQueueSubmit2KHR", "vkQueuePresentKHR", "vkQueueBindSparse"]);
 var BIND_DESCRIPTOR_METHODS = /* @__PURE__ */ new Set([
   "vkCmdBindDescriptorSets",
@@ -1534,6 +1544,8 @@ var VULKAN_SETS = {
   TRACE: TRACE_METHODS,
   PASS_BEGIN: PASS_BEGIN3,
   PASS_END: PASS_END3,
+  RECORD_BEGIN: RECORD_BEGIN2,
+  RECORD_END: RECORD_END2,
   LABEL_BEGIN,
   LABEL_END,
   SUBMIT: SUBMIT_METHODS,
@@ -4417,6 +4429,12 @@ function collectPassMetrics(data, db) {
   const boundPipeline = /* @__PURE__ */ new Map();
   const pipelinesOfPass = /* @__PURE__ */ new Map();
   const computeIndexOf = /* @__PURE__ */ new Map();
+  const ended = /* @__PURE__ */ new Set();
+  const restart = (cb) => {
+    passIndexOf.delete(cb);
+    computeIndexOf.delete(cb);
+    ended.delete(cb);
+  };
   let open = null;
   let computeRun = null;
   let inPass = false;
@@ -4433,6 +4451,11 @@ function collectPassMetrics(data, db) {
       closeComputeRun();
       currentCb = cb;
       currentSecondary = cmd.secondary ?? 0;
+    }
+    if (!sets.SUBMIT.has(m)) {
+      if (sets.RECORD_BEGIN.has(m)) restart(cb);
+      else if (sets.RECORD_END.has(m)) ended.add(cb);
+      else if (ended.has(cb)) restart(cb);
     }
     if (sets.PASS_BEGIN.has(m)) {
       closeComputeRun();

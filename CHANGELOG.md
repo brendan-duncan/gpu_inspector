@@ -71,6 +71,19 @@
   naming the unit at its limit — which on Vulkan is the only per-pass verdict there has been, since
   the vertex and fragment spans the inferred one needs are Metal's. `get_bottlenecks` reports it too.
 
+### Fixed
+- Most of a multi-frame capture's passes had no GPU time (`renderer/pass_metrics.ts`). A capture
+  library numbers a command buffer's passes from zero within each recording of it — the Vulkan
+  layer restarts at `vkBeginCommandBuffer`, the D3D12 library at a list's `Reset` — but the app
+  counted straight through the capture. From a buffer's second recording onwards every index was
+  shifted, and a shifted index matches no timing at all, so those passes showed no GPU time
+  anywhere: not in the pass list, GPU Bottlenecks, the counter rules, the hardware counters, the
+  overdraw lookup or `get_bottlenecks`. Since a frame is one recording of each buffer, a capture of
+  four frames lost three quarters of the passes of a single-buffer application and half of a
+  double-buffered one: the four-frame triangle capture reported 0.22 ms of GPU time where the
+  layer had measured 0.45 ms. Metal is unaffected — its command buffers are used once, so the next
+  frame's is a different object with a counter of its own.
+
 ## v0.12.0
 
 ### Added

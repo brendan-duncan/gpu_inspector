@@ -245,3 +245,132 @@ test("a Vulkan run of dispatches is its own pass, numbered apart from render pas
   assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2, 3]);
   assert.deepEqual(m.passes.map((p) => p.draws), [1, 2, 1], "the barrier ended the first run");
 });
+
+// ---------------------------------------------------------------------------------------------
+// Numbering across recordings. A capture library restarts a command buffer's pass numbering with
+// each recording of it (the Vulkan layer at vkBeginCommandBuffer, the D3D12 library at a list's
+// Reset), so this has to restart with them. Counting straight through instead shifts every index
+// from a buffer's second recording onwards, and a shifted index matches no timing at all — the pass
+// then shows no GPU time anywhere, which is what a multi-frame capture used to do to most of its
+// passes.
+
+/** A capture of several frames: commands are [frame, commandBuffer, method, args]. */
+function frames(commands, timings, api) {
+  const list = commands.map(([frame, cb, method, args], index) => ({
+    index, frame, method, args: args ?? null,
+    object: { __id: cb, __class: api === "d3d12" ? "ID3D12GraphicsCommandList" : "VkCommandBuffer" },
+  }));
+  const byKey = new Map();
+  for (const t of timings) byKey.set(`${t.frame}:${t.commandBuffer}:${t.kind === "compute" ? "c" : ""}${t.passIndex}`, t);
+  return {
+    api, commands: list, sets: setsFor(api),
+    passTiming: (frame, cb, passIndex, compute) => byKey.get(`${frame}:${cb}:${compute ? "c" : ""}${passIndex}`) ?? null,
+  };
+}
+
+const CB = 8;
+const vkPass = (frame, cb) => [
+  [frame, cb, "vkCmdBeginRenderPass", {}],
+  [frame, cb, "vkCmdDraw", { vertexCount: 3 }],
+  [frame, cb, "vkCmdEndRenderPass", {}],
+];
+const timing = (frame, commandBuffer, passIndex, durationMs) => ({ frame, commandBuffer, passIndex, durationMs, startMs: 0 });
+
+test("a command buffer recorded again numbers its passes from zero again", () => {
+  // Two frames, the same buffer re-recorded: the layer reports passIndex 0 for both.
+  const data = frames([
+    [0, CB, "vkBeginCommandBuffer", {}], ...vkPass(0, CB), [0, CB, "vkEndCommandBuffer", {}],
+    [1, CB, "vkBeginCommandBuffer", {}], ...vkPass(1, CB), [1, CB, "vkEndCommandBuffer", {}],
+  ], [timing(0, CB, 0, 1), timing(1, CB, 0, 2)], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.equal(m.passes.length, 2);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 0], "not [0, 1]: the second recording restarts");
+  assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2], "both found their timing");
+  assert.equal(m.timed, 2);
+});
+
+test("four frames of one buffer keep every pass's timing", () => {
+  const commands = [];
+  const timings = [];
+  for (let f = 0; f < 4; f++) {
+    commands.push([f, CB, "vkBeginCommandBuffer", {}], ...vkPass(f, CB), [f, CB, "vkEndCommandBuffer", {}]);
+    timings.push(timing(f, CB, 0, f + 1));
+  }
+  const m = collectPassMetrics(frames(commands, timings, "vulkan"), db);
+  assert.equal(m.timed, 4, "every frame's pass, not just the first");
+  assert.equal(m.gpuMs, 10);
+});
+
+test("a queue command between recordings does not disturb the numbering", () => {
+  // vkQueueSubmit carries the queue as its object, not a command buffer; reading it as the buffer
+  // resuming would restart the count in the middle of a recording.
+  const QUEUE = 5;
+  const data = frames([
+    [0, QUEUE, "vkQueueSubmit", {}],
+    [0, CB, "vkBeginCommandBuffer", {}], ...vkPass(0, CB), ...vkPass(0, CB), [0, CB, "vkEndCommandBuffer", {}],
+  ], [timing(0, CB, 0, 1), timing(0, CB, 1, 2)], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 1], "two passes in one recording still count up");
+  assert.equal(m.timed, 2);
+});
+
+test("two buffers alternating keep their own counts", () => {
+  // Double buffering: the engine alternates, so each buffer is re-recorded every other frame.
+  const A = 7;
+  const B = 8;
+  const commands = [];
+  const timings = [];
+  for (let f = 0; f < 4; f++) {
+    const cb = f % 2 === 0 ? A : B;
+    commands.push([f, cb, "vkBeginCommandBuffer", {}], ...vkPass(f, cb), [f, cb, "vkEndCommandBuffer", {}]);
+    timings.push(timing(f, cb, 0, 1));
+  }
+  const m = collectPassMetrics(frames(commands, timings, "vulkan"), db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 0, 0, 0]);
+  assert.equal(m.timed, 4);
+});
+
+test("the same recording submitted again restarts, even with no begin marker", () => {
+  // A stream that does not carry the recording's start: the guard in collectPassMetrics.
+  const data = frames([
+    [0, CB, "vkBeginCommandBuffer", {}], ...vkPass(0, CB), [0, CB, "vkEndCommandBuffer", {}],
+    ...vkPass(1, CB),
+  ], [timing(0, CB, 0, 1), timing(1, CB, 0, 2)], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 0]);
+  assert.equal(m.timed, 2);
+});
+
+test("a D3D12 command list restarts at Reset", () => {
+  const LIST = 9;
+  const pass = (frame) => [
+    [frame, LIST, "OMSetRenderTargets", {}],
+    [frame, LIST, "DrawInstanced", { VertexCountPerInstance: 3 }],
+    [frame, LIST, "EndRenderTargets", {}],
+  ];
+  const data = frames([
+    [0, LIST, "Reset", {}], ...pass(0), [0, LIST, "Close", {}],
+    [1, LIST, "Reset", {}], ...pass(1), [1, LIST, "Close", {}],
+  ], [timing(0, LIST, 0, 1), timing(1, LIST, 0, 2)], "d3d12");
+  const m = collectPassMetrics(data, db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 0]);
+  assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2]);
+});
+
+test("Metal keeps counting up within a command buffer, which is used once", () => {
+  // No recording markers: a Metal command buffer's encoders share one rising counter, and the next
+  // frame's command buffer is a different object with a counter of its own.
+  const A = 10;
+  const B = 11;
+  const enc = (frame, cb) => [
+    [frame, cb, "renderCommandEncoderWithDescriptor:", colorPass],
+    [frame, cb, "endEncoding", {}],
+  ];
+  const data = frames([
+    ...enc(0, A), ...enc(0, A),
+    ...enc(1, B),
+  ], [timing(0, A, 0, 1), timing(0, A, 1, 2), timing(1, B, 0, 3)], "metal");
+  const m = collectPassMetrics(data, db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 1, 0]);
+  assert.equal(m.timed, 3, "unchanged by the restart rule, which Metal has no markers for");
+});
