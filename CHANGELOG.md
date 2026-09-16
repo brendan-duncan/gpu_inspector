@@ -13,6 +13,18 @@
   `currentAllocatedSize` against `recommendedMaxWorkingSetSize`: Metal has no heap table to break
   down and no separate residency figure, so the series is what it reports and the Memory Use
   section shows that alone.
+- Ray tracing builds say what they were built from (`src/vulkan/src/resources.h`,
+  `renderer/acceleration_structure.ts`). An acceleration structure is opaque — the driver owns its
+  layout and nothing reads it back — so the only view of one is what it was built out of, and a
+  build names its geometry by device address rather than by handle. The layer now records the
+  address of every buffer and structure the application asks for one of, resolves the addresses in
+  a build back to the buffers holding them, and captures their contents: a bottom level's vertices,
+  indices and transforms, and a top level's instance array. The capture ids go on the recorded
+  command rather than on the structure, because an application that rebuilds its top level every
+  frame — the usual thing — would otherwise overwrite the captured build's with a later one's.
+  Captures also keep every acceleration structure now: a top level names the levels under it only
+  from inside that instance buffer, so a capture holding just what its commands referenced dropped
+  every bottom level and left the top level describing a scene of nothing.
 - Memory over time (**Over time** in the Memory Use section, `renderer/memory_timeline.ts`): both
   capture libraries keep a running total per heap and send a sample with each frame report, so
   memory reads as a shape rather than an instant. A renderer that has leaked a gigabyte and one

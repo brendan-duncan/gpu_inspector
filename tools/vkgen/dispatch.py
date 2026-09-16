@@ -77,6 +77,16 @@ DEVICE_LOST_CALLS = {
 
 # Hand-written post-call hooks (declared in hooks.h), called with the command's arguments after
 # the downstream call and after object registration. Signature: void Hook_<cmd>(<params>).
+# Hooks that need the call's return value rather than only its arguments: a device address query's
+# whole answer is what it returns. Without them a ray tracing build, which names the geometry it
+# reads by address, cannot be tied to any buffer (src/vulkan/src/resources.h, ResolveAddress).
+RESULT_HOOKS = {
+    "vkGetBufferDeviceAddress",
+    "vkGetBufferDeviceAddressKHR",
+    "vkGetBufferDeviceAddressEXT",
+    "vkGetAccelerationStructureDeviceAddressKHR",
+}
+
 EXTRA_HOOKS = {
     "vkCreateShaderModule",
     "vkCreateGraphicsPipelines",
@@ -494,6 +504,8 @@ def emit_entry_cpp(reg, cmds, out):
 
         if c.name in EXTRA_HOOKS:
             body.append(f"    Hook_{c.name}({args});")
+        if c.name in RESULT_HOOKS:
+            body.append(f"    Hook_{c.name}({args}, result);")
 
         if has_result:
             body.append("    return result;")
@@ -557,6 +569,12 @@ def emit_hooks_header(cmds, out):
         if c.name in EXTRA_HOOKS:
             params = ", ".join(p.decl for p in c.params)
             guard(lines, c.protect, [f"void Hook_{c.name}({params});"])
+    lines.append("")
+    lines.append("// Post-call hooks that also take the call's return value (RESULT_HOOKS).")
+    for c in cmds:
+        if c.name in RESULT_HOOKS:
+            params = ", ".join(p.decl for p in c.params)
+            guard(lines, c.protect, [f"void Hook_{c.name}({params}, {c.ret} result);"])
     lines.append("")
     lines.append("// Pre-call hooks (all parameters by reference so pointers can be substituted).")
     for c in cmds:

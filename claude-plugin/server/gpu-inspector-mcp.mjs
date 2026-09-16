@@ -26134,6 +26134,8 @@ function referencedObjects(session, data) {
     ids.add(b.info.commandBuffer);
   }
   for (const v of db.validation) db.collectReferences(v.objects, ids);
+  for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
+  for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
   const out = /* @__PURE__ */ new Map();
   const queue = [...ids];
   while (queue.length) {

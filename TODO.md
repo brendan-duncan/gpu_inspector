@@ -314,6 +314,13 @@ application with injected state. Route (a) is the general one and is the prerequ
       groups in the Inspect panel, the command details and `get_command`, a trace command's shader
       binding table regions, acceleration structures with what their last build held, and
       acceleration structures in descriptor snapshots (triangle `--ray-tracing`).
+- [x] What a build was built from (`src/vulkan/src/resources.h` `ResolveAddress`/`StructureAt`,
+      `renderer/acceleration_structure.ts`): the layer records buffer and structure device
+      addresses, resolves a build's addresses to the buffers behind them and captures the
+      contents, and captures keep every acceleration structure. Verified on an RTX 4080 with
+      `vkinsp_triangle --ray-tracing`: the instance decodes to the identity transform, mask 0xFF
+      and TRIANGLE_FACING_CULL_DISABLE the application wrote, and its reference resolves to the
+      bottom level's object — the link from a top level to what is under it, which did not exist.
 - [ ] Ray tracing, the rest:
   - The replay makes no ray tracing pipelines or acceleration structures, and leaves their
     commands out. Building needs the geometry buffers the builds read by device address, and
@@ -475,6 +482,57 @@ should say so:
 - Warp-state and occupancy stall reasons, for the same reason.
 
 Nsight Graphics has no shader debugger and no LLM-facing surface, both of which this project has.
+
+## What PIX has **(PIX)**
+
+Measured against PIX on Windows. What PIX has that is already done or listed elsewhere is left out:
+the DXIL shader debugger, the acceleration structure viewer, export to C++, remote targets, pixel
+history, the dependency view, DRED, and PIX's event markers (decoded in
+`src/d3d12/src/hooks_command_list.cpp`). Ordered by value per effort.
+
+- [ ] Timing captures: CPU and GPU recorded continuously over seconds or minutes, with a frame-time
+      graph to scroll, the hitches found, and statistics over a selected range. A capture today is
+      N frames in full detail, and the timeline covers only those. The CPU timeline, the pass
+      timestamps and the memory samples are cheap enough to keep for every frame in a ring buffer,
+      with no read-back. Capture on hitch belongs with it: a frame over budget keeps the frames
+      around it, or takes a full capture of the next one.
+- [ ] Pipeline and shader creation on the CPU timeline: `vkCreate*Pipelines`, `CreatePipelineState`
+      / `LoadGraphicsPipeline` and `newRenderPipelineState*` timed as spans, so a compile hitch
+      shows where it happened; on D3D12, pipeline library hits and misses. The timeline times only
+      submit, present, the waits and acquire now, and every backend already hooks these calls.
+- [ ] Which resources a shader actually used: PIX instruments shaders to report which entries of
+      a bindless descriptor array a draw read. A draw's descriptor sets list everything bound,
+      thousands of entries for a bindless heap. A replay with SPIR-V rewritten to record the
+      indices it reads fits beside the ablation variants (`renderer/vulkan/spirv_ablate.ts`), and
+      would limit sampled-image read-back to what was sampled.
+- [ ] App-triggered captures (`PIXGpuCaptureNextFrames` / `PIXBeginCapture`, and RenderDoc's
+      in-app API): a capture from a failed test, an assert or a debug key. Unity, Unreal and many
+      test harnesses already call the RenderDoc API, so answering `RENDERDOC_GetAPI` with a
+      minimal shim would need no change to the application.
+- [ ] GPU-based validation: nothing turns on D3D12's `SetEnableGPUBasedValidation` or Vulkan's
+      GPU-assisted validation from the launch dialog. PIX can also run a capture again under the
+      debug layer after the fact; `vkinsp_replay` could replay with validation on.
+- [ ] Replay on another device to tell a driver bug from an application bug (PIX replays on WARP):
+      replay on lavapipe or SwiftShader and compare the render targets with the hardware result,
+      which the replay's own comparison mostly does already.
+- [ ] Memory events beside the totals: residency changes (`MakeResident`, `Evict`,
+      `EnqueueMakeResident`) and budget-change notifications
+      (`RegisterVideoMemoryBudgetChangeNotificationEvent`) marked on the memory series, so it says
+      when the driver evicted or paged something back in, not only how much was held.
+- [ ] Present statistics: presentation mode (composed or independent flip), dropped frames and
+      latency, from `IDXGISwapChain::GetFrameStatistics`, `VK_GOOGLE_display_timing` /
+      `VK_EXT_present_timing` and Metal's `presentedTime`, so the display-paced verdict can say how
+      many frames were missed.
+- [ ] Texture viewer extras: NaN/Inf and min/max highlighting and a histogram, on any read-back
+      image. The NaN/INF draw overlay above needs the replay; the viewer's own would work for Metal
+      and D3D12 captures too.
+- [ ] App-reported counters (`PIXReportCounter`) plotted on the timeline, e.g. an engine's visible
+      object count beside frame time.
+
+Not worth the effort, since other tools already do them well:
+- ETW-based CPU sampling, context switches, file I/O and CPU heap allocations: Windows-only,
+  needs administrator rights, and Tracy and Superluminal cover it.
+- DirectML / NPU captures and the GDK / Xbox-specific features.
 
 ## Metal
 
