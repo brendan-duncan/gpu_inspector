@@ -372,12 +372,21 @@ vendor's driver is listed at the end so nobody spends time on it.
       in flight rather than the last two markers; the faulting address through `VK_EXT_device_fault`;
       a dialog rather than only a log line; and a real hang, which has not been tried because it
       trips a TDR reset on the machine running it (`test/triangle --hang` would be the way).
-- [ ] CPU and GPU timeline across frames (Nsight Systems: every thread's API calls with durations,
-      where the CPU blocks in fence waits and acquire, when each submission ran on the GPU). The
-      layer records submit time and the refresh rate but not per-call CPU durations or a
-      multi-frame queue timeline. Timing the hook entry points and pairing them with the pass
-      timestamps answers docs/PROFILING.md's "is the GPU even the problem" step directly rather
-      than by inference.
+- [x] Where a frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, `renderer/cpu_timeline.ts`,
+      **Where the CPU went** in Frame Stats): the layer times submit, present, fence waits, acquire
+      and wait-idle during a capture, with the thread of each, and the capture carries them with a
+      `VK_KHR_calibrated_timestamps` relation between the GPU and CPU clocks. The verdict separates
+      waiting for the GPU from being paced by the display from paying for submission, which
+      docs/PROFILING.md's first step could previously only infer. Checked on an RTX 4080: a vsynced
+      triangle reads as display-paced (65% in present and acquire), an offscreen one as spending its
+      time outside timed calls. The fence-wait and submission verdicts have tests but no real
+      capture that reaches them — nothing here is GPU-bound or submission-bound enough.
+- [ ] The timeline as a drawing, the rest: a track view with one lane per thread and a GPU lane,
+      laid on the shared axis the calibration already provides (`gpuTicksToCpuMs`), which is what
+      Nsight Systems shows and what makes a stall visible rather than merely counted; per-call
+      events rather than per-category totals in the UI; the CPU timeline live in the session bar
+      rather than only in a capture; and `get_capture_summary` reporting the verdict.
+
 - [x] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader):
       `src/vulkan/src/shader_statistics.h`, through `VK_KHR_pipeline_executable_properties`. The
       layer adds the capture flag to every pipeline and asks the driver what it made of each stage;

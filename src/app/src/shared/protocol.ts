@@ -512,7 +512,42 @@ export interface DeviceLostMessage {
   message: string;
 }
 
+/** One host-side call timed during a capture (src/vulkan/src/cpu_timeline.h). */
+export interface CpuEvent {
+  /** Index into CpuTimeline.threads. */
+  thread: number;
+  /** "submit", "present", "waitFences", "acquire", "waitIdle". */
+  category: string;
+  frame: number;
+  /** Relative to the capture's origin, the same axis the calibration maps GPU times onto. */
+  startMs: number;
+  durationMs: number;
+}
+
+/** How to place a GPU timestamp on the CPU axis: hostMs + (ticks - deviceTicks) * period / 1e6. */
+export interface CpuGpuCalibration {
+  deviceTicks: number;
+  hostMs: number;
+  timestampPeriod: number;
+}
+
+/**
+ * Where a frame's CPU time went, beside where its GPU time went: the calls the layer timed on the
+ * host during the capture, and (where the device has calibrated timestamps) the relation that puts
+ * both on one axis.
+ */
+export interface CpuTimelineMessage {
+  action: "CaptureCpuTimeline";
+  /** The threads that made the calls, by their OS id; events index into this. */
+  threads: number[];
+  /** Events beyond the capture's cap, which are not recorded. */
+  dropped?: number;
+  calibration?: CpuGpuCalibration;
+  events: CpuEvent[];
+}
+
 export type LayerMessage =
+  | CpuTimelineMessage
   | DeviceLostMessage
   | SnapshotMessage
   | ValidationMessage

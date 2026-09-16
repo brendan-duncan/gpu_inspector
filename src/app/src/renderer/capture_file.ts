@@ -156,6 +156,7 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
     ...(data.pixelHistory ? { pixelHistory: data.pixelHistory } : {}),
     ...(data.drawStats?.length ? { drawStats: data.drawStats } : {}),
     ...(data.hwCounters ? { hwCounters: data.hwCounters } : {}),
+    ...(data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {}),
     ...(data.ablations.length ? { ablations: data.ablations } : {}),
     validation: db.validation,
     ...(symbols ? { symbols } : {}),

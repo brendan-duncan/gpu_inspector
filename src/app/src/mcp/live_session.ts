@@ -36,7 +36,7 @@ const KILL_TIMEOUT_MS = 3000;
 
 /** The messages a capture streams, which CaptureData reassembles. */
 const CAPTURE_ACTIONS = new Set(["CaptureFrameResults", "CaptureFrameCommands", "CaptureTextureFrames", "CaptureTextureData", "CaptureBuffers", "CaptureBufferData", "CapturePassTimings",
-  "CaptureOverdraw", "CaptureOverdrawData", "CapturePixelHistory"]);
+  "CaptureOverdraw", "CaptureOverdrawData", "CapturePixelHistory", "CaptureCpuTimeline"]);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

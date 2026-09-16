@@ -6,6 +6,8 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import { REFRESH_SOURCE_NOTE, frameBound, type CaptureStatistics } from "./capture_statistics.js";
+import { cpuVerdict, summarizeCpuTimeline } from "./cpu_timeline.js";
+import type { CpuTimelineMessage } from "../shared/protocol.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import { formatBytes } from "./vulkan/vulkan_object.js";
 
@@ -48,6 +50,37 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
       : "The budget is the live frame interval (vsync is off, so no display refresh period applies). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.",
     class: "text-muted font-sm",
   });
+}
+
+/**
+ * "Where the CPU went": the calls the layer timed on the host during the capture
+ * (src/vulkan/src/cpu_timeline.h). The Frame Bound card above compares three aggregates and infers
+ * a verdict; this one measures where the CPU actually was, which tells a frame waiting for the GPU
+ * apart from a frame paced by the display — the same totals, opposite fixes.
+ */
+function renderCpuTimeline(root: Widget, timeline: CpuTimelineMessage | null): void {
+  const s = summarizeCpuTimeline(timeline);
+  if (!s) return;
+  const card = new Div(root, { class: "frame-stats-section" });
+  new Div(card, { text: "Where the CPU went", class: "frame-stats-heading" });
+  const body = new Div(card, { class: "frame-stats-list" });
+  new Div(body, { text: cpuVerdict(s), class: "frame-bound-verdict" });
+  for (const t of s.totals) {
+    const row = new Div(body, { class: "frame-bound-row" });
+    new Div(row, { text: t.label, class: "frame-bound-label" });
+    const track = new Div(row, { class: "frame-bound-track" });
+    const fill = new Div(track, { class: "frame-bound-fill" });
+    fill.style.width = `${Math.min(100, s.spanMs > 0 ? (t.ms / s.spanMs) * 100 : 0).toFixed(1)}%`;
+    // Waiting for the GPU, waiting for the display, and doing work each read differently.
+    fill.style.background = t.kind === "gpuWait" ? "#4a8db8" : t.kind === "displayWait" ? "#a0a0a0" : "#5fd08a";
+    new Div(row, { text: `${t.ms.toFixed(2)} ms in ${t.calls} call${t.calls === 1 ? "" : "s"}`, class: "frame-bound-value" });
+  }
+  const notes = [`Measured over ${s.spanMs.toFixed(2)} ms and ${s.frames} frame${s.frames === 1 ? "" : "s"} on ${s.threads} thread${s.threads === 1 ? "" : "s"}.`];
+  notes.push(s.calibrated
+    ? "The GPU's clock was related to the CPU's, so the pass timings above sit on this same axis."
+    : "This device has no calibrated-timestamps extension, so the GPU pass times keep their own origin and cannot be laid over these.");
+  if (s.dropped) notes.push(`${s.dropped} later calls were not recorded: the capture's event limit was reached.`);
+  new Div(body, { text: notes.join(" "), class: "text-muted font-sm" });
 }
 
 function renderPassTimings(root: Widget, t: FrameTimingInfo): void {
@@ -124,11 +157,13 @@ function renderFrameIssues(root: Widget, issues: FrameIssues): void {
 }
 
 /** Renders the statistics as WebGPU Inspector's Frame Stats view: one card per section. */
-export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null, issues: FrameIssues | null = null): void {
+export function renderFrameStats(container: Widget, stats: CaptureStatistics, timing: FrameTimingInfo | null = null, issues: FrameIssues | null = null,
+                                 cpuTimeline: CpuTimelineMessage | null = null): void {
   const root = new Div(container, { class: "frame-stats" });
   new Div(root, { text: "Frame Statistics", class: "frame-stats-title" });
   if (stats.frames > 1) new Div(root, { text: `Totals over ${stats.frames} captured frames.`, class: "text-muted font-sm" });
   if (timing) renderFrameBound(root, timing);
+  renderCpuTimeline(root, cpuTimeline);
   if (issues) renderFrameIssues(root, issues);
   if (timing) renderPassTimings(root, timing);
   for (const section of stats.sections()) {

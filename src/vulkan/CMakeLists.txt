@@ -54,6 +54,7 @@ add_library(${LAYER_LIB} SHARED
     src/shader_edit.h
     src/shader_edit.cpp
     src/validation.h
+    src/cpu_timeline.cpp
     src/device_lost.cpp
     src/shader_statistics.cpp
     src/validation.cpp

@@ -1,6 +1,14 @@
 ## v0.13.0
 
 ### Added
+- Where a captured frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, **Where the CPU went** in
+  Frame Stats): the layer times the host calls a frame spends its time in — submitting, presenting,
+  waiting on fences, acquiring a swapchain image — with the thread that made each, and the capture
+  carries them. It separates three cases the Frame Bound card could only infer from aggregates: the
+  CPU waiting on fences (the GPU sets the frame time), the CPU inside submission (submission is the
+  cost), and the CPU waiting in present (the display paces the frame and neither processor is the
+  limit). Where the device has `VK_KHR_calibrated_timestamps` the capture also carries the relation
+  between the GPU and CPU clocks, so pass timings can be placed on the same axis.
 - Compiler statistics per pipeline for Vulkan (`src/vulkan/src/shader_statistics.h`): **Compiler
   statistics** in the launch dialog (`VKINSP_SHADER_STATISTICS=1`, `shaderStatistics` for
   `launch_app`) asks the driver what its shader compiler made of each stage — registers used, code

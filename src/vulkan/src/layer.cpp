@@ -14,6 +14,7 @@
 #include "transport.h"
 #include "depth_resolve.h"
 #include "device_lost.h"
+#include "cpu_timeline.h"
 #include "shader_statistics.h"
 #include "pipeline_stats.h"
 #include "refresh_rate.h"
@@ -519,12 +520,15 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // Compiler statistics per pipeline (see shader_statistics.h).
     ShaderStatisticsSetup shaderStats;
     PlanShaderStatistics(instance, physicalDevice, createInfo, shaderStats);
+    // Calibrated timestamps, so a capture's CPU and GPU times share an axis (see cpu_timeline.h).
+    CpuTimelineSetup cpuTimeline;
+    PlanCpuTimeline(instance, physicalDevice, createInfo, cpuTimeline);
 
     // Counted from before the driver's vkCreateDevice, which may make a D3D12 device of its own
     // (vkinspDeviceCount).
     g_deviceCount.fetch_add(1, std::memory_order_relaxed);
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
-    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added || shaderStats.added)) {
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added || shaderStats.added || cpuTimeline.added)) {
         // The driver refused the additions: create the device as the application asked.
         Log("vkCreateDevice with the layer's extensions failed (%d); retrying without", (int)res);
         refresh = RefreshDeviceSetup{};
@@ -532,6 +536,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
         pipelineStats = PipelineStatisticsSetup{};
         breadcrumbs = BreadcrumbSetup{};
         shaderStats = ShaderStatisticsSetup{};
+        cpuTimeline = CpuTimelineSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
     if (res != VK_SUCCESS) {
@@ -551,6 +556,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->occlusionPrecise = pipelineStats.occlusion;
     data->inheritedQueries = pipelineStats.inheritedQueries;
     data->shaderStatistics = shaderStats.enabled;
+    InitCpuTimeline(data.get(), cpuTimeline);
     {
         // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
         const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");
@@ -839,7 +845,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     // their tracked layouts and the swapchain image is still owned by the application.
     ImageReadback::Get().OnPresent(data, queue);
     ShaderEditor::Get().OnPresent(data);
+    // Hand-written, so the generated CPU timing does not reach it (see cpu_timeline.h).
+    const uint64_t cpuStart = CpuEventBegin();
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+    CpuEventEnd(data, cpuStart, CpuCategory::Present);
     // This entry point is hand-written, so the generated device-lost check does not reach it.
     if (res == VK_ERROR_DEVICE_LOST) OnDeviceLost(data, "vkQueuePresentKHR");
     // A present always ends the frame; it also settles the frame boundary for good.

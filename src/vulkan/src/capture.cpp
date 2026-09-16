@@ -1,4 +1,5 @@
 #include "capture.h"
+#include "cpu_timeline.h"
 
 #include "pipeline_stats.h"
 
@@ -65,6 +66,8 @@ void CaptureManager::Start(DeviceData* dev) {
     _homeDevice = dev->device;
     _frameCount = std::max(1u, _options.frameCount);
     _state = State::Capturing;
+    // The CPU side of the frame starts its clock here, so its events share the capture's origin.
+    BeginCpuTimeline();
     _armedAtFrame.store(UINT64_MAX, std::memory_order_release);
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
@@ -310,6 +313,9 @@ void CaptureManager::Finish(DeviceData* dev) {
     SendTextures(dev);
     SendBuffers(dev);
     SendPassTimings();
+    // The GPU clock related to the host's, while the device is still alive, then the CPU events.
+    SampleCalibration(dev);
+    SendCpuTimeline();
     // The end of the capture's stream, whichever sections it had: a client waiting for the capture
     // (the MCP server) knows nothing more of it is coming.
     {
