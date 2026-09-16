@@ -6,7 +6,8 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import { isD3D12Texture } from "../d3d12/d3d12_object.js";
-import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, MemorySampleMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
+import { MAX_SAMPLES } from "../memory_timeline.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -68,6 +69,11 @@ export class ObjectDatabase implements ObjectLookup {
    * report, since what the UI does with them is the same and both carry a finished message.
    */
   deviceLost: DeviceLostMessage | DeviceRemovedMessage | null = null;
+  /**
+   * Memory use over the session, one sample per frame report. Kept here rather than derived from
+   * the object graph because the graph only ever holds the present: the shape needs the past.
+   */
+  memorySamples: MemorySampleMessage[] = [];
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -87,6 +93,8 @@ export class ObjectDatabase implements ObjectLookup {
   readonly onLeakReport = new Signal<(report: LeakReportMessage) => void>();
   /** The GPU stopped responding, with the command it was running when it did. */
   readonly onDeviceLost = new Signal<(report: DeviceLostMessage | DeviceRemovedMessage) => void>();
+  /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
+  readonly onMemorySample = new Signal<() => void>();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = new Map<number, StackFrame[]>();
   stacksAvailable: boolean | null = null;
@@ -347,6 +355,12 @@ export class ObjectDatabase implements ObjectLookup {
       case "LeakReport":
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
+        break;
+      case "MemorySample":
+        this.memorySamples.push(msg);
+        // Oldest first out: a long session would otherwise grow without bound.
+        if (this.memorySamples.length > MAX_SAMPLES) this.memorySamples.shift();
+        this.onMemorySample.emit();
         break;
       case "DeviceRemoved":
       case "DeviceLost":

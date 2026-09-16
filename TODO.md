@@ -437,12 +437,20 @@ vendor's driver is listed at the end so nobody spends time on it.
       are flagged, including ones another process is filling. Checked on an RTX 4080: the triangle
       holds 15 MB of a 16 GB device-local heap while the driver reports 156 MB resident, the
       difference being its own overhead and other processes.
-- [ ] Memory, the rest: over *time* rather than at one instant (Nsight's resource view plots
-      allocation against the frame, which needs the layer to report the totals per frame report
-      rather than only the budget); fragmentation, which Vulkan does not expose and which would have
-      to be approximated from the allocation size distribution; what each allocation is bound to
-      (images and buffers already name their memory, so the reverse mapping is derivable); and the
-      D3D12 equivalent through `QueryVideoMemoryInfo`.
+- [x] Memory over time (`renderer/memory_timeline.ts`, **Over time** in Memory Use): both capture
+      libraries keep a running total per heap and send a `MemorySample` with each frame report, and
+      the app reads the series as growing, sawtoothing, flat or shrinking. The shape comes from how
+      far the series moves each way, not its endpoints: a pool can stop anywhere in its cycle, so
+      endpoints alone call a refill a leak. Verified on an RTX 4080 on both backends by agreeing
+      the library's C++ running counter with the app's independent walk of the object graph
+      (Vulkan 1.257 MB in 6 allocations, D3D12 1.625 MB in 7, both exact) — a flat series alone
+      would look the same whether or not the counter worked.
+- [ ] Memory, the rest: the growing, sawtooth and shrinking branches have only been read from
+      synthetic series here, since the test applications allocate once and hold; fragmentation,
+      which Vulkan does not expose and which would have to be approximated from the allocation size
+      distribution; what each allocation is bound to (images and buffers already name their memory,
+      so the reverse mapping is derivable); the series in a saved capture, which today holds one
+      instant; and per-heap lines rather than one total.
 
 - [ ] Export to C++: a frame serialized into a standalone compilable project, mainly for driver
       bug reports. The replay engine already recreates every object, so emitting source from the

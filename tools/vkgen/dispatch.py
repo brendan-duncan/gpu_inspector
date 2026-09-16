@@ -440,6 +440,13 @@ def emit_entry_cpp(reg, cmds, out):
         if cpuTimed:
             body.append("    const uint64_t vkinsp_cpu = CpuEventBegin();")
 
+        # Memory is kept as a running total per heap so it can be plotted over time rather than
+        # only sampled (src/cpu_timeline.h): counting the tracked allocations on demand would
+        # walk a renderer's tens of thousands of them ten times a second. The free is noted
+        # while the handle is still valid, as the destroy hooks above are.
+        if c.name == "vkFreeMemory":
+            body.append("    NoteFree(vkinsp_dev, memory);")
+
         crumb = c.name in BREADCRUMB_COMMANDS
         if crumb:
             body.append(f"    const uint32_t vkinsp_crumb = BeginBreadcrumb(vkinsp_dev, {first.name}, (uint32_t)VkCmdId::{short(c.name)});")
@@ -452,6 +459,8 @@ def emit_entry_cpp(reg, cmds, out):
 
         if cpuTimed:
             body.append(f"    CpuEventEnd(vkinsp_dev, vkinsp_cpu, CpuCategory::{cpuTimed});")
+        if c.name == "vkAllocateMemory":
+            body.append("    if ((int)result >= 0 && pMemory) NoteAllocation(vkinsp_dev, *pMemory, pAllocateInfo);")
         if crumb:
             body.append(f"    EndBreadcrumb(vkinsp_dev, {first.name}, vkinsp_crumb);")
         # A call that can report the device has gone: read the breadcrumbs and say what it was on.

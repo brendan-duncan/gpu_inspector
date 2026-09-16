@@ -4,6 +4,7 @@
 // (extensions, features across the pNext chain, queues), and what it asked of the instance.
 // Everything here also works on capture files, where these questions matter most.
 import { heapPressure, memoryHeaps, usedHeaps, type MemoryDatabase } from "./memory_heaps.js";
+import { memoryTimeline, memoryVerdict } from "./memory_timeline.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
@@ -152,10 +153,42 @@ function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
   for (const h of heapPressure(m)) {
     row(s, "Nearly full", `Heap ${h.index} is close to its limit; an allocation failure here is a device-lost or an out-of-memory away.`);
   }
+  renderMemoryOverTime(s, db);
   if (!m.hasBudget) {
     // Both backends can fail to report it, for their own reasons, so the note names neither device.
     new Div(container, { text: "The driver did not report residency (Vulkan needs VK_EXT_memory_budget; D3D12 needs an adapter new enough for QueryVideoMemoryInfo), so how much is resident and how much it will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
   }
+}
+
+
+/**
+ * "Over time": the memory series drawn as a line, with what its shape means
+ * (renderer/memory_timeline.ts). The rows above are an instant, and an instant cannot tell a leak
+ * from a pool that happens to be full — only the direction can.
+ */
+function renderMemoryOverTime(container: Widget, db: MemoryDatabase | null): void {
+  const t = db?.memorySamples ? memoryTimeline(db.memorySamples) : null;
+  if (!t) return;
+  row(container, "Over time", memoryVerdict(t));
+
+  // Plotted against the sample's own frame number, so a stall does not stretch the line.
+  const first = t.points[0].frame;
+  const span = Math.max(1, t.points[t.points.length - 1].frame - first);
+  // A flat series would otherwise divide by zero; give it a floor so the line sits mid-height.
+  const low = t.minBytes;
+  const height = Math.max(1, t.maxBytes - low);
+  const points = t.points
+    .map((p) => `${(((p.frame - first) / span) * 100).toFixed(2)},${(100 - ((p.allocated - low) / height) * 100).toFixed(2)}`)
+    .join(" ");
+  const line = new Div(container, { class: "memory-chart" });
+  // preserveAspectRatio="none" lets the 0-100 space stretch to whatever width the panel has.
+  line.element.innerHTML =
+    `<svg viewBox="0 0 100 100" preserveAspectRatio="none" class="memory-chart-svg" aria-hidden="true">`
+    + `<polyline points="${points}" class="memory-chart-line" vector-effect="non-scaling-stroke" /></svg>`;
+  const scale = new Div(container, { class: "memory-chart-scale" });
+  new Span(scale, { text: formatBytes(t.maxBytes) });
+  new Span(scale, { text: `${t.points.length} samples, ${t.frames} frames` });
+  new Span(scale, { text: formatBytes(t.minBytes) });
 }
 
 export function renderPhysicalDeviceSections(container: Widget, object: VulkanObject, db: MemoryDatabase | null = null): void {

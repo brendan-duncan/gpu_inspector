@@ -406,6 +406,11 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-bound-track { flex: 1 1 auto; height: 10px; background: var(--bg-primary); border-radius: 5px; overflow: hidden; }
 .frame-bound-fill { height: 100%; border-radius: 5px; }
 .frame-bound-value { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+/* Memory over the session (renderer/memory_timeline.ts) */
+.memory-chart { height: 56px; margin: 4px 0 2px 0; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
+.memory-chart-svg { display: block; width: 100%; height: 100%; }
+.memory-chart-line { fill: none; stroke: #5fd08a; stroke-width: 1.5; }
+.memory-chart-scale { display: flex; justify-content: space-between; color: var(--fg-muted); font-size: 9pt; font-variant-numeric: tabular-nums; }
 /* CPU and GPU activity on one axis (renderer/timeline_tracks.ts) */
 .track-row { display: flex; align-items: center; gap: 10px; padding: 2px 0; font-size: 10pt; }
 .track-label { flex: 0 0 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

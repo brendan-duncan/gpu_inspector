@@ -235,6 +235,36 @@ primitive.
 Save both captures (the capture bar's save button, `.gpucap`) and reopen them side by side in two
 tabs if you want the before and after in front of you at once.
 
+## Memory: how much, from which heap, and which way it is going
+
+A frame that runs well and then dies after twenty minutes is not a frame-time problem, and none of
+the steps above will find it. **Memory Use**, on the physical device in Inspect (on D3D12, the
+adapter), answers the three questions that matter instead.
+
+*How much of which heap.* A gigabyte in a 16 GB device-local heap and a gigabyte in a 256 MB one
+are different situations, and a single total cannot tell them apart. Each heap is listed with what
+this application has allocated from it, its largest allocation and its share of the heap, broken
+down by memory type.
+
+*What the driver says.* What the application asked for is not what is resident: the driver has its
+own overhead, and other processes are on the same GPU. Where the device reports it
+(`VK_EXT_memory_budget`; on D3D12 `QueryVideoMemoryInfo`) each heap also shows what is resident and
+what this process is allowed. A heap another process is filling is flagged too — that is a problem
+for this application and only the driver can see it.
+
+*Which way it is going.* This is the one an instant cannot answer. **Over time** plots what the
+application holds across the session and names the shape:
+
+| Shape | What it means |
+|---|---|
+| Climbing, never giving it back | A leak: something is allocated each frame and never freed. The verdict gives the bytes per frame; the Inspect tab's allocations sorted by size are where it will be. |
+| Rising and falling | A pool being emptied and refilled. Not a leak — but the *peak* is what has to fit, not the average. |
+| Steady | Nothing is accumulating. |
+| Falling | The application is releasing what it held. |
+
+The shape is read from how far the series moves each way, not from where it starts and ends: a
+pool can stop anywhere in its cycle, so a refill caught at its peak would otherwise read as a leak.
+
 ## The limiters: which unit inside the shader core is saturated
 
 The counters above say *how much* work a pass did. They do not say *which unit* it waited on — the

@@ -8938,6 +8938,9 @@ function analyzeFrame(data, db, graph) {
   return { findings, byCommand };
 }
 
+// src/renderer/memory_timeline.ts
+var MAX_SAMPLES = 36e3;
+
 // src/renderer/vulkan/object_database.ts
 var HELD_REFERENCES = {
   VkImageView: /* @__PURE__ */ new Set(["VkImage"]),
@@ -8994,6 +8997,11 @@ var ObjectDatabase = class {
    * report, since what the UI does with them is the same and both carry a finished message.
    */
   deviceLost = null;
+  /**
+   * Memory use over the session, one sample per frame report. Kept here rather than derived from
+   * the object graph because the graph only ever holds the present: the shape needs the past.
+   */
+  memorySamples = [];
   _snapshotRemaining = 0;
   onReset = new Signal();
   onSnapshotBegin = new Signal();
@@ -9012,6 +9020,8 @@ var ObjectDatabase = class {
   onLeakReport = new Signal();
   /** The GPU stopped responding, with the command it was running when it did. */
   onDeviceLost = new Signal();
+  /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
+  onMemorySample = new Signal();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = /* @__PURE__ */ new Map();
   stacksAvailable = null;
@@ -9271,6 +9281,11 @@ var ObjectDatabase = class {
       case "LeakReport":
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
+        break;
+      case "MemorySample":
+        this.memorySamples.push(msg);
+        if (this.memorySamples.length > MAX_SAMPLES) this.memorySamples.shift();
+        this.onMemorySample.emit();
         break;
       case "DeviceRemoved":
       case "DeviceLost":

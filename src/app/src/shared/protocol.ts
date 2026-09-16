@@ -575,6 +575,30 @@ export interface DeviceRemovedMessage {
   message: string;
 }
 
+/** One heap in a memory sample. `usage` and `budget` are absent where the driver reports neither. */
+export interface MemorySampleHeap {
+  /** Bytes this application holds from the heap, and in how many allocations. */
+  allocated: number;
+  allocations: number;
+  /** The driver's view, counting every process: what is resident, and what this one may have. */
+  usage?: number;
+  budget?: number;
+}
+
+/**
+ * One sample of memory use, sent with each frame report (src/vulkan/src/cpu_timeline.h,
+ * src/d3d12/src/cpu_timeline.h). The object graph says what is held *now*; a series of these says
+ * which way it is going, which is the difference between a leak, a pool refilling and a steady
+ * renderer — indistinguishable at any one instant.
+ */
+export interface MemorySampleMessage {
+  action: "MemorySample";
+  /** The frame the sample was taken at, so memory can be plotted against frames rather than time. */
+  frame: number;
+  /** One per heap, in the order the device reports them (D3D12: local, then system). */
+  heaps: MemorySampleHeap[];
+}
+
 /** One host-side call timed during a capture (src/vulkan/src/cpu_timeline.h). */
 export interface CpuEvent {
   /** Index into CpuTimeline.threads. */
@@ -614,6 +638,7 @@ export type LayerMessage =
   | CpuTimelineMessage
   | DeviceLostMessage
   | DeviceRemovedMessage
+  | MemorySampleMessage
   | SnapshotMessage
   | ValidationMessage
   | ValidationCountMessage

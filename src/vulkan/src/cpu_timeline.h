@@ -100,4 +100,28 @@ void PlanMemoryBudget(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDev
  */
 void SendMemoryBudget(DeviceData* dev);
 
+// ---------------------------------------------------------------------------------------------
+// Memory over time.
+//
+// The update above is an instant: it says what is held now and overwrites what it said before. What
+// that cannot show is the shape — memory climbing frame after frame is a leak, memory sawtoothing
+// is a pool being refilled, and memory flat is neither, and all three look identical at any one
+// moment. So the layer keeps a running total per heap and reports it with each frame report, giving
+// a series the UI can plot against the frame.
+//
+// The totals are kept as the application allocates rather than counted on demand: a renderer with
+// tens of thousands of allocations would otherwise be walked ten times a second.
+
+/** An allocation, added to its heap's running total. */
+void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAllocateInfo* info);
+
+/** A free, subtracted from it. Quiet for a handle that was never noted. */
+void NoteFree(DeviceData* dev, VkDeviceMemory memory);
+
+/**
+ * Sends one sample of the memory series: what this application holds per heap, and what the driver
+ * says is resident and allowed where it reports that. Called with the frame report.
+ */
+void SendMemorySample(DeviceData* dev);
+
 } // namespace vkinsp

@@ -788,8 +788,11 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             data->frameTimeAccumMs = 0;
             data->frameTimeCount = 0;
             data->lastReport = now;
-            // The driver's per-heap residency, at the report's interval (see cpu_timeline.h).
+            // The driver's per-heap residency, at the report's interval (see cpu_timeline.h),
+            // and one sample of the series behind it, so memory can be read as a shape rather
+            // than an instant.
             SendMemoryBudget(data);
+            SendMemorySample(data);
             ValidationLog::Get().Flush();
         }
     } else {

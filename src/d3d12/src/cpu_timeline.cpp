@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "capture.h"
@@ -428,6 +430,9 @@ void SendMemoryBudget(ID3D12Device* device) {
     Tracker::Get().UpdateById(id, "memoryBudget", w.str());
 }
 
+/** A committed resource's implicit heap in the running total; declared here, defined below. */
+void NoteHeldAllocation(void* object, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType);
+
 void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc,
                              D3D12_HEAP_TYPE heapType) {
     if (!device || !resource) return;
@@ -462,6 +467,111 @@ void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, con
     w.EndObject();
     w.EndObject();
     Tracker::Get().UpdateById(id, "allocation", w.str());
+    // The same bytes in the running total behind the memory series (NoteHeapAllocation).
+    NoteHeldAllocation(resource, bytes, heapType);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Memory over time
+
+namespace {
+
+std::mutex g_memoryMutex;
+std::unordered_map<void*, std::pair<uint64_t, uint32_t>> g_held;   // object -> (bytes, segment)
+uint64_t g_segmentBytes[2] = {0, 0};
+uint32_t g_segmentCount[2] = {0, 0};
+
+/** Which segment a heap type draws on: DEFAULT is the GPU's own, UPLOAD and READBACK system memory. */
+uint32_t SegmentOf(D3D12_HEAP_TYPE type) {
+    return type == D3D12_HEAP_TYPE_DEFAULT ? 0u : 1u;
+}
+
+void AddHeld(void* object, uint64_t bytes, uint32_t segment) {
+    if (!object || segment >= 2) return;
+    std::lock_guard<std::mutex> lock(g_memoryMutex);
+    auto it = g_held.find(object);
+    // A pointer the allocator has handed out again without the release being seen: the old entry
+    // would otherwise be counted twice.
+    if (it != g_held.end()) {
+        g_segmentBytes[it->second.second] -= (std::min)(g_segmentBytes[it->second.second], it->second.first);
+        if (g_segmentCount[it->second.second]) --g_segmentCount[it->second.second];
+    }
+    g_held[object] = {bytes, segment};
+    g_segmentBytes[segment] += bytes;
+    ++g_segmentCount[segment];
+}
+
+}  // namespace
+
+void NoteHeapAllocation(ID3D12Heap* heap, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType) {
+    AddHeld(heap, sizeBytes, SegmentOf(heapType));
+}
+
+void NoteHeldAllocation(void* object, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType) {
+    AddHeld(object, sizeBytes, SegmentOf(heapType));
+}
+
+void NoteMemoryReleased(void* object) {
+    if (!object) return;
+    std::lock_guard<std::mutex> lock(g_memoryMutex);
+    auto it = g_held.find(object);
+    if (it == g_held.end()) return;
+    const uint32_t segment = it->second.second;
+    if (segment < 2) {
+        g_segmentBytes[segment] -= (std::min)(g_segmentBytes[segment], it->second.first);
+        if (g_segmentCount[segment]) --g_segmentCount[segment];
+    }
+    g_held.erase(it);
+}
+
+void SendMemorySample(ID3D12Device* device) {
+    if (!device) return;
+    uint64_t budget[2] = {0, 0}, usage[2] = {0, 0};
+    bool hasBudget = false;
+    {
+        ScopedInternal internal;
+        uint64_t id = 0;
+        ComPtr<IDXGIAdapter3> adapter = AdapterWithBudget(device, &id);
+        if (adapter) {
+            for (size_t i = 0; i < std::size(kSegments); ++i) {
+                DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+                if (FAILED(adapter->QueryVideoMemoryInfo(0, kSegments[i].group, &info))) continue;
+                budget[i] = info.Budget;
+                usage[i] = info.CurrentUsage;
+                hasBudget = true;
+            }
+        }
+    }
+
+    uint64_t bytes[2];
+    uint32_t counts[2];
+    {
+        std::lock_guard<std::mutex> lock(g_memoryMutex);
+        bytes[0] = g_segmentBytes[0];
+        bytes[1] = g_segmentBytes[1];
+        counts[0] = g_segmentCount[0];
+        counts[1] = g_segmentCount[1];
+    }
+
+    JsonWriter w(&Tracker::Get());
+    w.BeginObject();
+    w.Key("action"); w.String("MemorySample");
+    w.Key("frame"); w.Uint(CaptureManager::Get().FrameCounter());
+    w.Key("heaps"); w.BeginArray();
+    for (size_t i = 0; i < 2; ++i) {
+        w.BeginObject();
+        w.Key("allocated"); w.Uint(bytes[i]);
+        w.Key("allocations"); w.Uint(counts[i]);
+        if (hasBudget) {
+            w.Key("usage"); w.Uint(usage[i]);
+            w.Key("budget"); w.Uint(budget[i]);
+        }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 }  // namespace dxinsp

@@ -276,4 +276,105 @@ void SendMemoryBudget(DeviceData* dev) {
     Tracker::Get().Update(id, "memoryBudget", w.str());
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Memory over time
+
+namespace {
+
+struct AllocationRecord {
+    uint64_t size = 0;
+    uint32_t heap = 0;
+};
+
+std::mutex g_memoryMutex;
+std::unordered_map<uint64_t, AllocationRecord> g_allocations;   // VkDeviceMemory handle -> what it took
+uint64_t g_heapBytes[VK_MAX_MEMORY_HEAPS] = {};
+uint32_t g_heapCount[VK_MAX_MEMORY_HEAPS] = {};
+
+}  // namespace
+
+void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAllocateInfo* info) {
+    if (!dev || !memory || !info) return;
+    const uint32_t type = info->memoryTypeIndex;
+    if (type >= dev->memoryProperties.memoryTypeCount) return;
+    const uint32_t heap = dev->memoryProperties.memoryTypes[type].heapIndex;
+    if (heap >= VK_MAX_MEMORY_HEAPS) return;
+    std::lock_guard lock(g_memoryMutex);
+    AllocationRecord& r = g_allocations[(uint64_t)(uintptr_t)memory];
+    // A handle the driver has handed out again after a free it did not report: the old record would
+    // otherwise be counted twice.
+    if (r.size) {
+        g_heapBytes[r.heap] -= std::min(g_heapBytes[r.heap], r.size);
+        if (g_heapCount[r.heap]) --g_heapCount[r.heap];
+    }
+    r.size = info->allocationSize;
+    r.heap = heap;
+    g_heapBytes[heap] += r.size;
+    ++g_heapCount[heap];
+}
+
+void NoteFree(DeviceData* dev, VkDeviceMemory memory) {
+    (void)dev;
+    if (!memory) return;
+    std::lock_guard lock(g_memoryMutex);
+    auto it = g_allocations.find((uint64_t)(uintptr_t)memory);
+    if (it == g_allocations.end()) return;
+    const AllocationRecord& r = it->second;
+    if (r.heap < VK_MAX_MEMORY_HEAPS) {
+        g_heapBytes[r.heap] -= std::min(g_heapBytes[r.heap], r.size);
+        if (g_heapCount[r.heap]) --g_heapCount[r.heap];
+    }
+    g_allocations.erase(it);
+}
+
+void SendMemorySample(DeviceData* dev) {
+    if (!dev || !dev->instance) return;
+    const uint32_t heaps = dev->memoryProperties.memoryHeapCount;
+    if (!heaps) return;
+
+    // The driver's own view, where the device reports one. Absent is not zero, so the two are kept
+    // apart: a sample with no budget still carries what the application holds.
+    bool hasBudget = false;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    if (dev->memoryBudget) {
+        auto get = dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+                     ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+                     : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
+        if (get) {
+            VkPhysicalDeviceMemoryProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+            props.pNext = &budget;
+            get(dev->physicalDevice, &props);
+            hasBudget = true;
+        }
+    }
+
+    uint64_t bytes[VK_MAX_MEMORY_HEAPS];
+    uint32_t counts[VK_MAX_MEMORY_HEAPS];
+    {
+        std::lock_guard lock(g_memoryMutex);
+        std::copy(std::begin(g_heapBytes), std::end(g_heapBytes), std::begin(bytes));
+        std::copy(std::begin(g_heapCount), std::end(g_heapCount), std::begin(counts));
+    }
+
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("MemorySample");
+    w.Key("frame"); w.Uint(dev->frameIndex);
+    w.Key("heaps"); w.BeginArray();
+    for (uint32_t i = 0; i < heaps && i < VK_MAX_MEMORY_HEAPS; ++i) {
+        w.BeginObject();
+        w.Key("allocated"); w.Uint(bytes[i]);
+        w.Key("allocations"); w.Uint(counts[i]);
+        if (hasBudget) {
+            w.Key("usage"); w.Uint(budget.heapUsage[i]);
+            w.Key("budget"); w.Uint(budget.heapBudget[i]);
+        }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
 } // namespace vkinsp

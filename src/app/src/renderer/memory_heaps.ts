@@ -11,10 +11,16 @@
 // let this process have — is a separate thing it must be asked for (VK_EXT_memory_budget), and the
 // layer attaches it to the physical device as `memoryBudget` when the device offers it.
 import { isObject, num, str, type VulkanObject } from "./vulkan/vulkan_object.js";
+import type { MemorySampleMessage } from "../shared/protocol.js";
 
 /** What this needs of an object database: every object, since allocations are found by walking them. */
 export interface MemoryDatabase {
   allObjects: Map<number, VulkanObject>;
+  /**
+   * Memory use over the session, where the session recorded it (renderer/memory_timeline.ts).
+   * Absent for a loaded capture file, which holds one instant rather than a series.
+   */
+  memorySamples?: MemorySampleMessage[];
 }
 
 /** One memory type drawing from a heap. */
