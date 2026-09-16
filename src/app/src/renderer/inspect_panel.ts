@@ -1088,7 +1088,7 @@ export class InspectPanel {
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
-    if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object);
+    if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object, db);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
     if (object.type === "ID3D12Device") renderD3D12DeviceSections(this.inspectPanel, object, db);

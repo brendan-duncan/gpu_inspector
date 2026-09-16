@@ -410,9 +410,20 @@ vendor's driver is listed at the end so nobody spends time on it.
 - [ ] Acceleration structure viewer (the TLAS and BLAS drawn with overlap heatmaps and
       per-instance flags). The ray tracing item above already needs the build inputs captured
       by device address; once they are, the boxes and geometry belong in the mesh view.
-- [ ] Memory heap view over time (Nsight's resource view: allocations per heap, residency,
-      fragmentation). Inspect has memory totals; a per-heap allocation map with
-      `VK_EXT_memory_budget` pressure, and the D3D12 budget equivalent, closes it.
+- [x] Memory per heap (`renderer/memory_heaps.ts`, **Memory Use** on the physical device): what the
+      application allocated from each heap and type, its share of the heap, and the driver's own
+      residency and budget through `VK_EXT_memory_budget` (added at device creation, sampled with
+      the frame report, attached to the physical device as `memoryBudget`). Heaps near their limit
+      are flagged, including ones another process is filling. Checked on an RTX 4080: the triangle
+      holds 15 MB of a 16 GB device-local heap while the driver reports 156 MB resident, the
+      difference being its own overhead and other processes.
+- [ ] Memory, the rest: over *time* rather than at one instant (Nsight's resource view plots
+      allocation against the frame, which needs the layer to report the totals per frame report
+      rather than only the budget); fragmentation, which Vulkan does not expose and which would have
+      to be approximated from the allocation size distribution; what each allocation is bound to
+      (images and buffers already name their memory, so the reverse mapping is derivable); and the
+      D3D12 equivalent through `QueryVideoMemoryInfo`.
+
 - [ ] Export to C++: a frame serialized into a standalone compilable project, mainly for driver
       bug reports. The replay engine already recreates every object, so emitting source from the
       same walk is feasible; lower priority.

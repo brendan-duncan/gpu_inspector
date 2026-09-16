@@ -44,6 +44,8 @@ extern const char* const kCpuCategoryNames[(size_t)CpuCategory::Count];
 /** What a device asked for at creation, decided before vkCreateDevice. */
 struct CpuTimelineSetup {
     std::vector<const char*> extensionNames;
+    /** The layer added VK_EXT_memory_budget, so the driver's residency view is available. */
+    bool memoryBudget = false;
     /** The layer added a calibrated-timestamps extension, so GPU and CPU times can share an axis. */
     bool calibrated = false;
     bool added = false;
@@ -80,5 +82,22 @@ bool SampleCalibration(DeviceData* dev);
 
 /** Writes the capture's CpuTimeline section; nothing when no events were recorded. */
 void SendCpuTimeline();
+
+// ---------------------------------------------------------------------------------------------
+// Memory residency.
+//
+// What the application allocated is in the object graph already: every VkDeviceMemory records its
+// size and memory type. What it cannot know is how much of each heap is actually resident and how
+// much the driver will let this process have — that counts every process on the GPU, and only the
+// driver can say. VK_EXT_memory_budget is how it is asked.
+
+/** Adds VK_EXT_memory_budget to a device being created when the physical device offers it. */
+void PlanMemoryBudget(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup);
+
+/**
+ * Sends the driver's per-heap budget and usage as an update on the physical device, for the memory
+ * view. Cheap enough for the frame report's interval; quiet when the device has no budget extension.
+ */
+void SendMemoryBudget(DeviceData* dev);
 
 } // namespace vkinsp

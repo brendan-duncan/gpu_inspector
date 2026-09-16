@@ -11,6 +11,7 @@
 #include "capture.h"
 #include "json_writer.h"
 #include "layer.h"
+#include "tracker.h"
 #include "transport.h"
 
 namespace vkinsp {
@@ -93,6 +94,7 @@ void PlanCpuTimeline(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDevi
 
 void InitCpuTimeline(DeviceData* dev, const CpuTimelineSetup& setup) {
     dev->calibratedTimestamps = setup.calibrated;
+    dev->memoryBudget = setup.memoryBudget;
 }
 
 uint64_t CpuEventBegin() {
@@ -214,6 +216,64 @@ void SendCpuTimeline() {
     w.EndArray();
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Memory residency (VK_EXT_memory_budget)
+
+void PlanMemoryBudget(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup) {
+    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties) return;
+    uint32_t count = 0;
+    inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> available(count);
+    if (count) inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, available.data());
+    const bool has = std::any_of(available.begin(), available.end(), [](const VkExtensionProperties& e) {
+        return std::strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
+    });
+    if (!has) return;
+    // PlanCpuTimeline may already have taken a copy of the list; extend whichever is current.
+    if (setup.extensionNames.empty()) {
+        setup.extensionNames.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
+    }
+    const bool already = std::any_of(setup.extensionNames.begin(), setup.extensionNames.end(),
+                                     [](const char* e) { return std::strcmp(e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0; });
+    if (!already) setup.extensionNames.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    info.ppEnabledExtensionNames = setup.extensionNames.data();
+    info.enabledExtensionCount = (uint32_t)setup.extensionNames.size();
+    setup.memoryBudget = true;
+    setup.added = setup.added || !already;
+}
+
+void SendMemoryBudget(DeviceData* dev) {
+    if (!dev || !dev->memoryBudget || !dev->instance) return;
+    auto get = dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+                 ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+                 : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
+    if (!get) return;
+    const uint64_t id = Tracker::Get().Resolve(HT_VkPhysicalDevice, (uint64_t)(uintptr_t)dev->physicalDevice);
+    if (!id) return;
+
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    props.pNext = &budget;
+    get(dev->physicalDevice, &props);
+    const uint32_t heaps = props.memoryProperties.memoryHeapCount;
+
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("ObjectUpdate");
+    w.Key("id"); w.Uint(id);
+    w.Key("memoryBudget"); w.BeginObject();
+    // What the driver will let this process have, and what is resident from every process.
+    w.Key("heapBudget"); w.BeginArray();
+    for (uint32_t i = 0; i < heaps; ++i) w.Uint(budget.heapBudget[i]);
+    w.EndArray();
+    w.Key("heapUsage"); w.BeginArray();
+    for (uint32_t i = 0; i < heaps; ++i) w.Uint(budget.heapUsage[i]);
+    w.EndArray();
+    w.EndObject();
+    w.EndObject();
+    Tracker::Get().Update(id, "memoryBudget", w.str());
 }
 
 } // namespace vkinsp

@@ -3,6 +3,7 @@
 // layer as an update at vkEnumeratePhysicalDevices), what the application enabled on its device
 // (extensions, features across the pNext chain, queues), and what it asked of the instance.
 // Everything here also works on capture files, where these questions matter most.
+import { heapPressure, memoryHeaps, usedHeaps, type MemoryDatabase } from "./memory_heaps.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
@@ -127,7 +128,36 @@ function shortSType(s: ArgValue | undefined): string {
 
 // ---------------------------------------------------------------------------------------------
 
-export function renderPhysicalDeviceSections(container: Widget, object: VulkanObject): void {
+/**
+ * What the application has actually allocated from each heap, and what the driver says is resident
+ * (renderer/memory_heaps.ts). The Memory section above is the device's own description — the same
+ * for every application on this GPU; this one is about this run.
+ */
+function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
+  const m = db ? memoryHeaps(db) : null;
+  if (!m || !m.allocations) return;
+  const s = section(container, `Memory Use (${m.allocations} allocations, ${formatBytes(m.totalBytes)})`);
+  for (const h of usedHeaps(m)) {
+    const share = h.share === null ? "" : `  ${(100 * h.share).toFixed(h.share < 0.01 ? 2 : 1)}% of the heap`;
+    row(s, `Heap ${h.index}${h.deviceLocal ? " (device local)" : ""}`,
+        `${formatBytes(h.bytes)} in ${h.allocations} allocation${h.allocations === 1 ? "" : "s"}, largest ${formatBytes(h.largestBytes)}${share}`);
+    // The driver's view counts every process, so it is normally larger than ours.
+    if (h.budgetBytes !== undefined && h.usageBytes !== undefined) {
+      row(s, "", `driver: ${formatBytes(h.usageBytes)} resident of ${formatBytes(h.budgetBytes)} available to this process`);
+    }
+    for (const t of h.types) {
+      row(s, "", `type ${t.index} ${flagsText(t.propertyFlags) || "(no flags)"}: ${formatBytes(t.bytes)} in ${t.allocations}`);
+    }
+  }
+  for (const h of heapPressure(m)) {
+    row(s, "Nearly full", `Heap ${h.index} is close to its limit; an allocation failure here is a device-lost or an out-of-memory away.`);
+  }
+  if (!m.hasBudget) {
+    new Div(container, { text: "This device has no VK_EXT_memory_budget, so how much is resident and how much the driver will allow are not known — only what this application asked for.", class: "text-muted capture-note" });
+  }
+}
+
+export function renderPhysicalDeviceSections(container: Widget, object: VulkanObject, db: MemoryDatabase | null = null): void {
   const u = object.updates;
   const props = isObject(u.properties) ? u.properties : null;
   if (!props) {
@@ -171,6 +201,8 @@ export function renderPhysicalDeviceSections(container: Widget, object: VulkanOb
       row(m, `Type ${i}`, `heap ${num(t.heapIndex)}  ${flagsText(t.propertyFlags) || "(no flags)"}`);
     }
   }
+
+  renderMemoryUse(container, db);
 
   const families = Array.isArray(u.queueFamilies) ? u.queueFamilies.filter(isObject) : [];
   if (families.length) {

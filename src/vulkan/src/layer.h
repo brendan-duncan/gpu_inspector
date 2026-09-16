@@ -76,6 +76,8 @@ struct DeviceData {
     bool shaderStatistics = false;
     /** A calibrated-timestamps extension is on, so GPU times can be placed on the CPU axis. */
     bool calibratedTimestamps = false;
+    /** VK_EXT_memory_budget is on, so the driver's per-heap residency can be asked for. */
+    bool memoryBudget = false;
     /**
      * inheritedQueries is enabled: secondary command buffers are begun able to run inside the pass
      * counters' queries (`secondaries` lists them), so a pass that executes them keeps its counters.
