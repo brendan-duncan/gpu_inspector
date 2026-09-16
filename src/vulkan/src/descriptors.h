@@ -54,6 +54,14 @@ public:
     static DescriptorTracker& Get();
 
     void OnCreateLayout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutCreateInfo* info);
+    /**
+     * A pipeline layout's set layouts, by set number. A descriptor buffer binds a set by an offset
+     * rather than by a handle, so the only way to know what shape the bytes at that offset have is
+     * the pipeline layout the offsets were set against (descriptor_buffer.h).
+     */
+    void OnCreatePipelineLayout(VkPipelineLayout layout, const VkPipelineLayoutCreateInfo* info);
+    /** The set layout a pipeline layout declares at this set number, or null. */
+    VkDescriptorSetLayout SetLayoutOf(VkPipelineLayout layout, uint32_t set) const;
     void OnAllocateSets(const VkDescriptorSetAllocateInfo* info, const VkDescriptorSet* sets);
     void OnUpdateSets(uint32_t writeCount, const VkWriteDescriptorSet* writes, uint32_t copyCount,
                       const VkCopyDescriptorSet* copies);
@@ -80,6 +88,7 @@ private:
     std::unordered_map<uint64_t, DescriptorSetContents> _layouts;
     std::unordered_map<uint64_t, DescriptorSetContents> _sets;
     std::unordered_map<uint64_t, DescriptorTemplateInfo> _templates;
+    std::unordered_map<uint64_t, std::vector<VkDescriptorSetLayout>> _pipelineLayouts;
 };
 
 // Writes the JSON snapshot of one bound set:

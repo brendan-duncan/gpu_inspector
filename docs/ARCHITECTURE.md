@@ -884,9 +884,12 @@ touches. The sources are `renderer/vulkan/frame_resources.ts` and
 `frame_analysis.ts` shares, so the graph and the frame rules read the same load and store ops),
 the descriptor sets snapshotted at each draw and dispatch — or, for Metal, what the encoder had
 bound — and the transfer commands, which name their two ends outright. What a source cannot
-resolve it counts rather than guesses at: bindings through descriptor buffers, shader objects or
-Metal's argument buffers are not in the capture, and the view says the graph is a lower bound on
-the frame's edges instead of implying those passes read nothing. Storage bindings are counted
+resolve it counts rather than guesses at: bindings through shader objects or Metal's argument
+buffers are not in the capture, and the view says the graph is a lower bound on the frame's edges
+instead of implying those passes read nothing. Descriptor buffers used to be in that group and are
+now decoded (`src/vulkan/src/descriptor_buffer.h`), arriving as an ordinary set snapshot; only one
+the layer could not read — memory it had no host mapping for, or descriptors made before it
+attached — still counts as hidden. Storage bindings are counted
 read-write for the same reason — without shader reflection a read-only storage buffer is
 indistinguishable from one the shader writes — and the view says so.
 

@@ -143,6 +143,7 @@ struct App {
     // template (vkCmdPushDescriptorSetWithTemplateKHR) instead of a bound set, whose data the
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
+    bool descriptorBuffer = false;
     // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
     // input and pre-rasterization with the vertex shader; fragment shader and output), which live
     // as long as the pipeline linked from them (VK_EXT_graphics_pipeline_library).
@@ -193,6 +194,21 @@ struct App {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{}, callable{};
     } rt{};
+    // --descriptor-buffer: the set's descriptors live in a buffer the application owns rather
+    // than in a set object, so a draw names them by an offset into memory (docs/VULKAN.md).
+    struct DescriptorBufferFns {
+        PFN_vkGetDescriptorSetLayoutSizeEXT layoutSize;
+        PFN_vkGetDescriptorSetLayoutBindingOffsetEXT bindingOffset;
+        PFN_vkGetDescriptorEXT getDescriptor;
+        PFN_vkCmdBindDescriptorBuffersEXT bindBuffers;
+        PFN_vkCmdSetDescriptorBufferOffsetsEXT setOffsets;
+        VkPhysicalDeviceDescriptorBufferPropertiesEXT props{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceAddress address = 0;
+        void* mapped = nullptr;
+    } db{};
     struct ShaderObjectFns {
         PFN_vkCreateShadersEXT create;
         PFN_vkDestroyShaderEXT destroy;
@@ -418,10 +434,10 @@ struct App {
     }
 
     void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props, VkBuffer& buf,
-                      VkDeviceMemory& mem, const char* name) {
+                      VkDeviceMemory& mem, const char* name, bool deviceAddress = false) {
         VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size = size;
-        bci.usage = usage;
+        bci.usage = usage | (deviceAddress ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         CHECK(vkCreateBuffer(device, &bci, nullptr, &buf));
         VkMemoryRequirements req;
@@ -429,6 +445,9 @@ struct App {
         VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         mai.allocationSize = req.size;
         mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, props);
+        VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+        flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        if (deviceAddress) mai.pNext = &flags;
         CHECK(vkAllocateMemory(device, &mai, nullptr, &mem));
         CHECK(vkBindBufferMemory(device, buf, mem, 0));
         Name(VK_OBJECT_TYPE_BUFFER, (uint64_t)buf, name);
@@ -483,7 +502,10 @@ struct App {
         ai.pEngineName = "none";
         // --shader-object and --suspend draw in dynamic rendering, core in 1.3; --ray-tracing needs
         // 1.2's buffer device addresses and SPIR-V 1.4.
-        ai.apiVersion = shaderObject || suspend ? VK_API_VERSION_1_3 : rayTracing ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
+        // 1.2 for the modes that take a buffer's device address: vkGetBufferDeviceAddress is core
+        // there, and on a 1.1 instance the loader has no entry point for it to call.
+        ai.apiVersion = shaderObject || suspend ? VK_API_VERSION_1_3
+                      : rayTracing || descriptorBuffer ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
         std::vector<const char*> instExts = {VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(_WIN32)
                                              VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
@@ -562,6 +584,13 @@ struct App {
         }
         std::vector<const char*> devExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
         if (pushTemplate) devExts.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+        if (descriptorBuffer) {
+            devExts.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+            // What VK_EXT_descriptor_buffer is defined on top of, and so must be enabled with it.
+            devExts.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            devExts.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+            devExts.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        }
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
@@ -592,6 +621,17 @@ struct App {
             soFeatures.shaderObject = VK_TRUE;
             soFeatures.pNext = (void*)dci.pNext;
             dci.pNext = &soFeatures;
+        }
+        VkPhysicalDeviceDescriptorBufferFeaturesEXT dbFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+        VkPhysicalDeviceBufferDeviceAddressFeatures dbAddress{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+        if (descriptorBuffer) {
+            // A descriptor buffer is named by its device address, and so is every buffer a
+            // descriptor in it points at, so the two features go together.
+            dbFeatures.descriptorBuffer = VK_TRUE;
+            dbFeatures.pNext = (void*)dci.pNext;
+            dbAddress.bufferDeviceAddress = VK_TRUE;
+            dbAddress.pNext = &dbFeatures;
+            dci.pNext = &dbAddress;
         }
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferAddress{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
         VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
@@ -679,6 +719,21 @@ struct App {
                 fprintf(stderr, "--shader-object: the device has no VK_EXT_shader_object\n");
                 exit(1);
             }
+        }
+        if (descriptorBuffer) {
+            auto fn = [&](const char* name) { return vkGetDeviceProcAddr(device, name); };
+            db.layoutSize = (PFN_vkGetDescriptorSetLayoutSizeEXT)fn("vkGetDescriptorSetLayoutSizeEXT");
+            db.bindingOffset = (PFN_vkGetDescriptorSetLayoutBindingOffsetEXT)fn("vkGetDescriptorSetLayoutBindingOffsetEXT");
+            db.getDescriptor = (PFN_vkGetDescriptorEXT)fn("vkGetDescriptorEXT");
+            db.bindBuffers = (PFN_vkCmdBindDescriptorBuffersEXT)fn("vkCmdBindDescriptorBuffersEXT");
+            db.setOffsets = (PFN_vkCmdSetDescriptorBufferOffsetsEXT)fn("vkCmdSetDescriptorBufferOffsetsEXT");
+            if (!db.layoutSize || !db.bindingOffset || !db.getDescriptor || !db.bindBuffers || !db.setOffsets) {
+                fprintf(stderr, "--descriptor-buffer: the device has no VK_EXT_descriptor_buffer\n");
+                exit(1);
+            }
+            VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            props2.pNext = &db.props;
+            vkGetPhysicalDeviceProperties2(gpu, &props2);
         }
         if (pushTemplate) {
             pushWithTemplate = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
@@ -1501,7 +1556,8 @@ struct App {
         VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         CreateBuffer(sizeof(verts), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (hazard ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0), host, vertexBuffer, vertexMemory, "Cube vertices");
         CreateBuffer(sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, host, indexBuffer, indexMemory, "Cube indices");
-        CreateBuffer(sizeof(Mat4), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, uniformBuffer, uniformMemory, "Cube uniforms");
+        CreateBuffer(sizeof(Mat4), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, uniformBuffer, uniformMemory, "Cube uniforms",
+                     descriptorBuffer);
         void* map;
         CHECK(vkMapMemory(device, vertexMemory, 0, VK_WHOLE_SIZE, 0, &map));
         memcpy(map, verts, sizeof(verts));
@@ -1621,6 +1677,7 @@ struct App {
         dslci.bindingCount = 2;
         dslci.pBindings = bindings;
         if (pushTemplate) dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        if (descriptorBuffer) dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         CHECK(vkCreateDescriptorSetLayout(device, &dslci, nullptr, &setLayout));
         VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -1658,7 +1715,7 @@ struct App {
         dsai.descriptorPool = descriptorPool;
         dsai.descriptorSetCount = 1;
         dsai.pSetLayouts = &setLayout;
-        if (!pushTemplate) CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
+        if (!pushTemplate && !descriptorBuffer) CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptorSet;
@@ -1672,7 +1729,38 @@ struct App {
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo = &dii;
-        if (!pushTemplate) vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        if (!pushTemplate && !descriptorBuffer) vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        if (descriptorBuffer) {
+            // The set's bytes, laid out as the driver wants them: its size and the offset of each
+            // binding come from the layout, and each descriptor itself from vkGetDescriptorEXT,
+            // which is the only way to make one.
+            VkDeviceSize size = 0;
+            db.layoutSize(device, setLayout, &size);
+            CreateBuffer(size,
+                         VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
+                         host, db.buffer, db.memory, "Cube descriptors", true);
+            CHECK(vkMapMemory(device, db.memory, 0, VK_WHOLE_SIZE, 0, &db.mapped));
+            VkBufferDeviceAddressInfo bdai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            bdai.buffer = db.buffer;
+            db.address = vkGetBufferDeviceAddress(device, &bdai);
+            bdai.buffer = uniformBuffer;
+            VkDescriptorAddressInfoEXT uniform{VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
+            uniform.address = vkGetBufferDeviceAddress(device, &bdai);
+            uniform.range = sizeof(Mat4);
+            uniform.format = VK_FORMAT_UNDEFINED;
+
+            VkDeviceSize at = 0;
+            VkDescriptorGetInfoEXT get{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+            get.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            get.data.pUniformBuffer = &uniform;
+            db.bindingOffset(device, setLayout, 0, &at);
+            db.getDescriptor(device, &get, db.props.uniformBufferDescriptorSize, (char*)db.mapped + at);
+
+            get.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            get.data.pCombinedImageSampler = &dii;
+            db.bindingOffset(device, setLayout, 1, &at);
+            db.getDescriptor(device, &get, db.props.combinedImageSamplerDescriptorSize, (char*)db.mapped + at);
+        }
 
         // Pipeline
         VkShaderModule vs = LoadShader("cube.vert.spv");
@@ -1746,6 +1834,7 @@ struct App {
         gpci.pDynamicState = &dsci;
         gpci.layout = pipelineLayout;
         gpci.renderPass = renderPass;
+        if (descriptorBuffer) gpci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         // --suspend draws with this pipeline in dynamic rendering: the targets' formats stand in
         // for the render pass.
         VkPipelineRenderingCreateInfo dynamicTargets{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -2196,6 +2285,15 @@ struct App {
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
         if (pushTemplate) pushWithTemplate(cb, pushUpdateTemplate, pipelineLayout, 0, &pushData);
+        else if (descriptorBuffer) {
+            VkDescriptorBufferBindingInfoEXT binding{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT};
+            binding.address = db.address;
+            binding.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+            db.bindBuffers(cb, 1, &binding);
+            const uint32_t bufferIndex = 0;
+            const VkDeviceSize setOffset = 0;
+            db.setOffsets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &bufferIndex, &setOffset);
+        }
         else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cb, 0, 1, &vertexBuffer, &offset);
@@ -2371,6 +2469,11 @@ struct App {
         vkFreeMemory(device, vertexMemory, nullptr);
         vkDestroyBuffer(device, indexBuffer, nullptr);
         vkFreeMemory(device, indexMemory, nullptr);
+        if (db.buffer) {
+            vkUnmapMemory(device, db.memory);
+            vkDestroyBuffer(device, db.buffer, nullptr);
+            vkFreeMemory(device, db.memory, nullptr);
+        }
         vkDestroyBuffer(device, uniformBuffer, nullptr);
         vkFreeMemory(device, uniformMemory, nullptr);
         DestroySwapchainResources();
@@ -2420,6 +2523,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
+        else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
         else if (!strcmp(argv[i], "--suspend")) app.suspend = true;

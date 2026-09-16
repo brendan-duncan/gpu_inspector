@@ -43,6 +43,24 @@ struct BufferInfo {
     bool transferSrc = false;
     /** Its device address once the application asked for one; 0 until then (see NoteBufferAddress). */
     VkDeviceAddress address = 0;
+    /** The memory it was bound to, and how far in (see NoteBufferMemory). Null until it is bound. */
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize memoryOffset = 0;
+};
+
+/**
+ * One allocation, and the application's mapping of it if it has one.
+ *
+ * A descriptor buffer's contents cannot be read any other way: they are driver-defined bytes in
+ * the application's own memory, and the layer may not map memory the application has mapped, so
+ * reading them means borrowing the pointer the application already holds (descriptor_buffer.h).
+ */
+struct MemoryInfo {
+    VkDeviceSize size = 0;
+    bool hostVisible = false;
+    void* mapped = nullptr;              // the application's mapping, null when it holds none
+    VkDeviceSize mappedOffset = 0;
+    VkDeviceSize mappedSize = 0;         // VK_WHOLE_SIZE resolved against the allocation
 };
 
 struct FramebufferInfo {
@@ -132,6 +150,26 @@ public:
     /** The acceleration structure at `address`, or null. This is how a top level names its bottom levels. */
     VkAccelerationStructureKHR StructureAt(VkDeviceAddress address) const;
 
+    // ---------------------------------------------------------------------------------------
+    // Memory, and reading a buffer's bytes on the host.
+
+    /** `vkAllocateMemory` made this allocation (NoteAllocation, cpu_timeline.cpp, calls this). */
+    void NoteMemory(VkDeviceMemory memory, VkDeviceSize size, bool hostVisible);
+    /** `vkBindBufferMemory` put this buffer in that memory. */
+    void NoteBufferMemory(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset);
+    /** The application mapped this allocation; `size` may be VK_WHOLE_SIZE. */
+    void NoteMemoryMapped(VkDeviceMemory memory, void* pointer, VkDeviceSize offset, VkDeviceSize size);
+    void NoteMemoryUnmapped(VkDeviceMemory memory);
+
+    /**
+     * A host pointer to `size` bytes at `offset` in `buffer`, or null.
+     *
+     * Only the application's own mapping is used: mapping the memory here would be invalid while
+     * it holds a mapping of its own, and memory it has not mapped may not be host visible at all.
+     * Null therefore means "cannot be read from the host", not "empty".
+     */
+    const uint8_t* HostPointer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) const;
+
     // Called by the tracker when any object is destroyed.
     void OnDestroy(HandleType type, uint64_t handle);
 
@@ -151,6 +189,7 @@ private:
     };
     std::vector<AddressRange> _addresses;
     std::unordered_map<uint64_t, VkAccelerationStructureKHR> _structureAddresses;
+    std::unordered_map<uint64_t, MemoryInfo> _memory;
 };
 
 } // namespace vkinsp

@@ -236,8 +236,24 @@ void DescriptorTracker::OnDestroy(HandleType type, uint64_t handle) {
         case HT_VkDescriptorSet: _sets.erase(handle); break;
         case HT_VkDescriptorSetLayout: _layouts.erase(handle); break;
         case HT_VkDescriptorUpdateTemplate: _templates.erase(handle); break;
+        case HT_VkPipelineLayout: _pipelineLayouts.erase(handle); break;
         default: break;
     }
+}
+
+void DescriptorTracker::OnCreatePipelineLayout(VkPipelineLayout layout, const VkPipelineLayoutCreateInfo* info) {
+    if (!layout || !info) return;
+    std::vector<VkDescriptorSetLayout> sets(info->setLayoutCount);
+    for (uint32_t i = 0; info->pSetLayouts && i < info->setLayoutCount; ++i) sets[i] = info->pSetLayouts[i];
+    std::unique_lock lock(_mutex);
+    _pipelineLayouts[VKINSP_KEY(layout)] = std::move(sets);
+}
+
+VkDescriptorSetLayout DescriptorTracker::SetLayoutOf(VkPipelineLayout layout, uint32_t set) const {
+    std::shared_lock lock(_mutex);
+    auto it = _pipelineLayouts.find(VKINSP_KEY(layout));
+    if (it == _pipelineLayouts.end() || set >= it->second.size()) return VK_NULL_HANDLE;
+    return it->second[set];
 }
 
 bool DescriptorTracker::GetSet(VkDescriptorSet set, DescriptorSetContents& out) const {
