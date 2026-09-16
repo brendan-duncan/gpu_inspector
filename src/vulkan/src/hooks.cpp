@@ -1365,23 +1365,32 @@ void Hook_vkGetAccelerationStructureDeviceAddressKHR(VkDevice device, const VkAc
  * that owns it is what lets the capture read the vertices, indices and instances a structure was
  * actually built from, which is the only view there is of an otherwise opaque object.
  */
-static uint32_t WriteBuildAddress(JsonWriter& w, const char* key, VkDeviceAddress address, VkDeviceSize size,
-                                  DeviceData* dev, CommandRecorder* rec) {
+/** What an address resolved to, for the command's own record of it (see the note in NoteAccelerationStructureBuilds). */
+struct ResolvedAddress {
+    uint64_t buffer = 0;        // the buffer's object id, 0 when the address resolved to none
+    VkDeviceSize offset = 0;
+    uint32_t capture = 0;       // the contents read back, 0 when none were
+};
+
+static ResolvedAddress WriteBuildAddress(JsonWriter& w, const char* key, VkDeviceAddress address, VkDeviceSize size,
+                                         DeviceData* dev, CommandRecorder* rec) {
     w.Key(key); w.BeginObject();
     w.Key("deviceAddress"); w.Uint(address);
-    uint32_t capture = 0;
+    ResolvedAddress out;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0, remaining = 0;
     if (address && ResourceRegistry::Get().ResolveAddress(address, buffer, offset, remaining)) {
+        out.buffer = Tracker::Get().Resolve(HT_VkBuffer, (uint64_t)(uintptr_t)buffer);
+        out.offset = offset;
         w.Key("buffer"); w.Handle(HT_VkBuffer, "VkBuffer", (uint64_t)(uintptr_t)buffer);
         w.Key("offset"); w.Uint(offset);
         // A size the build implies can run past the buffer when the application over-declared it.
         if (size > remaining) size = remaining;
-        if (rec && size) capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
-        if (capture) { w.Key("capture"); w.Uint(capture); }
+        if (rec && size) out.capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
+        if (out.capture) { w.Key("capture"); w.Uint(out.capture); }
     }
     w.EndObject();
-    return capture;
+    return out;
 }
 
 static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* infos,
@@ -1416,11 +1425,18 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
         uint64_t primitives = 0;
         w.Key("geometries"); w.BeginArray();
         uint32_t g = 0;
-        auto note = [&](const char* what, uint32_t id) {
-            if (!id) return;
+        // Every address the layer resolved, on the command: the buffer and offset are what lets a
+        // replay turn the captured process's address into one of its own (docs/REPLAY.md), and the
+        // capture id is the contents for the UI. On the command rather than on the structure because
+        // a structure's update is last-write-wins (see above).
+        auto note = [&](const char* what, const ResolvedAddress& r) {
+            if (!r.buffer) return;
             captures += captured++ ? "," : "";
             captures += "{\"info\":" + std::to_string(i) + ",\"geometry\":" + std::to_string(g)
-                      + ",\"field\":\"" + what + "\",\"capture\":" + std::to_string(id) + "}";
+                      + ",\"field\":\"" + what + "\",\"buffer\":" + std::to_string(r.buffer)
+                      + ",\"offset\":" + std::to_string(r.offset);
+            if (r.capture) captures += ",\"capture\":" + std::to_string(r.capture);
+            captures += "}";
         };
         for (; g < info.geometryCount; ++g) {
             const VkAccelerationStructureGeometryKHR* geometry = info.pGeometries ? &info.pGeometries[g]

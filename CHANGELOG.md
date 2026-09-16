@@ -13,6 +13,14 @@
   `currentAllocatedSize` against `recommendedMaxWorkingSetSize`: Metal has no heap table to break
   down and no separate residency figure, so the series is what it reports and the Memory Use
   section shows that alone.
+- The replay builds acceleration structures and makes ray tracing pipelines (`vkinsp_replay`,
+  docs/REPLAY.md). It used to leave every ray tracing object and command out, because a build names
+  the geometry it reads by device address and an address from the captured process means nothing in
+  another one. Now that the layer records which buffer each address belonged to and how far in, the
+  replay looks up its own buffer for that object, asks the driver where it put it, and rebuilds the
+  structure from its own memory — with scratch of its own, since scratch holds no input. On the
+  ray tracing test capture that takes the replay from six problems to one (the trace itself), with
+  no validation messages and the raster targets still identical.
 - The shader binding table says which shader group each record runs (`renderer/binding_table.ts`,
   **Shader Binding Table** on a trace command). A trace does not name the shaders it runs: it names
   four regions of memory whose records begin with an opaque handle the driver gave for a shader
