@@ -1,0 +1,64 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+// camera::render and camera::ray_color, with the recursion unrolled into a loop: each bounce is
+// one traceRayEXT whose hit shader says whether and where the path goes on.
+#include "common.glsl"
+
+layout(location = 0) rayPayloadEXT Payload payload;
+
+// camera::get_ray: a ray from the defocus disk through a random point in pixel (i, j).
+void CameraRay(uvec2 pixel, inout uint rng, out vec3 origin, out vec3 direction) {
+    vec2 offset = vec2(RandomFloat(rng), RandomFloat(rng)) - 0.5;
+    vec3 pixelSample = camera.pixel00 + (float(pixel.x) + offset.x) * camera.pixelDeltaU +
+                       (float(pixel.y) + offset.y) * camera.pixelDeltaV;
+    origin = camera.center;
+    if (camera.defocusAngle > 0.0) {
+        vec2 p = RandomInUnitDisk(rng);
+        origin += p.x * camera.defocusDiskU + p.y * camera.defocusDiskV;
+    }
+    direction = pixelSample - origin;
+}
+
+vec3 RayColor(vec3 origin, vec3 direction, inout uint rng) {
+    vec3 throughput = vec3(1.0);
+    payload.rng = rng;
+    for (uint depth = 0u; depth < params.maxDepth; ++depth) {
+        // tmin 0.001 is the book's cure for shadow acne.
+        traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, 0.001, direction, 1.0e30, 0);
+        if (payload.state == kMissed) {
+            rng = payload.rng;
+            return throughput * payload.color;
+        }
+        if (payload.state == kAbsorbed) break;
+        throughput *= payload.color;
+        origin = payload.origin;
+        direction = payload.direction;
+    }
+    rng = payload.rng;
+    return vec3(0.0);
+}
+
+void main() {
+    uvec2 pixel = gl_LaunchIDEXT.xy;
+    uint rng = (pixel.x * 1973u + pixel.y * 9277u + params.frame * 26699u) | 1u;
+
+    vec3 color = vec3(0.0);
+    for (uint s = 0u; s < params.samplesPerFrame; ++s) {
+        vec3 origin, direction;
+        CameraRay(pixel, rng, origin, direction);
+        color += RayColor(origin, direction, rng);
+    }
+    color /= float(params.samplesPerFrame);
+
+    // A running mean over every frame since the last reset: frame n has weight 1 / (n + 1).
+    if (params.accumulate != 0u && params.frame > 0u) {
+        vec3 previous = imageLoad(accumulation, ivec2(pixel)).rgb;
+        color = mix(previous, color, 1.0 / float(params.frame + 1u));
+    }
+    imageStore(accumulation, ivec2(pixel), vec4(color, 1.0));
+
+    // write_color: gamma 2.
+    imageStore(outputImage, ivec2(pixel), vec4(sqrt(clamp(color, 0.0, 1.0)), 1.0));
+}
