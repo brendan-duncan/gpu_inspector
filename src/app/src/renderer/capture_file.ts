@@ -61,6 +61,13 @@ function referencedObjects(session: LayerSession, data: CaptureData): VulkanObje
     ids.add(b.info.commandBuffer);
   }
   for (const v of db.validation) db.collectReferences(v.objects, ids);
+  // Every acceleration structure, whether or not a command named one. A top level names the
+  // bottom levels under it by device address inside an instance buffer, which nothing can follow
+  // until that buffer is read back — so a capture that kept only what its commands reference would
+  // drop every bottom level and leave the top level describing a scene of nothing. There are a
+  // handful of these even in a large frame (renderer/acceleration_structure.ts).
+  for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
+  for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
   const out = new Map<number, VulkanObject>();
   const queue = [...ids];
   while (queue.length) {

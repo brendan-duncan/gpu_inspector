@@ -41,6 +41,8 @@ struct BufferInfo {
     VkDeviceSize size = 0;
     VkBufferUsageFlags usage = 0;
     bool transferSrc = false;
+    /** Its device address once the application asked for one; 0 until then (see NoteBufferAddress). */
+    VkDeviceAddress address = 0;
 };
 
 struct FramebufferInfo {
@@ -104,6 +106,32 @@ public:
     bool GetRenderPass(VkRenderPass rp, RenderPassInfo& out) const;
     bool GetSwapchain(VkSwapchainKHR sc, SwapchainInfo& out) const;
 
+    // ---------------------------------------------------------------------------------------
+    // Device addresses.
+    //
+    // A ray tracing build names the geometry it reads by device address rather than by handle, so
+    // without a way back from an address to the buffer holding it a build says nothing about what
+    // it built (src/vulkan/src/hooks.cpp, NoteAccelerationStructureBuilds). The D3D12 library has
+    // the same map for the same reason (src/d3d12/src/descriptors.h, AddressMap).
+    //
+    // Addresses are only known once the application asks for them, which it must do before it can
+    // put one in a build, so recording them at that moment is enough.
+
+    /** `vkGetBufferDeviceAddress` returned this address for this buffer. */
+    void NoteBufferAddress(VkBuffer buffer, VkDeviceAddress address);
+    /** `vkGetAccelerationStructureDeviceAddressKHR` returned this address for this structure. */
+    void NoteStructureAddress(VkAccelerationStructureKHR structure, VkDeviceAddress address);
+
+    /**
+     * The buffer holding `address`, and how far into it. False when no buffer whose address was
+     * asked for covers it — a buffer the application never took the address of, or memory that is
+     * not a buffer at all.
+     */
+    bool ResolveAddress(VkDeviceAddress address, VkBuffer& buffer, VkDeviceSize& offset, VkDeviceSize& remaining) const;
+
+    /** The acceleration structure at `address`, or null. This is how a top level names its bottom levels. */
+    VkAccelerationStructureKHR StructureAt(VkDeviceAddress address) const;
+
     // Called by the tracker when any object is destroyed.
     void OnDestroy(HandleType type, uint64_t handle);
 
@@ -115,6 +143,14 @@ private:
     std::unordered_map<uint64_t, FramebufferInfo> _framebuffers;
     std::unordered_map<uint64_t, RenderPassInfo> _renderPasses;
     std::unordered_map<uint64_t, SwapchainInfo> _swapchains;
+    /** Buffer addresses in ascending order, so a lookup is a binary search over their ranges. */
+    struct AddressRange {
+        VkDeviceAddress address = 0;
+        VkDeviceSize size = 0;
+        VkBuffer buffer = VK_NULL_HANDLE;
+    };
+    std::vector<AddressRange> _addresses;
+    std::unordered_map<uint64_t, VkAccelerationStructureKHR> _structureAddresses;
 };
 
 } // namespace vkinsp

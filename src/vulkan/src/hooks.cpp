@@ -1253,10 +1253,91 @@ void Hook_vkCreateRayTracingPipelinesKHR(VkDevice device, VkDeferredOperationKHR
 
 // Acceleration structures: what the last build of each put in it (its geometries and primitive
 // counts), as an update on the structure, so the object shows what it holds without its commands.
+
+// ---------------------------------------------------------------------------------------------
+// Device addresses (src/vulkan/src/resources.h)
+//
+// A ray tracing build names the geometry it reads by device address, so these are what make a build
+// say anything about what it built. The address is the return value, which is why these are
+// RESULT_HOOKS rather than ordinary ones.
+
+void Hook_vkGetBufferDeviceAddress(VkDevice device, const VkBufferDeviceAddressInfo* pInfo, VkDeviceAddress result) {
+    (void)device;
+    if (pInfo) ResourceRegistry::Get().NoteBufferAddress(pInfo->buffer, result);
+}
+
+void Hook_vkGetBufferDeviceAddressKHR(VkDevice device, const VkBufferDeviceAddressInfo* pInfo, VkDeviceAddress result) {
+    Hook_vkGetBufferDeviceAddress(device, pInfo, result);
+}
+
+void Hook_vkGetBufferDeviceAddressEXT(VkDevice device, const VkBufferDeviceAddressInfo* pInfo, VkDeviceAddress result) {
+    Hook_vkGetBufferDeviceAddress(device, pInfo, result);
+}
+
+void Hook_vkGetAccelerationStructureDeviceAddressKHR(VkDevice device, const VkAccelerationStructureDeviceAddressInfoKHR* pInfo,
+                                                     VkDeviceAddress result) {
+    (void)device;
+    if (!pInfo) return;
+    // How a top level names the bottom levels under it: every instance holds one of these.
+    ResourceRegistry::Get().NoteStructureAddress(pInfo->accelerationStructure, result);
+    // Also on the structure itself, so the UI can turn an instance's reference back into the
+    // object it names — the only link there is from a top level to what is under it.
+    Tracker& t = Tracker::Get();
+    const uint64_t id = t.Resolve(HT_VkAccelerationStructureKHR, (uint64_t)(uintptr_t)pInfo->accelerationStructure);
+    if (!id) return;
+    JsonWriter w(&t);
+    w.BeginObject();
+    w.Key("action"); w.String("ObjectUpdate");
+    w.Key("id"); w.Uint(id);
+    w.Key("deviceAddress"); w.Uint(result);
+    w.EndObject();
+    t.Update(id, "deviceAddress", w.str());
+}
+
+
+/**
+ * One of a build's input addresses: where it points, and the contents if they could be captured.
+ *
+ * A build reads its geometry from device addresses, and an address on its own says nothing — it is
+ * not a handle, and it means nothing outside the process that made it. Resolving it to the buffer
+ * that owns it is what lets the capture read the vertices, indices and instances a structure was
+ * actually built from, which is the only view there is of an otherwise opaque object.
+ */
+static uint32_t WriteBuildAddress(JsonWriter& w, const char* key, VkDeviceAddress address, VkDeviceSize size,
+                                  DeviceData* dev, CommandRecorder* rec) {
+    w.Key(key); w.BeginObject();
+    w.Key("deviceAddress"); w.Uint(address);
+    uint32_t capture = 0;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0, remaining = 0;
+    if (address && ResourceRegistry::Get().ResolveAddress(address, buffer, offset, remaining)) {
+        w.Key("buffer"); w.Handle(HT_VkBuffer, "VkBuffer", (uint64_t)(uintptr_t)buffer);
+        w.Key("offset"); w.Uint(offset);
+        // A size the build implies can run past the buffer when the application over-declared it.
+        if (size > remaining) size = remaining;
+        if (rec && size) capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
+        if (capture) { w.Key("capture"); w.Uint(capture); }
+    }
+    w.EndObject();
+    return capture;
+}
+
 static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* infos,
-                                            const VkAccelerationStructureBuildRangeInfoKHR* const* ranges, const uint32_t* const* maxPrimitiveCounts) {
+                                            const VkAccelerationStructureBuildRangeInfoKHR* const* ranges, const uint32_t* const* maxPrimitiveCounts,
+                                            VkCommandBuffer commandBuffer) {
     if (!infos) return;
     Tracker& t = Tracker::Get();
+    // A host build (vkBuildAccelerationStructuresKHR) has no command buffer, so its inputs cannot
+    // be read back the way a recorded build's can; the addresses are still resolved and named.
+    DeviceData* dev = commandBuffer ? GetDeviceData(commandBuffer) : nullptr;
+    CommandRecorder* rec = dev ? dev->RecorderFor(commandBuffer) : nullptr;
+
+    // The capture ids also go on the recorded command, not only on the structure. The structure's
+    // update is last-write-wins, and an application that rebuilds its top level every frame — the
+    // usual thing — overwrites the captured build's ids with a later build's, which has none
+    // because nothing was capturing then. The command belongs to the captured frame and keeps them.
+    std::string captures;
+    uint32_t captured = 0;
     for (uint32_t i = 0; i < infoCount; ++i) {
         const VkAccelerationStructureBuildGeometryInfoKHR& info = infos[i];
         const uint64_t id = t.Resolve(HT_VkAccelerationStructureKHR, (uint64_t)(uintptr_t)info.dstAccelerationStructure);
@@ -1272,7 +1353,14 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
         w.Key("flags"); Flags_VkBuildAccelerationStructureFlagsKHR(w, info.flags);
         uint64_t primitives = 0;
         w.Key("geometries"); w.BeginArray();
-        for (uint32_t g = 0; g < info.geometryCount; ++g) {
+        uint32_t g = 0;
+        auto note = [&](const char* what, uint32_t id) {
+            if (!id) return;
+            captures += captured++ ? "," : "";
+            captures += "{\"info\":" + std::to_string(i) + ",\"geometry\":" + std::to_string(g)
+                      + ",\"field\":\"" + what + "\",\"capture\":" + std::to_string(id) + "}";
+        };
+        for (; g < info.geometryCount; ++g) {
             const VkAccelerationStructureGeometryKHR* geometry = info.pGeometries ? &info.pGeometries[g]
                                                                : info.ppGeometries ? info.ppGeometries[g] : nullptr;
             if (!geometry) continue;
@@ -1289,10 +1377,30 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
                 w.Key("vertexStride"); w.Uint(tri.vertexStride);
                 w.Key("maxVertex"); w.Uint(tri.maxVertex);
                 w.Key("indexType"); w.Enum(ToString_VkIndexType(tri.indexType), (int64_t)tri.indexType);
+                // maxVertex is the highest index the build may read, so the array holds one more.
+                note("vertexData", WriteBuildAddress(w, "vertexData", tri.vertexData.deviceAddress,
+                                  (VkDeviceSize)(tri.maxVertex + 1) * tri.vertexStride, dev, rec));
+                if (tri.indexType != VK_INDEX_TYPE_NONE_KHR) {
+                    const VkDeviceSize indexSize = tri.indexType == VK_INDEX_TYPE_UINT16 ? 2 : 4;
+                    note("indexData", WriteBuildAddress(w, "indexData", tri.indexData.deviceAddress,
+                                      (VkDeviceSize)count * 3 * indexSize, dev, rec));
+                }
+                if (tri.transformData.deviceAddress) {
+                    note("transformData", WriteBuildAddress(w, "transformData", tri.transformData.deviceAddress,
+                                      sizeof(VkTransformMatrixKHR), dev, rec));
+                }
             } else if (geometry->geometryType == VK_GEOMETRY_TYPE_AABBS_KHR) {
-                w.Key("stride"); w.Uint(geometry->geometry.aabbs.stride);
+                const auto& aabbs = geometry->geometry.aabbs;
+                w.Key("stride"); w.Uint(aabbs.stride);
+                note("data", WriteBuildAddress(w, "data", aabbs.data.deviceAddress, (VkDeviceSize)count * aabbs.stride, dev, rec));
             } else if (geometry->geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR) {
-                w.Key("arrayOfPointers"); w.Boolean(geometry->geometry.instances.arrayOfPointers == VK_TRUE);
+                const auto& instances = geometry->geometry.instances;
+                w.Key("arrayOfPointers"); w.Boolean(instances.arrayOfPointers == VK_TRUE);
+                // An array of pointers is a list of addresses rather than of instances; its size is
+                // per pointer, and what they point at is not followed.
+                const VkDeviceSize stride = instances.arrayOfPointers ? sizeof(VkDeviceAddress)
+                                                                      : sizeof(VkAccelerationStructureInstanceKHR);
+                note("data", WriteBuildAddress(w, "data", instances.data.deviceAddress, (VkDeviceSize)count * stride, dev, rec));
             }
             w.EndObject();
         }
@@ -1302,23 +1410,27 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
         w.EndObject();
         t.Update(id, "build", w.str());
     }
+    if (rec && captured) rec->SetExtraOnLast(",\"buildData\":[" + captures + "]");
 }
 
 void Hook_vkCmdBuildAccelerationStructuresKHR(VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
                                               const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos) {
-    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr);
+    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr, commandBuffer);
 }
 
 void Hook_vkCmdBuildAccelerationStructuresIndirectKHR(VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
                                                       const VkDeviceAddress* pIndirectDeviceAddresses, const uint32_t* pIndirectStrides,
                                                       const uint32_t* const* ppMaxPrimitiveCounts) {
-    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresIndirectKHR", infoCount, pInfos, nullptr, ppMaxPrimitiveCounts);
+    NoteAccelerationStructureBuilds("vkCmdBuildAccelerationStructuresIndirectKHR", infoCount, pInfos, nullptr, ppMaxPrimitiveCounts,
+                                   commandBuffer);
 }
 
 void Hook_vkBuildAccelerationStructuresKHR(VkDevice device, VkDeferredOperationKHR deferredOperation, uint32_t infoCount,
                                            const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,
                                            const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos) {
-    NoteAccelerationStructureBuilds("vkBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr);
+    // A host build has no command buffer: its inputs cannot be read back (see the note above).
+    NoteAccelerationStructureBuilds("vkBuildAccelerationStructuresKHR", infoCount, pInfos, ppBuildRangeInfos, nullptr,
+                                   VK_NULL_HANDLE);
 }
 
 // A shader object's SPIR-V, attached to it as "<stage>:<entry point>" like a pipeline's stages.
