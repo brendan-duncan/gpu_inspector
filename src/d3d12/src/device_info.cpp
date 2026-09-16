@@ -4,6 +4,7 @@
 #include "device_info.h"
 
 #include "d3d12_enums.gen.h"
+#include "cpu_timeline.h"
 #include "hooks.h"
 #include "json.h"
 #include "serialize.h"
@@ -525,6 +526,8 @@ void RecordDeviceCreated(ID3D12Device* device, IUnknown* adapterArgument, D3D_FE
             message = FeaturesMessage(device, deviceId);
         }
         Tracker::Get().UpdateById(deviceId, "features", message);
+        // The adapter's memory segments, for the memory view (cpu_timeline.h).
+        SendMemoryProperties(device, adapter);
     }
     const char* levelName = ToString_D3D_FEATURE_LEVEL(EnumValue(featureLevel));
     const char* modelName = ToString_D3D_SHADER_MODEL(EnumValue(shaderModel));
@@ -567,12 +570,12 @@ void OnDeviceReleased(ID3D12Device* device) {
 // The frame timing of one boundary, accumulated and reported every 100 ms. `boundary` is
 // "present" or "submit"; `presentMode` and the refresh period are the present path's, empty and 0
 // for a submit boundary (a device that never presents has no display period). Caller holds g_mutex.
-void EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, double refreshMs, const std::string& presentMode) {
+bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, double refreshMs, const std::string& presentMode) {
     d.frame++;
     if (d.lastPresent.time_since_epoch().count() == 0) {
         d.lastReport = now;
         d.lastPresent = now;
-        return;
+        return false;
     }
     const double ms = std::chrono::duration<double, std::milli>(now - d.lastPresent).count();
     if (d.frames == 0) {
@@ -585,7 +588,9 @@ void EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
     d.accumMs += ms;
     d.frames++;
     const double sinceReport = std::chrono::duration<double, std::milli>(now - d.lastReport).count();
+    bool reported = false;
     if (sinceReport >= 100.0) {
+        reported = true;
         if (Transport::Get().Connected()) {
             JsonWriter w;
             w.BeginObject();
@@ -616,12 +621,13 @@ void EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
         d.lastReport = now;
     }
     d.lastPresent = now;
+    return reported;
 }
 
 void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT) {
     // A failed present is still a frame: the application paced itself to it.
     const Clock::time_point now = Clock::now();
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::unique_lock<std::mutex> lock(g_mutex);
     DeviceRecord& d = RecordOf(device);
     // The display can change (a window moved to another monitor, a mode switch): re-queried at the
     // first present and every 120 after.
@@ -638,15 +644,24 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
     std::string presentMode = "immediate";
     if (syncInterval == 1) presentMode = "vsync";
     else if (syncInterval > 1) presentMode = "vsync/" + std::to_string(syncInterval);
-    EmitBoundary(d, now, "present", synced ? d.displayRefreshMs : 0, presentMode);
+    bool reported = false;
+    {
+        // EmitBoundary needs the record under the lock; SendMemoryBudget asks for the adapter,
+        // which takes the same lock, so it runs after this scope rather than inside it.
+        reported = EmitBoundary(d, now, "present", synced ? d.displayRefreshMs : 0, presentMode);
+    }
+    lock.unlock();
+    if (reported) SendMemoryBudget(device);
 }
 
 void OnFrameNoPresent(ID3D12Device* device) {
     // A device that never presents (Dawn in Chrome): its frame time is the wall-clock interval
     // between the submit boundaries, with no display period and no present mode.
     const Clock::time_point now = Clock::now();
-    std::lock_guard<std::mutex> lock(g_mutex);
-    EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
+    std::unique_lock<std::mutex> lock(g_mutex);
+    const bool reported = EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
+    lock.unlock();
+    if (reported) SendMemoryBudget(device);
 }
 
 void AddSubmitTime(ID3D12Device* device, double milliseconds) {

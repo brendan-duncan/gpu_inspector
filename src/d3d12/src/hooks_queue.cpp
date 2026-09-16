@@ -11,6 +11,7 @@
 #include "capture.h"
 #include "d3d12_vtables.gen.h"
 #include "device_info.h"
+#include "cpu_timeline.h"
 #include "device_removed.h"
 #include "json.h"
 #include "resources.h"
@@ -157,7 +158,9 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
     }
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
+    const uint64_t cpuEvent = CpuEventBegin();
     orig(This, NumCommandLists, ppCommandLists);
+    CpuEventEnd(DeviceOf(This), cpuEvent, CpuCategory::Submit);
     QueryPerformanceCounter(&t1);
     double ms = (double)(t1.QuadPart - t0.QuadPart) * g_qpcToMs;
     Log("queue %p ExecuteCommandLists(%u) %.3f ms", (void*)This, NumCommandLists, ms);
@@ -215,7 +218,11 @@ void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRES
 HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval, UINT Flags) {
     auto orig = Orig<PFN_IDXGISwapChain4_Present>(This, slot::IDXGISwapChain4_Present);
     if (Internal()) return orig(This, SyncInterval, Flags);
+    // Present blocks on the display with vsync on, so it is timed apart from submission: the two
+    // mean opposite things for a frame (cpu_timeline.h).
+    const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, Flags);
+    CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
     AfterPresent(This, SyncInterval, Flags, hr);
     return hr;
 }
@@ -223,9 +230,22 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval,
 HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     auto orig = Orig<PFN_IDXGISwapChain4_Present1>(This, slot::IDXGISwapChain4_Present1);
     if (Internal()) return orig(This, SyncInterval, PresentFlags, pPresentParameters);
+    const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, PresentFlags, pPresentParameters);
+    CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
     AfterPresent(This, SyncInterval, PresentFlags, hr);
     return hr;
+}
+
+/**
+ * The handle an application waits on to pace itself with the presenter — D3D12's counterpart of
+ * vkAcquireNextImageKHR blocking. Noted so a wait on it is timed as one (cpu_timeline.h).
+ */
+HANDLE STDMETHODCALLTYPE Hook_GetFrameLatencyWaitableObject(IDXGISwapChain4* This) {
+    auto orig = Orig<PFN_IDXGISwapChain4_GetFrameLatencyWaitableObject>(This, slot::IDXGISwapChain4_GetFrameLatencyWaitableObject);
+    HANDLE handle = orig(This);
+    if (handle && !Internal()) NoteFrameLatencyEvent(handle);
+    return handle;
 }
 
 HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain4* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
@@ -400,6 +420,7 @@ void HookSwapChain(IDXGISwapChain* swapChain) {
         {slot::IDXGISwapChain4_ResizeBuffers, (void*)&Hook_ResizeBuffers},
         {slot::IDXGISwapChain4_ResizeBuffers1, (void*)&Hook_ResizeBuffers1},
         {slot::IDXGISwapChain4_GetBuffer, (void*)&Hook_GetBuffer},
+        {slot::IDXGISwapChain4_GetFrameLatencyWaitableObject, (void*)&Hook_GetFrameLatencyWaitableObject},
     });
 }
 

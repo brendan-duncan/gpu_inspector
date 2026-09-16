@@ -26,6 +26,15 @@
   memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
   registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
   light the report rules register pressure out instead.
+- D3D12 reaches the Vulkan backend's profiling features (`src/d3d12/src/cpu_timeline.h`,
+  docs/D3D12.md): the CPU timeline, so **Where the CPU went** and the **Timeline** card work on a
+  D3D12 capture, with `GetClockCalibration` putting the passes on the same axis as the calls that
+  submitted them; and memory per heap from the adapter's two segments plus the driver's residency
+  through `QueryVideoMemoryInfo`. Waiting for the GPU is not a D3D12 call — a fence is waited on
+  with `WaitForSingleObject` — so the library recognises the event a fence was given and the
+  swapchain's frame-latency object and times a wait on either, which is what lets a D3D12 frame be
+  called GPU-bound at all. Compiler statistics stay Vulkan-only: D3D12 has no equivalent of
+  `VK_KHR_pipeline_executable_properties`.
 - The CPU and GPU as tracks on one axis (**Timeline** in Frame Stats, `renderer/timeline_tracks.ts`,
   docs/PROFILING.md): one lane per thread with the calls the layer timed, and a GPU lane with the
   passes, laid on the shared axis the clock calibration provides. Every card above it reports a

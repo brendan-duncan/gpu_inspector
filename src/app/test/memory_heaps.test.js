@@ -137,3 +137,88 @@ test("only heaps drawn from are listed, largest first", () => {
   const none = memoryHeaps(db([], { heaps: DEVICE_HEAPS, types: DEVICE_TYPES }));
   assert.equal(usedHeaps(none).length, 0);
 });
+
+// ---------------------------------------------------------------------------------------------
+// D3D12 reports the same shape from a different place: the adapter rather than a physical device,
+// explicit ID3D12Heaps and committed resources rather than VkDeviceMemory
+// (src/d3d12/src/cpu_timeline.h).
+
+const D3D_HEAPS = [
+  { size: 16000 * MB, flags: "DEVICE_LOCAL", name: "Device local" },
+  { size: 8000 * MB, flags: "0", name: "System (shared)" },
+];
+const D3D_TYPES = [
+  { heapIndex: 0, propertyFlags: "DEFAULT" },
+  { heapIndex: 1, propertyFlags: "UPLOAD" },
+  { heapIndex: 1, propertyFlags: "READBACK" },
+];
+
+/** A D3D12 database: an adapter with memory properties, plus heaps and committed resources. */
+function d3d(objects, { budget } = {}) {
+  const all = new Map();
+  all.set(1, {
+    id: 1, type: "IDXGIAdapter", isDeleted: false, args: {},
+    updates: {
+      memoryProperties: {
+        memoryHeapCount: 2, memoryTypeCount: 3, memoryHeaps: D3D_HEAPS, memoryTypes: D3D_TYPES,
+      },
+      ...(budget ? { memoryBudget: budget } : {}),
+    },
+  });
+  objects.forEach((o, i) => all.set(100 + i, { id: 100 + i, isDeleted: false, args: {}, updates: {}, ...o }));
+  return { allObjects: all };
+}
+
+const heap = (bytes, type) => ({ type: "ID3D12Heap", args: { pDesc: { SizeInBytes: bytes, Properties: { Type: `D3D12_HEAP_TYPE_${type}` } } } });
+const committed = (bytes, typeIndex) => ({ type: "ID3D12Resource", updates: { allocation: { sizeBytes: bytes, heapTypeIndex: typeIndex } } });
+
+test("a D3D12 adapter carries the memory properties a physical device does on Vulkan", () => {
+  const m = memoryHeaps(d3d([heap(100 * MB, "DEFAULT")]));
+  assert.ok(m, "the adapter is recognised as the memory device");
+  assert.equal(m.heaps.length, 2);
+  assert.equal(m.heaps[0].deviceLocal, true);
+  assert.equal(m.heaps[1].deviceLocal, false);
+});
+
+test("an explicit D3D12 heap counts against the segment its heap type draws from", () => {
+  const m = memoryHeaps(d3d([heap(100 * MB, "DEFAULT"), heap(8 * MB, "UPLOAD"), heap(4 * MB, "READBACK")]));
+  assert.equal(m.allocations, 3);
+  assert.equal(m.heaps[0].bytes, 100 * MB, "DEFAULT is the GPU's own memory");
+  assert.equal(m.heaps[1].bytes, 12 * MB, "UPLOAD and READBACK are both system memory");
+});
+
+test("a committed resource counts by the size the runtime gave its implicit heap", () => {
+  // The library attaches this because only the runtime knows it: alignment and mip padding are in it.
+  const m = memoryHeaps(d3d([committed(70 * MB, 0), committed(2 * MB, 1)]));
+  assert.equal(m.totalBytes, 72 * MB);
+  assert.equal(m.heaps[0].bytes, 70 * MB);
+  assert.equal(m.heaps[1].bytes, 2 * MB);
+});
+
+test("a placed resource is not counted, since the heap holding it already is", () => {
+  // Placed resources carry no `allocation` update; counting them would double every placed byte.
+  const placed = { type: "ID3D12Resource", updates: {} };
+  const m = memoryHeaps(d3d([heap(100 * MB, "DEFAULT"), placed, placed]));
+  assert.equal(m.allocations, 1);
+  assert.equal(m.totalBytes, 100 * MB);
+});
+
+test("a released D3D12 allocation stops counting, as a freed VkDeviceMemory does", () => {
+  const db = d3d([heap(100 * MB, "DEFAULT"), committed(50 * MB, 0)]);
+  db.allObjects.get(101).isDeleted = true;
+  const m = memoryHeaps(db);
+  assert.equal(m.allocations, 1);
+  assert.equal(m.totalBytes, 100 * MB);
+});
+
+test("the driver's residency reaches the same fields from QueryVideoMemoryInfo", () => {
+  const budget = { heapBudget: [14000 * MB, 8000 * MB], heapUsage: [900 * MB, 30 * MB] };
+  const m = memoryHeaps(d3d([committed(100 * MB, 0)], { budget }));
+  assert.equal(m.hasBudget, true);
+  assert.equal(m.heaps[0].budgetBytes, 14000 * MB);
+  assert.equal(m.heaps[0].usageBytes, 900 * MB);
+  // The same pressure rule applies, so a D3D12 adapter another process is filling is flagged too.
+  const tight = memoryHeaps(d3d([committed(10 * MB, 0)],
+    { budget: { heapBudget: [1000 * MB, 100 * MB], heapUsage: [990 * MB, 1 * MB] } }));
+  assert.equal(heapPressure(tight).length, 1);
+});

@@ -1092,7 +1092,7 @@ export class InspectPanel {
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
     if (object.type === "ID3D12Device") renderD3D12DeviceSections(this.inspectPanel, object, db);
-    if (object.type === "IDXGIAdapter") renderDxgiAdapterSections(this.inspectPanel, object);
+    if (object.type === "IDXGIAdapter") renderDxgiAdapterSections(this.inspectPanel, object, db);
     if (object.type === "VkDescriptorSet" || object.type === "ID3D12DescriptorHeap") this._buildDescriptorSetSection(object);
     this._imageView = null;
     // A D3D12 texture is an ID3D12Resource whose description is not a buffer's; the live read-back
