@@ -11,6 +11,7 @@
 #include "capture.h"
 #include "d3d12_vtables.gen.h"
 #include "device_info.h"
+#include "device_removed.h"
 #include "json.h"
 #include "resources.h"
 #include "serialize.h"
@@ -193,11 +194,18 @@ HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFenc
 
 /** After a present of a D3D12 swap chain: the frame counters, the capture, validation polling, retired shader edits. */
 void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT hr) {
+    ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
+    ID3D12Device* device = queue ? DeviceOf(queue) : nullptr;
+    // Present is where a removal is usually noticed, long after the command that caused it, so this
+    // runs before anything else and even for a test present: what the GPU was doing is in DRED and
+    // only DRED, and nothing further in the frame will work anyway (device_removed.h).
+    if (IsDeviceRemoved(hr) || SimulateDeviceRemoved()) {
+        OnDeviceRemoved(device, "IDXGISwapChain::Present");
+        return;
+    }
     // A DXGI_PRESENT_TEST asks whether presenting would work; nothing was shown.
     if (flags & DXGI_PRESENT_TEST) return;
-    ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
     if (!queue) return;
-    ID3D12Device* device = DeviceOf(queue);
     OnFramePresented(device, swapChain, syncInterval, flags, hr);
     Cap().OnPresent(device, swapChain, queue);
     ValidationLog::Get().Poll(Cap().FrameCounter());

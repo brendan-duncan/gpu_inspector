@@ -366,12 +366,19 @@ vendor's driver is listed at the end so nobody spends time on it.
       the launch dialog, `breadcrumbs` for `launch_app`, `VKINSP_BREADCRUMBS=1`; off by default (two
       GPU writes per action). Verified on an RTX 4080 with `VKINSP_SIMULATE_DEVICE_LOST=<n>[:hung]`,
       which reports a loss without hanging the GPU.
-- [ ] Device-lost diagnostics, the rest: DRED on D3D12 (`ID3D12DeviceRemovedExtendedData`:
-      breadcrumbs and page-fault addresses), which is fully public and which the D3D12 library has
-      nothing of today; `VK_NV_device_diagnostic_checkpoints`, which reports every checkpoint still
-      in flight rather than the last two markers; the faulting address through `VK_EXT_device_fault`;
-      a dialog rather than only a log line; and a real hang, which has not been tried because it
-      trips a TDR reset on the machine running it (`test/triangle --hang` would be the way).
+- [x] Device-removed diagnostics on D3D12 (`src/d3d12/src/device_removed.h`): Device Removed Extended
+      Data turned on before the device is created, so a removal reports which operation each command
+      list stopped on, what the removal code means, and for a page fault the faulting address with
+      the objects allocated nearest it. On by default — the runtime keeps the breadcrumbs itself, so
+      unlike the Vulkan side there is no per-draw cost; `DXINSP_NO_DRED=1` turns it off. Verified on
+      an RTX 4080 with `DXINSP_SIMULATE_DEVICE_REMOVED=<n>`, with DRED on and off.
+- [ ] Device-lost diagnostics, the rest: `VK_NV_device_diagnostic_checkpoints`, which reports every
+      checkpoint still in flight rather than the last two markers; the faulting address through
+      `VK_EXT_device_fault`; a dialog rather than only a log line; and a real hang, which has not
+      been tried because it trips a TDR reset on the machine running it (`test/triangle --hang`
+      would be the way). The D3D12 breadcrumbs in particular have only been reached by simulation,
+      which by design cannot carry data: the runtime hands DRED over only after a real removal, so
+      the code that names the stopped operation has never run against one.
 - [x] Where a frame's CPU time went (`src/vulkan/src/cpu_timeline.h`, `renderer/cpu_timeline.ts`,
       **Where the CPU went** in Frame Stats): the layer times submit, present, fence waits, acquire
       and wait-idle during a capture, with the thread of each, and the capture carries them with a
