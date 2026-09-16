@@ -16,6 +16,11 @@ export const PASS_BEGIN = new Set(["vkCmdBeginRenderPass", "vkCmdBeginRenderPass
 export const PASS_END = new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
 export const LABEL_BEGIN = new Set(["vkCmdBeginDebugUtilsLabelEXT", "vkCmdDebugMarkerBeginEXT"]);
 export const LABEL_END = new Set(["vkCmdEndDebugUtilsLabelEXT", "vkCmdDebugMarkerEndEXT"]);
+// The layer clears CommandRecorder::_passCount here (src/vulkan/src/command_recorder.h), so a
+// buffer recorded again numbers its passes from zero again.
+export const RECORD_BEGIN = new Set(["vkBeginCommandBuffer"]);
+export const RECORD_END = new Set(["vkEndCommandBuffer"]);
+
 export const SUBMIT_METHODS = new Set(["vkQueueSubmit", "vkQueueSubmit2", "vkQueueSubmit2KHR", "vkQueuePresentKHR", "vkQueueBindSparse"]);
 
 export const BIND_DESCRIPTOR_METHODS = new Set([
@@ -57,6 +62,8 @@ export const VULKAN_SETS: CommandSets = {
   TRACE: TRACE_METHODS,
   PASS_BEGIN,
   PASS_END,
+  RECORD_BEGIN,
+  RECORD_END,
   LABEL_BEGIN,
   LABEL_END,
   SUBMIT: SUBMIT_METHODS,

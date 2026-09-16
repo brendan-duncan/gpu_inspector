@@ -142,6 +142,27 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
   const boundPipeline = new Map<number, number>();
   const pipelinesOfPass = new Map<PassMetrics, Set<number>>();
   const computeIndexOf = new Map<number, number>();
+  /**
+   * Command buffers whose recording has ended. Commands appearing for one again are that same
+   * recording submitted a second time, which numbers its passes from zero again (see restart).
+   */
+  const ended = new Set<number>();
+
+  /**
+   * A command buffer begins a recording, so its pass numbering starts over — because the capture
+   * libraries' does. The Vulkan layer clears `_passCount` in `CommandRecorder::Reset`, which runs at
+   * `vkBeginCommandBuffer`, and the D3D12 library does the same at a command list's `Reset`.
+   *
+   * Counting straight through the capture instead, as this did, shifts every index from a buffer's
+   * second recording onwards, and a shifted index matches no timing at all: those passes then show
+   * no GPU time anywhere — in the pass list, in GPU Bottlenecks, in the counter rules. A frame is
+   * one recording of each buffer, so a capture of N frames lost most of its passes' timings.
+   */
+  const restart = (cb: number): void => {
+    passIndexOf.delete(cb);
+    computeIndexOf.delete(cb);
+    ended.delete(cb);
+  };
   let open: PassMetrics | null = null;
   let computeRun: PassMetrics | null = null;
   let inPass = false;
@@ -160,6 +181,18 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       closeComputeRun();
       currentCb = cb;
       currentSecondary = cmd.secondary ?? 0;
+    }
+
+    // Where this buffer's recording starts and stops. A queue command carries the queue as its
+    // object rather than a command buffer, so it must not be read as the buffer resuming.
+    if (!sets.SUBMIT.has(m)) {
+      if (sets.RECORD_BEGIN.has(m)) restart(cb);
+      else if (sets.RECORD_END.has(m)) ended.add(cb);
+      // Commands for a buffer whose recording ended, with no new one having begun: the same
+      // recording replayed, which numbers its passes from zero again. A capture replays a
+      // prerecorded buffer with its RECORD_BEGIN, so this is a guard rather than the usual path —
+      // but it is the same silent failure if a stream ever arrives without one.
+      else if (ended.has(cb)) restart(cb);
     }
 
     if (sets.PASS_BEGIN.has(m)) {

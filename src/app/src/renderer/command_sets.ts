@@ -104,6 +104,16 @@ export interface CommandSets {
    */
   COMPUTE_PASS_END: ReadonlySet<string>;
   /**
+   * Where one recording of a command buffer starts and ends. The capture libraries number a
+   * buffer's passes from zero within each recording, so anything counting passes has to restart
+   * with them or its numbering drifts out of step (see collectPassMetrics).
+   *
+   * Empty for Metal, whose command buffers are used once: the next frame's is a different object
+   * and starts a fresh count of its own without any marker.
+   */
+  RECORD_BEGIN: ReadonlySet<string>;
+  RECORD_END: ReadonlySet<string>;
+  /**
    * Whether a PASS_BEGIN command opens a compute pass rather than a render one. The layer and the
    * capture library key a compute pass's timings apart from a render pass's, so the UI has to
    * agree with them about which a pass is. Absent for an API whose PASS_BEGIN is render-only.
