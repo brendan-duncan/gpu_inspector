@@ -760,6 +760,9 @@ private:
     bool EnsureScratch(VkDeviceSize size);
     /** Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped. */
     void BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb);
+    /** Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles. */
+    void TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb);
+    bool EnsureBindingTable(VkDeviceSize size);
     void Track(const std::string& type, uint64_t handle);
     void DestroyAll();
     /** Puts the frame's state back where the first frame found it (RunFrame, after the first). */
@@ -775,6 +778,13 @@ private:
     VkBuffer _scratch = VK_NULL_HANDLE;
     VkDeviceMemory _scratchMemory = VK_NULL_HANDLE;
     VkDeviceSize _scratchSize = 0;
+    /** The replay's own shader binding table, written with this driver's group handles. */
+    VkBuffer _bindingTable = VK_NULL_HANDLE;
+    VkDeviceMemory _bindingTableMemory = VK_NULL_HANDLE;
+    uint8_t* _bindingTableMapped = nullptr;
+    VkDeviceSize _bindingTableSize = 0;
+    /** The pipeline the last vkCmdBindPipeline bound at the ray tracing bind point. */
+    uint64_t _boundRayTracingPipeline = 0;
     VkInstance _instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT _messenger = VK_NULL_HANDLE;
     VkPhysicalDevice _physical = VK_NULL_HANDLE;

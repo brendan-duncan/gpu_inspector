@@ -1078,6 +1078,12 @@ void Replayer::DestroyAll() {
         _scratch = VK_NULL_HANDLE;
         _scratchMemory = VK_NULL_HANDLE;
         _scratchSize = 0;
+        if (_bindingTable) _fns.DestroyBuffer(_device, _bindingTable, nullptr);
+        if (_bindingTableMemory) _fns.FreeMemory(_device, _bindingTableMemory, nullptr);
+        _bindingTable = VK_NULL_HANDLE;
+        _bindingTableMemory = VK_NULL_HANDLE;
+        _bindingTableMapped = nullptr;
+        _bindingTableSize = 0;
         for (VkDeviceMemory m : _memories) _fns.FreeMemory(_device, m, nullptr);
         if (_utilityPool) _fns.DestroyCommandPool(_device, _utilityPool, nullptr);
         _fns.DestroyDevice(_device, nullptr);
@@ -1529,6 +1535,182 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     _fns.CmdBuildAccelerationStructuresKHR(cb, a.infoCount, built.data(), a.ppBuildRangeInfos);
 }
 
+
+/**
+ * Replays one vkCmdTraceRaysKHR.
+ *
+ * A trace names its shaders through a table in memory whose records hold opaque handles the
+ * *captured* driver gave out. Those handles name nothing here, so the table cannot be uploaded as
+ * it was captured: the replay builds its own, copying each region's bytes and replacing every
+ * record's handle with this pipeline's handle for the same group. Matching one to the other is what
+ * the captured pipeline's own handle blob is for.
+ */
+void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb) {
+    if (!_fns.CmdTraceRaysKHR || !_fns.GetRayTracingShaderGroupHandlesKHR) {
+        Problem("left out: this device has no ray tracing pipelines");
+        return;
+    }
+    const JValue* regions = command.Get("bindingTableData");
+    if (!regions || !regions->IsArray() || !regions->count) {
+        Problem("left out: the shader binding table's contents are not in this capture");
+        return;
+    }
+    const JValue* pipelineObject = _capture->Object(_boundRayTracingPipeline);
+    const uint64_t pipelineHandle = Handle(_boundRayTracingPipeline);
+    if (!pipelineObject || !pipelineHandle) {
+        Problem("left out: the ray tracing pipeline bound at the trace was not replayed");
+        return;
+    }
+
+    // The handles the captured driver gave, kept on the pipeline by the layer, and the ones this
+    // driver gives for the same groups. A record is matched by the first and rewritten with the
+    // second.
+    const uint8_t* capturedHandles = nullptr;
+    size_t capturedSize = 0;
+    if (!_capture->Blob(*pipelineObject, "group handles", capturedHandles, capturedSize) || !capturedSize) {
+        Problem("left out: the pipeline's shader group handles are not in this capture");
+        return;
+    }
+    const JValue* updates = pipelineObject->Get("updates");
+    const JValue* declared = updates ? updates->Get("shaderGroupHandles") : nullptr;
+    const JValue* sizeValue = declared ? declared->Get("handleSize") : nullptr;
+    const size_t handleSize = sizeValue ? (size_t)sizeValue->Uint() : 0;
+    if (!handleSize || capturedSize % handleSize) {
+        Problem("left out: the pipeline's shader group handle size was not recorded");
+        return;
+    }
+    const uint32_t groups = (uint32_t)(capturedSize / handleSize);
+
+    std::vector<uint8_t> replayHandles(capturedSize, 0);
+    if (_fns.GetRayTracingShaderGroupHandlesKHR(_device, (VkPipeline)(uintptr_t)pipelineHandle, 0, groups,
+                                                replayHandles.size(), replayHandles.data()) != VK_SUCCESS) {
+        Problem("left out: this driver would not give the pipeline's shader group handles");
+        return;
+    }
+
+    // One buffer for every region, each starting at the alignment the device asks for.
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties.pNext = &rt;
+    if (_fns.GetPhysicalDeviceProperties2) _fns.GetPhysicalDeviceProperties2(_physical, &properties);
+    const VkDeviceSize align = rt.shaderGroupBaseAlignment ? rt.shaderGroupBaseAlignment : 64;
+
+    struct Placed { std::string region; VkDeviceSize at = 0; std::vector<uint8_t> bytes; };
+    std::vector<Placed> placed;
+    VkDeviceSize total = 0;
+    uint32_t rewritten = 0, unmatched = 0;
+    for (uint32_t i = 0; i < regions->count; ++i) {
+        const JValue& e = regions->items[i];
+        const JValue* nameValue = e.Get("region");
+        const JValue* captureValue = e.Get("capture");
+        if (!nameValue || !captureValue) continue;
+        auto it = _bufferData.find(captureValue->Uint());
+        if (it == _bufferData.end()) continue;
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        if (!_capture->Payload(it->second->Get("payload"), data, size) || !size) continue;
+
+        const std::string name(nameValue->Str());
+        const JValue* region = args.Get(name == "raygen" ? "pRaygenShaderBindingTable"
+                                      : name == "miss" ? "pMissShaderBindingTable"
+                                      : name == "hit" ? "pHitShaderBindingTable" : "pCallableShaderBindingTable");
+        const JValue* strideValue = region ? region->Get("stride") : nullptr;
+        const VkDeviceSize stride = strideValue ? strideValue->Uint() : 0;
+        if (!stride) continue;
+
+        Placed p;
+        p.region = name;
+        p.bytes.assign(data, data + size);
+        // Each record's handle becomes this driver's for the group the captured handle named. The
+        // bytes after it are the application's own shader record data and are copied as they were.
+        for (size_t at = 0; at + handleSize <= p.bytes.size(); at += (size_t)stride) {
+            uint32_t group = UINT32_MAX;
+            for (uint32_t g = 0; g < groups && group == UINT32_MAX; ++g) {
+                if (!memcmp(&p.bytes[at], capturedHandles + (size_t)g * handleSize, handleSize)) group = g;
+            }
+            if (group == UINT32_MAX) {
+                ++unmatched;
+                continue;   // a handle this pipeline never gave out; left as it was
+            }
+            memcpy(&p.bytes[at], &replayHandles[(size_t)group * handleSize], handleSize);
+            ++rewritten;
+        }
+        p.at = (total + align - 1) & ~(align - 1);
+        total = p.at + p.bytes.size();
+        placed.push_back(std::move(p));
+    }
+    if (!rewritten) {
+        Problem("left out: no record of the shader binding table named a group of this pipeline");
+        return;
+    }
+    if (unmatched) {
+        Problem("the shader binding table has " + std::to_string(unmatched)
+                + " record(s) whose handle this pipeline never gave out; they are replayed as captured");
+    }
+    if (!EnsureBindingTable(total)) {
+        Problem("left out: the shader binding table could not be allocated");
+        return;
+    }
+    for (const Placed& p : placed) memcpy(_bindingTableMapped + p.at, p.bytes.data(), p.bytes.size());
+
+    VkBufferDeviceAddressInfo bi{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    bi.buffer = _bindingTable;
+    const VkDeviceAddress base = _fns.GetBufferDeviceAddress(_device, &bi);
+
+    Args_vkCmdTraceRaysKHR a{};
+    const size_t unresolvedBefore = _ctx.unresolved;
+    DecodeArgs(_ctx, args, a);
+    if (_ctx.unresolved != unresolvedBefore) {
+        Problem("left out: the trace names objects the replay does not have");
+        return;
+    }
+    VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{}, callable{};
+    auto fill = [&](const VkStridedDeviceAddressRegionKHR* source, const char* name, VkStridedDeviceAddressRegionKHR& out) {
+        if (source) out = *source;
+        out.deviceAddress = 0;
+        for (const Placed& p : placed) {
+            if (p.region == name) out.deviceAddress = base + p.at;
+        }
+    };
+    fill(a.pRaygenShaderBindingTable, "raygen", raygen);
+    fill(a.pMissShaderBindingTable, "miss", miss);
+    fill(a.pHitShaderBindingTable, "hit", hit);
+    fill(a.pCallableShaderBindingTable, "callable", callable);
+    if (!raygen.deviceAddress) {
+        Problem("left out: the trace's raygen table is not in this capture");
+        return;
+    }
+    _fns.CmdTraceRaysKHR(cb, &raygen, &miss, &hit, &callable, a.width, a.height, a.depth);
+}
+
+/** The replay's own shader binding table memory, host visible so the records can be written into it. */
+bool Replayer::EnsureBindingTable(VkDeviceSize size) {
+    if (size <= _bindingTableSize && _bindingTable) return true;
+    if (_bindingTable) {
+        _fns.DestroyBuffer(_device, _bindingTable, nullptr);
+        _fns.FreeMemory(_device, _bindingTableMemory, nullptr);
+        _bindingTable = VK_NULL_HANDLE;
+        _bindingTableMemory = VK_NULL_HANDLE;
+        _bindingTableMapped = nullptr;
+    }
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = size;
+    info.usage = VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+               | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (_fns.CreateBuffer(_device, &info, nullptr, &_bindingTable) != VK_SUCCESS) return false;
+    VkMemoryRequirements requirements{};
+    _fns.GetBufferMemoryRequirements(_device, _bindingTable, &requirements);
+    if (!AllocateBound(requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                       _bindingTableMemory, false, true)) return false;
+    if (_fns.BindBufferMemory(_device, _bindingTable, _bindingTableMemory, 0) != VK_SUCCESS) return false;
+    void* mapped = nullptr;
+    if (_fns.MapMemory(_device, _bindingTableMemory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) return false;
+    _bindingTableMapped = (uint8_t*)mapped;
+    _bindingTableSize = size;
+    return true;
+}
+
 void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb) {
     const std::string m = Str(command.Get("method"));
     // Ray tracing is not replayed: its pipelines and acceleration structures are not made, and
@@ -1539,8 +1721,19 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
         "vkCmdCopyAccelerationStructureKHR", "vkCmdCopyAccelerationStructureToMemoryKHR", "vkCmdCopyMemoryToAccelerationStructureKHR",
         "vkCmdCopyAccelerationStructureNV", "vkCmdSetRayTracingPipelineStackSizeKHR",
     };
+    // The trace needs to know which pipeline it runs, which only the bind before it says.
+    if (m == "vkCmdBindPipeline") {
+        const JValue* point = args.Get("pipelineBindPoint");
+        if (point && point->Str().find("RAY_TRACING") != std::string_view::npos) {
+            _boundRayTracingPipeline = IdOf(args.Get("pipeline"));
+        }
+    }
     if (m == "vkCmdBuildAccelerationStructuresKHR") {
         BuildAccelerationStructures(command, args, cb);
+        return;
+    }
+    if (m == "vkCmdTraceRaysKHR") {
+        TraceRays(command, args, cb);
         return;
     }
     if (kRayTracing.count(m)) {
