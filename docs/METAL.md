@@ -63,6 +63,19 @@ picked up with **Connect** (or `npm start -- --connect=<port>`):
   listed in the Inspect tab.
 - **Bottleneck counters** — Metal's counter sets measure overdraw, fragments per primitive and
   depth rejection per pass. See [Finding GPU bottlenecks](PROFILING.md).
+- **Where the CPU went, and the Timeline** — the calls the capture library times, so a Metal frame
+  can be called CPU- or GPU-bound and the threads and the passes can be drawn on one axis. Metal's
+  categories are the shortest of the three backends: `commit` is the submit, `waitUntilCompleted`
+  and `waitUntilScheduled` are waiting for the GPU, and `CAMetalLayer`'s `nextDrawable` is waiting
+  for the display, which is where a display-paced Metal frame spends its time. There is deliberately
+  no present span — `presentDrawable:` only schedules and returns at once, so timing it would record
+  a call that never waits. `sampleTimestamps:gpuTimestamp:` relates the two clocks, which is what
+  puts the passes on the same axis as the calls that committed them.
+- **Memory over time** — the device's own `currentAllocatedSize` against its
+  `recommendedMaxWorkingSetSize`, sampled each frame. Metal has no heap table to break down and no
+  separate residency figure, so the Memory Use section shows that series alone rather than the
+  per-heap breakdown the other backends have. See
+  [Memory](PROFILING.md#memory-how-much-from-which-heap-and-which-way-it-is-going).
 
 ## Metal-only capture options
 
@@ -78,7 +91,6 @@ following the pixel, so it needs the application to still be running.
 
 ## What is not there yet
 
-- No pass timings: the profile view still says *waiting for GPU timestamps*.
 - Depth attachments and sampled images are not read back.
 - Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
 - No creation stack traces.

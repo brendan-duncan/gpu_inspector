@@ -147,6 +147,8 @@ export interface CaptureDescriptor {
   sampler?: HandleRef | null;
   immutable?: boolean;
   bufferView?: HandleRef | null;
+  /** A ray tracing acceleration structure binding: the structure the rays are traced against. */
+  accelerationStructure?: HandleRef | null;
   /**
    * D3D12: a texture SRV/UAV names its resource and carries the view description (there is no view
    * object); `data` is the read-back's capture id as for `imageView`. A buffer view uses `buffer` /

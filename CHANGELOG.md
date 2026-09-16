@@ -102,6 +102,19 @@
   is left out rather than placed on a guessed origin.
 
 ### Fixed
+- A bound acceleration structure read as **(not written)** on a trace, and named nothing in a
+  descriptor set's contents (`renderer/capture_command_info.ts`, `renderer/inspect_panel.ts`). Both
+  views walk the kinds a descriptor can hold — buffer, image view, sampler, buffer view — and
+  neither had learned the kind a ray tracing set is mostly made of, so the one binding that says
+  what the rays are traced against looked like a binding nobody had filled in. The capture recorded
+  it correctly throughout; only the reading of it was wrong. Found in a documentation screenshot.
+- Every verdict in Frame Stats was cut off at the details pane's edge (`renderer/css/app.css`). The
+  split the pane sits in sets `white-space: nowrap` so its command rows do not wrap, and that
+  inherits: the Frame Bound, **Where the CPU went** and **Timeline** cards each write a sentence or
+  two of explanation, and all of it was laid out as one line and clipped — the Frame Bound verdict
+  measured 3519 pixels in a 700 pixel pane, so four fifths of what the report had to say was
+  unreadable. The cards reset it the way the Frame Issues rows already did. Found while taking the
+  documentation screenshots, which is what the screenshots are for.
 - Frame Bound could name a bottleneck from two numbers that cannot both describe the same frame
   (`renderer/capture_statistics.ts`). The GPU figure is the span of the *captured* passes and the
   budget is the frame interval the application reaches *without* a capture — and capturing adds a

@@ -391,7 +391,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-stats-title { font-size: 14pt; font-weight: bold; margin-bottom: 10px; }
 .frame-stats-section { margin-bottom: 14px; }
 .frame-stats-heading { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
-.frame-stats-list { background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 6px 10px; }
+/* The split the details pane sits in sets white-space: nowrap for its command rows, and it
+   inherits: without this every verdict and note here is one long line clipped at the pane's edge. */
+.frame-stats-list { background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 6px 10px; white-space: normal; }
 .frame-stats-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 10pt; line-height: 1.4; }
 .frame-stats-label { color: var(--fg-primary); }
 .frame-stats-value { color: var(--fg-muted); font-variant-numeric: tabular-nums; }

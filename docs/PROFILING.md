@@ -56,6 +56,19 @@ time its passes took.
 - Both well under the frame interval: something else sets the pace. Usually vsync, which is fine,
   or the application waiting on something that is not the GPU.
 
+There is a fourth answer: **the capture's own cost**. The frame interval is the one the application
+reaches *without* a capture, but the GPU time is the span of the *captured* passes — and capturing
+puts a timestamp, statistics and occlusion query around every pass and reads every render target
+back. When the passes span longer than the frame itself, the two numbers cannot both describe the
+same frame, and the card says so instead of naming a limiter. A Unity player running at 1475 fps
+whose captured passes span 9.2 ms is not GPU bound; it is a frame that got 13 times more expensive
+because it was being watched. Lighter frames distort proportionally more, so this is the usual
+verdict on a small or very fast application and a rare one on a real workload at its real frame
+rate. The per-pass figures are still worth reading against each other — it is the comparison with
+the frame budget that the capture has broken.
+
+![Frame Bound reporting the capture's own cost: a Unity frame of 0.74 ms whose captured passes span 4.81 ms, 648% of it](images/frame-bound-capture-cost.png)
+
 The meter in the session bar shows the same comparison live, without capturing.
 
 Those three numbers are aggregates, and two very different frames can produce the same ones: a frame
@@ -91,6 +104,8 @@ The **Timeline** card draws them instead: one lane per thread with the calls the
 GPU lane with the passes, on one axis. Both lanes sharing an axis needs the device clock related to
 the host clock, which the layer samples where the device has `VK_KHR_calibrated_timestamps`; without
 it the CPU lanes are still drawn and the GPU lane is left out rather than placed on a guessed origin.
+
+![The Timeline card: a thread lane and a GPU lane on one axis, with the verdict naming the gap before the first pass](images/timeline.png)
 
 What to read from it:
 

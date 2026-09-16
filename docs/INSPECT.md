@@ -48,6 +48,32 @@ now — **Refresh** reads it again from the application. Bindings that were neve
 Buffers are decoded with the types the shader declares, so a uniform block reads as its fields
 rather than as bytes.
 
+## Acceleration structures
+
+A ray tracing acceleration structure is opaque: the driver owns its layout and nothing reads one
+back. So the view of one is what it was *built from*, which the layer records as the build goes by.
+
+**Acceleration Structure** is that build — its type and mode, and each geometry with its primitive
+count, and for triangles the vertex format, stride and index type. A build names the memory it reads
+by device address rather than by handle, so the layer resolves those addresses back to the buffers
+holding them and the section names the buffer and the offset into it. A structure that was filled
+before the inspector attached says **Not built while the inspector was watching**, which is the
+usual state of a bottom level: most applications build theirs once, at load.
+
+**Instances** on a top level lists what it was built out of: for each instance the bottom level it
+names, where its transform puts it, its visibility mask, and its custom index, hit group offset and
+flags where they are not the default. An instance refers to its bottom level by device address, not
+by handle, which is why the layer records the address of every structure the application asks for
+one of — that map is what turns the reference back into an object you can click.
+
+![A top level acceleration structure in Inspect: what it was built from, and its instances drawn as a scene](images/acceleration-structures.png)
+
+The instances are also drawn, in the same preview the [mesh view](REPORTS.md#mesh-view) uses. An
+instance whose bottom level's geometry is in the capture is drawn with that geometry, placed by its
+transform; one whose is not is drawn as a box where it sits. A scene of boxes is the common case and
+is not a fault — it means those bottom levels were built before anything was capturing. Capturing a
+frame of an application that rebuilds its geometry each frame, or that streams it in, fills them in.
+
 ## Shaders
 
 A shader module or pipeline has a **Shader Code** section per stage with these views:

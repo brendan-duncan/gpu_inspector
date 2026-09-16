@@ -15,11 +15,22 @@ For the order to use them in when a frame is slow, see
 
 ## Frame Stats
 
-Two parts:
+In order down the view:
 
 - **Frame Bound** — the frame's GPU time next to the CPU submit time and the frame interval, with
   a verdict on which of them the frame is waiting for. This is the first thing to read: it says
-  whether the GPU is the problem at all.
+  whether the GPU is the problem at all. One verdict is not a bottleneck: when the captured passes
+  span *longer than the frame the application reaches without a capture*, the card reports the
+  capture's own cost instead of naming a limiter. Capturing puts a timestamp, statistics and
+  occlusion query around every pass and reads every render target back, so the captured frame is
+  the more expensive one — and a frame cannot be shorter than the GPU work it waits for, so the two
+  bars are not on the same footing and no honest verdict can be drawn from them. Take the GPU
+  figures from it as relative costs between passes, not as the frame's budget.
+- **Where the CPU went** — the frame's CPU time split into submitting, waiting for the GPU,
+  waiting for the display, and the application's own work.
+- **Timeline** — the threads and the GPU drawn as tracks on one axis, which is the only view here
+  that can show the GPU *idle*. See [when, not how much](PROFILING.md#step-1b-when-not-how-much).
+- **Pass Timings** — each pass's GPU time, with the total and the span they cover.
 - **Frame Statistics** — counts for the frame: commands by kind, draws (indexed, indirect, mesh),
   dispatches, submits and command buffers, passes and attachments, pipelines and stages bound,
   descriptor sets and what they bound, memory traffic and geometry.
