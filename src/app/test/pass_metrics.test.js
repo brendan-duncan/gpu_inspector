@@ -268,6 +268,21 @@ function frames(commands, timings, api) {
   };
 }
 
+/** Like frames(), but a fifth element marks a command inlined from that secondary buffer. */
+function framesWithSecondaries(commands, timings) {
+  const list = commands.map(([frame, cb, method, args, secondary], index) => ({
+    index, frame, method, args: args ?? null,
+    object: { __id: cb, __class: "VkCommandBuffer" },
+    ...(secondary ? { secondary } : {}),
+  }));
+  const byKey = new Map();
+  for (const t of timings) byKey.set(`${t.frame}:${t.commandBuffer}:${t.passIndex}`, t);
+  return {
+    api: "vulkan", commands: list, sets: setsFor("vulkan"),
+    passTiming: (frame, cb, passIndex, compute) => (compute ? null : byKey.get(`${frame}:${cb}:${passIndex}`) ?? null),
+  };
+}
+
 const CB = 8;
 const vkPass = (frame, cb) => [
   [frame, cb, "vkCmdBeginRenderPass", {}],
@@ -373,4 +388,30 @@ test("Metal keeps counting up within a command buffer, which is used once", () =
   const m = collectPassMetrics(data, db);
   assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 1, 0]);
   assert.equal(m.timed, 3, "unchanged by the restart rule, which Metal has no markers for");
+});
+
+test("a secondary's own begin and end do not restart the primary's numbering", () => {
+  // What a real Unity frame looks like: each render pass executes a secondary command buffer, whose
+  // commands the UI inlines carrying the *primary's* object id and the secondary's own id. Its
+  // vkBeginCommandBuffer is the secondary's recording, not the primary's — reading it as the
+  // primary's collapsed every pass onto the first one's timing.
+  const PRIMARY = 1040;
+  const commands = [];
+  const timings = [];
+  commands.push([0, PRIMARY, "vkBeginCommandBuffer", {}]);
+  for (let p = 0; p < 4; p++) {
+    commands.push([0, PRIMARY, "vkCmdBeginRenderPass", {}]);
+    commands.push([0, PRIMARY, "vkCmdExecuteCommands", {}]);
+    // Inlined from the secondary: same object, its own `secondary` id.
+    commands.push([0, PRIMARY, "vkBeginCommandBuffer", {}, 300 + p]);
+    commands.push([0, PRIMARY, "vkCmdDraw", { vertexCount: 3 }, 300 + p]);
+    commands.push([0, PRIMARY, "vkEndCommandBuffer", {}, 300 + p]);
+    commands.push([0, PRIMARY, "vkCmdEndRenderPass", {}]);
+    timings.push(timing(0, PRIMARY, p, p + 1));
+  }
+  commands.push([0, PRIMARY, "vkEndCommandBuffer", {}]);
+  const m = collectPassMetrics(framesWithSecondaries(commands, timings), db);
+  assert.deepEqual(m.passes.map((p) => p.passIndex), [0, 1, 2, 3], "not [0, 0, 0, 0]");
+  assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2, 3, 4], "each pass found its own timing");
+  assert.equal(m.gpuMs, 10, "not 4, which is the first pass counted four times");
 });

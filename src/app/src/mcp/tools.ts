@@ -59,7 +59,10 @@ function frameTiming(c: Capture): Record<string, unknown> {
     profiled: timings.length > 0,
     gpuPassMs: timings.length ? round(c.metrics.gpuMs) : undefined,
     gpuSpanMs: timings.length ? round(gpuSpanMs) : undefined,
-    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : undefined,
+    frameBound: bound
+      ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs),
+          distortedByCapture: bound.distorted || undefined }
+      : undefined,
     ...timelineTiming(c),
   };
 }

@@ -45,6 +45,15 @@
   is left out rather than placed on a guessed origin.
 
 ### Fixed
+- Frame Bound could name a bottleneck from two numbers that cannot both describe the same frame
+  (`renderer/capture_statistics.ts`). The GPU figure is the span of the *captured* passes and the
+  budget is the frame interval the application reaches *without* a capture — and capturing adds a
+  timestamp, statistics and occlusion query around every pass and reads every render target back,
+  so the captured frame is the more expensive one. A Unity player running at 1475 fps (0.68 ms a
+  frame) whose captured passes span 9.2 ms was called "GPU bound". A frame cannot be shorter than
+  the GPU work it waits for, so passes longer than the frame are now reported as the capture's own
+  cost rather than as a bottleneck, and the card says the two bars are not on the same footing.
+  `get_capture_summary` carries the same flag.
 - Most of a multi-frame capture's passes had no GPU time (`renderer/pass_metrics.ts`). A capture
   library numbers a command buffer's passes from zero within each recording of it — the Vulkan
   layer restarts at `vkBeginCommandBuffer`, the D3D12 library at a list's `Reset` — but the app
@@ -55,7 +64,11 @@
   four frames lost three quarters of the passes of a single-buffer application and half of a
   double-buffered one: the four-frame triangle capture reported 0.22 ms of GPU time where the
   layer had measured 0.45 ms. Metal is unaffected — its command buffers are used once, so the next
-  frame's is a different object with a counter of its own.
+  frame's is a different object with a counter of its own. Only the buffer's own markers count: a
+  command inlined from a secondary carries the primary's object id, so an engine that records each
+  pass into a secondary — Unity does — would otherwise restart the primary's numbering at every
+  pass and collapse all of them onto the first one's timing. On a real Unity frame that reported
+  19.9 ms of GPU time where the layer had measured 8.1 ms.
 
 ## v0.13.0
 

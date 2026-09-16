@@ -183,9 +183,14 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       currentSecondary = cmd.secondary ?? 0;
     }
 
-    // Where this buffer's recording starts and stops. A queue command carries the queue as its
-    // object rather than a command buffer, so it must not be read as the buffer resuming.
-    if (!sets.SUBMIT.has(m)) {
+    // Where this buffer's recording starts and stops.
+    //
+    // Only the buffer's own markers count. A queue command carries the queue as its object rather
+    // than a command buffer, and a command inlined from a secondary carries the *primary's* object
+    // with the secondary's id in `secondary` — so a secondary's own begin and end, of which an
+    // engine that records into them has one per pass, would otherwise restart the primary's
+    // numbering at every pass and collapse all of them onto the first one's timing.
+    if (!sets.SUBMIT.has(m) && !cmd.secondary) {
       if (sets.RECORD_BEGIN.has(m)) restart(cb);
       else if (sets.RECORD_END.has(m)) ended.add(cb);
       // Commands for a buffer whose recording ended, with no new one having begun: the same

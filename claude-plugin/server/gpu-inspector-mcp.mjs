@@ -2802,6 +2802,7 @@ var REFRESH_SOURCE_NOTE = {
   monitor: "the current mode of the monitor showing the application",
   estimate: "estimated from the frame intervals while vsync is on"
 };
+var CAPTURE_DISTORTION = 1.25;
 function frameBound(t) {
   const vsync = t.refreshMs > 0;
   const budget = vsync ? t.refreshMs : t.frameMs > 0 ? t.frameMs : Math.max(t.gpuSpanMs, t.submitMs);
@@ -2809,7 +2810,11 @@ function frameBound(t) {
   const gpu = t.frames > 1 ? t.gpuSpanMs / t.frames : t.gpuSpanMs;
   let verdict;
   let kind;
-  if (gpu / budget > 0.8) {
+  const distorted = gpu > budget * CAPTURE_DISTORTION;
+  if (distorted) {
+    verdict = "The captured passes take longer than the frame did, so the capture's own work \u2014 the timestamp, statistics and occlusion queries around every pass, and the render targets read back at the end of each \u2014 is most of what was measured. A frame cannot be shorter than the GPU work it waits for, so these two numbers cannot both describe the same frame and no bottleneck can be named from them. Compare passes against each other instead (GPU Bottlenecks), which is unaffected, and read the frame interval from the live meter.";
+    kind = "distorted";
+  } else if (gpu / budget > 0.8) {
     verdict = "GPU bound";
     kind = "gpu";
   } else if (t.submitMs / budget > 0.8) {
@@ -2825,7 +2830,7 @@ function frameBound(t) {
     verdict = "Present / CPU bound outside submit: the GPU has headroom";
     kind = "idle";
   }
-  return { verdict, kind, budgetMs: budget, gpuMs: gpu, vsync };
+  return { verdict, kind, budgetMs: budget, gpuMs: gpu, vsync, distorted };
 }
 
 // src/renderer/render_graph.ts
@@ -4452,7 +4457,7 @@ function collectPassMetrics(data, db) {
       currentCb = cb;
       currentSecondary = cmd.secondary ?? 0;
     }
-    if (!sets.SUBMIT.has(m)) {
+    if (!sets.SUBMIT.has(m) && !cmd.secondary) {
       if (sets.RECORD_BEGIN.has(m)) restart(cb);
       else if (sets.RECORD_END.has(m)) ended.add(cb);
       else if (ended.has(cb)) restart(cb);
@@ -29246,7 +29251,12 @@ function frameTiming(c2) {
     profiled: timings.length > 0,
     gpuPassMs: timings.length ? round(c2.metrics.gpuMs) : void 0,
     gpuSpanMs: timings.length ? round(gpuSpanMs) : void 0,
-    frameBound: bound ? { verdict: bound.verdict, budgetMs: round(bound.budgetMs), gpuMsPerFrame: round(bound.gpuMs) } : void 0,
+    frameBound: bound ? {
+      verdict: bound.verdict,
+      budgetMs: round(bound.budgetMs),
+      gpuMsPerFrame: round(bound.gpuMs),
+      distortedByCapture: bound.distorted || void 0
+    } : void 0,
     ...timelineTiming(c2)
   };
 }
