@@ -16,7 +16,7 @@ const DEFAULT_PORT = 47531;
 export function emptyLaunchConfig(): LaunchConfig {
   return {
     target: "native", exe: "", args: "", cwd: "", env: "", device: "", activity: "",
-    port: DEFAULT_PORT, log: true, recordAlways: false, breadcrumbs: false, validation: false, syncValidation: false, stacktraces: true, capture: { mode: "none", value: 0 },
+    port: DEFAULT_PORT, log: true, recordAlways: false, breadcrumbs: false, shaderStatistics: false, validation: false, syncValidation: false, stacktraces: true, capture: { mode: "none", value: 0 },
   };
 }
 
@@ -102,6 +102,7 @@ export class LaunchDialog extends Dialog {
   private _log: Checkbox;
   private _recordAlways: Checkbox;
   private _breadcrumbs: Checkbox;
+  private _shaderStatistics: Checkbox;
   private _validation!: Checkbox;
   private _syncValidation!: Checkbox;
   private _stacktraces!: Checkbox;
@@ -249,12 +250,14 @@ export class LaunchDialog extends Dialog {
         tooltip: "Record the call stack of every object creation, shown in the object's details (symbols from the application's PDBs or exports). A few microseconds per created object." });
       this._breadcrumbs = new Checkbox(row, { label: "Device-lost breadcrumbs", checked: false,
         tooltip: "Have the GPU write a marker before and after every draw and dispatch, so if it stops responding (VK_ERROR_DEVICE_LOST) the Log tab names the command it was running. Vulkan only, and it needs VK_AMD_buffer_marker. Two GPU writes per draw." });
+      this._shaderStatistics = new Checkbox(row, { label: "Compiler statistics", checked: false,
+        tooltip: "Ask the driver what its shader compiler made of each pipeline stage: registers used, code size, spilled memory. Shown on the pipeline in the Inspect tab. Vulkan only, and it needs VK_KHR_pipeline_executable_properties. Costs compile time and driver memory." });
       // Vulkan-only options. The Metal library has no "record always" — a Metal command buffer is
       // encoded and submitted once, so there is no earlier recording a capture could have missed —
       // and no synchronization validation. "Validation layer" stays: on macOS it is Metal's own
       // API and shader validation (src/metal/README.md); "Stack traces" is the same option there.
       if (hostPlatform === "darwin") {
-        for (const c of [this._recordAlways, this._syncValidation, this._breadcrumbs]) {
+        for (const c of [this._recordAlways, this._syncValidation, this._breadcrumbs, this._shaderStatistics]) {
           c.element.style.display = "none";
         }
       }
@@ -452,6 +455,7 @@ export class LaunchDialog extends Dialog {
       log: this._log.checked,
       recordAlways: this._recordAlways.checked,
       breadcrumbs: this._breadcrumbs.checked,
+      shaderStatistics: this._shaderStatistics.checked,
       validation: !android && this._validation.checked,
       syncValidation: !android && this._validation.checked && this._syncValidation.checked,
       symbolDirs: this._symbolDirs.value.trim(),

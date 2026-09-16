@@ -89,6 +89,29 @@ An application drawing with shader objects (`VK_EXT_shader_object`) edits a **Vk
 same way, unless it was created from a binary. A shader object created linked to others is
 replaced along with its whole set, each made again unlinked.
 
+## Compiler statistics
+
+Launch with **Compiler statistics** and every pipeline carries what the driver's shader compiler
+made of each of its stages, shown on the pipeline in the Inspect tab:
+
+```
+VS  vertex · subgroup 32
+    Register Count   16
+    Binary Size      1024
+    Input Count      8
+```
+
+Registers are the number to watch. A stage using many of them limits how many threads the GPU can
+keep in flight, which is what the hardware counters see as low occupancy
+([Finding GPU bottlenecks](PROFILING.md)). Spilled or local memory means the compiler ran out of
+registers and pushed values to memory, which is slower still.
+
+What the statistics are called is the driver's choice, not Vulkan's: the extension defines the
+mechanism and each driver decides what to report, so they appear exactly as the driver names them. A
+driver that reports none leaves the section out. It needs `VK_KHR_pipeline_executable_properties`,
+and it is off by default because the driver has to keep the information, which costs compile time
+and memory in the target.
+
 ## Validation messages
 
 With **Validation layer** ticked at launch, the errors and warnings it reports are listed in a

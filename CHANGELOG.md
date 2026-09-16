@@ -1,6 +1,14 @@
 ## v0.13.0
 
 ### Added
+- Compiler statistics per pipeline for Vulkan (`src/vulkan/src/shader_statistics.h`): **Compiler
+  statistics** in the launch dialog (`VKINSP_SHADER_STATISTICS=1`, `shaderStatistics` for
+  `launch_app`) asks the driver what its shader compiler made of each stage — registers used, code
+  size, spilled and shared memory, inputs and outputs — and the Inspect tab shows it on the
+  pipeline. Through `VK_KHR_pipeline_executable_properties`, the same data Nsight reports per
+  shader, and it explains the occupancy the hardware counters measure. The names are the driver's
+  own and are passed through as it reports them. Off by default: it costs compile time and driver
+  memory.
 - Device-lost diagnostics for Vulkan (`src/vulkan/src/device_lost.h`, docs/TROUBLESHOOTING.md):
   **Device-lost breadcrumbs** in the launch dialog (`VKINSP_BREADCRUMBS=1`, `breadcrumbs` for
   `launch_app`) has the GPU write a marker before and after every draw and dispatch, so when it

@@ -14,6 +14,7 @@
 #include "transport.h"
 #include "depth_resolve.h"
 #include "device_lost.h"
+#include "shader_statistics.h"
 #include "pipeline_stats.h"
 #include "refresh_rate.h"
 #include "stacktrace.h"
@@ -515,18 +516,22 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // Device-lost breadcrumbs: the marker extension, when asked for (see device_lost.h).
     BreadcrumbSetup breadcrumbs;
     PlanBreadcrumbs(instance, physicalDevice, createInfo, breadcrumbs);
+    // Compiler statistics per pipeline (see shader_statistics.h).
+    ShaderStatisticsSetup shaderStats;
+    PlanShaderStatistics(instance, physicalDevice, createInfo, shaderStats);
 
     // Counted from before the driver's vkCreateDevice, which may make a D3D12 device of its own
     // (vkinspDeviceCount).
     g_deviceCount.fetch_add(1, std::memory_order_relaxed);
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
-    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added)) {
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added || shaderStats.added)) {
         // The driver refused the additions: create the device as the application asked.
         Log("vkCreateDevice with the layer's extensions failed (%d); retrying without", (int)res);
         refresh = RefreshDeviceSetup{};
         dynamicRendering = DynamicRenderingSetup{};
         pipelineStats = PipelineStatisticsSetup{};
         breadcrumbs = BreadcrumbSetup{};
+        shaderStats = ShaderStatisticsSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
     if (res != VK_SUCCESS) {
@@ -545,6 +550,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     data->pipelineStatistics = pipelineStats.enabled;
     data->occlusionPrecise = pipelineStats.occlusion;
     data->inheritedQueries = pipelineStats.inheritedQueries;
+    data->shaderStatistics = shaderStats.enabled;
     {
         // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
         const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");
