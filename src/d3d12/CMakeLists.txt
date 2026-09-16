@@ -65,6 +65,7 @@ add_library(dxinsp_capture SHARED
     src/image_readback.h
     src/image_readback.cpp
     src/validation.h
+    src/device_removed.cpp
     src/validation.cpp
     src/shader_reflect.h
     src/shader_reflect.cpp

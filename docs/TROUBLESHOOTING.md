@@ -72,6 +72,28 @@ which declares the same resources at the same registers.
 optional *Graphics Tools* feature (Settings › System › Optional features). Without it
 `DXINSP_DEBUG_LAYER` has nothing to enable.
 
+**The GPU stops responding (`DXGI_ERROR_DEVICE_REMOVED` or `DXGI_ERROR_DEVICE_HUNG`).** The call
+that reports it is nearly always a `Present`, long after the command that caused it. The library
+turns on Device Removed Extended Data before it creates the device, so the runtime keeps, for every
+command list, how far into it the GPU had got; when the device goes, the session log names the
+operation it stopped on:
+
+```
+GPU device lost (IDXGISwapChain::Present): The device was lost: the GPU stopped making progress on
+this application's work (DXGI_ERROR_DEVICE_HUNG), usually a shader that does not terminate or a draw
+too large to finish in the time Windows allows. The GPU was running DrawIndexedInstanced (operation
+118 of 340 in command list shadows).
+```
+
+Unlike the Vulkan breadcrumbs this costs nothing per draw and is on by default; `DXINSP_NO_DRED=1`
+turns it off. Name your command lists and queues (`SetName`) or the report can only call them
+*(unnamed)*. When the removal was a page fault the message adds the address and the objects the
+runtime had allocated nearest it — a *recently freed* resource there is a use-after-free.
+
+`DXINSP_SIMULATE_DEVICE_REMOVED=<n>` reports a removal at the nth present without one happening, to
+check the report arrives. It cannot show breadcrumbs: the runtime hands those over only once the
+device really has been removed, and says so until then.
+
 **The application is slow while captured.** Every render target and every bound buffer and
 texture is read back at the end of the pass it was used in, and the debug layer, when on, checks
 every call. Untick **Validation layer**, and lower the capture's buffer and texture limits.

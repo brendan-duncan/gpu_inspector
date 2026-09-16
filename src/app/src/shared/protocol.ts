@@ -512,6 +512,53 @@ export interface DeviceLostMessage {
   message: string;
 }
 
+/** One command list the D3D12 runtime was tracking when the device went (DRED auto-breadcrumbs). */
+export interface RemovedCommandList {
+  /** The debug name the application gave it, or "(unnamed)". */
+  commandList: string;
+  commandQueue: string;
+  /** How far into the list the GPU had got, and how long the list was. */
+  operationsCompleted: number;
+  operationsTotal: number;
+  complete: boolean;
+  /** The operation it had reached, when it had not finished: "DrawIndexedInstanced", "Dispatch". */
+  stoppedAt?: string;
+}
+
+/** An object the runtime had allocated near a page-faulting address. */
+export interface RemovedAllocation {
+  name: string;
+  /** "resource", "heap", "command list": what kind of object it was. */
+  type: string;
+}
+
+/**
+ * The D3D12 counterpart of DeviceLostMessage: the device was removed and the library read Device
+ * Removed Extended Data for what the GPU was running (src/d3d12/src/device_removed.h). Sent once per
+ * device.
+ *
+ * The runtime fills DRED in only once the device has really been removed, so `breadcrumbs` is false
+ * — and `commandLists` empty — whenever it was asked before that, including under
+ * DXINSP_SIMULATE_DEVICE_REMOVED. Then `message` is the whole answer.
+ */
+export interface DeviceRemovedMessage {
+  action: "DeviceRemoved";
+  /** The entry point that reported the removal, "IDXGISwapChain::Present". */
+  call: string;
+  /** Whether the runtime handed over breadcrumbs; without them only `message` is meaningful. */
+  breadcrumbs: boolean;
+  /** What the device gave as the reason, in words; absent when it reported none. */
+  reason?: string;
+  commandLists?: RemovedCommandList[];
+  /** The address the GPU faulted on, when the removal was a page fault. */
+  pageFaultAddress?: string;
+  existingAllocations?: RemovedAllocation[];
+  /** Freed near the faulting address: the classic use-after-free. */
+  recentFreedAllocations?: RemovedAllocation[];
+  /** The diagnosis in words, ready to show. */
+  message: string;
+}
+
 /** One host-side call timed during a capture (src/vulkan/src/cpu_timeline.h). */
 export interface CpuEvent {
   /** Index into CpuTimeline.threads. */
@@ -549,6 +596,7 @@ export interface CpuTimelineMessage {
 export type LayerMessage =
   | CpuTimelineMessage
   | DeviceLostMessage
+  | DeviceRemovedMessage
   | SnapshotMessage
   | ValidationMessage
   | ValidationCountMessage

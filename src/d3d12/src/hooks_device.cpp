@@ -15,6 +15,7 @@
 #include "d3d12_vtables.gen.h"
 #include "descriptors.h"
 #include "device_info.h"
+#include "device_removed.h"
 #include "formats.h"
 #include "image_readback.h"
 #include "json.h"
@@ -1082,6 +1083,9 @@ HRESULT WINAPI Hook_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Mini
     }
     // Before the device exists, or the layer cannot attach to it.
     ValidationLog::Get().EnableDebugLayer();
+    // DRED has to be asked for before the device exists, or the runtime keeps nothing
+    // (see device_removed.h).
+    EnableDeviceRemovedData();
     HRESULT hr = g_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
     // A null ppDevice only asks whether the adapter supports the level.
     if (FAILED(hr) || !ppDevice || !*ppDevice) return hr;

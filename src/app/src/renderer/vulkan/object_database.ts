@@ -6,7 +6,7 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import { isD3D12Texture } from "../d3d12/d3d12_object.js";
-import type { AddObjectMessage, ArgValue, DeviceLostMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -63,8 +63,11 @@ export class ObjectDatabase implements ObjectLookup {
   validationDropped = 0;
   /** Leak reports (objects alive when their device or instance was destroyed), in arrival order. */
   leaks: LeakReportMessage[] = [];
-  /** Set once the GPU has stopped responding; it never recovers within the session. */
-  deviceLost: DeviceLostMessage | null = null;
+  /**
+   * Set once the GPU has stopped responding; it never recovers within the session. Either backend's
+   * report, since what the UI does with them is the same and both carry a finished message.
+   */
+  deviceLost: DeviceLostMessage | DeviceRemovedMessage | null = null;
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -83,7 +86,7 @@ export class ObjectDatabase implements ObjectLookup {
   readonly onValidationMessage = new Signal<(entry: ValidationEntry, isNew: boolean) => void>();
   readonly onLeakReport = new Signal<(report: LeakReportMessage) => void>();
   /** The GPU stopped responding, with the command it was running when it did. */
-  readonly onDeviceLost = new Signal<(report: DeviceLostMessage) => void>();
+  readonly onDeviceLost = new Signal<(report: DeviceLostMessage | DeviceRemovedMessage) => void>();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = new Map<number, StackFrame[]>();
   stacksAvailable: boolean | null = null;
@@ -345,9 +348,11 @@ export class ObjectDatabase implements ObjectLookup {
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
         break;
+      case "DeviceRemoved":
       case "DeviceLost":
-        // The GPU stopped responding. The layer has already worked out which command it was on;
-        // this only has to make sure the answer is not lost (src/vulkan/src/device_lost.h).
+        // The GPU stopped responding. The Vulkan layer, or on D3D12 the runtime's DRED, has already
+        // worked out which command it was on; this only has to make sure the answer is not lost.
+        // See src/vulkan/src/device_lost.h and src/d3d12/src/device_removed.h.
         this.deviceLost = msg;
         this.onDeviceLost.emit(msg);
         break;

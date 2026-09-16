@@ -26,6 +26,13 @@
   memory. A latency-bound pass in GPU Bottlenecks now says *why* where a capture carries them: the
   registers its heaviest stage holds are usually what keeps occupancy low, and where the shader is
   light the report rules register pressure out instead.
+- Device-removed diagnostics for D3D12 (`src/d3d12/src/device_removed.h`, docs/TROUBLESHOOTING.md):
+  the library turns on Device Removed Extended Data before it creates the device, so when the GPU
+  stops responding the session log names the operation each command list stopped on rather than only
+  reporting `DXGI_ERROR_DEVICE_REMOVED`, and spells out what the removal code means. A page fault
+  adds the faulting address and the objects allocated nearest it, where a recently freed one is a
+  use-after-free. Unlike the Vulkan breadcrumbs the runtime keeps these itself, so it costs nothing
+  per draw and is on by default (`DXINSP_NO_DRED=1` turns it off).
 - Device-lost diagnostics for Vulkan (`src/vulkan/src/device_lost.h`, docs/TROUBLESHOOTING.md):
   **Device-lost breadcrumbs** in the launch dialog (`VKINSP_BREADCRUMBS=1`, `breadcrumbs` for
   `launch_app`) has the GPU write a marker before and after every draw and dispatch, so when it

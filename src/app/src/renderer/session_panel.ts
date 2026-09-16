@@ -142,8 +142,15 @@ export class SessionPanel extends Div implements SessionContext {
     // rather than scrolling past with everything else (src/vulkan/src/device_lost.h).
     this.database.onDeviceLost.addListener((r) => {
       this.appendLog(`GPU device lost (${r.call}): ${r.message}`);
-      if (!r.breadcrumbs) {
+      // Only the Vulkan layer has breadcrumbs to turn on; D3D12's come from the runtime, and its
+      // own message already says why there are none (src/d3d12/src/device_removed.h).
+      if (!r.breadcrumbs && r.action === "DeviceLost") {
         this.appendLog("Launch with \"Device-lost breadcrumbs\" on to learn which command the GPU was running.");
+      }
+      // The command lists DRED was tracking, worst first: the one that stopped is the suspect.
+      for (const list of (r.action === "DeviceRemoved" ? r.commandLists ?? [] : []).filter((l) => !l.complete)) {
+        this.appendLog(`  ${list.commandList} on ${list.commandQueue}: ${list.operationsCompleted} of `
+          + `${list.operationsTotal} operations${list.stoppedAt ? `, stopped at ${list.stoppedAt}` : ""}`);
       }
     });
     const spacer = new Span(row, { class: "launch-spacer" });
