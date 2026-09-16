@@ -278,6 +278,13 @@ running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `src/d3d12/README
 `build\bin\Release\dxinsp_triangle.exe` is the D3D12 test application, the counterpart of
 `vkinsp_triangle` (`--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`).
 
+`test/path_tracer/` holds a path tracer for each API — `vkinsp_path_tracer`,
+`dxinsp_path_tracer` and `mtlinsp_path_tracer` — that renders the final scene of
+[Ray Tracing in One Weekend](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
+from one shared scene, to exercise ray tracing capture: bounding-box acceleration structures,
+intersection shaders, per-material hit groups and a running mean carried from frame to frame
+(`--spp N`, `--depth N`, `--no-accumulate`, `--rebuild`).
+
 ## macOS
 
 Applications on macOS render with Metal, and the Vulkan layer would see only the few that run on

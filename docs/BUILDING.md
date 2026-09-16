@@ -109,8 +109,9 @@ cd src/app && npm install && npm start
 ```
 
 Use the generator name of the Visual Studio you installed. The build puts the Vulkan layer, the
-D3D12 capture library with `dxinsp_launch.exe` and `dxinsp_shader.exe`, and the two test
-applications (`vkinsp_triangle.exe`, `dxinsp_triangle.exe`) in `build\bin\Release`.
+D3D12 capture library with `dxinsp_launch.exe` and `dxinsp_shader.exe`, and the test
+applications (`vkinsp_triangle.exe`, `dxinsp_triangle.exe`, and the ray tracing
+`vkinsp_path_tracer.exe` and `dxinsp_path_tracer.exe`) in `build\bin\Release`.
 
 ### macOS
 
@@ -121,7 +122,7 @@ cd src/app && npm install && npm start
 ```
 
 No submodule: the top-level `CMakeLists.txt` builds `src/metal/` — `build/bin/libmtlinsp_capture.dylib`
-— and the `mtlinsp_triangle` test application instead of the Vulkan layer. `tools/setup.sh` is
+— and the `mtlinsp_triangle` and `mtlinsp_path_tracer` test applications instead of the Vulkan layer. `tools/setup.sh` is
 Linux-only.
 
 ### Android layer

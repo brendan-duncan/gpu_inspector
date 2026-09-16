@@ -1183,6 +1183,37 @@ struct App {
     // Each frame: the top level rebuilt, then one trace into the storage image.
     void RecordRayTracing(VkCommandBuffer cb) {
         if (!rayTracing) return;
+        // The bottom level is rebuilt every frame beside the top one, as an engine with deforming
+        // geometry does. It also means a capture holds the build of everything it traces against:
+        // a bottom level built once before the capture cannot be rebuilt by a replay, which then
+        // traces against an empty structure (docs/REPLAY.md).
+        {
+            VkAccelerationStructureGeometryKHR triangles{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            triangles.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            triangles.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            triangles.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+            triangles.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            triangles.geometry.triangles.vertexData.deviceAddress = rt.vertices.address;
+            triangles.geometry.triangles.vertexStride = 3 * sizeof(float);
+            triangles.geometry.triangles.maxVertex = 2;
+            triangles.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+            VkAccelerationStructureBuildGeometryInfoKHR blasInfo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+            blasInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            blasInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            blasInfo.dstAccelerationStructure = rt.blas;
+            blasInfo.geometryCount = 1;
+            blasInfo.pGeometries = &triangles;
+            blasInfo.scratchData.deviceAddress = rt.scratch.address;
+            VkAccelerationStructureBuildRangeInfoKHR blasRange{1, 0, 0, 0};
+            const VkAccelerationStructureBuildRangeInfoKHR* blasRanges = &blasRange;
+            rt.build(cb, 1, &blasInfo, &blasRanges);
+            // The top level below reads it, and they share the scratch buffer.
+            VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                 VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+        }
         VkAccelerationStructureGeometryKHR geometry = TlasGeometry();
         VkAccelerationStructureBuildGeometryInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
         info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
