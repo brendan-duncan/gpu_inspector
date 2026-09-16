@@ -1320,7 +1320,7 @@ export class CaptureView implements CaptureHost {
     const db = this.window.database;
     if (!this._analysis) this._analysis = analyzeFrame(this.data, db, this.renderGraph());
     renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
-      { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) });
+      { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) }, this.data.cpuTimeline);
   }
 
   /**

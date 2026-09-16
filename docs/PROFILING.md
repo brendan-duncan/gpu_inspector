@@ -58,6 +58,23 @@ time its passes took.
 
 The meter in the session bar shows the same comparison live, without capturing.
 
+Those three numbers are aggregates, and two very different frames can produce the same ones: a frame
+blocked five milliseconds waiting for the GPU and a frame spending five milliseconds building
+command buffers look alike, and want opposite fixes. **Where the CPU went**, below the Frame Bound
+card, measures it instead. The layer times the calls a frame's CPU actually sits in, and the verdict
+distinguishes:
+
+| What dominates | What it means |
+|---|---|
+| Waiting on fences | The CPU is ahead of the GPU; the GPU sets the frame time. Continue to step 2. |
+| Submitting | Submission is a real cost: fewer, larger submissions and less state churn. |
+| Present and acquire | The display paces the frame. Neither processor is the limit at this rate. |
+| None of them | The time is in the application's own work between calls, which the layer does not time. |
+
+Waiting in `vkQueuePresentKHR` is not the same as waiting on a fence, which is why they are counted
+apart: with vsync on, a frame that finishes early blocks in present, and that is headroom rather
+than a problem.
+
 ## Step 2: which pass
 
 Open **Reports → GPU Bottlenecks**. The Passes table lists every pass, slowest first, with what

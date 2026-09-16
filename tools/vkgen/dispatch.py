@@ -56,6 +56,17 @@ BREADCRUMB_COMMANDS = {
     "vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR",
 }
 
+# The CPU side of a frame (src/cpu_timeline.h): calls timed on the host during a capture, so the
+# timeline shows where a frame's CPU time goes — submitting, presenting, or blocked waiting.
+# vkQueuePresentKHR is hand-written and times itself.
+CPU_TIMED_CALLS = {
+    "vkQueueSubmit": "Submit", "vkQueueSubmit2": "Submit", "vkQueueSubmit2KHR": "Submit",
+    "vkQueueBindSparse": "Submit",
+    "vkWaitForFences": "WaitFences",
+    "vkAcquireNextImageKHR": "Acquire", "vkAcquireNextImage2KHR": "Acquire",
+    "vkQueueWaitIdle": "WaitIdle", "vkDeviceWaitIdle": "WaitIdle",
+}
+
 # Calls that can report VK_ERROR_DEVICE_LOST, where the diagnosis is read (src/device_lost.h).
 DEVICE_LOST_CALLS = {
     "vkQueueSubmit", "vkQueueSubmit2", "vkQueueSubmit2KHR", "vkQueueBindSparse",
@@ -352,6 +363,7 @@ def emit_entry_cpp(reg, cmds, out):
         '#include "tracker.h"',
         '#include "hooks.h"',
         '#include "device_lost.h"',
+        '#include "cpu_timeline.h"',
         "#include <cstring>",
         "",
         "namespace vkinsp {",
@@ -424,6 +436,10 @@ def emit_entry_cpp(reg, cmds, out):
         # Device-lost breadcrumbs (src/device_lost.h): the GPU writes a marker before and after each
         # action, so a hang can be traced to the command that caused it. Both calls are a single
         # branch when breadcrumbs are off, which they are unless asked for.
+        cpuTimed = CPU_TIMED_CALLS.get(c.name)
+        if cpuTimed:
+            body.append("    const uint64_t vkinsp_cpu = CpuEventBegin();")
+
         crumb = c.name in BREADCRUMB_COMMANDS
         if crumb:
             body.append(f"    const uint32_t vkinsp_crumb = BeginBreadcrumb(vkinsp_dev, {first.name}, (uint32_t)VkCmdId::{short(c.name)});")
@@ -434,6 +450,8 @@ def emit_entry_cpp(reg, cmds, out):
         else:
             body.append(f"    {call};")
 
+        if cpuTimed:
+            body.append(f"    CpuEventEnd(vkinsp_dev, vkinsp_cpu, CpuCategory::{cpuTimed});")
         if crumb:
             body.append(f"    EndBreadcrumb(vkinsp_dev, {first.name}, vkinsp_crumb);")
         # A call that can report the device has gone: read the breadcrumbs and say what it was on.

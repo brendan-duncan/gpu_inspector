@@ -9,7 +9,7 @@ import type { DrawOverlay } from "./draw_overlay.js";
 import type { DrawStat } from "./draw_stats.js";
 import type { HwCounters } from "./hw_counters.js";
 import { ablationKey, type ShaderAblation } from "./shader_ablation.js";
-import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
+import type { CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, CpuTimelineMessage, LayerMessage, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 
 export interface CapturedTexture {
   info: CaptureTextureInfo;
@@ -91,6 +91,8 @@ export class CaptureData {
   drawStats: DrawStat[] | null = null;
   /** The GPU's own hardware counters per pass from a replay (renderer/hw_counters.ts). */
   hwCounters: HwCounters | null = null;
+  /** Where the frame's CPU time went, and how to place GPU times on the same axis (cpu_timeline.h). */
+  cpuTimeline: CpuTimelineMessage | null = null;
   /** Shader stages whose functions and lines a replay measured by ablation (renderer/shader_ablation.ts), one per pipeline stage. */
   ablations: ShaderAblation[] = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
@@ -115,6 +117,8 @@ export class CaptureData {
   readonly onDrawStats = new Signal<() => void>();
   /** The GPU's hardware counters arrived from a replay. */
   readonly onHwCounters = new Signal<() => void>();
+  /** The capture's CPU timeline arrived. */
+  readonly onCpuTimeline = new Signal<() => void>();
   /** Draw-call overlays arrived from a replay. */
   readonly onDrawOverlays = new Signal<() => void>();
   /** A shader stage was measured by ablation. */
@@ -137,6 +141,7 @@ export class CaptureData {
     this.pixelHistory = null;
     this.drawStats = null;
     this.hwCounters = null;
+    this.cpuTimeline = null;
     this.ablations = [];
     this.drawOverlays = new Map();
     this._expectedCommands = 0;
@@ -226,6 +231,7 @@ export class CaptureData {
     this.pixelHistory = c.pixelHistory;
     this.drawStats = c.drawStats;
     this.hwCounters = c.hwCounters;
+    this.cpuTimeline = c.cpuTimeline;
     this.ablations = c.ablations;
     this.onCaptureStatus.emit(`${this.commands.length} commands`);
     this.onCommandsComplete.emit();
@@ -238,6 +244,7 @@ export class CaptureData {
     if (this.pixelHistory) this.onPixelHistory.emit();
     if (this.drawStats) this.onDrawStats.emit();
     if (this.hwCounters) this.onHwCounters.emit();
+    if (this.cpuTimeline) this.onCpuTimeline.emit();
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -288,6 +295,11 @@ export class CaptureData {
         this.passTimings = new Map();
         for (const p of msg.passes ?? []) this.passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
         this.onPassTimings.emit();
+        break;
+      case "CaptureCpuTimeline":
+        // Where the frame's CPU time went, beside where its GPU time went (cpu_timeline.h).
+        this.cpuTimeline = msg;
+        this.onCpuTimeline.emit();
         break;
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
