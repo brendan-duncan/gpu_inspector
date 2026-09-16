@@ -341,16 +341,38 @@ application with injected state. Route (a) is the general one and is the prerequ
       because the bottom level is unbuilt in the replay. Checked for false positives on the
       triangle and Unity captures, which have no storage read-backs and are unchanged.
 - [ ] Ray tracing, the rest:
-  - **A replayed trace still finds no geometry**: every ray misses, so exactly the triangle's
-    12.5% of `test/triangle --ray-tracing`'s traced image differs. Three causes were found and
-    fixed (the build's geometry contents were never uploaded; instance references were the
-    captured addresses; the primitive count driving the rewrite was read too late) and the
-    symptom is unchanged, so at least one more remains. Ruled out: the contents are captured and
-    uploaded (`buildData` names buffer 56 for the vertices and 61 for the instances), the
-    references resolve (an unresolvable one leaves the build out and none is reported), the
-    patched upload precedes the frame's submission, and validation is silent. Worth checking
-    next: whether the descriptor set's acceleration structure write resolves to the replay's top
-    level, and whether the replay's buffers really carry the device-address allocate flag.
+  - **A replayed trace still finds no geometry**: every ray misses (or every hit runs the miss
+    shader, which looks the same), so exactly the triangle's 12.5% of `test/triangle
+    --ray-tracing`'s traced image differs. Three causes were found and fixed — the build's
+    geometry contents were never uploaded, instance references were left as the captured
+    addresses, and the primitive count driving the rewrite was read after the loop that needed
+    it — and the symptom did not move, so at least one more remains.
+
+    What the capture holds is correct, read straight out of the file: the vertex payload is a
+    real triangle (-0.5,-0.5,0 / 0.5,-0.5,0 / 0,0.5,0), the instance is the identity with mask
+    0xff and reference 276299776, and the bottom level (object 60) recorded exactly that address,
+    so the reference names it and nothing else. The frame is: two dispatches, a barrier, the
+    bottom level's build, an acceleration-structure barrier, the top level's build, then the
+    trace.
+
+    Ruled out on the replay side, each checked rather than assumed: the geometry contents are
+    uploaded; the instance reference is remapped to this process's bottom level (276299776 ->
+    195624960); the bottom level is built before the top one and the app's barrier between them
+    is replayed; the descriptor write names the same top level the build wrote; the primitive
+    counts reach `GetAccelerationStructureBuildSizesKHR` as 1; every binding table record matched
+    a captured group handle and was rewritten (an unmatched one is reported and none was); the
+    patched instance upload runs on its own submit that waits idle, so it precedes the frame; and
+    validation is silent with zero problems reported.
+
+    So the recorded stream looks right and the fault is in what the GPU actually does with it.
+    The cheapest way to split the remaining space is to read a structure back after the replay:
+    if the bottom level's backing buffer is empty the build did not run, and if it holds data the
+    fault is downstream in the top level or the trace. Two candidates that a static read cannot
+    settle: the two builds are recorded as separate calls and each allocates its scratch from
+    offset 0 of one shared buffer, so a second `EnsureScratch` that grows the buffer would free
+    memory the first build's recorded address still points at; and the pipeline's
+    `maxPipelineRayRecursionDepth` is worth confirming, since a replayed 0 would make the trace do
+    nothing without validation complaining.
   - A bottom level built before the capture cannot be rebuilt by the replay, so its rays miss
     (docs/REPLAY.md). Reading the structure back with `vkCmdCopyAccelerationStructureToMemoryKHR`
     at capture time is the only way to carry one that was never built while watching.
