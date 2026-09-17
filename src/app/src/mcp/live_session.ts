@@ -50,6 +50,7 @@ export interface LaunchOptions {
   port?: number;
   validation?: boolean;
   syncValidation?: boolean;
+  gpuValidation?: boolean;
   stacktraces?: boolean;
   recordAlways?: boolean;
   /** Vulkan: GPU breadcrumbs, so a lost device names the command it was running. */
@@ -588,7 +589,7 @@ export class SessionManager {
       const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
       const vulkan = layerDir ? {
         layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, breadcrumbs: !!o.breadcrumbs, shaderStatistics: !!o.shaderStatistics, stacktraces: o.stacktraces ?? true,
-        validation: !!o.validation, syncValidation: !!o.syncValidation,
+        validation: !!o.validation, syncValidation: !!o.syncValidation, gpuValidation: !!o.gpuValidation,
       } : null;
       const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;
       if (process.platform === "win32") {

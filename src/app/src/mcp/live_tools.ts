@@ -155,6 +155,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
         validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK), the D3D12 debug layer or Metal's validation, so validation messages reach the captures (default false)." },
         syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
+        gpuValidation: { type: "boolean", description: "With validation: GPU-assisted validation, which checks descriptor indices and addresses the CPU cannot see (default false; very slow)." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
         breadcrumbs: { type: "boolean", description: "Vulkan: have the GPU write a marker before and after every draw and dispatch, so if it stops responding (VK_ERROR_DEVICE_LOST) the session log names the command it was running. Costs two GPU writes per action; default false." },
@@ -168,6 +169,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         const s = await sessions.launch({
           exe: requireString(args, "exe"), args: stringArg(args, "args"), cwd: stringArg(args, "cwd"), env,
           validation: boolArg(args, "validation", false), syncValidation: boolArg(args, "syncValidation", false),
+          gpuValidation: boolArg(args, "gpuValidation", false),
           stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), breadcrumbs: boolArg(args, "breadcrumbs", false), shaderStatistics: boolArg(args, "shaderStatistics", false),
           port: optionalInt(args, "port"), layerDir: stringArg(args, "layerDir"),
         }, (numberArg(args, "waitSeconds") ?? 60) * 1000);

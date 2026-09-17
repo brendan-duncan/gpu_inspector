@@ -144,6 +144,15 @@ With **Validation layer** ticked at launch, the errors and warnings it reports a
 **Validation Messages** section, each linked to the objects it names. With **Sync validation**,
 synchronization hazards appear the same way, linked to the command that caused them.
 
+**GPU validation** adds the class neither of those can reach. The validation layer works from the
+calls it sees, and an index computed inside a shader is not one of them: a draw that reads element
+900 of a 256-entry descriptor array, or dereferences a buffer address the application never
+allocated, is a correct-looking call. GPU-assisted validation rewrites the shaders to check those on
+the device and report what they found, so the message names the dispatch and the binding it went out
+of bounds on. It is much slower than the rest — the shaders are patched and every access is checked
+— so it is worth turning on to answer a question rather than leaving on. On D3D12 the same tick
+enables the debug layer's GPU-based validation.
+
 On Metal this is Metal's own API and shader validation, in the mode that logs a failure instead of
 aborting.
 

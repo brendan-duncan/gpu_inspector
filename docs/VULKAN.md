@@ -37,6 +37,7 @@ The dialog's fields:
 | **Layer log** | Writes the layer's activity to the session's **Log** tab | small |
 | **Validation layer** | Also enables the Khronos validation layer. Its errors and warnings are listed in the Inspect tab, linked to the objects they name | slows the application |
 | **Sync validation** | With the validation layer: reports synchronization hazards between commands and between submissions | slow |
+| **GPU validation** | With the validation layer: rewrites the shaders to check descriptor indices, buffer addresses and indirect parameters on the GPU | very slow |
 | **Stack traces** | Records the call stack of every object creation, shown in the object's details | a few microseconds per object |
 
 ### Queued capture

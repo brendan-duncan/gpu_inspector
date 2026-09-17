@@ -86,6 +86,8 @@ export interface D3D12EnvironmentOptions {
   stacktraces: boolean;
   /** "Validation layer": the D3D12 debug layer is enabled before the device is created. */
   validation: boolean;
+  /** With `validation`: GPU-based validation, which patches the shaders to check what only the GPU knows. */
+  gpuValidation?: boolean;
   /** Also append the library's log to this file (a GUI application has no usable stderr). */
   logFile?: string;
 }
@@ -99,6 +101,7 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
     DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
     DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
     DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
+    ...(o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}),
   };
 }
 
@@ -186,7 +189,7 @@ export function windowsLaunch(o: WindowsLaunchOptions): WindowsLaunch {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
     ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
-    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? " (D3D12 debug layer on)" : ""}`);
+    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? (options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)") : ""}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
   }

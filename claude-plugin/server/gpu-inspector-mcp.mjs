@@ -11611,8 +11611,15 @@ function vulkanLayerEnvironment(o) {
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.
     ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
-    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
-    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
+    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
+    // the enable list for older ones, which takes several separated by the platform's path
+    // separator — so the two are built together rather than one overwriting the other.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {},
+    ...o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {},
+    ...o.validation && (o.syncValidation || o.gpuValidation) ? { VK_LAYER_ENABLES: [
+      ...o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : [],
+      ...o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []
+    ].join(path5.delimiter) } : {}
   };
 }
 function splitArgs(s) {
@@ -11699,7 +11706,8 @@ function d3d12Environment(o) {
     ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
     DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
     DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0"
+    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
+    ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
   };
 }
 function wrapLaunch(tools, exe, args, cwd) {
@@ -11736,7 +11744,7 @@ function windowsLaunch(o) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
     ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
-    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? " (D3D12 debug layer on)" : ""}`);
+    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
   }
@@ -27284,7 +27292,8 @@ var SessionManager = class {
         shaderStatistics: !!o.shaderStatistics,
         stacktraces: o.stacktraces ?? true,
         validation: !!o.validation,
-        syncValidation: !!o.syncValidation
+        syncValidation: !!o.syncValidation,
+        gpuValidation: !!o.gpuValidation
       } : null;
       const validationNote = o.validation && layerDir ? validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : null;
       if (process.platform === "win32") {
@@ -30872,6 +30881,7 @@ function liveTools(sessions2, store) {
         env: { type: "object", additionalProperties: { type: "string" }, description: "Extra environment variables." },
         validation: { type: "boolean", description: "Also enable the Khronos validation layer (Vulkan SDK), the D3D12 debug layer or Metal's validation, so validation messages reach the captures (default false)." },
         syncValidation: { type: "boolean", description: "With validation: synchronization validation too (default false)." },
+        gpuValidation: { type: "boolean", description: "With validation: GPU-assisted validation, which checks descriptor indices and addresses the CPU cannot see (default false; very slow)." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, so buffers recorded once and reused appear in captures (default false; costs CPU time)." },
         breadcrumbs: { type: "boolean", description: "Vulkan: have the GPU write a marker before and after every draw and dispatch, so if it stops responding (VK_ERROR_DEVICE_LOST) the session log names the command it was running. Costs two GPU writes per action; default false." },
@@ -30889,6 +30899,7 @@ function liveTools(sessions2, store) {
           env,
           validation: boolArg(args, "validation", false),
           syncValidation: boolArg(args, "syncValidation", false),
+          gpuValidation: boolArg(args, "gpuValidation", false),
           stacktraces: boolArg(args, "stacktraces", true),
           recordAlways: boolArg(args, "recordAlways", false),
           breadcrumbs: boolArg(args, "breadcrumbs", false),
