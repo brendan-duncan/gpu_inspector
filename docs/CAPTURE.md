@@ -21,6 +21,7 @@ The bar above it controls what is recorded:
 | **Profile passes** | Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |
+| **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). Vulkan only |
 
 On macOS there are also **Overdraw** and **Xcode Trace**; see [Metal](METAL.md#metal-only-capture-options).
 
