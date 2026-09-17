@@ -765,7 +765,16 @@ private:
     /** A device address the capture recorded, as one in this process (see the definition). */
     VkDeviceAddress RemapAddress(uint64_t bufferId, uint64_t offset);
     /** Working space for acceleration structure builds, grown as they need it. */
-    bool EnsureScratch(VkDeviceSize size);
+    /**
+     * A stretch of build scratch for one build command, as a device address in `address`.
+     *
+     * Scratch holds no input, so the replay makes its own rather than carrying the capture's — but
+     * it cannot hand every build the same memory from offset 0. Two builds recorded into one
+     * submission may run with nothing ordering them, which is legal when the application gave each
+     * its own scratch, and sharing would introduce a hazard the frame never had. So each
+     * reservation takes a fresh stretch, reset only when the next submission starts recording.
+     */
+    bool ReserveScratch(VkDeviceSize size, VkDeviceAddress& address);
     /** Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped. */
     void BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb);
     /** Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles. */
@@ -791,10 +800,14 @@ private:
 
     void* _library = nullptr;
     VkFunctions _fns{};
-    /** Build scratch, shared by every build of the frame (EnsureScratch). */
+    /** Build scratch, handed out a stretch at a time within a submission (ReserveScratch). */
     VkBuffer _scratch = VK_NULL_HANDLE;
     VkDeviceMemory _scratchMemory = VK_NULL_HANDLE;
     VkDeviceSize _scratchSize = 0;
+    /** How much of it this submission has given out; reset when the next one starts recording. */
+    VkDeviceSize _scratchUsed = 0;
+    /** Buffers outgrown mid-submission, kept alive because recorded builds hold their addresses. */
+    std::vector<std::pair<VkBuffer, VkDeviceMemory>> _retiredScratch;
     /** The replay's own shader binding table, written with this driver's group handles. */
     VkBuffer _bindingTable = VK_NULL_HANDLE;
     VkDeviceMemory _bindingTableMemory = VK_NULL_HANDLE;

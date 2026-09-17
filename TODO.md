@@ -363,12 +363,10 @@ application with injected state. Route (a) is the general one and is the prerequ
     (the build's geometry contents were never uploaded, instance references were left as the
     captured addresses, and the primitive count driving the rewrite was read after the loop that
     needed it), but none of them was the one that mattered.
-  - A replay's scratch is one buffer grown as builds need it, and each
-    `vkCmdBuildAccelerationStructuresKHR` allocates from offset 0 of it. A later build that needs
-    more frees the buffer an earlier recorded build's scratch address still points at. Not seen
-    on any capture here — the addresses happened to come back the same — but a frame whose builds
-    grow would replay against freed memory. The scratch wants sizing across the whole frame
-    before any of it is recorded, rather than per call.
+  - [x] A replay's scratch used to start at offset 0 for every build and free the buffer when it
+    grew, so a frame of several builds replayed them into each other and, once the buffer grew,
+    into memory the driver had taken back. It is now handed out a stretch at a time within a
+    submission, and an outgrown buffer is retired rather than freed (`Replayer::ReserveScratch`).
   - A bottom level built before the capture cannot be rebuilt by the replay, so its rays miss
     (docs/REPLAY.md). Reading the structure back with `vkCmdCopyAccelerationStructureToMemoryKHR`
     at capture time is the only way to carry one that was never built while watching.

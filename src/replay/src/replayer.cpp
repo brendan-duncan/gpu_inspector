@@ -1074,11 +1074,19 @@ void Replayer::DestroyAll() {
             // Command buffers and descriptor sets go with their pools.
         }
         // The build scratch is the replay's own, not the capture's, so it is not in _created.
+        // Everything it outgrew goes with it: those buffers were kept alive only until the
+        // submissions holding their addresses had run.
+        for (const auto& [buffer, memory] : _retiredScratch) {
+            _fns.DestroyBuffer(_device, buffer, nullptr);
+            _fns.FreeMemory(_device, memory, nullptr);
+        }
+        _retiredScratch.clear();
         if (_scratch) _fns.DestroyBuffer(_device, _scratch, nullptr);
         if (_scratchMemory) _fns.FreeMemory(_device, _scratchMemory, nullptr);
         _scratch = VK_NULL_HANDLE;
         _scratchMemory = VK_NULL_HANDLE;
         _scratchSize = 0;
+        _scratchUsed = 0;
         if (_bindingTable) _fns.DestroyBuffer(_device, _bindingTable, nullptr);
         if (_bindingTableMemory) _fns.FreeMemory(_device, _bindingTableMemory, nullptr);
         _bindingTable = VK_NULL_HANDLE;
@@ -1416,24 +1424,43 @@ VkDeviceAddress Replayer::RemapAddress(uint64_t bufferId, uint64_t offset) {
  * is not remapped: scratch holds no input, only the driver's working space, so a fresh buffer of the
  * size the driver asks for is equivalent and avoids depending on a buffer the capture may not hold.
  */
-bool Replayer::EnsureScratch(VkDeviceSize size) {
-    if (size <= _scratchSize && _scratch) return true;
-    if (_scratch) {
-        _fns.DestroyBuffer(_device, _scratch, nullptr);
-        _fns.FreeMemory(_device, _scratchMemory, nullptr);
+bool Replayer::ReserveScratch(VkDeviceSize size, VkDeviceAddress& address) {
+    if (!size || !_fns.GetBufferDeviceAddress) return false;
+    // Comfortably above every minAccelerationStructureScratchOffsetAlignment in the wild.
+    constexpr VkDeviceSize kAlign = 256;
+    VkDeviceSize at = (_scratchUsed + kAlign - 1) & ~(kAlign - 1);
+    if (!_scratch || at + size > _scratchSize) {
+        // The old buffer is retired rather than freed: builds already recorded into this
+        // submission hold addresses into it, and freeing it would leave them writing into memory
+        // the driver has taken back.
+        if (_scratch) _retiredScratch.emplace_back(_scratch, _scratchMemory);
         _scratch = VK_NULL_HANDLE;
         _scratchMemory = VK_NULL_HANDLE;
+        _scratchSize = 0;
+        // Twice what is asked for and never trivially small, so a frame of many builds allocates
+        // once rather than retiring a buffer per build.
+        constexpr VkDeviceSize kMinimum = 4u << 20;
+        const VkDeviceSize doubled = (at + size) * 2;
+        const VkDeviceSize want = doubled > kMinimum ? doubled : kMinimum;
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = want;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (_fns.CreateBuffer(_device, &info, nullptr, &_scratch) != VK_SUCCESS) return false;
+        VkMemoryRequirements requirements{};
+        _fns.GetBufferMemoryRequirements(_device, _scratch, &requirements);
+        if (!AllocateBound(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, _scratchMemory, false, true)) return false;
+        if (_fns.BindBufferMemory(_device, _scratch, _scratchMemory, 0) != VK_SUCCESS) return false;
+        _scratchSize = want;
+        _scratchUsed = 0;
+        at = 0;
     }
-    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    info.size = size;
-    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (_fns.CreateBuffer(_device, &info, nullptr, &_scratch) != VK_SUCCESS) return false;
-    VkMemoryRequirements requirements{};
-    _fns.GetBufferMemoryRequirements(_device, _scratch, &requirements);
-    if (!AllocateBound(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, _scratchMemory, false, true)) return false;
-    if (_fns.BindBufferMemory(_device, _scratch, _scratchMemory, 0) != VK_SUCCESS) return false;
-    _scratchSize = size;
+    VkBufferDeviceAddressInfo bi{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    bi.buffer = _scratch;
+    const VkDeviceAddress base = _fns.GetBufferDeviceAddress(_device, &bi);
+    if (!base) return false;
+    address = base + at;
+    _scratchUsed = at + size;
     return true;
 }
 
@@ -1617,15 +1644,10 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
         scratchNeeded = scratchAt[i] + sizes.buildScratchSize;
     }
 
-    if (scratchNeeded && !EnsureScratch(scratchNeeded)) {
+    VkDeviceAddress scratchBase = 0;
+    if (scratchNeeded && !ReserveScratch(scratchNeeded, scratchBase)) {
         Problem("left out: the build's scratch memory could not be allocated");
         return;
-    }
-    VkDeviceAddress scratchBase = 0;
-    if (_scratch && _fns.GetBufferDeviceAddress) {
-        VkBufferDeviceAddressInfo bi{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-        bi.buffer = _scratch;
-        scratchBase = _fns.GetBufferDeviceAddress(_device, &bi);
     }
     for (uint32_t i = 0; i < a.infoCount; ++i) built[i].scratchData.deviceAddress = scratchBase + scratchAt[i];
 
@@ -2562,6 +2584,9 @@ void Replayer::ReplayCommands() {
         _drawSlot = 0;
         _pendingDraws.clear();
         _pendingDrawSlots.clear();
+        // The submission before this one has been waited on, so its builds have finished with the
+        // scratch they were given and the next frame's can start from the beginning of it again.
+        _scratchUsed = 0;
         const JValue* submits = args->Get("pSubmits");
         for (uint32_t s = 0; submits && s < submits->count; ++s) {
             const JValue& submit = submits->items[s];

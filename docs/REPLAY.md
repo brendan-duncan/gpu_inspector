@@ -564,7 +564,10 @@ Ray tracing replays, builds and traces alike. Pipelines and acceleration structu
 `vkCmdBuildAccelerationStructuresKHR` is issued with its addresses remapped: a build names the
 geometry it reads by device address, and an address from the captured process means nothing here,
 so the replay uses the buffer and offset the layer recorded for each one to find its own buffer and
-ask the driver where it put it. Scratch is the replay's own, since scratch holds no input. A build
+ask the driver where it put it. Scratch is the replay's own, since scratch holds no input, and each
+build in a submission gets a stretch of its own rather than all of them sharing one: builds recorded
+with nothing ordering them are legal when the application gave each its own scratch, and overlapping
+them would introduce a hazard the frame never had. A build
 reading memory the capture could not tie to a buffer is left out rather than issued, because the
 driver rejects a build whose geometry address is not one of its buffers.
 
