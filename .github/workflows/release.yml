@@ -239,6 +239,35 @@ jobs:
 
           Installed builds update themselves: the app checks this repository's releases on startup.
           NOTES
+          # The release is created empty and published only once every asset is up, rather than
+          # handing the whole set to `gh release create`. That form uploads five assets at a time
+          # and deletes the release if any one of them fails, so a single dropped connection threw
+          # away all 745MB and left no release at all (v0.15.0 failed this way twice). Worse, gh
+          # cannot recover on its own: it retries a failed upload when the transport drops, but the
+          # POST is not idempotent, so an upload that reached GitHub while the response did not
+          # comes back 422 "ReleaseAsset.name already exists" on the retry.
+          #
+          # So: one asset at a time, with real backoff, and --clobber to delete a half-landed asset
+          # before re-sending it instead of colliding with it. The release stays a draft throughout,
+          # which keeps the property that a failure never leaves a half-published release, and lets
+          # a re-run pick up the draft an earlier attempt left behind instead of starting over.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "GPU Inspector ${VERSION}" --notes-file notes.md
+          fi
+
           # latest.yml / latest-linux.yml and the .blockmap are what installed builds read to update.
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --title "GPU Inspector ${VERSION}" --notes-file notes.md assets/*
+          for asset in assets/*; do
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$asset"; then
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "::error::Failed to upload $(basename "$asset") after 5 attempts."
+                exit 1
+              fi
+              sleep $((attempt * 15))
+            done
+          done
+
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
