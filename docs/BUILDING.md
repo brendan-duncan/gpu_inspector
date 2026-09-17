@@ -133,6 +133,45 @@ python tools/build_android.py            # arm64-v8a; add --abi arm64-v8a,x86_64
 
 See [Android and Quest](ANDROID.md#build-the-android-layer).
 
+## What the test applications can be asked to do
+
+Each feature of the inspector has a mode of the test application that exercises it, which is how
+they are developed and how a regression is reproduced. `--frames N`, `--width` and `--height` apply
+to both; the rest draw the cube differently or misbehave on purpose.
+
+`vkinsp_triangle`:
+
+| Mode | What it does |
+|---|---|
+| `--ray-tracing` | Builds both acceleration structures every frame and traces into a storage image |
+| `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
+| `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |
+| `--oob` | Writes past its storage buffer from the shader: found only by **GPU validation** |
+| `--hazard` | Writes the vertex buffer with no barrier, for synchronization validation |
+| `--leak` | Never destroys what it creates, for the leak report |
+| `--bad-scissor` | A negative scissor offset, a validation error |
+| `--occluded` | Draws the cube twice in the same place, so every fragment is overdrawn |
+| `--heavy` | A costly fragment shader with known per-function costs, for shader analysis |
+| `--msaa`, `--stencil` | Multisampled and stencil attachments, for the read-back paths |
+| `--push-template` | Pushes its descriptors through an update template |
+| `--pipeline-library` | Links the pipeline from graphics pipeline libraries |
+| `--shader-object` | Draws with `VK_EXT_shader_object` instead of a pipeline |
+| `--suspend` | A dynamic rendering pass suspended and resumed across command buffers |
+| `--prerecord` | Records command buffers once and resubmits them, for **Record all command buffers** |
+| `--persistent` | Each frame reads what the last left behind, which a replay must restore |
+| `--second-device`, `--second-queue` | A second stream of work each frame |
+| `--offscreen` | Renders without ever presenting, like an OpenXR application |
+
+`dxinsp_triangle`:
+
+| Mode | What it does |
+|---|---|
+| `--stall <ms>` | Sleeps each frame so vsynced presents miss refreshes, for the dropped-frame count |
+| `--compute`, `--bundle`, `--indirect` | A dispatch, a bundle, and an indirect draw |
+| `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
+| `--debug-layer` | Turns the D3D12 debug layer on from the application |
+| `--msaa`, `--stencil`, `--leak`, `--offscreen` | As above |
+
 ## Other commands
 
 From `src/app/`:
