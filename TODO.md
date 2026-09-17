@@ -544,12 +544,28 @@ the DXIL shader debugger, the acceleration structure viewer, export to C++, remo
 history, the dependency view, DRED, and PIX's event markers (decoded in
 `src/d3d12/src/hooks_command_list.cpp`). Ordered by value per effort.
 
-- [ ] Timing captures: CPU and GPU recorded continuously over seconds or minutes, with a frame-time
-      graph to scroll, the hitches found, and statistics over a selected range. A capture today is
-      N frames in full detail, and the timeline covers only those. The CPU timeline, the pass
-      timestamps and the memory samples are cheap enough to keep for every frame in a ring buffer,
-      with no read-back. Capture on hitch belongs with it: a frame over budget keeps the frames
-      around it, or takes a full capture of the next one.
+- [x] Timing captures, the CPU half (**Timing Capture** in the capture bar, `renderer/frame_timing.ts`,
+      `renderer/timing_view.ts`). Every frame's wall time and its CPU time per category, kept in a
+      ring in the layer (about twenty minutes) and batched to the UI on the frame report's interval,
+      with a frame-time graph, the distribution, and each hitch named with what caused it. A hitch is
+      a frame over twice the median *and* at least 4 ms over it — the multiple alone calls ordinary
+      jitter a hitch on an application running at 300 fps — and a category is only blamed when it
+      accounts for half the frame's time over the median, so submission that costs the same in every
+      frame is not blamed for the one that stalled. It is a mode rather than always on: recording
+      needs a clock read in every timed call, and the layer's cost when idle is one relaxed atomic
+      read. Vulkan only so far.
+- [ ] Timing captures, the rest:
+  - **D3D12 and Metal**: both have the same CPU categories already
+    (`src/d3d12/src/cpu_timeline.h`, `src/metal/src/cpu_timeline.h`), so this is the same ring and
+    the same message on each; the UI and the analysis are backend-agnostic already.
+  - **The GPU half**: a pass's GPU time every frame, not only while capturing. Unlike the CPU side
+    this is not free — it needs timestamp queries around every pass in every frame — so it wants to
+    be its own option rather than part of the same switch.
+  - **Statistics over a selected range**: `summarizeTiming` already takes one, and the graph should
+    let a range be dragged out rather than always summarizing the whole run.
+  - **Capture on hitch**: a frame over budget takes a full capture of the next one, which is the
+    thing that would make a hitch reproducible rather than only visible. The hitch threshold to
+    trigger on is the one this already computes.
 - [x] Pipeline and shader creation on the CPU timeline, on all three backends, as a category of its
       own with its own verdict (`renderer/cpu_timeline.ts`, "Creating pipelines"). Metal's
       completion-handler forms are left untimed on purpose: they do not block.

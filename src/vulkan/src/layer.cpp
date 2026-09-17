@@ -276,6 +276,8 @@ static void HandleUiMessage(const std::string& text) {
         o.profilePasses = msg.GetBool("profilePasses", true);
         o.stacktraces = msg.GetBool("stacktraces", false);
         CaptureManager::Get().Request(o);
+    } else if (action == "TimingCapture") {
+        if (msg.GetBool("start", false)) BeginTimingCapture(); else EndTimingCapture();
     } else if (action == "RequestStacktraces") {
         // Creation stacks of objects, symbolized: {stacks: [{id, frames}]}; `available` says
         // whether the layer captured any (the launch option).
@@ -725,6 +727,9 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
         }
         data->frameTimeAccumMs += ms;
         data->frameTimeCount++;
+        // Per-frame rather than per-report: a hitch is one frame, and the report below
+        // averages five or six of them together (cpu_timeline.h).
+        NoteFrameTiming((uint32_t)data->frameIndex, ms);
 
         // Refresh-rate estimate from the intervals of the last ~240 frames (see EstimateRefreshMs).
         constexpr size_t kWindow = 240;
@@ -793,6 +798,9 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             // than an instant.
             SendMemoryBudget(data);
             SendMemorySample(data);
+            // The frames recorded since the last report, batched onto the same interval so a
+            // timing capture adds no traffic of its own.
+            SendTimingFrames();
             ValidationLog::Get().Flush();
         }
     } else {

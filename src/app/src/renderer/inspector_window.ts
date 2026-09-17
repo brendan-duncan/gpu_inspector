@@ -190,6 +190,7 @@ export class InspectorWindow extends Window {
       if (this._debug?.capture) this._debugCapture(panel);
     }
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
+    if (this._debug?.timingMs) this._debugTiming(panel, this._debug.timingMs);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -518,6 +519,16 @@ export class InspectorWindow extends Window {
       else setTimeout(tryIt, 500);
     };
     setTimeout(tryIt, 1000);
+  }
+
+  /** --debug-timing=<ms>: a timing capture driven from the command line, for screenshots and tests. */
+  private _debugTiming(panel: SessionPanel, ms: number): void {
+    setTimeout(() => {
+      if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
+      panel.showCaptureTab();
+      panel.capturePanel.toggleTiming();
+      setTimeout(() => panel.capturePanel.toggleTiming(), Math.max(500, ms));
+    }, 1500);
   }
 
   private _debugCapture(panel: SessionPanel): void {

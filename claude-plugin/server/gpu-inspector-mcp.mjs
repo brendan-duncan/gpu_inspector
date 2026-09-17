@@ -8948,6 +8948,106 @@ function analyzeFrame(data, db, graph) {
 // src/renderer/memory_timeline.ts
 var MAX_SAMPLES = 36e3;
 
+// src/renderer/cpu_timeline.ts
+var CPU_CATEGORY_LABEL = {
+  submit: "Submitting",
+  present: "Presenting",
+  waitFences: "Waiting on fences",
+  acquire: "Waiting for a swapchain image",
+  waitIdle: "Waiting for idle",
+  pipeline: "Creating pipelines"
+};
+var CPU_CATEGORY_KIND = {
+  waitFences: "gpuWait",
+  waitIdle: "gpuWait",
+  present: "displayWait",
+  acquire: "displayWait",
+  submit: "work",
+  // Kept apart from submission, though both are the application's own thread doing something
+  // rather than waiting, because the two want opposite fixes: submission wants fewer and larger
+  // submits, a compile wants the pipeline built before the frame that needs it.
+  pipeline: "compile"
+};
+function cpuKindOf(category) {
+  return CPU_CATEGORY_KIND[category] ?? "work";
+}
+function summarizeCpuTimeline(timeline) {
+  if (!timeline || !timeline.events?.length) return null;
+  const events = timeline.events;
+  let start = Infinity;
+  let end = -Infinity;
+  const byCategory = /* @__PURE__ */ new Map();
+  const frames = /* @__PURE__ */ new Set();
+  for (const e of events) {
+    start = Math.min(start, e.startMs);
+    end = Math.max(end, e.startMs + e.durationMs);
+    frames.add(e.frame);
+    const t = byCategory.get(e.category) ?? { calls: 0, ms: 0 };
+    t.calls++;
+    t.ms += e.durationMs;
+    byCategory.set(e.category, t);
+  }
+  const totals = [...byCategory.entries()].map(([category, t]) => ({
+    category,
+    label: CPU_CATEGORY_LABEL[category] ?? category,
+    calls: t.calls,
+    ms: t.ms,
+    kind: cpuKindOf(category)
+  })).sort((a, b) => b.ms - a.ms);
+  let gpuWaitMs = 0;
+  let displayWaitMs = 0;
+  let submitMs = 0;
+  let compileMs = 0;
+  for (const t of totals) {
+    if (t.kind === "gpuWait") gpuWaitMs += t.ms;
+    else if (t.kind === "displayWait") displayWaitMs += t.ms;
+    else if (t.kind === "compile") compileMs += t.ms;
+    else submitMs += t.ms;
+  }
+  return {
+    spanMs: end > start ? end - start : 0,
+    totals,
+    gpuWaitMs,
+    displayWaitMs,
+    submitMs,
+    compileMs,
+    threads: timeline.threads?.length ?? 1,
+    frames: frames.size,
+    dropped: timeline.dropped ?? 0,
+    calibrated: !!timeline.calibration
+  };
+}
+function cpuVerdict(s) {
+  const share = (ms) => s.spanMs > 0 ? ms / s.spanMs : 0;
+  const gpu = share(s.gpuWaitMs);
+  const display = share(s.displayWaitMs);
+  const submit = share(s.submitMs);
+  const compile = share(s.compileMs);
+  const pct = (v) => `${(100 * v).toFixed(0)}%`;
+  if (compile >= 0.1) {
+    const calls = s.totals.find((t) => t.kind === "compile")?.calls ?? 0;
+    return `The CPU spent ${pct(compile)} of this capture creating pipelines \u2014 ${calls} ${calls === 1 ? "call" : "calls"} inside the captured frames. A pipeline built while the frame that needs it is being recorded stops that frame for as long as the driver takes to compile it, which is the usual cause of a hitch on first sight of a material or an effect. Build them at load, or from a pipeline cache.`;
+  }
+  if (gpu >= 0.4) {
+    return `The CPU spent ${pct(gpu)} of this capture waiting on fences, so it is ahead of the GPU and the GPU is what sets the frame time. GPU Bottlenecks says which pass to shorten.`;
+  }
+  if (submit >= 0.3) {
+    return `The CPU spent ${pct(submit)} of this capture inside submission, which is a real cost at that share: fewer and larger submissions, fewer command buffers, and less state churn per draw.`;
+  }
+  if (display >= 0.4) {
+    return `The CPU spent ${pct(display)} of this capture in present and acquire and only ${pct(gpu)} waiting on the GPU, so the frame is paced by the display rather than limited by either processor. Neither has to get faster for this frame rate; both would have to for a higher one.`;
+  }
+  return `Only ${pct(gpu + display + submit + compile)} of this capture was inside calls the layer times, so most of the frame went to the application's own work between them: building command buffers, culling, simulation.`;
+}
+function gpuTicksToCpuMs(timeline, ticks) {
+  const c2 = timeline?.calibration;
+  if (!c2) return null;
+  return c2.hostMs + (Number(ticks) - Number(c2.deviceTicks)) * c2.timestampPeriod / 1e6;
+}
+
+// src/renderer/frame_timing.ts
+var MAX_TIMING_FRAMES = 72e3;
+
 // src/renderer/vulkan/object_database.ts
 var HELD_REFERENCES = {
   VkImageView: /* @__PURE__ */ new Set(["VkImage"]),
@@ -9011,6 +9111,11 @@ var ObjectDatabase = class {
    * the object graph because the graph only ever holds the present: the shape needs the past.
    */
   memorySamples = [];
+  /**
+   * A timing capture's per-frame records, appended as the layer sends them
+   * (renderer/frame_timing.ts). Empty until one is started.
+   */
+  timing = { categories: [], frames: [] };
   _snapshotRemaining = 0;
   onReset = new Signal();
   onSnapshotBegin = new Signal();
@@ -9031,6 +9136,7 @@ var ObjectDatabase = class {
   onDeviceLost = new Signal();
   /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
   onMemorySample = new Signal();
+  onTimingFrames = new Signal();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = /* @__PURE__ */ new Map();
   stacksAvailable = null;
@@ -9292,6 +9398,14 @@ var ObjectDatabase = class {
       case "LeakReport":
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
+        break;
+      case "TimingFrames":
+        if (msg.categories.length) this.timing.categories = msg.categories;
+        for (const f of msg.frames) this.timing.frames.push(f);
+        if (this.timing.frames.length > MAX_TIMING_FRAMES) {
+          this.timing.frames.splice(0, this.timing.frames.length - MAX_TIMING_FRAMES);
+        }
+        this.onTimingFrames.emit();
         break;
       case "MemorySample":
         this.memorySamples.push(msg);
@@ -29638,103 +29752,6 @@ function texelValues(format, bytes, depth = false) {
   if (!bytes.byteLength || !format) return null;
   const tex = decodeTexels(texelInfo(format, depth), bytes);
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
-}
-
-// src/renderer/cpu_timeline.ts
-var CPU_CATEGORY_LABEL = {
-  submit: "Submitting",
-  present: "Presenting",
-  waitFences: "Waiting on fences",
-  acquire: "Waiting for a swapchain image",
-  waitIdle: "Waiting for idle",
-  pipeline: "Creating pipelines"
-};
-var CPU_CATEGORY_KIND = {
-  waitFences: "gpuWait",
-  waitIdle: "gpuWait",
-  present: "displayWait",
-  acquire: "displayWait",
-  submit: "work",
-  // Kept apart from submission, though both are the application's own thread doing something
-  // rather than waiting, because the two want opposite fixes: submission wants fewer and larger
-  // submits, a compile wants the pipeline built before the frame that needs it.
-  pipeline: "compile"
-};
-function cpuKindOf(category) {
-  return CPU_CATEGORY_KIND[category] ?? "work";
-}
-function summarizeCpuTimeline(timeline) {
-  if (!timeline || !timeline.events?.length) return null;
-  const events = timeline.events;
-  let start = Infinity;
-  let end = -Infinity;
-  const byCategory = /* @__PURE__ */ new Map();
-  const frames = /* @__PURE__ */ new Set();
-  for (const e of events) {
-    start = Math.min(start, e.startMs);
-    end = Math.max(end, e.startMs + e.durationMs);
-    frames.add(e.frame);
-    const t = byCategory.get(e.category) ?? { calls: 0, ms: 0 };
-    t.calls++;
-    t.ms += e.durationMs;
-    byCategory.set(e.category, t);
-  }
-  const totals = [...byCategory.entries()].map(([category, t]) => ({
-    category,
-    label: CPU_CATEGORY_LABEL[category] ?? category,
-    calls: t.calls,
-    ms: t.ms,
-    kind: cpuKindOf(category)
-  })).sort((a, b) => b.ms - a.ms);
-  let gpuWaitMs = 0;
-  let displayWaitMs = 0;
-  let submitMs = 0;
-  let compileMs = 0;
-  for (const t of totals) {
-    if (t.kind === "gpuWait") gpuWaitMs += t.ms;
-    else if (t.kind === "displayWait") displayWaitMs += t.ms;
-    else if (t.kind === "compile") compileMs += t.ms;
-    else submitMs += t.ms;
-  }
-  return {
-    spanMs: end > start ? end - start : 0,
-    totals,
-    gpuWaitMs,
-    displayWaitMs,
-    submitMs,
-    compileMs,
-    threads: timeline.threads?.length ?? 1,
-    frames: frames.size,
-    dropped: timeline.dropped ?? 0,
-    calibrated: !!timeline.calibration
-  };
-}
-function cpuVerdict(s) {
-  const share = (ms) => s.spanMs > 0 ? ms / s.spanMs : 0;
-  const gpu = share(s.gpuWaitMs);
-  const display = share(s.displayWaitMs);
-  const submit = share(s.submitMs);
-  const compile = share(s.compileMs);
-  const pct = (v) => `${(100 * v).toFixed(0)}%`;
-  if (compile >= 0.1) {
-    const calls = s.totals.find((t) => t.kind === "compile")?.calls ?? 0;
-    return `The CPU spent ${pct(compile)} of this capture creating pipelines \u2014 ${calls} ${calls === 1 ? "call" : "calls"} inside the captured frames. A pipeline built while the frame that needs it is being recorded stops that frame for as long as the driver takes to compile it, which is the usual cause of a hitch on first sight of a material or an effect. Build them at load, or from a pipeline cache.`;
-  }
-  if (gpu >= 0.4) {
-    return `The CPU spent ${pct(gpu)} of this capture waiting on fences, so it is ahead of the GPU and the GPU is what sets the frame time. GPU Bottlenecks says which pass to shorten.`;
-  }
-  if (submit >= 0.3) {
-    return `The CPU spent ${pct(submit)} of this capture inside submission, which is a real cost at that share: fewer and larger submissions, fewer command buffers, and less state churn per draw.`;
-  }
-  if (display >= 0.4) {
-    return `The CPU spent ${pct(display)} of this capture in present and acquire and only ${pct(gpu)} waiting on the GPU, so the frame is paced by the display rather than limited by either processor. Neither has to get faster for this frame rate; both would have to for a higher one.`;
-  }
-  return `Only ${pct(gpu + display + submit + compile)} of this capture was inside calls the layer times, so most of the frame went to the application's own work between them: building command buffers, culling, simulation.`;
-}
-function gpuTicksToCpuMs(timeline, ticks) {
-  const c2 = timeline?.calibration;
-  if (!c2) return null;
-  return c2.hostMs + (Number(ticks) - Number(c2.deviceTicks)) * c2.timestampPeriod / 1e6;
 }
 
 // src/renderer/timeline_tracks.ts

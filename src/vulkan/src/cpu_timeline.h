@@ -77,6 +77,44 @@ void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category);
 /** Clears the recorded events and takes the capture's time origin; called when a capture starts. */
 void BeginCpuTimeline();
 
+// ---------------------------------------------------------------------------------------------
+// Timing captures.
+//
+// A frame report averages over its interval (about 100 ms, so five or six frames at 60 Hz), and a
+// hitch is one frame: averaged together with five good ones it disappears. A capture keeps every
+// call of a few frames, which is the opposite problem — all the detail, none of the duration.
+//
+// A timing capture is the shape in between: for every frame, its wall time and how long the CPU
+// spent in each category during it. That is 32 bytes a frame, so minutes of it fit in memory, and
+// it is enough to find a hitch and say what the CPU was doing in it.
+//
+// It is a mode rather than something always on. Recording needs a clock read in every timed call,
+// and the layer's whole cost when idle today is one relaxed atomic read; making every run pay for
+// a feature few runs use would be the wrong trade.
+
+/** One frame: how long it took, and where its CPU time went. */
+struct FrameTiming {
+    uint32_t frame = 0;
+    float durationMs = 0;
+    float categoryMs[(size_t)CpuCategory::Count] = {};
+};
+
+/** Starts recording per-frame timings, discarding anything held from a previous one. */
+void BeginTimingCapture();
+/** Stops recording. The records already taken stay until the next Begin. */
+void EndTimingCapture();
+/** Whether a timing capture is running, for the frame report to say so. */
+bool TimingCaptureRunning();
+
+/**
+ * Closes off the frame that just ended: called from the frame boundary with its wall time. Quiet
+ * unless a timing capture is running.
+ */
+void NoteFrameTiming(uint32_t frame, double frameMs);
+
+/** Writes the records taken since the last call as a TimingFrames message; quiet when there are none. */
+void SendTimingFrames();
+
 /**
  * Relates the GPU clock to the host's, so pass timestamps can be placed on the CPU axis. Sampled
  * when the capture ends, while the device is still alive. Returns false when the device has no

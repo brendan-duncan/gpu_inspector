@@ -7,6 +7,7 @@
 - The image viewer marks NaN and the infinities (**Highlight**, on by default), and draws a per-channel histogram.
 - `--debug-view=target[:color|depth|<id>]` opens a render target in its own tab, for screenshots and UI tests.
 - **GPU validation** in the launch dialog: GPU-assisted validation on Vulkan and the debug layer's GPU-based validation on D3D12, which catch out-of-bounds descriptor and buffer access the CPU cannot see; `test/triangle --oob`.
+- **Timing Capture** records every frame's time and where its CPU went for as long as it runs, and reports the hitches with what caused each (Vulkan; `renderer/frame_timing.ts`).
 - D3D12 reports dropped frames measured from the swap chain's refresh counters instead of a hard-coded zero, and the Vulkan layer's estimate now says so (`droppedMeasured`); `test/d3d12_triangle --stall <ms>`.
 - Metal's Memory Use breaks down by what is holding the memory — buffers, textures and heaps — since Metal has no heap table to enumerate (`renderer/metal/metal_memory.ts`).
 

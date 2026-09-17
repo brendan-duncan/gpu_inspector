@@ -43,6 +43,17 @@ bool g_running = false;
 std::atomic<bool> g_recording{false};
 size_t g_dropped = 0;
 
+// Timing captures (cpu_timeline.h). `g_timing` is read on the hot path beside g_recording; the
+// clock is read when either wants it.
+std::atomic<bool> g_timing{false};
+/** The frame being accumulated: category totals in milliseconds, rolled up at the frame boundary. */
+double g_frameCategoryMs[(size_t)CpuCategory::Count] = {};
+std::vector<FrameTiming> g_frames;
+/** How many of `g_frames` have been sent, so each report carries only what is new. */
+size_t g_framesSent = 0;
+/** About twenty minutes at 60 Hz, after which the oldest are dropped. */
+constexpr size_t kMaxFrames = 72000;
+
 /** Stable small indices for the threads that made calls, with their OS ids for the report. */
 std::unordered_map<std::thread::id, uint32_t> g_threadIndex;
 std::vector<uint64_t> g_threadIds;
@@ -99,28 +110,106 @@ void InitCpuTimeline(DeviceData* dev, const CpuTimelineSetup& setup) {
 }
 
 uint64_t CpuEventBegin() {
-    if (!g_recording.load(std::memory_order_relaxed)) return 0;
+    // Either a capture (which keeps every call) or a timing capture (which keeps per-frame totals)
+    // needs the clock; neither means this costs one relaxed read and nothing else.
+    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed)) return 0;
     return (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
 void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category) {
-    if (!started || !g_recording.load(std::memory_order_relaxed)) return;
+    if (!started) return;
+    const bool recording = g_recording.load(std::memory_order_relaxed);
+    const bool timing = g_timing.load(std::memory_order_relaxed);
+    if (!recording && !timing) return;
     const uint64_t now = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    const uint64_t durationNs = now > started ? now - started : 0;
+    std::lock_guard lock(g_mutex);
+    // The frame's running total, which is all a timing capture keeps of an individual call.
+    if (timing && (size_t)category < (size_t)CpuCategory::Count) {
+        g_frameCategoryMs[(size_t)category] += (double)durationNs / 1e6;
+    }
+    if (!recording || !g_running) return;
     const uint64_t originNs = (uint64_t)g_origin.time_since_epoch().count();
     if (started < originNs) return;   // began before the capture did
-    std::lock_guard lock(g_mutex);
-    if (!g_running) return;
     if (g_events.size() >= kMaxEvents) {
         ++g_dropped;
         return;
     }
     CpuEvent e;
     e.startNs = started - originNs;
-    e.durationNs = (uint32_t)std::min<uint64_t>(now > started ? now - started : 0, UINT32_MAX);
+    e.durationNs = (uint32_t)std::min<uint64_t>(durationNs, UINT32_MAX);
     e.thread = ThreadIndex();
     e.category = (uint16_t)category;
     e.frame = dev ? (uint32_t)dev->frameIndex : 0;
     g_events.push_back(e);
+}
+
+void BeginTimingCapture() {
+    std::lock_guard lock(g_mutex);
+    g_frames.clear();
+    g_framesSent = 0;
+    for (double& v : g_frameCategoryMs) v = 0;
+    g_timing.store(true, std::memory_order_relaxed);
+    Log("timing capture: started");
+}
+
+void EndTimingCapture() {
+    std::lock_guard lock(g_mutex);
+    g_timing.store(false, std::memory_order_relaxed);
+    Log("timing capture: stopped after %zu frames", g_frames.size());
+}
+
+bool TimingCaptureRunning() {
+    return g_timing.load(std::memory_order_relaxed);
+}
+
+void NoteFrameTiming(uint32_t frame, double frameMs) {
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    std::lock_guard lock(g_mutex);
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    FrameTiming t;
+    t.frame = frame;
+    t.durationMs = (float)frameMs;
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) {
+        t.categoryMs[i] = (float)g_frameCategoryMs[i];
+        g_frameCategoryMs[i] = 0;
+    }
+    // The oldest go when the ring is full: a timing capture left running should not grow without
+    // bound, and what matters is the recent minutes.
+    if (g_frames.size() >= kMaxFrames) {
+        g_frames.erase(g_frames.begin(), g_frames.begin() + (g_frames.size() - kMaxFrames + 1));
+        if (g_framesSent > g_frames.size()) g_framesSent = 0;
+    }
+    g_frames.push_back(t);
+}
+
+void SendTimingFrames() {
+    std::vector<FrameTiming> batch;
+    {
+        std::lock_guard lock(g_mutex);
+        if (g_framesSent >= g_frames.size()) return;
+        batch.assign(g_frames.begin() + (ptrdiff_t)g_framesSent, g_frames.end());
+        g_framesSent = g_frames.size();
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingFrames");
+    w.Key("categories"); w.BeginArray();
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.String(kCpuCategoryNames[i]);
+    w.EndArray();
+    w.Key("frames"); w.BeginArray();
+    for (const FrameTiming& t : batch) {
+        w.BeginObject();
+        w.Key("frame"); w.Uint(t.frame);
+        w.Key("durationMs"); w.Double(t.durationMs);
+        w.Key("categoryMs"); w.BeginArray();
+        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.Double(t.categoryMs[i]);
+        w.EndArray();
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void BeginCpuTimeline() {
