@@ -1280,6 +1280,15 @@ struct App {
         VkAccelerationStructureBuildRangeInfoKHR range{1, 0, 0, 0};
         const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
         rt.build(cb, 1, &info, &ranges);
+        // The trace below reads the structure this build writes, and nothing else orders them.
+        // Without this the rays are traced against whatever the top level held when the trace
+        // reached it, which on this driver happened to be the finished build often enough to look
+        // correct — until a replay ran the same commands with different timing and every ray missed.
+        VkMemoryBarrier built{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        built.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        built.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &built, 0, nullptr, 0, nullptr);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.pipeline);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.layout, 0, 1, &rt.set, 0, nullptr);
         rt.trace(cb, &rt.raygen, &rt.miss, &rt.hit, &rt.callable, 256, 256, 1);

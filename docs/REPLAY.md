@@ -560,7 +560,7 @@ These cases differ for known reasons:
    ranges again, but a buffer the frame wrote outside those ranges (a compute shader's output, a
    `vkCmdUpdateBuffer` target) keeps what the last frame left there.
 
-Ray tracing replays as far as the build. Pipelines and acceleration structures are made, and
+Ray tracing replays, builds and traces alike. Pipelines and acceleration structures are made, and
 `vkCmdBuildAccelerationStructuresKHR` is issued with its addresses remapped: a build names the
 geometry it reads by device address, and an address from the captured process means nothing here,
 so the replay uses the buffer and offset the layer recorded for each one to find its own buffer and
@@ -583,9 +583,16 @@ no pass. Without that, a trace that runs and a trace that produces the wrong pix
 
 A traced image will differ when the bottom level it traces against was built *before* the capture
 began, which is the usual thing: an engine builds its bottom levels once at load. The replay
-creates the structure but has nothing to build it from, so the rays miss. On `test/triangle
---ray-tracing` that is exactly 12.5% of the traced image — the triangle's share of it. A capture
-that holds the bottom level's own build replays it and the rays hit.
+creates the structure but has nothing to build it from, so the rays miss. A capture that holds the
+bottom level's own build — which `test/triangle --ray-tracing` makes, rebuilding both levels every
+frame as an engine with deforming geometry does — replays it, and the traced image comes back
+identical.
+
+That comparison earns its keep. The first thing it found was not a fault in the replay at all: the
+test application had no barrier between the top level's build and the trace that reads it, and on
+this driver the race resolved in its favour often enough that the frame looked right every time it
+was run. Synchronization validation does not report that hazard. Two runs of identical commands
+disagreeing does, which is what a replay is for.
 
 Not replayed yet: `vkCmdTraceRaysIndirect*`, the NV ray tracing commands, acceleration structure
 copies, queries whose results the frame reads back, and Metal captures. Shader objects are made one at a time from their payloads, so a linked set replays
