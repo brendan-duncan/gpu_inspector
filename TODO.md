@@ -585,9 +585,12 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       latency, from `IDXGISwapChain::GetFrameStatistics`, `VK_GOOGLE_display_timing` /
       `VK_EXT_present_timing` and Metal's `presentedTime`, so the display-paced verdict can say how
       many frames were missed.
-- [ ] Texture viewer extras: NaN/Inf and min/max highlighting and a histogram, on any read-back
-      image. The NaN/INF draw overlay above needs the replay; the viewer's own would work for Metal
-      and D3D12 captures too.
+- [x] Texture viewer extras: NaN and infinity marking (**Highlight**, on by default, since an image
+      that has them is already wrong and nobody goes looking), optional clipping marks, the NaN and
+      infinity counts beside the format, and a per-channel histogram. Min and max are over the
+      finite values only, which also fixes **Auto Range** blacking out an image holding one `+Inf`.
+      Works on any read-back image, so on Metal and D3D12 captures too. The NaN/INF *draw overlay*
+      above is separate and still needs the replay.
 - [ ] App-reported counters (`PIXReportCounter`) plotted on the timeline, e.g. an engine's visible
       object count beside frame time.
 

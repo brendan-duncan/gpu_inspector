@@ -148,6 +148,32 @@ you click on the right. The **overlay list** in its toolbar draws over the image
 **Highlight Draw**, **Depth Test** or **Wireframe**. **Reports → Overdraw** opens it on the frame's
 first measured pass with the overdraw on.
 
+### What the picture cannot show
+
+A NaN in a render target is invisible: it clamps to some ordinary colour on screen, and nothing else
+in a capture points at it. So **Highlight** marks the texels a picture cannot show, and is on
+(*Auto*) to begin with — an image that has them is already wrong, and you would have to suspect it
+to go looking.
+
+| Colour | What it marks |
+|---|---|
+| Magenta | NaN |
+| Cyan | `+Inf` |
+| Orange | `-Inf` |
+| Blue | Below 0, with *Auto + clipping* |
+| Red | Above 1, with *Auto + clipping* |
+
+Clipping is not on by default because a value outside `[0,1]` is ordinary in an HDR target rather
+than a fault. The counts appear beside the format whenever there are any, and **Min** and **Max**
+are over the finite values only — one infinity would otherwise be the whole range, and **Auto
+Range** divides by it, which turns the image black and hides the very thing that is wrong with it.
+
+**Histogram** draws each channel's distribution over its own range. It answers a different question
+from the image: a target that looks black because a single texel is ten thousand, or a depth buffer
+whose values are all crowded against the far plane, both look unremarkable until you see the shape.
+
+These work on any read-back image, so on Metal and D3D12 captures too.
+
 ### Overdraw
 
 How many fragments landed on each pixel, drawn over the pass's render target. Two numbers per

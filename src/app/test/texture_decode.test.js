@@ -19,7 +19,8 @@ buildSync({
   entryPoints: [join(here, "..", "src", "renderer", "vulkan", "texture_decode.ts")],
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { decodeTexels } = await import(pathToFileURL(out).href);
+const { decodeTexels, texelStats, channelHistogram, markTexels, MARK_COLOR, displayTexels } =
+  await import(pathToFileURL(out).href);
 
 function bytes(b64) {
   return new Uint8Array(Buffer.from(b64, "base64"));
@@ -55,3 +56,90 @@ for (const v of vectors) {
     assert.ok(worst <= v.tolerance, `worst difference ${worst} > ${v.tolerance} at ${worstAt}`);
   });
 }
+
+// --- what an image holds past the picture of it -------------------------------------------------
+//
+// A NaN in a render target is invisible: it clamps to some ordinary colour on screen and no other
+// figure in a capture points at it. These cover the counting, the ranges that have to ignore it,
+// and the marking that puts it where it can be seen.
+
+/** An R32_SFLOAT image from the values given, one per texel. */
+function floats(values) {
+  const data = new Uint8Array(new Float32Array(values).buffer);
+  return decodeTexels({ format: "VK_FORMAT_R32_SFLOAT", aspect: "color", width: values.length, height: 1 }, data);
+}
+
+test("NaN and the infinities are counted, per channel and per texel", () => {
+  const tex = floats([0, 0.5, NaN, Infinity, -Infinity, 1]);
+  const s = texelStats(tex);
+  assert.equal(s.total, 6);
+  assert.equal(s.nanTexels, 1);
+  assert.equal(s.infTexels, 2, "one of each infinity");
+  const r = s.channels[0];
+  assert.equal(r.nan, 1);
+  assert.equal(r.posInf, 1);
+  assert.equal(r.negInf, 1);
+  assert.equal(r.finite, 3);
+});
+
+test("the range is over the finite values, so one infinity does not become the whole image", () => {
+  // The auto-ranged display divides by this range: with Infinity in it every other texel maps to
+  // zero and the image goes black, hiding the very thing that is wrong with it.
+  const tex = floats([0, 0.25, 0.5, Infinity]);
+  assert.equal(tex.min[0], 0);
+  assert.equal(tex.max[0], 0.5, "the infinity is not the maximum");
+  const s = texelStats(tex);
+  assert.equal(s.channels[0].max, 0.5);
+  assert.equal(s.channels[0].mean, 0.25);
+});
+
+test("a channel with nothing finite in it reports a range of zero rather than infinities", () => {
+  const tex = floats([NaN, Infinity, -Infinity]);
+  assert.equal(tex.min[0], 0);
+  assert.equal(tex.max[0], 0);
+  const s = texelStats(tex);
+  assert.equal(s.channels[0].finite, 0);
+  assert.equal(s.channels[0].mean, 0);
+});
+
+test("an image of ordinary values is marked as nothing at all", () => {
+  assert.equal(markTexels(floats([0, 0.5, 1]), false), null, "no overlay rather than a transparent one");
+  assert.equal(markTexels(floats([0, 0.5, 1]), true), null);
+});
+
+test("NaN and the infinities are marked in their own colours", () => {
+  const marks = markTexels(floats([0.5, NaN, Infinity, -Infinity]), false);
+  assert.ok(marks, "an image with a NaN in it is marked");
+  const at = (i) => [marks[i * 4], marks[i * 4 + 1], marks[i * 4 + 2]];
+  assert.equal(marks[3], 0, "an ordinary texel is left transparent");
+  assert.deepEqual(at(1), MARK_COLOR.nan);
+  assert.deepEqual(at(2), MARK_COLOR.posInf);
+  assert.deepEqual(at(3), MARK_COLOR.negInf);
+});
+
+test("clipping is marked only when asked for", () => {
+  assert.equal(markTexels(floats([-0.5, 2]), false), null, "out of range is a picture's business, not an error");
+  const marks = markTexels(floats([-0.5, 2]), true);
+  assert.deepEqual([marks[0], marks[1], marks[2]], MARK_COLOR.below);
+  assert.deepEqual([marks[4], marks[5], marks[6]], MARK_COLOR.above);
+});
+
+test("a histogram shows the shape a single outlier hides", () => {
+  // Fifteen dark texels and one very bright one: the picture is black, the histogram is not.
+  const values = new Array(15).fill(0.01);
+  values.push(10000);
+  const h = channelHistogram(floats(values), 0, 8);
+  assert.equal(h.reduce((a, b) => a + b, 0), 16, "every finite texel lands in a bucket");
+  assert.equal(h[0], 15, "the dark ones are together at the bottom");
+  assert.equal(h[7], 1, "the outlier is alone at the top");
+});
+
+test("a histogram of a constant channel does not divide by an empty range", () => {
+  const h = channelHistogram(floats([0.5, 0.5, 0.5]), 0, 4);
+  assert.deepEqual(h, [3, 0, 0, 0]);
+});
+
+test("histogram buckets ignore what is not a number", () => {
+  const h = channelHistogram(floats([0, 1, NaN, Infinity]), 0, 2);
+  assert.equal(h.reduce((a, b) => a + b, 0), 2);
+});

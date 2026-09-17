@@ -39,6 +39,141 @@ export interface DisplaySettings {
 
 export const DEFAULT_DISPLAY: DisplaySettings = { channels: "rgb", exposure: 1, autoRange: false };
 
+/**
+ * What one channel of an image holds, past the picture of it.
+ *
+ * `min` and `max` are over the finite values only: a single infinity would otherwise be the whole
+ * range and flatten the auto-ranged display to nothing, and a NaN compares false against both so it
+ * would silently drop out anyway. The counts are what say the image is wrong — a NaN in a render
+ * target reads as an ordinary dark pixel on screen, and nothing else in a capture points at it.
+ */
+export interface ChannelStats {
+  name: string;
+  /** Over finite values only; both 0 when the channel is entirely NaN or infinite. */
+  min: number;
+  max: number;
+  /** Mean of the finite values, 0 when there are none. */
+  mean: number;
+  nan: number;
+  posInf: number;
+  negInf: number;
+  /** Texels with a finite value, which is what min, max and mean are over. */
+  finite: number;
+}
+
+export interface TexelStats {
+  channels: ChannelStats[];
+  /** Texels where any channel is NaN, and where any is infinite. */
+  nanTexels: number;
+  infTexels: number;
+  total: number;
+}
+
+/** Per-channel ranges and the NaN and infinity counts. Walks the image once. */
+export function texelStats(tex: TexelData): TexelStats {
+  const n = tex.width * tex.height;
+  const channels: ChannelStats[] = [];
+  for (let c = 0; c < tex.channels; c++) {
+    channels.push({
+      name: tex.names[c] ?? String(c), min: Infinity, max: -Infinity, mean: 0, nan: 0, posInf: 0, negInf: 0, finite: 0,
+    });
+  }
+  const sums = new Float64Array(tex.channels);
+  let nanTexels = 0;
+  let infTexels = 0;
+  for (let i = 0; i < n; i++) {
+    let anyNan = false;
+    let anyInf = false;
+    for (let c = 0; c < tex.channels; c++) {
+      const v = tex.values[i * 4 + c];
+      const s = channels[c];
+      if (Number.isNaN(v)) { s.nan++; anyNan = true; continue; }
+      if (v === Infinity) { s.posInf++; anyInf = true; continue; }
+      if (v === -Infinity) { s.negInf++; anyInf = true; continue; }
+      s.finite++;
+      sums[c] += v;
+      if (v < s.min) s.min = v;
+      if (v > s.max) s.max = v;
+    }
+    if (anyNan) nanTexels++;
+    if (anyInf) infTexels++;
+  }
+  for (let c = 0; c < tex.channels; c++) {
+    const s = channels[c];
+    if (!s.finite) { s.min = 0; s.max = 0; s.mean = 0; } else s.mean = sums[c] / s.finite;
+  }
+  return { channels, nanTexels, infTexels, total: n };
+}
+
+/**
+ * A histogram of one channel's finite values over [min, max], for the shape of a distribution
+ * rather than its extremes: a target that looks black because one texel is 10000 shows it here.
+ * An empty range (a constant channel) puts everything in the first bucket.
+ */
+export function channelHistogram(tex: TexelData, channel: number, buckets = 64,
+                                 range?: { min: number; max: number }): number[] {
+  const out = new Array<number>(buckets).fill(0);
+  if (channel < 0 || channel >= tex.channels || buckets < 1) return out;
+  const stats = range ?? texelStats(tex).channels[channel];
+  const lo = stats.min;
+  const span = stats.max - lo;
+  const n = tex.width * tex.height;
+  for (let i = 0; i < n; i++) {
+    const v = tex.values[i * 4 + channel];
+    if (!Number.isFinite(v)) continue;
+    const t = span > 0 ? (v - lo) / span : 0;
+    const b = Math.min(buckets - 1, Math.max(0, Math.floor(t * buckets)));
+    out[b]++;
+  }
+  return out;
+}
+
+/** What a texel is marked as by the image view's highlighting; null for an ordinary one. */
+export type TexelMark = "nan" | "posInf" | "negInf" | "below" | "above";
+
+/**
+ * Marks every texel that is not an ordinary value in range, as a colour over the image.
+ *
+ * NaN and infinity are always marked when `clip` is false as well: they are the ones that cannot be
+ * seen by looking, since both land on some ordinary colour once clamped to eight bits. Clipping is
+ * offered beside them because "below zero" and "above one" are the other two states a picture
+ * cannot show, and they are what a blown-out or negative-valued target looks like.
+ */
+export const MARK_COLOR: Record<TexelMark, [number, number, number]> = {
+  nan: [255, 0, 255],      // magenta: not a number
+  posInf: [0, 255, 255],   // cyan: too large to be one
+  negInf: [255, 128, 0],   // orange: too small
+  below: [0, 0, 255],      // blue: darker than black
+  above: [255, 0, 0],      // red: brighter than white
+};
+
+export function markTexels(tex: TexelData, clip: boolean): Uint8ClampedArray<ArrayBuffer> | null {
+  const n = tex.width * tex.height;
+  const out = new Uint8ClampedArray(n * 4);
+  const colorChannels = Math.min(tex.channels, 3);
+  let marked = 0;
+  for (let i = 0; i < n; i++) {
+    let mark: TexelMark | null = null;
+    for (let c = 0; c < colorChannels && !mark; c++) {
+      const v = tex.values[i * 4 + c];
+      if (Number.isNaN(v)) mark = "nan";
+      else if (v === Infinity) mark = "posInf";
+      else if (v === -Infinity) mark = "negInf";
+      else if (clip && !tex.integer && v < 0) mark = "below";
+      else if (clip && !tex.integer && v > 1) mark = "above";
+    }
+    if (!mark) continue;
+    const [r, g, b] = MARK_COLOR[mark];
+    const o = i * 4;
+    out[o] = r;
+    out[o + 1] = g;
+    out[o + 2] = b;
+    out[o + 3] = 255;
+    marked++;
+  }
+  return marked ? out : null;
+}
+
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) ? -1 : 1;
   const e = (h >> 10) & 0x1f;
@@ -400,13 +535,20 @@ function finish(tex: TexelData): TexelData {
   for (let c = 0; c < tex.channels; c++) {
     let min = Infinity;
     let max = -Infinity;
+    let finite = 0;
     for (let i = 0; i < n; i++) {
       const v = tex.values[i * 4 + c];
+      // Finite values only. One infinity would otherwise be the whole range, and the auto-ranged
+      // display divides by it: every other texel maps to zero and the image goes black, which
+      // hides the very thing that is wrong with it. NaN compares false both ways and drops out
+      // here on its own; texelStats counts both.
+      if (!Number.isFinite(v)) continue;
+      finite++;
       if (v < min) min = v;
       if (v > max) max = v;
     }
-    tex.min[c] = min;
-    tex.max[c] = max;
+    tex.min[c] = finite ? min : 0;
+    tex.max[c] = finite ? max : 0;
   }
   return tex;
 }
