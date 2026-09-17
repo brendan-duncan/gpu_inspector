@@ -624,6 +624,18 @@ export interface MemorySampleMessage {
   heaps: MemorySampleHeap[];
 }
 
+/**
+ * Per-frame timings from a running timing capture (src/vulkan/src/cpu_timeline.h). Sent in batches
+ * on the frame report's interval: a frame report averages five or six frames together, and a hitch
+ * is one frame, so this carries each of them.
+ */
+export interface TimingFramesMessage {
+  action: "TimingFrames";
+  /** Category names, in the order each frame's `categoryMs` is indexed by. */
+  categories: string[];
+  frames: { frame: number; durationMs: number; categoryMs: number[] }[];
+}
+
 /** One host-side call timed during a capture (src/vulkan/src/cpu_timeline.h). */
 export interface CpuEvent {
   /** Index into CpuTimeline.threads. */
@@ -661,6 +673,7 @@ export interface CpuTimelineMessage {
 
 export type LayerMessage =
   | CpuTimelineMessage
+  | TimingFramesMessage
   | DeviceLostMessage
   | DeviceRemovedMessage
   | MemorySampleMessage
@@ -718,6 +731,9 @@ export interface SettingsRequest { action: "Settings"; recordAlways?: boolean }
 export interface RequestStacktracesRequest { action: "RequestStacktraces"; ids: number[] }
 /** Asks the layer to symbolize addresses a capture's commands carry (answered by Symbols). */
 export interface RequestSymbolsRequest { action: "RequestSymbols"; addresses: string[] }
+/** Starts or stops a timing capture in the layer. */
+export interface TimingCaptureRequest { action: "TimingCapture"; start: boolean }
+
 export interface CaptureRequest {
   action: "Capture";
   frameCount: number;
@@ -765,7 +781,7 @@ export interface SaveGpuTraceRequest { action: "SaveGpuTrace"; path?: string }
 
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
   | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
-  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest;
+  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer
@@ -908,6 +924,8 @@ export interface AppConfig {
     selectCommand: number | null;
     /** --debug-view=<stats|graph>: open that report of the capture instead of a command. */
     showView: string | null;
+    /** --debug-timing=<ms>: run a timing capture for this long once connected, then stop. */
+    timingMs?: number | null;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */

@@ -389,6 +389,12 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Frame Stats (capture) */
 .frame-stats { padding: 12px 16px; }
 .frame-stats-title { font-size: 14pt; font-weight: bold; margin-bottom: 10px; }
+/* A timing capture's report, under the capture bar (renderer/timing_view.ts). Bounded and its own
+   scroller: it lists every hitch, and it must not push the capture tabs off the window. */
+.timing-panel { flex: 0 0 auto; max-height: 40vh; overflow: auto; padding: 6px 10px; background: var(--bg-elevated); }
+.timing-graph { display: block; margin: 4px 0 8px 0; background: var(--bg-primary); border-radius: var(--radius-sm); }
+.timing-hitch { cursor: pointer; }
+.timing-hitch:hover { background: var(--bg-hover); }
 .frame-stats-section { margin-bottom: 14px; }
 .frame-stats-heading { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
 /* The split the details pane sits in sets white-space: nowrap for its command rows, and it

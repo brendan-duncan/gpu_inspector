@@ -6,8 +6,9 @@
 import { Signal } from "../utils/signal.js";
 import { VulkanObject, isHandleRef, objectMemoryBytes, type ObjectLookup } from "./vulkan_object.js";
 import { isD3D12Texture } from "../d3d12/d3d12_object.js";
-import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, MemorySampleMessage, StackFrame, ValidationMessage } from "../../shared/protocol.js";
+import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, MemorySampleMessage, StackFrame, TimingFramesMessage, ValidationMessage } from "../../shared/protocol.js";
 import { MAX_SAMPLES } from "../memory_timeline.js";
+import { MAX_TIMING_FRAMES, type TimingCapture as TimingCaptureData } from "../frame_timing.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -76,6 +77,11 @@ export class ObjectDatabase implements ObjectLookup {
    * the object graph because the graph only ever holds the present: the shape needs the past.
    */
   memorySamples: MemorySampleMessage[] = [];
+  /**
+   * A timing capture's per-frame records, appended as the layer sends them
+   * (renderer/frame_timing.ts). Empty until one is started.
+   */
+  timing: TimingCaptureData = { categories: [], frames: [] };
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -97,6 +103,7 @@ export class ObjectDatabase implements ObjectLookup {
   readonly onDeviceLost = new Signal<(report: DeviceLostMessage | DeviceRemovedMessage) => void>();
   /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
   readonly onMemorySample = new Signal<() => void>();
+  readonly onTimingFrames = new Signal<() => void>();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = new Map<number, StackFrame[]>();
   stacksAvailable: boolean | null = null;
@@ -359,6 +366,16 @@ export class ObjectDatabase implements ObjectLookup {
       case "LeakReport":
         this.leaks.push(msg);
         this.onLeakReport.emit(msg);
+        break;
+      case "TimingFrames":
+        // The layer sends only what is new since the last report, so these append.
+        if (msg.categories.length) this.timing.categories = msg.categories;
+        for (const f of msg.frames) this.timing.frames.push(f);
+        // A ring rather than unbounded: the layer keeps about twenty minutes and so does this.
+        if (this.timing.frames.length > MAX_TIMING_FRAMES) {
+          this.timing.frames.splice(0, this.timing.frames.length - MAX_TIMING_FRAMES);
+        }
+        this.onTimingFrames.emit();
         break;
       case "MemorySample":
         this.memorySamples.push(msg);

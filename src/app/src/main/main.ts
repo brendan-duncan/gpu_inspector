@@ -1128,6 +1128,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       showView: cliOption("debug-view"),
+      timingMs: cliOption("debug-timing") ? Number(cliOption("debug-timing")) : null,
       expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,

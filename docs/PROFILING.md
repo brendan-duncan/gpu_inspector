@@ -135,6 +135,33 @@ Only the gaps *between* passes count as idle. The axis runs wider than the GPU l
 the CPU calls, and the empty stretch at either end is time outside the timed region — where the GPU
 may well have been running the previous frame, which the capture never timed.
 
+### Step 1c: a hitch, rather than a slow frame
+
+Everything above describes a frame. A hitch is one frame among hundreds, and neither view can find
+one: the live frame report averages over its interval — five or six frames at 60 Hz — so one bad
+frame disappears into the mean, and a capture keeps every call of a handful of frames, which can
+only describe a hitch already caught in the act.
+
+**Timing Capture** in the capture bar records every frame's time and where its CPU went, for as long
+as you leave it running. Stop it and the report gives the frame-time graph, the distribution, and
+every hitch with what caused it.
+
+- **The graph** is the point. A list of percentiles says the run was uneven; only the shape says
+  whether it was one stall at load, a spike every few seconds, or a slow drift, and those are
+  different problems. Frames are reduced to the width by taking the *worst* in each column rather
+  than the average — averaging is what hid the hitch in the first place.
+- **The median against the 95th and 99th** is what a player feels. A median of 16 ms with a 99th of
+  60 ms is a game that is smooth and then, twice a minute, is not.
+- **A hitch** is a frame over twice the median *and* at least 4 ms over it. The multiple alone would
+  call ordinary jitter a hitch on an application running at 300 frames a second.
+- **Its cause** is the category that accounts for at least half the time the frame spent over an
+  ordinary one. Work that costs the same every frame is not what made this one late, so submission
+  that always takes 8 ms is not blamed for the frame that took 120. When nothing accounts for it,
+  the report says so: the time went to the application's own work between the calls the layer times,
+  and that is itself the finding.
+
+Vulkan only so far.
+
 ## Step 2: which pass
 
 Open **Reports → GPU Bottlenecks**. The Passes table lists every pass, slowest first, with what

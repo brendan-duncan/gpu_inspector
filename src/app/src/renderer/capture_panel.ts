@@ -15,6 +15,7 @@ import { TabWidget } from "./widget/tab_widget.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
+import { renderTimingReport, timingButtonLabel } from "./timing_view.js";
 import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
 import { fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
@@ -111,6 +112,9 @@ export class CapturePanel {
   readonly parent: Widget;
 
   private _statusLabel!: Span;
+  private _timingButton!: Button;
+  private _timingPanel!: Div;
+  private _timingRunning = false;
   private _frameCountInput!: TextInput;
   private _atFrameInput!: TextInput;
   private _texturesCheck!: Checkbox;
@@ -247,7 +251,16 @@ export class CapturePanel {
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
     this._saveButton = new Button(row, { html: ICON_SAVE, class: "btn btn-icon", tooltip: "Save the capture in the active tab to a file (.gpucap)", disabled: true, callback: () => void this.saveActive() });
+    // A timing capture is a different question from a frame capture — minutes of frame times
+    // rather than every call of one frame — so it is its own control and its own report.
+    this._timingButton = new Button(row, { label: timingButtonLabel(false), class: "btn",
+      tooltip: "Record every frame's time and where its CPU went, for as long as it runs. A frame report averages five or six frames together and a hitch is one frame, so this is what finds one.",
+      callback: () => this.toggleTiming() });
+    c.push(this._timingButton);
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
+    this._timingPanel = new Div(this.parent, { class: "timing-panel" });
+    this._timingPanel.element.hidden = true;
+    this.window.database.onTimingFrames.addListener(() => this._refreshTiming());
 
     this._tabs = new TabWidget(this.parent, { class: "capture-tabs tabs-fill", displayCloseButton: true });
     this._tabs.onTabClosed.addListener((panel) => this._tabClosed(panel));
@@ -524,6 +537,32 @@ export class CapturePanel {
     };
     live.data.onPixelHistory.addListener(finish);
     live.onCaptureComplete.addListener(finish);
+  }
+
+  /**
+   * Starts or stops a timing capture. Starting clears what the last one recorded: two runs of an
+   * application are two questions, and a graph spanning both would answer neither.
+   */
+  /** Starts or stops a timing capture (the button, and --debug-timing). */
+  toggleTiming(): void {
+    if (!this.window.connected) {
+      this._statusLabel.text = "not connected";
+      return;
+    }
+    this._timingRunning = !this._timingRunning;
+    if (this._timingRunning) {
+      this.window.database.timing.frames.length = 0;
+      this._timingPanel.element.hidden = false;
+    }
+    this._timingButton.text = timingButtonLabel(this._timingRunning);
+    this._statusLabel.text = this._timingRunning ? "recording frame times..." : "";
+    void this.window.send({ action: "TimingCapture", start: this._timingRunning });
+    this._refreshTiming();
+  }
+
+  private _refreshTiming(): void {
+    if (this._timingPanel.element.hidden) return;
+    renderTimingReport(this._timingPanel, this.window.database.timing);
   }
 
   private _showCaptureTab(view: CaptureView): void {
