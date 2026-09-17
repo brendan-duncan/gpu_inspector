@@ -1,6 +1,16 @@
 ## Unreleased
 
 ### Fixed
+- The replay gave every acceleration structure build the same scratch memory, from the start of one
+  buffer it grew as it went (`Replayer::ReserveScratch`). Two faults followed from that, neither
+  visible on a frame with a single build, which is why nothing here had shown them. Growing the
+  buffer *freed* it, while builds already recorded into the submission still held addresses into it
+  — so a frame whose later builds are bigger replayed the earlier ones into memory the driver had
+  taken back. And handing every build the same stretch introduced a hazard the frame never had:
+  builds recorded with nothing ordering them are legal when the application gives each its own
+  scratch, and the replay made them overlap. Scratch is now handed out a stretch at a time within a
+  submission and reset when the next one starts recording, and a buffer that is outgrown is retired
+  rather than freed, so nothing already recorded is left pointing at memory that is gone.
 - A replayed ray tracing frame traced against nothing, and the cause was a missing barrier in
   `test/triangle --ray-tracing` rather than anything in the replay. The trace reads the top level
   the build before it writes, and the application ordered them with nothing at all; on this driver
