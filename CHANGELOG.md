@@ -1,4 +1,4 @@
-## Unreleased
+## v0.15.0
 
 ### Added
 - The shader debugger on a D3D12 capture, by recompiling the container's HLSL to SPIR-V with `dxc -spirv` and stepping that (`src/app/src/shared/hlsl_debug.ts`).
