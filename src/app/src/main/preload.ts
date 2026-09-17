@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld("inspector", {
     ipcRenderer.invoke("inspector:compileShader", source, language, stage, entryPoint, spirvVersion),
   decompileForDebugging: (spirv: Uint8Array, stage: string, entryPoint: string) =>
     ipcRenderer.invoke("inspector:decompileForDebugging", spirv, stage, entryPoint),
+  compileHlslForDebugging: (bytecode: Uint8Array, stage: string, entryPoint: string, target?: string, pdbDirs?: string[]) =>
+    ipcRenderer.invoke("inspector:compileHlslForDebugging", bytecode, stage, entryPoint, target, pdbDirs),
   compileDxil: (source: string, stage: string, entryPoint: string, shaderModel?: string) =>
     ipcRenderer.invoke("inspector:compileDxil", source, stage, entryPoint, shaderModel),
 });

@@ -45,8 +45,27 @@ ShaderInfo ReflectShader(const void* bytecode, size_t size);
 /** The container's disassembly; false with `error` when no disassembler is available. */
 bool DisassembleShader(const void* bytecode, size_t size, std::string& text, std::string& error);
 
+/**
+ * How dxc was run, as the debug information records it: what a compile of the same source again
+ * needs (the shader debugger compiles the HLSL to SPIR-V to step it). Empty where the container
+ * or PDB does not say (DXBC from fxc, an old dxc).
+ */
+struct ShaderCompileInfo {
+    /** The file dxc was given, as it was named on the command line. */
+    std::string mainFile;
+    std::string entryPoint;
+    std::string target;
+    /** -D defines, "NAME" or "NAME=VALUE". */
+    std::vector<std::string> defines;
+    /** The other arguments (-HV, -enable-16bit-types, -O3, ...), without the defines and the file options. */
+    std::vector<std::string> args;
+};
+
 /** The source files embedded in a container compiled with -Zi (or a DXBC with debug info): (name, text). */
 std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size);
+
+/** The same, with how they were compiled read out beside them; `compile` may be null. */
+std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size, ShaderCompileInfo* compile);
 
 /** Where a container's HLSL was found, and why there is none when there is none. */
 struct ShaderSourceFiles {
@@ -55,6 +74,8 @@ struct ShaderSourceFiles {
     std::string pdb;
     /** Why nothing was found: the PDB dxc named, and where it was looked for. */
     std::string note;
+    /** How the files were compiled, from the same debug information. */
+    ShaderCompileInfo compile;
 };
 
 /**

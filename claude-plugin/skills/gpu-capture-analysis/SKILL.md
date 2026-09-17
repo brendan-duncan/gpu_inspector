@@ -188,9 +188,11 @@ each step.
    - **Shaders**: `get_shader`. `source` when it is embedded, `glsl` or `hlsl` otherwise, and
      `reflection` to check the bindings the shader expects against what `get_command` shows bound.
    - **What the shader computed**: `debug_shader` runs one vertex, pixel (`x`, `y`; a pixel the
-     draw covers by default) or compute invocation — a Vulkan capture's SPIR-V or a Metal
-     capture's Metal Shading Language. There is no DXIL interpreter, so a D3D12 capture cannot be
-     stepped: read its shader with `get_shader` and reason from the bound state instead. Read the `trace` for the line where a value goes wrong, and
+     draw covers by default) or compute invocation — a Vulkan capture's SPIR-V, a Metal
+     capture's Metal Shading Language, or a D3D12 capture's HLSL compiled to SPIR-V by dxc (there
+     is no DXIL interpreter, so it needs the source: a `-Zi` build, or a `-Zs` build's PDB under
+     `symbolDirs`; without it, read the shader with `get_shader` and reason from the bound state).
+     Read the `trace` for the line where a value goes wrong, and
      `firstNonFinite` for a NaN. For a pixel, `compare` has the render target after the whole pass;
      later draws and blending come between. A Vulkan pixel needs the replay; a Metal one does not,
      but a Metal library the application loaded precompiled has no source to step. SPIR-V without

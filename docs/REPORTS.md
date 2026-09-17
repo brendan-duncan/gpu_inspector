@@ -265,14 +265,18 @@ values each line computed. Open it from:
   - a vertex with the replay's outputs for that vertex (Vulkan)
   - a pixel with the render target's value after the pass
 
-A Vulkan capture's shaders are SPIR-V, a Metal capture's are Metal Shading Language, and the tab is
-the same for both.
+A Vulkan capture's shaders are SPIR-V, a Metal capture's are Metal Shading Language, a D3D12
+capture's are DXIL, and the tab is the same for all three.
 
 The debugger steps by source line when the shader has its source: a Metal library always does (the
 capture holds the text the application compiled), and SPIR-V does when it was compiled with line
 information and its source is embedded (`-g`) or found under the launch dialog's Source roots.
 SPIR-V without it steps by instruction through the disassembly instead; **Source** /
-**Disassembly** switches between the two.
+**Disassembly** switches between the two. A D3D12 shader is stepped as its HLSL compiled to SPIR-V
+by `dxc` on this machine, since there is no DXIL interpreter: it needs the source, which a build
+with `-Zi` embeds and a `-Zs` build writes to a PDB the symbol directories find, and it is compiled
+the way the build compiled it, with the same defines and arguments. It is the same source the GPU
+ran, but not the same module, and nothing checks the two against each other; the tab says so.
 
 For SPIR-V without source, pick **Decompiled GLSL** instead of **Original SPIR-V** to step by
 line anyway. `spirv-cross` decompiles the shader to GLSL with a variable for every value, named

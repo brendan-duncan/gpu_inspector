@@ -9,15 +9,18 @@
 //     pixel and the three others of its 2x2 quad.
 //   * A compute invocation: its ids from the dispatch and the shader's local size.
 //
-// This file holds the Vulkan half and the rasterizer both halves share; metal/shader_debug.ts holds
-// the Metal one, and prepareDebugSession sends a command to whichever the pipeline came from. The
-// rasterizer is shared because the two differ only in where the state comes from: a Vulkan draw's
-// cull mode is in its pipeline, a Metal draw's is a command on the encoder.
+// This file holds the Vulkan half and the rasterizer every API shares; metal/shader_debug.ts holds
+// the Metal one, d3d12/shader_debug.ts the Direct3D 12 one, and prepareDebugSession sends a command
+// to whichever the pipeline came from. The rasterizer is shared because the three differ only in
+// where the state comes from: a Vulkan draw's cull mode is in its pipeline, a Metal draw's is a
+// command on the encoder, a D3D12 draw's is in its pipeline state with D3D's conventions.
 //
 // Shared by the debugger tab (shader_debugger_view.ts) and the MCP server's debug_shader.
 import type { CaptureData, CapturedTexture } from "./capture_data.js";
 import { drawState, dynamicValue, findPass, type DrawState } from "./draw_state.js";
-import { isMetalPipeline, prepareMetalSession } from "./metal/shader_debug.js";
+import { interpretedMeshOutput, isMetalPipeline, metalRasterState, prepareMetalSession } from "./metal/shader_debug.js";
+import { d3d12RasterState, interpretedD3D12MeshOutput, isD3D12Pipeline, prepareD3D12Session } from "./d3d12/shader_debug.js";
+import { isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { MslBindings } from "./msl/interpreter.js";
 import { meshInput } from "./mesh_input.js";
 import { positionOutput, primitiveKind, type MeshOutput, type MeshOutputVariable } from "./mesh_output.js";
@@ -85,6 +88,13 @@ export interface DebugContext {
    * could not translate. The session's `original` runs the capture's own module to compare with.
    */
   translate?: (spirv: Uint8Array, source: StageSource) => Promise<Uint8Array>;
+  /**
+   * A D3D12 stage's HLSL compiled to SPIR-V with line information, which is what the debugger
+   * steps for it (d3d12/shader_debug.ts): given the stage's DXBC/DXIL container and its profile
+   * from the reflection ("ps_6_0"). Throws with the reason it could not compile. Without it a
+   * D3D12 command cannot be debugged.
+   */
+  compileHlsl?: (bytecode: Uint8Array, source: StageSource, target: string) => Promise<Uint8Array>;
 }
 
 /** What a session built with DebugContext.translate says about the code it steps. */
@@ -364,6 +374,13 @@ function viewportOf(state: DrawState): RasterState["viewport"] {
     vp = isObject(vs) ? pick(vs.pViewports) : null;
   }
   if (!isObject(vp)) return null;
+  // D3D12_VIEWPORT: TopLeftX / TopLeftY, Width / Height, MinDepth / MaxDepth.
+  if (vp.TopLeftX !== undefined || vp.Width !== undefined) {
+    return {
+      x: num(vp.TopLeftX), y: num(vp.TopLeftY), width: num(vp.Width), height: num(vp.Height),
+      minDepth: num(vp.MinDepth), maxDepth: vp.MaxDepth === undefined ? 1 : num(vp.MaxDepth),
+    };
+  }
   // MTLViewport spells the same thing differently, and its depth range is znear..zfar.
   if (vp.originX !== undefined || vp.znear !== undefined) {
     return {
@@ -384,6 +401,24 @@ const METAL_COMPARE = ["Never", "Less", "Equal", "LessEqual", "Greater", "NotEqu
  */
 export function rasterStateOf(state: DrawState, defaultViewport?: RasterState["viewport"]): RasterState {
   const viewport = viewportOf(state) ?? defaultViewport ?? null;
+  if (state.pipeline && isD3D12Type(state.pipeline.type)) {
+    // D3D12: the pipeline state's rasterizer and depth-stencil descriptions. Clockwise is the
+    // front face unless FrontCounterClockwise says otherwise, and clip +Y is the top of the target.
+    const d = state.pipeline.descriptor;
+    const raster = isObject(d?.RasterizerState) ? d!.RasterizerState : null;
+    const ds = isObject(d?.DepthStencilState) ? d!.DepthStencilState : null;
+    const cull = str(raster?.CullMode);
+    const enabled = ds?.DepthEnable === true || ds?.DepthEnable === 1;
+    const compare = enabled ? str(ds?.DepthFunc) : "";
+    return {
+      viewport,
+      cullFront: cull.endsWith("_FRONT"),
+      cullBack: cull.endsWith("_BACK"),
+      ccwFront: raster?.FrontCounterClockwise === true || raster?.FrontCounterClockwise === 1,
+      yUp: true,
+      depthPrefers: compare.includes("LESS") ? "less" : compare.includes("GREATER") ? "greater" : "none",
+    };
+  }
   if (state.pipeline?.type.startsWith("MTL") || state.cullMode !== null || state.frontFace !== null) {
     // Metal: MTLCullModeNone is the default, and clockwise is the default front face. The
     // depth-stencil state's compare function is serialized as its MTLCompareFunction number.
@@ -588,6 +623,136 @@ function fragmentInputs(module: SpirvModule, hit: Covering, px: number, py: numb
 }
 
 // ---------------------------------------------------------------------------------------------
+// Vertex outputs interpreted rather than replayed
+//
+// Metal and D3D12 captures have no replay. Their fragment inputs come from running the draw's
+// own vertex shader in the interpreter, once per vertex, and packing what it wrote the way a
+// replay's transform feedback would be, so the rasterizer above reads both alike. Each API's half
+// runs its own interpreter over its own inputs; the packing is here.
+
+/** Scalars of a value in order, padded or cut to a count. */
+export function scalarsOf(value: Value | undefined, components: number): number[] {
+  const flat: number[] = [];
+  const walk = (v: Value | undefined): void => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    flat.push(typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0);
+  };
+  walk(value);
+  return Array.from({ length: components }, (_, i) => flat[i] ?? 0);
+}
+
+/** The vertex each position of an expanded list reads, for a strip or a fan. */
+export function expandTopology(topology: string, vertices: number): number[] {
+  if (/TRIANGLE_STRIP/.test(topology)) {
+    const out: number[] = [];
+    for (let i = 0; i + 2 < vertices; i++) out.push(i, i + 1 + (i % 2), i + 2 - (i % 2));
+    return out;
+  }
+  if (/TRIANGLE_FAN/.test(topology)) {
+    const out: number[] = [];
+    for (let i = 0; i + 2 < vertices; i++) out.push(0, i + 1, i + 2);
+    return out;
+  }
+  if (/LINE_STRIP/.test(topology)) {
+    const out: number[] = [];
+    for (let i = 0; i + 1 < vertices; i++) out.push(i, i + 1);
+    return out;
+  }
+  return Array.from({ length: vertices }, (_, i) => i);
+}
+
+/**
+ * The records an interpreted vertex shader produced (`perInstance` per instance, `instanceCount`
+ * instances, each record the outputs' scalars in order) packed as a MeshOutput. Strips and fans
+ * become lists here rather than in the rasterizer, which walks vertices three at a time; each
+ * instance is expanded on its own, since a strip does not run from one instance into the next.
+ */
+export function packInterpretedMesh(cmd: CaptureCommand, topology: string, outputs: MeshOutputVariable[], stride: number, records: number[][],
+                                    perInstance: number, instanceCount: number, truncated: boolean, notes: string[]): MeshOutput {
+  const order: number[] = [];
+  for (let instance = 0; instance < instanceCount; instance++) {
+    const base = instance * perInstance;
+    for (const at of expandTopology(topology, perInstance)) order.push(base + at);
+  }
+  const data = new Uint8Array(order.length * stride);
+  const view = new DataView(data.buffer);
+  const baseAt: MeshOutputVariable["base"][] = [];
+  for (const o of outputs) for (let k = 0; k < o.components; k++) baseAt[o.offset / 4 + k] = o.base;
+  order.forEach((from, to) => {
+    const record = records[from] ?? [];
+    for (let i = 0; i < stride / 4; i++) {
+      const value = record[i] ?? 0;
+      if (baseAt[i] === "int") view.setInt32(to * stride + i * 4, value | 0, true);
+      else if (baseAt[i] === "uint") view.setUint32(to * stride + i * 4, value >>> 0, true);
+      else view.setFloat32(to * stride + i * 4, value, true);
+    }
+  });
+  return {
+    command: cmd.index, method: cmd.method, frame: cmd.frame, commandBuffer: cmd.object?.__id ?? 0, passIndex: 0,
+    measured: true, topology: /LINE/.test(topology) ? "VK_PRIMITIVE_TOPOLOGY_LINE_LIST" : /POINT/.test(topology) ? topology : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST",
+    stride, vertices: order.length, truncated, outputs, data,
+    note: notes.length ? notes.join(" ") : undefined,
+  };
+}
+
+/** The pass a command belongs to, counted among its command buffer's (or encoder's, or list's) pass beginnings. */
+export function passOfCommand(data: CaptureData, cmd: CaptureCommand): { commandBuffer: number; passIndex: number } | null {
+  const sets = data.sets;
+  const commandBuffer = cmd.object?.__id ?? 0;
+  let passIndex = -1;
+  for (let i = 0; i <= cmd.index; i++) {
+    const c = data.commands[i];
+    if (!c || (c.object?.__id ?? 0) !== commandBuffer) continue;
+    if (sets.PASS_BEGIN.has(c.method)) passIndex++;
+  }
+  return passIndex < 0 ? null : { commandBuffer, passIndex };
+}
+
+/** The render target's value at the pixel after the pass, for the end-of-run comparison (Metal and D3D12 passes). */
+export function passPixel(ctx: DebugContext, cmd: CaptureCommand, x: number, y: number): DebugSession["targetPixel"] {
+  const passInfo = passOfCommand(ctx.data, cmd);
+  if (!passInfo) return undefined;
+  const colour = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex)
+    .find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
+  if (!colour?.data || x >= colour.info.width || y >= colour.info.height) return undefined;
+  const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  if (!texels) return undefined;
+  const o = (y * texels.width + x) * 4;
+  return {
+    image: colour.info.id, attachment: colour.info.attachment,
+    value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))),
+    format: colour.info.format,
+  };
+}
+
+/** Whether a draw's vertex outputs are interpreted here (Metal, D3D12) rather than replayed (Vulkan). */
+export function interpretsVertexOutputs(state: DrawState): boolean {
+  return isMetalPipeline(state.pipeline) || isD3D12Pipeline(state.pipeline);
+}
+
+/**
+ * A draw's vertex shader outputs, from wherever its API gets them: the Vulkan replay through
+ * `ctx.meshOutput`, or the interpreter itself for a Metal or D3D12 draw. What a fragment's inputs
+ * are rasterized from, and what the pixel offered by default is found in.
+ */
+export function vertexOutputsOf(ctx: DebugContext, cmd: CaptureCommand, state: DrawState): Promise<MeshOutput> {
+  if (isMetalPipeline(state.pipeline)) return interpretedMeshOutput(ctx, cmd, state);
+  if (isD3D12Pipeline(state.pipeline)) return interpretedD3D12MeshOutput(ctx, cmd, state);
+  if (!ctx.meshOutput) return Promise.reject(new Error("a fragment's inputs come from replaying the draw's vertex shader, and no replay is available here"));
+  return ctx.meshOutput(cmd.index);
+}
+
+/** The rasterizer state a pixel is looked for with, including the API's default viewport where a draw set none. */
+export function pixelRasterState(ctx: DebugContext, cmd: CaptureCommand, state: DrawState): RasterState {
+  if (isMetalPipeline(state.pipeline)) return metalRasterState(ctx, cmd, state);
+  if (isD3D12Pipeline(state.pipeline)) return d3d12RasterState(ctx, cmd, state);
+  return rasterStateOf(state);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 /** Prepares a debugging session for a target; throws with the reason it cannot be debugged. */
 export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget): Promise<DebugSession> {
@@ -599,8 +764,10 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
     throw new Error(`command ${target.command} (${cmd.method}) is not a ${target.stage === "compute" ? "dispatch" : "draw"}`);
   }
   const state = drawState(data, db, cmd);
-  // A Metal pipeline's shaders are Metal Shading Language, run by a different interpreter.
+  // A Metal pipeline's shaders are Metal Shading Language, run by a different interpreter; a D3D12
+  // pipeline state's are HLSL compiled to SPIR-V for this one.
   if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
+  if (isD3D12Pipeline(state.pipeline)) return prepareD3D12Session(ctx, target, state, cmd);
   const { source, bytes, module: captured } = stageOf(ctx, state, target.stage);
   const bindings = commandBindings(ctx, state, source);
   const model = STAGE_MODEL[target.stage];

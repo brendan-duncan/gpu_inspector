@@ -1,7 +1,8 @@
 // The shader debugger in a tab of its own, after RenderDoc's shader viewer and WebGPU Inspector's
 // shader debugger: one invocation of a draw's vertex or fragment shader, or of a dispatch's compute
 // shader, run in the interpreter of whichever language the shader is in — SPIR-V (spirv/) for a
-// Vulkan capture, MSL (msl/) for a Metal one — on the capture's inputs (shader_debug_setup.ts),
+// Vulkan capture, MSL (msl/) for a Metal one, and for a D3D12 capture the stage's HLSL compiled to
+// SPIR-V by dxc (d3d12/shader_debug.ts) — on the capture's inputs (shader_debug_setup.ts),
 // stepped by source line (shader_debugger.ts) with breakpoints, the values each line computed,
 // the locals, the call stack, the inputs, outputs and resources, and at the end how the outputs
 // compare with what the GPU produced (the replay's vertex outputs, the render target's pixel).
@@ -19,14 +20,13 @@ import { drawState } from "./draw_state.js";
 import type { MeshOutput } from "./mesh_output.js";
 import type { OverdrawPassKey } from "./overdraw.js";
 import { DebugController, sourceKey, type StepKind } from "./shader_debugger.js";
-import { compareWithOriginal, coveredPixel, prepareDebugSession, sameValue, type DebugContext, type DebugSession, type DebugTarget, type Stepper } from "./shader_debug_setup.js";
+import { compareWithOriginal, coveredPixel, interpretsVertexOutputs, pixelRasterState, prepareDebugSession, sameValue, vertexOutputsOf, type DebugContext, type DebugSession, type DebugTarget, type Stepper } from "./shader_debug_setup.js";
 import type { StageSource } from "./shader_cache.js";
 import { resolveSourcesFromHost } from "./shader_source_view.js";
 import type { SessionContext } from "./session_panel.js";
 import type { DebugProgram, VariableView } from "./debug/program.js";
 import { nonFinite, scalars, type Value } from "./debug/values.js";
 import { SpirvProgram } from "./spirv/program.js";
-import { interpretedMeshOutput, isMetalPipeline, metalRasterState } from "./metal/shader_debug.js";
 import { sourceLineMap } from "./vulkan/spirv_debug.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureCommand, DebugTranslationResult, ShaderTextResult } from "../shared/protocol.js";
@@ -60,6 +60,8 @@ export interface ShaderDebuggerHost {
   disassemble(spirv: Uint8Array): Promise<ShaderTextResult>;
   /** A module decompiled to GLSL and recompiled with line information; absent where the tools are not. */
   decompile?(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult>;
+  /** D3D12: a stage's HLSL compiled to SPIR-V with line information (`target` its profile, "ps_6_0"); absent where dxc is not. */
+  compileHlsl?(bytecode: Uint8Array, stage: string, entryPoint: string, target: string): Promise<DebugTranslationResult>;
   /** Fetches an object's payload from the layer: a live Metal capture's library source. */
   fetchBlob?(objectId: number, index: number): Promise<Uint8Array | null>;
 }
@@ -256,18 +258,33 @@ export class ShaderDebuggerView {
       meshOutput: (command) => this.host.meshOutput(command),
       fetchBlob: this.host.fetchBlob ? (id, index) => this.host.fetchBlob!(id, index) : undefined,
       translate: this._decompiled && this.host.decompile ? (bytes, source) => this._translate(bytes, source) : undefined,
+      compileHlsl: this.host.compileHlsl ? (bytes, source, target) => this._compileHlsl(bytes, source, target) : undefined,
     };
   }
 
   private _translate(bytes: Uint8Array, source: StageSource): Promise<Uint8Array> {
+    return this._translated(source, "Decompiling the SPIR-V to GLSL and compiling it back with line information...", async () => {
+      const r = await this.host.decompile!(bytes, source.stage, source.entryPoint);
+      if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+      return r.spirv;
+    });
+  }
+
+  private _compileHlsl(bytes: Uint8Array, source: StageSource, target: string): Promise<Uint8Array> {
+    return this._translated(source, "Compiling the stage's HLSL to SPIR-V with line information...", async () => {
+      const r = await this.host.compileHlsl!(bytes, source.stage, source.entryPoint, target);
+      if (!r.ok || !r.spirv) throw new Error(`the HLSL could not be compiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+      return r.spirv;
+    });
+  }
+
+  /** A stage's translation, made once and kept: picking another invocation of the same shader reuses it. */
+  private _translated(source: StageSource, status: string, make: () => Promise<Uint8Array>): Promise<Uint8Array> {
     const key = `${source.object.id}:${source.blobIndex}:${source.stage}:${source.entryPoint}`;
     let translation = this._translations.get(key);
     if (!translation) {
-      this._setStatus("Decompiling the SPIR-V to GLSL and compiling it back with line information...");
-      translation = this.host.decompile!(bytes, source.stage, source.entryPoint).then((r) => {
-        if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
-        return r.spirv;
-      });
+      this._setStatus(status);
+      translation = make();
       // A failure is not kept: the tools may be there on the next try.
       translation.catch(() => this._translations.delete(key));
       this._translations.set(key, translation);
@@ -291,10 +308,9 @@ export class ShaderDebuggerView {
     if (!cmd) throw new Error(`the capture has no command ${r.command}`);
     if (r.stage === "compute") return { stage: "compute", command: r.command, invocation: r.invocation ?? [0, 0, 0] };
     const state = drawState(this.host.data, this.host.db, cmd);
-    // Where the draw's vertex outputs come from: a Vulkan replay, or the interpreter itself.
-    const metal = isMetalPipeline(state.pipeline);
-    const vertexOutputs = async (): Promise<MeshOutput> =>
-      (metal ? interpretedMeshOutput(this._context(), cmd, state) : this.host.meshOutput(r.command));
+    // Where the draw's vertex outputs come from: a Vulkan replay, or the interpreter itself (Metal, D3D12).
+    const interpreted = interpretsVertexOutputs(state);
+    const vertexOutputs = (): Promise<MeshOutput> => vertexOutputsOf(this._context(), cmd, state);
     if (r.stage === "vertex") {
       if (r.record === undefined) return { stage: "vertex", command: r.command, vertex: r.vertex ?? 0, instance: r.instance ?? 0 };
       const first = await prepareDebugSession(this._context(), { stage: "vertex", command: r.command, vertex: 0, instance: 0 });
@@ -304,13 +320,13 @@ export class ShaderDebuggerView {
       return { stage: "vertex", command: r.command, vertex, instance };
     }
     if (r.x !== undefined && r.y !== undefined) return { stage: "fragment", command: r.command, x: r.x, y: r.y };
-    this._setStatus(metal
+    this._setStatus(interpreted
       ? "Running the draw's vertex shader, to find a pixel it covers..."
       : "Replaying the capture for the draw's vertex shader outputs, to find a pixel it covers...");
     const mesh = await vertexOutputs();
     if (token !== this._token) return null;
     if (!mesh.measured) throw new Error(`the draw's vertex shader outputs could not be captured: ${mesh.note ?? "the replay did not reach the draw"}`);
-    const pixel = coveredPixel(state, mesh, metal ? metalRasterState(this._context(), cmd, state) : undefined);
+    const pixel = coveredPixel(state, mesh, pixelRasterState(this._context(), cmd, state));
     if (!pixel) throw new Error("no triangle of the draw is visible in its viewport: enter a pixel to debug");
     return { stage: "fragment", command: r.command, x: pixel.x, y: pixel.y };
   }

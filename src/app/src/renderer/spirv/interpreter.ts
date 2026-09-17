@@ -29,6 +29,8 @@ export interface ShaderBindings {
   buffer(set: number, binding: number, element: number): Uint8Array | null;
   texture(set: number, binding: number, element: number): DebugTexture | null;
   sampler(set: number, binding: number, element: number): DebugSampler | null;
+  /** How a binding is named in warnings and resource labels; "set 0 binding 1" when absent (a D3D12 translation says "t1"). */
+  label?(set: number, binding: number, element: number): string;
   /** The push constant bytes, from offset 0. */
   pushConstants: Uint8Array | null;
   /** Specialization: bytes of each constant's value, by SpecId. */
@@ -353,7 +355,7 @@ export class Invocation implements DebugInvocation {
             const count = t.kind === "array" ? t.length : 1;
             cell.value = Array.from({ length: count }, (_, i) => {
               const bytes = this.bindings.buffer(set, binding, i);
-              if (!bytes) this.warnings.add(`set ${set} binding ${binding}[${i}] (${m.nameOf(id)}) was not captured: it reads as zeros`);
+              if (!bytes) this.warnings.add(`${this._where(set, binding, i)} (${m.nameOf(id)}) was not captured: it reads as zeros`);
               return { buffer: { bytes: bytes ?? new Uint8Array(0), type: element, overrides: new Map() } } as unknown as Value;
             });
             cell.bufferArray = true;
@@ -361,7 +363,7 @@ export class Invocation implements DebugInvocation {
             const bytes = g.storage === StorageClass.PushConstant ? this.bindings.pushConstants : this.bindings.buffer(set, binding, 0);
             if (!bytes) {
               this.warnings.add(g.storage === StorageClass.PushConstant ? "the push constants were not captured: they read as zeros"
-                : `set ${set} binding ${binding} (${m.nameOf(id)}) was not captured: it reads as zeros`);
+                : `${this._where(set, binding, 0)} (${m.nameOf(id)}) was not captured: it reads as zeros`);
             }
             cell.buffer = { bytes: bytes ?? new Uint8Array(0), type: pointee, overrides: new Map() };
           }
@@ -384,10 +386,15 @@ export class Invocation implements DebugInvocation {
     }
   }
 
+  /** "set 0 binding 1[2]", or what the bindings call it. */
+  private _where(set: number, binding: number, element: number): string {
+    return this.bindings.label?.(set, binding, element) ?? `set ${set} binding ${binding}${element ? `[${element}]` : ""}`;
+  }
+
   private _resource(id: number, type: number, set: number, binding: number, element: number): Value {
     const m = this.module;
     const t = m.types.get(type);
-    const label = `set ${set} binding ${binding}${element ? `[${element}]` : ""} (${m.nameOf(id)})`;
+    const label = `${this._where(set, binding, element)} (${m.nameOf(id)})`;
     if (t?.kind === "array" || t?.kind === "runtimeArray") {
       const count = t.kind === "array" ? t.length : 1;
       return Array.from({ length: count }, (_, i) => this._resource(id, t.element, set, binding, i));

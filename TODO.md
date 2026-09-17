@@ -705,10 +705,20 @@ The D3D12 capture library (`src/d3d12/`) reaches the Inspect and Capture panels 
 protocol as the Vulkan layer. What it lacks is what the replay does for Vulkan, and what the
 library does not read back yet.
 
-- [ ] Shader debugger: the interpreters are SPIR-V's (`renderer/spirv/`) and MSL's
-      (`renderer/msl/`); DXIL has none. Either a DXIL interpreter behind the `DebugProgram` seam,
-      or the HLSL compiled to SPIR-V with `dxc -spirv` and stepped in the SPIR-V one, with the
-      D3D12 bindings mapped to sets and bindings.
+- [x] Shader debugger (`renderer/d3d12/shader_debug.ts`, `compileHlslForDebugging`): the stage's
+      HLSL (embedded by `-Zi`, or in a PDB under the symbol directories) compiled to SPIR-V with
+      `dxc -spirv` and stepped in the SPIR-V interpreter. Registers survive as shifted bindings
+      (`shared/hlsl_debug.ts`) and are found in the root tables, root views, root constants and
+      static samplers; stage variables keep their semantics (`-fspv-reflect`), which pair a vertex
+      input with the input layout and a pixel input with the vertex shader's output; a pixel's
+      inputs come from the vertex shader run in the interpreter, as on Metal. `dxinsp_shader
+      --sources` now reports how dxc was run (main file, defines, arguments) so the compile
+      matches the build's.
+- [ ] Shader debugger on D3D12, the rest: a DXIL interpreter (or DXIL run on the GPU) to check the
+      translation against, the way the Vulkan decompile route runs the original; a shipped shader
+      with no HLSL anywhere (the stub of `hlsl_stub.ts` compiles but computes nothing); shader
+      model 6.6 dynamic resources (`ResourceDescriptorHeap[]`), which `dxc -spirv` cannot compile;
+      the mesh view's VS Out from the same interpreted run.
 - [x] Overdraw and pixel history, by the Metal route: measured while capturing, inside the
       application (`src/d3d12/src/overdraw.*`, `pixel_history.cpp`, `pass_record.h`). The pass is
       issued again on the application's own command list with a counting pixel shader, and one

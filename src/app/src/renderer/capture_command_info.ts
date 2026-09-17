@@ -222,18 +222,17 @@ export class CommandInfoView {
             tooltip: api === "vulkan"
               ? "The draw's mesh in a tab: the vertices it read (VS In) and what its vertex shader wrote (VS Out, replayed), as a wireframe and a table"
               : "The draw's mesh in a tab: the vertices it read (VS In), as a wireframe and a table; VS Out needs a replay, which only Vulkan captures have" });
-          // The shader debugger interprets SPIR-V and MSL; DXIL has no interpreter here.
-          if (api === "d3d12") {
-            new Span(row, { text: "Shader debugging is not available for D3D12 captures", class: "text-muted font-sm capture-note" });
-          } else {
-            const metal = api === "metal";
-            new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
-              tooltip: "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
-            new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
-              tooltip: metal
-                ? "Step through the draw's fragment shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel"
-                : "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel" });
-          }
+          // The shader debugger interprets SPIR-V and MSL; a D3D12 stage is its HLSL compiled to
+          // SPIR-V by dxc, so it needs the source (dxc -Zi, or a PDB under the symbol directories).
+          const d3d12 = api === "d3d12";
+          new Button(row, { label: "Debug Vertex", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "vertex", command: cmd.index }),
+            tooltip: d3d12
+              ? "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources: the HLSL the capture holds, compiled to SPIR-V by dxc"
+              : "Step through the draw's vertex shader for its first vertex, on the captured attributes and resources" });
+          new Button(row, { label: "Debug Pixel", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "fragment", command: cmd.index }),
+            tooltip: api === "vulkan"
+              ? "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel"
+              : `Step through the draw's ${d3d12 ? "pixel" : "fragment"} shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel${d3d12 ? ". The HLSL the capture holds is compiled to SPIR-V by dxc" : ""}` });
         }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
@@ -241,12 +240,10 @@ export class CommandInfoView {
       this._renderStageBuffers(container, state, [...state.stageBuffers.values()].filter((sb) => graphics ? sb.stage !== "compute" : sb.stage === "compute"));
       if (!graphics && cmdSets.DISPATCH.has(method)) {
         const row = new Div(container, { class: "capture-mesh-row" });
-        if (this.panel.data.api === "d3d12") {
-          new Span(row, { text: "Shader debugging is not available for D3D12 captures", class: "text-muted font-sm capture-note" });
-        } else {
-          new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
-            tooltip: "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });
-        }
+        new Button(row, { label: "Debug Invocation", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "compute", command: cmd.index }),
+          tooltip: this.panel.data.api === "d3d12"
+            ? "Step through the dispatch's compute shader for one thread (0, 0, 0 to start), on the captured resources: the HLSL the capture holds, compiled to SPIR-V by dxc"
+            : "Step through the dispatch's compute shader for one invocation (0, 0, 0 to start), on the captured resources" });
       }
       if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
       this._renderPushConstants(container, state, state.pushConstants, token);

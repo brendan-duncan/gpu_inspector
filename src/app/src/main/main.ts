@@ -17,7 +17,7 @@ import {
   NO_REPLAY_TOOL, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
-import { compileDxil, compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
+import { compileDxil, compileHlslForDebugging, compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
 import { measureStageByAblation, type StageAblationRequest } from "./shader_ablation_run.js";
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
 import {
@@ -1102,6 +1102,11 @@ ipcMain.handle("inspector:compileDxil", (_e, source: string, stage: string, entr
 ipcMain.handle("inspector:decompileForDebugging", (_e, spirv: Uint8Array, stage: string, entryPoint: string) =>
   decompileForDebugging(spirv, stage, entryPoint));
 
+// A D3D12 stage for the shader debugger: its HLSL (from the container, or a PDB under the symbol
+// directories, as for inspector:shaderText) compiled to SPIR-V, includes from the source roots.
+ipcMain.handle("inspector:compileHlslForDebugging", (_e, bytecode: Uint8Array, stage: string, entryPoint: string, target?: string, pdbDirs?: string[]) =>
+  compileHlslForDebugging(bytecode, stage, entryPoint, { pdbDirs: symbolDirsWith(pdbDirs), includeDirs: sourceRootDirs(), target }));
+
 ipcMain.handle("inspector:getConfig", (e): AppConfig => {
   const win = windowOf(e.sender);
   return {
@@ -1322,11 +1327,15 @@ ipcMain.handle("inspector:send", (_e, id: number, msg: UiRequest) => {
 // build, so the tool is given directories to look in: the session's symbol directories, which
 // already name unstripped build output, then the last ones a launch used and the MCP server's
 // environment variable, so a capture file opened later still finds them.
-ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode, pdbDirs?: string[]) => {
+ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode, pdbDirs?: string[]) =>
+  shaderText(spirv, mode, { pdbDirs: symbolDirsWith(pdbDirs) }));
+
+/** The session's symbol directories with the saved and the environment's ones, for a shader PDB. */
+function symbolDirsWith(pdbDirs?: string[]): string[] {
   const dirs = [...(pdbDirs ?? []), ...(loadSettings().symbolDirs ?? "").split(";"), ...(process.env.GPU_INSPECTOR_SYMBOL_DIRS ?? "").split(";")]
     .map((d) => d.trim()).filter(Boolean);
-  return shaderText(spirv, mode, { pdbDirs: [...new Set(dirs)] });
-});
+  return [...new Set(dirs)];
+}
 ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   const win = windowOf(e.sender) ?? mainWin;
   if (!win) return null;

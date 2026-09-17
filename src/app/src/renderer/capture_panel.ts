@@ -470,6 +470,8 @@ export class CapturePanel {
       inputNames: (cmd) => view.vertexInputNames(cmd),
       disassemble: (spirv) => window.inspector.shaderText(spirv, "dis"),
       decompile: (spirv, stage, entryPoint) => window.inspector.decompileForDebugging(spirv, stage, entryPoint),
+      // D3D12: the stage's HLSL, from the container or a PDB under the session's symbol directories, compiled to SPIR-V.
+      compileHlsl: (bytecode, stage, entryPoint, target) => window.inspector.compileHlslForDebugging(bytecode, stage, entryPoint, target, view.window.symbolDirs),
       fetchBlob: (objectId, index) => view.fetchShaderBlob(objectId, index),
     }, request, options);
     const entry = this._addSubTab(view, "debugger", tab, `${tab.label}: ${view.label}`);
