@@ -39,7 +39,56 @@ struct DeviceRecord {
     double submitMs = 0;
     /** The monitor's refresh period (0 when unknown), re-queried every 120 presents. */
     double displayRefreshMs = 0;
+
+    // What the display actually did with the presents, from DXGI_FRAME_STATISTICS. The counters
+    // are cumulative and only meaningful as differences, so the previous reading is kept.
+    bool haveStats = false;
+    UINT lastPresentCount = 0;
+    UINT lastPresentRefresh = 0;
+    /** Refreshes that showed the previous frame again because no new one had arrived. */
+    uint64_t droppedTotal = 0;
+    uint64_t droppedSinceReport = 0;
 };
+
+/**
+ * Missed refreshes since the last reading, from the swap chain's own counters.
+ *
+ * `PresentRefreshCount` is the display refresh a present was shown at and `PresentCount` is how
+ * many presents have been shown, so between two readings the refreshes that elapsed and the
+ * presents that filled them differ by exactly the refreshes that showed the previous frame again.
+ * That is what a dropped frame is, measured by the display rather than guessed at from wall-clock
+ * time the way the Vulkan layer has to (src/vulkan/src/layer.cpp).
+ *
+ * Not every swap chain answers: a blit-model or windowed one usually fails, and after a mode change
+ * the counters are disjoint. Both leave the count alone rather than reporting a made-up zero.
+ */
+void UpdatePresentStatistics(DeviceRecord& d, IDXGISwapChain* swapChain) {
+    if (!swapChain) return;
+    DXGI_FRAME_STATISTICS stats{};
+    if (FAILED(swapChain->GetFrameStatistics(&stats))) {
+        // DXGI_ERROR_FRAME_STATISTICS_DISJOINT and the unsupported cases: the next reading starts
+        // a fresh interval rather than differencing across the gap.
+        d.haveStats = false;
+        return;
+    }
+    // A reading taken before anything has actually been shown answers with zeros, and
+    // `PresentRefreshCount` is the display's own running count rather than this swap chain's — so
+    // differencing a real reading against a zeroed one reports the entire counter as dropped
+    // frames, which is tens of millions on a machine that has been up for a day.
+    if (stats.PresentCount == 0 || stats.PresentRefreshCount == 0) return;
+    if (d.haveStats && stats.PresentCount >= d.lastPresentCount && stats.PresentRefreshCount >= d.lastPresentRefresh) {
+        const uint64_t refreshes = stats.PresentRefreshCount - d.lastPresentRefresh;
+        const uint64_t presents = stats.PresentCount - d.lastPresentCount;
+        if (refreshes > presents) {
+            const uint64_t missed = refreshes - presents;
+            d.droppedTotal += missed;
+            d.droppedSinceReport += missed;
+        }
+    }
+    d.haveStats = true;
+    d.lastPresentCount = stats.PresentCount;
+    d.lastPresentRefresh = stats.PresentRefreshCount;
+}
 
 std::mutex g_mutex;
 std::unordered_map<ID3D12Device*, std::unique_ptr<DeviceRecord>> g_devices;
@@ -606,10 +655,11 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
             w.Key("displayRefreshMs"); w.Double(refreshMs > 0 ? d.displayRefreshMs : 0);
             if (!presentMode.empty()) { w.Key("presentMode"); w.String(presentMode); }
             w.Key("frameBoundary"); w.String(boundary);
-            // Dropped frames need a refresh count the swap chain does not give; the UI shows the
-            // zeros as sent.
-            w.Key("dropped"); w.Uint(0);
-            w.Key("droppedTotal"); w.Uint(0);
+            w.Key("dropped"); w.Uint(d.droppedSinceReport);
+            w.Key("droppedTotal"); w.Uint(d.droppedTotal);
+            // Read from the swap chain's refresh counters rather than worked out from the frame
+            // interval, which is what the Vulkan layer has to do (src/vulkan/src/layer.cpp).
+            if (d.haveStats) { w.Key("droppedMeasured"); w.Boolean(true); }
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
         }
@@ -618,6 +668,7 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
         d.accumMs = 0;
         d.frames = 0;
         d.submitMs = 0;
+        d.droppedSinceReport = 0;
         d.lastReport = now;
     }
     d.lastPresent = now;
@@ -640,6 +691,8 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
     }
     // A present that syncs waits for the display: its period is the frame's floor. Tearing
     // presents and syncInterval 0 do not, so no refresh period applies.
+    // Before the boundary below, so a report in this present carries the interval's own count.
+    UpdatePresentStatistics(d, swapChain);
     const bool synced = syncInterval > 0 && !(flags & DXGI_PRESENT_ALLOW_TEARING);
     std::string presentMode = "immediate";
     if (syncInterval == 1) presentMode = "vsync";

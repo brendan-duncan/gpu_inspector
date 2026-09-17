@@ -140,6 +140,9 @@ constexpr uint32_t kHeapSize = kHeapUav + 1;
 struct App {
     uint32_t width = 640, height = 480;
     uint32_t maxFrames = 0;   // 0: until the window is closed
+    // --stall <ms>: sleep this long before each frame, so a vsynced present misses refreshes
+    // and the swap chain's statistics have dropped frames to report.
+    uint32_t stallMs = 0;
     // --msaa: the cubes render into a 4x multisampled target and depth buffer, resolved into the
     // back buffer with ResolveSubresource (the capture resolves the targets it reads back).
     bool msaa = false;
@@ -949,6 +952,7 @@ struct App {
             PumpEvents();
             if (quit) break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+            if (stallMs) Sleep(stallMs);
             if (!DrawFrame(t)) Sleep(16);
             // A swap chain paces the loop to the display; an offscreen renderer has nothing to
             // wait on and would spin a core at thousands of fps, so it is paced to ~60 the way a
@@ -975,6 +979,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--msaa")) app.msaa = true;
         else if (!strcmp(argv[i], "--bundle")) app.bundle = true;
         else if (!strcmp(argv[i], "--indirect")) app.indirect = true;
