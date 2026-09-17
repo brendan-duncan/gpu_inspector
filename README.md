@@ -270,10 +270,11 @@ What works: object inspection with descriptors, names and descriptor heap conten
 capture with passes synthesized from `OMSetRenderTargets` (or the application's own
 `BeginRenderPass`), render targets, bound buffers and textures, root constants, pass timings and
 counters; the D3D12 debug layer's messages; stack traces; DXBC/DXIL disassembly, embedded HLSL
-and reflection; and shader editing through `dxc`. Not yet: the shader debugger and the
-replay-based analyses (overdraw, pixel history, draw overlays, mesh output, per-draw
-measurements), stencil read-back, 32-bit targets, and attaching to an application already
-running. [docs/D3D12.md](docs/D3D12.md) is the user's page and `src/d3d12/README.md` the design.
+and reflection; shader editing through `dxc`; and the shader debugger, which steps a stage as its
+HLSL compiled to SPIR-V by `dxc` (there is no DXIL interpreter, so it needs the source: `-Zi`, or
+a PDB under the symbol directories). Not yet: the replay-based analyses (draw overlays, mesh output,
+per-draw measurements), 32-bit targets, and attaching to an application already running.
+[docs/D3D12.md](docs/D3D12.md) is the user's page and `src/d3d12/README.md` the design.
 
 `build\bin\Release\dxinsp_triangle.exe` is the D3D12 test application, the counterpart of
 `vkinsp_triangle` (`--msaa`, `--bundle`, `--indirect`, `--render-pass`, `--compute`, `--leak`).

@@ -166,6 +166,22 @@ test("the per-command rules find the redundant pipeline bind and nothing else on
   assert.ok(!second.discards && !second.dropped, "PRESERVE / PRESERVE");
 });
 
+test("a list's Reset binds its initial pipeline state, and nothing before the Reset is the recording's", () => {
+  const reset = new CaptureData();
+  reset.api = "d3d12";
+  reset.commands = [
+    ["SetPipelineState", { pipeline: ref(20, "ID3D12PipelineState"), bindPoint: "compute" }],   // the previous recording
+    ["Reset", { pAllocator: ref(7, "ID3D12CommandAllocator"), pInitialState: ref(21, "ID3D12PipelineState") }],
+    ["Dispatch", { ThreadGroupCountX: 1, ThreadGroupCountY: 1, ThreadGroupCountZ: 1 }],
+    ["DrawInstanced", { VertexCountPerInstance: 3, InstanceCount: 1, StartVertexLocation: 0, StartInstanceLocation: 0 }],
+    ["Reset", { pAllocator: ref(7, "ID3D12CommandAllocator"), pInitialState: null }],
+    ["DrawInstanced", { VertexCountPerInstance: 3, InstanceCount: 1, StartVertexLocation: 0, StartInstanceLocation: 0 }],
+  ].map(([method, args], i) => ({ index: i, frame: 0, slot: i, method, object: list, args }));
+  assert.equal(drawState(reset, db, reset.commands[3]).pipeline?.id, 21, "the graphics pipeline Reset was given");
+  assert.equal(drawState(reset, db, reset.commands[2]).pipeline, null, "a graphics initial state binds no compute pipeline, and the earlier recording's bind is not this one's");
+  assert.equal(drawState(reset, db, reset.commands[5]).pipeline, null, "Reset with no initial state binds nothing");
+});
+
 test("the draw's state reconstructs the D3D12 bindings, layout and root constants", () => {
   const draw = data.commands.find((c) => c.method === "DrawIndexedInstanced");
   const state = drawState(data, db, draw);

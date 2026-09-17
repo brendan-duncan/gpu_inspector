@@ -11,6 +11,9 @@
 //                                        --pdb-dir. An entry read out of a PDB carries "from", the
 //                                        file it came from. When there is no source anywhere the
 //                                        array is empty and the reason goes to stderr, exit 0.
+//                                        A last entry {"compile": {"mainFile", "entryPoint",
+//                                        "target", "defines", "args"}} says how dxc was run, for
+//                                        compiling the same source again (the shader debugger).
 //   dxinsp_shader --info <file>          {"stage", "entryPoint", "target", "dxil", "debugName"}
 //
 // Output goes to stdout as UTF-8, errors to stderr with exit code 1.
@@ -116,6 +119,23 @@ int wmain(int argc, wchar_t** argv) {
             w.Key("text"); w.String(text);
             // Where the text came from, for a source the container itself does not carry.
             if (!sources.pdb.empty()) { w.Key("from"); w.String(sources.pdb); }
+            w.EndObject();
+        }
+        // How the files were compiled, after them so a reader wanting only the files can stop.
+        const ShaderCompileInfo& c = sources.compile;
+        if (!sources.files.empty() && (!c.mainFile.empty() || !c.defines.empty() || !c.args.empty())) {
+            w.BeginObject();
+            w.Key("compile"); w.BeginObject();
+            w.Key("mainFile"); w.String(c.mainFile);
+            w.Key("entryPoint"); w.String(c.entryPoint);
+            w.Key("target"); w.String(c.target);
+            w.Key("defines"); w.BeginArray();
+            for (const std::string& d : c.defines) w.String(d);
+            w.EndArray();
+            w.Key("args"); w.BeginArray();
+            for (const std::string& a : c.args) w.String(a);
+            w.EndArray();
+            w.EndObject();
             w.EndObject();
         }
         w.EndArray();

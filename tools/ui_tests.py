@@ -636,6 +636,51 @@ def d3d12_offscreen(state, log):
     return check_connected(state, log) + check_capture_basic(state, log) +         expect(s.get("frameBoundary") == "submit", f"frame boundary {s.get('frameBoundary')!r} (expected the submit fallback)") +         expect(s.get("refreshSource") in ("", None), f"refresh source {s.get('refreshSource')!r} (a device that never presents has no display period)") +         expect("no present after" in log, "the layer did not fall back to the submit frame boundary") +         expect("submit boundary" in log, "the capture did not start on a submit boundary")
 
 
+def d3d12_debug_pixel(state, log):
+    d = debugger_tab(state)
+    outputs = d.get("outputs") or []
+    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    target = (d.get("targetPixel") or {}).get("value") or []
+    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    # cube.hlsl's pixel shader at a pixel the draw covers: the HLSL dxc embedded (-Zi) compiled to
+    # SPIR-V and stepped by line, its inputs rasterized from the vertex shader run in the
+    # interpreter, the checker texture sampled through the root signature's static sampler, the root
+    # constants read, and the colour compared with the render target (the cube is the pass's only draw).
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
+        expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 10, f"cube.hlsl's source is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
+        expect(any("compiled to SPIR-V by dxc" in n for n in d.get("notes") or []), f"the notes do not say the HLSL was compiled to SPIR-V: {d.get('notes')}") + \
+        expect(d.get("status") == "returned", f"the pixel shader did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+
+
+def d3d12_debug_vertex(state, log):
+    d = debugger_tab(state)
+    # Stopped part way through cube.hlsl's VSMain: two lines stepped over, inside the source's own
+    # function rather than dxc's wrapper around it. There is no replay to compare the outputs with.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:vertex opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the vertex: {d.get('error')}") + \
+        expect(d.get("mode") == "source", f"cube.hlsl's source is not what is stepped: {d.get('mode')}") + \
+        expect(d.get("status") == "running" and d.get("line") in (35, 36, 37), f"not paused inside VSMain after two steps: {d.get('status')} line {d.get('line')}") + \
+        expect((d.get("lineValues") or 0) > 0, "the line stepped over shows no values") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
+
+
+def d3d12_debug_compute(state, log):
+    d = debugger_tab(state)
+    # wave.hlsl's dispatch (--compute): thread (0, 0, 0) run to the end on the UAV and the root constants.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:compute opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the thread: {d.get('error')}") + \
+        expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 10, f"wave.hlsl's source is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
+        expect(d.get("status") == "returned", f"the thread did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
+
+
 def d3d12_cases(triangle):
     launch = [f"--launch={triangle}"]
     saved = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12.gpucap")
@@ -651,6 +696,15 @@ def d3d12_cases(triangle):
         Case("d3d12-stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], d3d12_stencil, delay_ms=16000),
         Case("d3d12-offscreen", launch + ["--args=--offscreen --compute", "--debug-capture"], d3d12_offscreen, delay_ms=14000),
         Case("d3d12-open", [f"--debug-open={saved}", "--debug-command=22"], d3d12_open, delay_ms=9000),
+        # The shader debugger on a D3D12 capture: the stage's HLSL (embedded by the sample's -Zi
+        # build) compiled to SPIR-V by dxc and stepped; no replay is involved. --debug-settle waits
+        # for the compile and, for a pixel, the vertex shader run over the draw.
+        Case("d3d12-debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel::end", "--debug-settle=8000"],
+             d3d12_debug_pixel, delay_ms=20000),
+        Case("d3d12-debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::2", "--debug-settle=8000"],
+             d3d12_debug_vertex, delay_ms=20000),
+        Case("d3d12-debug-compute", launch + ["--args=--compute", "--debug-capture", "--debug-view=debugger:compute::end", "--debug-settle=8000"],
+             d3d12_debug_compute, delay_ms=20000),
     ]
 
 

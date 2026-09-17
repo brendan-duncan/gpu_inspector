@@ -6,7 +6,7 @@ import { decodeBase64 } from "./utils/base64.js";
 import {
   boundPipelineOf, type BoundIndexBuffer, type BoundStageBuffer, type BoundStageSampler, type BoundStageTexture, type BoundVertexBuffer, type CommandSets,
 } from "./command_sets.js";
-import { d3d12InputElements, isD3D12Type } from "./d3d12/d3d12_object.js";
+import { d3d12InputElements, d3d12PipelineKind, isD3D12Type } from "./d3d12/d3d12_object.js";
 import { vkFormatOfDxgi } from "./d3d12/dxgi_format.js";
 import { isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { CaptureData } from "./capture_data.js";
@@ -145,6 +145,19 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       if (c.secondary !== cmd.secondary) break;
     } else if (c.secondary) {
       continue;
+    }
+    if (cmdSets.RECORD_BEGIN.has(c.method)) {
+      // The recording starts here: nothing before it is this recording's state. A D3D12 list's
+      // Reset binds its initial pipeline state (of either kind; the other kind's stays unbound).
+      const initial = c.args?.pInitialState;
+      if (initial !== undefined && !state.pipelineCmd && !state.shadersCmd) {
+        const pipeline = db.getObject(refId(initial));
+        if (pipeline && d3d12PipelineKind(pipeline) === bindPoint) {
+          state.pipelineCmd = c;
+          state.pipeline = pipeline;
+        }
+      }
+      break;
     }
     const a = c.args;
     if (!a) continue;

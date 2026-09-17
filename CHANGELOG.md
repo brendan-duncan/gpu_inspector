@@ -1,6 +1,13 @@
 ## Unreleased
 
 ### Fixed
+- A D3D12 draw whose pipeline came from its command list's `Reset` had no pipeline in its
+  reconstructed state: the library records `Reset` with its `pInitialState`, but the state walk
+  only followed `SetPipelineState`, so a list that started with its pipeline (as the sample does,
+  and as many engines do) showed its draws without shaders, a mesh view without a layout and,
+  now, a debugger with nothing to step. The walk now stops at the recording's beginning (a
+  `Reset`, a `vkBeginCommandBuffer`) rather than reading on into the list's previous recording,
+  and takes the initial pipeline state of the draw's kind from a `Reset`.
 - The replay gave every acceleration structure build the same scratch memory, from the start of one
   buffer it grew as it went (`Replayer::ReserveScratch`). Two faults followed from that, neither
   visible on a frame with a single build, which is why nothing here had shown them. Growing the
@@ -28,6 +35,30 @@
   none of them was the one that mattered.
 
 ### Added
+- The shader debugger on a D3D12 capture. There is no DXIL interpreter, and writing one (LLVM
+  bitcode, then DXIL's own operations) is a long road for a result that would still be a second
+  implementation of the same semantics. What a D3D12 capture holds for a stage is a container, and
+  what the container holds when the build used `-Zi` (or wrote a PDB the symbol directories find)
+  is the HLSL it was compiled from — the same text the Inspect panel already shows. So the debugger
+  compiles that HLSL again, to SPIR-V, with `dxc -spirv` on this machine, and steps the result in
+  the interpreter a Vulkan capture's modules run in: source lines, locals, the call stack, every
+  resource. The compile is run the way the build ran it: `dxinsp_shader --sources` now reports the
+  main file, the `-D` defines and the other arguments dxc kept in the debug information, so an
+  engine's shader with a hundred defines compiles to what it compiled to. Three things tie the
+  translation back to the capture. The register classes are shifted apart in the bindings
+  (`src/app/src/shared/hlsl_debug.ts`), so `t0` and `b0` do not collide and a binding names one
+  register, which is then found in the draw's root descriptor tables, root views, root constants
+  (through the root signature's parameters) and static samplers. Stage variables keep their HLSL
+  semantics (`-fspv-reflect`), which pair a vertex input with the input layout's element and a
+  pixel input with the vertex shader's output, since dxc numbers the two stages' locations
+  independently. And a pixel's inputs come from the draw's vertex shader run in the interpreter
+  over the draw, as on Metal, rasterized with D3D's conventions (clip +Y up, clockwise front unless
+  the pipeline says otherwise, the viewport as `RSSetViewports` set it). Stepping starts inside the
+  function the source wrote rather than in dxc's wrapper around it, so Step Over does not run the
+  whole shader as one call. The tab and `debug_shader` say plainly that this is the HLSL compiled
+  by dxc rather than the DXIL the GPU ran, and that nothing checks the two against each other.
+  `test/d3d12_shader_debug.test.js` runs the cube's three stages through it; `tools/ui_tests.py`
+  gains `d3d12-debug-pixel`, `d3d12-debug-vertex` and `d3d12-debug-compute`.
 - Descriptor buffers are read (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`).
   A descriptor buffer replaces descriptor sets with plain memory: the application asks the driver
   for a descriptor's bytes, puts them in a buffer of its own, and a draw names a set by an offset

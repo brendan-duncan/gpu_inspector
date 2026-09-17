@@ -112,6 +112,12 @@ export interface InspectorApi {
   compileDxil(source: string, stage: string, entryPoint: string, shaderModel?: string): Promise<CompileShaderResult>;
   /** A SPIR-V module decompiled to GLSL and recompiled with line information, for the shader debugger. */
   decompileForDebugging(spirv: Uint8Array, stage: string, entryPoint: string): Promise<DebugTranslationResult>;
+  /**
+   * A D3D12 stage's HLSL (embedded, or in a PDB under `pdbDirs` and the saved symbol directories)
+   * compiled to SPIR-V with line information, for the shader debugger; `target` is the stage's
+   * profile from its reflection ("ps_6_0"). The result's `source` is the main file's text.
+   */
+  compileHlslForDebugging(bytecode: Uint8Array, stage: string, entryPoint: string, target?: string, pdbDirs?: string[]): Promise<DebugTranslationResult>;
 }
 
 declare global {

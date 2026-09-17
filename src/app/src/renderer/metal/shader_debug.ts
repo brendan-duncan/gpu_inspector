@@ -21,13 +21,12 @@ import type { DebugSampler, DebugTexture } from "../debug/values.js";
 import { meshInput } from "../mesh_input.js";
 import type { MeshOutput, MeshOutputVariable } from "../mesh_output.js";
 import {
-  coveringTriangle, debugTexture, interpolate, rasterStateOf,
+  coveringTriangle, debugTexture, interpolate, packInterpretedMesh, passOfCommand, passPixel, rasterStateOf, scalarsOf,
   type Covering, type DebugContext, type DebugSession, type DebugTarget, type Interpolation, type RasterState,
 } from "../shader_debug_setup.js";
 import type { DrawState } from "../draw_state.js";
 import type { StageSource } from "../shader_cache.js";
 import { isObject, num, refId, str, type VulkanObject } from "../vulkan/vulkan_object.js";
-import { decodeTexels } from "../vulkan/texture_decode.js";
 import type { ArgValue, CaptureCommand } from "../../shared/protocol.js";
 
 /** Vertices the draw's vertex shader is run for, to rasterize a fragment. */
@@ -289,65 +288,7 @@ export async function interpretedMeshOutput(ctx: DebugContext, cmd: CaptureComma
     notes.push(`The draw's vertex shader was run for ${perInstance.toLocaleString()} of its ${input.ids.length.toLocaleString()} vertices in ${instanceCount.toLocaleString()} of its ${instances.toLocaleString()} instances.`);
   }
   for (const w of warnings) notes.push(`Running the vertex shader: ${w}`);
-
-  // Strips and fans become lists, so the rasterizer reads three vertices per triangle; each
-  // instance is expanded on its own, since a strip does not run from one instance into the next.
-  const order: number[] = [];
-  for (let instance = 0; instance < instanceCount; instance++) {
-    const base = instance * perInstance;
-    for (const at of expandTopology(topology, perInstance)) order.push(base + at);
-  }
-  const data = new Uint8Array(order.length * stride);
-  const view = new DataView(data.buffer);
-  order.forEach((from, to) => {
-    const record = records[from] ?? [];
-    for (let i = 0; i < stride / 4; i++) {
-      const o = outputs.find((x) => i * 4 >= x.offset && i * 4 < x.offset + x.components * 4);
-      const value = record[i] ?? 0;
-      if (o?.base === "float") view.setFloat32(to * stride + i * 4, value, true);
-      else if (o?.base === "int") view.setInt32(to * stride + i * 4, value | 0, true);
-      else view.setUint32(to * stride + i * 4, value >>> 0, true);
-    }
-  });
-  return {
-    command: cmd.index, method: cmd.method, frame: cmd.frame, commandBuffer: cmd.object?.__id ?? 0, passIndex: 0,
-    measured: true, topology: /LINE/.test(topology) ? "VK_PRIMITIVE_TOPOLOGY_LINE_LIST" : /POINT/.test(topology) ? topology : "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST",
-    stride, vertices: order.length, truncated, outputs, data,
-    note: notes.length ? notes.join(" ") : undefined,
-  };
-}
-
-function scalarsOf(value: Value | undefined, components: number): number[] {
-  const flat: number[] = [];
-  const walk = (v: Value | undefined): void => {
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x);
-      return;
-    }
-    flat.push(typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0);
-  };
-  walk(value);
-  return Array.from({ length: components }, (_, i) => flat[i] ?? 0);
-}
-
-/** The vertex each position of an expanded list reads, for a strip or a fan. */
-function expandTopology(topology: string, vertices: number): number[] {
-  if (/TRIANGLE_STRIP/.test(topology)) {
-    const out: number[] = [];
-    for (let i = 0; i + 2 < vertices; i++) out.push(i, i + 1 + (i % 2), i + 2 - (i % 2));
-    return out;
-  }
-  if (/TRIANGLE_FAN/.test(topology)) {
-    const out: number[] = [];
-    for (let i = 0; i + 2 < vertices; i++) out.push(0, i + 1, i + 2);
-    return out;
-  }
-  if (/LINE_STRIP/.test(topology)) {
-    const out: number[] = [];
-    for (let i = 0; i + 1 < vertices; i++) out.push(i, i + 1);
-    return out;
-  }
-  return Array.from({ length: vertices }, (_, i) => i);
+  return packInterpretedMesh(cmd, topology, outputs, stride, records, perInstance, instanceCount, truncated, notes);
 }
 
 /**
@@ -356,7 +297,7 @@ function expandTopology(topology: string, vertices: number): number[] {
  * never changes it never records one.
  */
 export function metalRasterState(ctx: DebugContext, cmd: CaptureCommand, state: DrawState): RasterState {
-  const pass = findMetalPass(ctx, cmd);
+  const pass = passOfCommand(ctx.data, cmd);
   const target = pass
     ? ctx.data.texturesForPass(cmd.frame, pass.commandBuffer, pass.passIndex).find((t) => t.info.aspect === "color")
     : undefined;
@@ -510,33 +451,4 @@ function fragmentInputs(hit: Covering, px: number, py: number, interpolationOf: 
   };
 }
 
-/** The render target's value at the pixel after the pass, for the end-of-run comparison. */
-function passPixel(ctx: DebugContext, cmd: CaptureCommand, x: number, y: number): DebugSession["targetPixel"] {
-  const passInfo = findMetalPass(ctx, cmd);
-  if (!passInfo) return undefined;
-  const colour = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex)
-    .find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
-  if (!colour?.data || x >= colour.info.width || y >= colour.info.height) return undefined;
-  const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
-  if (!texels) return undefined;
-  const o = (y * texels.width + x) * 4;
-  return {
-    image: colour.info.id, attachment: colour.info.attachment,
-    value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))),
-    format: colour.info.format,
-  };
-}
-
-/** The pass a Metal command belongs to: its encoder's, counted among its command buffer's. */
-function findMetalPass(ctx: DebugContext, cmd: CaptureCommand): { commandBuffer: number; passIndex: number } | null {
-  const sets = ctx.data.sets;
-  const commandBuffer = cmd.object?.__id ?? 0;
-  let passIndex = -1;
-  for (let i = 0; i <= cmd.index; i++) {
-    const c = ctx.data.commands[i];
-    if (!c || (c.object?.__id ?? 0) !== commandBuffer) continue;
-    if (sets.PASS_BEGIN.has(c.method)) passIndex++;
-  }
-  return passIndex < 0 ? null : { commandBuffer, passIndex };
-}
 

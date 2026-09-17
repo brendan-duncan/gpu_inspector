@@ -1,16 +1,16 @@
 // debug_shader: the shader debugger for an agent. One invocation of a draw's vertex or fragment
 // shader, or of a dispatch's compute shader, run in the interpreter of whichever language it is in
-// — SPIR-V for a Vulkan capture, Metal Shading Language for a Metal one — on the capture's inputs
+// — SPIR-V for a Vulkan capture, Metal Shading Language for a Metal one, and for a D3D12 capture
+// the stage's HLSL compiled to SPIR-V by dxc — on the capture's inputs
 // (renderer/shader_debug_setup.ts), with the values every source line computed in the order they
 // ran, the first NaN or infinity, the outputs, and how they compare with what the GPU produced.
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { findShaderSources } from "../main/shader_sources.js";
-import { decompileForDebugging } from "../main/shader_tools.js";
+import { compileHlslForDebugging, decompileForDebugging } from "../main/shader_tools.js";
 import { drawState } from "../renderer/draw_state.js";
 import { parseMeshFile, type MeshOutput } from "../renderer/mesh_output.js";
 import { DebugController } from "../renderer/shader_debugger.js";
-import { compareWithOriginal, coveredPixel, prepareDebugSession, sameValue, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
-import { interpretedMeshOutput, metalRasterState } from "../renderer/metal/shader_debug.js";
+import { compareWithOriginal, coveredPixel, pixelRasterState, prepareDebugSession, sameValue, vertexOutputsOf, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
 import { nonFinite, Pointer, scalars } from "../renderer/debug/values.js";
 import { SpirvProgram } from "../renderer/spirv/program.js";
 import { sourceLineMap } from "../renderer/vulkan/spirv_debug.js";
@@ -18,7 +18,6 @@ import type { Capture, CaptureStore } from "./capture_store.js";
 import { vertexInputs } from "./command_tools.js";
 import { CAPTURE_PARAM, boolArg, enumArg, intArg, jsonResult, optionalInt, requireInt, schema, stringArg, tidy } from "./describe.js";
 import { checkoutRoots, installedLayerDirs } from "./live_session.js";
-import { NO_D3D12_REPLAY } from "./resource_tools.js";
 import { searchPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
@@ -46,14 +45,16 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
     {
       name: "debug_shader",
       description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger " +
-        "does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V or a Metal " +
-        "capture's Metal Shading Language. A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a " +
+        "does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V, a Metal " +
+        "capture's Metal Shading Language, or a D3D12 capture's HLSL (compiled to SPIR-V by dxc, since there is no DXIL interpreter). " +
+        "A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a " +
         "pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized " +
-        "from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal fragment's come from running the draw's own vertex " +
-        "shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to " +
+        "from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal or D3D12 fragment's come from running the draw's own " +
+        "vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to " +
         "compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line " +
         "information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. " +
-        "A Metal library the application loaded precompiled has no source, and says so.",
+        "A Metal library the application loaded precompiled has no source, and says so; so does a D3D12 shader built without -Zi whose " +
+        "PDB is not under symbolDirs.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
@@ -75,27 +76,29 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         const command = requireInt(args, "command");
         const cmd = c.data.commands[command];
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
-        // The interpreters are SPIR-V's and MSL's; DXIL has none here, and a D3D12 fragment's
-        // inputs would need the replay a D3D12 capture does not have either.
-        if (c.data.api !== "vulkan" && c.data.api !== "metal") {
-          return jsonResult({ capture: c.id, command, note: `The shader debugger interprets a Vulkan capture's SPIR-V or a Metal capture's MSL: ${NO_D3D12_REPLAY}, and no DXIL interpreter. get_shader has a D3D12 pipeline's source and disassembly.` });
-        }
         const isDispatch = c.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");
         const state = drawState(c.data, c.db, cmd);
         const inputNames = new Map<number, string>();
         for (const v of vertexInputs(c, state)) if (v.location !== undefined && v.name) inputNames.set(v.location, v.name);
-        // A Metal capture needs no replay: its fragment inputs come from interpreting the draw's
-        // own vertex shader, so the replay is only wired up for a Vulkan one.
-        const metal = c.data.api === "metal";
-        const decompiled = !metal && boolArg(args, "decompiled", false);
+        // A Metal or D3D12 capture needs no replay: its fragment inputs come from interpreting the
+        // draw's own vertex shader, so the replay is only wired up for a Vulkan one. A D3D12 stage
+        // is its HLSL compiled to SPIR-V, with the PDBs and includes found where get_shader finds them.
+        const vulkan = c.data.api === "vulkan";
+        const d3d12 = c.data.api === "d3d12";
+        const decompiled = vulkan && boolArg(args, "decompiled", false);
         const ctx: DebugContext = {
           data: c.data, db: c.db, inputNames,
-          meshOutput: metal ? undefined : meshOutputs(c),
+          meshOutput: vulkan ? meshOutputs(c) : undefined,
           translate: decompiled ? async (bytes, source) => {
             const r = await decompileForDebugging(bytes, source.stage, source.entryPoint);
             if (!r.ok || !r.spirv) throw new Error(`the SPIR-V could not be decompiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
+            return r.spirv;
+          } : undefined,
+          compileHlsl: d3d12 ? async (bytes, source, target) => {
+            const r = await compileHlslForDebugging(bytes, source.stage, source.entryPoint, { pdbDirs: searchPaths("symbolDirs").dirs, includeDirs: searchPaths("sourceRoots").dirs, target });
+            if (!r.ok || !r.spirv) throw new Error(`the HLSL could not be compiled for debugging: ${r.log.trim() || `${r.tool} failed`}`);
             return r.spirv;
           } : undefined,
         };
@@ -111,12 +114,12 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           if (x === undefined || y === undefined) {
             let mesh: MeshOutput;
             try {
-              // Metal has no replay: the vertex shader is interpreted to find a covered pixel.
-              mesh = metal ? await interpretedMeshOutput(ctx, cmd, state) : await ctx.meshOutput!(command);
+              // Metal and D3D12 have no replay: the vertex shader is interpreted to find a covered pixel.
+              mesh = await vertexOutputsOf(ctx, cmd, state);
             } catch (e) {
               return jsonResult({ capture: c.id, command, stage, note: `Cannot debug the fragment: ${(e as Error).message}` });
             }
-            const pixel = mesh.measured ? coveredPixel(state, mesh, metal ? metalRasterState(ctx, cmd, state) : undefined) : null;
+            const pixel = mesh.measured ? coveredPixel(state, mesh, pixelRasterState(ctx, cmd, state)) : null;
             if (!pixel) return jsonResult({ capture: c.id, command, stage, note: `No pixel to debug: ${mesh.measured ? "no triangle of the draw is visible in its viewport" : mesh.note ?? "the vertex outputs were not captured"}. Give x and y.` });
             x = pixel.x;
             y = pixel.y;
@@ -239,6 +242,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           invocation: session.description, notes: session.notes.length ? session.notes : undefined,
           status: inv.status, error: inv.error || undefined, instructions: inv.steps,
           steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)"
+            : d3d12 ? "source line of the HLSL the capture holds, compiled to SPIR-V by dxc (there is no DXIL interpreter, so nothing checks it against the DXIL the GPU ran)"
             : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
           outputs, compare, original, firstNonFinite,
           warnings: inv.warnings.size ? [...inv.warnings] : undefined,

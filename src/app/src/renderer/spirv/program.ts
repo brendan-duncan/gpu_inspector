@@ -26,6 +26,8 @@ export class SpirvProgram implements DebugProgram {
   readonly kind = "spirv" as const;
   readonly module: SpirvModule;
   private _names: Map<string, number[]> | null = null;
+  /** How a resource's set and binding are named in the variables table; a D3D12 translation names its register ("t0"). */
+  bindingName: ((set: number, binding: number) => string) | null = null;
 
   /** One program per module: the view holds onto it across steps, and the name index is built once. */
   static of(module: SpirvModule): SpirvProgram {
@@ -143,7 +145,7 @@ export class SpirvProgram implements DebugProgram {
   variableWhere(v: VariableView): string {
     if (v.builtin !== undefined) return "";
     if (v.location !== undefined) return `location ${v.location}`;
-    if (v.binding !== undefined) return `set ${v.set ?? 0} binding ${v.binding}`;
+    if (v.binding !== undefined) return this.bindingName ? this.bindingName(v.set ?? 0, v.binding) : `set ${v.set ?? 0} binding ${v.binding}`;
     return v.storage === StorageClass.PushConstant ? "push constants" : "";
   }
 

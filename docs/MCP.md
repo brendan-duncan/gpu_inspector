@@ -105,10 +105,11 @@ application the plugin does not start itself, `wait_for_app` watches for the exe
 injects the library as the process starts; call it before the application is launched, since one
 that already has a device cannot be caught. A D3D12 session's
 `replace_shader` takes HLSL, compiled to DXIL with `dxc`, and `get_shader` shows a D3D12 pipeline's
-reflection, embedded source and disassembly (through `dxinsp_shader.exe`). The tools that replay a
-capture — overdraw, pixel history, mesh output, the flame graph's measured draws, shader cost by
-ablation, the shader debugger — are Vulkan-only (Metal has its own paths for some of them) and say
-so for a D3D12 capture.
+reflection, embedded source and disassembly (through `dxinsp_shader.exe`), and `debug_shader`
+steps a stage as its HLSL compiled to SPIR-V by `dxc`, so it needs the source (`-Zi`, or a PDB
+under `symbolDirs`). The tools that replay a capture — overdraw, pixel history, mesh output, the
+flame graph's measured draws, shader cost by ablation — are Vulkan-only (Metal has its own paths
+for some of them) and say so for a D3D12 capture.
 
 ## Configuration
 

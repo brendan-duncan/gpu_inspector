@@ -398,6 +398,10 @@ for that file name a few levels down, and then every `.pdb` lying in it is opene
 the hash `IDxcPdbUtils::GetHash` reports, which catches a build that renamed the file. An entry the
 tool read out of a PDB carries `"from"` beside its `name` and `text`, so the UI can say where the
 source came from; when there is none anywhere the array is empty and the reason goes to stderr.
+The array's last entry, `{"compile": {"mainFile", "entryPoint", "target", "defines", "args"}}`,
+is how dxc was run, from the same debug information (`IDxcPdbUtils::GetMainFileName`, `GetDefine`,
+`GetArg`; `ShaderCompileInfo`): what compiling the same source again needs, less the file options
+and the debug flags, which the caller supplies itself.
 
 The directories come from the session's **symbol directories** — the same build output stack
 traces are symbolized against (`src/app/src/main/main.ts`'s `inspector:shaderText`, the MCP
@@ -410,11 +414,31 @@ the input and output signature's semantics and a compute stage's real `[numthrea
 that compiles and does something harmless. It declares what the original declared, so `dxc` turns
 it into a binding-compatible replacement and **Compile & Apply** works on a shipped shader.
 
-Not done for D3D12: the shader debugger (the interpreters are SPIR-V's and MSL's; DXIL has none
-here) and the replay-based analyses that are left -- draw overlays, mesh output, draw timings and
-ablation -- which `vkinsp_replay` does for Vulkan captures only. Overdraw and pixel history are
-measured in the application while it captures instead; see "Overdraw" and "Pixel history" below. The
-capture panel and the MCP server say so where the rest are offered.
+**The shader debugger** steps a D3D12 stage as that HLSL compiled to SPIR-V. There is no DXIL
+interpreter in the app (the interpreters are SPIR-V's and MSL's), so `compileHlslForDebugging`
+(`src/app/src/main/shader_tools.ts`) takes the sources and the compile entry above, writes the
+files out under their own names so `#include` resolves, and runs `dxc -spirv` on the main file with
+the build's defines and arguments, `-fspv-debug=line -fspv-debug=source` (the text and a line per
+instruction embedded), `-fspv-reflect` (every stage variable keeps its HLSL semantic),
+`-fvk-use-dx-layout` (constant buffers at their D3D offsets, so the captured bytes read right),
+`-O0` (the locals survive) and the register shifts of `src/app/src/shared/hlsl_debug.ts`: `t`
+registers become bindings from 65536, `s` from 131072, `u` from 196608, a space its descriptor set.
+`src/app/src/renderer/d3d12/shader_debug.ts` steps the result in the SPIR-V interpreter and undoes
+the shift when the interpreter asks for a binding: the register is looked up in the draw's root
+descriptor table and root view snapshots (keyed by register and space, above), in the root
+constants set for the root signature parameter naming that `b` register, or among the root
+signature's static samplers (`pStaticSamplers` of the object's `pDesc`). A vertex input is paired
+with the input layout's element by semantic, a pixel input with the vertex shader's output by
+semantic, since dxc numbers each stage's locations by declaration order; a pixel's inputs come from
+the vertex shader run in the interpreter over the draw, as on Metal, rasterized with D3D's
+conventions. dxc wraps the HLSL entry point in a SPIR-V one that loads the inputs and calls
+`src.<name>`; stepping starts inside the latter. A shader with no HLSL anywhere cannot be
+debugged, and the tab says so.
+
+Not done for D3D12: the replay-based analyses that are left -- draw overlays, mesh output, draw
+timings and ablation -- which `vkinsp_replay` does for Vulkan captures only. Overdraw and pixel
+history are measured in the application while it captures instead; see "Overdraw" and "Pixel
+history" below. The capture panel and the MCP server say so where the rest are offered.
 
 ## Validation messages
 

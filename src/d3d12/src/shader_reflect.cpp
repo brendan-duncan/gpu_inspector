@@ -814,11 +814,70 @@ std::vector<std::pair<std::string, std::string>> LoadedSources(IDxcUtils* utils,
     return out;
 }
 
+/** Whether an argument is an option, or the start of one that takes its value in the same word. */
+bool ArgIs(const std::string& arg, const char* option) {
+    const size_t n = strlen(option);
+    if (arg.compare(0, n, option) != 0) return false;
+    return arg.size() == n || arg[n] == '=' || arg[n] == ':' || n == 2;   // "-D", "-E", "-T", "-I" take a glued value
+}
+
+/**
+ * How dxc was run, from a loaded PDB or ILDB part: the main file, the defines and the rest of
+ * the arguments. The compiler keeps them so a PDB can be recompiled to a full one
+ * (CompileForFullPDB); they are just as much what compiling the source to SPIR-V needs.
+ */
+ShaderCompileInfo LoadedCompile(IDxcPdbUtils* pdb) {
+    ShaderCompileInfo out;
+    BSTR text = nullptr;
+    if (SUCCEEDED(pdb->GetMainFileName(&text))) out.mainFile = BstrText(text);
+    text = nullptr;
+    if (SUCCEEDED(pdb->GetEntryPoint(&text))) out.entryPoint = BstrText(text);
+    text = nullptr;
+    if (SUCCEEDED(pdb->GetTargetProfile(&text))) out.target = BstrText(text);
+    UINT32 count = 0;
+    if (SUCCEEDED(pdb->GetDefineCount(&count))) {
+        for (UINT32 i = 0; i < count; ++i) {
+            text = nullptr;
+            if (SUCCEEDED(pdb->GetDefine(i, &text))) out.defines.push_back(BstrText(text));
+        }
+    }
+    count = 0;
+    if (SUCCEEDED(pdb->GetArgCount(&count))) {
+        // The arguments as dxc saw them, less what names the input, the output and the debug
+        // files and the defines (GetDefine has those): a compile of the same source again supplies
+        // them itself. An option's value may sit in the same word ("-HV2021") or the next one.
+        static const char* kValued[] = {"-Fo", "-Fd", "-Fe", "-Fh", "-Fc", "-Fi", "-Fre", "-Frs", "-Fsh", "-D", "-E", "-T", "-I", "-fspv-target-env"};
+        static const char* kFlags[] = {"-Zi", "-Zs", "-Qembed_debug", "-Qstrip_debug", "-spirv"};
+        bool skipValue = false;
+        for (UINT32 i = 0; i < count; ++i) {
+            text = nullptr;
+            if (FAILED(pdb->GetArg(i, &text))) continue;
+            std::string arg = BstrText(text);
+            if (skipValue) {
+                skipValue = false;
+                continue;
+            }
+            if (arg.empty() || arg[0] != '-') continue;   // the input file
+            bool skip = false;
+            for (const char* option : kValued) {
+                if (!ArgIs(arg, option)) continue;
+                skip = true;
+                skipValue = arg.size() == strlen(option);
+                break;
+            }
+            for (const char* option : kFlags) if (arg == option) skip = true;
+            if (!skip) out.args.push_back(arg);
+        }
+    }
+    return out;
+}
+
 struct LoadedPdb {
     std::vector<std::pair<std::string, std::string>> files;
     /** The shader hash the PDB was written for, lowercase hex; "" when the PDB does not say. */
     std::string hash;
     std::string error;
+    ShaderCompileInfo compile;
 };
 
 LoadedPdb LoadPdbFile(const std::wstring& path) {
@@ -854,6 +913,7 @@ LoadedPdb LoadPdbFile(const std::wstring& path) {
         else if (n >= 16) out.hash = HexBytes(p, 16);
     }
     out.files = LoadedSources(utils.get(), pdb.get());
+    out.compile = LoadedCompile(pdb.get());
     if (out.files.empty()) out.error = Narrow(path.c_str()) + ": carries no source";
     return out;
 }
@@ -988,6 +1048,10 @@ bool DisassembleShader(const void* bytecode, size_t size, std::string& text, std
 }
 
 std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size) {
+    return EmbeddedSources(bytecode, size, nullptr);
+}
+
+std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size, ShaderCompileInfo* compile) {
     std::vector<std::pair<std::string, std::string>> out;
     std::vector<Part> parts;
     if (!ParseContainer(bytecode, size, parts) || !FindPart(parts, kPartDXIL)) return out;
@@ -1000,6 +1064,7 @@ std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* byt
     if (FAILED(utils->CreateBlob(bytecode, (UINT32)size, DXC_CP_ACP, blob.put())) || !blob) return out;
     // Load fails for a container without debug information, which is simply "no sources".
     if (FAILED(pdb->Load(blob.get()))) return out;
+    if (compile) *compile = LoadedCompile(pdb.get());
     return LoadedSources(utils.get(), pdb.get());
 }
 
@@ -1025,7 +1090,7 @@ ShaderSourceFiles FindShaderSources(const void* bytecode, size_t size,
                                     const std::vector<std::wstring>& pdbFiles,
                                     const std::vector<std::wstring>& pdbDirs) {
     ShaderSourceFiles out;
-    out.files = EmbeddedSources(bytecode, size);
+    out.files = EmbeddedSources(bytecode, size, &out.compile);
     if (!out.files.empty()) return out;
 
     const std::string debugName = ShaderDebugName(bytecode, size);
@@ -1043,6 +1108,7 @@ ShaderSourceFiles FindShaderSources(const void* bytecode, size_t size,
             return false;
         }
         out.files = std::move(loaded.files);
+        out.compile = std::move(loaded.compile);
         out.pdb = Narrow(file.c_str());
         return true;
     };
