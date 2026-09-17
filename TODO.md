@@ -567,10 +567,19 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       thousands of entries for a bindless heap. A replay with SPIR-V rewritten to record the
       indices it reads fits beside the ablation variants (`renderer/vulkan/spirv_ablate.ts`), and
       would limit sampled-image read-back to what was sampled.
-- [ ] App-triggered captures (`PIXGpuCaptureNextFrames` / `PIXBeginCapture`, and RenderDoc's
-      in-app API): a capture from a failed test, an assert or a debug key. Unity, Unreal and many
-      test harnesses already call the RenderDoc API, so answering `RENDERDOC_GetAPI` with a
-      minimal shim would need no change to the application.
+- [ ] App-triggered captures: a capture from a failed test, an assert or a debug key.
+
+      **Not by answering RenderDoc's API.** Unity, Unreal and the test harnesses that already call
+      it find it with `GetModuleHandle("renderdoc.dll")`, so being found at all would mean shipping
+      a library named `renderdoc.dll` — which shadows a real RenderDoc on the same machine and
+      breaks it for anyone who has one installed. The same goes for PIX's
+      `WinPixGpuCapturer.dll`. Interfering with another tool on someone's computer is not worth a
+      convenience, so this is settled: no impersonation, whatever the API.
+
+      What is left is the inspector's own in-app API — a small header, and entry points exported
+      from the capture library, reached through the library's own name — which costs the
+      application a few lines it has to add on purpose. That is the honest version and the one to
+      build.
 - [x] GPU-based validation from the launch dialog (**GPU validation**): Vulkan's GPU-assisted
       validation and D3D12's `SetEnableGPUBasedValidation`, which catch the out-of-bounds descriptor
       and buffer access no CPU-side check can see. `test/triangle --oob` writes past its storage
@@ -584,10 +593,24 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       `EnqueueMakeResident`) and budget-change notifications
       (`RegisterVideoMemoryBudgetChangeNotificationEvent`) marked on the memory series, so it says
       when the driver evicted or paged something back in, not only how much was held.
-- [ ] Present statistics: presentation mode (composed or independent flip), dropped frames and
-      latency, from `IDXGISwapChain::GetFrameStatistics`, `VK_GOOGLE_display_timing` /
-      `VK_EXT_present_timing` and Metal's `presentedTime`, so the display-paced verdict can say how
-      many frames were missed.
+- [x] Dropped frames on D3D12, measured rather than estimated (`UpdatePresentStatistics`,
+      `src/d3d12/src/device_info.cpp`): the swap chain's `DXGI_FRAME_STATISTICS` counts the
+      refreshes that showed the previous frame again, where the library used to send a hard-coded
+      zero. The Vulkan layer still works its count out from the frame interval and the refresh
+      period, so the number says **(estimated)** there and not on D3D12 (`droppedMeasured`).
+      `test/d3d12_triangle --stall <ms>` misses refreshes on purpose.
+- [ ] Present statistics, the rest:
+  - Dropped frames on Vulkan, measured: `VK_EXT_present_timing` (available on this machine, unlike
+    `VK_GOOGLE_display_timing`) reports when each present was actually shown, but only for presents
+    the application tagged with a `presentId` — so the layer would have to inject
+    `VkPresentTimingInfoEXT` into every `VkPresentInfoKHR` and number them itself. Worth doing; it
+    replaces the estimate with a measurement on the backend that matters most here.
+  - Present latency: `DXGI_FRAME_STATISTICS::SyncQPCTime` against the present call, and the same
+    from present timing on Vulkan.
+  - Metal's `presentedTime` / the drawable's presented handler.
+  - **Presentation mode (composed or independent flip) is not reachable from DXGI at all.** PIX and
+    PresentMon read it from ETW, which needs a trace session and administrator rights. Worth
+    recording as out of scope rather than leaving on the list as if it were a small thing.
 - [x] Texture viewer extras: NaN and infinity marking (**Highlight**, on by default, since an image
       that has them is already wrong and nobody goes looking), optional clipping marks, the NaN and
       infinity counts beside the format, and a per-channel histogram. Min and max are over the
@@ -604,13 +627,24 @@ Not worth the effort, since other tools already do them well:
 
 ## Metal
 
-- [ ] **Untested on a Mac.** The CPU timeline and memory series below were written on Windows,
-      where `src/metal/` does not compile: they need a build and a run before they are trusted.
-      What to check first — that `nextDrawable` shows as *Waiting for a swapchain image* on a
-      vsynced app (the verdict reads it as display pacing), that the GPU lane lands beside the
-      commits rather than offset (the calibration relates `sampleTimestamps` to `steady_clock`,
-      which assumes nothing about Metal's host domain but does assume the two reads bracket the
-      same instant), and that `MTLDevice` in Inspect shows a Memory Use section with the series.
+- [ ] **Untested on a Mac.** Everything below was written on Windows, where `src/metal/` does not
+      compile, so none of it has been built or run. In the order it is worth checking, hardest
+      first:
+      1. **Pipeline creation timing** (`hooks_device.mm`): six call sites were edited without a
+         compiler, which is the largest unbuilt change here. Check that a frame that builds a
+         pipeline shows a *Creating pipelines* row in **Where the CPU went**, and — the part that
+         is easy to get wrong — that editing a shader does *not* add one: the inner compile is
+         guarded by `reentry.outermost()` so the inspector's own work is not reported as the
+         application's. The `completionHandler:` forms are deliberately untimed; an application
+         using those should show nothing.
+      2. **Memory Use on an `MTLDevice`** — the section should list Buffers, Textures and Heaps with
+         sizes, the series under it, and, for an application using heaps, an "In heaps" row. The
+         totals are unit tested (`test/metal_memory.test.js`); what has never drawn is the rows.
+      3. **The CPU timeline itself** — that `nextDrawable` shows as *Waiting for a swapchain image*
+         on a vsynced app (the verdict reads it as display pacing), and that the GPU lane lands
+         beside the commits rather than offset (the calibration relates `sampleTimestamps` to
+         `steady_clock`, which assumes nothing about Metal's host domain but does assume the two
+         reads bracket the same instant).
 - [x] The CPU timeline and memory over time (`src/metal/src/cpu_timeline.h`), so **Where the CPU
       went**, the **Timeline** card and memory as a shape work on a Metal capture. Submit is
       `commit`, waiting for the GPU is `waitUntilCompleted`/`waitUntilScheduled`, waiting for the

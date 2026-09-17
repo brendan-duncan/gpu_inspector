@@ -492,7 +492,7 @@ export class InspectPanel {
     const db = this.database;
     const hz = (ms: number): string => `${(1000 / ms).toFixed(0)} Hz`;
     const refresh = db.refreshMs > 0
-      ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${hz(db.refreshMs)}${db.refreshSource === "estimate" ? ", estimated" : " display"})${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}` : ""}`
+      ? `   Vsync: ${db.refreshMs.toFixed(2)} ms (${hz(db.refreshMs)}${db.refreshSource === "estimate" ? ", estimated" : " display"})${db.droppedFramesTotal ? `, ${db.droppedFramesTotal} dropped frame${db.droppedFramesTotal === 1 ? "" : "s"}${db.droppedFramesMeasured ? "" : " (estimated)"}` : ""}`
       : db.presentMode ? `   ${/FIFO/.test(db.presentMode) ? "Vsync on, rate not known yet" : `No vsync${db.displayRefreshMs > 0 ? ` (${hz(db.displayRefreshMs)} display)` : ""}`} (${db.presentMode.replace(/^VK_PRESENT_MODE_/, "").replace(/_KHR$/, "")})` : "";
     const boundary = db.frameBoundary === "wait" ? "   Frames end at the application's vkWaitForFences (no swapchain present)"
       : db.frameBoundary === "submit" ? "   Frames end at every submission (no swapchain present, no fence waits)" : "";

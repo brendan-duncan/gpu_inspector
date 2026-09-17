@@ -79,6 +79,12 @@ export interface FrameStatsMessage {
    *  layer's running total since the refresh estimate was made. */
   dropped?: number;
   droppedTotal?: number;
+  /**
+   * The dropped count was measured by the display rather than worked out from the refresh period
+   * and the frame interval. D3D12 reads the swap chain's own refresh counters; the Vulkan layer has
+   * no equivalent and estimates, which is worth saying next to the number.
+   */
+  droppedMeasured?: boolean;
 }
 export interface PongMessage { action: "Pong" }
 
