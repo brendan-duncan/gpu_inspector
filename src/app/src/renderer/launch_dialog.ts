@@ -16,7 +16,7 @@ const DEFAULT_PORT = 47531;
 export function emptyLaunchConfig(): LaunchConfig {
   return {
     target: "native", exe: "", args: "", cwd: "", env: "", device: "", activity: "",
-    port: DEFAULT_PORT, log: true, recordAlways: false, breadcrumbs: false, shaderStatistics: false, validation: false, syncValidation: false, stacktraces: true, capture: { mode: "none", value: 0 },
+    port: DEFAULT_PORT, log: true, recordAlways: false, breadcrumbs: false, shaderStatistics: false, validation: false, syncValidation: false, gpuValidation: false, stacktraces: true, capture: { mode: "none", value: 0 },
   };
 }
 
@@ -105,6 +105,7 @@ export class LaunchDialog extends Dialog {
   private _shaderStatistics: Checkbox;
   private _validation!: Checkbox;
   private _syncValidation!: Checkbox;
+  private _gpuValidation!: Checkbox;
   private _stacktraces!: Checkbox;
   private _captureMode: Select;
   private _captureValue: TextInput;
@@ -246,6 +247,8 @@ export class LaunchDialog extends Dialog {
             : "Also enable the Khronos validation layer (VK_LAYER_KHRONOS_validation from the Vulkan SDK). Its errors and warnings are listed in the Inspect tab and linked to the objects they name. Native targets only; slows the application down." });
       this._syncValidation = new Checkbox(row, { label: "Sync validation", checked: false,
         tooltip: "With the validation layer: synchronization validation, which reports hazards between commands (at record time) and between submissions (at vkQueueSubmit, linked to the command the message names). Slow." });
+      this._gpuValidation = new Checkbox(row, { label: "GPU validation", checked: false,
+        tooltip: "With the validation layer: GPU-assisted validation, which rewrites the shaders to check what only the GPU knows — descriptor array indices, buffer device addresses, indirect draw parameters. The only thing here that catches an out-of-bounds index into a bindless heap. Very slow." });
       this._stacktraces = new Checkbox(row, { label: "Stack traces", checked: true,
         tooltip: "Record the call stack of every object creation, shown in the object's details (symbols from the application's PDBs or exports). A few microseconds per created object." });
       this._breadcrumbs = new Checkbox(row, { label: "Device-lost breadcrumbs", checked: false,
@@ -257,7 +260,7 @@ export class LaunchDialog extends Dialog {
       // and no synchronization validation. "Validation layer" stays: on macOS it is Metal's own
       // API and shader validation (src/metal/README.md); "Stack traces" is the same option there.
       if (hostPlatform === "darwin") {
-        for (const c of [this._recordAlways, this._syncValidation, this._breadcrumbs, this._shaderStatistics]) {
+        for (const c of [this._recordAlways, this._syncValidation, this._gpuValidation, this._breadcrumbs, this._shaderStatistics]) {
           c.element.style.display = "none";
         }
       }
@@ -458,6 +461,7 @@ export class LaunchDialog extends Dialog {
       shaderStatistics: this._shaderStatistics.checked,
       validation: !android && this._validation.checked,
       syncValidation: !android && this._validation.checked && this._syncValidation.checked,
+      gpuValidation: !android && this._validation.checked && this._gpuValidation.checked,
       symbolDirs: this._symbolDirs.value.trim(),
       sourceRoots: this._sourceRoots.value.trim(),
       stacktraces: this._stacktraces.checked,
@@ -491,6 +495,7 @@ export class LaunchDialog extends Dialog {
     this._recordAlways.checked = c.recordAlways ?? false;
     this._validation.checked = c.validation ?? false;
     this._syncValidation.checked = c.syncValidation ?? false;
+    this._gpuValidation.checked = c.gpuValidation ?? false;
     this._symbolDirs.value = c.symbolDirs ?? "";
     this._sourceRoots.value = c.sourceRoots ?? "";
     this._stacktraces.checked = c.stacktraces ?? true;

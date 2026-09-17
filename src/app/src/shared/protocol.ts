@@ -805,6 +805,8 @@ export interface LaunchConfig {
   sourceRoots?: string;
   /** With `validation`: the validation layer's synchronization validation (hazards between commands and submissions). */
   syncValidation?: boolean;
+  /** With `validation`: GPU-assisted validation, which checks descriptor indices and addresses the CPU cannot see. */
+  gpuValidation?: boolean;
   /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */
   stacktraces: boolean;
   capture: QueuedCapture;

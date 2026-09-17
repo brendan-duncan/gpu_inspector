@@ -133,6 +133,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     shaderStatistics: c.shaderStatistics ?? false,
     validation: c.validation ?? false,
     syncValidation: c.syncValidation ?? false,
+    gpuValidation: c.gpuValidation ?? false,
     symbolDirs: c.symbolDirs ?? "",
     sourceRoots: c.sourceRoots ?? "",
     stacktraces: c.stacktraces ?? true,
@@ -498,7 +499,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   const debugLog = cliOption("debug-log");
   const vulkan = layerDir ? {
     layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, breadcrumbs: config.breadcrumbs, shaderStatistics: config.shaderStatistics, stacktraces: config.stacktraces,
-    validation: config.validation, syncValidation: !!config.syncValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
+    validation: config.validation, syncValidation: !!config.syncValidation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
   } : null;
   const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };
   const args = splitArgs(config.args ?? "");
@@ -508,7 +509,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
       exe: config.exe, args, cwd, env: base, vulkan,
       d3d12: d3d12 ? {
         tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
-        validation: config.validation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
+        validation: config.validation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
       } : null,
     });
     return runTarget(s, launch.exe, launch.args, cwd, launch.env, launch.notes);
@@ -774,7 +775,7 @@ function waitForD3D12Application(s: Session, d3d12: D3D12Tools): LaunchResult {
   const watch = watchLaunch(d3d12, {
     image: config.exe, timeoutSeconds: WAIT_CONNECT_TIMEOUT_MS / 1000, once: true,
     port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
-    validation: config.validation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
+    validation: config.validation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
   });
   const image = path.basename(config.exe);
   let timer: NodeJS.Timeout | null = null;
@@ -1445,6 +1446,7 @@ void app.whenReady().then(() => {
         recordAlways: cliFlag("record-always"),
         validation: cliFlag("validation"),
         syncValidation: cliFlag("sync-validation"),
+        gpuValidation: cliFlag("gpu-validation"),
         symbolDirs: cliOption("symbol-dirs") ?? "",
         sourceRoots: cliOption("source-roots") ?? "",
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.

@@ -297,6 +297,20 @@ void ValidationLog::EnableDebugLayer() {
             return;
         }
         debug->EnableDebugLayer();
+        // GPU-based validation checks what only the GPU knows — descriptor heap indices, resource
+        // states at the point a shader reads them — by patching the shaders, so it is asked for
+        // separately and is much slower. It must be turned on before the device is created, which
+        // is where this runs.
+        if (ConfigFlag("DXINSP_GPU_VALIDATION")) {
+            ComPtr<ID3D12Debug1> debug1;
+            if (SUCCEEDED(debug->QueryInterface(IID_PPV_ARGS(debug1.put()))) && debug1) {
+                debug1->SetEnableGPUBasedValidation(TRUE);
+                LogAlways("debug layer enabled, with GPU-based validation");
+                return;
+            }
+            LogAlways("debug layer enabled; GPU-based validation is unavailable (no ID3D12Debug1)");
+            return;
+        }
         LogAlways("debug layer enabled");
     });
 }

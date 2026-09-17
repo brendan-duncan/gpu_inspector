@@ -73,6 +73,13 @@ export interface VulkanLayerOptions {
   /** "Validation layer" was asked for: its settings apply even when no validation layer was found. */
   validation: boolean;
   syncValidation: boolean;
+  /**
+   * GPU-assisted validation: the layer rewrites the shaders to check what only the GPU knows —
+   * descriptor array indices, buffer device addresses, indirect draw parameters. It is the only
+   * thing here that catches an out-of-bounds index in a bindless heap, and it is slow, so it is
+   * asked for rather than assumed.
+   */
+  gpuValidation?: boolean;
   /** Also append the layer's log to this file (a GUI application has no usable stderr). */
   logFile?: string;
 }
@@ -106,8 +113,17 @@ export function vulkanLayerEnvironment(o: VulkanLayerOptions): NodeJS.ProcessEnv
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.
     ...(o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {}),
-    // Synchronization validation: the settings-file name for current layers, the enable list for older ones.
-    ...(o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}),
+    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
+    // the enable list for older ones, which takes several separated by the platform's path
+    // separator — so the two are built together rather than one overwriting the other.
+    ...(o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {}),
+    ...(o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {}),
+    ...(o.validation && (o.syncValidation || o.gpuValidation)
+      ? { VK_LAYER_ENABLES: [
+        ...(o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : []),
+        ...(o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []),
+      ].join(path.delimiter) }
+      : {}),
   };
 }
 

@@ -145,6 +145,7 @@ struct App {
     bool pushTemplate = false;
     bool descriptorBuffer = false;
     bool compileHitch = false;
+    bool outOfBounds = false;
     VkPipeline hitchPipeline{};
     // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
     // input and pre-rasterization with the vertex shader; fragment shader and output), which live
@@ -2130,10 +2131,14 @@ struct App {
         // times the run as one compute pass.
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeSet, 0, nullptr);
-        struct { float time; uint32_t count; } wavePush{t, kWaveCount};
+        // --oob: tells the shader there are four times as many elements as the buffer holds and
+        // dispatches for them, so it writes past the end. Nothing on the CPU can see that: the
+        // index is computed on the GPU, and only GPU-assisted validation reports it.
+        const uint32_t waveCount = outOfBounds ? kWaveCount * 4 : kWaveCount;
+        struct { float time; uint32_t count; } wavePush{t, waveCount};
         vkCmdPushConstants(cb, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(wavePush), &wavePush);
-        vkCmdDispatch(cb, kWaveCount / 64, 1, 1);
-        vkCmdDispatch(cb, kWaveCount / 64, 1, 1);
+        vkCmdDispatch(cb, waveCount / 64, 1, 1);
+        vkCmdDispatch(cb, waveCount / 64, 1, 1);
         VkMemoryBarrier waveBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         waveBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         waveBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2559,6 +2564,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
         else if (!strcmp(argv[i], "--compile-hitch")) app.compileHitch = true;
+        else if (!strcmp(argv[i], "--oob")) app.outOfBounds = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
         else if (!strcmp(argv[i], "--suspend")) app.suspend = true;

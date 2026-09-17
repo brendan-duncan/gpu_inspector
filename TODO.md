@@ -571,9 +571,12 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       in-app API): a capture from a failed test, an assert or a debug key. Unity, Unreal and many
       test harnesses already call the RenderDoc API, so answering `RENDERDOC_GetAPI` with a
       minimal shim would need no change to the application.
-- [ ] GPU-based validation: nothing turns on D3D12's `SetEnableGPUBasedValidation` or Vulkan's
-      GPU-assisted validation from the launch dialog. PIX can also run a capture again under the
-      debug layer after the fact; `vkinsp_replay` could replay with validation on.
+- [x] GPU-based validation from the launch dialog (**GPU validation**): Vulkan's GPU-assisted
+      validation and D3D12's `SetEnableGPUBasedValidation`, which catch the out-of-bounds descriptor
+      and buffer access no CPU-side check can see. `test/triangle --oob` writes past its storage
+      buffer from the shader and is reported as `VUID-vkCmdDispatch-storageBuffers-06936`.
+      Still open from this item: running a capture again under validation after the fact, which
+      `vkinsp_replay --validate` already does for the replay but not as a report in the UI.
 - [ ] Replay on another device to tell a driver bug from an application bug (PIX replays on WARP):
       replay on lavapipe or SwiftShader and compare the render targets with the hardware result,
       which the replay's own comparison mostly does already.
