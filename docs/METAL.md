@@ -72,10 +72,17 @@ picked up with **Connect** (or `npm start -- --connect=<port>`):
   a call that never waits. `sampleTimestamps:gpuTimestamp:` relates the two clocks, which is what
   puts the passes on the same axis as the calls that committed them.
 - **Memory over time** — the device's own `currentAllocatedSize` against its
-  `recommendedMaxWorkingSetSize`, sampled each frame. Metal has no heap table to break down and no
-  separate residency figure, so the Memory Use section shows that series alone rather than the
-  per-heap breakdown the other backends have. See
+  `recommendedMaxWorkingSetSize`, sampled each frame. See
   [Memory](PROFILING.md#memory-how-much-from-which-heap-and-which-way-it-is-going).
+- **Memory by what is holding it** — Metal has no heap table to enumerate and no residency figure
+  separate from `currentAllocatedSize`, so the Memory Use section cannot show the per-heap
+  breakdown the other two backends have. What Metal does give is every resource's `allocatedSize`,
+  so the breakdown is by object kind instead: buffers, textures, and the heaps themselves. A
+  resource created *from* a heap is left out of the total and reported apart from it — its bytes
+  are part of the heap's reservation, and counting both would count them twice — and a heap using
+  much less than it reserved is called out, since that is memory the process has taken and is not
+  using. The total is what the inspector has seen created, which is less than the device's own
+  figure in the series: that includes whatever the driver allocated behind the objects.
 
 ## Metal-only capture options
 
