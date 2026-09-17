@@ -82,7 +82,20 @@ distinguishes:
 | Waiting on fences | The CPU is ahead of the GPU; the GPU sets the frame time. Continue to step 2. |
 | Submitting | Submission is a real cost: fewer, larger submissions and less state churn. |
 | Present and acquire | The display paces the frame. Neither processor is the limit at this rate. |
+| Creating pipelines | The frame stopped while the driver compiled. Build them at load, or from a cache. |
 | None of them | The time is in the application's own work between calls, which the layer does not time. |
+
+**Creating pipelines** is read before the rest, because no share of the others explains it away and
+its fix is the only one here that is "do it earlier" rather than "do less". A pipeline built while
+the frame that needs it is being recorded stops that frame for as long as the compile takes, which
+is what a hitch on first sight of a material or an effect usually is. Most captures will not show
+the row at all: an engine that builds its pipelines at load compiles nothing during a frame, and a
+category with nothing in it is left out rather than shown as zero. Seeing it is the finding.
+
+Only the calls that *block* are timed. Vulkan's pipeline and shader creation all do;
+Metal's completion-handler forms (`newRenderPipelineStateWithDescriptor:completionHandler:` and
+its siblings) do not, and are deliberately left untimed, since reporting a stall for a compile
+that ran on another thread would condemn the very pattern this is meant to recommend.
 
 Metal names two of these differently, because its calls are different: waiting for the GPU is
 `waitUntilCompleted`, and waiting for the display is `CAMetalLayer.nextDrawable`, which blocks once

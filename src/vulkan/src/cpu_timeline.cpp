@@ -18,7 +18,7 @@
 namespace vkinsp {
 
 const char* const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
-    "submit", "present", "waitFences", "acquire", "waitIdle",
+    "submit", "present", "waitFences", "acquire", "waitIdle", "pipeline",
 };
 
 namespace {

@@ -436,8 +436,12 @@ void TrackSourceLibrary(id device, id library, NSString *source, const char *cmd
 id D_newLibraryWithSource(id self, SEL _cmd, NSString *source, MTLCompileOptions *options,
                           NSError **error) {
     Reentry reentry(self, _cmd);
+    // Only the application's own compile: a nested one is the inspector recompiling an edited
+    // shader, and reporting that as a stall the frame suffered would be its own measurement.
+    const uint64_t timed = reentry.outermost() ? CpuEventBegin() : 0;
     id library = ORIG(id (*)(id, SEL, NSString *, MTLCompileOptions *, NSError **))(
         self, _cmd, source, options, error);
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     if (reentry.outermost()) {
         Log("device.newLibraryWithSource: %lu chars -> %s", (unsigned long)source.length,
             ClassName(library));
@@ -490,10 +494,12 @@ id D_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescriptor *desc
             self, _cmd, descriptor, error);
     }
     MTLRenderPipelineReflection *reflection = nil;
+    const uint64_t timed = CpuEventBegin();
     id state = [(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:descriptor
                                                                  options:kReflectionOptions
                                                               reflection:&reflection
                                                                    error:error];
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     Log("device.newRenderPipelineStateWithDescriptor: label=\"%s\" -> %s",
         descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
     Track(state, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:", self,
@@ -513,9 +519,11 @@ id D_newRenderPipelineStateReflection(id self, SEL _cmd, MTLRenderPipelineDescri
     }
     MTLRenderPipelineReflection *local = nil;
     MTLRenderPipelineReflection **out = reflection != nullptr ? reflection : &local;
+    const uint64_t timed = CpuEventBegin();
     id state = ORIG(id (*)(id, SEL, MTLRenderPipelineDescriptor *, MTLPipelineOption,
                            MTLRenderPipelineReflection **, NSError **))(
         self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     Track(state, "MTLRenderPipelineState",
           "newRenderPipelineStateWithDescriptor:options:reflection:error:", self,
           RenderPipelineArgs(descriptor, *out));
@@ -663,10 +671,12 @@ id D_newComputePipelineStateWithFunction(id self, SEL _cmd, id<MTLFunction> func
         return ORIG(id (*)(id, SEL, id, NSError **))(self, _cmd, function, error);
     }
     MTLComputePipelineReflection *reflection = nil;
+    const uint64_t timed = CpuEventBegin();
     id state = [(id<MTLDevice>)self newComputePipelineStateWithFunction:function
                                                                 options:kReflectionOptions
                                                              reflection:&reflection
                                                                   error:error];
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     Log("device.newComputePipelineStateWithFunction: %s -> %s",
         function == nil ? "" : function.name.UTF8String, ClassName(state));
     Track(state, "MTLComputePipelineState", "newComputePipelineStateWithFunction:error:", self,
@@ -685,8 +695,10 @@ id D_newComputePipelineStateWithFunctionReflection(id self, SEL _cmd, id<MTLFunc
     }
     MTLComputePipelineReflection *local = nil;
     MTLComputePipelineReflection **out = reflection != nullptr ? reflection : &local;
+    const uint64_t timed = CpuEventBegin();
     id state = ORIG(id (*)(id, SEL, id, MTLPipelineOption, MTLComputePipelineReflection **, NSError **))(
         self, _cmd, function, options | kReflectionOptions, out, error);
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     Track(state, "MTLComputePipelineState",
           "newComputePipelineStateWithFunction:options:reflection:error:", self,
           ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state, *out));
@@ -744,9 +756,11 @@ id D_newComputePipelineStateWithDescriptor(id self, SEL _cmd, MTLComputePipeline
     }
     MTLComputePipelineReflection *local = nil;
     MTLComputePipelineReflection **out = reflection != nullptr ? reflection : &local;
+    const uint64_t timed = CpuEventBegin();
     id state = ORIG(id (*)(id, SEL, MTLComputePipelineDescriptor *, MTLPipelineOption,
                            MTLComputePipelineReflection **, NSError **))(
         self, _cmd, descriptor, options | kReflectionOptions, out, error);
+    CpuEventEnd(timed, CpuCategory::PipelineCreate);
     Track(state, "MTLComputePipelineState",
           "newComputePipelineStateWithDescriptor:options:reflection:error:", self,
           ComputePipelineDescriptorArgs(descriptor, (id<MTLComputePipelineState>)state, *out));

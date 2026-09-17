@@ -18,6 +18,7 @@ export const CPU_CATEGORY_LABEL: Record<string, string> = {
   waitFences: "Waiting on fences",
   acquire: "Waiting for a swapchain image",
   waitIdle: "Waiting for idle",
+  pipeline: "Creating pipelines",
 };
 
 /**
@@ -27,7 +28,7 @@ export const CPU_CATEGORY_LABEL: Record<string, string> = {
  * neither processor is the limit. Calling both "blocked" would advise the same fix for opposite
  * situations.
  */
-export type CpuKind = "gpuWait" | "displayWait" | "work";
+export type CpuKind = "gpuWait" | "displayWait" | "work" | "compile";
 
 export const CPU_CATEGORY_KIND: Record<string, CpuKind> = {
   waitFences: "gpuWait",
@@ -35,6 +36,10 @@ export const CPU_CATEGORY_KIND: Record<string, CpuKind> = {
   present: "displayWait",
   acquire: "displayWait",
   submit: "work",
+  // Kept apart from submission, though both are the application's own thread doing something
+  // rather than waiting, because the two want opposite fixes: submission wants fewer and larger
+  // submits, a compile wants the pipeline built before the frame that needs it.
+  pipeline: "compile",
 };
 
 export function cpuKindOf(category: string): CpuKind {
@@ -58,6 +63,8 @@ export interface CpuTimelineSummary {
   gpuWaitMs: number;
   displayWaitMs: number;
   submitMs: number;
+  /** Time inside pipeline and shader creation: a compile the frame stopped for. */
+  compileMs: number;
   threads: number;
   frames: number;
   /** Events the capture could not keep. */
@@ -91,14 +98,16 @@ export function summarizeCpuTimeline(timeline: CpuTimelineMessage | null): CpuTi
   let gpuWaitMs = 0;
   let displayWaitMs = 0;
   let submitMs = 0;
+  let compileMs = 0;
   for (const t of totals) {
     if (t.kind === "gpuWait") gpuWaitMs += t.ms;
     else if (t.kind === "displayWait") displayWaitMs += t.ms;
+    else if (t.kind === "compile") compileMs += t.ms;
     else submitMs += t.ms;
   }
   return {
     spanMs: end > start ? end - start : 0,
-    totals, gpuWaitMs, displayWaitMs, submitMs,
+    totals, gpuWaitMs, displayWaitMs, submitMs, compileMs,
     threads: timeline.threads?.length ?? 1,
     frames: frames.size,
     dropped: timeline.dropped ?? 0,
@@ -115,7 +124,18 @@ export function cpuVerdict(s: CpuTimelineSummary): string {
   const gpu = share(s.gpuWaitMs);
   const display = share(s.displayWaitMs);
   const submit = share(s.submitMs);
+  const compile = share(s.compileMs);
   const pct = (v: number): string => `${(100 * v).toFixed(0)}%`;
+  // Read before the rest: a pipeline built inside a frame stops it, and no share of the others
+  // explains that away. It is also the one finding here whose fix is not "do less of something"
+  // but "do it earlier", so it would be wrong to fold into the submission verdict.
+  if (compile >= 0.1) {
+    const calls = s.totals.find((t) => t.kind === "compile")?.calls ?? 0;
+    return `The CPU spent ${pct(compile)} of this capture creating pipelines — ${calls} `
+      + `${calls === 1 ? "call" : "calls"} inside the captured frames. A pipeline built while the frame that needs it `
+      + "is being recorded stops that frame for as long as the driver takes to compile it, which is the usual cause "
+      + "of a hitch on first sight of a material or an effect. Build them at load, or from a pipeline cache.";
+  }
   if (gpu >= 0.4) {
     return `The CPU spent ${pct(gpu)} of this capture waiting on fences, so it is ahead of the GPU and the GPU is `
       + "what sets the frame time. GPU Bottlenecks says which pass to shorten.";
@@ -129,8 +149,8 @@ export function cpuVerdict(s: CpuTimelineSummary): string {
       + "GPU, so the frame is paced by the display rather than limited by either processor. Neither has to get faster "
       + "for this frame rate; both would have to for a higher one.";
   }
-  return `Only ${pct(gpu + display + submit)} of this capture was inside calls the layer times, so most of the frame `
-    + "went to the application's own work between them: building command buffers, culling, simulation.";
+  return `Only ${pct(gpu + display + submit + compile)} of this capture was inside calls the layer times, so most of `
+    + "the frame went to the application's own work between them: building command buffers, culling, simulation.";
 }
 
 /** The events of one thread in time order, for a track of a timeline drawing. */

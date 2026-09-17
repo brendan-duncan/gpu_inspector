@@ -65,6 +65,15 @@ CPU_TIMED_CALLS = {
     "vkWaitForFences": "WaitFences",
     "vkAcquireNextImageKHR": "Acquire", "vkAcquireNextImage2KHR": "Acquire",
     "vkQueueWaitIdle": "WaitIdle", "vkDeviceWaitIdle": "WaitIdle",
+    # Compiling, on the thread that asked: a pipeline built inside a frame stops it. Shader module
+    # creation is in here too — most drivers only store the SPIR-V there, but some compile, and a
+    # capture should say which this one did rather than assume.
+    "vkCreateGraphicsPipelines": "PipelineCreate",
+    "vkCreateComputePipelines": "PipelineCreate",
+    "vkCreateRayTracingPipelinesKHR": "PipelineCreate",
+    "vkCreateRayTracingPipelinesNV": "PipelineCreate",
+    "vkCreateShaderModule": "PipelineCreate",
+    "vkCreateShadersEXT": "PipelineCreate",
 }
 
 # Calls that can report VK_ERROR_DEVICE_LOST, where the diagnosis is read (src/device_lost.h).

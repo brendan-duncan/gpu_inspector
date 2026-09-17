@@ -550,10 +550,18 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       timestamps and the memory samples are cheap enough to keep for every frame in a ring buffer,
       with no read-back. Capture on hitch belongs with it: a frame over budget keeps the frames
       around it, or takes a full capture of the next one.
-- [ ] Pipeline and shader creation on the CPU timeline: `vkCreate*Pipelines`, `CreatePipelineState`
-      / `LoadGraphicsPipeline` and `newRenderPipelineState*` timed as spans, so a compile hitch
-      shows where it happened; on D3D12, pipeline library hits and misses. The timeline times only
-      submit, present, the waits and acquire now, and every backend already hooks these calls.
+- [x] Pipeline and shader creation on the CPU timeline, on all three backends, as a category of its
+      own with its own verdict (`renderer/cpu_timeline.ts`, "Creating pipelines"). Metal's
+      completion-handler forms are left untimed on purpose: they do not block.
+      `test/triangle --compile-hitch`. Still open from this item: **D3D12 pipeline library hits and
+      misses** as a count rather than only as time — a `Load*Pipeline` that misses returns fast and
+      the application then compiles, so the two are already distinguishable by eye on the timeline,
+      but a "N of M pipelines came from the library" figure would say it outright.
+- [ ] A compile that a *capture* cannot see: an engine building its pipelines at load compiles
+      nothing during a captured frame, so the category above is usually absent — which is correct,
+      and also means the finding only lands when the hitch happens to fall inside the capture.
+      Timing captures (below) are what make it reliable: a ring buffer over minutes would catch the
+      compile wherever it happened.
 - [ ] Which resources a shader actually used: PIX instruments shaders to report which entries of
       a bindless descriptor array a draw read. A draw's descriptor sets list everything bound,
       thousands of entries for a bindless heap. A replay with SPIR-V rewritten to record the

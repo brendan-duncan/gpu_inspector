@@ -32,6 +32,9 @@ enum class CpuCategory : uint16_t {
     Present,        // IDXGISwapChain::Present
     WaitFences,     // waiting on a fence's event: blocked until the GPU caught up
     Acquire,        // waiting on a swapchain's frame-latency object: blocked until the presenter freed one
+    // Pipeline state creation: the driver compiling, on the thread that asked. A pipeline built
+    // inside a frame stops it, which is what a hitch on first sight of a material usually is.
+    PipelineCreate,
     Count,
 };
 

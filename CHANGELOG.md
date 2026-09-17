@@ -1,5 +1,23 @@
 ## Unreleased
 
+### Added
+- Pipeline and shader creation on the CPU timeline, as its own category on all three backends
+  (**Where the CPU went** → *Creating pipelines*, and its own colour in the **Timeline** card).
+  Everything the timeline timed until now was the application handing work over or waiting for
+  something; a compile is neither, and a pipeline built while the frame that needs it is being
+  recorded stops that frame for as long as the driver takes. That is what a hitch on first sight of
+  a material usually is, and no aggregate elsewhere in the capture shows it. Vulkan times
+  `vkCreate*Pipelines`, `vkCreateShaderModule` and `vkCreateShadersEXT`; D3D12 the three
+  `Create*PipelineState` forms, `CreateStateObject` and the pipeline library's `Load*Pipeline`;
+  Metal the synchronous `newRenderPipelineState*` / `newComputePipelineState*` and
+  `newLibraryWithSource:`. Metal's completion-handler forms are deliberately *not* timed: they
+  return at once and compile elsewhere, and reporting a stall for them would condemn the pattern
+  this is meant to recommend. It is kept apart from submission rather than folded into it because
+  the two want opposite fixes — submission wants fewer and larger submits, a compile wants to have
+  happened earlier — and the verdict reads it before anything else, since no share of the other
+  categories explains it away. A capture whose frames compiled nothing does not show the row at
+  all. `test/triangle --compile-hitch` builds one inside every frame.
+
 ### Fixed
 - A D3D12 draw whose pipeline came from its command list's `Reset` had no pipeline in its
   reconstructed state: the library records `Reset` with its `pInitialState`, but the state walk

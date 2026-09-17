@@ -101,7 +101,7 @@ export interface GpuTrackInput {
 
 /** The colour of a span, which is the colour "Where the CPU went" already uses for that kind. */
 const SPAN_COLOR: Record<string, string> = {
-  gpuWait: "#4a8db8", displayWait: "#a0a0a0", work: "#5fd08a", gpu: "#8a6fd0",
+  gpuWait: "#4a8db8", displayWait: "#a0a0a0", work: "#5fd08a", gpu: "#8a6fd0", compile: "#d07a3a",
 };
 
 /**
@@ -157,6 +157,11 @@ function renderTimelineTracks(root: Widget, input: TimelineInput): void {
   key(SPAN_COLOR.work, "Submitting");
   key(SPAN_COLOR.gpuWait, "Waiting for the GPU");
   key(SPAN_COLOR.displayWait, "Paced by the display");
+  // Only when the frame actually built one: a legend entry for something absent reads as a
+  // category that happened to be empty rather than one that never applies.
+  if (t.tracks.some((track) => track.spans.some((s) => s.kind === "compile"))) {
+    key(SPAN_COLOR.compile, "Creating pipelines");
+  }
   if (t.hasGpu) key(SPAN_COLOR.gpu, "GPU pass");
   if (t.gpuNote) new Div(body, { text: t.gpuNote, class: "text-muted font-sm" });
   if (t.hasGpu) {

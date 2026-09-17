@@ -16,6 +16,7 @@ import {
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabelledPass } from "../renderer/timeline_tracks.js";
+import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
@@ -87,8 +88,24 @@ function timelineTiming(c: Capture): Record<string, unknown> {
     label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`)
       ?? defaultPassLabel(timing),
   }));
+  // Where the CPU went, beside where it went *when*: the split names things the track drawing
+  // cannot, above all a frame that stopped to compile a pipeline, which no other figure here shows.
+  const cpu = summarizeCpuTimeline(c.data.cpuTimeline);
+  const cpuSection = cpu
+    ? {
+      cpu: {
+        verdict: cpuVerdict(cpu),
+        submitMs: round(cpu.submitMs),
+        gpuWaitMs: round(cpu.gpuWaitMs),
+        displayWaitMs: round(cpu.displayWaitMs),
+        // Left out when the frames compiled nothing, which is the usual case: a zero here would
+        // read as a measurement rather than as the absence of one.
+        ...(cpu.compileMs > 0 ? { pipelineCreateMs: round(cpu.compileMs) } : {}),
+      },
+    }
+    : {};
   const t = buildTimelineTracks({ timeline: c.data.cpuTimeline, passes, originTicks: c.data.passTimingOrigin });
-  if (!t) return {};
+  if (!t) return cpuSection;
   const gaps = gpuGaps(t);
   const wait = submitToFirstPassMs(t);
   return {
@@ -101,6 +118,7 @@ function timelineTiming(c: Capture): Record<string, unknown> {
       submitToFirstPassMs: wait !== null ? round(wait) : undefined,
       note: t.gpuNote ?? undefined,
     },
+    ...cpuSection,
   };
 }
 
