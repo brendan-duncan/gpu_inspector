@@ -617,10 +617,13 @@ Not worth the effort, since other tools already do them well:
       display is `nextDrawable`; there is no present span, because `presentDrawable:` does not
       block. `sampleTimestamps:gpuTimestamp:` gives the clock relation and the pass timings now
       carry `originTicks`.
-- [ ] Metal memory per heap: there is no heap table to enumerate and no residency figure separate
-      from `currentAllocatedSize`, so Memory Use shows the series alone. Totalling the tracked
-      MTLBuffer/MTLTexture/MTLHeap `allocatedSize` would give a breakdown by object, which is a
-      different shape from the other two backends' heaps and needs its own view.
+- [x] Metal memory by what is holding it (`renderer/metal/metal_memory.ts`): there is no heap
+      table to enumerate and no residency figure separate from `currentAllocatedSize`, so the
+      breakdown totals each resource's `allocatedSize` by object kind — buffers, textures, heaps —
+      instead. A resource made from a heap is kept out of the total (its bytes are the heap's), and
+      a heap using much less than it reserved is called out. Computed in the renderer from the
+      object graph the library already records, so there was no Metal code to write; the sizes it
+      reads (`allocatedSize`, the heap's `usage` update) were already being sent.
 
 The Metal capture library (`src/metal/`) reaches the Inspect and Capture panels through the same
 protocol as the Vulkan layer. What it lacks falls into two groups: what the UI already does for

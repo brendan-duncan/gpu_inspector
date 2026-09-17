@@ -7,6 +7,7 @@
 - The image viewer marks NaN and the infinities (**Highlight**, on by default), and draws a per-channel histogram.
 - `--debug-view=target[:color|depth|<id>]` opens a render target in its own tab, for screenshots and UI tests.
 - **GPU validation** in the launch dialog: GPU-assisted validation on Vulkan and the debug layer's GPU-based validation on D3D12, which catch out-of-bounds descriptor and buffer access the CPU cannot see; `test/triangle --oob`.
+- Metal's Memory Use breaks down by what is holding the memory — buffers, textures and heaps — since Metal has no heap table to enumerate (`renderer/metal/metal_memory.ts`).
 
 ### Fixed
 - A D3D12 draw whose pipeline came from its command list's `Reset` had no pipeline in its reconstructed state.

@@ -4,6 +4,7 @@
 // (extensions, features across the pNext chain, queues), and what it asked of the instance.
 // Everything here also works on capture files, where these questions matter most.
 import { heapPressure, memoryHeaps, usedHeaps, type MemoryDatabase } from "./memory_heaps.js";
+import { HEAP_OCCUPANCY_LOW, heapOccupancy, metalMemory, type MetalMemory } from "./metal/metal_memory.js";
 import { memoryTimeline, memoryVerdict } from "./memory_timeline.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
@@ -137,15 +138,37 @@ function shortSType(s: ArgValue | undefined): string {
 function renderMemoryUse(container: Widget, db: MemoryDatabase | null): void {
   const m = db ? memoryHeaps(db) : null;
   const heaps = m && m.allocations ? m : null;
-  // Metal has no heap table to break down, but it does report a total over time, so the section
-  // appears for either (renderer/memory_timeline.ts).
+  // Metal has no heap table to break down; what it has is the size of every resource, which totals
+  // by object kind instead (renderer/metal/metal_memory.ts).
+  const metal = !heaps && db ? metalMemory(db) : null;
   const series = db?.memorySamples?.length ? db.memorySamples : null;
-  if (!heaps && !series) return;
+  if (!heaps && !metal && !series) return;
   const s = section(container, heaps
     ? `Memory Use (${heaps.allocations} allocations, ${formatBytes(heaps.totalBytes)})`
-    : "Memory Use");
+    : metal ? `Memory Use (${formatBytes(metal.totalBytes)})`
+      : "Memory Use");
   if (heaps) renderHeapRows(s, heaps);
+  if (metal) renderMetalRows(s, metal);
   renderMemoryOverTime(s, db);
+}
+
+/**
+ * Metal's breakdown: by what is holding the memory rather than by which heap it came from, since
+ * there are no heaps to enumerate. Resources inside a heap are named apart from the total, because
+ * their bytes are the heap's reservation and counting both would count them twice.
+ */
+function renderMetalRows(s: Widget, m: MetalMemory): void {
+  for (const g of m.groups) {
+    row(s, g.label, `${formatBytes(g.bytes)} in ${g.count} object${g.count === 1 ? "" : "s"}, largest ${formatBytes(g.largestBytes)}`);
+  }
+  if (m.inHeaps.count) {
+    row(s, "In heaps", `${m.inHeaps.count} resource${m.inHeaps.count === 1 ? "" : "s"} suballocated from the heaps above, using ${formatBytes(m.inHeaps.bytes)} of what they reserved`);
+  }
+  const occupancy = heapOccupancy(m);
+  if (occupancy !== null && occupancy < HEAP_OCCUPANCY_LOW) {
+    row(s, "Mostly empty", `The heaps report ${formatBytes(m.heapUsedBytes)} in use of ${formatBytes(m.heapReservedBytes)} reserved (${(100 * occupancy).toFixed(0)}%): the rest is memory this process has taken and is not using.`);
+  }
+  new Div(s, { text: "Totalled from the resources the inspector has seen created, which is not the whole story: the device's own figure in the series below includes what the driver allocated behind them. Metal reports no heap table and no residency separate from that figure.", class: "text-muted capture-note" });
 }
 
 /** The per-heap breakdown, for the backends that have one. */
