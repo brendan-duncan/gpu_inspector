@@ -1,5 +1,22 @@
 ## Unreleased
 
+### Fixed
+- A replayed ray tracing frame traced against nothing, and the cause was a missing barrier in
+  `test/triangle --ray-tracing` rather than anything in the replay. The trace reads the top level
+  the build before it writes, and the application ordered them with nothing at all; on this driver
+  the race resolved in its favour often enough that the frame looked right, so the bug sat there
+  unnoticed until a replay ran the same commands with different timing and every ray missed. With
+  the barrier the replay's traced image is identical to the capture's, and the whole frame replays
+  with no problems and no validation messages.
+
+  Worth saying plainly, because it is what the feature is for: **synchronization validation does not
+  report this hazard**. Running the application with it on names only a pre-existing depth-attachment
+  transition and says nothing about the acceleration structure or the trace. What found it was the
+  replay comparing what the frame *computed* into a storage image against what the capture recorded
+  — two runs of identical commands disagreeing is a synchronisation bug by definition, whatever the
+  validation layers make of it. The three defects fixed alongside it in v0.14.0 were all real, but
+  none of them was the one that mattered.
+
 ### Added
 - Descriptor buffers are read (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`).
   A descriptor buffer replaces descriptor sets with plain memory: the application asks the driver

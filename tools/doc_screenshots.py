@@ -120,8 +120,8 @@ SHOTS = [
     # level sorts first.
     Shot("acceleration-structures", ["--debug-open={capture}", "--debug-select=VkAccelerationStructureKHR:TLAS"],
          delay_ms=12000, capture="rt.gpucap"),
-    # The shader binding table of a trace (rt.gpucap, command 13 is the vkCmdTraceRaysKHR).
-    Shot("binding-table", ["--debug-open={capture}", "--debug-command=13", "--debug-expand=Shader Binding Table"],
+    # The shader binding table of a trace (rt.gpucap, command 14 is the vkCmdTraceRaysKHR).
+    Shot("binding-table", ["--debug-open={capture}", "--debug-command=14", "--debug-expand=Shader Binding Table"],
          delay_ms=12000, capture="rt.gpucap"),
     # The launch dialog, in its desktop and Android forms.
     Shot("launch-dialog", ["--debug-launch-dialog"], delay_ms=5000, crop="dialog"),
