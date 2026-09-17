@@ -137,6 +137,15 @@ function manifest(objectList, passMs) {
     ],
     buffers: [{ info: { id: 1, buffer: 15, frame: 0, commandBuffer: CB, offset: 0, size: 36 }, payload: [64, 36] }],
     passTimings: [{ frame: 0, commandBuffer: CB, passIndex: 0, startMs: 0, durationMs: passMs, counters: { vertexInvocations: 120, fragmentInvocations: 64, clipperPrimitivesOut: 40 } }],
+    // A frame that stopped to build a pipeline, which is the one finding the summary's other
+    // figures cannot show: the totals all look ordinary and the frame is still slow.
+    cpuTimeline: {
+      action: "CaptureCpuTimeline", threads: [1000], events: [
+        { thread: 0, category: "submit", frame: 7, startMs: 0, durationMs: 1.5 },
+        { thread: 0, category: "pipeline", frame: 7, startMs: 1.5, durationMs: 9 },
+        { thread: 0, category: "present", frame: 7, startMs: 10.5, durationMs: 1 },
+      ],
+    },
     validation: [{
       action: "ValidationMessage", key: 1, severity: "error", types: ["validation"], idName: "VUID-Test", idNumber: 1, message: "A test message.", frame: 7, count: 3,
       objects: [{ object: ref(14, "VkPipeline"), class: "VkPipeline", handle: "0xe" }], command: { commandBuffer: CB, slot: FIRST_DRAW },
@@ -177,6 +186,10 @@ test("a capture opens with its summary", async () => {
   assert.equal(json.counts.frameStartImages, 1);
   assert.equal(json.timing.profiled, true);
   assert.match(json.timing.frameBound.verdict, /Vsync bound/);
+  // The compile reaches this surface too: an agent reading a capture through MCP would otherwise
+  // be told the frame was fine by every other number in the summary.
+  assert.equal(json.timing.cpu.pipelineCreateMs, 9);
+  assert.match(json.timing.cpu.verdict, /creating pipelines/i);
   assert.equal(json.validation.errors, 1);
   const rules = json.issues.top.map((f) => f.rule);
   assert.ok(rules.includes("tiny-draws") && rules.includes("redundant-pipeline-bind"), rules.join(", "));

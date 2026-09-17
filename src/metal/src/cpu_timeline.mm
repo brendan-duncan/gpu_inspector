@@ -21,7 +21,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 const char *const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
-    "submit", "waitFences", "acquire",
+    "submit", "waitFences", "acquire", "pipeline",
 };
 
 /** One timed call. Kept small: a busy frame records a few hundred of these. */

@@ -144,6 +144,8 @@ struct App {
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
     bool descriptorBuffer = false;
+    bool compileHitch = false;
+    VkPipeline hitchPipeline{};
     // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
     // input and pre-rasterization with the vertex shader; fragment shader and output), which live
     // as long as the pipeline linked from them (VK_EXT_graphics_pipeline_library).
@@ -2315,8 +2317,30 @@ struct App {
 
     // --------------------------------------------------------------------------------- frame
     // Returns false when nothing was drawn (window minimized or swapchain being replaced).
+    /**
+     * --compile-hitch: builds a pipeline in the middle of the frame, the way an engine does when it
+     * meets a material it has not compiled yet. The point is the stall, so the pipeline is made
+     * without a cache and thrown away again: the timeline should show the frame stopping for it
+     * (**Where the CPU went**, "Creating pipelines").
+     */
+    void CompileHitch() {
+        if (!compileHitch) return;
+        if (hitchPipeline) vkDestroyPipeline(device, hitchPipeline, nullptr);
+        VkShaderModule cs = LoadShader("wave.comp.spv");
+        VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpci.stage.module = cs;
+        cpci.stage.pName = "main";
+        cpci.layout = computePipelineLayout;
+        CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpci, nullptr, &hitchPipeline));
+        Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)hitchPipeline, "Compile hitch");
+        vkDestroyShaderModule(device, cs, nullptr);
+    }
+
     bool DrawFrame(float t) {
         if (resized && !RecreateSwapchain()) return false;
+        CompileHitch();
         VkFence fence = inFlight[frameSlot];
         CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
         uint32_t imageIndex = 0;
@@ -2483,6 +2507,7 @@ struct App {
             vkDestroyBuffer(device, db.buffer, nullptr);
             vkFreeMemory(device, db.memory, nullptr);
         }
+        if (hitchPipeline) vkDestroyPipeline(device, hitchPipeline, nullptr);
         vkDestroyBuffer(device, uniformBuffer, nullptr);
         vkFreeMemory(device, uniformMemory, nullptr);
         DestroySwapchainResources();
@@ -2533,6 +2558,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
+        else if (!strcmp(argv[i], "--compile-hitch")) app.compileHitch = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
         else if (!strcmp(argv[i], "--suspend")) app.suspend = true;

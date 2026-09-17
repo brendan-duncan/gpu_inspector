@@ -613,7 +613,9 @@ void TrackPipeline(ID3D12Device* device, ID3D12PipelineState* pipeline, const ch
 
 HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(ID3D12Device14* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return DEV(CreateGraphicsPipelineState)(This, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = DEV(CreateGraphicsPipelineState)(This, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(This, pipeline, "CreateGraphicsPipelineState", nullptr, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -623,7 +625,9 @@ HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(ID3D12Device14* This,
 
 HRESULT STDMETHODCALLTYPE Hook_CreateComputePipelineState(ID3D12Device14* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return DEV(CreateComputePipelineState)(This, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = DEV(CreateComputePipelineState)(This, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(This, pipeline, "CreateComputePipelineState", nullptr, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -633,7 +637,9 @@ HRESULT STDMETHODCALLTYPE Hook_CreateComputePipelineState(ID3D12Device14* This, 
 
 HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(ID3D12Device14* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return DEV(CreatePipelineState)(This, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = DEV(CreatePipelineState)(This, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(This, pipeline, "CreatePipelineState", nullptr, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -650,7 +656,9 @@ HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(ID3D12Device14* This, const D
 
 HRESULT STDMETHODCALLTYPE Hook_LoadGraphicsPipeline(ID3D12PipelineLibrary1* This, LPCWSTR pName, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return LIB(LoadGraphicsPipeline)(This, pName, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = LIB(LoadGraphicsPipeline)(This, pName, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadGraphicsPipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -660,7 +668,9 @@ HRESULT STDMETHODCALLTYPE Hook_LoadGraphicsPipeline(ID3D12PipelineLibrary1* This
 
 HRESULT STDMETHODCALLTYPE Hook_LoadComputePipeline(ID3D12PipelineLibrary1* This, LPCWSTR pName, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return LIB(LoadComputePipeline)(This, pName, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = LIB(LoadComputePipeline)(This, pName, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadComputePipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -670,7 +680,9 @@ HRESULT STDMETHODCALLTYPE Hook_LoadComputePipeline(ID3D12PipelineLibrary1* This,
 
 HRESULT STDMETHODCALLTYPE Hook_LoadPipeline(ID3D12PipelineLibrary1* This, LPCWSTR pName, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return LIB(LoadPipeline)(This, pName, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = LIB(LoadPipeline)(This, pName, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12PipelineState* pipeline = Result<ID3D12PipelineState>(hr, out);
     if (!pipeline) return hr;
     TrackPipeline(DeviceOf(This), pipeline, "LoadPipeline", pName, DescJson(pDesc), pDesc ? StagesOf(*pDesc) : std::vector<StageBytecode>());
@@ -1016,7 +1028,9 @@ HRESULT STDMETHODCALLTYPE Hook_CreateCommandSignature(ID3D12Device14* This, cons
 
 HRESULT STDMETHODCALLTYPE Hook_CreateStateObject(ID3D12Device14* This, const D3D12_STATE_OBJECT_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return DEV(CreateStateObject)(This, pDesc, riid, out);
+    const uint64_t timed = CpuEventBegin();
     HRESULT hr = DEV(CreateStateObject)(This, pDesc, riid, out);
+    CpuEventEnd(nullptr, timed, CpuCategory::PipelineCreate);
     ID3D12StateObject* stateObject = Result<ID3D12StateObject>(hr, out);
     if (!stateObject) return hr;
     HookStateObject(stateObject);

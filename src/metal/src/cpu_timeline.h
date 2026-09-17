@@ -31,6 +31,11 @@ enum class CpuCategory : uint16_t {
     Submit = 0,     // commit: handing work to the GPU
     WaitFences,     // waitUntilCompleted / waitUntilScheduled: blocked until the GPU caught up
     Acquire,        // nextDrawable: blocked until the presenter freed a drawable
+    // Pipeline state and library creation, the synchronous forms only: those block the thread
+    // that asked while the driver compiles, and a pipeline built inside a frame stops it. The
+    // completion-handler forms are deliberately not timed — they return at once and compile
+    // elsewhere, which is the pattern this is meant to point an application towards.
+    PipelineCreate,
     Count,
 };
 

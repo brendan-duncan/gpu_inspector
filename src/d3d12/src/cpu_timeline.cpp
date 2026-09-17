@@ -20,7 +20,7 @@ namespace dxinsp {
 namespace {
 
 const char* const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
-    "submit", "present", "waitFences", "acquire",
+    "submit", "present", "waitFences", "acquire", "pipeline",
 };
 
 /** One timed call. Kept small: a busy frame records a few hundred of these. */

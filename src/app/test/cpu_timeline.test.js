@@ -95,3 +95,34 @@ test("the summary carries what the capture could not keep", () => {
   assert.equal(s.dropped, 12);
   assert.equal(s.calibrated, false);
 });
+
+test("pipeline creation is its own kind, not submission work", () => {
+  // Both are the application's thread doing something rather than waiting, but the fixes differ:
+  // submission wants fewer and larger submits, a compile wants to happen before the frame.
+  assert.equal(cpuKindOf("pipeline"), "compile");
+  const s = summarizeCpuTimeline(timeline([["submit", 0, 1], ["pipeline", 1, 4]]));
+  assert.equal(s.compileMs, 4);
+  assert.equal(s.submitMs, 1, "a compile is not counted as submission");
+  assert.equal(s.totals.find((t) => t.category === "pipeline").label, "Creating pipelines");
+});
+
+test("a frame that stopped to build a pipeline is told so first", () => {
+  // Even beside a long fence wait: the wait is a symptom of the GPU being behind, the compile is a
+  // stall with a different cause and a different fix, and nothing else in the frame explains it.
+  const s = summarizeCpuTimeline(timeline([["waitFences", 0, 5], ["pipeline", 5, 4], ["submit", 9, 1]]));
+  const verdict = cpuVerdict(s);
+  assert.match(verdict, /creating pipelines/i);
+  assert.match(verdict, /1 call/, "the count is named, since one slow compile reads differently from many");
+});
+
+test("a frame that built nothing says nothing about compiling", () => {
+  const s = summarizeCpuTimeline(timeline([["waitFences", 0, 8], ["submit", 8, 2]]));
+  assert.equal(s.compileMs, 0);
+  assert.doesNotMatch(cpuVerdict(s), /pipeline/i);
+});
+
+test("a compile too small to have caused the frame's trouble is not the verdict", () => {
+  const s = summarizeCpuTimeline(timeline([["waitFences", 0, 9], ["pipeline", 9, 0.2], ["submit", 9.2, 0.8]]));
+  assert.doesNotMatch(cpuVerdict(s), /creating pipelines/i);
+  assert.equal(s.compileMs, 0.2, "still counted, just not the headline");
+});

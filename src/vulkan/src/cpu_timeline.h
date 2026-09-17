@@ -35,6 +35,10 @@ enum class CpuCategory : uint16_t {
     WaitFences,     // vkWaitForFences: blocked until the GPU caught up
     Acquire,        // vkAcquireNextImageKHR: blocked until the presenter freed an image
     WaitIdle,       // vkQueueWaitIdle / vkDeviceWaitIdle
+    // Pipeline and shader creation: the driver compiling, on the thread that asked. Timed because
+    // a pipeline built inside a frame stops it, which is what a hitch on first sight of a material
+    // usually is — and unlike the categories above, the fix is to do it earlier rather than less.
+    PipelineCreate,
     Count,
 };
 

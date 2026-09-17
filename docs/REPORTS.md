@@ -27,7 +27,9 @@ In order down the view:
   bars are not on the same footing and no honest verdict can be drawn from them. Take the GPU
   figures from it as relative costs between passes, not as the frame's budget.
 - **Where the CPU went** — the frame's CPU time split into submitting, waiting for the GPU,
-  waiting for the display, and the application's own work.
+  waiting for the display, creating pipelines, and the application's own work. A pipeline built
+  inside a frame stops it, so that row appearing at all is worth reading first; see
+  [is the GPU even the problem](PROFILING.md#step-1-is-the-gpu-even-the-problem).
 - **Timeline** — the threads and the GPU drawn as tracks on one axis, which is the only view here
   that can show the GPU *idle*. See [when, not how much](PROFILING.md#step-1b-when-not-how-much).
 - **Pass Timings** — each pass's GPU time, with the total and the span they cover.
