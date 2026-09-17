@@ -1,100 +1,17 @@
 ## Unreleased
 
 ### Added
-- Pipeline and shader creation on the CPU timeline, as its own category on all three backends
-  (**Where the CPU went** → *Creating pipelines*, and its own colour in the **Timeline** card).
-  Everything the timeline timed until now was the application handing work over or waiting for
-  something; a compile is neither, and a pipeline built while the frame that needs it is being
-  recorded stops that frame for as long as the driver takes. That is what a hitch on first sight of
-  a material usually is, and no aggregate elsewhere in the capture shows it. Vulkan times
-  `vkCreate*Pipelines`, `vkCreateShaderModule` and `vkCreateShadersEXT`; D3D12 the three
-  `Create*PipelineState` forms, `CreateStateObject` and the pipeline library's `Load*Pipeline`;
-  Metal the synchronous `newRenderPipelineState*` / `newComputePipelineState*` and
-  `newLibraryWithSource:`. Metal's completion-handler forms are deliberately *not* timed: they
-  return at once and compile elsewhere, and reporting a stall for them would condemn the pattern
-  this is meant to recommend. It is kept apart from submission rather than folded into it because
-  the two want opposite fixes — submission wants fewer and larger submits, a compile wants to have
-  happened earlier — and the verdict reads it before anything else, since no share of the other
-  categories explains it away. A capture whose frames compiled nothing does not show the row at
-  all. `test/triangle --compile-hitch` builds one inside every frame.
+- The shader debugger on a D3D12 capture, by recompiling the container's HLSL to SPIR-V with `dxc -spirv` and stepping that (`src/app/src/shared/hlsl_debug.ts`).
+- Descriptor buffers are read (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`), so a draw bound through one shows its bindings like any other; `test/triangle --descriptor-buffer`.
+- Pipeline and shader creation is timed on the CPU timeline on all three backends, as its own *Creating pipelines* category; `test/triangle --compile-hitch`.
+- The image viewer marks NaN and the infinities (**Highlight**, on by default), and draws a per-channel histogram.
+- `--debug-view=target[:color|depth|<id>]` opens a render target in its own tab, for screenshots and UI tests.
 
 ### Fixed
-- A D3D12 draw whose pipeline came from its command list's `Reset` had no pipeline in its
-  reconstructed state: the library records `Reset` with its `pInitialState`, but the state walk
-  only followed `SetPipelineState`, so a list that started with its pipeline (as the sample does,
-  and as many engines do) showed its draws without shaders, a mesh view without a layout and,
-  now, a debugger with nothing to step. The walk now stops at the recording's beginning (a
-  `Reset`, a `vkBeginCommandBuffer`) rather than reading on into the list's previous recording,
-  and takes the initial pipeline state of the draw's kind from a `Reset`.
-- The replay gave every acceleration structure build the same scratch memory, from the start of one
-  buffer it grew as it went (`Replayer::ReserveScratch`). Two faults followed from that, neither
-  visible on a frame with a single build, which is why nothing here had shown them. Growing the
-  buffer *freed* it, while builds already recorded into the submission still held addresses into it
-  — so a frame whose later builds are bigger replayed the earlier ones into memory the driver had
-  taken back. And handing every build the same stretch introduced a hazard the frame never had:
-  builds recorded with nothing ordering them are legal when the application gives each its own
-  scratch, and the replay made them overlap. Scratch is now handed out a stretch at a time within a
-  submission and reset when the next one starts recording, and a buffer that is outgrown is retired
-  rather than freed, so nothing already recorded is left pointing at memory that is gone.
-- A replayed ray tracing frame traced against nothing, and the cause was a missing barrier in
-  `test/triangle --ray-tracing` rather than anything in the replay. The trace reads the top level
-  the build before it writes, and the application ordered them with nothing at all; on this driver
-  the race resolved in its favour often enough that the frame looked right, so the bug sat there
-  unnoticed until a replay ran the same commands with different timing and every ray missed. With
-  the barrier the replay's traced image is identical to the capture's, and the whole frame replays
-  with no problems and no validation messages.
-
-  Worth saying plainly, because it is what the feature is for: **synchronization validation does not
-  report this hazard**. Running the application with it on names only a pre-existing depth-attachment
-  transition and says nothing about the acceleration structure or the trace. What found it was the
-  replay comparing what the frame *computed* into a storage image against what the capture recorded
-  — two runs of identical commands disagreeing is a synchronisation bug by definition, whatever the
-  validation layers make of it. The three defects fixed alongside it in v0.14.0 were all real, but
-  none of them was the one that mattered.
-
-### Added
-- The shader debugger on a D3D12 capture. There is no DXIL interpreter, and writing one (LLVM
-  bitcode, then DXIL's own operations) is a long road for a result that would still be a second
-  implementation of the same semantics. What a D3D12 capture holds for a stage is a container, and
-  what the container holds when the build used `-Zi` (or wrote a PDB the symbol directories find)
-  is the HLSL it was compiled from — the same text the Inspect panel already shows. So the debugger
-  compiles that HLSL again, to SPIR-V, with `dxc -spirv` on this machine, and steps the result in
-  the interpreter a Vulkan capture's modules run in: source lines, locals, the call stack, every
-  resource. The compile is run the way the build ran it: `dxinsp_shader --sources` now reports the
-  main file, the `-D` defines and the other arguments dxc kept in the debug information, so an
-  engine's shader with a hundred defines compiles to what it compiled to. Three things tie the
-  translation back to the capture. The register classes are shifted apart in the bindings
-  (`src/app/src/shared/hlsl_debug.ts`), so `t0` and `b0` do not collide and a binding names one
-  register, which is then found in the draw's root descriptor tables, root views, root constants
-  (through the root signature's parameters) and static samplers. Stage variables keep their HLSL
-  semantics (`-fspv-reflect`), which pair a vertex input with the input layout's element and a
-  pixel input with the vertex shader's output, since dxc numbers the two stages' locations
-  independently. And a pixel's inputs come from the draw's vertex shader run in the interpreter
-  over the draw, as on Metal, rasterized with D3D's conventions (clip +Y up, clockwise front unless
-  the pipeline says otherwise, the viewport as `RSSetViewports` set it). Stepping starts inside the
-  function the source wrote rather than in dxc's wrapper around it, so Step Over does not run the
-  whole shader as one call. The tab and `debug_shader` say plainly that this is the HLSL compiled
-  by dxc rather than the DXIL the GPU ran, and that nothing checks the two against each other.
-  `test/d3d12_shader_debug.test.js` runs the cube's three stages through it; `tools/ui_tests.py`
-  gains `d3d12-debug-pixel`, `d3d12-debug-vertex` and `d3d12-debug-compute`.
-- Descriptor buffers are read (`VK_EXT_descriptor_buffer`, `src/vulkan/src/descriptor_buffer.h`).
-  A descriptor buffer replaces descriptor sets with plain memory: the application asks the driver
-  for a descriptor's bytes, puts them in a buffer of its own, and a draw names a set by an offset
-  into that buffer rather than by a handle. Nothing about those bytes is defined — their size and
-  layout belong to the implementation — so a capture of an engine using them showed draws reading
-  memory it could say nothing about, and the render graph could only mark the whole stream unknown.
-  What makes them readable is that `vkGetDescriptorEXT` is the *only* way to produce a descriptor:
-  whatever the application does with the bytes afterwards, it had to ask for them first, naming the
-  buffer, image view or sampler it wanted one for. The layer keeps what it saw go past — the bytes,
-  and the resource they were made from — resolves the descriptor buffer's device address back to a
-  buffer the way a ray tracing build's geometry is resolved, reads the set's memory through the
-  application's own mapping, and looks its contents up in that table. The result is an ordinary
-  descriptor set snapshot, so a draw bound this way shows its bindings, their contents and their
-  images exactly as one that bound a set does, and the render graph, the reports and the replay
-  needed no changes to understand it. A descriptor whose bytes were never seen made, or a set in
-  memory with no host mapping, is reported as unread rather than guessed at, and the graph still
-  counts that stream as hiding something. `test/triangle --descriptor-buffer` exercises it, on a
-  Vulkan 1.2 instance, since taking a buffer's device address is core only from there.
+- A D3D12 draw whose pipeline came from its command list's `Reset` had no pipeline in its reconstructed state.
+- An image's **Min** and **Max** counted infinities, so one `+Inf` made **Auto Range** show the whole image as black.
+- The replay gave every acceleration structure build the same scratch, overlapping them and freeing memory recorded builds still pointed at (`Replayer::ReserveScratch`).
+- `test/triangle --ray-tracing` never ordered its trace after the top level's build, which synchronization validation does not report and the replay's image comparison found.
 
 ## v0.14.0
 

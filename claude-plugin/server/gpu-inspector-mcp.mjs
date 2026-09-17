@@ -25203,13 +25203,16 @@ function finish(tex) {
   for (let c2 = 0; c2 < tex.channels; c2++) {
     let min = Infinity;
     let max = -Infinity;
+    let finite = 0;
     for (let i = 0; i < n; i++) {
       const v = tex.values[i * 4 + c2];
+      if (!Number.isFinite(v)) continue;
+      finite++;
       if (v < min) min = v;
       if (v > max) max = v;
     }
-    tex.min[c2] = min;
-    tex.max[c2] = max;
+    tex.min[c2] = finite ? min : 0;
+    tex.max[c2] = finite ? max : 0;
   }
   return tex;
 }

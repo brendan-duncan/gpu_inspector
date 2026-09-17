@@ -1511,6 +1511,16 @@ export class CaptureView implements CaptureHost {
       if (draw) this.openDrawOverlay(draw, overlay);
       else this._setStatus("no draw of this capture is in a pass with a render target");
     }
+    else if (name.startsWith("target")) {
+      // Testing aid (--debug-view=target[:color|depth|<image id>]): a render target in its own tab,
+      // which is otherwise only reachable through overdraw or pixel history.
+      const [, which = "color"] = name.split(":");
+      const id = Number(which);
+      const t = this.data.textures.find((x) => isRenderTarget(x.info) && !x.info.error
+        && (Number.isFinite(id) ? x.info.id === id : x.info.aspect === which));
+      if (t) this.openTextureForPixel({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+      else this._setStatus(`this capture has no ${which} render target`);
+    }
     else if (name === "pixel-history") {
       // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
       // centre of the first colour render target.

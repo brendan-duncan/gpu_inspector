@@ -10,8 +10,8 @@ import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import type { Widget } from "./widget/widget.js";
 import {
-  decodeTexels, displayTexels, formatFloat, formatTexel, isFormatSupported, sliceBytes,
-  type ChannelMode, type DisplaySettings, type TexelData,
+  channelHistogram, decodeTexels, displayTexels, formatFloat, formatTexel, isFormatSupported, markTexels, sliceBytes,
+  texelStats, type ChannelMode, type DisplaySettings, type TexelData, type TexelStats,
 } from "./vulkan/texture_decode.js";
 import { isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { d3d12TextureShape } from "./d3d12/d3d12_object.js";
@@ -94,6 +94,13 @@ export class ImageView {
   private _display: DisplaySettings & { zoom: number };
   private _data: ImageDataMessage | null = null;
   private _texels: TexelData | null = null;
+  /** What the decoded image holds past its picture: the ranges, and the NaN and infinity counts. */
+  private _stats: TexelStats | null = null;
+  /** Marking of what a picture cannot show. "auto" turns itself on for an image with NaN in it. */
+  private _highlight: "off" | "auto" | "clip" = "auto";
+  private _highlightSelect: Select | null = null;
+  private _histogram!: HTMLCanvasElement;
+  private _showHistogram = false;
   private _pinned = "";
 
   /** Follows a pixel of a captured render target through the frame (pixel history); absent otherwise. */
@@ -309,6 +316,20 @@ export class ImageView {
       }
     } });
 
+    // What a picture of the image cannot show. A NaN clamps to some ordinary colour on screen, so
+    // "Auto" marks those wherever they are without being asked: an image that has them is already
+    // wrong, and nothing else in a capture points at it. Clipping is opt-in, since a value outside
+    // [0,1] is ordinary in an HDR target rather than a fault.
+    label("Highlight", "Mark the texels a picture cannot show");
+    this._highlightSelect = new Select(bar, {
+      options: ["Auto", "Off", "Auto + clipping"],
+      index: 0,
+      onChange: (_v: string, index: number) => {
+        this._highlight = index === 1 ? "off" : index === 2 ? "clip" : "auto";
+        this._draw();
+      },
+    });
+
     this._autoRangeCheck = new Checkbox(bar, { label: "Auto Range", checked: this._display.autoRange,
       tooltip: "Stretch the values so the smallest shows as black and the largest as white" });
     this._autoRangeCheck.input.onchange = () => {
@@ -324,6 +345,12 @@ export class ImageView {
         this._applyZoom();
       }
     } });
+    const histogramCheck = new Checkbox(bar, { label: "Histogram", checked: false,
+      tooltip: "The distribution of the values, which a picture of them does not show" });
+    histogramCheck.input.onchange = () => {
+      this._showHistogram = histogramCheck.checked;
+      this._draw();
+    };
     this._smoothCheck = new Checkbox(bar, { label: "Smooth", checked: false, tooltip: "Filter when scaling instead of showing texels" });
     this._smoothCheck.input.onchange = () => this._canvas.classList.toggle("smooth", this._smoothCheck.checked);
     if (!this.captured) new Button(bar, { html: ICON_REFRESH, class: "btn btn-sm btn-icon", tooltip: "Refresh: read the image again from the application", callback: () => this.request() });
@@ -337,6 +364,12 @@ export class ImageView {
 
     const info = new Div(parent, { class: "image-view-toolbar" });
     this._status = new Span(info, { text: "", class: "image-view-status" });
+    // Under the status line rather than in it: the picture answers "what does it look like", the
+    // histogram answers "what is in it", and one outlier is enough to make those different answers.
+    this._histogram = document.createElement("canvas");
+    this._histogram.className = "image-histogram";
+    this._histogram.hidden = true;
+    parent.element.appendChild(this._histogram);
     this._pixelInfo = new Span(info, { text: "", class: "image-view-pixel" });
 
     this._scroll = new Div(parent, { class: "image-view-scroll" });
@@ -432,6 +465,9 @@ export class ImageView {
     }
     const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
     this._texels = decodeTexels(msg, msg.__binary, slice);
+    // Once per decode rather than once per draw: the walk is over every texel, and changing the
+    // channel or the exposure does not change what the image holds.
+    this._stats = this._texels ? texelStats(this._texels) : null;
     if (!this._texels) {
       this._status.text = "decode failed";
       return;
@@ -459,6 +495,19 @@ export class ImageView {
         rgba[i + 2] = rgba[i + 2] * (1 - a) + overlay[i + 2] * a;
       }
     }
+    // The marks go on last and opaque: they are there to be seen, not to be blended into the very
+    // colour that was hiding them.
+    if (this._highlight !== "off") {
+      const marks = markTexels(tex, this._highlight === "clip");
+      if (marks) {
+        for (let i = 0; i < rgba.length; i += 4) {
+          if (!marks[i + 3]) continue;
+          rgba[i] = marks[i];
+          rgba[i + 1] = marks[i + 1];
+          rgba[i + 2] = marks[i + 2];
+        }
+      }
+    }
     this._canvas.width = tex.width;
     this._canvas.height = tex.height;
     this._canvas.getContext("2d")!.putImageData(new ImageData(rgba, tex.width, tex.height), 0, 0);
@@ -468,9 +517,61 @@ export class ImageView {
     const range = tex.channels === 1
       ? `  Min ${fmt(tex.min[0])}  Max ${fmt(tex.max[0])}`
       : `  Min ${tex.min.slice(0, tex.channels).map(fmt).join(", ")}  Max ${tex.max.slice(0, tex.channels).map(fmt).join(", ")}`;
-    this._status.text = `${msg.format.replace(/^VK_FORMAT_/, "")} ${where}${range}${this._fromCapture ? "  (from the capture)" : ""}`;
+    // Said plainly and before anything else in the line: a target with a NaN in it is a bug, and
+    // the picture above looks perfectly ordinary.
+    const s = this._stats;
+    const bad: string[] = [];
+    if (s?.nanTexels) bad.push(`${s.nanTexels.toLocaleString()} NaN`);
+    if (s?.infTexels) bad.push(`${s.infTexels.toLocaleString()} infinite`);
+    const warning = bad.length
+      ? `  ⚠ ${bad.join(", ")} of ${s!.total.toLocaleString()} texels${this._highlight === "off" ? "" : ", marked"}`
+      : "";
+    this._status.text = `${msg.format.replace(/^VK_FORMAT_/, "")} ${where}${range}${warning}`
+      + `${this._fromCapture ? "  (from the capture)" : ""}`;
     this._pixelInfo.text = this._pinned;
+    this._drawHistogram(tex);
     this._applyZoom();
+  }
+
+  /**
+   * The distribution of each channel's finite values, over its own range.
+   *
+   * Per channel rather than pooled, and each scaled to its own tallest bucket: what this is for is
+   * the shape — a target that looks black because one texel is ten thousand, a depth buffer whose
+   * values are all crowded against the far plane — and a shared scale would flatten the channel
+   * that has the fewest texels in it into nothing.
+   */
+  private _drawHistogram(tex: TexelData): void {
+    const canvas = this._histogram;
+    canvas.hidden = !this._showHistogram;
+    if (!this._showHistogram) return;
+    const buckets = 128;
+    const rows = Math.min(tex.channels, 4);
+    const rowHeight = 26;
+    canvas.width = buckets * 2;
+    canvas.height = rows * rowHeight;
+    canvas.style.width = `${canvas.width}px`;
+    canvas.style.height = `${canvas.height}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const colors = ["#d05f5f", "#5fd08a", "#5f8ad0", "#b0b0b0"];
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let c = 0; c < rows; c++) {
+      const stats = this._stats?.channels[c];
+      const counts = channelHistogram(tex, c, buckets, stats ? { min: stats.min, max: stats.max } : undefined);
+      const peak = Math.max(1, ...counts);
+      const top = c * rowHeight;
+      ctx.fillStyle = tex.channels === 1 ? "#b0b0b0" : colors[c] ?? "#b0b0b0";
+      for (let b = 0; b < buckets; b++) {
+        // A bucket with anything in it gets at least a pixel: the handful of texels that are the
+        // outlier are the whole point, and rounding them to nothing would hide them again.
+        const h = counts[b] ? Math.max(1, Math.round((counts[b] / peak) * (rowHeight - 10))) : 0;
+        if (h) ctx.fillRect(b * 2, top + (rowHeight - 3) - h, 2, h);
+      }
+      ctx.fillStyle = "#808080";
+      ctx.font = "9px sans-serif";
+      ctx.fillText(`${tex.names[c] ?? c}  ${formatFloat(stats?.min ?? 0)} .. ${formatFloat(stats?.max ?? 0)}`, 2, top + 9);
+    }
   }
 
   private _applyZoom(): void {
