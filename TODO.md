@@ -916,8 +916,9 @@ library does not read back yet.
       as a lost device ("Unrecoverable GPU device error"). Only `-force-d3d12-debug` named it:
       `ResolveQueryData ... called while a Render Pass is suspended`. A capture now completes and
       the player runs on.
-- [ ] A Unity frame is measured almost not at all: the capture above holds 1,423,718 commands but
-      only 18 pass timings, 32 textures and 21 buffers. The queries and the read-back go in while a
+- [ ] A Unity frame is measured almost not at all: a capture holds over a million commands but
+      only ~18 pass timings, ~30 textures and 21 buffers (and the buffers all fail with "command
+      list was not executed during the capture"). The queries and the read-back go in while a
       list is *recorded*, and Unity records its lists several frames ahead, so the lists submitted
       in the captured frame were built before the capture began; 58 more pass segments are
       suspended across lists and take nothing by construction (README.md, "Passes"). Measuring at
