@@ -12,6 +12,8 @@
 //   redundant-vertex-buffer-bind IASetVertexBuffers of the views already bound at those slots
 //   tiny-draws                   many draws of a handful of vertices
 //   single-threadgroup-dispatch  a dispatch of one thread group
+//   unrecorded-list              a submitted command list the capture holds no commands of
+//   suspended-pass               a render pass suspended across command lists, which carries no measurement
 //
 // The rules over the GPU counters (../counter_rules.ts), over sampling state (../sampling_rules.ts)
 // and over the render graph (../render_graph_analysis.ts) are shared with Vulkan and Metal and run
@@ -29,8 +31,11 @@ import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
 
-const RULE_ORDER = ["undefined-load", "clear-then-discard", "empty-pass", "tiny-draws",
+const RULE_ORDER = ["unrecorded-list", "suspended-pass", "undefined-load", "clear-then-discard", "empty-pass", "tiny-draws",
   "redundant-pipeline-bind", "redundant-root-signature-bind", "redundant-vertex-buffer-bind", "single-threadgroup-dispatch"];
+
+/** What the library emits for a submitted list whose commands it never recorded (src/d3d12/src/capture.cpp). */
+const UNRECORDED_LIST = "<unrecorded command list>";
 
 /** One finding per rule with the commands it applies to folded in: the first is named, the rest counted. */
 class Folded {
@@ -116,6 +121,8 @@ export class D3D12FrameAnalysis {
     const undefinedLoad = new Folded();
     const clearThenDiscard = new Folded();
     const emptyPass = new Folded();
+    const unrecorded = new Folded();
+    const suspended = new Folded();
 
     const stateOf = (stream: string): ListState => {
       let s = lists.get(stream);
@@ -135,6 +142,12 @@ export class D3D12FrameAnalysis {
       const m = cmd.method;
       const stream = `${cmd.frame}:${cmd.object?.__id ?? 0}:${cmd.secondary ?? 0}`;
 
+      // A list the capture holds no commands of: it was recorded before the capture asked for
+      // anything, so everything it did is missing from the frame.
+      if (m === UNRECORDED_LIST) {
+        unrecorded.add(cmd);
+        continue;
+      }
       if (sets.SUBMIT.has(m)) continue;
       if (m === "Close" || m === "Reset") {
         closePass(stream);
@@ -145,6 +158,9 @@ export class D3D12FrameAnalysis {
         closePass(stream);
         const pass: PassInfo = { command: cmd, draws: 0, targets: [] };
         if (m === "BeginRenderPass" && a) {
+          // A pass suspended here or resumed from another list: between the suspension and the
+          // resume nothing may be added to the list, so the capture measures none of it.
+          if (/SUSPENDING|RESUMING/.test(str(a.Flags))) suspended.add(cmd);
           const entries: [ArgObject, boolean][] = [];
           for (const rt of Array.isArray(a.pRenderTargets) ? a.pRenderTargets : []) if (isObject(rt)) entries.push([rt, false]);
           if (isObject(a.pDepthStencil)) entries.push([a.pDepthStencil, true]);
@@ -233,6 +249,21 @@ export class D3D12FrameAnalysis {
     }
     for (const stream of [...openPass.keys()]) closePass(stream);
 
+    if (unrecorded.count) {
+      this._addFolded("unrecorded-list", "high", "high",
+        `${unrecorded.count} submitted command list${unrecorded.count === 1 ? " holds" : "s hold"} no commands: `
+        + `${unrecorded.count === 1 ? "it was" : "they were"} recorded before the capture began, so the draws, dispatches and state `
+        + "in them are missing from this frame — an engine that records a frame ahead on worker threads (Unity does) records this way. "
+        + "Turn on \"Record all command buffers\" in the capture bar and capture again: every list is then recorded as it is built, "
+        + "whenever that happens.", unrecorded);
+    }
+    if (suspended.count) {
+      this._addFolded("suspended-pass", "low", "high",
+        `${suspended.count} render pass${suspended.count === 1 ? " is" : "es are"} suspended across command lists `
+        + "(D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS / _RESUMING_PASS). Between a suspension and its resume Direct3D allows "
+        + "no work at all on the list, so these passes have no timings and their render targets were not read back; "
+        + "their commands are all here.", suspended);
+    }
     if (undefinedLoad.count) {
       this._addFolded("undefined-load", "high", "high", `${undefinedLoad.count} render pass${undefinedLoad.count === 1 ? "" : "es"} PRESERVE${undefinedLoad.count === 1 ? "s" : ""} a target the previous render pass on it ended with D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD: the contents are undefined. Either preserve it there, or begin with CLEAR or DISCARD here.`, undefinedLoad);
     }

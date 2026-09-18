@@ -1427,6 +1427,11 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     CommandRecorder* rec = Rec(This);
     std::vector<BoundTarget> targets;
     std::string argsJson;
+    // A pass the application suspends here, or resumes from another list, carries no work of the
+    // capture's: not the copies a measurement starts from, not its queries, not its read-back.
+    // Between a suspension and its resume the runtime rejects every GPU-work-generating call and
+    // closes the list with E_FAIL, which the application takes for a lost device (ActivePass::split).
+    const bool split = (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)) != 0;
     // The arguments and the pass's targets are resolved before the forward, because the copies a
     // measurement starts from have to be taken while the list is still outside the render-pass
     // region: a copy may not interrupt one. The command itself is recorded after the forward, so
@@ -1435,7 +1440,7 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
         Cap().EndPass(rec, true);
         Cap().OnComputePassEnd(rec);
         argsJson = BeginRenderPassArgs(rec, NumRenderTargets, pRenderTargets, pDepthStencil, Flags, targets);
-        PrepareMeasuredPass(rec, targets);
+        if (!split) PrepareMeasuredPass(rec, targets);
     }
     CommandScope scope(rec);
     orig(This, NumRenderTargets, pRenderTargets, pDepthStencil, Flags);
@@ -1446,8 +1451,8 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     HookCommandList(This);
     if (!rec) return;
     rec->Record("BeginRenderPass", argsJson);
-    Cap().BeginPass(rec, std::move(targets), true);
-    BeginMeasuredPass(rec);
+    Cap().BeginPass(rec, std::move(targets), true, split);
+    if (!split) BeginMeasuredPass(rec);
 }
 
 /** BeginRenderPass' arguments as the capture records them, with the pass's targets resolved beside them. */

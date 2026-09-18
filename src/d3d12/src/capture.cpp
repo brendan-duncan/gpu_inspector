@@ -22,6 +22,7 @@
 #include "validation.h"
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -65,10 +66,19 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint3
     list->ResourceBarrier(1, &b);
 }
 
-/** The description of a resource: the tracker's, else asked of the resource itself. */
+/**
+ * The description of a resource the tracker still holds, false for any other pointer.
+ *
+ * Only the tracker may say a resource pointer is worth dereferencing. A descriptor keeps no
+ * reference to what it names, and an engine that recycles resources (Unity does, constantly)
+ * leaves heap slots and bindings naming released ones, which is legal and which the application
+ * never reads. Asking such a pointer for its description crashes the application in our frame.
+ * Every creation path registers with the tracker and Release removes it (hooks_device.cpp,
+ * resources.h), so a resource it does not have is one that is gone.
+ */
 bool DescOf(ID3D12Resource* resource, D3D12_RESOURCE_DESC& desc, ResourceInfo* info = nullptr) {
     ResourceInfo local;
-    if (ResourceTracker::Get().Get(resource, local)) {
+    if (resource && ResourceTracker::Get().Get(resource, local)) {
         desc = local.desc;
         // The tracker keeps the creation description, where MipLevels 0 asked for a full chain;
         // the read-back needs the count the runtime chose.
@@ -80,15 +90,7 @@ bool DescOf(ID3D12Resource* resource, D3D12_RESOURCE_DESC& desc, ResourceInfo* i
         if (info) *info = local;
         return true;
     }
-    if (!resource) return false;
-    ScopedInternal internal;
-    desc = resource->GetDesc();
-    if (info) {
-        *info = ResourceInfo{};
-        info->resource = resource;
-        info->desc = desc;
-    }
-    return true;
+    return false;
 }
 
 /** The protocol format a target or texture of `format` is sent under, and whether it travels as the depth aspect. */
@@ -271,6 +273,16 @@ struct DeviceCapture {
     void* queryMapped = nullptr;
     std::vector<StagingChunk> staging;
     std::map<ResolveKey, ComPtr<ID3D12Resource>> resolves;
+    /**
+     * The staging buffers and resolve textures of captures already finished, held until the next
+     * capture starts. A command list does not keep a resource it names alive, and an engine that
+     * records several frames ahead (Unity does) always has lists open that the capture recorded
+     * copies into; freeing the destination while such a list is still being recorded makes its
+     * Close return E_FAIL, which the application takes for a lost device. By the time another
+     * capture begins those lists have been closed, executed and reset many times over.
+     */
+    std::vector<StagingChunk> retiredStaging;
+    std::vector<ComPtr<ID3D12Resource>> retiredResolves;
     ComPtr<ID3D12Fence> fence;
     HANDLE event = nullptr;
     uint64_t fenceValue = 0;
@@ -323,6 +335,14 @@ struct CaptureManager::Impl {
     CaptureOptions options;
     uint64_t frameIndex = 0;
     uint32_t frameCount = 1;
+    /**
+     * Frame boundaries an armed capture lets pass before it starts, so that the frame it captures
+     * has had its command lists recorded from the beginning. An engine records a frame's lists
+     * during the frame before it — Unity's renderer does, on worker threads — and recording starts
+     * when the capture is asked for, part way through a frame; without the wait, the lists of the
+     * frame being captured were half recorded before anything was watching.
+     */
+    uint32_t warmupBoundaries = 0;
     uint32_t framesDone = 0;
     IDXGISwapChain* homeSwapChain = nullptr;   // whose presents count the captured frames (null: a submit-delimited home)
     ID3D12Device* homeDevice = nullptr;        // the device the capture started on, whose frames it counts
@@ -352,6 +372,10 @@ struct CaptureManager::Impl {
     std::vector<TimingEntry> timings;
     uint64_t bufferBytes = 0;
     uint64_t imageBytes = 0;
+    /** Render-target bytes read back in this capture, against CaptureOptions::maxTargetTotal. */
+    uint64_t targetBytes = 0;
+    /** Pass segments the capture added nothing to because they were suspended (ActivePass::split). */
+    uint32_t splitPasses = 0;
     uint64_t commandTotal = 0;
     std::map<std::tuple<ID3D12Resource*, uint64_t, uint64_t>, uint32_t> bufferIds;   // (buffer, offset, size) -> id
     std::unordered_map<ID3D12Resource*, uint32_t> textureIds;                        // resource -> sampled capture id
@@ -522,6 +546,9 @@ void CaptureManager::Impl::ReleaseCaptureObjects(DeviceCapture& dc) {
         if (c.mapped && c.buffer) c.buffer->Unmap(0, nullptr);
         c.mapped = nullptr;
     }
+    // Unmapped and out of use here, but not freed: see DeviceCapture::retiredStaging.
+    for (StagingChunk& c : dc.staging) dc.retiredStaging.push_back(std::move(c));
+    for (auto& [key, texture] : dc.resolves) dc.retiredResolves.push_back(std::move(texture));
     dc.staging.clear();
     dc.resolves.clear();
     dc.queues.clear();
@@ -550,6 +577,21 @@ void CaptureManager::RequestCapture(const CaptureOptions& options) {
     i.options = options;
     i.frameCount = std::max(1u, options.frameCount);
     i.state = Impl::State::Armed;
+    // Recording starts with the request, not with the frame boundary that starts the capture, and
+    // the capture then lets one boundary pass before it begins. An engine that records a frame's
+    // command lists during the frame before it — Unity's renderer does, on worker threads — would
+    // otherwise submit lists whose commands were never recorded, and the whole capture would read
+    // "<unrecorded command list>"; waiting a frame means the captured frame's lists were recorded
+    // from the moment they were reset. It costs the application one frame of recording, and the
+    // capture arrives a frame later than it otherwise would.
+    //
+    // A capture queued at a later frame does not wait, which would miss the frame it was asked for:
+    // it starts recording a frame ahead of its target instead (OnFrameBoundary).
+    i.warmupBoundaries = 0;
+    if (options.atFrame == UINT64_MAX) {
+        _recordActive.store(true, std::memory_order_relaxed);
+        i.warmupBoundaries = 1;
+    }
     Log("capture armed: %u frame(s)%s", i.frameCount, options.atFrame == UINT64_MAX ? "" : " at a given frame");
 }
 
@@ -713,13 +755,14 @@ bool TimestampsAllowed(D3D12_COMMAND_LIST_TYPE type) {
 
 }  // namespace
 
-uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi) {
+uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi, bool split) {
     if (!rec) return 0;
     Impl& i = impl();
     ActivePass& pass = rec->pass();
     pass = ActivePass{};
     pass.active = true;
     pass.renderPassApi = renderPassApi;
+    pass.split = split;
     pass.targets = std::move(targets);
     pass.passIndex = rec->NextPassIndex();
     pass.beginCommand = rec->commandCount() ? (uint32_t)rec->commandCount() - 1 : 0;
@@ -739,7 +782,7 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
         std::lock_guard lock(i.mutex);
         profile = i.state == Impl::State::Capturing && i.options.profilePasses;
     }
-    if (!profile || rec->bundle() || !TimestampsAllowed(rec->type())) return pass.passIndex;
+    if (!profile || rec->bundle() || pass.split || !TimestampsAllowed(rec->type())) return pass.passIndex;
     DeviceCapture* dc = i.CaptureFor(rec->device());
     if (!dc || !dc->timestampHeap || !dc->queryMapped) return pass.passIndex;
     const uint32_t slot = dc->slotsUsed.fetch_add(1, std::memory_order_relaxed);
@@ -813,38 +856,58 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
     Impl& i = impl();
     ActivePass& pass = rec->pass();
     if (!pass.active) return;
+    // A pass suspended across command lists takes nothing (ActivePass::split): its commands are
+    // recorded, and a query, a barrier or a copy here would close the list with E_FAIL.
+    if (pass.split) {
+        if (synthetic) rec->Record("EndRenderTargets", std::string());
+        pass.active = false;
+        std::lock_guard lock(i.mutex);
+        ++i.splitPasses;
+        return;
+    }
     ID3D12GraphicsCommandList* list = rec->list();
     bool capturing, captureTextures;
-    uint64_t maxTextureSize;
+    uint64_t maxTextureSize, maxTargetTotal;
     {
         std::lock_guard lock(i.mutex);
         capturing = i.state == Impl::State::Capturing;
         captureTextures = i.options.captureTextures;
         maxTextureSize = i.options.maxTextureSize;
+        maxTargetTotal = i.options.maxTargetTotal;
     }
-    DeviceCapture* dc = capturing ? i.CaptureFor(rec->device()) : nullptr;
+    // Not CaptureFor: the queries of a pass that began them have to be ended whichever state the
+    // capture is in now, and the device's capture outlives the capture itself.
+    DeviceCapture* dc = i.FindCapture(rec->device());
     const uint64_t listId = Tracker::Get().IdOf(list);
 
     // The queries first: what the pass drew is what they count, not the copies that follow.
+    //
+    // A pass begun while the capture ran must end its queries even if the capture has finished
+    // since -- which happens on every engine that records its lists on worker threads, since the
+    // capture ends at a frame boundary and those lists are in the middle of a pass. A command list
+    // closed with a query still open fails with E_FAIL, and the application reads that as a lost
+    // device. The timing is only worth keeping while the capture is still collecting them.
     if (dc && pass.timestampQuery != UINT32_MAX) {
         EndPassQueries(*dc, list, pass.timestampQuery, pass.statsQuery, pass.occlusionQuery);
-        TimingEntry te;
-        te.device = rec->device();
-        te.list = list;
-        te.listId = listId;
-        te.passIndex = pass.passIndex;
-        te.compute = false;
-        te.slot = pass.timestampQuery / 2;
-        te.hasStats = pass.statsQuery != UINT32_MAX;
-        te.hasOcclusion = pass.occlusionQuery != UINT32_MAX;
-        std::lock_guard lock(i.mutex);
-        i.timings.push_back(te);
+        if (capturing) {
+            TimingEntry te;
+            te.device = rec->device();
+            te.list = list;
+            te.listId = listId;
+            te.passIndex = pass.passIndex;
+            te.compute = false;
+            te.slot = pass.timestampQuery / 2;
+            te.hasStats = pass.statsQuery != UINT32_MAX;
+            te.hasOcclusion = pass.occlusionQuery != UINT32_MAX;
+            std::lock_guard lock(i.mutex);
+            i.timings.push_back(te);
+        }
     }
 
     // Then every target, slice by slice, into staging. A depth-stencil target is read back twice:
     // its depth plane, then its stencil plane (`asStencil`: plane 1, one byte per texel), each an
     // entry of its own under the same attachment index.
-    if (dc && captureTextures && !rec->bundle()) {
+    if (dc && capturing && captureTextures && !rec->bundle()) {
         auto readBack = [&](const BoundTarget& t, bool asStencil) {
             TextureEntry e;
             e.resourceId = Tracker::Get().IdOf(t.resource);
@@ -880,6 +943,19 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             const uint32_t rows = TightRows(pf, e.height);
             e.size = rowBytes * rows * slices;
             if (e.size > maxTextureSize) return fail("exceeds max texture size");
+            // The budget for the frame's targets together. Past it the copies stop: they are work
+            // the capture adds to the application's own lists, and a frame with thousands of passes
+            // asks for more of it than the frame itself does.
+            {
+                std::lock_guard lock(i.mutex);
+                if (i.targetBytes + e.size > maxTargetTotal) {
+                    e.failed = true;
+                    e.note = "render target capture budget exceeded";
+                    i.textures.push_back(e);
+                    return;
+                }
+                i.targetBytes += e.size;
+            }
             if (t.depth && e.samples > 1) return fail(asStencil ? "multisampled stencil is not read back" : "multisampled depth is not read back");
             if (t.mip >= desc.MipLevels) return fail("mip level out of range");
             // The stencil plane's subresources follow every mip of every slice of the depth plane.
@@ -1055,6 +1131,9 @@ uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT forma
 
 uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size) {
     if (!rec || !buffer) return 0;
+    // A copy inside a suspended pass may not be recorded at all -- not here, and not held for the
+    // pass's end, which is on another list (ActivePass::split).
+    if (rec->pass().active && rec->pass().split) return 0;
     Impl& i = impl();
     ResourceInfo info;
     if (!ResourceTracker::Get().Get(buffer, info) || info.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return 0;
@@ -1146,6 +1225,9 @@ uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIR
 
 uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture) {
     if (!rec || !texture) return 0;
+    // A copy inside a suspended pass may not be recorded at all -- not here, and not held for the
+    // pass's end, which is on another list (ActivePass::split).
+    if (rec->pass().active && rec->pass().split) return 0;
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
@@ -1278,6 +1360,8 @@ uint32_t QueueRecordData(CaptureManager& cm, CommandRecorder* rec, const Descrip
         case DescriptorKind::SRV:
         case DescriptorKind::UAV: {
             if (r.accelerationStructure || !r.resource) return 0;
+            // The pointer a descriptor holds is not known to name anything: DescOf refuses the
+            // ones the tracker has let go, which is what keeps this off a released resource.
             D3D12_RESOURCE_DESC desc{};
             if (!DescOf(r.resource, desc)) return 0;
             if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return cm.QueueTextureCapture(rec, r.resource);
@@ -1419,6 +1503,13 @@ void RekeyList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* from, ID3
         if (e.list == from && e.frame == UINT32_MAX) e.list = to;
 }
 
+/** The entries a list queued but whose copies were never recorded, marked so the data is not read as if it were there. */
+template <typename Entry>
+void FailList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, const char* why) {
+    for (Entry& e : entries)
+        if (e.list == list && e.frame == UINT32_MAX && !e.failed) { e.failed = true; e.note = why; }
+}
+
 void NoteQueue(DeviceCapture& dc, ID3D12CommandQueue* queue) {
     if (!queue) return;
     std::lock_guard lock(dc.mutex);
@@ -1535,9 +1626,17 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
                 RekeyList(i.buffers, bundle, rec->list());
             }
             const ActivePass& pass = rec->pass();
-            std::vector<DeferredCopy>* mine = pass.active && pass.renderPassApi ? i.DeferredOf(rec) : nullptr;
-            if (mine) mine->insert(mine->end(), std::make_move_iterator(pending.begin()), std::make_move_iterator(pending.end()));
-            else for (auto& fn : pending) fn(rec->list());
+            // A suspended pass takes no copies, and there is no later point on this list to hold
+            // them for, so the bundle's entries say they hold nothing (ActivePass::split).
+            if (pass.active && pass.split) {
+                std::lock_guard lock(i.mutex);
+                FailList(i.textures, rec->list(), "inside a suspended render pass");
+                FailList(i.buffers, rec->list(), "inside a suspended render pass");
+            } else if (std::vector<DeferredCopy>* mine = pass.active && pass.renderPassApi ? i.DeferredOf(rec) : nullptr) {
+                mine->insert(mine->end(), std::make_move_iterator(pending.begin()), std::make_move_iterator(pending.end()));
+            } else {
+                for (auto& fn : pending) fn(rec->list());
+            }
         }
     }
     std::shared_ptr<const CommandList> commands = bundleRec->Snapshot();
@@ -1604,6 +1703,16 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             // DXINSP_FRAME_BOUNDARY=submit forces it (the Chrome case, where the compositor may
             // present on a hooked device but the WebGPU work to capture is Dawn's, which does not).
             if (!present && i.presentSeenAny && override != BoundaryOverride::Submit) return;
+            // A capture queued at a later frame starts recording one frame before it, so that the
+            // lists the target frame executes are recorded wherever the engine records them (see
+            // RequestCapture). Nothing is kept: the recorders are reset as the lists are.
+            if (i.options.atFrame != UINT64_MAX && deviceFrameIndex + 1 >= i.options.atFrame)
+                _recordActive.store(true, std::memory_order_relaxed);
+            // One frame of recording before the captured one, so that its lists were recorded whole.
+            if (i.warmupBoundaries) {
+                --i.warmupBoundaries;
+                return;
+            }
             if (i.options.atFrame == UINT64_MAX || deviceFrameIndex >= i.options.atFrame) {
                 i.state = Impl::State::Capturing;
                 i.frameIndex = deviceFrame;
@@ -1616,7 +1725,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 i.timings.clear();
                 i.bufferIds.clear();
                 i.textureIds.clear();
-                i.bufferBytes = i.imageBytes = i.commandTotal = 0;
+                i.bufferBytes = i.imageBytes = i.targetBytes = i.commandTotal = 0;
+                i.splitPasses = 0;
                 // The host calls the frame spends its time in, from here until Finish
                 // (cpu_timeline.h).
                 BeginCpuTimeline();
@@ -1659,6 +1769,11 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             dc->statsUsed.store(0, std::memory_order_relaxed);
             dc->occlusionUsed.store(0, std::memory_order_relaxed);
             dc->slotsUsed.store(0, std::memory_order_relaxed);
+            // The last capture's staging, which its lists have long since stopped naming.
+            std::lock_guard dlock(dc->mutex);
+            ScopedInternal internal;
+            dc->retiredStaging.clear();
+            dc->retiredResolves.clear();
         }
         Log("capture started at frame %llu (%u frame(s), %s)", (unsigned long long)deviceFrame, i.frameCount,
             present ? "present" : "submit boundary");
@@ -1751,6 +1866,7 @@ void SendCommands(const CaptureData& data) {
         if (++inBatch >= kCommandBatch) flush();
     };
     static const std::string kNone;
+    uint32_t unrecorded = 0;
     for (const Submission& s : data.submissions) {
         if (s.present) {
             emit(s.frame, -1, "Present", "IDXGISwapChain", s.objectId, s.args, kNone);
@@ -1759,6 +1875,7 @@ void SendCommands(const CaptureData& data) {
         emit(s.frame, -1, "ExecuteCommandLists", "ID3D12CommandQueue", s.objectId, s.args, kNone);
         for (const SubmittedList& l : s.lists) {
             if (!l.commands) {
+                ++unrecorded;
                 emit(s.frame, -1, "<unrecorded command list>", "ID3D12GraphicsCommandList", l.listId, kNone, kNone);
                 continue;
             }
@@ -1768,6 +1885,12 @@ void SendCommands(const CaptureData& data) {
         }
     }
     flush();
+    // A list whose commands nothing recorded was recorded before the capture asked for anything —
+    // earlier than the frame before it, which is where recording starts (RequestCapture). Saying so
+    // is the difference between a capture that looks empty and one that says what to do about it.
+    if (unrecorded)
+        Log("capture: %u submitted command list(s) were recorded before the capture began and hold no commands; "
+            "turn on \"Record all command buffers\" to capture them", unrecorded);
 }
 
 }  // namespace
@@ -2014,9 +2137,14 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
 
 
 void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
+    // Finish runs on the thread that presented, so the application is stopped for as long as it
+    // takes: how long that was is the first thing to know when a capture of a large frame seems to
+    // hang, and it says whether the wait is here or in the client reading it (docs/ARCHITECTURE.md).
+    const auto finishBegan = std::chrono::steady_clock::now();
     cm._capturing.store(false, std::memory_order_release);
     cm._recordActive.store(cm.RecordAlways(), std::memory_order_relaxed);
     CaptureData data;
+    uint32_t splitPassCount = 0;
     {
         std::lock_guard lock(mutex);
         data.frameIndex = frameIndex;
@@ -2028,13 +2156,20 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
         data.timings.swap(timings);
         bufferIds.clear();
         textureIds.clear();
-        bufferBytes = imageBytes = commandTotal = 0;
+        bufferBytes = imageBytes = targetBytes = commandTotal = 0;
+        splitPassCount = splitPasses;
+        splitPasses = 0;
         homeSwapChain = nullptr;
         homeDevice = nullptr;   // presentSeenAny is a device-lifetime fact and is not reset here
         state = Impl::State::Idle;
     }
     Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers, %zu passes", data.submissions.size(),
         (unsigned long long)data.commandTotal, data.textures.size(), data.buffers.size(), data.timings.size());
+    // A pass the application suspends across command lists is recorded whole and measured not at
+    // all: between the suspension and its resume nothing may be added to the list (ActivePass::split).
+    if (splitPassCount)
+        LogAlways("capture: %u render pass segment(s) were suspended across command lists, so they have no timings and their render targets were not read back",
+                  splitPassCount);
 
     // Everything recorded in the frames has been executed; wait for it on every queue that took
     // part, so the staging buffers and the query results are complete.
@@ -2111,7 +2246,8 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
         std::unique_lock lock(recorderMutex);
         recorders.clear();
     }
-    Log("capture sent");
+    LogAlways("capture sent: %llu commands in %.1f s", (unsigned long long)data.commandTotal,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - finishBegan).count());
 }
 
 }  // namespace dxinsp

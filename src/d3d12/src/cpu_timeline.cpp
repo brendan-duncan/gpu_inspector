@@ -448,8 +448,17 @@ void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, con
         D3D12_HEAP_FLAGS flags = D3D12_HEAP_FLAG_NONE;
         if (FAILED(resource->GetHeapProperties(&props, &flags))) return;
         // What the runtime actually reserves, which for a texture is more than width x height x
-        // format: alignment, mip padding and the swizzle the driver wants are all in here.
-        const D3D12_RESOURCE_ALLOCATION_INFO info = device->GetResourceAllocationInfo(0, 1, &desc);
+        // format: alignment, mip padding and the swizzle the driver wants are all in here. A
+        // description asking for tight alignment must carry none of its own, and the runtime
+        // refuses the pair: the application's creation call passed them together through a form
+        // that allows it (CreateCommittedResource3), and this one does not.
+        // D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT, by value: it arrived with an Agility SDK newer
+        // than the Windows SDK this builds against, and an application using it (Unity does) would
+        // otherwise have every resource of its own rejected here.
+        constexpr D3D12_RESOURCE_FLAGS kUseTightAlignment = (D3D12_RESOURCE_FLAGS)0x200;
+        D3D12_RESOURCE_DESC asked = desc;
+        if (asked.Flags & kUseTightAlignment) asked.Alignment = 0;
+        const D3D12_RESOURCE_ALLOCATION_INFO info = device->GetResourceAllocationInfo(0, 1, &asked);
         if (info.SizeInBytes == UINT64_MAX) return;   // the runtime rejected the description
         bytes = info.SizeInBytes;
     }

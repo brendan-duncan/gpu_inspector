@@ -267,6 +267,13 @@ the boundaries the UI's pass model needs, and says so in the stream:
   UI's `COMPUTE_PASS_END` listing the same commands.
 * Passes are numbered per command list, render and compute in separate sequences, which is what a
   `CaptureTextureInfo.passIndex` and a `PassTiming.passIndex` refer to.
+* A render pass the application **suspends** across command lists
+  (`D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS` / `_RESUMING_PASS`, which Unity's URP uses) carries
+  nothing of the library's. Between a suspension and its resume Direct3D allows no
+  GPU-work-generating call at all: a query, a barrier or a copy there makes `Close` return `E_FAIL`,
+  and an application that checks it -- Unity does -- treats that as a lost device and exits. So a
+  split pass is recorded like any other and has no timings, no counters and no render target
+  read-back; the app's `suspended-pass` finding says how many there were.
 
 **Render target read-back.** When a render pass ends the library appends to the application's
 list: transition barriers of every color target and the depth target into `COPY_SOURCE`,

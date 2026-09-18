@@ -166,6 +166,34 @@ test("the per-command rules find the redundant pipeline bind and nothing else on
   assert.ok(!second.discards && !second.dropped, "PRESERVE / PRESERVE");
 });
 
+test("a render pass suspended across command lists is reported as measured by nothing", () => {
+  const rp = (begin, end) => ({ cpuDescriptor: handle(0, 4, null), BeginningAccess: { Type: `D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_${begin}` }, EndingAccess: { Type: `D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_${end}` } });
+  const split = new CaptureData();
+  split.api = "d3d12";
+  split.commands = [
+    ["BeginRenderPass", { NumRenderTargets: 1, pRenderTargets: [rp("CLEAR", "PRESERVE")], pDepthStencil: null, Flags: "D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS" }],
+    ["DrawInstanced", { VertexCountPerInstance: 3, InstanceCount: 1 }],
+    ["EndRenderPass", {}],
+    ["Close", {}],
+    ["Reset", { pAllocator: ref(7, "ID3D12CommandAllocator"), pInitialState: null }],
+    ["BeginRenderPass", { NumRenderTargets: 1, pRenderTargets: [rp("PRESERVE", "PRESERVE")], pDepthStencil: null, Flags: "D3D12_RENDER_PASS_FLAG_RESUMING_PASS" }],
+    ["DrawInstanced", { VertexCountPerInstance: 3, InstanceCount: 1 }],
+    ["EndRenderPass", {}],
+  ].map(([method, args], i) => ({ index: i, frame: 0, slot: i, method, object: list, args }));
+  const findings = analyzeD3D12Frame(split, db).findings;
+  const suspended = findings.find((f) => f.rule === "suspended-pass");
+  assert.equal(suspended?.count, 2, "both halves of the pass");
+  // A pass that is neither suspended nor resumed says nothing.
+  const whole = new CaptureData();
+  whole.api = "d3d12";
+  whole.commands = [
+    ["BeginRenderPass", { NumRenderTargets: 1, pRenderTargets: [rp("CLEAR", "PRESERVE")], pDepthStencil: null, Flags: "D3D12_RENDER_PASS_FLAG_NONE" }],
+    ["DrawInstanced", { VertexCountPerInstance: 3, InstanceCount: 1 }],
+    ["EndRenderPass", {}],
+  ].map(([method, args], i) => ({ index: i, frame: 0, slot: i, method, object: list, args }));
+  assert.equal(analyzeD3D12Frame(whole, db).findings.find((f) => f.rule === "suspended-pass"), undefined);
+});
+
 test("a list's Reset binds its initial pipeline state, and nothing before the Reset is the recording's", () => {
   const reset = new CaptureData();
   reset.api = "d3d12";

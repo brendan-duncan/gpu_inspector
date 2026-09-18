@@ -43,6 +43,15 @@ import { renderObjectStack } from "./stacktrace_view.js";
 import { renderAccelerationStructure, renderShaderGroups } from "./ray_tracing_view.js";
 import type { CaptureDescriptorBinding, CompileShaderResult, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
+/**
+ * D3D12 has one resource type for everything, so a session's textures and its buffers would share
+ * a group — and a frame's render targets would sit among its vertex, index and constant buffers,
+ * hundreds of them in a real engine. The two are their own groups instead, keyed by the type with
+ * what the resource is after it (see groupKeyOf); Vulkan and Metal name the two apart themselves.
+ */
+const D3D12_TEXTURES = "ID3D12Resource:texture";
+const D3D12_BUFFERS = "ID3D12Resource:buffer";
+
 // Preferred display order; any other type is appended alphabetically as it appears. Both APIs
 // share the list rather than selecting one, because a session only ever holds objects of one of
 // them — the Vk entries never match in a Metal session, and the MTL entries never match in a
@@ -61,7 +70,7 @@ const TYPE_ORDER = [
 
   "ID3D12Device", "IDXGIAdapter", "IDXGISwapChain", "ID3D12CommandQueue", "ID3D12GraphicsCommandList", "ID3D12CommandList",
   "ID3D12CommandAllocator", "ID3D12PipelineState", "ID3D12StateObject", "ID3D12RootSignature", "ID3D12DescriptorHeap",
-  "ID3D12Heap", "ID3D12Resource", "ID3D12Fence", "ID3D12QueryHeap", "ID3D12CommandSignature", "ID3D12PipelineLibrary",
+  "ID3D12Heap", D3D12_TEXTURES, D3D12_BUFFERS, "ID3D12Fence", "ID3D12QueryHeap", "ID3D12CommandSignature", "ID3D12PipelineLibrary",
 ];
 
 /** The types whose creation or destruction moves the memory meter. */
@@ -94,7 +103,19 @@ function functionLine(source: string, name: string): number {
   return plain >= 0 ? plain : first;
 }
 
+/**
+ * The group an object belongs to: its type, except that a D3D12 resource is grouped by what it is.
+ * A back buffer from the swap chain carries no description of its own and counts as a texture,
+ * which is what it always is (d3d12_object.ts).
+ */
+function groupKeyOf(object: VulkanObject): string {
+  if (object.type !== "ID3D12Resource") return object.type;
+  return isD3D12Texture(object) ? D3D12_TEXTURES : D3D12_BUFFERS;
+}
+
 function typeLabel(type: string): string {
+  if (type === D3D12_TEXTURES) return "Textures";
+  if (type === D3D12_BUFFERS) return "Buffers";
   if (PLURALS[type]) return PLURALS[type];
   const t = type.replace(/^Vk/, "").replace(/^ID3D12/, "").replace(/^IDXGI/, "DXGI ").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
   const words = t.replace(/([a-z])([A-Z])/g, "$1 $2");
@@ -504,9 +525,20 @@ export class InspectPanel {
     this._frameTimeMaxData.add(maxMs);
     this._submitData.add(submitMs);
     this._frameTimePlot.draw();
-    const count = this._objectCountType ? db.getObjectsOfType(this._objectCountType)?.size ?? 0 : db.allObjects.size;
+    const count = this._objectCountType ? this._countOfGroup(this._objectCountType) : db.allObjects.size;
     this._objectCountData.add(count);
     this._objectCountPlot.draw();
+  }
+
+  /** How many objects the meter's group holds: the D3D12 resource groups are a type split in two. */
+  private _countOfGroup(key: string): number {
+    const db = this.database;
+    if (key !== D3D12_TEXTURES && key !== D3D12_BUFFERS) return db.getObjectsOfType(key)?.size ?? 0;
+    const resources = db.getObjectsOfType("ID3D12Resource");
+    if (!resources) return 0;
+    let count = 0;
+    for (const object of resources.values()) if (groupKeyOf(object) === key) ++count;
+    return count;
   }
 
   private _updateMemoryLabel(): void {
@@ -830,7 +862,7 @@ export class InspectPanel {
   }
 
   private _addObject(object: VulkanObject): void {
-    const g = this._groupFor(object.type);
+    const g = this._groupFor(groupKeyOf(object));
     const item = new Widget("li", g.objectList, { class: "object-item" }) as ObjectItem;
     item.group = g;
     object.widget = item;
@@ -873,8 +905,9 @@ export class InspectPanel {
   }
 
   private _deleteObject(id: number, object: VulkanObject): void {
-    const g = this._groups.get(object.type);
     const item = object.widget as ObjectItem | null;
+    // The item's own group, so that a resource always leaves the group it went into.
+    const g = item?.group ?? this._groups.get(groupKeyOf(object));
     if (item) {
       const wasVisible = item.element.style.display !== "none";
       item.remove();

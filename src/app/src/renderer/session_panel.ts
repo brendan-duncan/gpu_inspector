@@ -199,19 +199,27 @@ export class SessionPanel extends Div implements SessionContext {
     }});
   }
 
+  /** --debug-capture-without: read-backs the debug capture leaves out, set by the window. */
+  debugCaptureWithout: string | null = null;
+
   /** Takes the launch configuration's queued capture once the application is connected. */
   private _scheduleQueuedCapture(): void {
     const capture = this.info.config?.capture;
     if (!capture || capture.mode === "none" || this._queuedCaptureDone) return;
     this._queuedCaptureDone = true;
+    // Testing aid: --debug-capture-without applies to a queued capture as well, which is the one
+    // that takes a frame of the running application rather than of its start-up.
+    const without = (this.debugCaptureWithout ?? "").split(",").map((p) => p.trim()).filter(Boolean);
     if (capture.mode === "frame") {
       this.showCaptureTab();
+      if (without.length) this.capturePanel.setCaptureOptions(without);
       this.capturePanel.capture(undefined, capture.value);
     } else {
       this._queuedCaptureTimer = setTimeout(() => {
         this._queuedCaptureTimer = null;
         if (!this.connected) return;
         this.showCaptureTab();
+        if (without.length) this.capturePanel.setCaptureOptions(without);
         this.capturePanel.capture();
       }, capture.value * 1000);
     }
@@ -321,6 +329,8 @@ export class SessionPanel extends Div implements SessionContext {
     const port = /^port (\d+)/.exec(s.detail);
     if (port) this.info = { ...this.info, port: Number(port[1]) };
     this._nameLabel.text = `${this.info.name}   port ${this.info.port}${this.info.pid && running ? `   pid ${this.info.pid}` : ""}`;
+    // The label truncates (app.css): the tooltip is where the whole command line stays readable.
+    this._nameLabel.tooltip = this._nameLabel.text;
     this._stopButton.disabled = !running;
     this._restartButton.disabled = !this.info.config;
   }

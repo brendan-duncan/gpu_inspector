@@ -75,7 +75,20 @@ html, body {
 .session-name {
   font-weight: 600;
   white-space: pre;
+  /* The name is the application's whole command line, which is as long as it likes. It gives way
+     first so that the buttons at the end of the bar stay on the bar's one row (the row wraps, and
+     a flex item only shrinks below its content with min-width: 0). Its tooltip has it in full. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
 }
+.session-bar .launch-row {
+  flex-wrap: nowrap;
+}
+/* Everything else on that row keeps its size: the name is what gives way. */
+.session-bar .launch-row > :not(.session-name) { flex: 0 0 auto; white-space: nowrap; }
+.session-bar .launch-row > .launch-spacer { flex: 1 1 auto; }
 .session-tabs {
   flex: 1 1 auto;
   min-height: 0;

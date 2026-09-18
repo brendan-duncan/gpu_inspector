@@ -9,12 +9,22 @@
 - Pixel history names the primitive whose fragment won the pixel, follows a multisampled target through the resolve of its samples, and measures a shader that asks for early fragment tests with those tests on.
 - **HUD** draws the application's frame time over its own window on all three backends, so it reads without looking away and is in any screenshot (`VKINSP_HUD=1`, `src/vulkan/src/hud_text.h`).
 - **Live pause** holds the application at its frame boundary on the frame it just drew, and steps one frame at a time from there (`src/vulkan/src/frame_pause.h`).
+- D3D12 lists its textures and its buffers as their own groups in the Inspect tab rather than one Resources group.
+- A D3D12 capture records from the moment it is asked for, and lets a frame pass before it starts, so an engine that records its command lists ahead is captured rather than reported as unrecorded.
+- A D3D12 capture says when a submitted command list holds no commands, in the log and as a frame issue, with what to turn on.
+- A D3D12 frame says which render passes the application suspended across command lists, since those are the passes a capture can measure nothing of.
 
 ### Changed
 - Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.
 
 ### Fixed
 - The Timeline drew at most 4,000 spans a lane and dropped the rest silently, which also hid those passes from its idle-gap analysis.
+- Capturing a D3D12 frame added its queries and read-back copies to a render pass the application suspends across command lists, which Direct3D forbids: the list closed with E_FAIL and the application took it for a lost device and exited.
+- Recording a D3D12 application's command lists asked a resource named by a stale descriptor for its description, which crashed the application: a descriptor keeps no reference to what it names, so an engine that recycles resources leaves slots naming released ones. Nothing the resource tracker has let go is touched now.
+- The session bar's application command line is truncated with the whole of it in its tooltip, rather than pushing the bar's buttons onto a second row.
+- The D3D12 capture library is built with debug information in every configuration, so its frames in an application's own crash report carry function names and lines.
+- A D3D12 capture read every render target of every pass back with no total budget, which on a frame with thousands of passes is more work than the frame itself.
+- The memory accounting asked the runtime to size a resource whose description uses tight alignment, which it refuses.
 
 ## v0.15.0
 

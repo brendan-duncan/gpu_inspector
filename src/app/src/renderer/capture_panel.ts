@@ -74,6 +74,14 @@ import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTi
 import type { ValidationEntry } from "./vulkan/object_database.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 
+/**
+ * Past this many commands in a frame, a render pass is listed collapsed and its rows are built the
+ * first time it is opened. A row is several DOM elements and a formatted argument summary, and a
+ * game engine's frame holds hundreds of thousands of commands -- more rows than a browser will
+ * build in any useful time. The passes are the frame's structure, so they are what stays.
+ */
+const LAZY_PASS_COMMANDS = 20000;
+
 interface CommandRow extends Widget {
   command: CaptureCommand;
   /** The validation marker, once the command has messages. */
@@ -315,6 +323,19 @@ export class CapturePanel {
       ...(pixelHistory ? { pixelHistory } : {}),
     });
     return view;
+  }
+
+  /**
+   * Turns capture options off by name ("textures", "buffers", "images", "profile"), for
+   * --debug-capture-without: what each read-back costs is measured by leaving it out.
+   */
+  setCaptureOptions(without: string[]): void {
+    for (const name of without) {
+      if (name === "textures") this._texturesCheck.checked = false;
+      else if (name === "buffers") this._buffersCheck.checked = false;
+      else if (name === "images") this._imagesCheck.checked = false;
+      else if (name === "profile") this._profileCheck.checked = false;
+    }
   }
 
   /** Opens a loaded capture (a file, or a copy of another tab) in a new tab. */
@@ -742,6 +763,10 @@ export class CaptureView implements CaptureHost {
   private _filterInput: TextInput;
   private _filter = "";
   private _rows: CommandRow[] = [];
+  /** Passes listed collapsed (LAZY_PASS_COMMANDS): the commands each holds, so one can be jumped to. */
+  private _lazyBodies: { from: number; to: number; open: () => void }[] = [];
+  /** How long the command list took to build, said in the status when it is worth knowing. */
+  private _listMs = 0;
   /** The frame analysis of the current commands (Frame Issues and the row markers). */
   _analysis: { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } | null = null;
   /** The capture's render graph, built on demand (see renderGraph()). */
@@ -946,10 +971,12 @@ export class CaptureView implements CaptureHost {
   // Command list
 
   private _renderCommands(): void {
+    const began = performance.now();
     this._listPanel.html = "";
     this._infoPanel.html = "";
     this._selectedRow = null;
     this._rows = [];
+    this._lazyBodies = [];
     this._renderGraph = null;
     this._replayFile = null;
     this.releaseReplay();
@@ -987,8 +1014,18 @@ export class CaptureView implements CaptureHost {
     this._buildThumbnails();
     if (this.data.passTimings.size) this._applyPassTimings();
     else if (this._profile) this._timeline.showPlaceholder("Profile passes: waiting for GPU timestamps...");
+    // A frame whose passes are collapsed (LAZY_PASS_COMMANDS) has no draw row to select until one
+    // is opened, so the first pass is opened: the view opens on a draw either way.
+    if (!this._listPanel.element.querySelector(".capture_drawcall")) {
+      for (const { block } of this._passBlocks.values()) {
+        if (block.collapsed) { block.collapsed = false; break; }
+      }
+    }
     const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
     first?.click();
+    // A frame of this size takes visible time to list, and the status is where the user is looking.
+    this._listMs = performance.now() - began;
+    if (this._listMs > 1000) this._updateStatus();
   }
 
   /** Hides the command rows that do not match the filter text (containers stay, like WebGPU Inspector). */
@@ -1007,6 +1044,7 @@ export class CaptureView implements CaptureHost {
     this._computePassCounters.clear();
     const commands = this.data.commandsForFrame(frame);
     const db = this.window.database;
+    const lazy = commands.length > LAZY_PASS_COMMANDS;
 
     // Containers: submit -> command buffer -> render pass / debug label groups.
     let submitBody: Widget = container;
@@ -1057,7 +1095,8 @@ export class CaptureView implements CaptureHost {
       current = submitBody;
     };
 
-    for (const cmd of commands) {
+    for (let index = 0; index < commands.length; index++) {
+      const cmd = commands[index];
       const objId = cmd.object?.__id ?? 0;
       if ((cmd.secondary ?? 0) !== currentSecondary) {
         closeSecondary();
@@ -1104,6 +1143,30 @@ export class CaptureView implements CaptureHost {
         this._passBlocks.set(passKey(frame, objId, passIndex, sets.passIsCompute?.(cmd.method) ?? false), { block, row, label, frame });
         stack.push(current);
         current = block.body;
+        if (lazy) {
+          // The pass's own commands, up to the one that ends it, are counted now and listed when
+          // the pass is opened (LAZY_PASS_COMMANDS).
+          let end = index + 1;
+          while (end < commands.length && !sets.PASS_END.has(commands[end].method)) {
+            if (isAction(sets, commands[end].method)) drawCount++;
+            end++;
+          }
+          const body = commands.slice(index + 1, end);
+          block.collapsed = true;
+          let filled = false;
+          const fill = (): void => {
+            if (filled) return;
+            filled = true;
+            this._fillPassBody(block.body, body);
+            this._applyCommandFilter();
+          };
+          block.onExpanded.addListener(fill);
+          if (body.length) {
+            this._lazyBodies.push({ from: body[0].index, to: body[body.length - 1].index,
+              open: () => { block.collapsed = false; fill(); } });
+          }
+          index = end - 1;   // the loop takes the command that ends the pass next
+        }
         continue;
       }
       if (sets.PASS_END.has(cmd.method)) {
@@ -1153,7 +1216,8 @@ export class CaptureView implements CaptureHost {
     const [images, failedImages] = d.sampledImageCounts;
     const targets = d.textures.filter((t) => isRenderTarget(t.info)).length;
     const imageText = images || failedImages ? `, ${images} image${images === 1 ? "" : "s"}${failedImages ? ` (${failedImages} failed)` : ""}` : "";
-    this._setStatus(`${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${targets} render targets${imageText}${buffers}`);
+    const listed = this._listMs > 1000 ? `, listed in ${(this._listMs / 1000).toFixed(1)}s` : "";
+    this._setStatus(`${which}: ${d.commands.length} commands, ${this._drawCount} draws/dispatches, ${targets} render targets${imageText}${buffers}${listed}`);
   }
 
   private _passLabel(cmd: CaptureCommand, passIndex: number): string {
@@ -1192,6 +1256,49 @@ export class CaptureView implements CaptureHost {
     if (cmd.method.startsWith("resourceStateCommandEncoder")) return `Resource State Pass ${passIndex}`;
     if (cmd.method.startsWith("accelerationStructureCommandEncoder")) return `Acceleration Structure Pass ${passIndex}`;
     return `Pass ${passIndex}`;
+  }
+
+  /**
+   * The rows of one render pass, built when the pass is first opened (see LAZY_PASS_COMMANDS).
+   * Only what can appear inside a render pass is handled here: debug label groups, the commands of
+   * a secondary command buffer, and the commands themselves. A dispatch inside a render pass stays
+   * in it, so there is no compute block to open, and passes do not nest.
+   */
+  private _fillPassBody(body: Widget, commands: CaptureCommand[]): void {
+    const sets = this.data.sets;
+    const db = this.window.database;
+    let current: Widget = body;
+    const stack: Widget[] = [];
+    let currentSecondary = 0;
+    let secondaryParent: Widget | null = null;
+    for (const cmd of commands) {
+      if ((cmd.secondary ?? 0) !== currentSecondary) {
+        if (currentSecondary && secondaryParent) current = secondaryParent;
+        currentSecondary = 0;
+        secondaryParent = null;
+        if (cmd.secondary) {
+          const sec = db.getObject(cmd.secondary);
+          const block = new collapsible(current, { label: `Secondary: ${sec ? sec.name : `CommandBuffer ${cmd.secondary}`}`, collapsed: false, class: "capture-secondary" });
+          secondaryParent = current;
+          currentSecondary = cmd.secondary;
+          current = block.body;
+        }
+      }
+      if (sets.LABEL_BEGIN.has(cmd.method)) {
+        const block = new collapsible(current, { label: labelNameOf(cmd), collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
+        this._addRow(block.titleBar, cmd, true);
+        stack.push(current);
+        current = block.body;
+        continue;
+      }
+      if (sets.LABEL_END.has(cmd.method)) {
+        this._addRow(current, cmd);
+        current = stack.pop() ?? body;
+        continue;
+      }
+      const row = this._addRow(current, cmd);
+      if (isAction(sets, cmd.method)) row.classList.add("capture_drawcall");
+    }
   }
 
   private _addRow(parent: Widget, cmd: CaptureCommand, inline = false): CommandRow {
@@ -1284,7 +1391,12 @@ export class CaptureView implements CaptureHost {
   }
 
   selectCommand(index: number): void {
-    const row = this._rows.find((r) => r.command.index === index);
+    let row = this._rows.find((r) => r.command.index === index);
+    // The command may be in a pass that has not been listed yet (LAZY_PASS_COMMANDS): open it.
+    if (!row) {
+      this._lazyBodies.find((b) => index >= b.from && index <= b.to)?.open();
+      row = this._rows.find((r) => r.command.index === index);
+    }
     if (!row) return;
     row.element.scrollIntoView({ block: "center" });
     this._selectRow(row);
