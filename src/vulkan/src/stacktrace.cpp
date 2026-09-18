@@ -76,6 +76,68 @@ static void EnsureSymbols() {
     g_symInit = true;
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS);
     if (!SymInitialize(GetCurrentProcess(), nullptr, TRUE)) Log("stack traces: SymInitialize failed (%lu)", GetLastError());
+    // VKINSP_SYMBOL_PATH (the launch dialog's symbol directories): where to look for PDBs that
+    // are not beside their modules, which is every build that keeps its symbols somewhere else —
+    // a symbol store, a build server's artifacts, an installed game with the PDBs left behind.
+    // Added in front of what DbgHelp works out for itself (the module directories and
+    // _NT_SYMBOL_PATH) rather than instead of it, so a PDB that is beside its module still wins
+    // nothing by being listed.
+    std::string dirs = ConfigValue("VKINSP_SYMBOL_PATH");
+    if (dirs.empty()) return;
+    std::string path = dirs;
+    char current[4096] = {};
+    if (SymGetSearchPath(GetCurrentProcess(), current, (DWORD)sizeof(current)) && current[0]) {
+        path += ';';
+        path += current;
+    }
+    if (!SymSetSearchPath(GetCurrentProcess(), path.c_str())) {
+        Log("stack traces: SymSetSearchPath(%s) failed (%lu)", path.c_str(), GetLastError());
+        return;
+    }
+    Log("stack traces: symbol search path is %s", path.c_str());
+}
+
+/**
+ * The source functions a return address stands for. The compiler emits one function and inlines
+ * others into it, so DbgHelp's answer for the address is the emitted one; the inlined callers are
+ * a separate walk, innermost first. `f` already carries the emitted function, which becomes the
+ * outermost caller: the frame itself takes the innermost, which is the one the reader means.
+ */
+static void ResolveInlineFrames(HANDLE process, uint64_t addr, StackFrame& f) {
+    DWORD count = SymAddrIncludeInlineTrace(process, addr);
+    if (!count) return;
+    DWORD context = 0;
+    DWORD frameIndex = 0;
+    if (!SymQueryInlineTrace(process, addr, 0, addr, addr, &context, &frameIndex)) return;
+    std::vector<InlinedCaller> frames;
+    alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512];
+    for (DWORD i = 0; i < count; ++i) {
+        InlinedCaller c;
+        SYMBOL_INFO* sym = (SYMBOL_INFO*)buffer;
+        memset(sym, 0, sizeof(SYMBOL_INFO));
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 511;
+        DWORD64 disp = 0;
+        if (SymFromInlineContext(process, addr, context + i, &disp, sym)) c.function = sym->Name;
+        IMAGEHLP_LINE64 line;
+        memset(&line, 0, sizeof(line));
+        line.SizeOfStruct = sizeof(line);
+        DWORD lineDisp = 0;
+        if (SymGetLineFromInlineContext(process, addr, context + i, 0, &lineDisp, &line) && line.FileName) {
+            c.file = line.FileName;
+            c.line = line.LineNumber;
+        }
+        if (c.function.empty() && c.file.empty()) continue;
+        frames.push_back(std::move(c));
+    }
+    if (frames.empty()) return;
+    // The emitted function is the last caller, after the inlined ones.
+    InlinedCaller emitted{f.function, f.file, f.line};
+    f.function = frames.front().function;
+    f.file = frames.front().file;
+    f.line = frames.front().line;
+    f.inlinedInto.assign(frames.begin() + 1, frames.end());
+    if (!emitted.function.empty() || !emitted.file.empty()) f.inlinedInto.push_back(std::move(emitted));
 }
 
 std::vector<StackFrame> Symbolize(const StackTrace& addresses) {
@@ -110,6 +172,7 @@ std::vector<StackFrame> Symbolize(const StackTrace& addresses) {
             f.file = line.FileName;
             f.line = line.LineNumber;
         }
+        ResolveInlineFrames(process, addr, f);
         out.push_back(std::move(f));
     }
     MarkInternal(out);
@@ -187,6 +250,17 @@ void WriteStackFrames(JsonWriter& w, const std::vector<StackFrame>& frames) {
         if (!f.file.empty()) { w.Key("file"); w.String(f.file); w.Key("line"); w.Uint(f.line); }
         w.Key("offset"); w.Uint(f.offset);
         if (f.internal) { w.Key("internal"); w.Boolean(true); }
+        if (!f.inlinedInto.empty()) {
+            w.Key("inlinedInto");
+            w.BeginArray();
+            for (const InlinedCaller& c : f.inlinedInto) {
+                w.BeginObject();
+                if (!c.function.empty()) { w.Key("function"); w.String(c.function); }
+                if (!c.file.empty()) { w.Key("file"); w.String(c.file); w.Key("line"); w.Uint(c.line); }
+                w.EndObject();
+            }
+            w.EndArray();
+        }
         w.EndObject();
     }
     w.EndArray();

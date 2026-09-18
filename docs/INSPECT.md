@@ -153,6 +153,15 @@ of bounds on. It is much slower than the rest — the shaders are patched and ev
 — so it is worth turning on to answer a question rather than leaving on. On D3D12 the same tick
 enables the debug layer's GPU-based validation.
 
+A GPU-assisted message is about a shader invocation, so it arrives when the submission finishes,
+after the capture that holds the command is over. The layer keeps what the capture recorded for
+exactly this reason and reads the command out of the message — the command buffer it names, the
+entry point in its header, and which draw or dispatch of that buffer it was — so the message is
+attached to the dispatch it happened in, marked in the command list like any other. The same
+mistake is reported once per invocation that made it, hundreds a frame; those are folded into one
+message with a count, keeping apart what tells two mistakes apart (the descriptor, the shader
+instruction, and which draw or dispatch it was).
+
 On Metal this is Metal's own API and shader validation, in the mode that logs a failure instead of
 aborting.
 

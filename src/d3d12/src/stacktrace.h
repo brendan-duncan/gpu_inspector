@@ -18,6 +18,13 @@ constexpr size_t kMaxStackFrames = 32;
 /** Return addresses, innermost first. */
 using StackTrace = std::vector<uint64_t>;
 
+/** A function an inlined one was inlined into, as far as the debug information names it. */
+struct InlinedCaller {
+    std::string function;
+    std::string file;
+    uint32_t line = 0;
+};
+
 struct StackFrame {
     uint64_t address = 0;
     std::string module;     // file name of the module (no directory), empty when unknown
@@ -26,6 +33,12 @@ struct StackFrame {
     uint32_t line = 0;
     uint64_t offset = 0;    // from the module base
     bool internal = false;  // inside this library, the D3D12 runtime, DXGI or the driver
+    /**
+     * The callers this frame's function was inlined into, innermost first, ending with the
+     * function the compiler actually emitted. One return address stands for several source
+     * functions, and the one the reader is looking for is usually not the emitted one.
+     */
+    std::vector<InlinedCaller> inlinedInto;
 };
 
 /** DXINSP_STACKTRACES: capture a stack at every object creation (the launch dialog's "Stack traces"). */

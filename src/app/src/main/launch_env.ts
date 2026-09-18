@@ -70,6 +70,12 @@ export interface VulkanLayerOptions {
   /** Vulkan: ask the driver what its compiler made of each shader stage (shader_statistics.h). */
   shaderStatistics?: boolean;
   stacktraces: boolean;
+  /**
+   * Where to look for PDBs that are not beside their modules, separated by ";" (the symbol
+   * directories of the launch dialog and `set_search_paths`). DbgHelp looks beside the module and
+   * along _NT_SYMBOL_PATH by itself, which is nothing for a build whose symbols are kept apart.
+   */
+  symbolDirs?: string;
   /** "Validation layer" was asked for: its settings apply even when no validation layer was found. */
   validation: boolean;
   syncValidation: boolean;
@@ -109,6 +115,7 @@ export function vulkanLayerEnvironment(o: VulkanLayerOptions): NodeJS.ProcessEnv
     ...(o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {}),
     ...(o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {}),
     VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...(o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {}),
     // The validation layer stops reporting a message after a few repeats (its
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.

@@ -207,6 +207,9 @@ export class SessionPanel extends Div implements SessionContext {
       validationErrors: db.validation.filter((v) => v.severity === "error").length,
       frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
       symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
+      // Frames that stand for more than one source function: the inlined callers of each, which
+      // only debug information with inline records has (stacktrace.cpp).
+      symbolsInlined: [...db.symbols.values()].filter((f) => !!f.inlinedInto?.length).length,
       hostSources: hostSourcesResolved(),
       captures: this.capturePanel.debugState(),
       log: this.info.log.slice(-40),
