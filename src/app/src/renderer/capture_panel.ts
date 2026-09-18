@@ -16,6 +16,7 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { renderTimingReport, timingButtonLabel } from "./timing_view.js";
+import type { FrameRange } from "./frame_timing.js";
 import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
 import { fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
@@ -115,6 +116,13 @@ export class CapturePanel {
   private _timingButton!: Button;
   private _timingPanel!: Div;
   private _timingRunning = false;
+  /**
+   * The stretch of the timing run the report's figures are of, dragged out on its graph. Held by
+   * frame number rather than by position because the ring drops the oldest frames out of the front
+   * (see FrameRange), and held here rather than in the view because the report is rebuilt on every
+   * batch of frames the layer sends.
+   */
+  private _timingRange: FrameRange | null = null;
   private _frameCountInput!: TextInput;
   private _atFrameInput!: TextInput;
   private _texturesCheck!: Checkbox;
@@ -552,6 +560,9 @@ export class CapturePanel {
     this._timingRunning = !this._timingRunning;
     if (this._timingRunning) {
       this.window.database.timing.frames.length = 0;
+      // Two runs are two questions, and a range dragged out of the last one names frames this one
+      // will number again from somewhere else.
+      this._timingRange = null;
       this._timingPanel.element.hidden = false;
     }
     this._timingButton.text = timingButtonLabel(this._timingRunning);
@@ -562,7 +573,13 @@ export class CapturePanel {
 
   private _refreshTiming(): void {
     if (this._timingPanel.element.hidden) return;
-    renderTimingReport(this._timingPanel, this.window.database.timing);
+    renderTimingReport(this._timingPanel, this.window.database.timing, {
+      range: this._timingRange,
+      onRange: (range) => {
+        this._timingRange = range;
+        this._refreshTiming();
+      },
+    });
   }
 
   private _showCaptureTab(view: CaptureView): void {

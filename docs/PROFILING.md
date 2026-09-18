@@ -159,6 +159,14 @@ every hitch with what caused it.
   whether it was one stall at load, a spike every few seconds, or a slow drift, and those are
   different problems. Frames are reduced to the width by taking the *worst* in each column rather
   than the average — averaging is what hid the hitch in the first place.
+- **Drag across the graph** and every figure below it is of that stretch alone; click it, or press
+  **Whole run**, to go back. Figures over twenty minutes describe twenty minutes, which is the wrong
+  question once the shape shows where the interesting part is — a median taken across a loading
+  screen and then across play is neither. The graph keeps drawing the whole run, with the rest of it
+  veiled, so there is still something to select against. One thing follows from a range being asked
+  about on its own: a hitch is measured against the median of the range, so selecting only a rough
+  stretch makes its slow frames the norm and reports them as slow rather than as hitches, which is
+  the honest answer — nothing in there is an outlier.
 - **The median against the 95th and 99th** is what a player feels. A median of 16 ms with a 99th of
   60 ms is a game that is smooth and then, twice a minute, is not.
 - **A hitch** is a frame over twice the median *and* at least 4 ms over it. The multiple alone would

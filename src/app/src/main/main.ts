@@ -63,7 +63,7 @@ let mainWin: BrowserWindow | null = null;
 //               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
-//               [--debug-settle=<ms>]
+//               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -1517,8 +1517,26 @@ void app.whenReady().then(() => {
     const shot = cliOption("screenshot");
     if (shot) {
       setTimeout(async () => {
+        // Testing aid: --debug-drag=x,y;x,y[;x,y...] presses at the first point, moves through the
+        // rest and releases at the last, which a click cannot stand in for: a drag is what selects
+        // a range on the timing graph and what pans the timeline's lanes.
+        const path = (cliOption("debug-drag")?.split(";") ?? []).map((p) => p.split(",").map(Number));
+        if (path.length >= 2 && mainWin && path.every((p) => p.length === 2)) {
+          const [start, ...rest] = path;
+          mainWin.webContents.sendInputEvent({ type: "mouseEnter", x: start[0], y: start[1] });
+          mainWin.webContents.sendInputEvent({ type: "mouseMove", x: start[0], y: start[1] });
+          mainWin.webContents.sendInputEvent({ type: "mouseDown", x: start[0], y: start[1], button: "left", clickCount: 1 });
+          for (const p of rest) {
+            await new Promise((r) => setTimeout(r, 100));
+            mainWin.webContents.sendInputEvent({ type: "mouseMove", x: p[0], y: p[1], button: "left" });
+          }
+          const end = rest[rest.length - 1];
+          mainWin.webContents.sendInputEvent({ type: "mouseUp", x: end[0], y: end[1], button: "left", clickCount: 1 });
+          await new Promise((r) => setTimeout(r, 400));
+        }
         // Testing aid: --debug-mouse=x,y[;x,y...] clicks each point on the main window (in
-        // order, with a pause between) before the shot; the last one leaves the mouse there.
+        // order, with a pause between) before the shot; the last one leaves the mouse there. After
+        // any --debug-drag, so a run can drag a range out and then click what that put on screen.
         for (const point of cliOption("debug-mouse")?.split(";") ?? []) {
           const mouse = point.split(",").map(Number);
           if (mouse.length !== 2 || !mainWin) continue;

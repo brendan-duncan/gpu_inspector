@@ -568,8 +568,14 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
   - **The GPU half**: a pass's GPU time every frame, not only while capturing. Unlike the CPU side
     this is not free — it needs timestamp queries around every pass in every frame — so it wants to
     be its own option rather than part of the same switch.
-  - **Statistics over a selected range**: `summarizeTiming` already takes one, and the graph should
-    let a range be dragged out rather than always summarizing the whole run.
+  - [x] **Statistics over a selected range**: a range dragged out on the frame-time graph
+    (`renderer/timing_view.ts`), which every figure and hitch below it is then of. Held by frame
+    number rather than by position (`rangeIndices`), since both rings drop the oldest frames out of
+    the front and a selection held by position would slide backwards through the run as it
+    recorded; a range that ages out entirely goes back to the whole run. The graph keeps drawing the
+    whole run with the rest veiled, and keeps its median and threshold, so the picture does not
+    move as a range is dragged across it. `--debug-drag=x,y;x,y[;...]` was added to drive a drag
+    from the command line, since a click cannot stand in for one.
   - **Capture on hitch**: a frame over budget takes a full capture of the next one, which is the
     thing that would make a hitch reproducible rather than only visible. The hitch threshold to
     trigger on is the one this already computes.

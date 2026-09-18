@@ -2,6 +2,7 @@
 
 ### Added
 - The **Timeline** card zooms and pans, so a frame whose spans are sub-pixel at frame scale can be read, and clicking a pass's span selects it in the command list.
+- A stretch of a timing capture dragged out on its frame-time graph: every figure and hitch below it is then of that stretch alone.
 
 ### Fixed
 - The Timeline drew at most 4,000 spans a lane and dropped the rest silently, which also hid those passes from its idle-gap analysis.
