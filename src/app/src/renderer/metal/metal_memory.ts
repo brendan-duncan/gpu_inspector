@@ -78,13 +78,17 @@ export function metalMemory(db: MemoryDatabase): MetalMemory | null {
       // (`UpdateObject(self, "usage", ...)`). The creation arguments hold the figures from the
       // moment it was made, when a heap has necessarily used none of itself — reading those would
       // report every heap as entirely empty.
-      const usage = isObject(o.updates.usage) ? o.updates.usage : null;
+      //
+      // The key the library groups those fields under is not on the wire: an ObjectUpdate carries
+      // them flat beside the id, and the database merges them into `updates` one by one
+      // (vulkan/object_database.ts), so they are read from there rather than from `updates.usage`.
       const a = isObject(o.args) ? o.args : null;
+      const updated = o.updates.usedSize !== undefined ? o.updates : null;
       // What the heap holds: its current size where it reported one (a sparse heap grows), else
       // the size it was created with.
-      const size = num(usage?.currentAllocatedSize) || sizeOf(o);
+      const size = num(updated?.currentAllocatedSize) || sizeOf(o);
       heapReservedBytes += size;
-      heapUsedBytes += usage ? num(usage.usedSize) : a ? num(a.usedSize) : 0;
+      heapUsedBytes += updated ? num(updated.usedSize) : a ? num(a.usedSize) : 0;
       add("Heaps", size);
       continue;
     }

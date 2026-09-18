@@ -21,12 +21,22 @@ export interface FrameTimingInfo {
   frameMs: number;       // live frame interval
   refreshMs: number;     // display refresh interval while vsync was on (the budget), 0 without
   refreshSource?: string; // "present_timing" | "display_timing" | "monitor" | "estimate"
-  submitMs: number;      // CPU time per frame inside vkQueueSubmit
+  submitMs: number;      // CPU time per frame inside the submit call
   gpuSpanMs: number;     // first pass start to last pass end
   gpuTotalMs: number;    // sum of pass durations
   frames: number;
   passes: { label: string; durationMs: number; startMs: number; onJump: () => void }[];
+  /**
+   * What submitting is called on this backend, for the notes: naming vkQueueSubmit to someone
+   * reading a Metal capture describes a function their application never calls.
+   */
+  submitCall?: string;
 }
+
+/** The call the submit time is spent in, per backend (SUBMIT_CALL[api]). */
+export const SUBMIT_CALL: Record<string, string> = {
+  vulkan: "vkQueueSubmit", metal: "commit", d3d12: "ExecuteCommandLists",
+};
 
 /** "Frame Bound" card: the verdict of frameBound() with the three times it compared as bars. */
 function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
@@ -58,10 +68,11 @@ function renderFrameBound(root: Widget, t: FrameTimingInfo): void {
     });
     return;
   }
+  const submitCall = t.submitCall ?? SUBMIT_CALL.vulkan;
   new Div(body, {
     text: bound.vsync
-      ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, ${REFRESH_SOURCE_NOTE[t.refreshSource ?? ""] ?? "estimated from the frame intervals while vsync is on"}). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.`
-      : "The budget is the live frame interval (vsync is off, so no display refresh period applies). GPU time is the span of this capture's timed passes; CPU is the time inside vkQueueSubmit, so work outside submission counts as headroom here.",
+      ? `The budget is the display refresh period (${(1000 / t.refreshMs).toFixed(0)} Hz, ${REFRESH_SOURCE_NOTE[t.refreshSource ?? ""] ?? "estimated from the frame intervals while vsync is on"}). GPU time is the span of this capture's timed passes; CPU is the time inside ${submitCall}, so work outside submission counts as headroom here.`
+      : `The budget is the live frame interval (vsync is off, so no display refresh period applies). GPU time is the span of this capture's timed passes; CPU is the time inside ${submitCall}, so work outside submission counts as headroom here.`,
     class: "text-muted font-sm",
   });
 }

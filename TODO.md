@@ -729,24 +729,29 @@ Not worth the effort, since other tools already do them well:
 
 ## Metal
 
-- [ ] **Untested on a Mac.** Everything below was written on Windows, where `src/metal/` does not
-      compile, so none of it has been built or run. In the order it is worth checking, hardest
-      first:
-      1. **Pipeline creation timing** (`hooks_device.mm`): six call sites were edited without a
-         compiler, which is the largest unbuilt change here. Check that a frame that builds a
-         pipeline shows a *Creating pipelines* row in **Where the CPU went**, and — the part that
-         is easy to get wrong — that editing a shader does *not* add one: the inner compile is
-         guarded by `reentry.outermost()` so the inspector's own work is not reported as the
-         application's. The `completionHandler:` forms are deliberately untimed; an application
-         using those should show nothing.
-      2. **Memory Use on an `MTLDevice`** — the section should list Buffers, Textures and Heaps with
-         sizes, the series under it, and, for an application using heaps, an "In heaps" row. The
-         totals are unit tested (`test/metal_memory.test.js`); what has never drawn is the rows.
-      3. **The CPU timeline itself** — that `nextDrawable` shows as *Waiting for a swapchain image*
-         on a vsynced app (the verdict reads it as display pacing), and that the GPU lane lands
-         beside the commits rather than offset (the calibration relates `sampleTimestamps` to
-         `steady_clock`, which assumes nothing about Metal's host domain but does assume the two
-         reads bracket the same instant).
+- [x] **Run the CPU timeline and the memory breakdown on a Mac** (2026-09-18), which the three
+      items below had only ever been written for, on Windows, where `src/metal/` does not compile.
+      All three work; each is now a case in `tools/ui_tests.py` rather than something to look at
+      once, since what they check is invisible to a screenshot:
+      1. **Pipeline creation timing** (`hooks_device.mm`): `mtlinsp_triangle --compile-hitch`
+         compiles a library and a pipeline inside every frame — a fresh source each time, since
+         Metal's compiler cache would answer an identical one instantly — and the frame stops for
+         it under *Creating pipelines* (`metal-compile-hitch`). The other side of the guard is
+         `metal-self-compile`: the same application compiling nothing, captured with **Overdraw**
+         on so the library compiles counting pipelines of its own (`overdraw.mm`), and no
+         *Creating pipelines* row appears. `reentry.outermost()` holds because those compiles are
+         issued from inside a hook; a compile made off one — from the transport thread, say —
+         would be timed as the application's, which is what that case is watching for.
+      2. **Memory Use on an `MTLDevice`** draws (`metal-memory`), and the heap rows found a real
+         bug: the breakdown read the heap's live usage from `updates.usage`, but an `ObjectUpdate`
+         carries its fields flat beside the id, so `usedSize` was always the creation-time zero and
+         every heap read as entirely empty. `test/metal_memory.test.js` had encoded the same wrong
+         shape, which is why it passed. The sample now reserves a heap and takes two resources out
+         of it, so the "In heaps" and "mostly empty" rows have something to report.
+      3. **The CPU timeline itself**: `nextDrawable` shows as *Waiting for a swapchain image* and
+         `commit` as *Submitting*, the clocks are related, and the GPU lane lands 0.5 ms after the
+         commit that issued it rather than a frame away (`metal-cpu-timeline` checks
+         `submitToFirstPassMs`, which is where a wrong calibration would show).
 - [x] The CPU timeline and memory over time (`src/metal/src/cpu_timeline.h`), so **Where the CPU
       went**, the **Timeline** card and memory as a shape work on a Metal capture. Submit is
       `commit`, waiting for the GPU is `waitUntilCompleted`/`waitUntilScheduled`, waiting for the

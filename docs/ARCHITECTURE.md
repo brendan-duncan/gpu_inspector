@@ -1202,10 +1202,13 @@ captures a frame automatically and writes a screenshot (one per window), and
 malformed layer message to `<file>.badjson`; `--debug-launch-dialog[=android]` opens the launch
 dialog at startup; `--launch-android=<package> --device=<serial>` launches on an Android device;
 `--debug-dump=<json>` writes what the renderer knows at screenshot time (each session's state,
-object and validation counts, refresh source, frame boundary, symbols, and per capture the
-command, draw, pass, texture and buffer counts, the frame findings and the commands carrying
-stacks or validation messages: `debugState()` on the session and capture views, read through
-`window.__inspectorDebugState`); `--debug-mouse=x,y[;x,y...]` clicks points on the window before
+object and validation counts, refresh source, frame boundary, symbols, the Metal memory
+breakdown, and per capture the command, draw, pass, texture and buffer counts, the frame findings,
+the commands carrying stacks or validation messages, the CPU timeline's categories and the
+Timeline card's lanes: `debugState()` on the session and capture views, read through
+`window.__inspectorDebugState`); `--debug-capture-with=overdraw,stacks` turns on the capture
+options that are off by default, as `--debug-capture-without=<list>` turns the default ones off;
+`--debug-mouse=x,y[;x,y...]` clicks points on the window before
 the dump, and `--debug-settle=<ms>` waits after them for work a click set going (a pixel history's
 replay). `tools/ui_tests.py` builds its cases on these flags: the triangle application's options
 (plain, `--msaa`, `--offscreen`, `--bad-scissor` with the validation layer, `--hazard` with sync

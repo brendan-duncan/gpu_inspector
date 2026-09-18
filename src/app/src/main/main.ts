@@ -63,6 +63,7 @@ let mainWin: BrowserWindow | null = null;
 //               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-capture-without=textures,buffers,images,profile]
+//               [--debug-capture-with=overdraw,stacks]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 //               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
 function cliOption(name: string): string | null {
@@ -1129,6 +1130,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       captureFrames: Number(cliOption("debug-capture")) || 1,
       captureStacks: cliFlag("debug-capture-stacks"),
       captureWithout: cliOption("debug-capture-without"),
+      captureWith: cliOption("debug-capture-with"),
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       showView: cliOption("debug-view"),
