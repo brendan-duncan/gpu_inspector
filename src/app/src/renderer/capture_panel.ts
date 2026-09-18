@@ -883,9 +883,18 @@ export class CaptureView implements CaptureHost {
     // Every timed pass, named from its command-list block where there is one. Driven by the timings
     // rather than the blocks so that a pass with no block — a command buffer submitted again in a
     // multi-frame capture — is still drawn (see defaultPassLabel).
-    const passes: LabelledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => ({
-      timing, label: this._passBlocks.get(key)?.label ?? defaultPassLabel(timing),
-    }));
+    const passes: LabelledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => {
+      const block = this._passBlocks.get(key);
+      return {
+        timing, label: block?.label ?? defaultPassLabel(timing),
+        // Clicking the pass's span goes to it in the command list, the way Pass Timings does. A
+        // pass with no block has nowhere to go, so its span is left unclickable rather than inert.
+        select: block ? () => {
+          block.row.element.scrollIntoView({ block: "center" });
+          if ("command" in block.row) block.row.element.click();   // a command row: select it (a label only scrolls)
+        } : undefined,
+      };
+    });
     return { passes, originTicks: this.data.passTimingOrigin };
   }
 

@@ -29758,7 +29758,6 @@ function texelValues(format, bytes, depth = false) {
 function defaultPassLabel(t) {
   return `${t.kind === "compute" ? "Compute" : "Render"} pass ${t.passIndex} (frame ${t.frame})`;
 }
-var MAX_SPANS_PER_TRACK = 4e3;
 function threadLabel(tid, index, total) {
   return total > 1 && index === 0 ? `Thread ${tid} (main)` : `Thread ${tid}`;
 }
@@ -29790,33 +29789,31 @@ function buildTimelineTracks(input) {
       const startMs = gpuOriginMs + p.timing.startMs;
       min = Math.min(min, startMs);
       max = Math.max(max, startMs + p.timing.durationMs);
-      gpuSpans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu" });
+      gpuSpans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu", select: p.select });
     }
   }
   if (!(max > min)) return null;
   const finish2 = (spans) => {
     spans.sort((a, b) => a.startMs - b.startMs);
     let busyMs = 0;
-    for (const s of spans) busyMs += s.durationMs;
-    const rebased = spans.slice(0, MAX_SPANS_PER_TRACK).map((s) => ({ ...s, startMs: s.startMs - min }));
-    return { spans: rebased, busyMs };
+    let maxDurationMs = 0;
+    for (const s of spans) {
+      busyMs += s.durationMs;
+      maxDurationMs = Math.max(maxDurationMs, s.durationMs);
+    }
+    return { spans: spans.map((s) => ({ ...s, startMs: s.startMs - min })), busyMs, maxDurationMs };
   };
   const tracks = [];
   threads.forEach((tid, i) => {
     const spans = byThread.get(i);
     if (!spans?.length) return;
-    const { spans: out, busyMs } = finish2(spans);
-    tracks.push({ label: threadLabel(tid, i, threads.length), kind: "cpu", spans: out, busyMs });
+    tracks.push({ label: threadLabel(tid, i, threads.length), kind: "cpu", ...finish2(spans) });
   });
   for (const [index, spans] of byThread) {
     if (index < threads.length) continue;
-    const { spans: out, busyMs } = finish2(spans);
-    tracks.push({ label: `Thread #${index}`, kind: "cpu", spans: out, busyMs });
+    tracks.push({ label: `Thread #${index}`, kind: "cpu", ...finish2(spans) });
   }
-  if (hasGpu) {
-    const { spans: out, busyMs } = finish2(gpuSpans);
-    tracks.push({ label: "GPU", kind: "gpu", spans: out, busyMs });
-  }
+  if (hasGpu) tracks.push({ label: "GPU", kind: "gpu", ...finish2(gpuSpans) });
   if (!tracks.length) return null;
   return { tracks, spanMs: max - min, hasGpu, gpuNote };
 }

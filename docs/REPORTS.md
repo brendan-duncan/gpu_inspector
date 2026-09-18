@@ -31,7 +31,8 @@ In order down the view:
   inside a frame stops it, so that row appearing at all is worth reading first; see
   [is the GPU even the problem](PROFILING.md#step-1-is-the-gpu-even-the-problem).
 - **Timeline** — the threads and the GPU drawn as tracks on one axis, which is the only view here
-  that can show the GPU *idle*. See [when, not how much](PROFILING.md#step-1b-when-not-how-much).
+  that can show the GPU *idle*. Zoomable and pannable, and a pass's span selects it in the command
+  list. See [when, not how much](PROFILING.md#step-1b-when-not-how-much).
 - **Pass Timings** — each pass's GPU time, with the total and the span they cover.
 - **Frame Statistics** — counts for the frame: commands by kind, draws (indexed, indirect, mesh),
   dispatches, submits and command buffers, passes and attachments, pipelines and stages bound,

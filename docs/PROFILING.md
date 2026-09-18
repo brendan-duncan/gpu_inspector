@@ -120,6 +120,15 @@ it the CPU lanes are still drawn and the GPU lane is left out rather than placed
 
 ![The Timeline card: a thread lane and a GPU lane on one axis, with the verdict naming the gap before the first pass](images/timeline.png)
 
+The lanes open on the whole capture and zoom from there, which a real frame needs: a few thousand
+draws over 16 ms leaves every span inside a pixel, and spans that share a pixel are drawn as one box
+saying how many it stands for rather than as one span standing for the rest. **Drag** the lanes to
+pan them, hold **Ctrl** and use the wheel to zoom where the pointer is (**Shift** and the wheel
+pans), **double-click** to zoom in there, and use **−**, **+** and **Fit** or the arrow, `+`, `-`
+and `0` keys. The bar under the axis shows which part of the capture is on screen and drags too.
+Clicking a pass's span selects that pass in the command list; clicking a box that stands for several
+spans zooms in on them instead, since the only way to tell them apart is to look closer.
+
 What to read from it:
 
 - **Gaps in the GPU lane** are the GPU idle between passes. The verdict names the longest and says

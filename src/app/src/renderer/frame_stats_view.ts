@@ -1,13 +1,17 @@
 // The Frame Stats report: the capture's statistics (capture_statistics.ts) as WebGPU Inspector
 // shows them, one card per section, with the Frame Bound card, the Frame Issues list and the pass
 // timings above them.
+import { Button } from "./widget/button.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
 import { REFRESH_SOURCE_NOTE, frameBound, type CaptureStatistics } from "./capture_statistics.js";
 import { cpuVerdict, summarizeCpuTimeline } from "./cpu_timeline.js";
-import { MIN_SPAN_MS, buildTimelineTracks, gpuGaps, tracksVerdict, type LabelledPass, type TimelineInput } from "./timeline_tracks.js";
+import {
+  MIN_VIEW_MS, axisTicks, buildTimelineTracks, clampView, fullView, gpuGaps, panView, tracksVerdict, visibleBoxes,
+  zoomView, type LabelledPass, type SpanBox, type TimelineInput, type TimelineView, type Track,
+} from "./timeline_tracks.js";
 import type { CpuTimelineMessage } from "../shared/protocol.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
 import { formatBytes } from "./vulkan/vulkan_object.js";
@@ -104,11 +108,26 @@ const SPAN_COLOR: Record<string, string> = {
   gpuWait: "#4a8db8", displayWait: "#a0a0a0", work: "#5fd08a", gpu: "#8a6fd0", compile: "#d07a3a",
 };
 
+/** The tooltip of a box: what it was, how long, and — when it stands for several — how many. */
+function boxTitle(box: SpanBox): string {
+  if (box.count === 1 && box.span) {
+    return `${box.span.label}: ${box.span.durationMs.toFixed(3)} ms at ${box.span.startMs.toFixed(3)} ms`
+      + (box.span.select ? "\nClick to select it in the command list" : "");
+  }
+  return `${box.count} spans between ${box.startMs.toFixed(3)} and ${(box.startMs + box.durationMs).toFixed(3)} ms, `
+    + `${box.busyMs.toFixed(3)} ms of them inside a call.\nToo close together to draw apart at this zoom — click to zoom in.`;
+}
+
 /**
  * "Timeline": every thread's timed calls and every timed pass drawn against one axis
  * (renderer/timeline_tracks.ts). The two cards above total time per category and per pass, which
  * answers how much but never when — and a GPU left idle waiting for a late submission is a gap
  * between spans, so it has no size in any total and only a drawing shows it.
+ *
+ * The lanes are zoomable and pannable, because at frame scale a real frame is not readable: 4,000
+ * draws over 16 ms put every span inside a pixel. What the card draws is therefore a view of the
+ * range rather than the whole of it, and only the spans that view reaches become boxes — so the
+ * cost of drawing follows the width of the lane and not the size of the frame.
  */
 function renderTimelineTracks(root: Widget, input: TimelineInput): void {
   const t = buildTimelineTracks(input);
@@ -118,34 +137,213 @@ function renderTimelineTracks(root: Widget, input: TimelineInput): void {
   const body = new Div(card, { class: "frame-stats-list" });
   new Div(body, { text: tracksVerdict(t), class: "frame-bound-verdict" });
 
-  const pct = (ms: number): string => `${((ms / t.spanMs) * 100).toFixed(4)}%`;
   const gaps = gpuGaps(t);
+  let view = fullView(t);
+
+  const bar = new Div(body, { class: "track-toolbar" });
+  // The buttons come before the readout so that they keep still: the readout's width changes with
+  // every zoom, and a control that moves under the pointer is a control that gets missed.
+  const controls = new Div(bar, { class: "track-controls" });
+  const readout = new Div(bar, { class: "track-range" });
+  const lanesBox = new Div(body, { class: "track-lanes", tabIndex: 0 });
+  // The rows are built once and only their boxes are replaced, so panning does not rebuild the
+  // labels, the busy figures or the lane elements the pointer is working against.
+  const lanes: { track: Track; lane: Div; boxes: SpanBox[] }[] = [];
   for (const track of t.tracks) {
-    const row = new Div(body, { class: "track-row" });
-    new Div(row, { text: track.label, class: "track-label" });
-    const lane = new Div(row, { class: `track-lane${track.kind === "gpu" ? " track-lane-gpu" : ""}` });
-    // The idle stretches go in first, so a span drawn over one still reads on top.
-    if (track.kind === "gpu") {
-      for (const g of gaps) {
-        const box = new Div(lane, { class: "track-gap" });
-        box.style.left = pct(g.startMs);
-        box.style.width = pct(g.durationMs);
-        box.element.title = `${g.durationMs.toFixed(2)} ms with no pass running`;
-      }
-    }
-    for (const s of track.spans) {
-      const box = new Div(lane, { class: "track-span" });
-      box.style.left = pct(s.startMs);
-      // A call lasting microseconds would otherwise be sub-pixel and vanish.
-      box.style.width = `max(1px, ${pct(Math.max(s.durationMs, MIN_SPAN_MS))})`;
-      box.style.background = SPAN_COLOR[s.kind] ?? "#5fd08a";
-      box.element.title = `${s.label}: ${s.durationMs.toFixed(3)} ms at ${s.startMs.toFixed(3)} ms`;
-    }
-    new Div(row, { text: `${((track.busyMs / t.spanMs) * 100).toFixed(0)}%`, class: "track-busy" });
+    const row = new Div(lanesBox, { class: "track-row" });
+    new Div(row, { text: track.label, class: "track-label", title: track.label });
+    const entry = { track, lane: new Div(row, { class: `track-lane${track.kind === "gpu" ? " track-lane-gpu" : ""}` }), boxes: [] as SpanBox[] };
+    lanes.push(entry);
+    new Div(row, { text: `${((track.busyMs / t.spanMs) * 100).toFixed(0)}%`, class: "track-busy",
+      title: `${track.spans.length} spans, ${track.busyMs.toFixed(3)} ms of the ${t.spanMs.toFixed(3)} ms range` });
+    // The lane takes the click rather than the boxes on it. A box can be a single pixel wide —
+    // that is the whole reason this view zooms — and a target that narrow cannot be hit, so a
+    // click takes the nearest box within a few pixels instead of only a direct one.
+    entry.lane.element.onclick = (e: MouseEvent) => {
+      if (dragged) return;                       // the end of a pan, not a click on what it ended over
+      const box = boxNear(entry, e.clientX);
+      if (!box) return;
+      // A box that names one pass selects it; one that stands for several can only be taken apart
+      // by looking closer, so that is what clicking it does.
+      if (box.count === 1 && box.span?.select) box.span.select();
+      else zoomTo(box.startMs, box.durationMs);
+    };
   }
   const axis = new Div(body, { class: "track-axis" });
-  new Div(axis, { text: "0 ms" });
-  new Div(axis, { text: `${t.spanMs.toFixed(2)} ms` });
+  // The window this view is of the whole range: an affordance that a zoomed lane is part of
+  // something longer, and a way to move it that does not need the lane itself.
+  const scrub = new Div(body, { class: "track-scrub", title: "The part of the capture shown above. Drag to move it." });
+  const scrubWindow = new Div(scrub, { class: "track-scrub-window" });
+
+  const laneWidth = (): number => Math.max(1, lanes[0]?.lane.element.clientWidth || 0);
+  /** Where in the view a page x sits, as a fraction, which is what a zoom anchors on. */
+  const fractionAt = (clientX: number): number => {
+    const rect = lanes[0].lane.element.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
+  };
+
+  /** How far a click may land from a box and still count as on it. */
+  const CLICK_SLACK_PX = 4;
+
+  /** The box a click at `clientX` means: the one under it, or the nearest within a few pixels. */
+  const boxNear = (entry: { lane: Div; boxes: SpanBox[] }, clientX: number): SpanBox | null => {
+    const rect = entry.lane.element.getBoundingClientRect();
+    const at = view.startMs + view.spanMs * Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
+    const slack = CLICK_SLACK_PX * (view.spanMs / Math.max(1, rect.width));
+    let best: SpanBox | null = null;
+    let bestDistance = Infinity;
+    for (const b of entry.boxes) {
+      const distance = Math.max(0, b.startMs - at, at - (b.startMs + b.durationMs));
+      if (distance > slack || distance >= bestDistance) continue;
+      best = b;
+      bestDistance = distance;
+    }
+    return best;
+  };
+
+  const draw = (): void => {
+    const width = laneWidth();
+    // One pixel's worth of time: what decides both the floor on a box's width and which spans are
+    // too close together to draw apart. It comes from the lane's own width rather than a constant,
+    // so zooming in really does separate them instead of stopping at a fixed resolution.
+    const minMs = view.spanMs / width;
+    const pct = (ms: number): string => `${(((ms - view.startMs) / view.spanMs) * 100).toFixed(4)}%`;
+    const widthPct = (ms: number): string => `${((Math.max(ms, minMs) / view.spanMs) * 100).toFixed(4)}%`;
+    for (const entry of lanes) {
+      const { track, lane } = entry;
+      lane.removeAllChildren();
+      // The idle stretches go in first, so a span drawn over one still reads on top.
+      if (track.kind === "gpu") {
+        for (const g of gaps) {
+          if (g.startMs + g.durationMs <= view.startMs || g.startMs >= view.startMs + view.spanMs) continue;
+          const box = new Div(lane, { class: "track-gap" });
+          box.style.left = pct(g.startMs);
+          box.style.width = widthPct(g.durationMs);
+          box.element.title = `${g.durationMs.toFixed(2)} ms with no pass running`;
+        }
+      }
+      entry.boxes = visibleBoxes(track, view, minMs);
+      for (const b of entry.boxes) {
+        const box = new Div(lane, { class: `track-span${b.count === 1 && b.span?.select ? " track-span-link" : ""}` });
+        box.style.left = pct(b.startMs);
+        // A call lasting microseconds would otherwise be sub-pixel and vanish.
+        box.style.width = `max(1px, ${widthPct(b.durationMs)})`;
+        box.style.background = SPAN_COLOR[b.kind] ?? "#5fd08a";
+        box.element.title = boxTitle(b);
+      }
+    }
+    axis.removeAllChildren();
+    for (const tick of axisTicks(view)) {
+      const mark = new Div(axis, { class: "track-tick", text: tick.label });
+      mark.style.left = pct(tick.ms);
+    }
+    readout.text = view.spanMs >= t.spanMs
+      ? `0 – ${t.spanMs.toFixed(3)} ms (the whole capture)`
+      : `${view.startMs.toFixed(3)} – ${(view.startMs + view.spanMs).toFixed(3)} ms `
+        + `(${view.spanMs.toFixed(3)} ms of ${t.spanMs.toFixed(3)} ms, ${(t.spanMs / view.spanMs).toFixed(0)}x)`;
+    scrubWindow.style.left = `${((view.startMs / t.spanMs) * 100).toFixed(4)}%`;
+    scrubWindow.style.width = `${Math.max(0.5, (view.spanMs / t.spanMs) * 100).toFixed(4)}%`;
+    scrub.classList.toggle("track-scrub-full", view.spanMs >= t.spanMs);
+  };
+
+  const setView = (next: TimelineView): void => { view = clampView(next, t); draw(); };
+  /** Zoom onto a stretch, with a margin either side so what is beside it is still in the picture. */
+  const zoomTo = (startMs: number, durationMs: number): void => {
+    const spanMs = Math.max(MIN_VIEW_MS, durationMs * 1.4);
+    setView({ startMs: startMs + durationMs / 2 - spanMs / 2, spanMs });
+  };
+
+  const zoomButton = (label: string, title: string, factor: number): void => {
+    new Button(controls, { label, title, class: "track-btn", callback: () => setView(zoomView(view, t, factor)) });
+  };
+  zoomButton("−", "Zoom out (or Ctrl and the wheel over the lanes)", 1 / 2);
+  zoomButton("+", "Zoom in (or Ctrl and the wheel over the lanes)", 2);
+  new Button(controls, { label: "Fit", title: "Show the whole capture again", class: "track-btn",
+    callback: () => setView(fullView(t)) });
+  new Div(bar, {
+    text: "Drag to pan · Ctrl and the wheel to zoom · double-click to zoom in · click a pass to select it",
+    class: "text-muted font-sm track-hint",
+  });
+
+  // Ctrl and the wheel zooms, as it does on the texture viewer; shift and the wheel pans. A plain
+  // wheel is left alone, since this card sits in a long report the reader is scrolling through.
+  lanesBox.element.addEventListener("wheel", (e: WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      setView(zoomView(view, t, e.deltaY < 0 ? 1.25 : 1 / 1.25, fractionAt(e.clientX)));
+    } else if (e.shiftKey) {
+      e.preventDefault();
+      setView(panView(view, t, (e.deltaY > 0 ? 0.15 : -0.15)));
+    }
+  }, { passive: false });
+
+  // Dragging the lanes pans them. A drag that moved is not also a click on the span it ended over.
+  let dragged = false;
+  lanesBox.element.addEventListener("mousedown", (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    const startMs = view.startMs;
+    const msPerPixel = view.spanMs / laneWidth();
+    dragged = false;
+    const move = (m: MouseEvent): void => {
+      if (Math.abs(m.clientX - startX) > 3) dragged = true;
+      if (dragged) setView({ startMs: startMs - (m.clientX - startX) * msPerPixel, spanMs: view.spanMs });
+    };
+    const up = (): void => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      lanesBox.classList.remove("track-dragging");
+      // Cleared after the click the release produces, so the click knows it ended a drag.
+      setTimeout(() => { dragged = false; }, 0);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    lanesBox.classList.add("track-dragging");
+  });
+  lanesBox.element.addEventListener("dblclick", (e: MouseEvent) => {
+    // Zoom in on what was double-clicked, whatever it was: the lane background as well as a span.
+    const at = view.startMs + view.spanMs * fractionAt(e.clientX);
+    zoomTo(at - view.spanMs / 8, view.spanMs / 4);
+  });
+  lanesBox.element.addEventListener("keydown", (e: KeyboardEvent) => {
+    const key = e.key;
+    if (key === "ArrowRight") setView(panView(view, t, 0.2));
+    else if (key === "ArrowLeft") setView(panView(view, t, -0.2));
+    else if (key === "+" || key === "=") setView(zoomView(view, t, 2));
+    else if (key === "-" || key === "_") setView(zoomView(view, t, 1 / 2));
+    else if (key === "0" || key === "Home") setView(fullView(t));
+    else return;
+    e.preventDefault();
+  });
+
+  // The scrub bar moves the view without touching the lanes: a click or a drag centres it there.
+  const scrubTo = (clientX: number): void => {
+    const rect = scrub.element.getBoundingClientRect();
+    const at = t.spanMs * Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
+    setView({ startMs: at - view.spanMs / 2, spanMs: view.spanMs });
+  };
+  scrub.element.addEventListener("mousedown", (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    scrubTo(e.clientX);
+    const move = (m: MouseEvent): void => scrubTo(m.clientX);
+    const up = (): void => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+
+  // The boxes are sized in pixels' worth of time, so a lane that changes width has to be redrawn:
+  // the panel is resizable, and the card is often laid out before it has its final width.
+  if (typeof ResizeObserver !== "undefined") {
+    let width = 0;
+    new ResizeObserver(() => {
+      const now = laneWidth();
+      if (now === width) return;
+      width = now;
+      draw();
+    }).observe(lanesBox.element);
+  }
+  draw();
 
   const legend = new Div(body, { class: "track-legend" });
   const key = (color: string, label: string): void => {
