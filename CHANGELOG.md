@@ -7,6 +7,8 @@
 - Stack traces find PDBs that are not beside their modules, through the launch's symbol directories, and name the functions a frame was inlined into on Windows.
 - Pixel history follows the writes that happen outside a render pass: a clear, a copy, a blit, a resolve, and a dispatch or trace with the image bound.
 - Pixel history names the primitive whose fragment won the pixel, follows a multisampled target through the resolve of its samples, and measures a shader that asks for early fragment tests with those tests on.
+- **HUD** draws the application's frame time over its own window on all three backends, so it reads without looking away and is in any screenshot (`VKINSP_HUD=1`, `src/vulkan/src/hud_text.h`).
+- **Live pause** holds the application at its frame boundary on the frame it just drew, and steps one frame at a time from there (`src/vulkan/src/frame_pause.h`).
 
 ### Changed
 - Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.

@@ -578,9 +578,36 @@ vendor's driver is listed at the end so nobody spends time on it.
 - [ ] Export to C++: a frame serialized into a standalone compilable project, mainly for driver
       bug reports. The replay engine already recreates every object, so emitting source from the
       same walk is feasible; lower priority.
-- [ ] In-app HUD and live pause (frame time drawn over the target, the paused frame scrubbed in
-      the app itself). The served replay is close to the second half; the overlay is small work
-      through the swapchain hook on Vulkan and Present on D3D12.
+- [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
+      time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
+      graphics API in it, so the three libraries only differ in how they put flat rectangles on the
+      screen). Live pause (`src/vulkan/src/frame_pause.h`) holds the application at its frame
+      boundary, after the present, so the frozen frame is the complete one; a step lets exactly one
+      more frame through. Two things worth keeping: pausing grants one step on purpose, because most
+      of a frame's wall time is inside the present call and a pause request otherwise arrives after
+      the HUD has drawn the frame in flight, freezing on one with no PAUSED badge; and a frame
+      interval measured across a pause is the pause's length, which read as a 4985 ms frame until
+      the pause counted its own generations. Checked on an RTX 4080: the triangle's HUD reads
+      6.95 ms / 143.9 FPS against a 144 Hz display, pausing freezes it byte-for-byte across seconds,
+      a step advances exactly one frame number, and the synchronization validation layer reports no
+      hazard the application did not already have. The D3D12 half is checked the same way with the
+      debug layer on; **the Metal half is written but not compiled or run** — it needs a Mac.
+- [ ] The paused frame scrubbed in the target's own window, which is the half of Nsight's live pause
+      still missing: while paused, re-issue the frame's commands up to draw N and present that, so
+      the application's window shows the frame building up. The blocker is that the layer keeps a
+      frame's commands only as serialized JSON (`command_recorder.h`: `std::string args`), which
+      cannot be re-issued; the replay tool's decoder can, but it is 63k generated lines bound to its
+      own object map and a separate process, and it could not present to the application's swapchain
+      anyway. What this wants is a native record: a generator pass beside `tools/gen_vulkan.py`
+      emitting a tagged union of each `vkCmd*`'s arguments, deep-copied into an arena the same way
+      `vk_serialize.gen.cpp` already walks them, plus a dispatcher that re-issues one against the
+      live handles — which need no re-creation, since the application's objects are all still there.
+      Re-submitting the application's own command buffers is not an alternative: truncating at a
+      draw needs re-recording, and many engines record with `ONE_TIME_SUBMIT`.
+- [ ] Capture the frame you are looking at, rather than resuming: a capture requested while paused
+      resumes the application today, because a paused one renders no frames to capture and waiting
+      would hang. Stepping exactly as many frames as the capture needs, and re-pausing when it
+      finishes, would keep the paused frame on screen.
 
 Out of reach without the vendor's driver, so ablation stays the honest substitute and the docs
 should say so:

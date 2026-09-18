@@ -64,6 +64,8 @@ add_library(dxinsp_capture SHARED
     src/capture.cpp
     src/image_readback.h
     src/image_readback.cpp
+    src/hud.h
+    src/hud.cpp
     src/validation.h
     src/cpu_timeline.cpp
     src/device_removed.cpp
@@ -89,9 +91,14 @@ add_library(dxinsp_capture SHARED
     ${GEN_OUTPUTS})
 
 # ../vulkan/src for json_writer.h and json_parse.h, header-only and API-neutral: the JSON they
-# write and read is what the UI speaks whichever API produced it.
+# write and read is what the UI speaks whichever API produced it. The HUD's hud_text.h and the
+# live pause's frame_pause.h are shared from there for the same reason -- neither has any graphics
+# API in it, so the HUD reads the same and the pause behaves the same on all three backends.
 target_include_directories(dxinsp_capture PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    # The HUD's DXBC, committed rather than compiled: a release build has no fxc
+    # (tools/gen_hud_shaders.py).
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
     "${GEN_DIR}"
     "${DXINSP_ROOT}/src/vulkan/src")
 target_compile_definitions(dxinsp_capture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)

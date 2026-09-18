@@ -27,6 +27,9 @@ MANUAL_COMMANDS = {
     "vkEnumerateDeviceExtensionProperties",
     "vkEnumerateInstanceVersion",
     "vkQueuePresentKHR",
+    # The HUD holds image views and framebuffers of the swapchain's images, which have to go
+    # before the swapchain does (see hud.h).
+    "vkDestroySwapchainKHR",
     # object labels
     "vkSetDebugUtilsObjectNameEXT",
     "vkDebugMarkerSetObjectNameEXT",

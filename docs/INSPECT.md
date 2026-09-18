@@ -176,6 +176,61 @@ The **Frame Time** graph plots the application's recent frames: the average, the
 CPU time spent inside `vkQueueSubmit`. It is the quickest check of whether a change you made in
 the application or in a shader actually moved anything.
 
+## The in-app HUD
+
+**HUD** in the session bar draws the frame time over the application's own window, so it can be
+read without looking away from what the application is doing -- and so it is in any screenshot or
+video of it:
+
+```
+GPU INSPECTOR - VULKAN
+6.95 MS  143.9 FPS
+MIN 6.29  MAX 7.43  VSYNC 144 HZ
+```
+
+The figures are the application's whole frame, present included, averaged over half a second, with
+the shortest and longest frame of that window beside them. The frame time here is the interval
+between presents, which is not the same number as the CPU time the **Frame Time** graph plots: an
+application waiting for vblank spends most of its frame blocked inside the present call, and only
+this line counts that.
+
+The HUD is drawn by the capture library into the frame the application is about to show, so it
+costs one small extra draw a frame and nothing else. It works on all three backends. Two cases
+where it does not appear, both logged once:
+
+- a swap chain the application did not create as a render target (some engines blit into one);
+- on Metal, an application that presents its drawables itself from a completion handler rather
+  than through `presentDrawable:` -- by then the command buffer that drew the frame has finished,
+  and there is nothing left to draw into. Live pause still works there.
+
+`VKINSP_HUD=1` (or `DXINSP_HUD=1`, `MTLINSP_HUD=1`) turns it on from the start, before any UI is
+attached.
+
+## Live pause
+
+The pause button beside the HUD checkbox holds the application at its next frame boundary, on the
+frame it has just drawn. The window keeps showing that frame, and with the HUD on it says which:
+
+```
+PAUSED AT FRAME 4564
+```
+
+The step button then lets exactly one more frame through and pauses again, which is how a frame is
+advanced one at a time. Resume lets it go.
+
+While paused, everything the Inspect panel shows is a snapshot of a still application, so an object
+list or a descriptor set cannot change under you as you read it.
+
+Two things to know:
+
+- **A capture resumes the application.** A capture is recorded from frames the application renders,
+  and a paused one renders none, so asking for a capture while paused resumes rather than hanging.
+  The pause button follows on its own when that happens.
+- **The window will say it is not responding.** Pausing stops the application's render thread
+  inside its present call, so it stops pumping window messages too, and after a few seconds the
+  system marks the window that way and draws its ghost copy. The frame is still what is on screen.
+  This is inherent to freezing a running application.
+
 ---
 
 Previous: [Android and Quest](ANDROID.md) · [Docs index](README.md) · Next: [Capture](CAPTURE.md)

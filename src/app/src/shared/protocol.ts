@@ -457,6 +457,13 @@ export interface CaptureOverdrawDataMessage {
  */
 export interface CaptureCompleteMessage { action: "CaptureComplete"; frame: number; frames: number }
 
+/**
+ * Whether the application is being held at its frame boundary (the capture libraries' frame_pause.h).
+ * Sent whenever the state changes, including when the library changed it itself -- a capture
+ * requested while paused resumes, since a paused application renders no frames to capture.
+ */
+export interface PauseStateMessage { action: "PauseState"; paused: boolean }
+
 /** Answer to ReplaceShader / RestoreShader: whether the pipeline was rebuilt with the edit. */
 export interface ShaderReplacedMessage {
   action: "ShaderReplaced";
@@ -702,6 +709,7 @@ export type LayerMessage =
   | CaptureOverdrawDataMessage
   | CapturePixelHistoryMessage
   | ShaderReplacedMessage
+  | PauseStateMessage
   | ImageDataMessage
   | GpuTraceMessage
   | CaptureCompleteMessage;
@@ -733,6 +741,14 @@ export interface RequestStacktracesRequest { action: "RequestStacktraces"; ids: 
 export interface RequestSymbolsRequest { action: "RequestSymbols"; addresses: string[] }
 /** Starts or stops a timing capture in the layer. */
 export interface TimingCaptureRequest { action: "TimingCapture"; start: boolean }
+/** Switches the in-app HUD on or off: the frame time drawn over the application's own window. */
+export interface HudRequest { action: "Hud"; enabled: boolean }
+/**
+ * Live pause. `paused` holds the application at its frame boundary or lets it go; `step` instead
+ * lets that many frames through and stays paused, which is how a single frame is stepped. The
+ * library answers with PauseState either way.
+ */
+export interface PauseRequest { action: "Pause"; paused?: boolean; step?: number }
 
 export interface CaptureRequest {
   action: "Capture";
@@ -781,7 +797,8 @@ export interface SaveGpuTraceRequest { action: "SaveGpuTrace"; path?: string }
 
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
   | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
-  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest;
+  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest
+  | HudRequest | PauseRequest;
 
 // ------------------------------------------------------------------------------------------
 // Electron main <-> renderer

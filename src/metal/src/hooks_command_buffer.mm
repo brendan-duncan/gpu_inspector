@@ -3,12 +3,16 @@
 #include "hooks.h"
 #include "hooks_common.h"
 #include "cpu_timeline.h"
+#include "frame_pause.h"
 #include "frame_stats.h"
+#include "hud.h"
 #include "overdraw.h"
 #include "transport.h"
 #include "validation.h"
 
 #include <chrono>
+#include <mutex>
+#include <unordered_set>
 
 namespace mtlinsp {
 namespace {
@@ -335,6 +339,22 @@ std::string PresentArgs(id drawable, double timeValue, const char *timeKey) {
     return a.str();
 }
 
+// Which command buffers have been asked to present, so the commit that follows one is known to be
+// a frame boundary (live pause waits there). A set rather than a thread-local: nothing says the
+// commit has to happen on the thread that encoded the present.
+std::mutex g_presentingMutex;
+std::unordered_set<const void *> g_presenting;
+
+void NotePresenting(id commandBuffer) {
+    std::lock_guard<std::mutex> lock(g_presentingMutex);
+    g_presenting.insert((__bridge const void *)commandBuffer);
+}
+
+bool TakePresenting(id commandBuffer) {
+    std::lock_guard<std::mutex> lock(g_presentingMutex);
+    return g_presenting.erase((__bridge const void *)commandBuffer) != 0;
+}
+
 void CB_presentDrawable(id self, SEL _cmd, id drawable) {
     Reentry reentry(self, _cmd);
     if (reentry.outermost()) {
@@ -342,6 +362,8 @@ void CB_presentDrawable(id self, SEL _cmd, id drawable) {
         if (Recording()) RecordCommand("presentDrawable:", self, PresentArgs(drawable, 0, nullptr));
         // Not the frame boundary itself: the commit that follows is. See OnCommit.
         OnPresentDrawable(self, drawable);
+        NotePresenting(self);
+        Hud::Get().DrawInto(self, drawable);
     }
     ORIG(void (*)(id, SEL, id))(self, _cmd, drawable);
 }
@@ -354,6 +376,8 @@ void CB_presentDrawableAtTime(id self, SEL _cmd, id drawable, CFTimeInterval tim
             RecordCommand("presentDrawable:atTime:", self, PresentArgs(drawable, time, "presentationTime"));
         }
         OnPresentDrawable(self, drawable);
+        NotePresenting(self);
+        Hud::Get().DrawInto(self, drawable);
     }
     ORIG(void (*)(id, SEL, id, CFTimeInterval))(self, _cmd, drawable, time);
 }
@@ -367,6 +391,8 @@ void CB_presentDrawableAfterMinimumDuration(id self, SEL _cmd, id drawable, CFTi
                           PresentArgs(drawable, duration, "duration"));
         }
         OnPresentDrawable(self, drawable);
+        NotePresenting(self);
+        Hud::Get().DrawInto(self, drawable);
     }
     ORIG(void (*)(id, SEL, id, CFTimeInterval))(self, _cmd, drawable, duration);
 }
@@ -389,6 +415,15 @@ void CB_commit(id self, SEL _cmd) {
     CpuEventEnd(cpuEvent, CpuCategory::Submit);
     AddSubmitTime((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                       std::chrono::steady_clock::now() - begin).count());
+    // Live pause, at the frame boundary (frame_pause.h). Only a commit that presents is one.
+    if (TakePresenting(self)) {
+        // presentDrawable: does not present until this command buffer completes, so freezing
+        // straight after the commit would leave the previous frame on the screen. Waiting costs
+        // the application a stall, which is why it only happens when the pause is about to take
+        // effect anyway.
+        if (gpuinsp::FramePause::Get().Paused()) [(id<MTLCommandBuffer>)self waitUntilCompleted];
+        gpuinsp::FramePause::Get().Wait();
+    }
 }
 
 void CB_enqueue(id self, SEL _cmd) {
