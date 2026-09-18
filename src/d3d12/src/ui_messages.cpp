@@ -10,6 +10,8 @@
 #include "capture.h"
 #include "common.h"
 #include "descriptors.h"
+#include "frame_pause.h"
+#include "hud.h"
 #include "image_readback.h"
 #include "json_parse.h"
 #include "shader_edit.h"
@@ -228,6 +230,17 @@ void HandleRestoreShader(const JsonValue& msg) {
     SendShaderReplaced(pipeline, stage, ok, ok ? "" : error, "", 0);
 }
 
+// Tells the UI what the pause state is now, so its button follows a pause the UI did not ask for
+// (a capture resuming the application above) as well as one it did.
+void SendPauseState() {
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("PauseState");
+    w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
 void Dispatch(const std::string& text) {
     JsonValue msg;
     if (!JsonParser::Parse(text, msg)) {
@@ -252,7 +265,27 @@ void Dispatch(const std::string& text) {
         if (const JsonValue* v = msg.Get("recordAlways")) {
             if (v->kind == JsonValue::Boolean) CaptureManager::Get().SetRecordAlways(v->b);
         }
+    } else if (action == "Hud") {
+        // The in-app HUD (hud.h): the application's frame time drawn over its own window.
+        Hud::Get().SetEnabled(msg.GetBool("enabled", false));
+    } else if (action == "Pause") {
+        // Live pause (frame_pause.h): the application is held at its frame boundary. "step" lets
+        // that many frames through and stays paused.
+        if (const JsonValue* v = msg.Get("step")) {
+            gpuinsp::FramePause::Get().Step(v->num >= 1 ? (uint32_t)v->num : 1u);
+        } else {
+            gpuinsp::FramePause::Get().SetPaused(msg.GetBool("paused", false));
+        }
+        SendPauseState();
     } else if (action == "Capture") {
+        // A capture is recorded from frames the application renders, and a paused application
+        // renders none: waiting here would simply hang. Resuming is the honest answer, and the UI
+        // is told so its pause button follows.
+        if (gpuinsp::FramePause::Get().Paused()) {
+            Log("capture requested while paused: resuming");
+            gpuinsp::FramePause::Get().SetPaused(false);
+            SendPauseState();
+        }
         HandleCapture(msg);
     } else if (action == "RequestStacktraces") {
         HandleRequestStacktraces(msg);

@@ -153,6 +153,14 @@ jobs:
             exit 1
           fi
 
+      # The HUD's shaders are compiled by hand and committed (tools/gen_hud_shaders.py), because
+      # this build deliberately has no shader compiler. So the one mistake CI can catch is a shader
+      # edited without regenerating its header, which it does by comparing hashes rather than by
+      # recompiling. Linux only: the headers are the same on every platform.
+      - name: Check that the committed HUD shaders are current
+        if: runner.os == 'Linux'
+        run: python tools/gen_hud_shaders.py --check-sources
+
       # Builds only; the release job below publishes once every platform has built.
       - name: Build installer
         if: runner.os != 'macOS'

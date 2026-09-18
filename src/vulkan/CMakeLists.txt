@@ -70,6 +70,10 @@ add_library(${LAYER_LIB} SHARED
     src/capture.cpp
     src/image_readback.h
     src/image_readback.cpp
+    src/hud.h
+    src/hud.cpp
+    src/hud_text.h
+    shaders/hud_shaders.gen.h
     src/format_info.h
     src/transport.h
     src/transport.cpp
@@ -79,6 +83,9 @@ add_library(${LAYER_LIB} SHARED
 target_include_directories(${LAYER_LIB} PRIVATE
     "${VULKAN_HEADERS}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    # The HUD's SPIR-V, committed rather than compiled: a release build has no glslc
+    # (tools/gen_hud_shaders.py).
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
     "${GEN_DIR}")
 
 target_compile_definitions(${LAYER_LIB} PRIVATE VK_NO_PROTOTYPES)

@@ -21,6 +21,8 @@
 #include "stacktrace.h"
 #include "validation.h"
 #include "image_readback.h"
+#include "hud.h"
+#include "frame_pause.h"
 #include "resources.h"
 #include "vk_commands.gen.h"
 #include "vk_serialize.gen.h"
@@ -168,6 +170,17 @@ void UnregisterDevice(void* key) {
 // ---------------------------------------------------------------------------------------------
 // UI messages
 
+// Tells the UI what the pause state is now, so its button follows a pause the UI did not ask for
+// (a capture resuming the application below) as well as one it did.
+static void SendPauseState() {
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("PauseState");
+    w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
 static void HandleUiMessage(const std::string& text) {
     JsonValue msg;
     if (!JsonParser::Parse(text, msg)) {
@@ -256,6 +269,18 @@ static void HandleUiMessage(const std::string& text) {
                 ShaderEditor::Get().Replace(pipeline, stage, std::move(words));
             }
         }
+    } else if (action == "Hud") {
+        // The in-app HUD (hud.h): the application's frame time drawn over its own window.
+        Hud::Get().SetEnabled(msg.GetBool("enabled", false));
+    } else if (action == "Pause") {
+        // Live pause (frame_pause.h): the application is held at its frame boundary. "step" lets
+        // that many frames through and stays paused.
+        if (const JsonValue* v = msg.Get("step")) {
+            gpuinsp::FramePause::Get().Step((uint32_t)std::max(1.0, v->num));
+        } else {
+            gpuinsp::FramePause::Get().SetPaused(msg.GetBool("paused", false));
+        }
+        SendPauseState();
     } else if (action == "RequestSnapshot") {
         // A UI window that picked up an already-connected session rebuilds its object list.
         Tracker::Get().SendSnapshot();
@@ -275,6 +300,14 @@ static void HandleUiMessage(const std::string& text) {
         o.captureImages = msg.GetBool("captureImages", true);
         o.profilePasses = msg.GetBool("profilePasses", true);
         o.stacktraces = msg.GetBool("stacktraces", false);
+        // A capture is recorded from frames the application renders, and a paused application
+        // renders none: waiting here would simply hang. Resuming is the honest answer, and the UI
+        // is told so its pause button follows.
+        if (gpuinsp::FramePause::Get().Paused()) {
+            Log("capture requested while paused: resuming");
+            gpuinsp::FramePause::Get().SetPaused(false);
+            SendPauseState();
+        }
         CaptureManager::Get().Request(o);
     } else if (action == "TimingCapture") {
         if (msg.GetBool("start", false)) BeginTimingCapture(); else EndTimingCapture();
@@ -325,6 +358,7 @@ static void EnsureStarted() {
     Transport::Get().Start();
     Transport::Get().SetMessageHandler(HandleUiMessage);
     if (ConfigFlag("VKINSP_RECORD_ALWAYS")) CaptureManager::Get().SetRecordAlways(true);
+    if (ConfigFlag("VKINSP_HUD")) Hud::Get().SetEnabled(true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -603,6 +637,7 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAlloca
     Log("vkDestroyDevice frames=%llu", (unsigned long long)data->frameIndex);
     // A capture's query pools and staging on the device go before the device does.
     CaptureManager::Get().OnDestroyDevice(data);
+    Hud::Get().OnDestroyDevice(data);
     DestroyBreadcrumbs(data);
     Tracker::Get().SendLeakReport(HT_VkDevice, (uint64_t)(uintptr_t)device);
     Tracker::Get().OnDestroy(HT_VkDevice, (uint64_t)(uintptr_t)device);
@@ -854,12 +889,29 @@ void OnWaitForFrames(DeviceData* data) {
         FrameWithoutPresent(data, data->lastSubmitQueue.load(std::memory_order_relaxed));
 }
 
+// The swapchain's images belong to the swapchain, so the views and framebuffers the HUD made of
+// them have to be destroyed first. Hand-written for that one reason (MANUAL_COMMANDS in
+// tools/vkgen/dispatch.py); the tracker call below is what the generated forwarder did.
+VKAPI_ATTR void VKAPI_CALL layer_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                      const VkAllocationCallbacks* pAllocator) {
+    DeviceData* data = GetDeviceData(device);
+    Hud::Get().OnDestroySwapchain(data, swapchain);
+    Tracker::Get().OnDestroy(HT_VkSwapchainKHR, (uint64_t)(uintptr_t)swapchain);
+    data->dispatch.DestroySwapchainKHR(device, swapchain, pAllocator);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceData* data = GetDeviceData(queue);
     // Live image readbacks go on this queue before the present, while the frame's images are in
     // their tracked layouts and the swapchain image is still owned by the application.
     ImageReadback::Get().OnPresent(data, queue);
     ShaderEditor::Get().OnPresent(data);
+    // The HUD draws into the image about to be shown and, when it does, hands back a present whose
+    // wait semaphore is the one its own submission signals (see hud.h). `hudWaits` owns that array
+    // until the present has been made.
+    VkPresentInfoKHR hudPresent{};
+    std::vector<VkSemaphore> hudWaits;
+    if (Hud::Get().Draw(data, queue, pPresentInfo, hudPresent, hudWaits)) pPresentInfo = &hudPresent;
     // Hand-written, so the generated CPU timing does not reach it (see cpu_timeline.h).
     const uint64_t cpuStart = CpuEventBegin();
     VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
@@ -871,6 +923,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     data->frameBoundary = DeviceData::FrameBoundary::Present;
     data->submitsSinceFrame.store(0, std::memory_order_relaxed);
     EndFrame(data, queue, pPresentInfo, res);
+    // Live pause, after the frame is on the screen rather than before (frame_pause.h): the frame
+    // the user is left looking at is the complete one the application just drew, with the HUD's
+    // PAUSED line on it.
+    gpuinsp::FramePause::Get().Wait();
     return res;
 }
 

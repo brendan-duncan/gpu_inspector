@@ -32,6 +32,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/frame_stats.mm
     src/gpu_trace.h
     src/gpu_trace.mm
+    src/hud.h
+    src/hud.mm
     src/image.h
     src/image.mm
     src/overdraw.h
@@ -53,7 +55,9 @@ add_library(${CAPTURE_LIB} SHARED
     src/interpose.mm)
 
 # ../vulkan/src for json_writer.h, which is header-only, has no Vulkan in it, and writes the same
-# JSON the UI already reads. Shared rather than copied so the two backends cannot drift apart.
+# JSON the UI already reads. Shared rather than copied so the two backends cannot drift apart. The
+# HUD's hud_text.h and the live pause's frame_pause.h come from there for the same reason: neither
+# has any graphics API in it, so the HUD reads the same and the pause behaves the same on all three.
 target_include_directories(${CAPTURE_LIB} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/../vulkan/src")

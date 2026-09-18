@@ -13,6 +13,7 @@
 #include "refresh_rate.h"
 #include "shader_edit.h"
 #include "layer.h"
+#include "hud.h"
 #include "resources.h"
 #include "tracker.h"
 #include "transport.h"
@@ -1001,6 +1002,8 @@ void Hook_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uin
         return;
     }
     Log("swapchain images: %u tracked", *pSwapchainImageCount);
+    // The HUD draws into these images by index, so it needs them in the order handed out here.
+    Hud::Get().OnSwapchainImages(device, swapchain, *pSwapchainImageCount, pSwapchainImages);
     ImageInfo info;
     info.device = device;
     info.swapchainImage = true;

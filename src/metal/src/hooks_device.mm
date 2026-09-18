@@ -2,9 +2,11 @@
 // MTLLibrary, MTLTexture and MTLBuffer. See hooks_common.h for the shape every hook has.
 #include "function_constants.h"
 #include "cpu_timeline.h"
+#include "frame_pause.h"
+#include "frame_stats.h"
 #include "hooks.h"
 #include "hooks_common.h"
-#include "frame_stats.h"
+#include "hud.h"
 #include "overdraw.h"
 
 #import <QuartzCore/CAMetalLayer.h>
@@ -116,16 +118,35 @@ void LogCommitFrame(id commandBuffer) {
         g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(commandBuffer));
 }
 
+/**
+ * The frame boundary on the path where the application presents its drawables itself: live pause
+ * waits here, and the HUD says once that it cannot draw on this path (hud.h -- the command buffer
+ * that drew the frame has already completed, so there is nothing left to append a pass to).
+ *
+ * The present itself has happened by the time this runs, so the frame the pause freezes on is the
+ * complete one, as it is on the other path.
+ */
+void AfterDrawablePresent() {
+    if (Hud::Get().Enabled()) Hud::Get().NoteUnsupportedPresentPath();
+    gpuinsp::FramePause::Get().Wait();
+}
+
 void Replaced_drawablePresent(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
     ORIG(void (*)(id, SEL))(self, _cmd);
-    if (reentry.outermost() && OnDrawablePresent(self)) LogDrawableFrame(self, "present");
+    if (reentry.outermost() && OnDrawablePresent(self)) {
+        LogDrawableFrame(self, "present");
+        AfterDrawablePresent();
+    }
 }
 
 void Replaced_drawablePresentAtTime(id self, SEL _cmd, CFTimeInterval time) {
     Reentry reentry(self, _cmd);
     ORIG(void (*)(id, SEL, CFTimeInterval))(self, _cmd, time);
-    if (reentry.outermost() && OnDrawablePresent(self)) LogDrawableFrame(self, "presentAtTime:");
+    if (reentry.outermost() && OnDrawablePresent(self)) {
+        LogDrawableFrame(self, "presentAtTime:");
+        AfterDrawablePresent();
+    }
 }
 
 void Replaced_drawablePresentAfterMinimumDuration(id self, SEL _cmd, CFTimeInterval duration) {
@@ -133,6 +154,7 @@ void Replaced_drawablePresentAfterMinimumDuration(id self, SEL _cmd, CFTimeInter
     ORIG(void (*)(id, SEL, CFTimeInterval))(self, _cmd, duration);
     if (reentry.outermost() && OnDrawablePresent(self)) {
         LogDrawableFrame(self, "presentAfterMinimumDuration:");
+        AfterDrawablePresent();
     }
 }
 

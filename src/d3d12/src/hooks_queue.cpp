@@ -7,6 +7,8 @@
 // factory is patched with IDXGIFactory7's slot count and a swap chain with IDXGISwapChain4's —
 // after asking the object which version it really has, so a shorter vtable is never written past.
 #include "hooks.h"
+#include "hud.h"
+#include "frame_pause.h"
 
 #include "capture.h"
 #include "d3d12_vtables.gen.h"
@@ -215,25 +217,42 @@ void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRES
     ShaderEditor::Get().OnPresent();
 }
 
+/**
+ * Before a present: the HUD over the back buffer about to be shown (hud.h). Executed on the queue
+ * the swap chain presents from, which is what orders it before the present itself.
+ */
+void BeforePresent(IDXGISwapChain* swapChain, UINT flags) {
+    if (!Hud::Get().Enabled()) return;
+    if (flags & DXGI_PRESENT_TEST) return;   // nothing will be shown
+    ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
+    if (!queue) return;
+    if (ID3D12Device* device = DeviceOf(queue)) Hud::Get().Draw(device, swapChain, queue);
+}
+
 HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval, UINT Flags) {
     auto orig = Orig<PFN_IDXGISwapChain4_Present>(This, slot::IDXGISwapChain4_Present);
     if (Internal()) return orig(This, SyncInterval, Flags);
+    BeforePresent(This, Flags);
     // Present blocks on the display with vsync on, so it is timed apart from submission: the two
     // mean opposite things for a frame (cpu_timeline.h).
     const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, Flags);
     CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
     AfterPresent(This, SyncInterval, Flags, hr);
+    // Live pause, after the frame is on the screen (frame_pause.h).
+    gpuinsp::FramePause::Get().Wait();
     return hr;
 }
 
 HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     auto orig = Orig<PFN_IDXGISwapChain4_Present1>(This, slot::IDXGISwapChain4_Present1);
     if (Internal()) return orig(This, SyncInterval, PresentFlags, pPresentParameters);
+    BeforePresent(This, PresentFlags);
     const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, PresentFlags, pPresentParameters);
     CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
     AfterPresent(This, SyncInterval, PresentFlags, hr);
+    gpuinsp::FramePause::Get().Wait();
     return hr;
 }
 
@@ -253,6 +272,7 @@ HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain4* This, UINT BufferC
     if (Internal()) return orig(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     bool known = Tracker::Get().IdOf(This) != 0;
     if (known) UntrackBackBuffers(This);
+    Hud::Get().OnResizeBuffers(This);
     HRESULT hr = orig(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     Log("swap chain %p ResizeBuffers(%u, %ux%u) -> %s", (void*)This, BufferCount, Width, Height, HrText(hr).c_str());
     // Whatever GetBuffer answers now is the current set, the new one or the old on failure.

@@ -6,7 +6,9 @@
 #include "ui_messages.h"
 
 #include "capture.h"
+#include "frame_pause.h"
 #include "gpu_trace.h"
+#include "hud.h"
 #include "image.h"
 #include "json_parse.h"
 #include "json_writer.h"
@@ -20,6 +22,17 @@
 
 namespace mtlinsp {
 namespace {
+
+// Tells the UI what the pause state is now, so its button follows a pause the UI did not ask for
+// (a capture resuming the application below) as well as one it did.
+void SendPauseState() {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("PauseState");
+    w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
 
 void HandleMessage(const std::string &text) {
     // The receiver is a plain std::thread with no autorelease pool of its own, and the image
@@ -39,7 +52,27 @@ void HandleMessage(const std::string &text) {
         } else if (action == "RequestSnapshot") {
             SendSnapshot();
             SendValidationSnapshot();
+        } else if (action == "Hud") {
+            // The in-app HUD (hud.h): the application's frame time drawn over its own window.
+            Hud::Get().SetEnabled(message.GetBool("enabled", false));
+        } else if (action == "Pause") {
+            // Live pause (frame_pause.h): the application is held at its frame boundary. "step"
+            // lets that many frames through and stays paused.
+            if (const vkinsp::JsonValue *v = message.Get("step")) {
+                gpuinsp::FramePause::Get().Step(v->num >= 1 ? (uint32_t)v->num : 1u);
+            } else {
+                gpuinsp::FramePause::Get().SetPaused(message.GetBool("paused", false));
+            }
+            SendPauseState();
         } else if (action == "Capture") {
+            // A capture is recorded from frames the application renders, and a paused application
+            // renders none: waiting here would simply hang. Resuming is the honest answer, and the
+            // UI is told so its pause button follows.
+            if (gpuinsp::FramePause::Get().Paused()) {
+                Log("capture requested while paused: resuming");
+                gpuinsp::FramePause::Get().SetPaused(false);
+                SendPauseState();
+            }
             // The same fields the Vulkan layer reads (layer.cpp); what the Metal side cannot
             // honour (sampled images, stack traces) is left at its default.
             CaptureOptions options;

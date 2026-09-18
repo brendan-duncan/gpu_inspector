@@ -49,6 +49,9 @@ const LOG_RENDER_MS = 100;
 
 // Session bar icons (inline SVG in the button's text color).
 const ICON_STOP = '<svg viewBox="0 0 16 16" aria-label="Stop"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 16 16" aria-label="Pause"><rect x="4" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9" y="3" width="3" height="10" rx="1" fill="currentColor"/></svg>';
+const ICON_RESUME = '<svg viewBox="0 0 16 16" aria-label="Resume"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>';
+const ICON_STEP = '<svg viewBox="0 0 16 16" aria-label="Step one frame"><path d="M3 3.5v9L10 8z" fill="currentColor"/><rect x="11" y="3" width="2.5" height="10" rx="1" fill="currentColor"/></svg>';
 const ICON_RELAUNCH = '<svg viewBox="0 0 16 16" aria-label="Relaunch"><path d="M13.2 9.2A5.3 5.3 0 1 1 12 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13.6 1.8v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.8 6.2v3.6l3-1.8z" fill="currentColor"/></svg>';
 
 export class SessionPanel extends Div implements SessionContext {
@@ -70,6 +73,11 @@ export class SessionPanel extends Div implements SessionContext {
   private _stopButton!: Button;
   private _restartButton!: Button;
   private _recordAlwaysCheck!: Checkbox;
+  private _hudCheck!: Checkbox;
+  private _pauseButton!: Button;
+  private _stepButton!: Button;
+  /** What the library last said (PauseState), not what the UI last asked for. */
+  private _paused = false;
   /** The launch configuration's queued capture has been taken (or scheduled) for this run. */
   private _queuedCaptureDone = false;
   private _queuedCaptureTimer: ReturnType<typeof setTimeout> | null = null;
@@ -167,6 +175,22 @@ export class SessionPanel extends Div implements SessionContext {
     this._recordAlwaysCheck.input.onchange = () => {
       void this.send({ action: "Settings", recordAlways: this._recordAlwaysCheck.checked });
     };
+    this._hudCheck = new Checkbox(row, { label: "HUD", checked: false,
+      tooltip: "Draw the frame time over the application's own window, so it can be read without looking away from it (and is in any screen capture)." });
+    this._hudCheck.input.onchange = () => {
+      void this.send({ action: "Hud", enabled: this._hudCheck.checked });
+    };
+    this._pauseButton = new Button(row, { html: ICON_PAUSE, class: "btn btn-icon",
+      tooltip: "Pause: hold the application at its next frame boundary, on the frame it has just drawn",
+      callback: () => {
+        // The button follows PauseState, not the click: it is the library that decides, and it
+        // resumes on its own if a capture is asked for while paused.
+        void this.send({ action: "Pause", paused: !this._paused });
+      }});
+    this._stepButton = new Button(row, { html: ICON_STEP, class: "btn btn-icon",
+      tooltip: "Step: let one more frame through and pause again",
+      callback: () => { void this.send({ action: "Pause", step: 1 }); }});
+    this._stepButton.disabled = true;
     this._stopButton = new Button(row, { html: ICON_STOP, class: "btn btn-danger btn-icon", tooltip: "Stop: terminate the application", callback: () => {
       void window.inspector.kill(this.sessionId);
     }});
@@ -257,7 +281,21 @@ export class SessionPanel extends Div implements SessionContext {
   }
 
   handleMessages(batch: LayerMessage[]): void {
-    for (const msg of batch) this.database.handleMessage(msg);
+    for (const msg of batch) {
+      if (msg.action === "PauseState") this._setPaused(msg.paused);
+      this.database.handleMessage(msg);
+    }
+  }
+
+  /** The pause state the library reports: the two buttons and the tooltip follow it. */
+  private _setPaused(paused: boolean): void {
+    if (this._paused === paused) return;
+    this._paused = paused;
+    this._pauseButton.element.innerHTML = paused ? ICON_RESUME : ICON_PAUSE;
+    this._pauseButton.tooltip = paused
+      ? "Resume: let the application run again"
+      : "Pause: hold the application at its next frame boundary, on the frame it has just drawn";
+    this._stepButton.disabled = !paused;
   }
 
   setStatus(s: StatusMessage): void {
@@ -265,7 +303,9 @@ export class SessionPanel extends Div implements SessionContext {
     this.info = { ...this.info, state: s.state, detail: s.detail };
     const running = s.state === "launched" || s.state === "connecting" || s.state === "connected";
     if (s.state === "launched") {
-      // A new run of the application: its queued capture applies again.
+      // A new run of the application: its queued capture applies again, and nothing is paused --
+      // the pause lives in the process that just went away.
+      this._setPaused(false);
       this._queuedCaptureDone = false;
       if (this._queuedCaptureTimer) {
         clearTimeout(this._queuedCaptureTimer);
