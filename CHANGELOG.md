@@ -1,4 +1,4 @@
-## Unreleased
+## v0.16.0
 
 ### Added
 - The **Timeline** card zooms and pans, so a frame whose spans are sub-pixel at frame scale can be read, and clicking a pass's span selects it in the command list.
