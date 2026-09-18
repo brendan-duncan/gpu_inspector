@@ -463,11 +463,18 @@ vendor's driver is listed at the end so nobody spends time on it.
       interval would let the card compare like with like instead of refusing, and would say how
       much of the captured frame was the library's own work (queries, read-backs). The Unity player
       is the target that shows it — 12x on a 7-pass frame.
-- [ ] The timeline as a drawing, the rest: the lanes zoomable and scrollable rather than fitted to
-      the card (a 4,000-draw frame's spans are sub-pixel at frame scale, and `MAX_SPANS_PER_TRACK`
-      drops the rest); clicking a span to select the pass or call it names; the CPU timeline live in
-      the session bar rather than only in a capture; and per-queue GPU lanes rather than one, which
-      needs the layer to report the queue each pass ran on.
+- [x] The timeline zooms, pans and answers a click (`renderer/timeline_tracks.ts`,
+      `renderFrameStats`): the lanes draw a view of the range rather than all of it, so a frame
+      whose spans are sub-pixel at frame scale can be opened up. The model keeps every span — the
+      old cap dropped the tail of a busy track, and with it those passes' idle gaps — and the view
+      decides what it can draw, merging spans that would share a pixel into one box that says how
+      many it stands for. Ctrl and the wheel zoom where the pointer is, dragging pans, the bar under
+      the axis shows and moves the window, and the keys (arrows, `+`, `-`, `0`) do the same; a
+      pass's span selects it in the command list, and a merged box zooms in on what it holds.
+      Checked on a Unity frame and a live triangle capture.
+- [ ] The timeline as a drawing, the rest: the CPU timeline live in the session bar rather than only
+      in a capture; and per-queue GPU lanes rather than one, which needs the layer to report the
+      queue each pass ran on.
 
 - [x] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader):
       `src/vulkan/src/shader_statistics.h`, through `VK_KHR_pipeline_executable_properties`. The

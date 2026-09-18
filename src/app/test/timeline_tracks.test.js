@@ -15,7 +15,8 @@ const load = async (entry, name) => {
   buildSync({ entryPoints: [join(here, "..", "src", entry)], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
   return import(pathToFileURL(out).href);
 };
-const { buildTimelineTracks, gpuGaps, gpuSpan, attributeGaps, submitToFirstPassMs, tracksVerdict, MAX_SPANS_PER_TRACK } =
+const { buildTimelineTracks, gpuGaps, gpuSpan, attributeGaps, submitToFirstPassMs, tracksVerdict,
+  fullView, clampView, zoomView, panView, visibleBoxes, axisTicks, MIN_VIEW_MS } =
   await load("renderer/timeline_tracks.ts", "timeline_tracks");
 
 /** The layer's timeline message: events as [thread, category, startMs, durationMs]. */
@@ -138,13 +139,15 @@ test("busy time is the time inside spans, not the range", () => {
   assert.equal(t.tracks[0].busyMs, 2);
 });
 
-test("a track keeps at most MAX_SPANS_PER_TRACK spans", () => {
+test("every span is kept, however many a frame has", () => {
   const events = [];
-  for (let i = 0; i < MAX_SPANS_PER_TRACK + 500; i++) events.push([0, "submit", i, 0.1]);
+  for (let i = 0; i < 20000; i++) events.push([0, "submit", i, 0.1]);
   const t = buildTimelineTracks({ timeline: timeline(events), passes: [], originTicks: null });
-  assert.equal(t.tracks[0].spans.length, MAX_SPANS_PER_TRACK);
-  // The total is still of every event, so the summary does not shrink with the drawing.
-  assert.ok(Math.abs(t.tracks[0].busyMs - (MAX_SPANS_PER_TRACK + 500) * 0.1) < 1e-6);
+  // A view draws what its width allows (visibleBoxes); the model drops nothing, so zooming in
+  // can reach the end of a frame with thousands of draws.
+  assert.equal(t.tracks[0].spans.length, 20000);
+  assert.ok(Math.abs(t.tracks[0].busyMs - 20000 * 0.1) < 1e-6);
+  assert.equal(t.tracks[0].maxDurationMs, 0.1);
 });
 
 test("idle GPU between passes is found, longest first", () => {
@@ -296,4 +299,106 @@ test("without a GPU lane the verdict talks about the threads instead", () => {
   const v = tracksVerdict(t);
   assert.match(v, /Thread 4812/);
   assert.doesNotMatch(v, /GPU was busy/);
+});
+
+// The view: the stretch of the axis a card draws, and the boxes a lane of that width can hold.
+// A frame's spans are sub-pixel at frame scale, so the drawing is only readable if it can be
+// zoomed — and only affordable if a zoomed view costs its own width rather than the whole frame.
+
+/** A track of `count` spans, each `durationMs` long, one per millisecond. */
+function denseTrack(count, durationMs = 0.1) {
+  const events = [];
+  for (let i = 0; i < count; i++) events.push([0, "submit", i, durationMs]);
+  return buildTimelineTracks({ timeline: timeline(events), passes: [], originTicks: null }).tracks[0];
+}
+
+test("a view opens on the whole range and is held inside it", () => {
+  const t = buildTimelineTracks({ timeline: timeline([[0, "submit", 0, 1], [0, "submit", 9, 1]]), passes: [], originTicks: null });
+  assert.deepEqual(fullView(t), { startMs: 0, spanMs: 10 });
+  // Panned past either end, it stops at the end rather than leaving the range.
+  assert.deepEqual(clampView({ startMs: -5, spanMs: 2 }, t), { startMs: 0, spanMs: 2 });
+  assert.deepEqual(clampView({ startMs: 50, spanMs: 2 }, t), { startMs: 8, spanMs: 2 });
+  // Zoomed out past the range, it is the range.
+  assert.deepEqual(clampView({ startMs: 3, spanMs: 100 }, t), { startMs: 0, spanMs: 10 });
+  assert.equal(clampView({ startMs: 0, spanMs: 1e-9 }, t).spanMs, MIN_VIEW_MS);
+});
+
+test("zooming keeps the time under the anchor where it was", () => {
+  const t = buildTimelineTracks({ timeline: timeline([[0, "submit", 0, 1], [0, "submit", 9, 1]]), passes: [], originTicks: null });
+  const view = zoomView(fullView(t), t, 2, 0.25);   // a quarter across: 2.5 ms in
+  assert.equal(view.spanMs, 5);
+  assert.equal(view.startMs + view.spanMs * 0.25, 2.5);
+  // And panning moves by a fraction of the view, not of the range.
+  assert.equal(panView(view, t, 0.5).startMs, view.startMs + 2.5);
+});
+
+test("a lane draws only what its view reaches", () => {
+  const track = denseTrack(1000);
+  // 10 ms of a 1,000 ms range, so 10 spans of the thousand.
+  const boxes = visibleBoxes(track, { startMs: 100, spanMs: 10 }, 10 / 800);
+  assert.equal(boxes.length, 10);
+  assert.equal(boxes[0].count, 1);
+  assert.equal(boxes[0].startMs, 100);
+  assert.equal(boxes[0].span.label, "Submitting");
+});
+
+test("a span reaching into the view from before it is drawn", () => {
+  const t = buildTimelineTracks({ timeline: timeline([[0, "submit", 0, 8], [0, "submit", 9, 1]]), passes: [], originTicks: null });
+  // The view starts at 5, inside the long span that began at 0: it is still on screen.
+  const boxes = visibleBoxes(t.tracks[0], { startMs: 5, spanMs: 2 }, 0.01);
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].startMs, 0);
+  assert.equal(boxes[0].durationMs, 8);
+});
+
+test("spans too close together to draw apart become one box that says how many", () => {
+  const track = denseTrack(1000);
+  // The whole range on an 800-pixel lane: 1.25 ms a pixel, so the spans merge.
+  const boxes = visibleBoxes(track, { startMs: 0, spanMs: 1000 }, 1000 / 800);
+  assert.ok(boxes.length < 1000, "merged rather than a box per span");
+  const spans = boxes.reduce((n, b) => n + b.count, 0);
+  assert.equal(spans, 1000, "every span is still accounted for in some box");
+  const merged = boxes.find((b) => b.count > 1);
+  assert.equal(merged.span, null, "a merged box names no single span, so it cannot be clicked to one");
+  assert.ok(merged.busyMs < merged.durationMs, "busy time is the spans, the extent is the stretch they cover");
+});
+
+test("zoomed in, the same spans separate again", () => {
+  const track = denseTrack(1000);
+  const wide = visibleBoxes(track, { startMs: 0, spanMs: 1000 }, 1000 / 800);
+  const close = visibleBoxes(track, { startMs: 500, spanMs: 10 }, 10 / 800);
+  assert.ok(close.every((b) => b.count === 1), "each span is its own box at this width");
+  assert.ok(close.length < wide.reduce((n, b) => n + b.count, 0));
+});
+
+test("a merged box is coloured by the kind holding most of its time", () => {
+  const t = buildTimelineTracks({
+    // Two brief submits beside a long wait, all within a pixel of each other.
+    timeline: timeline([[0, "submit", 0, 0.01], [0, "waitFences", 0.02, 1], [0, "submit", 1.03, 0.01]]),
+    passes: [], originTicks: null,
+  });
+  const boxes = visibleBoxes(t.tracks[0], { startMs: 0, spanMs: 1.04 }, 1.04);
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].count, 3);
+  assert.equal(boxes[0].kind, "gpuWait");
+});
+
+test("a pass span carries the way to select the pass", () => {
+  let selected = 0;
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [{ ...pass("Shadows", 0, 1), select: () => { selected++; } }], originTicks: 0,
+  });
+  const gpu = t.tracks.find((x) => x.kind === "gpu");
+  gpu.spans[0].select();
+  assert.equal(selected, 1);
+});
+
+test("the axis is marked in round numbers across the view, not at its ends", () => {
+  const ticks = axisTicks({ startMs: 2.13, spanMs: 1 });
+  assert.ok(ticks.length >= 4);
+  // Steps of 0.2 ms here, and every mark is inside the view.
+  assert.equal(ticks[0].label, "2.20");
+  assert.ok(ticks.every((x) => x.ms >= 2.13 && x.ms <= 3.13));
+  assert.equal(axisTicks({ startMs: 0, spanMs: 0 }).length, 0);
 });

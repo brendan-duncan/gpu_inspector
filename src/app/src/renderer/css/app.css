@@ -428,10 +428,32 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .track-lane { position: relative; flex: 1 1 auto; height: 16px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
 .track-lane-gpu { height: 20px; }
 .track-span { position: absolute; top: 2px; bottom: 2px; min-width: 1px; border-radius: 2px; }
+/* A span that names something the UI can select: clicking it goes there. */
+.track-span-link { cursor: pointer; }
+.track-span-link:hover { outline: 1px solid var(--fg-primary); }
 /* An idle stretch of the GPU lane: drawn as an outline so it reads as absence, not as work. */
 .track-gap { position: absolute; top: 0; bottom: 0; border: 1px dashed var(--accent-warning, #c08040); border-radius: 2px; box-sizing: border-box; opacity: 0.8; }
-.track-busy { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; font-size: 9pt; }
-.track-axis { display: flex; justify-content: space-between; color: var(--fg-muted); font-size: 9pt; padding-left: 150px; font-variant-numeric: tabular-nums; }
+/* The lanes as one surface: what the pointer pans and the keys drive. */
+.track-lanes { cursor: grab; outline: none; }
+.track-lanes:focus-visible { outline: 1px solid var(--accent-primary); outline-offset: 2px; }
+.track-dragging, .track-dragging .track-lane { cursor: grabbing; }
+.track-toolbar { display: flex; align-items: center; gap: 8px; padding: 2px 0 4px 150px; font-size: 9pt; flex-wrap: wrap; }
+.track-controls { display: flex; align-items: center; gap: 4px; }
+.track-btn { min-width: 26px; padding: 1px 6px; font-size: 9pt; line-height: 1.4; }
+.track-range { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.track-hint { margin-left: auto; }
+/* The busy column is a fixed width so the axis and the scrub bar can line up with the lanes. */
+.track-busy { flex: 0 0 44px; text-align: right; color: var(--fg-muted); font-variant-numeric: tabular-nums; font-size: 9pt; }
+/* Round marks across the view rather than its two ends, since a zoomed view is somewhere inside. */
+.track-axis { position: relative; height: 14px; margin: 2px 54px 0 150px; color: var(--fg-muted); font-size: 9pt; font-variant-numeric: tabular-nums; }
+.track-tick { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.track-tick::before { content: ""; position: absolute; left: 50%; top: -3px; height: 3px; border-left: 1px solid var(--border-color); }
+/* Where the view sits in the whole capture: an affordance, and a way to move it. */
+.track-scrub { position: relative; height: 8px; margin: 2px 54px 0 150px; background: var(--bg-primary); border-radius: 4px; cursor: pointer; }
+.track-scrub-window { position: absolute; top: 0; bottom: 0; background: var(--accent-primary); opacity: 0.55; border-radius: 4px; }
+/* Nothing to move when the whole capture is shown: the window is the bar. */
+.track-scrub-full { cursor: default; }
+.track-scrub-full .track-scrub-window { opacity: 0.25; }
 .track-legend { display: flex; gap: 14px; align-items: center; color: var(--fg-muted); font-size: 9pt; padding: 6px 0 0 150px; }
 .track-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .capture-left-row { display: flex; height: 100%; min-height: 0; }
