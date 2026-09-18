@@ -18,6 +18,7 @@
 - A capture library says how long it took to send a frame, so a capture that seems to hang says whether the wait is in the application or in the app reading it.
 
 ### Changed
+- The outermost debug label group in the command list is blue rather than red, which read as an error on every frame that has one.
 - Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.
 
 ### Fixed
