@@ -776,8 +776,12 @@ export class CaptureView implements CaptureHost {
   private _filterInput: TextInput;
   private _filter = "";
   private _rows: CommandRow[] = [];
-  /** Passes listed collapsed (LAZY_PASS_COMMANDS): the commands each holds, so one can be jumped to. */
-  private _lazyBodies: { from: number; to: number; open: () => void }[] = [];
+  /**
+   * Command buffers and passes listed collapsed (LAZY_PASS_COMMANDS) and the commands each holds,
+   * so a jump to a command can open what holds it. A command buffer's entry comes first and its
+   * passes add theirs when it is opened, so a command inside both takes two rounds.
+   */
+  private _lazyBodies: { from: number; to: number; opened: boolean; open: () => void }[] = [];
   /** How long the command list took to build, said in the status when it is worth knowing. */
   private _listMs = 0;
   /** The frame analysis of the current commands (Frame Issues and the row markers). */
@@ -1027,12 +1031,14 @@ export class CaptureView implements CaptureHost {
     this._buildThumbnails();
     if (this.data.passTimings.size) this._applyPassTimings();
     else if (this._profile) this._timeline.showPlaceholder("Profile passes: waiting for GPU timestamps...");
-    // A frame whose passes are collapsed (LAZY_PASS_COMMANDS) has no draw row to select until one
-    // is opened, so the first pass is opened: the view opens on a draw either way.
-    if (!this._listPanel.element.querySelector(".capture_drawcall")) {
-      for (const { block } of this._passBlocks.values()) {
-        if (block.collapsed) { block.collapsed = false; break; }
-      }
+    // A frame listed collapsed (LAZY_PASS_COMMANDS) has no draw row to select until something is
+    // opened, so the first command buffer and then the first pass in it are opened: the view opens
+    // on a draw either way.
+    for (let i = 0; i < 2 && !this._listPanel.element.querySelector(".capture_drawcall"); i++) {
+      const next = this._lazyBodies.find((b) => !b.opened);
+      if (!next) break;
+      next.opened = true;
+      next.open();
     }
     const first = this._listPanel.element.querySelector(".capture_drawcall") as HTMLElement | null;
     first?.click();
@@ -1059,14 +1065,57 @@ export class CaptureView implements CaptureHost {
     const db = this.window.database;
     const lazy = commands.length > LAZY_PASS_COMMANDS;
 
-    // Containers: submit -> command buffer -> render pass / debug label groups.
+    // Containers: submit -> command buffer -> render pass / debug label groups. The first two are
+    // built here; what is inside a command buffer is _fillCommandBuffer's, at once or when the
+    // buffer is opened (LAZY_PASS_COMMANDS).
     let submitBody: Widget = container;
-    let cbBody: Widget = submitBody;
-    let currentCb = -1;
-    const stack: Widget[] = [];     // open pass / label bodies within the command buffer
-    let current: Widget = cbBody;
-    let drawCount = 0;
+    for (let index = 0; index < commands.length; index++) {
+      const cmd = commands[index];
+      const objId = cmd.object?.__id ?? 0;
+      if (sets.SUBMIT.has(cmd.method)) {
+        const queue = db.getObject(objId);
+        const block = new collapsible(container, { label: `${cmd.method}  ${queue ? queue.name : ""}`, collapsed: false, class: "capture-submit" });
+        this._addRow(block.titleBar, cmd, true);
+        submitBody = block.body;
+        continue;
+      }
+      // One command buffer: its commands run to the next submit or the next buffer.
+      let end = index + 1;
+      while (end < commands.length && !sets.SUBMIT.has(commands[end].method) && (commands[end].object?.__id ?? 0) === objId) end++;
+      const body = commands.slice(index, end);
+      index = end - 1;
+      const cbObj = db.getObject(objId);
+      const cbBlock = new collapsible(submitBody, { label: cbObj ? cbObj.name : `CommandBuffer ${objId}`, collapsed: false, class: "capture-cmdbuf" });
+      if (!lazy) {
+        this._drawCount += this._fillCommandBuffer(cbBlock.body, body, frame, objId, false);
+        continue;
+      }
+      for (const c of body) if (isAction(sets, c.method)) this._drawCount++;
+      cbBlock.collapsed = true;
+      let filled = false;
+      const fill = (): void => {
+        if (filled) return;
+        filled = true;
+        this._fillCommandBuffer(cbBlock.body, body, frame, objId, true);
+        this._applyCommandFilter();
+      };
+      cbBlock.onExpanded.addListener(fill);
+      this._lazyBodies.push({ from: body[0].index, to: body[body.length - 1].index, opened: false,
+        open: (): void => { cbBlock.collapsed = false; fill(); } });
+    }
+  }
 
+  /**
+   * The contents of one command buffer: its render and compute passes, its debug label groups, the
+   * commands of a secondary it executes, and everything else as rows. Returns the draws and
+   * dispatches in it. `lazy` lists each render pass collapsed and fills it when it is opened.
+   */
+  private _fillCommandBuffer(container: Widget, commands: CaptureCommand[], frame: number, cbKey: number, lazy: boolean): number {
+    const sets = this.data.sets;
+    const db = this.window.database;
+    const stack: Widget[] = [];     // open pass / label bodies within the command buffer
+    let current: Widget = container;
+    let drawCount = 0;
     let currentSecondary = 0;      // secondary command buffer whose inlined commands are being listed
     let secondaryParent: Widget | null = null;
     let inRenderPass = false;
@@ -1083,34 +1132,31 @@ export class CaptureView implements CaptureHost {
       current = compute.parent;
       compute = null;
     };
-    const openCompute = (cbKey: number): void => {
-      const index = this._computePassCounters.get(cbKey) ?? 0;
-      this._computePassCounters.set(cbKey, index + 1);
+    const openCompute = (key: number): void => {
+      const index = this._computePassCounters.get(key) ?? 0;
+      this._computePassCounters.set(key, index + 1);
       const label = `Compute ${index}`;
       const block = new collapsible(current, { label, collapsed: false, class: "capture_computepass_block" });
       // No command begins a compute pass; the block's label stands in for the header row.
-      this._passBlocks.set(passKey(frame, cbKey, index, true), { block, row: block.label, label, frame });
+      this._passBlocks.set(passKey(frame, key, index, true), { block, row: block.label, label, frame });
       compute = { block, parent: current, dispatches: 0, label };
       current = block.body;
     };
-
     const closeSecondary = (): void => {
       closeCompute();
       if (currentSecondary && secondaryParent) current = secondaryParent;
       currentSecondary = 0;
       secondaryParent = null;
     };
-    const closeCommandBuffer = (): void => {
-      closeSecondary();
-      stack.length = 0;
-      currentCb = -1;
-      inRenderPass = false;
-      current = submitBody;
-    };
 
     for (let index = 0; index < commands.length; index++) {
       const cmd = commands[index];
       const objId = cmd.object?.__id ?? 0;
+      // A list the capture holds no commands of stands for the whole buffer.
+      if (index === 0 && cmd.method.startsWith("<")) {
+        new Div(container, { text: cmd.method.replace(/[<>]/g, ""), class: "text-muted capture-note" });
+        continue;
+      }
       if ((cmd.secondary ?? 0) !== currentSecondary) {
         closeSecondary();
         if (cmd.secondary) {
@@ -1121,39 +1167,17 @@ export class CaptureView implements CaptureHost {
           current = block.body;
         }
       }
-      if (sets.SUBMIT.has(cmd.method)) {
-        closeCommandBuffer();
-        const queue = db.getObject(objId);
-        const block = new collapsible(container, { label: `${cmd.method}  ${queue ? queue.name : ""}`, collapsed: false, class: "capture-submit" });
-        this._addRow(block.titleBar, cmd, true);
-        submitBody = block.body;
-        current = submitBody;
-        continue;
-      }
-      if (objId !== currentCb) {
-        // New command buffer within this submit.
-        closeCommandBuffer();
-        currentCb = objId;
-        const cbObj = db.getObject(objId);
-        const cbBlock = new collapsible(submitBody, { label: cbObj ? cbObj.name : `CommandBuffer ${objId}`, collapsed: false, class: "capture-cmdbuf" });
-        cbBody = cbBlock.body;
-        current = cbBody;
-        if (cmd.method.startsWith("<")) {
-          new Div(cbBody, { text: cmd.method.replace(/[<>]/g, ""), class: "text-muted capture-note" });
-          continue;
-        }
-      }
       if (sets.PASS_BEGIN.has(cmd.method)) {
         closeCompute();
         inRenderPass = true;
-        const passIndex = this._commandBufferPassCounters.get(objId) ?? 0;
-        this._commandBufferPassCounters.set(objId, passIndex + 1);
+        const passIndex = this._commandBufferPassCounters.get(cbKey) ?? 0;
+        this._commandBufferPassCounters.set(cbKey, passIndex + 1);
         const label = this._passLabel(cmd, passIndex);
         const block = new collapsible(current, { label, collapsed: false, class: "capture_renderpass_block" });
         const row = this._addRow(block.titleBar, cmd, true);
         row.element.dataset.passIndex = String(passIndex);
         // A compute encoder is timed under its own key, so its block has to be filed there too.
-        this._passBlocks.set(passKey(frame, objId, passIndex, sets.passIsCompute?.(cmd.method) ?? false), { block, row, label, frame });
+        this._passBlocks.set(passKey(frame, cbKey, passIndex, sets.passIsCompute?.(cmd.method) ?? false), { block, row, label, frame });
         stack.push(current);
         current = block.body;
         if (lazy) {
@@ -1175,8 +1199,8 @@ export class CaptureView implements CaptureHost {
           };
           block.onExpanded.addListener(fill);
           if (body.length) {
-            this._lazyBodies.push({ from: body[0].index, to: body[body.length - 1].index,
-              open: () => { block.collapsed = false; fill(); } });
+            this._lazyBodies.push({ from: body[0].index, to: body[body.length - 1].index, opened: false,
+              open: (): void => { block.collapsed = false; fill(); } });
           }
           index = end - 1;   // the loop takes the command that ends the pass next
         }
@@ -1186,7 +1210,7 @@ export class CaptureView implements CaptureHost {
         closeSecondary();
         inRenderPass = false;
         this._addRow(current, cmd);
-        current = stack.pop() ?? cbBody;
+        current = stack.pop() ?? container;
         continue;
       }
       if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
@@ -1204,7 +1228,7 @@ export class CaptureView implements CaptureHost {
       }
       if (sets.LABEL_END.has(cmd.method)) {
         this._addRow(current, cmd);
-        current = stack.pop() ?? cbBody;
+        current = stack.pop() ?? container;
         continue;
       }
       const row = this._addRow(current, cmd);
@@ -1213,8 +1237,8 @@ export class CaptureView implements CaptureHost {
         drawCount++;
       }
     }
-    closeCommandBuffer();
-    this._drawCount += drawCount;
+    closeSecondary();
+    return drawCount;
   }
 
   private _updateStatus(): void {
@@ -1432,9 +1456,13 @@ export class CaptureView implements CaptureHost {
 
   selectCommand(index: number): void {
     let row = this._rows.find((r) => r.command.index === index);
-    // The command may be in a pass that has not been listed yet (LAZY_PASS_COMMANDS): open it.
-    if (!row) {
-      this._lazyBodies.find((b) => index >= b.from && index <= b.to)?.open();
+    // The command may be in a command buffer or a pass that has not been listed yet
+    // (LAZY_PASS_COMMANDS): open what holds it, the buffer before the pass inside it.
+    while (!row) {
+      const holder = this._lazyBodies.find((b) => !b.opened && index >= b.from && index <= b.to);
+      if (!holder) break;
+      holder.opened = true;
+      holder.open();
       row = this._rows.find((r) => r.command.index === index);
     }
     if (!row) return;

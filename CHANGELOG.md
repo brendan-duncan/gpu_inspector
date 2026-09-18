@@ -15,11 +15,15 @@
 - A D3D12 frame says which render passes the application suspended across command lists, since those are the passes a capture can measure nothing of.
 - `mtlinsp_triangle --compile-hitch` compiles a library and a pipeline inside every frame, and the sample reserves a heap and suballocates from it, so the Metal CPU timeline and memory breakdown have something to report.
 - The Metal CPU timeline and Memory Use are checked end to end on a Mac (`tools/ui_tests.py`, the `metal-cpu-timeline`, `metal-compile-hitch`, `metal-self-compile` and `metal-memory` cases), including that the capture library's own pipeline compiles stay out of the application's timeline.
+- A capture library says how long it took to send a frame, so a capture that seems to hang says whether the wait is in the application or in the app reading it.
 
 ### Changed
 - Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.
 
 ### Fixed
+- A frame of a million commands left the Capture tab on "Capturing..." for minutes: a command buffer and each render pass in it are now listed collapsed and their rows built when they are opened, which took one Unity frame from 172 seconds to 2.
+- Capturing a D3D12 frame left a pass's pipeline-statistics and occlusion queries open on a command list the application was still recording when the capture ended, and a list closed with a query open fails with E_FAIL, which the application takes for a lost device.
+- A D3D12 capture freed the staging buffers it had copied into while the application still had command lists open that named them, which fails those lists' Close the same way; they are held until the next capture.
 - The Timeline drew at most 4,000 spans a lane and dropped the rest silently, which also hid those passes from its idle-gap analysis.
 - Capturing a D3D12 frame added its queries and read-back copies to a render pass the application suspends across command lists, which Direct3D forbids: the list closed with E_FAIL and the application took it for a lost device and exited.
 - Recording a D3D12 application's command lists asked a resource named by a stale descriptor for its description, which crashed the application: a descriptor keeps no reference to what it names, so an engine that recycles resources leaves slots naming released ones. Nothing the resource tracker has let go is touched now.
