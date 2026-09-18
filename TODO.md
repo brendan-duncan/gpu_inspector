@@ -902,6 +902,34 @@ library does not read back yet.
       barriers (`Barrier`) beyond the layouts that map to legacy states.
 - [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded
       without contents (bundles inherit the caller's root signature).
+- [x] A capture of a Unity D3D12 player took the application's GPU with it
+      (`D:\Unity\urp_sample\build\urp_sample.exe`, URP, 800x600). Two faults, both fixed: a
+      descriptor naming a released resource, which the library asked for its description (a crash
+      while merely recording), and the queries and read-back copies the capture added to a render
+      pass the application suspends across command lists. Direct3D allows no GPU-work-generating
+      call between a suspension and its resume; `Close` then returns E_FAIL, and Unity treats that
+      as a lost device ("Unrecoverable GPU device error"). Only `-force-d3d12-debug` named it:
+      `ResolveQueryData ... called while a Render Pass is suspended`. A capture now completes and
+      the player runs on.
+- [ ] A Unity frame is measured almost not at all: the capture above holds 1,423,718 commands but
+      only 18 pass timings, 32 textures and 21 buffers. The queries and the read-back go in while a
+      list is *recorded*, and Unity records its lists several frames ahead, so the lists submitted
+      in the captured frame were built before the capture began; 58 more pass segments are
+      suspended across lists and take nothing by construction (README.md, "Passes"). Measuring at
+      record time cannot reach either. What RenderDoc does instead (`D:\src\ref\renderdoc`): it
+      records every command list from injection (`CaptureState::BackgroundCapturing`, so
+      `IsCaptureMode` is true outside captures too) and adds nothing to the application's lists
+      during the captured frame. At `StartFrameCapture` it waits for the device to be idle, copies
+      the *initial contents* of dirty resources once per resource into **its own** lists and submits
+      those itself (`D3D12Device::StartFrameCapture` -> `PrepareInitialContents`, which also
+      postpones and skips the large ones); the frame then runs untouched, and what each pass
+      rendered, the overdraw, the pixel history and the timings all come from replaying the capture.
+      The Vulkan side already replays for them (`vkinsp_replay`); D3D12 has no replay yet, and that
+      is what this needs.
+- [ ] Unity records its command lists more than a frame ahead, so recording from the capture request
+      and letting one frame pass still leaves 78 of its lists unrecorded: only "Record all command
+      buffers" captures a Unity frame whole. Recording from two frames ahead, or keeping the last
+      frame's recordings and using them when a list is submitted unchanged, would cover it.
 - [ ] 32-bit targets: only x64 processes are injected.
 - [x] Catching an application started elsewhere: `dxinsp_launch.exe --watch <image>` polls for the
       process and injects it while it is held suspended, which is what D3D12 has in place of an

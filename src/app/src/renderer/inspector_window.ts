@@ -189,6 +189,7 @@ export class InspectorWindow extends Window {
       void window.inspector.refresh(info.id);
       if (this._debug?.capture) this._debugCapture(panel);
     }
+    panel.debugCaptureWithout = this._debug?.captureWithout ?? null;
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.timingMs) this._debugTiming(panel, this._debug.timingMs);
   }
@@ -230,6 +231,7 @@ export class InspectorWindow extends Window {
     this._tabs.setHandleActive(handle);
     this._updatePlaceholder();
     if (opts.recent !== false) void window.inspector.addRecentCapture(path);
+    panel.debugCaptureWithout = this._debug?.captureWithout ?? null;
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.selectCommand !== null && this._debug?.selectCommand !== undefined) panel.capturePanel.activeView?.selectCommand(this._debug.selectCommand);
     if (this._debug?.showView) panel.capturePanel.activeView?.showView(this._debug.showView);
@@ -535,6 +537,10 @@ export class InspectorWindow extends Window {
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
+      // --debug-capture-without=<list>: take the capture with those read-backs off, which is how
+      // the cost of each is measured on a frame that is slow to capture.
+      const without = (this._debug?.captureWithout ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+      if (without.length) panel.capturePanel.setCaptureOptions(without);
       panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
       // --debug-command=<index>: select a command once the capture has arrived.
       const selectCommand = this._debug?.selectCommand;

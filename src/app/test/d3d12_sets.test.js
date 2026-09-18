@@ -17,13 +17,14 @@ buildSync({
       export { setsFor, labelNameOf, boundPipelineOf } from "./command_sets.ts";
       export { D3D12_SETS } from "./d3d12/command_sets.ts";
       export { vkFormatOfDxgi, dxgiFormatBytes, dxgiFormatIsDepth, dxgiFormatIsBlockCompressed } from "./d3d12/dxgi_format.ts";
-      export { d3d12InputElements, vkTopologyOfD3D } from "./d3d12/d3d12_object.ts";
+      export { d3d12InputElements, vkTopologyOfD3D, isD3D12Texture } from "./d3d12/d3d12_object.ts";
+      export { VulkanObject } from "./vulkan/vulkan_object.ts";
     `,
     resolveDir: join(here, "..", "src", "renderer"), loader: "ts",
   },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { setsFor, labelNameOf, boundPipelineOf, D3D12_SETS, vkFormatOfDxgi, dxgiFormatBytes, dxgiFormatIsDepth, dxgiFormatIsBlockCompressed, d3d12InputElements, vkTopologyOfD3D } = await import(pathToFileURL(out).href);
+const { setsFor, labelNameOf, boundPipelineOf, D3D12_SETS, vkFormatOfDxgi, dxgiFormatBytes, dxgiFormatIsDepth, dxgiFormatIsBlockCompressed, d3d12InputElements, vkTopologyOfD3D, isD3D12Texture, VulkanObject } = await import(pathToFileURL(out).href);
 
 const ref = (id, cls) => ({ __id: id, __class: cls });
 const list = ref(5, "ID3D12GraphicsCommandList");
@@ -124,4 +125,19 @@ test("an input layout's elements resolve appended offsets per slot and name thei
   assert.deepEqual(elements.map((e) => [e.location, e.name, e.slot, e.offset, e.perInstance]), [[0, "POSITION0", 0, 0, false], [1, "TEXCOORD0", 0, 12, false], [2, "TEXCOORD1", 1, 0, true]]);
   assert.equal(vkTopologyOfD3D("D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"), "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP");
   assert.equal(vkTopologyOfD3D("D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE"), "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST");
+});
+
+
+// D3D12 has one resource type for everything, so the Inspect tab's Textures and Buffers groups are
+// told apart by the resource itself (groupKeyOf in renderer/inspect_panel.ts, on this predicate).
+test("a resource is a texture or a buffer by its own description", () => {
+  const resource = (cmd, args) => new VulkanObject({ id: 1, type: "ID3D12Resource", parent: 1, cmd, index: 0, handle: "0x1", label: "", args, blobs: [] });
+  const desc = (dimension) => ({ pDesc: { Dimension: dimension, Width: 64, Height: 64, DepthOrArraySize: 1, MipLevels: 1,
+    Format: "DXGI_FORMAT_R8G8B8A8_UNORM", SampleDesc: { Count: 1, Quality: 0 }, Flags: "D3D12_RESOURCE_FLAG_NONE" } });
+  assert.equal(isD3D12Texture(resource("CreateCommittedResource", desc("D3D12_RESOURCE_DIMENSION_TEXTURE2D"))), true);
+  assert.equal(isD3D12Texture(resource("CreateCommittedResource", desc("D3D12_RESOURCE_DIMENSION_TEXTURE3D"))), true);
+  assert.equal(isD3D12Texture(resource("CreateCommittedResource", desc("D3D12_RESOURCE_DIMENSION_BUFFER"))), false);
+  // A swap chain's back buffer arrives from GetBuffer, which carries no description of its own.
+  assert.equal(isD3D12Texture(resource("GetBuffer", {})), true);
+  assert.equal(isD3D12Texture(null), false);
 });

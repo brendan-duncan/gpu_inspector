@@ -51,6 +51,14 @@ struct BoundTarget {
 struct ActivePass {
     bool active = false;
     bool renderPassApi = false;           // BeginRenderPass/EndRenderPass rather than OMSetRenderTargets
+    /**
+     * The pass is suspended across command lists: BeginRenderPass carried SUSPENDING or RESUMING.
+     * Between a suspension and its resume no GPU work of any kind may be issued -- not a query,
+     * not a barrier, not a copy -- and a list that holds any closes with E_FAIL, which is fatal to
+     * the application. So the capture adds nothing to a split pass: it is recorded, and it has no
+     * timings and no read-back (README.md, "Passes").
+     */
+    bool split = false;
     std::vector<BoundTarget> targets;
     uint32_t passIndex = 0;
     uint32_t width = 0;

@@ -933,6 +933,12 @@ export interface AppConfig {
     select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
     /** --debug-capture-stacks: the debug capture records command stack traces. */
     captureStacks: boolean;
+    /**
+     * --debug-capture-without=<list>: what the debug capture leaves out, of "textures", "buffers",
+     * "images" and "profile" (comma separated), for measuring what each read-back costs on a frame
+     * that is slow to capture.
+     */
+    captureWithout: string | null;
     /** Open the Stack trace section of selected commands and objects (symbolizes at once). */
     expandStacks: boolean;
     /** Start a session waiting for an application the implicit layer brings (--wait-for-app). */

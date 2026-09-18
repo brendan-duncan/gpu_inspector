@@ -9,11 +9,14 @@ creates them, each with the arguments it was created with. Nothing has to be cap
 
 Objects are listed by type — images, buffers, pipelines, shader modules, descriptor sets, device
 memory and the rest — with a count beside each type. On Metal the types are `MTLTexture`,
-`MTLBuffer`, `MTLLibrary` and so on instead.
+`MTLBuffer`, `MTLLibrary` and so on instead. Direct3D 12 has one type for every resource, so its
+textures and its buffers are listed as two groups of their own rather than as one: a frame's render
+targets would otherwise sit among its vertex, index and constant buffers.
 
 - **Search** matches a name, label, type, format or id.
 - **Filters** narrow further: images by format, size, layers and usage; buffers by size and
-  usage; shaders and pipelines by stage; descriptor sets by what they bind.
+  usage; shaders and pipelines by stage; descriptor sets by what they bind. These read the Vulkan
+  descriptions, so they narrow a Vulkan session; a D3D12 session is narrowed by search.
 - **Only objects used in the last capture** hides everything the captured frame did not touch,
   which is usually the fastest way to a short list.
 - The back and forward buttons walk through the objects you have visited.

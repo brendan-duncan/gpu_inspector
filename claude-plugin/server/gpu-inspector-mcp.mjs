@@ -6338,6 +6338,8 @@ function analyzeMetalFrame(data, db) {
 var TINY_DRAW_VERTICES2 = 12;
 var TINY_DRAW_COUNT2 = 32;
 var RULE_ORDER3 = [
+  "unrecorded-list",
+  "suspended-pass",
   "undefined-load",
   "clear-then-discard",
   "empty-pass",
@@ -6347,6 +6349,7 @@ var RULE_ORDER3 = [
   "redundant-vertex-buffer-bind",
   "single-threadgroup-dispatch"
 ];
+var UNRECORDED_LIST = "<unrecorded command list>";
 var Folded3 = class {
   first = null;
   count = 0;
@@ -6405,6 +6408,8 @@ var D3D12FrameAnalysis = class {
     const undefinedLoad = new Folded3();
     const clearThenDiscard = new Folded3();
     const emptyPass = new Folded3();
+    const unrecorded = new Folded3();
+    const suspended = new Folded3();
     const stateOf = (stream) => {
       let s = lists.get(stream);
       if (!s) lists.set(stream, s = { pipeline: /* @__PURE__ */ new Map(), rootSignature: /* @__PURE__ */ new Map(), vertexBuffers: /* @__PURE__ */ new Map() });
@@ -6421,6 +6426,10 @@ var D3D12FrameAnalysis = class {
       const a = cmd.args;
       const m = cmd.method;
       const stream = `${cmd.frame}:${cmd.object?.__id ?? 0}:${cmd.secondary ?? 0}`;
+      if (m === UNRECORDED_LIST) {
+        unrecorded.add(cmd);
+        continue;
+      }
       if (sets.SUBMIT.has(m)) continue;
       if (m === "Close" || m === "Reset") {
         closePass(stream);
@@ -6431,6 +6440,7 @@ var D3D12FrameAnalysis = class {
         closePass(stream);
         const pass = { command: cmd, draws: 0, targets: [] };
         if (m === "BeginRenderPass" && a) {
+          if (/SUSPENDING|RESUMING/.test(str(a.Flags))) suspended.add(cmd);
           const entries = [];
           for (const rt of Array.isArray(a.pRenderTargets) ? a.pRenderTargets : []) if (isObject(rt)) entries.push([rt, false]);
           if (isObject(a.pDepthStencil)) entries.push([a.pDepthStencil, true]);
@@ -6518,6 +6528,24 @@ var D3D12FrameAnalysis = class {
       }
     }
     for (const stream of [...openPass.keys()]) closePass(stream);
+    if (unrecorded.count) {
+      this._addFolded(
+        "unrecorded-list",
+        "high",
+        "high",
+        `${unrecorded.count} submitted command list${unrecorded.count === 1 ? " holds" : "s hold"} no commands: ${unrecorded.count === 1 ? "it was" : "they were"} recorded before the capture began, so the draws, dispatches and state in them are missing from this frame \u2014 an engine that records a frame ahead on worker threads (Unity does) records this way. Turn on "Record all command buffers" in the capture bar and capture again: every list is then recorded as it is built, whenever that happens.`,
+        unrecorded
+      );
+    }
+    if (suspended.count) {
+      this._addFolded(
+        "suspended-pass",
+        "low",
+        "high",
+        `${suspended.count} render pass${suspended.count === 1 ? " is" : "es are"} suspended across command lists (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS / _RESUMING_PASS). Between a suspension and its resume Direct3D allows no work at all on the list, so these passes have no timings and their render targets were not read back; their commands are all here.`,
+        suspended
+      );
+    }
     if (undefinedLoad.count) {
       this._addFolded("undefined-load", "high", "high", `${undefinedLoad.count} render pass${undefinedLoad.count === 1 ? "" : "es"} PRESERVE${undefinedLoad.count === 1 ? "s" : ""} a target the previous render pass on it ended with D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD: the contents are undefined. Either preserve it there, or begin with CLEAR or DISCARD here.`, undefinedLoad);
     }

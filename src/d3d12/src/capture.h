@@ -50,6 +50,13 @@ struct CaptureOptions {
     uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets (and sampled textures) larger than this
     uint64_t maxImageTotal = 256ull << 20;    // stop capturing sampled textures past this many bytes
+    /**
+     * Stop reading render targets back past this many bytes in one capture. A frame of a few
+     * passes never reaches it; a frame of thousands does, and without it the copies the capture
+     * adds to the application's own command lists are more work than the frame itself — enough to
+     * hang the GPU and take the application with it (a Unity URP frame here: 2,120 passes).
+     */
+    uint64_t maxTargetTotal = 512ull << 20;
     bool captureTextures = true;              // render targets
     bool captureBuffers = true;
     bool captureImages = true;                // textures bound through SRVs and UAVs
@@ -103,8 +110,11 @@ public:
      * After OMSetRenderTargets / BeginRenderPass was forwarded and recorded: opens a pass on the
      * targets (already resolved through the descriptor tracker), reserving its queries and writing
      * the begin timestamp. Returns the pass index within the list.
+     *
+     * `split` says the pass is suspended across command lists (ActivePass::split): it is recorded
+     * like any other, and nothing is added to it.
      */
-    uint32_t BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi);
+    uint32_t BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi, bool split = false);
     /** Before a dispatch is forwarded: opens a compute pass when no pass is open. */
     void OnBeforeDispatch(CommandRecorder* rec);
     /** Before a command that closes a compute pass (barrier, event, bundle, render pass begin, Close): its end timestamp. */
