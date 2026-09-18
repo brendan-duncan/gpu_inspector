@@ -1833,8 +1833,12 @@ export class CaptureView implements CaptureHost {
 
   /** A pass's label as the command tree shows it, with its frame when the capture has several. */
   passLabelOf(key: OverdrawPassKey): string {
-    const label = this._passBlocks.get(passKey(key.frame, key.commandBuffer, key.passIndex))?.label
-      ?? `Pass ${key.passIndex} (command buffer ${key.commandBuffer})`;
+    // A pixel history event from outside any render pass (a clear, a copy, a dispatch) carries no
+    // pass index: UINT32_MAX, which names no pass and would read as "Pass 4294967295".
+    const label = key.passIndex === 0xffffffff
+      ? `Outside a render pass (command buffer ${key.commandBuffer})`
+      : this._passBlocks.get(passKey(key.frame, key.commandBuffer, key.passIndex))?.label
+        ?? `Pass ${key.passIndex} (command buffer ${key.commandBuffer})`;
     return this.data.frames > 1 ? `Frame ${this.data.frame + key.frame}: ${label}` : label;
   }
 

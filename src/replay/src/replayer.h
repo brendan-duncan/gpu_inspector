@@ -233,6 +233,12 @@ struct PixelEvent {
     uint32_t passIndex = 0;
     uint64_t pipeline = 0;
     bool scissored = false;        // the pixel is outside the draw's scissor
+    /**
+     * The fragment shader declares EarlyFragmentTests, so the depth and stencil tests ran before it
+     * rather than after: `shaded` is measured with those tests on, the way the hardware runs them,
+     * and a fragment missing from it was either killed by a test or discarded.
+     */
+    bool earlyTests = false;
     uint32_t testsMeasured = 0;    // bit per measurement below that was taken
     uint64_t covered = 0;          // the draw's primitives cover the pixel (no culling, no tests)
     uint64_t facing = 0;           // ... with the pipeline's culling
@@ -240,6 +246,12 @@ struct PixelEvent {
     uint64_t depthPassed = 0;      // ... and the depth test alone
     uint64_t stencilPassed = 0;    // ... and the stencil test alone
     uint64_t passed = 0;           // ... and every test: what the draw wrote
+    /**
+     * The primitive of the draw whose fragment won the pixel, or -1 when it was not measured and
+     * -2 when it was measured and no fragment of the draw wrote the pixel. A primitive index is the
+     * draw's own: the nth triangle (or line, or point) it assembled.
+     */
+    int64_t primitive = -1;
     std::vector<uint8_t> value;    // the pixel's texel after the event
     std::vector<uint8_t> depth;    // the pass's depth texel after the event, when it has depth
 };
@@ -549,14 +561,28 @@ private:
             uint32_t slot = 0;
             int32_t queryBase = -1;
             uint32_t issued = 0;     // bit per query variant issued
+            /** The slot the primitive id was written into, or none for an event without one. */
+            int32_t idSlot = -1;
         };
         Staging staging;
+        /** One pixel of the target's format, for a multisampled target whose samples are resolved into it. */
+        TransientImage resolve;
+        /** Where the primitive ids are read: one 32-bit slot per draw event. */
+        Staging ids;
+        uint32_t idSlots = 0;
+        uint32_t nextId = 0;
+        /** The pass-sized target the primitive id is drawn into, and the framebuffer over it. */
+        TransientImage idTarget;
+        VkFramebuffer idFramebuffer = VK_NULL_HANDLE;
+        /** The attachment whose copy holds the depth and stencil the id pass tests against, or none. */
+        int idDepth = -1;
         VkQueryPool queries = VK_NULL_HANDLE;
         uint32_t queryCount = 0;
         uint32_t nextQuery = 0;
         uint32_t targetTexel = 0;
         uint32_t depthTexel = 0;
         uint32_t nextSlot = 0;
+        uint32_t slots = 0;          // room the staging was made for
         std::vector<Entry> entries;
     };
     /** Whether a captured pipeline's scissor is dynamic, and its static scissor otherwise. */
@@ -613,12 +639,46 @@ private:
     bool PipelineDynamic(uint64_t pipelineId, std::string_view state) const;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
+    /** The fragment shader of the primitive-id pass (util.h, kPrimitiveIdFragmentSpirv). */
+    VkShaderModule PrimitiveIdModule();
 
     // Pixel history (history.cpp)
     VkPipeline HistoryPipeline(uint64_t pipelineId, int variant);
+    /** Whether a captured pipeline's fragment shader asks for the depth and stencil tests before it. */
+    bool HistoryEarlyFragmentTests(uint64_t pipelineId);
+    /**
+     * The pixel history's primitive-id pass: which primitive of a draw wrote the pixel. The draw is
+     * issued again with its fragment shader replaced by one writing gl_PrimitiveID into a target of
+     * the replay's own, tested against the depth and stencil the event starts from, so what remains
+     * in the pixel is the primitive of the fragment that won it.
+     */
+    VkRenderPass HistoryIdRenderPass(VkFormat depthFormat);
+    VkPipeline HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat);
     VkRenderPass HistoryRenderPass(uint64_t renderPassId);
     ScissorInfo PipelineScissor(uint64_t pipelineId);
     void PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<PendingHistory>& histories);
+    /**
+     * What a command outside a render pass does to the image the pixel history follows. A clear, a
+     * copy, a blit or a resolve says in its own arguments which image it writes, where, and in what
+     * layout, so it is known before the command runs; a dispatch or a trace writes through a
+     * descriptor, which no argument names, so those are watched instead — the pixel is read before
+     * and after, and the event is kept only when it changed.
+     */
+    struct DirectWrite {
+        bool writes = false;
+        const char* kind = "";                              // the event's kind: "clear", "copy", "blit", "resolve", "compute"
+        std::string detail;                                 // what it was, for the event
+        VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;     // the layout the image is in around the command
+    };
+    DirectWrite HistoryDirectWrite(const std::string& method, const JValue& args);
+    /** The pixel read straight from the followed image, into the group's direct-write staging. */
+    void HistoryDirectPixel(VkCommandBuffer cb, const CommandGroup& group, const DirectWrite& write,
+                            std::vector<PendingHistory>& histories, uint32_t index, const std::string& method, uint32_t frame);
+    /**
+     * Keeps whether each bound descriptor set holds the followed image as a storage image, per
+     * pipeline bind point, so a dispatch or a trace that could have written the pixel is known.
+     */
+    void NoteHistoryBindings(const JValue* descriptors);
     void RecordHistory(VkCommandBuffer cb, const CommandGroup& group, PassState& pass, uint32_t endIndex, std::vector<PendingHistory>& histories);
     uint32_t CopyHistoryPixel(VkCommandBuffer cb, const PassState& pass, PendingHistory& pending, VkImageLayout layout);
     void CompleteHistory(std::vector<PendingHistory>& histories);
@@ -962,6 +1022,20 @@ private:
     std::map<uint64_t, VkRenderPass> _historyRenderPasses;
     std::map<uint64_t, ScissorInfo> _pipelineScissors;
     size_t _historyPasses = 0;
+    /** Writes to the followed image outside a render pass, for the note when nothing touched it. */
+    size_t _historyWrites = 0;
+    /** The command buffer's direct-write pending record (an index into the group's histories), or none yet. */
+    int _historyDirect = -1;
+    /** Per pipeline bind point, per bound set index: it holds the followed image as a storage image. */
+    std::map<std::string, std::map<uint32_t, bool>> _historyStorageBinds;
+    /** Whether a pipeline's fragment shader declares EarlyFragmentTests, read from its SPIR-V once. */
+    std::map<uint64_t, bool> _historyEarlyTests;
+    /** The primitive-id render passes by depth format, and the pipelines that draw into them. */
+    std::map<VkFormat, VkRenderPass> _historyIdRenderPasses;
+    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyIdPipelines;
+    VkShaderModule _primitiveIdModule = VK_NULL_HANDLE;
+    /** The geometryShader feature is enabled, without which gl_PrimitiveID cannot be read. */
+    bool _primitiveIdAvailable = false;
 };
 
 } // namespace vkreplay

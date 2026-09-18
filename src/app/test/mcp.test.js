@@ -523,7 +523,7 @@ test("vkinsp_replay's overdraw file is read back with its counts", async () => {
 });
 
 test("vkinsp_replay's pixel history is read back and says what each draw met", async () => {
-  const { parsePixelHistory, drawOutcome, eventSummary, texelValues, texelLines, touchesPixel } = await import(pathToFileURL(bundle("renderer/pixel_history.ts", "pixel_history")).href);
+  const { parsePixelHistory, drawOutcome, eventSummary, sampleCountsText, texelValues, texelLines, touchesPixel } = await import(pathToFileURL(bundle("renderer/pixel_history.ts", "pixel_history")).href);
   const draw = (fields) => ({
     kind: "draw", command: 17, method: "vkCmdDrawIndexed", detail: "", commandBuffer: 7, frame: 0, passIndex: 0, pipeline: 48, scissored: false,
     testsMeasured: 63, covered: 2, facing: 1, shaded: 1, depthPassed: 1, stencilPassed: 1, passed: 1, value: "c73cc7ff", depth: "7236743f", ...fields,
@@ -556,6 +556,40 @@ test("vkinsp_replay's pixel history is read back and says what each draw met", a
   assert.deepEqual(texelLines("VK_FORMAT_UNKNOWN_THING", new Uint8Array([1, 255])), ["bytes 01 ff"]);
   assert.throws(() => parsePixelHistory("{}"), /Not a pixel history/);
   assert.equal(h.requestedImage, 17);
+
+  // The primitive that won the pixel, and a shader whose depth test runs before it: both change
+  // how the sample counts read, so both are said rather than left to be inferred.
+  const early = parsePixelHistory({
+    format: "gpu-inspector-pixel-history", version: 1, image: 17, x: 1, y: 1, mip: 0, layer: 0,
+    pixelFormat: "VK_FORMAT_B8G8R8A8_UNORM", depthFormat: "",
+    events: [draw({ primitive: 5 }), draw({ command: 18, primitive: -2, earlyTests: true, passed: 0, testsMeasured: 63, shaded: 0 })],
+    notes: [], problems: [],
+  });
+  assert.equal(eventSummary(early.events[0]), "vkCmdDrawIndexed: wrote the pixel (1 sample passed), primitive 5");
+  assert.match(sampleCountsText(early.events[0]), /won the pixel came from primitive 5/);
+  assert.match(sampleCountsText(early.events[1]), /EarlyFragmentTests/);
+  assert.match(sampleCountsText(early.events[1]), /No fragment of this draw wrote the pixel/);
+
+  // Writes from outside a render pass: a copy, a blit, a resolve and a dispatch that had the image
+  // bound to be written. They have no fragments to account for, so each says what it was.
+  const outside = parsePixelHistory({
+    format: "gpu-inspector-pixel-history", version: 1, image: 65, x: 28, y: 28, mip: 0, layer: 0,
+    pixelFormat: "VK_FORMAT_R8G8B8A8_UNORM", depthFormat: "",
+    events: [
+      { kind: "copy", command: 4, method: "vkCmdCopyBufferToImage", detail: "copied from a buffer", commandBuffer: 7, frame: 0,
+        passIndex: 4294967295, pipeline: 0, scissored: false, testsMeasured: 0, value: "14e63cff", depth: "" },
+      { kind: "blit", command: 13, method: "vkCmdBlitImage", detail: "blitted from an image", commandBuffer: 7, frame: 0,
+        passIndex: 4294967295, pipeline: 0, scissored: false, testsMeasured: 0, value: "6c5394ff", depth: "" },
+      { kind: "compute", command: 14, method: "vkCmdTraceRaysKHR", detail: "traced with the image bound to be written", commandBuffer: 7,
+        frame: 0, passIndex: 4294967295, pipeline: 0, scissored: false, testsMeasured: 0, value: "3f417fff", depth: "" },
+    ],
+    notes: [], problems: [],
+  });
+  assert.deepEqual(outside.events.map((e) => e.kind), ["copy", "blit", "compute"]);
+  assert.deepEqual(outside.events.map(touchesPixel), [true, true, true]);
+  assert.equal(eventSummary(outside.events[0]), "vkCmdCopyBufferToImage: copied from a buffer");
+  assert.equal(eventSummary(outside.events[2]), "vkCmdTraceRaysKHR: traced with the image bound to be written");
+  assert.equal(sampleCountsText(outside.events[0]), "", "there are no samples to explain");
 
   // A Metal capture's history arrives parsed, with Metal's load action names.
   const metal = parsePixelHistory({

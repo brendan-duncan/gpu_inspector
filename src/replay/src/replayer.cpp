@@ -266,7 +266,9 @@ bool Replayer::CreateDevice() {
     // features the application may not have enabled. They go into whichever form the capture used: a
     // chained VkPhysicalDeviceFeatures2 (which must stay the only one), else our own copy of pEnabledFeatures.
     VkPhysicalDeviceFeatures features{};
-    if (wantDrawStats || wantWireframe) {
+    // The pixel history's primitive-id pass needs one too (geometryShader, below).
+    const bool wantPrimitiveId = _options.history.enabled || _options.allFeatures;
+    if (wantDrawStats || wantWireframe || wantPrimitiveId) {
         VkPhysicalDeviceFeatures supported{};
         _fns.GetPhysicalDeviceFeatures(_physical, &supported);
         VkPhysicalDeviceFeatures2* features2 = nullptr;
@@ -296,6 +298,12 @@ bool Replayer::CreateDevice() {
         if (wantDrawStats && supported.occlusionQueryPrecise) {
             ours->occlusionQueryPrecise = VK_TRUE;
             _drawSamplesAvailable = true;
+        }
+        // Which primitive of a draw won a pixel (history.cpp): gl_PrimitiveID in a fragment shader
+        // is SPIR-V's Geometry capability, which needs this feature even with no geometry stage.
+        if (wantPrimitiveId && supported.geometryShader) {
+            ours->geometryShader = VK_TRUE;
+            _primitiveIdAvailable = true;
         }
     }
 
@@ -1048,6 +1056,8 @@ void Replayer::DestroyAll() {
         ReleaseTransients();
         if (_countModule) _fns.DestroyShaderModule(_device, _countModule, nullptr);
         _countModule = VK_NULL_HANDLE;
+        if (_primitiveIdModule) _fns.DestroyShaderModule(_device, _primitiveIdModule, nullptr);
+        _primitiveIdModule = VK_NULL_HANDLE;
         for (auto it = _created.rbegin(); it != _created.rend(); ++it) {
             const std::string& t = it->type;
             uint64_t h = it->handle;
@@ -2302,6 +2312,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 begun = false;
             } else if (ReplayFn fn = FindReplayCommand(m); fn && args && begun) {
                 ApplyDescriptorSnapshot(c.Get("descriptors"));
+                if (_options.history.enabled) NoteHistoryBindings(c.Get("descriptors"));
                 NoteStreamCommand(stream, m, *args, i);
                 if (_options.ablation.enabled && IsAction(m)) IssueAblation(cb, i, m, *args, frame, commandBuffer, passIndex, stream);
                 // Per-draw timing and counters: an engine that records its draws into secondaries
@@ -2334,6 +2345,11 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         return;
     }
     ApplyBufferData(group);
+    // The pixel history's staging for this command buffer's writes outside its render passes is
+    // made when the first of them is met (history.cpp).
+    _historyDirect = -1;
+    // What a command buffer binds is its own: the next one starts from nothing bound.
+    _historyStorageBinds.clear();
     const JValue& beginCommand = commands->items[group.first];
     _ctx.where = "command " + std::to_string(group.first) + " vkBeginCommandBuffer";
     Args_vkBeginCommandBuffer begin{};
@@ -2509,6 +2525,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
 
         if (m == "vkCmdBindDescriptorSets" || m == "vkCmdBindDescriptorSets2" || m == "vkCmdBindDescriptorSets2KHR")
             ApplyDescriptorSnapshot(c.Get("descriptors"));
+        // Which bound set holds the followed pixel's image to be written (history.cpp).
+        if (_options.history.enabled) NoteHistoryBindings(c.Get("descriptors"));
         if (m == "vkCmdExecuteCommands") RecordSecondaries(i, c, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX);
 
         ReplayFn fn = FindReplayCommand(m);
@@ -2528,7 +2546,14 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         // Hardware counters: each draw's range, nested inside its pass's (hw_counters.cpp).
         const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
         const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
+        // Pixel history outside the render passes: what a clear, a copy, a blit, a resolve or a
+        // dispatch did to the pixel, read straight out of the image once the command has run
+        // (history.cpp). A watched command is read before it as well, since nothing but the value
+        // says whether it wrote the pixel at all.
+        const DirectWrite direct = _options.history.enabled && !pass.active && _ctx.unresolved == unresolvedBefore
+            ? HistoryDirectWrite(m, *args) : DirectWrite{};
         IssueCommand(fn, c, *args, cb);
+        if (direct.writes) HistoryDirectPixel(cb, group, direct, histories, i, m, frame);
         if (countDraw) EndCounterDraw(cb, counterRange);
         if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
         // The capture's own queries: a statistics query of ours must not begin inside one.
@@ -2751,10 +2776,10 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
                      : "command " + std::to_string(target.command) + " was not replayed";
         report.ablations.push_back(std::move(missing));
     }
-    if (options.history.enabled && !_historyPasses) {
-        report.history.notes.push_back("no replayed render pass renders to image " + std::to_string(options.history.image) + " at mip " +
+    if (options.history.enabled && !_historyPasses && !_historyWrites) {
+        report.history.notes.push_back("nothing the replay ran writes image " + std::to_string(options.history.image) + " at mip " +
                                        std::to_string(options.history.mip) + ", layer " + std::to_string(options.history.layer) +
-                                       " (writes outside render passes are not followed yet)");
+                                       ": no render pass renders to it, and no clear, copy, blit, resolve or dispatch touched that pixel of it");
     }
     // A draw asked for that no replayed pass holds still gets an answer.
     for (uint32_t command : options.overlay.commands) {
@@ -2805,6 +2830,9 @@ void Replayer::ResetFrameState() {
     });
     _groups.clear();
     _historyPasses = 0;
+    _historyWrites = 0;
+    _historyDirect = -1;
+    _historyStorageBinds.clear();
     _appQueryDepth = 0;
     _passViews = 1;
     _overlayTarget = UINT32_MAX;

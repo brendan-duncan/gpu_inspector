@@ -212,6 +212,11 @@ function pixelHistoryAnswer(c: Capture, h: PixelHistory, all: boolean, extra: Re
         samples: e.kind === "draw" && e.testsMeasured
           ? { covering: e.covered, facing: e.facing, shaded: e.shaded, passingDepth: e.depthPassed, passingStencil: e.stencilPassed, passingAll: e.passed }
           : undefined,
+        // Which of the draw's primitives the winning fragment came from, and whether its shader
+        // asked for the depth and stencil tests before it (so the shaded count includes them).
+        primitive: e.primitive >= 0 ? e.primitive : undefined,
+        wroteNothing: e.primitive === -2 ? true : undefined,
+        earlyFragmentTests: e.earlyTests ? true : undefined,
         valueAfter: value(h.pixelFormat, e.value, false), depthAfter: value(h.depthFormat, e.depth, true),
       };
     }),

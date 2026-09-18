@@ -300,7 +300,8 @@ def triangle_overdraw(state, log):
         expect(bool(t.get("picked")), "the click on the image picked no pixel") + \
         expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
         expect(bool(touched), f"the pixel history lists no events: {h}") + \
-        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}") +         expect(any("primitive" in e for e in touched),
+               f"no draw names the primitive that won the pixel (the primitive-id pass): {touched}")
 
 
 def triangle_overlay(state, log):

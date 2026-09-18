@@ -16,8 +16,12 @@ export interface PixelRequest {
   layer?: number;
 }
 
-/** "load": a pass starting from what it loaded or cleared; "clear": vkCmdClearAttachments; "draw": a draw. */
-export type PixelEventKind = "load" | "clear" | "draw";
+/**
+ * "load": a pass starting from what it loaded or cleared; "clear": vkCmdClearAttachments; "draw": a
+ * draw; and the writes that happen outside a render pass — "copy", "blit", "resolve" and "compute"
+ * (a dispatch or a trace with the image bound to be written), whose value is the whole answer.
+ */
+export type PixelEventKind = "load" | "clear" | "draw" | "copy" | "blit" | "resolve" | "compute";
 
 export interface PixelEvent {
   kind: PixelEventKind;
@@ -33,6 +37,16 @@ export interface PixelEvent {
   pipeline: number;
   /** The pixel is outside the draw's scissor. */
   scissored: boolean;
+  /**
+   * The draw's fragment shader asks for the depth and stencil tests before it (EarlyFragmentTests),
+   * so `shaded` was measured with those tests on, the way the hardware runs them.
+   */
+  earlyTests: boolean;
+  /**
+   * The primitive of the draw whose fragment won the pixel: -1 when it was not measured, -2 when it
+   * was and no fragment of the draw wrote the pixel.
+   */
+  primitive: number;
   /** Bit per sample count below that was measured (1 covered ... 32 passed). */
   testsMeasured: number;
   /** Samples at the pixel: the draw's primitives with no culling and no tests. */
@@ -99,10 +113,11 @@ export function parsePixelHistory(input: Uint8Array | string | object): PixelHis
     const e = raw as Record<string, unknown>;
     const kind = str(e.kind);
     return {
-      kind: kind === "load" || kind === "clear" ? kind : "draw",
+      kind: KINDS.includes(kind as PixelEventKind) ? (kind as PixelEventKind) : "draw",
       command: num(e.command), method: str(e.method), detail: str(e.detail),
       commandBuffer: num(e.commandBuffer), frame: num(e.frame), passIndex: num(e.passIndex), pipeline: num(e.pipeline),
-      scissored: e.scissored === true, testsMeasured: num(e.testsMeasured),
+      scissored: e.scissored === true, earlyTests: e.earlyTests === true,
+      primitive: typeof e.primitive === "number" ? e.primitive : -1, testsMeasured: num(e.testsMeasured),
       covered: num(e.covered), facing: num(e.facing), shaded: num(e.shaded),
       depthPassed: num(e.depthPassed), stencilPassed: num(e.stencilPassed), passed: num(e.passed),
       value: hexBytes(e.value), depth: hexBytes(e.depth),
@@ -165,6 +180,9 @@ export const OUTCOME_TEXT: Record<DrawOutcome, string> = {
   covers: "covers the pixel",
 };
 
+/** The event kinds a history can hold; anything else a newer replay writes is read as a draw. */
+const KINDS: PixelEventKind[] = ["load", "clear", "draw", "copy", "blit", "resolve", "compute"];
+
 /** Whether the event touched the pixel: a pass start, a clear, or a draw whose primitives reach it. */
 export function touchesPixel(e: PixelEvent): boolean {
   if (e.kind !== "draw") return true;
@@ -176,9 +194,12 @@ export function touchesPixel(e: PixelEvent): boolean {
 export function eventSummary(e: PixelEvent): string {
   if (e.kind === "load") return `pass ${e.passIndex} begins (${e.detail.replace(/^(VK_ATTACHMENT_LOAD_OP_|MTLLoadAction)/, "") || "load"})`;
   if (e.kind === "clear") return `${e.method}: cleared`;
+  // A write from outside a render pass: no fragments to account for, so the value is the answer.
+  if (e.kind !== "draw") return e.detail ? `${e.method}: ${e.detail}` : e.method;
   const outcome = drawOutcome(e);
   const samples = outcome === "wrote" ? ` (${e.passed} sample${e.passed === 1 ? "" : "s"} passed)` : "";
-  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}`;
+  const primitive = outcome === "wrote" && e.primitive >= 0 ? `, primitive ${e.primitive}` : "";
+  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
 }
 
 /** The sample counts behind a draw's outcome, for a tooltip. */
@@ -194,7 +215,13 @@ export function sampleCountsText(e: PixelEvent): string {
   add(MEASURED_DEPTH, "passing depth", e.depthPassed);
   add(MEASURED_STENCIL, "passing stencil", e.stencilPassed);
   add(MEASURED_ALL, "passing every test", e.passed);
-  return `Samples at the pixel: ${parts.join(", ")}. Each count adds one step to the one before, measured with depth and stencil writes off, against what the pass held before the draw.`;
+  const early = e.earlyTests
+    ? " This shader asks for the depth and stencil tests before it (EarlyFragmentTests), so the shaded count is measured with those tests on, as the hardware runs them."
+    : "";
+  const primitive = e.primitive >= 0 ? ` The fragment that won the pixel came from primitive ${e.primitive}.`
+    : e.primitive === -2 ? " No fragment of this draw wrote the pixel."
+    : "";
+  return `Samples at the pixel: ${parts.join(", ")}. Each count adds one step to the one before, measured with depth and stencil writes off, against what the pass held before the draw.${early}${primitive}`;
 }
 
 // ---------------------------------------------------------------------------------------------
