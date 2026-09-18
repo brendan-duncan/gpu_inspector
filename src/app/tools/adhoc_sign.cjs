@@ -1,4 +1,4 @@
-// electron-builder afterPack hook: ad-hoc code signing for macOS, as a fallback.
+// Ad-hoc code signing for macOS, as a fallback. Called from the afterPack hook in after_pack.cjs.
 //
 // Released builds are signed with the project's Developer ID and notarized, and this hook is
 // irrelevant to them: afterPack runs before electron-builder signs, so the real signature simply
