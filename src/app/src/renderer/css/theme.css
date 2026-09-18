@@ -53,13 +53,14 @@
   --timeline-segment-fg: #ffffff;
 
   /* Debug label groups in the capture list, by nesting depth: title bar, and the body that
-     tints the commands inside the group (like WebGPU Inspector). */
-  --group-0-bg: #5c3b3c;
+     tints the commands inside the group (like WebGPU Inspector). No red: the outermost group is
+     the one on screen the whole time, and a red bar over a list of commands reads as an error. */
+  --group-0-bg: #3b4a6b;
   --group-1-bg: #5c4b2a;
   --group-2-bg: #3d5330;
   --group-3-bg: #2f4f50;
   --group-4-bg: #4e3a55;
-  --group-0-body-bg: #3e2f30;
+  --group-0-body-bg: #2b3446;
   --group-1-body-bg: #3e3628;
   --group-2-body-bg: #2f3a2a;
   --group-3-body-bg: #283a3b;
@@ -207,12 +208,12 @@
   --timeline-budget: #b07a10;
   --timeline-segment-fg: #ffffff;
 
-  --group-0-bg: #f5c0c1;
+  --group-0-bg: #c6d8f7;
   --group-1-bg: #ffd98a;
   --group-2-bg: #cdeeb6;
   --group-3-bg: #bfeaea;
   --group-4-bg: #ebc8f5;
-  --group-0-body-bg: #fbe3e3;
+  --group-0-body-bg: #e4edfc;
   --group-1-body-bg: #fff0cf;
   --group-2-body-bg: #e8f7dc;
   --group-3-body-bg: #e2f5f5;
