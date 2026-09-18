@@ -448,7 +448,7 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
         pending.resolve = CreateTransientImage(targetFormat, {1, 1}, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                                VK_SAMPLE_COUNT_1_BIT);
         if (!pending.resolve.image) return note("no memory to resolve the multisampled target's pixel into");
-        note("the target is multisampled: each value is what the pixel's samples resolve to, and the counts are of samples rather than fragments");
+        note("the target is multisampled: each value is what the pixel's samples resolve to, the counts are of samples rather than fragments, and no primitive is named (the primitive-id pass draws into a single-sampled target of its own)");
     }
     if (out.format.empty()) out.format = EnumName(kEnum_VkFormat, kEnumCount_VkFormat, targetFormat);
     if (out.depthFormat.empty() && pending.depthTexel) out.depthFormat = EnumName(kEnum_VkFormat, kEnumCount_VkFormat, pass.formats[depthAttachment]);

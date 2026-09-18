@@ -228,8 +228,32 @@ application with injected state. Route (a) is the general one and is the prerequ
       that touched a pixel, with what each draw's fragments met (outside the scissor, culled,
       discarded, depth, stencil), measured with occlusion queries on pipeline copies, and the
       pixel's value and depth after each event.
-- [ ] Pixel history, the rest: writes outside render passes (clears, copies, blits, compute),
-      multisampled images, per-fragment values (a primitive-id pass), early fragment tests.
+- [x] Pixel history, the rest (`src/replay/src/history.cpp`):
+      **writes outside render passes** — a clear, a copy from an image or a buffer, a blit and a
+      resolve are recognised from their own arguments (which image, which region, which layout, and
+      whether it covers the pixel at that mip and layer) and the pixel is read straight out of the
+      image after the command; a dispatch or a trace writes through a descriptor, so it is reported
+      by what was bound (a descriptor set of that bind point holding the image as a storage image),
+      which the replay now tracks as it walks the binds. Verified on `test/triangle --persistent`
+      (a copy from an image, a copy from a buffer at an offset, and a blit into mip 1, each with the
+      value it wrote) and `--ray-tracing` (the trace into its storage image).
+      **Multisampled targets** — the pixel is resolved into a one-pixel image of the replay's own
+      and read from there, since a multisampled image cannot be copied to a buffer; a note says the
+      values are what the samples resolve to. `--msaa` checked. A multisampled *depth* target still
+      cannot be read, and says so.
+      **Early fragment tests** — a fragment shader declaring `EarlyFragmentTests` has the depth and
+      stencil tests on in the variant that measures the shader, the way the hardware runs it, so a
+      shader that discards what depth would have killed is no longer reported as discarding; the
+      event carries the flag, since it changes what the shaded count means.
+      **Per-fragment values** — the primitive of the fragment that won the pixel, from a pass of the
+      replay's own: the draw again with its fragment shader replaced by one writing `gl_PrimitiveID`
+      into an R32_UINT target, over the copy of the pass's depth, with the one-pixel scissor (needs
+      the geometryShader feature, which the replay now enables). Checked on the cube: the centre
+      pixel is primitive 5, and other pixels 2, 3 and 4.
+      The `pixel-history` case in `tools/ui_tests.py` covers it through the app.
+- [ ] Pixel history, the rest of the rest: every fragment of a draw with its own value and primitive
+      (the winning fragment's primitive is what a draw reports now), which needs the draw re-run
+      per fragment the way RenderDoc does it; layered passes past their first layer.
 - [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
       tab, beside the image, and `get_pixel_history`. Both replay the capture with
       `vkinsp_replay --pixel-data`.

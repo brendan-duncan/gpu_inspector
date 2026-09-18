@@ -230,7 +230,9 @@ bool WritePixelHistoryData(const ReplayReport& report, const std::string& path) 
                 ",\"method\":" + JsonString(e.method) + ",\"detail\":" + JsonString(e.detail) +
                 ",\"commandBuffer\":" + std::to_string(e.commandBuffer) + ",\"frame\":" + std::to_string(e.frame) +
                 ",\"passIndex\":" + std::to_string(e.passIndex) + ",\"pipeline\":" + std::to_string(e.pipeline) +
-                ",\"scissored\":" + (e.scissored ? "true" : "false") + ",\"testsMeasured\":" + std::to_string(e.testsMeasured) +
+                ",\"scissored\":" + (e.scissored ? "true" : "false") +
+                ",\"earlyTests\":" + (e.earlyTests ? "true" : "false") + ",\"primitive\":" + std::to_string(e.primitive) +
+                ",\"testsMeasured\":" + std::to_string(e.testsMeasured) +
                 ",\"covered\":" + std::to_string(e.covered) + ",\"facing\":" + std::to_string(e.facing) +
                 ",\"shaded\":" + std::to_string(e.shaded) + ",\"depthPassed\":" + std::to_string(e.depthPassed) +
                 ",\"stencilPassed\":" + std::to_string(e.stencilPassed) + ",\"passed\":" + std::to_string(e.passed) +
