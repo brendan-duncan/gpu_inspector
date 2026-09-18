@@ -11,6 +11,15 @@ directories:
   # registers the capture layer as an implicit layer on Windows.
   buildResources: installer
 
+# English only, which drops 54 of Electron's 55 Chromium locale bundles: 48MB of the installed
+# tree and 8MB of every download, for translations of Chromium's own strings (the text-field
+# context menu, network error pages) that the app has no counterpart for -- its UI is English.
+# Spelled en-US and not en: app-builder-lib matches this against the locale file's own name, and
+# its prefix fallback is the wrong way round (wanted.startsWith(`${language}-`)), so en matches
+# nothing and would delete en-US.pak along with the rest, leaving Chromium no strings at all.
+# macOS keeps en.lproj through that same fallback, so the one value covers all three platforms.
+electronLanguages: [en-US]
+
 asar: true
 files:
   - dist/**/*
@@ -106,9 +115,11 @@ mac:
   # Developer account can still build and run the app.
   hardenedRuntime: true
 
-# Runs before electron-builder's own signing, so a real Developer ID signature simply replaces
-# what it did. It matters only when there is no certificate to sign with.
-afterPack: tools/adhoc_sign.cjs
+# Two things, in this order: it removes the parts of Electron the app never loads, then ad-hoc
+# signs the macOS bundle. It runs before electron-builder's own signing, which is what lets the
+# signature seal the pruned tree, and what lets a real Developer ID signature simply replace the
+# ad-hoc one -- that half matters only when there is no certificate to sign with.
+afterPack: tools/after_pack.cjs
 
 dmg:
   artifactName: GPU-Inspector-${version}-${arch}.${ext}

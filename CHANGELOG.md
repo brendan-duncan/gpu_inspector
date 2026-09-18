@@ -8,6 +8,9 @@
 - Pixel history follows the writes that happen outside a render pass: a clear, a copy, a blit, a resolve, and a dispatch or trace with the image bound.
 - Pixel history names the primitive whose fragment won the pixel, follows a multisampled target through the resolve of its samples, and measures a shader that asks for early fragment tests with those tests on.
 
+### Changed
+- Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.
+
 ### Fixed
 - The Timeline drew at most 4,000 spans a lane and dropped the rest silently, which also hid those passes from its idle-gap analysis.
 
