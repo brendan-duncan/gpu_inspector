@@ -245,6 +245,14 @@ def triangle_hazard(state, log):
         expect((s.get("validation") or 0) < 50, f"{s.get('validation')} distinct validation messages (the per-submission counters were not folded)")
 
 
+def triangle_oob(state, log):
+    """GPU-assisted validation: the shader reads past its storage buffer, and the message that
+    reports it arrives after the capture — it is about a submission that has only now finished —
+    so linking it to the dispatch it names needs what the capture recorded to outlive it."""
+    s = session(state)
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect("access out of bounds" in log, "no out-of-bounds access reported by GPU validation") +         expect((s.get("validationLinked") or 0) >= 1, "no GPU validation message linked to a command") +         expect((capture(state).get("commandsWithValidation") or 0) >= 1, "no captured command carries the message") +         expect((s.get("validation") or 0) < 50, f"{s.get('validation')} distinct validation messages (one per shader invocation was not folded)")
+
+
 def graph(state):
     return capture(state).get("renderGraph") or {}
 
@@ -508,7 +516,8 @@ def triangle_stacks(state, log):
     s = session(state)
     return check_connected(state, log) + check_capture_basic(state, log) + \
         expect((c.get("commandsWithStacks") or 0) >= 5, f"{c.get('commandsWithStacks')} commands carry stacks") + \
-        expect((s.get("symbolsWithLines") or 0) >= 1, "no symbol resolved to a source line (PDB next to the app?)")
+        expect((s.get("symbolsWithLines") or 0) >= 1, "no symbol resolved to a source line (PDB next to the app?)") +         expect(not IS_WIN or (s.get("symbolsInlined") or 0) >= 1,
+               "no frame carries its inlined callers (DbgHelp's inline walk; the CRT's startup inlines at least one)")
 
 
 def triangle_prerecord(state, log):
@@ -561,6 +570,7 @@ def triangle_cases(triangle):
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
         Case("hazard", launch + ["--args=--hazard", "--validation", "--sync-validation", "--debug-capture"], triangle_hazard, delay_ms=18000),
+        Case("oob", launch + ["--args=--oob", "--validation", "--gpu-validation", "--debug-capture"], triangle_oob, delay_ms=18000),
         Case("stacks", launch + ["--debug-capture", "--debug-capture-stacks", "--debug-command=9", "--debug-expand-stacks"], triangle_stacks, delay_ms=16000),
         # The render graph, on the frames whose passes have a dependency to find, with the view
         # open so the screenshot shows the chart. Three frames, because the pass indices the graph

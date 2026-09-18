@@ -71,6 +71,13 @@ void CaptureManager::Start(DeviceData* dev) {
     _armedAtFrame.store(UINT64_MAX, std::memory_order_release);
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
+    {
+        // What the last capture recorded is no use once another one starts: the UI shows the
+        // new one, and a reused handle would otherwise point a message at the old commands.
+        std::lock_guard capturedLock(_capturedCommandsMutex);
+        _capturedCommands.clear();
+        _haveCapturedCommands.store(false, std::memory_order_release);
+    }
     CaptureFor(dev);
     Log("capture started at frame %llu", (unsigned long long)_frameIndex);
 }
@@ -111,6 +118,26 @@ CommandRecorder* CaptureManager::RecorderFor(DeviceData* dev, VkCommandBuffer cb
     return it == dev->recorders.end() ? nullptr : it->second.get();
 }
 
+// The caller holds the device's recorder lock (the recorders are about to be released).
+void CaptureManager::RetainCapturedCommands(DeviceData* dev) {
+    std::lock_guard lock(_capturedCommandsMutex);
+    _capturedCommands.clear();
+    for (auto& [cb, rec] : dev->recorders) {
+        auto commands = rec->Snapshot();
+        if (!commands || commands->empty()) continue;
+        uint64_t id = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
+        if (!id) continue;   // freed already: the UI has no command of it to point at either
+        _capturedCommands.emplace(cb, CapturedCommands{id, std::move(commands)});
+    }
+    _haveCapturedCommands.store(!_capturedCommands.empty(), std::memory_order_release);
+}
+
+CaptureManager::CapturedCommands CaptureManager::CapturedCommandsFor(VkCommandBuffer cb) {
+    std::lock_guard lock(_capturedCommandsMutex);
+    auto it = _capturedCommands.find(cb);
+    return it == _capturedCommands.end() ? CapturedCommands{} : it->second;
+}
+
 void CaptureManager::OnBeginCommandBuffer(DeviceData* dev, VkCommandBuffer cb, VkCommandBufferUsageFlags flags) {
     // A capture queued for a specific frame starts with that frame's first command buffer, so
     // frame 0 (before any present) can be captured whole. Later frames start at the present.
@@ -141,6 +168,10 @@ void CaptureManager::OnResetCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
 void CaptureManager::OnFreeCommandBuffer(DeviceData* dev, VkCommandBuffer cb) {
     std::unique_lock lock(dev->recorderMutex);
     dev->recorders.erase(cb);
+    // The handle can come back as another buffer, which is not the one the capture recorded.
+    std::lock_guard capturedLock(_capturedCommandsMutex);
+    _capturedCommands.erase(cb);
+    _haveCapturedCommands.store(!_capturedCommands.empty(), std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -336,6 +367,10 @@ void CaptureManager::Finish(DeviceData* dev) {
         ReleaseDevice(*dc);
         if (!RecordAlways()) {
             std::unique_lock lock(dc->dev->recorderMutex);
+            // What was recorded outlives the recorders: GPU-assisted validation reports a shader
+            // invocation's mistake when the submission completes, which is after this, and the
+            // command it names can only be found in what the capture recorded.
+            RetainCapturedCommands(dc->dev);
             dc->dev->recorders.clear();
         }
     }

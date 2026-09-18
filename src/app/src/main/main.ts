@@ -499,6 +499,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   const debugLog = cliOption("debug-log");
   const vulkan = layerDir ? {
     layerDir, validationDir, port: s.port, log: config.log, recordAlways: config.recordAlways, breadcrumbs: config.breadcrumbs, shaderStatistics: config.shaderStatistics, stacktraces: config.stacktraces,
+    symbolDirs: launchSymbolDirs(config),
     validation: config.validation, syncValidation: !!config.syncValidation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
   } : null;
   const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };
@@ -509,6 +510,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
       exe: config.exe, args, cwd, env: base, vulkan,
       d3d12: d3d12 ? {
         tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
+        symbolDirs: launchSymbolDirs(config),
         validation: config.validation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
       } : null,
     });
@@ -1332,7 +1334,16 @@ ipcMain.handle("inspector:send", (_e, id: number, msg: UiRequest) => {
 ipcMain.handle("inspector:shaderText", (_e, spirv: Uint8Array, mode: ShaderTextMode, pdbDirs?: string[]) =>
   shaderText(spirv, mode, { pdbDirs: symbolDirsWith(pdbDirs) }));
 
-/** The session's symbol directories with the saved and the environment's ones, for a shader PDB. */
+/**
+ * The session's symbol directories with the saved and the environment's ones: where a shader's PDB
+ * is looked for, and what the capture libraries are given as their DbgHelp search path so a stack
+ * trace names functions whose PDBs are not beside their modules (launch_env.ts).
+ */
+/** What a launch gives the capture libraries: its own symbol directories and the saved ones. */
+function launchSymbolDirs(config: { symbolDirs?: string }): string {
+  return symbolDirsWith((config.symbolDirs ?? "").split(";")).join(";");
+}
+
 function symbolDirsWith(pdbDirs?: string[]): string[] {
   const dirs = [...(pdbDirs ?? []), ...(loadSettings().symbolDirs ?? "").split(";"), ...(process.env.GPU_INSPECTOR_SYMBOL_DIRS ?? "").split(";")]
     .map((d) => d.trim()).filter(Boolean);

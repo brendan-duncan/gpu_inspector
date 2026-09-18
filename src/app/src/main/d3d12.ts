@@ -84,6 +84,8 @@ export interface D3D12EnvironmentOptions {
   log: boolean;
   recordAlways: boolean;
   stacktraces: boolean;
+  /** Where to look for PDBs that are not beside their modules, separated by ";". */
+  symbolDirs?: string;
   /** "Validation layer": the D3D12 debug layer is enabled before the device is created. */
   validation: boolean;
   /** With `validation`: GPU-based validation, which patches the shaders to check what only the GPU knows. */
@@ -100,6 +102,7 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
     ...(o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {}),
     DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
     DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...(o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {}),
     DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
     ...(o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}),
   };

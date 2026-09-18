@@ -24,7 +24,7 @@ import { resolveSymbols } from "../renderer/stack_requests.js";
 import { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { isObject, str } from "../renderer/vulkan/vulkan_object.js";
 import type { AndroidDevice, CaptureRequest, FrameStatsMessage, ImageDataMessage, LayerMessage, ShaderReplacedMessage, UiRequest } from "../shared/protocol.js";
-import { symbolizeSymbolMap } from "./search_paths.js";
+import { searchPaths, symbolizeSymbolMap } from "./search_paths.js";
 
 const MAX_LOG_LINES = 2000;
 /** A minute of the capture library's frame reports (one every 100 ms). */
@@ -589,13 +589,17 @@ export class SessionManager {
       const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
       const vulkan = layerDir ? {
         layerDir, validationDir, port, log: true, recordAlways: !!o.recordAlways, breadcrumbs: !!o.breadcrumbs, shaderStatistics: !!o.shaderStatistics, stacktraces: o.stacktraces ?? true,
+        // set_search_paths' symbolDirs are where a PDB that is not beside its module is looked for,
+        // by the capture library's own symbolizer as well as by this server's.
+        symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
         validation: !!o.validation, syncValidation: !!o.syncValidation, gpuValidation: !!o.gpuValidation,
       } : null;
       const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;
       if (process.platform === "win32") {
         const launch = windowsLaunch({
           exe: requested, args, cwd, env: { ...process.env, ...o.env }, vulkan,
-          d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation } : null,
+          d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
+            symbolDirs: searchPaths("symbolDirs").dirs.join(";"), validation: !!o.validation } : null,
         });
         exe = launch.exe;
         spawnArgs = launch.args;

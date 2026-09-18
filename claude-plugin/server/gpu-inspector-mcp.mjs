@@ -11725,6 +11725,7 @@ function vulkanLayerEnvironment(o) {
     ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
     ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
     VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {},
     // The validation layer stops reporting a message after a few repeats (its
     // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
     // attaches a message to the captured command it fired on, which needs every occurrence.
@@ -11824,6 +11825,7 @@ function d3d12Environment(o) {
     ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
     DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
     DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {},
     DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
     ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
   };
@@ -27409,6 +27411,9 @@ var SessionManager = class {
         breadcrumbs: !!o.breadcrumbs,
         shaderStatistics: !!o.shaderStatistics,
         stacktraces: o.stacktraces ?? true,
+        // set_search_paths' symbolDirs are where a PDB that is not beside its module is looked for,
+        // by the capture library's own symbolizer as well as by this server's.
+        symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
         validation: !!o.validation,
         syncValidation: !!o.syncValidation,
         gpuValidation: !!o.gpuValidation
@@ -27421,7 +27426,15 @@ var SessionManager = class {
           cwd,
           env: { ...process.env, ...o.env },
           vulkan,
-          d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation } : null
+          d3d12: d3d12 ? {
+            tools: d3d12,
+            port,
+            log: true,
+            recordAlways: !!o.recordAlways,
+            stacktraces: o.stacktraces ?? true,
+            symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
+            validation: !!o.validation
+          } : null
         });
         exe = launch.exe;
         spawnArgs = launch.args;

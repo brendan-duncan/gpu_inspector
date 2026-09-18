@@ -231,7 +231,8 @@ export class LaunchDialog extends Dialog {
     this._symbolDirs.tooltip = "Where the application's debug files are on this machine (its build tree): the unstripped libraries, so stack traces of "
       + "objects and captured commands show functions, files and lines (an Android library is resolved with the NDK's llvm-symbolizer here), and the "
       + "PDBs of Direct3D 12 shaders, so a shader built with dxc -Zs -Fd <dir>\\ — which keeps its HLSL out of the bytecode — still gets its Source "
-      + "view, and Edit starts from the real source. Searched five levels deep.";
+      + "view, and Edit starts from the real source. On Windows they are also the capture library's own symbol path, so a PDB kept somewhere other "
+      + "than beside its module is still found. Searched five levels deep.";
     this._sourceRoots = this._inputRow(body, "Source roots", "(directories with the shader sources, separated by ;)");
     this._sourceRoots.tooltip = "Where the shader sources live on this machine: a shader compiled with line information but without embedded text (dxc -Zi, a stripped build) then gets its Source view, line costs and findings from the file its debug information names.";
     {

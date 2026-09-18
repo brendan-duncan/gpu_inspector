@@ -656,7 +656,15 @@ object database and saved in capture files (`symbols`, `stacks`) so a file sessi
 itself. Symbols come from DbgHelp on Windows (one mutex around it; `SymRefreshModuleList` before
 each batch for modules loaded since) and `dladdr` on Linux/Android (exported names only). A
 symbol further than 64 KB from the address is the nearest export of a module without symbols
-and is dropped for module+offset. Frames from the innermost up to the outermost loader/layer
+and is dropped for module+offset. DbgHelp looks for a PDB beside its module and along
+`_NT_SYMBOL_PATH`, which finds nothing for a build that keeps its symbols elsewhere, so the
+launch passes the symbol directories to the capture libraries as well
+(`VKINSP_SYMBOL_PATH` / `DXINSP_SYMBOL_PATH`, `SymSetSearchPath` in front of what DbgHelp
+works out for itself). One return address can stand for several source functions: DbgHelp
+answers with the function the compiler emitted, and the inlined ones are a separate walk
+(`SymAddrIncludeInlineTrace`, `SymQueryInlineTrace`, then `SymFromInlineContext` per context),
+so the frame takes the innermost — the one the reader means — and the rest, ending with the
+emitted function, become its `inlinedInto`, the same shape the host symbolizer produces. Frames from the innermost up to the outermost loader/layer
 frame are marked `internal` (the driver's frames sit between them) and hidden behind a toggle,
 so the first frame shown is the application's call into Vulkan. Every frame carries its offset
 from the module base, and frames without a source location get a second pass on the host

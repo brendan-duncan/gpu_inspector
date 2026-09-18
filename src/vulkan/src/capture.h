@@ -165,6 +165,25 @@ public:
     void OnFreeCommandBuffer(DeviceData* dev, VkCommandBuffer cb);
     CommandRecorder* RecorderFor(DeviceData* dev, VkCommandBuffer cb);
 
+    /** What the last capture recorded of one command buffer, for a message that arrives after it. */
+    struct CapturedCommands {
+        /** The command buffer's object id, as the capture's commands are keyed by. */
+        uint64_t cmdBufferId = 0;
+        std::shared_ptr<const CommandList> commands;
+    };
+    /**
+     * The commands the last capture recorded of `cb`, empty when it recorded none. GPU-assisted
+     * validation reports what a shader invocation did, so its messages arrive when the submission
+     * completes — after the capture has finished and the recorders are gone — and the command a
+     * message names can only be found by keeping what was recorded (see validation.cpp). Kept as
+     * the recorder's own frozen snapshot, so retaining it costs a reference count.
+     */
+    CapturedCommands CapturedCommandsFor(VkCommandBuffer cb);
+    /** Whether any are kept, so a message outside a capture costs nothing when none are. */
+    bool HasCapturedCommands() const { return _haveCapturedCommands.load(std::memory_order_relaxed); }
+    /** Keeps what every recorder of `dev` holds, called with its recorder lock as they are released. */
+    void RetainCapturedCommands(DeviceData* dev);
+
     // `readBack`: command buffers of the submission whose attachments ReadBackSubmitted already read.
     void OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args, int64_t result,
                   const std::vector<VkCommandBuffer>& commandBuffers, const std::vector<VkCommandBuffer>& readBack = {});
@@ -374,6 +393,14 @@ private:
     VkDevice _homeDevice = VK_NULL_HANDLE;
     std::vector<PassTiming> _passTimings;
     uint64_t _commandTotal = 0;
+
+    // What the last capture recorded, kept after its recorders are released so that a message
+    // arriving later still names a command of it (see CapturedCommandsFor). Replaced by the next
+    // capture rather than added to: a handle is reused, and the commands of an older capture under
+    // the same handle are not the ones the UI is showing.
+    std::mutex _capturedCommandsMutex;
+    std::unordered_map<VkCommandBuffer, CapturedCommands> _capturedCommands;
+    std::atomic<bool> _haveCapturedCommands{false};
 };
 
 } // namespace vkinsp

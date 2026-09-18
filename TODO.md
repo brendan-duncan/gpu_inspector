@@ -124,18 +124,40 @@ interpreter and re-created pipelines.
 - [ ] Sampled images bound through shader objects.
 
 ### Inspect
-- [ ] GPU-assisted validation messages attached to the commands they name (submit-time
-      synchronization validation messages are linked through the command buffer handle and the
-      command name in their text; a name that occurs several times in the buffer links to its
-      first occurrence). The capture's own read-back barriers can resolve a hazard in the
-      captured frame (a barrier before the layer's buffer copy orders the draw after an earlier
-      unsynchronized write), so a hazard seen every other frame may be missing from the
-      captured one: turning the Buffers and Render targets options off avoids that.
-- [ ] Stack traces: a symbol path for PDBs that are not next to the modules on Windows, and
-      inlined callers for the DbgHelp path (the host symbolizer shows them for Android/Linux).
+- [x] GPU-assisted validation messages attached to the commands they name
+      (`src/vulkan/src/validation.cpp`). A GPU-assisted message is about a shader invocation, so it
+      arrives when the submission finishes — after the capture is over and its recorders are gone —
+      and the command is read out of the text: the command buffer it names, the entry point in its
+      header (`vkCmdDispatch(): ...`) and which draw or dispatch of that buffer it was ("Compute
+      Dispatch Index 1"), which tells two dispatches of the same name apart. The capture's command
+      lists outlive it for this (`CaptureManager::CapturedCommandsFor`, a reference count on the
+      recorder's frozen snapshot). The same mistake is reported once per invocation that made it, so
+      the invocation id and the out-of-bounds offset are folded out of the dedupe key: 200 messages
+      became 12 on `test/triangle --oob`, both dispatches marked. The `oob` case in
+      `tools/ui_tests.py` covers it. Submit-time synchronization validation messages are linked as
+      before (the command buffer handle and the command name in their text; a name that occurs
+      several times links to its first occurrence, unless an index says which).
+      Still true, and not fixable here: the capture's own read-back barriers can resolve a hazard in
+      the captured frame (a barrier before the layer's buffer copy orders the draw after an earlier
+      unsynchronized write), so a hazard seen every other frame may be missing from the captured
+      one; turning the Buffers and Render targets options off avoids that.
+- [x] Stack traces: a symbol path for PDBs that are not next to the modules on Windows
+      (`VKINSP_SYMBOL_PATH` / `DXINSP_SYMBOL_PATH` from the launch's symbol directories, set with
+      `SymSetSearchPath` in front of what DbgHelp works out for itself), and inlined callers for the
+      DbgHelp path (`SymAddrIncludeInlineTrace` / `SymQueryInlineTrace` / `SymFromInlineContext`):
+      the frame takes the innermost function and the rest become its `inlinedInto`, the shape the
+      host symbolizer already produced for Android/Linux. Checked with the triangle's PDB moved out
+      of its build directory: 0 frames with lines without the symbol directory, 6 with it, and the
+      CRT's `invoke_main` shown inlined into `__scrt_common_main_seh`.
 - [ ] Refresh rate on Linux without a driver timing extension: the monitor mode through
       RandR / Wayland outputs (Windows reads the monitor mode today; Linux and Android without
-      `VK_GOOGLE_display_timing` fall back to the frame-interval estimate).
+      `VK_GOOGLE_display_timing` fall back to the frame-interval estimate). Not written yet because
+      it cannot be built or run on the Windows machine this was developed on (no Linux toolchain,
+      no WSL). The shape of it: `vkCreateXlibSurfaceKHR` and friends are hooked already but keep the
+      display and window only as serialized JSON, so a typed field per surface comes first; then the
+      X11 path is `XRRGetScreenResourcesCurrent` and the mode of the window's CRTC (dotClock over
+      hTotal*vTotal) behind `HAVE_XLIB_H`, xcb-randr behind `HAVE_XCB_H`, and Wayland needs
+      `wl_output`'s mode event dispatched on a queue of our own rather than on the application's.
 
 ### Shaders
 - [x] Shader flame graph: fragment stages are weighted by the fragment invocations a pass's GPU
