@@ -1805,7 +1805,7 @@ export class InspectPanel {
         log.html = "";
         if (r.log) {
           for (const line of r.log.split("\n")) {
-            const lineNo = [...errors.keys()].find((n) => new RegExp(`(^|[^0-9])${n}:`).test(line) && line.includes(errors.get(n) ?? " "));
+            const lineNo = [...errors.keys()].find((n) => new RegExp(`(^|[^0-9])${n}:`).test(line) && line.includes(errors.get(n) ?? ""));
             const row = new Div(log, { text: line, class: lineNo !== undefined ? "shader-log-line shader-log-link" : "shader-log-line" });
             if (lineNo !== undefined) row.element.onclick = () => text.goToLine(lineNo);
           }

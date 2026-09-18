@@ -13,6 +13,8 @@
 - A D3D12 capture records from the moment it is asked for, and lets a frame pass before it starts, so an engine that records its command lists ahead is captured rather than reported as unrecorded.
 - A D3D12 capture says when a submitted command list holds no commands, in the log and as a frame issue, with what to turn on.
 - A D3D12 frame says which render passes the application suspended across command lists, since those are the passes a capture can measure nothing of.
+- `mtlinsp_triangle --compile-hitch` compiles a library and a pipeline inside every frame, and the sample reserves a heap and suballocates from it, so the Metal CPU timeline and memory breakdown have something to report.
+- The Metal CPU timeline and Memory Use are checked end to end on a Mac (`tools/ui_tests.py`, the `metal-cpu-timeline`, `metal-compile-hitch`, `metal-self-compile` and `metal-memory` cases), including that the capture library's own pipeline compiles stay out of the application's timeline.
 
 ### Changed
 - Smaller downloads on every platform — the Windows installer 98MB rather than 113MB, the installed app 304MB rather than 377MB — from shipping one Chromium locale instead of 55 and dropping Dawn's DirectX shader compiler, which the app never loads.
@@ -25,6 +27,8 @@
 - The D3D12 capture library is built with debug information in every configuration, so its frames in an application's own crash report carry function names and lines.
 - A D3D12 capture read every render target of every pass back with no total budget, which on a frame with thousands of passes is more work than the frame itself.
 - The memory accounting asked the runtime to size a resource whose description uses tight alignment, which it refuses.
+- Metal's Memory Use reported every heap as entirely empty: it looked for the heap's live usage under the key the library groups those fields by, but an `ObjectUpdate` carries them flat beside the id, so what it read was the creation-time zero.
+- The Frame Bound card told the reader of a Metal or D3D12 capture that the CPU bar is time inside `vkQueueSubmit`, naming a function their application never calls.
 
 ## v0.15.0
 

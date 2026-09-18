@@ -28,8 +28,8 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { pipelineUses, programStages, shaderProgram, stageLabel } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
-import { renderFrameStats, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
-import { defaultPassLabel, type LabelledPass } from "./timeline_tracks.js";
+import { renderFrameStats, SUBMIT_CALL, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
+import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabelledPass } from "./timeline_tracks.js";
 import { accelerationScene } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
@@ -47,6 +47,7 @@ import { drawState, findPass } from "./draw_state.js";
 import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
 import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
+import { summarizeCpuTimeline } from "./cpu_timeline.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { hwCountersSummary, parseHwCounters } from "./hw_counters.js";
 import type { ShaderMeasureTarget } from "./shader_ablation.js";
@@ -335,6 +336,18 @@ export class CapturePanel {
       else if (name === "buffers") this._buffersCheck.checked = false;
       else if (name === "images") this._imagesCheck.checked = false;
       else if (name === "profile") this._profileCheck.checked = false;
+    }
+  }
+
+  /**
+   * Turns on the options that are off by default, for --debug-capture-with: "overdraw" and
+   * "stacks". Only the ones the host offers — asking for overdraw on a platform whose capture bar
+   * has no such checkbox does nothing, the way ticking it by hand could not.
+   */
+  setExtraCaptureOptions(on: string[]): void {
+    for (const name of on) {
+      if (name === "overdraw" && this._overdrawCheck) this._overdrawCheck.checked = true;
+      else if (name === "stacks") this._stacksCheck.checked = true;
     }
   }
 
@@ -913,7 +926,7 @@ export class CaptureView implements CaptureHost {
     if (!passes.length) return null;
     passes.sort((a, b) => b.durationMs - a.durationMs);
     const db = this.window.database;
-    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes };
+    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes, submitCall: SUBMIT_CALL[this.data.api] };
   }
 
   /**
@@ -1350,6 +1363,33 @@ export class CaptureView implements CaptureHost {
       })() : null,
       commandsWithStacks: d.commands.filter((c) => c.stack && c.stack.length).length,
       commandsWithValidation: d.commands.filter((c) => db.validationForCommand(c.secondary ?? c.object?.__id, c.slot).length).length,
+      // "Where the CPU went" (frame_stats_view.ts) in numbers: which categories the layer timed
+      // and how much went to each. What a case checks is usually that a category is there at all
+      // — a frame that compiles has a `pipeline` total, a vsynced one has `acquire` — which no
+      // screenshot can assert.
+      cpuTimeline: (() => {
+        const s = summarizeCpuTimeline(d.cpuTimeline);
+        return s ? {
+          spanMs: s.spanMs, frames: s.frames, threads: s.threads, dropped: s.dropped, calibrated: s.calibrated,
+          categories: s.totals.map((t) => ({ category: t.category, kind: t.kind, calls: t.calls, ms: t.ms })),
+        } : null;
+      })(),
+      // The Timeline card's lanes. `submitToFirstPass` is where a clock relation that is wrong
+      // shows itself: the GPU lane is drawn on the CPU's axis, so a bad calibration puts the
+      // passes before the submit that issued them or a whole frame away from it, which no total
+      // would reveal.
+      timelineTracks: (() => {
+        const gpu = this.gpuTrack();
+        const t = buildTimelineTracks({ timeline: d.cpuTimeline, passes: gpu.passes, originTicks: gpu.originTicks });
+        if (!t) return null;
+        const span = gpuSpan(t);
+        return {
+          spanMs: t.spanMs, hasGpu: t.hasGpu, gpuNote: t.gpuNote,
+          tracks: t.tracks.map((k) => ({ kind: k.kind, spans: k.spans.length, busyMs: k.busyMs })),
+          gpuStartMs: span?.startMs ?? null, gpuEndMs: span?.endMs ?? null,
+          submitToFirstPassMs: submitToFirstPassMs(t),
+        };
+      })(),
     };
   }
 

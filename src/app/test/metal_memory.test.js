@@ -94,14 +94,27 @@ test("a heap's usage comes from its updates, not from what it was created with",
   // The library refreshes usedSize every time a resource is made from the heap. A heap has used
   // none of itself at the moment it is created, so reading the creation arguments would report
   // every heap in every session as entirely empty.
+  //
+  // The updates are flat, which is the shape the wire has: the library groups the two fields under
+  // a key ("usage") for its own bookkeeping, but an ObjectUpdate sends them beside the id and the
+  // database merges them into `updates` individually. Written nested, these cases passed against a
+  // reader that could never see a real heap's usage at all.
   const m = metalMemory(db(obj(10, "MTLHeap", { allocatedSize: 8000, usedSize: 0 }, false,
-                              { usage: { usedSize: 7000, currentAllocatedSize: 8000 } })));
+                              { usedSize: 7000, currentAllocatedSize: 8000 })));
   assert.equal(m.heapUsedBytes, 7000);
   assert.equal(heapOccupancy(m), 0.875);
 });
 
 test("a heap that grew is counted at its current size", () => {
   const m = metalMemory(db(obj(10, "MTLHeap", { allocatedSize: 4000 }, false,
-                              { usage: { usedSize: 5000, currentAllocatedSize: 9000 } })));
+                              { usedSize: 5000, currentAllocatedSize: 9000 })));
   assert.equal(m.totalBytes, 9000, "what it holds now, not what it was asked for");
+});
+
+test("a heap that has reported nothing since it was created falls back to its arguments", () => {
+  // No update yet: the creation figures are all there is, and a heap created full (one made to
+  // hold a single resource placed at once) should not read as empty.
+  const m = metalMemory(db(obj(10, "MTLHeap", { allocatedSize: 8000, usedSize: 0 })));
+  assert.equal(m.heapReservedBytes, 8000);
+  assert.equal(m.heapUsedBytes, 0);
 });

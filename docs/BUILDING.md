@@ -162,6 +162,13 @@ to both; the rest draw the cube differently or misbehave on purpose.
 | `--second-device`, `--second-queue` | A second stream of work each frame |
 | `--offscreen` | Renders without ever presenting, like an OpenXR application |
 
+`mtlinsp_triangle`:
+
+| Mode | What it does |
+|---|---|
+| `--present-direct` | Presents through `[drawable present]` from a scheduled handler, the way Unity's macOS player does |
+| `--compile-hitch` | Compiles a library and a pipeline inside every frame, so the CPU timeline has a stall to attribute |
+
 `dxinsp_triangle`:
 
 | Mode | What it does |

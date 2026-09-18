@@ -939,6 +939,13 @@ export interface AppConfig {
      * that is slow to capture.
      */
     captureWithout: string | null;
+    /**
+     * --debug-capture-with=<list>: options that are off by default and the debug capture turns on,
+     * of "overdraw" and "stacks" (comma separated). Overdraw is the one that makes the capture
+     * library compile pipelines of its own, which is how a case checks that the library's work is
+     * kept out of the application's CPU timeline.
+     */
+    captureWith: string | null;
     /** Open the Stack trace section of selected commands and objects (symbolizes at once). */
     expandStacks: boolean;
     /** Start a session waiting for an application the implicit layer brings (--wait-for-app). */

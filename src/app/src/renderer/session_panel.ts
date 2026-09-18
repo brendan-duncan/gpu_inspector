@@ -11,6 +11,7 @@ import { ObjectDatabase, type ValidationEntry } from "./vulkan/object_database.j
 import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
+import { heapOccupancy, metalMemory } from "./metal/metal_memory.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { CapturedTexture } from "./capture_data.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
@@ -243,6 +244,19 @@ export class SessionPanel extends Div implements SessionContext {
       // only debug information with inline records has (stacktrace.cpp).
       symbolsInlined: [...db.symbols.values()].filter((f) => !!f.inlinedInto?.length).length,
       hostSources: hostSourcesResolved(),
+      // The Memory Use rows an MTLDevice shows (device_info_view.ts, renderMetalDeviceRows), which
+      // are the breakdown by object kind Metal has instead of a heap table. Null on the other two
+      // backends, whose breakdown is memoryHeaps() and is checked through the heap cases.
+      metalMemory: (() => {
+        const m = metalMemory(db);
+        return m ? {
+          totalBytes: m.totalBytes,
+          groups: m.groups.map((g) => ({ label: g.label, count: g.count, bytes: g.bytes })),
+          inHeaps: m.inHeaps, heapUsedBytes: m.heapUsedBytes, heapReservedBytes: m.heapReservedBytes,
+          occupancy: heapOccupancy(m),
+        } : null;
+      })(),
+      memorySamples: db.memorySamples?.length ?? 0,
       captures: this.capturePanel.debugState(),
       log: this.info.log.slice(-40),
     };

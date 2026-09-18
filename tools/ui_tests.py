@@ -513,6 +513,94 @@ def metal_debug_pixel(state, log):
         expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
 
 
+def cpu_categories(state):
+    """Which categories "Where the CPU went" totalled, by name -> milliseconds."""
+    timeline = capture(state).get("cpuTimeline") or {}
+    return {t["category"]: t.get("ms", 0.0) for t in timeline.get("categories") or []}
+
+
+def metal_cpu_timeline(state, log):
+    c = capture(state)
+    timeline = c.get("cpuTimeline") or {}
+    cats = cpu_categories(state)
+    # The CPU timeline on a Metal capture (src/metal/src/cpu_timeline.h): commit is submission and
+    # nextDrawable is waiting for the display, which is what a vsynced frame spends itself on and
+    # what makes the verdict read as display pacing rather than as a GPU bound. `calibrated` is the
+    # sampleTimestamps relation that puts the GPU lane on the same axis as the commits; without it
+    # the Timeline card can still draw the CPU spans but the passes keep their own origin.
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(timeline), "the capture carries no CPU timeline") + \
+        expect("submit" in cats, f"nothing was timed as submission (commit): {sorted(cats)}") + \
+        expect("acquire" in cats, f"nextDrawable was not timed as waiting for a swapchain image: {sorted(cats)}") + \
+        expect(timeline.get("calibrated") is True,
+               "the GPU and CPU clocks were not related, so the GPU lane cannot be laid over the commits") + \
+        expect((timeline.get("frames") or 0) >= 1 and (timeline.get("spanMs") or 0) > 0,
+               f"the timeline spans nothing: {timeline.get('frames')} frames, {timeline.get('spanMs')} ms") + \
+        metal_timeline_lanes(c)
+
+
+def metal_timeline_lanes(c):
+    """The Timeline card's GPU lane sitting where the commits put it, not a frame away from them."""
+    t = c.get("timelineTracks") or {}
+    gap = t.get("submitToFirstPassMs")
+    return expect(bool(t), "the capture builds no timeline tracks") + \
+        expect(t.get("hasGpu") is True, f"no GPU lane: {t.get('gpuNote')}") + \
+        expect((t.get("gpuStartMs") or -1) >= 0 and (t.get("gpuEndMs") or 0) <= (t.get("spanMs") or 0) + 0.001,
+               f"the GPU lane falls outside the drawn range: {t.get('gpuStartMs')}-{t.get('gpuEndMs')} of {t.get('spanMs')} ms") + \
+        expect(gap is not None, "no commit precedes the first pass, so the two lanes cannot be related at all") + \
+        expect(gap is None or 0 <= gap < 8.0,
+               f"the GPU lane sits {gap} ms after the commit that issued it: the clocks are related wrongly "
+               f"(a pass cannot precede its commit, and a frame's worth of offset is the calibration being out)")
+
+
+def metal_compile_hitch(state, log):
+    cats = cpu_categories(state)
+    # --compile-hitch builds a library and a pipeline inside the frame, so the frame should stop
+    # for it under "Creating pipelines" (hooks_device.mm times the six creation calls).
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect("pipeline" in cats,
+               f"the frame's pipeline creation was not timed: {sorted(cats)}") + \
+        expect(cats.get("pipeline", 0) > 0.1,
+               f"the compile was timed at {cats.get('pipeline')} ms, which is too little to be a real compile")
+
+
+def metal_no_self_compile(state, log):
+    c = capture(state)
+    cats = cpu_categories(state)
+    # The same application *without* --compile-hitch, captured with Overdraw on: the library
+    # compiles counting copies of every pipeline of its own (src/metal/src/overdraw.mm), and the
+    # reentry guard is what keeps that out of the application's timeline. If the guard ever stops
+    # holding, a frame that compiled nothing grows a "Creating pipelines" row and the verdict
+    # blames the application for the inspector's work.
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect((c.get("overdraw") or 0) >= 1, f"{c.get('overdraw')} overdraw measurements: the library did not measure, so it compiled nothing to be confused by") + \
+        expect("pipeline" not in cats,
+               f"the inspector's own compiles were timed as the application's: {cats.get('pipeline')} ms under 'pipeline'")
+
+
+def metal_memory(state, log):
+    s = session(state)
+    m = s.get("metalMemory") or {}
+    groups = {g["label"]: g for g in m.get("groups") or []}
+    in_heaps = m.get("inHeaps") or {}
+    # Memory Use on an MTLDevice (renderer/metal/metal_memory.ts): the breakdown by object kind
+    # Metal has instead of a heap table, and the rows that only an application using heaps draws.
+    # The sample reserves 4 MB and takes two small resources out of it, so the reservation is
+    # mostly empty and that call-out has something to report too.
+    return check_connected(state, log) + \
+        expect(bool(m), "the session has no Metal memory breakdown") + \
+        expect("Buffers" in groups and "Textures" in groups and "Heaps" in groups,
+               f"the breakdown is missing a kind: {sorted(groups)}") + \
+        expect((m.get("totalBytes") or 0) > 0, "the breakdown totals nothing") + \
+        expect((in_heaps.get("count") or 0) >= 2,
+               f"{in_heaps.get('count')} resources were counted as suballocated from a heap, so the 'In heaps' row is missing") + \
+        expect((m.get("heapReservedBytes") or 0) >= (m.get("heapUsedBytes") or 0) > 0,
+               f"the heap reported {m.get('heapUsedBytes')} used of {m.get('heapReservedBytes')} reserved") + \
+        expect((m.get("occupancy") or 1) < 0.5,
+               f"the heap is {m.get('occupancy')} full, so the 'mostly empty' call-out this case is for does not apply") + \
+        expect((s.get("memorySamples") or 0) > 0, "no memory samples arrived, so the series under the rows is empty")
+
+
 def metal_cases(triangle):
     launch = [f"--launch={triangle}"]
     return [
@@ -527,6 +615,20 @@ def metal_cases(triangle):
         # read-back (src/metal/src/capture.mm, QueueTextureCapture) as well as the interpreter.
         Case("metal-debug-pixel", launch + ["--debug-capture", "--debug-view=debugger:pixel:last:end"],
              metal_debug_pixel, delay_ms=18000),
+        # "Where the CPU went" and the Timeline card on a Metal capture, with the Frame Stats view
+        # open so the screenshot shows the rows the checks are of.
+        Case("metal-cpu-timeline", launch + ["--debug-capture", "--debug-view=stats"],
+             metal_cpu_timeline, delay_ms=16000),
+        Case("metal-compile-hitch", launch + ["--args=--compile-hitch", "--debug-capture", "--debug-view=stats"],
+             metal_compile_hitch, delay_ms=16000),
+        # The other side of the same guard: the library compiling for itself must not land in the
+        # application's timeline. Overdraw is what makes it compile.
+        Case("metal-self-compile", launch + ["--debug-capture", "--debug-capture-with=overdraw", "--debug-view=stats"],
+             metal_no_self_compile, delay_ms=20000),
+        # Memory Use on the MTLDevice. No --debug-capture: the checks read the live object graph,
+        # and taking a capture would leave the Capture tab in front so the screenshot would not
+        # show the rows this case is about.
+        Case("metal-memory", launch + ["--debug-select=MTLDevice"], metal_memory, delay_ms=16000),
     ]
 
 

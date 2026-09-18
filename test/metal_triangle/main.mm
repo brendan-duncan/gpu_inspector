@@ -1,9 +1,10 @@
 // A small Metal application, the counterpart of test/triangle: something to point the Metal
 // capture library at without needing a Unity build. It exercises the parts of the API the
 // library has to intercept — a device, a command queue, buffers in shared and private storage, a
-// library compiled at run time, two render pipelines, a sampler, a compute pass, a multisampled
-// render pass through a parallel encoder resolving into a texture, a render pass to the drawable
-// that samples it with inline constants bound, and a present.
+// heap with resources suballocated from it, a library compiled at run time, two render pipelines,
+// a sampler, a compute pass, a multisampled render pass through a parallel encoder resolving into
+// a texture, a render pass to the drawable that samples it with inline constants bound, and a
+// present.
 //
 //   mtlinsp_triangle              a window, until it is closed
 //   mtlinsp_triangle --frames N   render N frames and exit (no interaction needed)
@@ -11,6 +12,9 @@
 //                                 present through [drawable present] from a scheduled handler,
 //                                 the way Unity's macOS player does, instead of through
 //                                 [MTLCommandBuffer presentDrawable:]
+//   mtlinsp_triangle --compile-hitch
+//                                 compile a library and a pipeline inside every frame, so the CPU
+//                                 timeline has a stall in it to attribute
 //
 // Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See src/metal/README.md.
 #import <Cocoa/Cocoa.h>
@@ -90,12 +94,30 @@ kernel void wave_main(device float *values [[buffer(0)]],
 }
 )MSL";
 
+// --compile-hitch compiles this, with the frame number substituted in, once per frame. The source
+// has to differ every time: Metal keeps a compiler cache, and recompiling identical source would
+// be answered from it in microseconds, which is the opposite of the stall being staged.
+NSString *const kHitchSourceFormat = @R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void hitch_main(device float *values [[buffer(0)]],
+                       uint i [[thread_position_in_grid]]) {
+    values[i] = %f + sin(float(i));
+}
+)MSL";
+
 struct Uniforms {
     float angle;
     float scale;
 };
 
 constexpr NSUInteger kWaveCount = 256;
+
+// The heap is deliberately far larger than the two resources taken out of it, so that the
+// breakdown's "mostly empty" call-out (renderer/metal/metal_memory.ts, HEAP_OCCUPANCY_LOW) has
+// something to report as well as the "In heaps" row.
+constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
 }  // namespace
 
@@ -107,6 +129,8 @@ constexpr NSUInteger kWaveCount = 256;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --present-direct: present through the drawable, the way Unity's macOS player does. */
 @property(nonatomic) BOOL presentDirect;
+/** --compile-hitch: build a library and a pipeline inside every frame. */
+@property(nonatomic) BOOL compileHitch;
 @end
 
 @implementation Renderer {
@@ -126,6 +150,12 @@ constexpr NSUInteger kWaveCount = 256;
     id<MTLBuffer> _indices;
     id<MTLBuffer> _uniforms;
     id<MTLBuffer> _waveOut;
+    // A heap and what was suballocated from it: memory the process holds through one reservation
+    // rather than a resource at a time, which the memory breakdown counts differently (their bytes
+    // are the heap's, not their own).
+    id<MTLHeap> _heap;
+    id<MTLBuffer> _heapBuffer;
+    id<MTLTexture> _heapTexture;
     // Resources allocated while running rather than at start-up, so that a capture library has
     // something to stream to a UI that is already connected — the snapshot path and the live path
     // are different code and only one of them is exercised by start-up allocations.
@@ -262,11 +292,59 @@ constexpr NSUInteger kWaveCount = 256;
     _waveOut = [_device newBufferWithLength:kWaveCount * sizeof(float)
                                     options:MTLResourceStorageModeShared];
     _waveOut.label = @"wave output";
+
+    // A heap, the way an engine reserves once and suballocates: the resources made from it never
+    // pass through the device, so they reach the library through the heap's own hooks
+    // (src/metal/src/hooks_device.mm, H_newBufferWithLength and friends) and each one moves the
+    // heap's reported usage.
+    MTLHeapDescriptor *heapDescriptor = [[MTLHeapDescriptor alloc] init];
+    heapDescriptor.size = kHeapSize;
+    heapDescriptor.storageMode = MTLStorageModePrivate;
+    _heap = [_device newHeapWithDescriptor:heapDescriptor];
+    if (_heap) {
+        _heap.label = @"scratch heap";
+        _heapBuffer = [_heap newBufferWithLength:64 * 1024 options:MTLResourceStorageModePrivate];
+        _heapBuffer.label = @"heap scratch";
+        MTLTextureDescriptor *heapTexture =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                               width:128
+                                                              height:128
+                                                           mipmapped:NO];
+        heapTexture.usage = MTLTextureUsageShaderRead;
+        heapTexture.storageMode = MTLStorageModePrivate;
+        _heapTexture = [_heap newTextureWithDescriptor:heapTexture];
+        _heapTexture.label = @"heap lightmap";
+    }
+
     _later = [NSMutableArray array];
     return self;
 }
 
+/**
+ * --compile-hitch: builds a pipeline in the middle of the frame, the way an engine does when it
+ * meets a material it has not compiled yet. The point is the stall, so the library is compiled
+ * from source that has never been seen before and both it and the pipeline are thrown away again:
+ * the timeline should show the frame stopping for it (**Where the CPU went**, "Creating
+ * pipelines"), and nothing the inspector itself compiles should join it there.
+ */
+- (void)runCompileHitch {
+    if (!self.compileHitch) return;
+    NSString *source = [NSString stringWithFormat:kHitchSourceFormat, (double)_frameCount];
+    NSError *error = nil;
+    id<MTLLibrary> library = [_device newLibraryWithSource:source options:nil error:&error];
+    if (!library) {
+        NSLog(@"hitch compilation failed: %@", error);
+        return;
+    }
+    library.label = @"compile hitch";
+    id<MTLComputePipelineState> pipeline =
+        [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"hitch_main"]
+                                               error:&error];
+    if (!pipeline) NSLog(@"hitch pipeline creation failed: %@", error);
+}
+
 - (void)renderFrame {
+    [self runCompileHitch];
     id<CAMetalDrawable> drawable = [_layer nextDrawable];
     if (!drawable) return;
 
@@ -361,6 +439,7 @@ constexpr NSUInteger kWaveCount = 256;
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic) NSUInteger frameLimit;  // 0: run until the window is closed
 @property(nonatomic) BOOL presentDirect;
+@property(nonatomic) BOOL compileHitch;
 @end
 
 @implementation AppDelegate {
@@ -400,6 +479,7 @@ constexpr NSUInteger kWaveCount = 256;
 
     _renderer = [[Renderer alloc] initWithLayer:layer];
     _renderer.presentDirect = self.presentDirect;
+    _renderer.compileHitch = self.compileHitch;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
                                                block:^(NSTimer *t) {
@@ -421,9 +501,11 @@ constexpr NSUInteger kWaveCount = 256;
 int main(int argc, const char *argv[]) {
     NSUInteger frameLimit = 0;
     BOOL presentDirect = NO;
+    BOOL compileHitch = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
+        else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
     }
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
@@ -431,6 +513,7 @@ int main(int argc, const char *argv[]) {
         AppDelegate *delegate = [[AppDelegate alloc] init];
         delegate.frameLimit = frameLimit;
         delegate.presentDirect = presentDirect;
+        delegate.compileHitch = compileHitch;
         app.delegate = delegate;
         [app run];
     }

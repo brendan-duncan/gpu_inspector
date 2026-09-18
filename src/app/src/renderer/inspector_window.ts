@@ -541,6 +541,9 @@ export class InspectorWindow extends Window {
       // the cost of each is measured on a frame that is slow to capture.
       const without = (this._debug?.captureWithout ?? "").split(",").map((p) => p.trim()).filter(Boolean);
       if (without.length) panel.capturePanel.setCaptureOptions(without);
+      // --debug-capture-with=<list>: and the options that are off by default.
+      const with_ = (this._debug?.captureWith ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+      if (with_.length) panel.capturePanel.setExtraCaptureOptions(with_);
       panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
       // --debug-command=<index>: select a command once the capture has arrived.
       const selectCommand = this._debug?.selectCommand;
