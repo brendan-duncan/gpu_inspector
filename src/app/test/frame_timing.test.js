@@ -16,7 +16,7 @@ buildSync({
   entryPoints: [join(here, "..", "src", "renderer", "frame_timing.ts")],
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { summarizeTiming, hitchThresholdMs, HITCH_FLOOR_MS } = await import(pathToFileURL(out).href);
+const { summarizeTiming, hitchThresholdMs, rangeIndices, HITCH_FLOOR_MS } = await import(pathToFileURL(out).href);
 
 const CATEGORIES = ["submit", "present", "waitFences", "acquire", "waitIdle", "pipeline"];
 const at = (name) => CATEGORIES.indexOf(name);
@@ -130,4 +130,74 @@ test("a range can be summarized on its own", () => {
   assert.equal(tail.medianMs, 50);
   assert.equal(tail.hitches.length, 0, "steady at 50 ms is not hitching, it is just slow");
   assert.notEqual(whole.medianMs, tail.medianMs);
+});
+
+// A range dragged out on the graph (renderer/timing_view.ts). It is held by the application's own
+// frame numbers, because both rings drop the oldest frames out of the front of the array and a
+// range held by position would name different frames after every trim.
+
+test("a range resolves to the frames it names, the last one included", () => {
+  const c = capture(steady(10));            // frames 100 to 109
+  assert.deepEqual(rangeIndices(c, { fromFrame: 102, toFrame: 105 }), { from: 2, to: 6 });
+  assert.deepEqual(rangeIndices(c, { fromFrame: 100, toFrame: 109 }), { from: 0, to: 10 });
+  assert.equal(summarizeTiming(c, 2, 6).frames, 4);
+});
+
+test("a range dragged right to left is the same range", () => {
+  const c = capture(steady(10));
+  assert.deepEqual(rangeIndices(c, { fromFrame: 105, toFrame: 102 }), { from: 2, to: 6 });
+});
+
+test("the same range names the same frames after the ring drops the oldest", () => {
+  const range = { fromFrame: 104, toFrame: 106 };
+  const c = capture(steady(10));
+  const before = rangeIndices(c, range);
+  assert.deepEqual(before, { from: 4, to: 7 });
+  const kept = c.frames.slice(before.from, before.to).map((f) => f.frame);
+  // Three frames trimmed off the front, as a long recording does every batch.
+  c.frames.splice(0, 3);
+  const after = rangeIndices(c, range);
+  assert.deepEqual(after, { from: 1, to: 4 }, "the indices moved");
+  assert.deepEqual(c.frames.slice(after.from, after.to).map((f) => f.frame), kept, "the frames did not");
+});
+
+test("a range half aged out keeps the frames it still has", () => {
+  const c = capture(steady(10));
+  c.frames.splice(0, 5);                    // frames 105 to 109 remain
+  const r = rangeIndices(c, { fromFrame: 102, toFrame: 106 });
+  assert.deepEqual(r, { from: 0, to: 2 }, "frames 105 and 106");
+});
+
+test("a range entirely aged out is nothing, so the caller can go back to the whole run", () => {
+  const c = capture(steady(10));
+  c.frames.splice(0, 5);
+  assert.equal(rangeIndices(c, { fromFrame: 100, toFrame: 104 }), null);
+  assert.equal(rangeIndices(capture([]), { fromFrame: 1, toFrame: 2 }), null);
+});
+
+test("hitches are counted in the range, not in the run", () => {
+  // A calm stretch and then one with a spike every tenth frame, which is what makes whole-run
+  // figures the wrong answer: the spikes are 10% of the second half and 5% of the run.
+  const c = capture([...steady(60, 16.7), ...Array.from({ length: 20 }, (_, i) => [i % 10 ? 16.7 : 60])]);
+  assert.ok(summarizeTiming(c).hitches.length > 0);
+  const calm = rangeIndices(c, { fromFrame: 100, toFrame: 159 });
+  const s = summarizeTiming(c, calm.from, calm.to);
+  assert.equal(s.frames, 60);
+  assert.equal(s.hitches.length, 0, "nothing in the calm stretch hitched");
+  const rough = rangeIndices(c, { fromFrame: 160, toFrame: 179 });
+  assert.equal(summarizeTiming(c, rough.from, rough.to).hitches.length, 2);
+});
+
+test("a range where the slow frames are the norm reports them as the norm", () => {
+  // Half the range at 60 ms makes 60 ms the median, and a hitch is measured against the median of
+  // the range being asked about. Selecting only the rough part therefore says the frames are slow
+  // — in the figures — rather than that they are hitching, which is the honest answer: nothing
+  // there is an outlier. The whole run, where those frames are outliers, still calls them hitches.
+  const c = capture([...steady(60, 16.7), ...Array.from({ length: 20 }, (_, i) => [i % 2 ? 16.7 : 60])]);
+  assert.ok(summarizeTiming(c).hitches.length >= 10);
+  const rough = rangeIndices(c, { fromFrame: 160, toFrame: 179 });
+  const s = summarizeTiming(c, rough.from, rough.to);
+  assert.equal(s.hitches.length, 0);
+  assert.equal(s.medianMs, 60);
+  assert.match(s.verdict, /Nothing here hitched/);
 });

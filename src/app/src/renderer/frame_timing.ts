@@ -89,6 +89,43 @@ export function hitchThresholdMs(medianMs: number): number {
 }
 
 /**
+ * A stretch of a run to summarize, held by the application's own frame numbers rather than by
+ * position. Positions do not survive a long recording: both the layer's ring and the UI's keep
+ * about twenty minutes and drop the oldest frames out of the front, so an index means a different
+ * frame after every trim, and a selection stored that way would quietly slide backwards through
+ * the run while the reader watched it.
+ */
+export interface FrameRange {
+  fromFrame: number;
+  toFrame: number;
+}
+
+/** The first index whose frame number is at or after `frame`; `frames.length` when none is. */
+function lowerBound(frames: TimingFrame[], frame: number): number {
+  let lo = 0;
+  let hi = frames.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (frames[mid].frame < frame) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Where a range sits in the capture now, as the `[from, to)` indices `summarizeTiming` takes. Null
+ * when the range holds no frames any more — the whole of it has fallen out of the ring — so the
+ * caller can go back to the whole run rather than report on nothing. A range that has *partly*
+ * aged out keeps the frames it still has, since what remains of it is still what was asked about.
+ */
+export function rangeIndices(capture: TimingCapture, range: FrameRange): { from: number; to: number } | null {
+  const frames = capture.frames;
+  if (!frames.length) return null;
+  const from = lowerBound(frames, Math.min(range.fromFrame, range.toFrame));
+  const to = lowerBound(frames, Math.max(range.fromFrame, range.toFrame) + 1);
+  return to > from ? { from, to } : null;
+}
+
+/**
  * Summarizes a range of frames: the distribution, the hitches in it and what caused them.
  * Null for an empty range, so the caller can ask before checking.
  */

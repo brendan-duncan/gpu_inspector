@@ -392,7 +392,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* A timing capture's report, under the capture bar (renderer/timing_view.ts). Bounded and its own
    scroller: it lists every hitch, and it must not push the capture tabs off the window. */
 .timing-panel { flex: 0 0 auto; max-height: 40vh; overflow: auto; padding: 6px 10px; background: var(--bg-elevated); }
-.timing-graph { display: block; margin: 4px 0 8px 0; background: var(--bg-primary); border-radius: var(--radius-sm); }
+.timing-graph { display: block; margin: 4px 0 4px 0; background: var(--bg-primary); border-radius: var(--radius-sm); cursor: col-resize; }
+/* What stretch of the run the figures are of, and the way back to all of it. */
+.timing-range-row { display: flex; align-items: center; gap: 8px; margin: 0 0 6px 0; min-height: 20px; }
 .timing-hitch { cursor: pointer; }
 .timing-hitch:hover { background: var(--bg-hover); }
 .frame-stats-section { margin-bottom: 14px; }
