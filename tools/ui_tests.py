@@ -250,7 +250,11 @@ def triangle_oob(state, log):
     reports it arrives after the capture — it is about a submission that has only now finished —
     so linking it to the dispatch it names needs what the capture recorded to outlive it."""
     s = session(state)
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect("access out of bounds" in log, "no out-of-bounds access reported by GPU validation") +         expect((s.get("validationLinked") or 0) >= 1, "no GPU validation message linked to a command") +         expect((capture(state).get("commandsWithValidation") or 0) >= 1, "no captured command carries the message") +         expect((s.get("validation") or 0) < 50, f"{s.get('validation')} distinct validation messages (one per shader invocation was not folded)")
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect("access out of bounds" in log, "no out-of-bounds access reported by GPU validation") + \
+        expect((s.get("validationLinked") or 0) >= 1, "no GPU validation message linked to a command") + \
+        expect((capture(state).get("commandsWithValidation") or 0) >= 1, "no captured command carries the message") + \
+        expect((s.get("validation") or 0) < 50, f"{s.get('validation')} distinct validation messages (one per shader invocation was not folded)")
 
 
 def graph(state):
@@ -300,7 +304,21 @@ def triangle_overdraw(state, log):
         expect(bool(t.get("picked")), "the click on the image picked no pixel") + \
         expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
         expect(bool(touched), f"the pixel history lists no events: {h}") + \
-        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}") +         expect(any("primitive" in e for e in touched),
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
+
+
+def triangle_pixel_history(state, log):
+    h = (capture(state).get("textureTab") or {}).get("history") or {}
+    touched = h.get("touched") or []
+    # The pixel history of the centre of the first colour target (--debug-view=pixel-history, no
+    # click needed): the pass it starts from, the draw that wrote it, and which of that draw's
+    # primitives the winning fragment came from (the replay's primitive-id pass).
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(bool(touched), f"the pixel history lists no events: {h}") + \
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}") + \
+        expect(any("wrote the pixel" in e for e in touched), f"no draw wrote the pixel: {touched}") + \
+        expect(any("primitive" in e for e in touched),
                f"no draw names the primitive that won the pixel (the primitive-id pass): {touched}")
 
 
@@ -517,7 +535,8 @@ def triangle_stacks(state, log):
     s = session(state)
     return check_connected(state, log) + check_capture_basic(state, log) + \
         expect((c.get("commandsWithStacks") or 0) >= 5, f"{c.get('commandsWithStacks')} commands carry stacks") + \
-        expect((s.get("symbolsWithLines") or 0) >= 1, "no symbol resolved to a source line (PDB next to the app?)") +         expect(not IS_WIN or (s.get("symbolsInlined") or 0) >= 1,
+        expect((s.get("symbolsWithLines") or 0) >= 1, "no symbol resolved to a source line (PDB next to the app?)") + \
+        expect(not IS_WIN or (s.get("symbolsInlined") or 0) >= 1,
                "no frame carries its inlined callers (DbgHelp's inline walk; the CRT's startup inlines at least one)")
 
 
@@ -593,6 +612,8 @@ def triangle_cases(triangle):
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))
+        cases.append(Case("pixel-history", launch + ["--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
+                          triangle_pixel_history, delay_ms=20000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh, delay_ms=20000))
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",

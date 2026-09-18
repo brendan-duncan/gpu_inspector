@@ -244,9 +244,12 @@ of zero; NaN positions at a uniform that was never set. `get_mesh_output` gives 
 ### Pixel history
 
 Click a pixel in the render target tab. The **Pixel History** pane beside it
-lists every clear and draw that touched that pixel, in order, with what became of the draw's
-fragments — not reached, culled, discarded, failed the depth test, failed the stencil test,
-written — and the pixel's value and depth after each one.
+lists everything that touched that pixel, in order, with the pixel's value and depth after each one:
+every clear and draw of the passes that render to it, with what became of the draw's fragments —
+not reached, culled, discarded, failed the depth test, failed the stencil test, written — and which
+of the draw's primitives the winning fragment came from; and the writes from outside a render pass,
+which are a clear, a copy from an image or a buffer, a blit, a resolve, or a dispatch or trace that
+had the image bound to be written.
 
 ![Pixel history: the clear and the draw that touched the clicked pixel, with the value after each](images/pixel-history.png)
 
@@ -257,9 +260,10 @@ This is the report for "why is this pixel the wrong colour".
 - **Metal** — another frame is captured while following the pixel, so the application must still
   be running.
 
-Current limits: writes outside render passes (copies, blits, compute) are not followed,
-multisampled images are followed through their resolve attachment, and a draw is one event with no
-detail per primitive inside it. The full list is in [Capture replay](REPLAY.md#pixel-history).
+Current limits: a draw is one event, so it names the primitive that won the pixel but not every
+fragment of the draw with its own value; only the first layer of a layered pass is followed; and a
+multisampled depth target cannot be read (a multisampled colour target is, through the resolve of
+the pixel's samples). The full list is in [Capture replay](REPLAY.md#pixel-history).
 
 A draw's row has **Debug**, which opens the [shader debugger](#shader-debugger) on that draw's
 fragment shader at the pixel.

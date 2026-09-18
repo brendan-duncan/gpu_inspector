@@ -5,6 +5,8 @@
 - A stretch of a timing capture dragged out on its frame-time graph: every figure and hitch below it is then of that stretch alone.
 - GPU-assisted validation messages are attached to the draw or dispatch they happened in, and the same mistake from every shader invocation is folded into one message with a count.
 - Stack traces find PDBs that are not beside their modules, through the launch's symbol directories, and name the functions a frame was inlined into on Windows.
+- Pixel history follows the writes that happen outside a render pass: a clear, a copy, a blit, a resolve, and a dispatch or trace with the image bound.
+- Pixel history names the primitive whose fragment won the pixel, follows a multisampled target through the resolve of its samples, and measures a shader that asks for early fragment tests with those tests on.
 
 ### Fixed
 - The Timeline drew at most 4,000 spans a lane and dropped the rest silently, which also hid those passes from its idle-gap analysis.

@@ -318,13 +318,35 @@ Limits:
     | stencil | stencil test only | failed the stencil test |
     | all tests | every test | nothing written |
 
-    Then it runs with its own pipeline, and writes.
+    Then it runs once more into a target of the replay's own with its fragment shader replaced by
+    one writing `gl_PrimitiveID`, in a render pass of the replay's own over that target and the
+    copy of the pass's depth: what is left in the pixel is the **primitive** the winning fragment
+    came from (one per draw, and `gl_PrimitiveID` needs the `geometryShader` feature, which the
+    replay adds to the device it creates). Finally it runs with its own pipeline, and writes.
   - **`vkCmdClearAttachments`** runs as it is.
-  - After each event the pixel and the pass's depth at it are read.
-- **Output.** Each event lists the command index, what became of the draw's fragments, and the
-  pixel's value and depth after it, decoded for common formats (8-bit RGBA and BGRA, half and full float,
-  `A2B10G10R10`, `B10G11R11`, and the depth formats). Draws that do not reach the pixel are only
-  counted.
+  - After each event the pixel and the pass's depth at it are read. A multisampled target cannot be
+    copied to a buffer, so its pixel is resolved into a one-pixel image of the replay's own first:
+    each value is then what the pixel's samples resolve to.
+  - **A shader that asks for the depth and stencil tests before it** (`EarlyFragmentTests`) has them
+    on in the `shaded` query, because the hardware never runs such a shader on a fragment they
+    killed; the event says so (`earlyTests`), since it changes what the shaded count means.
+**A write from outside a render pass** needs none of that: it lands in the image itself, so the
+pixel is read straight out of it once the command has run, as its own event.
+
+- A **clear**, a **copy** (from an image or a buffer), a **blit** and a **resolve** say in their own
+  arguments which image they write, which part of it, and in what layout, so the event is known
+  before the command runs — including whether the written region covers the pixel at the mip and
+  layer being followed.
+- A **dispatch** or a **trace** writes through a descriptor, which no argument names. What is known
+  is what was bound: the event is recorded when a descriptor set bound to that pipeline holds the
+  followed image as a storage image, and it says so ("dispatched with the image bound to be
+  written"). Whether the shader wrote that pixel is not knowable from outside it; the value after
+  the command is, and that is what the event carries.
+
+- **Output.** Each event lists the command index, what became of the draw's fragments, the primitive
+  that won the pixel, and the pixel's value and depth after it, decoded for common formats (8-bit
+  RGBA and BGRA, half and full float, `A2B10G10R10`, `B10G11R11`, and the depth formats). Draws that
+  do not reach the pixel are only counted.
 
 On these captures, the value after a pass's last event matches the target the capture (or the
 replay) read back at that pixel:
@@ -341,12 +363,12 @@ They are also tested against the depth and stencil from before the draw, since t
 write depth. So two triangles of one draw that both pass count twice.
 
 Limits:
-- Writes outside render passes are not followed yet: clears, copies and blits into the image, and
-  compute.
-- A multisampled image is not followed (its resolve attachment is). Only the first layer of a
-  layered framebuffer is followed.
-- Per-fragment detail is missing: a draw is one event, with no values of the primitives inside it.
-- A shader that writes depth, or discards after early tests, is classified as if tests ran late.
+- Only the first layer of a layered framebuffer is followed.
+- Per-fragment detail is partial: a draw is one event, which names the primitive of the fragment
+  that won the pixel but not every fragment of the draw with its own value.
+- A multisampled *depth* target cannot be resolved to be read, so a pixel of one is not followed;
+  a multisampled colour target is, through the resolve of its samples.
+- A dispatch or a trace is reported by what it had bound, not by what it wrote (see above).
 
 ## Per-draw timing and counters
 
