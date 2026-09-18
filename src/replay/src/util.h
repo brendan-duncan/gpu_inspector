@@ -106,6 +106,32 @@ inline const uint32_t kCountFragmentSpirv[] = {
     0x0003003e, 0x00000008, 0x00000009, 0x000100fd, 0x00010038,
 };
 
+/**
+ * The primitive id shader of the pixel history, written into an R32_UINT target one pixel wide:
+ *   #version 450
+ *   layout(location = 0) out uint primitive;
+ *   void main() { primitive = uint(gl_PrimitiveID) + 1u; }
+ * One more than the index, so that nothing having written the pixel reads as 0. gl_PrimitiveID in a
+ * fragment shader needs SPIR-V's Geometry capability, hence the geometryShader feature, which the
+ * replay enables when the device has it (_primitiveIdAvailable). Compiled with glslangValidator -V
+ * --target-env vulkan1.0, spirv-opt --strip-debug -O, and checked with spirv-val.
+ */
+inline const uint32_t kPrimitiveIdFragmentSpirv[] = {
+    0x07230203, 0x00010000, 0x0008000b, 0x00000010, 0x00000000, 0x00020011, 0x00000001, 0x00020011,
+    0x00000002, 0x0006000b, 0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e,
+    0x00000000, 0x00000001, 0x0007000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000008,
+    0x0000000b, 0x00030010, 0x00000004, 0x00000007, 0x00040047, 0x00000008, 0x0000001e, 0x00000000,
+    0x00040047, 0x0000000b, 0x0000000b, 0x00000007, 0x00030047, 0x0000000b, 0x0000000e, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000000,
+    0x00040020, 0x00000007, 0x00000003, 0x00000006, 0x0004003b, 0x00000007, 0x00000008, 0x00000003,
+    0x00040015, 0x00000009, 0x00000020, 0x00000001, 0x00040020, 0x0000000a, 0x00000001, 0x00000009,
+    0x0004003b, 0x0000000a, 0x0000000b, 0x00000001, 0x0004002b, 0x00000006, 0x0000000e, 0x00000001,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+    0x00000009, 0x0000000c, 0x0000000b, 0x0004007c, 0x00000006, 0x0000000d, 0x0000000c, 0x00050080,
+    0x00000006, 0x0000000f, 0x0000000d, 0x0000000e, 0x0003003e, 0x00000008, 0x0000000f, 0x000100fd,
+    0x00010038,
+};
+
 inline float HalfToFloat(uint16_t h) {
     const int sign = (h >> 15) ? -1 : 1;
     const int exponent = (h >> 10) & 0x1F;

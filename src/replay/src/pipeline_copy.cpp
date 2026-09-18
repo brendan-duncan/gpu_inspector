@@ -188,6 +188,16 @@ VkShaderModule Replayer::CountModule() {
     return _countModule;
 }
 
+VkShaderModule Replayer::PrimitiveIdModule() {
+    if (!_primitiveIdModule) {
+        VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        m.codeSize = sizeof(kPrimitiveIdFragmentSpirv);
+        m.pCode = kPrimitiveIdFragmentSpirv;
+        _fns.CreateShaderModule(_device, &m, nullptr, &_primitiveIdModule);
+    }
+    return _primitiveIdModule;
+}
+
 VkPipeline Replayer::CopyGraphicsPipeline(uint64_t pipelineId, const std::string& purpose, const std::function<bool(PipelineCopy&)>& edit) {
     const JValue* object = _capture->Object(pipelineId);
     const JValue* args = object ? object->Get("args") : nullptr;

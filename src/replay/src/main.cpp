@@ -194,7 +194,8 @@ std::string DrawOutcome(const PixelEvent& e) {
     if (stencilFailed) return "failed the stencil test";
     if (measured(5) && !e.passed) return "failed the depth and stencil tests together";
     // Samples of every fragment the draw put there, tested against the depth and stencil from before the draw.
-    if (measured(5)) return "wrote the pixel (" + std::to_string(e.passed) + (e.passed == 1 ? " sample passed)" : " samples passed)");
+    if (measured(5)) return "wrote the pixel (" + std::to_string(e.passed) + (e.passed == 1 ? " sample passed)" : " samples passed)")
+        + (e.primitive >= 0 ? ", primitive " + std::to_string(e.primitive) : "");
     return "covers the pixel";
 }
 
@@ -622,10 +623,12 @@ void PrintHistory(const PixelHistoryResult& h) {
         std::string line = "  [" + std::to_string(e.command) + "] ";
         if (e.kind == "load") {
             line += "command buffer " + std::to_string(e.commandBuffer) + ", pass " + std::to_string(e.passIndex) + " begins (" + e.detail + ")";
-        } else if (e.kind == "clear") {
-            line += e.method;
-        } else {
+        } else if (e.kind == "draw") {
             line += e.method + " (pipeline " + std::to_string(e.pipeline) + "): " + DrawOutcome(e);
+        } else {
+            // A clear of the pass, or a write outside one: the value is the whole answer.
+            line += e.method;
+            if (!e.detail.empty() && e.detail != e.method) line += " (" + e.detail + ")";
         }
         std::printf("%s\n", line.c_str());
         std::printf("      value %s", FormatTexel(h.format, e.value, h.format.find("VK_FORMAT_D") == 0).c_str());

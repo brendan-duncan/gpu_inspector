@@ -29676,7 +29676,7 @@ function parsePixelHistory(input) {
     const e = raw;
     const kind = str3(e.kind);
     return {
-      kind: kind === "load" || kind === "clear" ? kind : "draw",
+      kind: KINDS2.includes(kind) ? kind : "draw",
       command: num4(e.command),
       method: str3(e.method),
       detail: str3(e.detail),
@@ -29685,6 +29685,8 @@ function parsePixelHistory(input) {
       passIndex: num4(e.passIndex),
       pipeline: num4(e.pipeline),
       scissored: e.scissored === true,
+      earlyTests: e.earlyTests === true,
+      primitive: typeof e.primitive === "number" ? e.primitive : -1,
       testsMeasured: num4(e.testsMeasured),
       covered: num4(e.covered),
       facing: num4(e.facing),
@@ -29746,6 +29748,7 @@ var OUTCOME_TEXT = {
   wrote: "wrote the pixel",
   covers: "covers the pixel"
 };
+var KINDS2 = ["load", "clear", "draw", "copy", "blit", "resolve", "compute"];
 function touchesPixel(e) {
   if (e.kind !== "draw") return true;
   const outcome = drawOutcome(e);
@@ -29754,9 +29757,11 @@ function touchesPixel(e) {
 function eventSummary(e) {
   if (e.kind === "load") return `pass ${e.passIndex} begins (${e.detail.replace(/^(VK_ATTACHMENT_LOAD_OP_|MTLLoadAction)/, "") || "load"})`;
   if (e.kind === "clear") return `${e.method}: cleared`;
+  if (e.kind !== "draw") return e.detail ? `${e.method}: ${e.detail}` : e.method;
   const outcome = drawOutcome(e);
   const samples = outcome === "wrote" ? ` (${e.passed} sample${e.passed === 1 ? "" : "s"} passed)` : "";
-  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}`;
+  const primitive = outcome === "wrote" && e.primitive >= 0 ? `, primitive ${e.primitive}` : "";
+  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
 }
 function texelInfo(format, depth) {
   return { format, aspect: depth ? "depth" : "color", width: 1, height: 1 };
@@ -30087,6 +30092,11 @@ function pixelHistoryAnswer(c2, h, all, extra) {
         pass: pass >= 0 ? c2.passName(pass) : void 0,
         pipeline: e.pipeline ? refText(c2.db, e.pipeline) : void 0,
         samples: e.kind === "draw" && e.testsMeasured ? { covering: e.covered, facing: e.facing, shaded: e.shaded, passingDepth: e.depthPassed, passingStencil: e.stencilPassed, passingAll: e.passed } : void 0,
+        // Which of the draw's primitives the winning fragment came from, and whether its shader
+        // asked for the depth and stencil tests before it (so the shaded count includes them).
+        primitive: e.primitive >= 0 ? e.primitive : void 0,
+        wroteNothing: e.primitive === -2 ? true : void 0,
+        earlyFragmentTests: e.earlyTests ? true : void 0,
         valueAfter: value(h.pixelFormat, e.value, false),
         depthAfter: value(h.depthFormat, e.depth, true)
       };
