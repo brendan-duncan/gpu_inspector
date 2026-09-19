@@ -901,14 +901,30 @@ export interface AndroidDevice {
   abi: string;
 }
 
-/** A Chromium browser found on this machine (main/browsers.ts), for the launch dialog. */
+/**
+ * The directory that names a browser install, for a session's name and a recent launch's:
+ * "Chrome SxS" out of ...\Google\Chrome SxS\Application\chrome.exe, "Firefox Nightly" out of
+ * ...\Firefox Nightlyirefox.exe, since Firefox keeps its executable one level up.
+ */
+export function browserInstallName(exe: string): string {
+  const parts = exe.replace(/\\/g, "/").split("/").filter((p) => p.length);
+  const up = parts[parts.length - 1]?.toLowerCase() === "firefox.exe" ? 2 : 3;
+  return parts[parts.length - up] ?? parts[parts.length - 1] ?? "a browser";
+}
+
+/** A browser found on this machine (main/browsers.ts), for the launch dialog. */
 export interface BrowserInstall {
-  /** "Google Chrome Canary". */
+  /** "Google Chrome Canary", "Firefox Nightly". */
   name: string;
   /** The executable. */
   path: string;
-  /** Its build's version, from the versioned directory beside the executable; empty when unknown. */
+  /** Its build's version (Chromium's versioned directory, Firefox's application.ini); empty when unknown. */
   version: string;
+  /**
+   * Which engine it is, which decides how it is launched and which of its processes is followed:
+   * Chromium's WebGPU is Dawn in a --type=gpu-process child, Firefox's is wgpu in its " gpu" one.
+   */
+  family: "chromium" | "firefox";
 }
 
 export interface AndroidDeviceList {

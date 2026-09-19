@@ -28,9 +28,9 @@ import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironm
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
-import { BROWSER_FOLLOW, browserArgs, browserProfileDir, installedBrowsers } from "./browsers.js";
+import { browserArgs, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } from "./browsers.js";
 import {
-  THEMES,
+  THEMES, browserInstallName,
   type AndroidDeviceList,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type OpenFileOptions, type SaveFileOptions, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
@@ -250,7 +250,7 @@ function findAndroidLayerFiles(): AndroidLayerFiles | null {
 
 function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
-  if (c.target === "browser") return `${c.args || "a page"} in ${path.basename(path.dirname(path.dirname(c.exe))) || path.basename(c.exe)}`;
+  if (c.target === "browser") return `${c.args || "a page"} in ${browserInstallName(c.exe)}`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
   if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = path.basename(c.exe) || c.exe;
@@ -512,10 +512,12 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   // WebGPU work is in the GPU process the browser starts, which `follow` puts the library into
   // (main/browsers.ts). Everything below — the environment, the ports, the session — is the same.
   const browser = config.target === "browser";
-  const args = browser
-    ? browserArgs(config.args ?? "", browserProfileDir(app.getPath("userData"), config.exe))
-    : splitArgs(config.args ?? "");
-  const follow = browser ? BROWSER_FOLLOW : config.follow?.trim() ? splitArgs(config.follow) : undefined;
+  const profileDir = browser ? browserProfileDir(app.getPath("userData"), config.exe) : "";
+  // Firefox takes the settings a capture needs as preferences rather than switches, so the profile
+  // this launch uses is written before the browser reads it (browsers.ts).
+  if (browser) prepareProfile(config.exe, profileDir);
+  const args = browser ? browserArgs(config.exe, config.args ?? "", profileDir) : splitArgs(config.args ?? "");
+  const follow = browser ? browserFollow(config.exe) : config.follow?.trim() ? splitArgs(config.follow) : undefined;
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
   if (browser) s.appendLog(`${path.basename(config.exe)} ${args.join(" ")}`);
   if (process.platform === "win32") {

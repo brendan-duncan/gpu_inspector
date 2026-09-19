@@ -1,11 +1,12 @@
-// Finding the Chromium browsers on this machine and the command line that opens a page in one
-// with its GPU process captured (src/main/browsers.ts). The installations are faked under a
-// temporary root, since what a machine has installed is not something a test can rely on.
+// Finding the browsers on this machine and what it takes to open a page in one with its GPU
+// process captured (src/main/browsers.ts): the two families want different command lines, different
+// settings and different child processes followed. The installations are faked under a temporary
+// root, since what a machine has installed is not something a test can rely on.
 //
 //     cd src/app && npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,7 +19,13 @@ buildSync({
   entryPoints: [join(here, "..", "src", "main", "browsers.ts")],
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { BROWSER_FOLLOW, browserArgs, browserProfileDir, installedBrowsers } = await import(pathToFileURL(out).href);
+const { CHROMIUM_FOLLOW, FIREFOX_FOLLOW, browserArgs, browserFamily, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } =
+  await import(pathToFileURL(out).href);
+
+const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const CANARY = "C:\\Users\\me\\AppData\\Local\\Google\\Chrome SxS\\Application\\chrome.exe";
+const FIREFOX = "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
+const NIGHTLY = "C:\\Program Files\\Firefox Nightly\\firefox.exe";
 
 /** An installation: <root>/<relative>, with `versions` as the versioned directories beside it. */
 function install(root, relative, versions = []) {
@@ -31,25 +38,34 @@ function install(root, relative, versions = []) {
 
 const windows = process.platform === "win32";
 
-test("the installed browsers are found under the Windows roots, newest version first", { skip: !windows }, () => {
+test("the installed browsers are found under the Windows roots, with their versions", { skip: !windows }, () => {
   const local = join(dir, "local");
   const programs = join(dir, "programs");
   const chrome = install(programs, "Google\\Chrome\\Application\\chrome.exe", ["99.0.1.2", "153.0.8010.48"]);
   const canary = install(local, "Google\\Chrome SxS\\Application\\chrome.exe", ["155.0.8100.0"]);
   const edge = install(programs, "Microsoft\\Edge\\Application\\msedge.exe");
+  // Firefox has no versioned directory: its version is in application.ini beside the executable.
+  const firefox = install(programs, "Mozilla Firefox\\firefox.exe");
+  writeFileSync(join(dirname(firefox), "application.ini"), "[App]\nName=Firefox\nVersion=156.0\n");
+  const nightly = install(programs, "Firefox Nightly\\firefox.exe");
+  writeFileSync(join(dirname(nightly), "application.ini"), "[App]\nName=Firefox\nVersion=154.0a1\n");
   const saved = { p: process.env["ProgramFiles"], x: process.env["ProgramFiles(x86)"], l: process.env["LOCALAPPDATA"] };
   process.env["ProgramFiles"] = programs;
   process.env["ProgramFiles(x86)"] = programs;   // the same root twice: each browser is listed once
   process.env["LOCALAPPDATA"] = local;
   try {
     const found = installedBrowsers();
-    assert.deepEqual(found.map((b) => b.path), [chrome, canary, edge]);
-    assert.deepEqual(found.map((b) => b.name), ["Google Chrome", "Google Chrome Canary", "Microsoft Edge"]);
-    // The version comes from the versioned directory Chromium keeps its build in; 153 is newer
-    // than 99, which sorting as text would get backwards, and an install without one has none.
+    assert.deepEqual(found.map((b) => b.path), [chrome, canary, edge, firefox, nightly]);
+    assert.deepEqual(found.map((b) => b.name),
+      ["Google Chrome", "Google Chrome Canary", "Microsoft Edge", "Firefox", "Firefox Nightly"]);
+    assert.deepEqual(found.map((b) => b.family), ["chromium", "chromium", "chromium", "firefox", "firefox"]);
+    // Chromium's version is the versioned directory: 153 is newer than 99, which sorting as text
+    // would get backwards, and an install without one has no version to show.
     assert.equal(found[0].version, "153.0.8010.48");
     assert.equal(found[1].version, "155.0.8100.0");
     assert.equal(found[2].version, "");
+    assert.equal(found[3].version, "156.0");
+    assert.equal(found[4].version, "154.0a1");
   } finally {
     process.env["ProgramFiles"] = saved.p;
     process.env["ProgramFiles(x86)"] = saved.x;
@@ -57,8 +73,8 @@ test("the installed browsers are found under the Windows roots, newest version f
   }
 });
 
-test("the browser's command line turns the GPU sandbox off and keeps its own profile", () => {
-  const args = browserArgs("https://example.com/page", "C:\\profiles\\Chrome");
+test("a Chromium browser's command line turns the GPU sandbox off and keeps its own profile", () => {
+  const args = browserArgs(CHROME, "https://example.com/page", "C:\\profiles\\Chrome");
   // Without this the capture library in the GPU process cannot open its port and nothing connects.
   assert.ok(args.includes("--disable-gpu-sandbox"));
   assert.ok(args.includes("--disable-gpu-watchdog"));
@@ -66,17 +82,51 @@ test("the browser's command line turns the GPU sandbox off and keeps its own pro
   assert.ok(args.includes("--user-data-dir=C:\\profiles\\Chrome"));
   // The page is last, as a browser expects, and an empty one leaves the browser to open its own.
   assert.equal(args[args.length - 1], "https://example.com/page");
-  assert.ok(!browserArgs("  ", "C:\\profiles\\Chrome").some((a) => !a.startsWith("--")));
+  assert.ok(!browserArgs(CHROME, "  ", "C:\\profiles\\Chrome").some((a) => !a.startsWith("--")));
 });
 
-test("the GPU process is followed and the information-collection one left alone", () => {
-  assert.deepEqual(BROWSER_FOLLOW, ["--type=gpu-process", "!--use-gl=disabled"]);
+test("Firefox is launched into its own profile, away from the one the user has open", () => {
+  // -no-remote, or a running Firefox takes the page and this process exits with nothing to capture.
+  assert.deepEqual(browserArgs(NIGHTLY, "https://example.com/page", "C:\\profiles\\FF"),
+    ["-no-remote", "-profile", "C:\\profiles\\FF", "https://example.com/page"]);
+  assert.equal(browserFamily(NIGHTLY), "firefox");
+  assert.equal(browserFamily(CHROME), "chromium");
+});
+
+test("Firefox's profile carries the settings a capture needs, since it has no switch for them", () => {
+  const profile = join(dir, "ffprofile");
+  prepareProfile(FIREFOX, profile);
+  const prefs = readFileSync(join(profile, "user.js"), "utf8");
+  // The GPU process sandbox: without it the capture library cannot open its port.
+  assert.match(prefs, /user_pref\("security\.sandbox\.gpu\.level", 0\);/);
+  assert.match(prefs, /user_pref\("dom\.webgpu\.enabled", true\);/);
+  // A Chromium profile takes its settings on the command line, so nothing is written into it.
+  const chromeProfile = join(dir, "chromeprofile");
+  prepareProfile(CHROME, chromeProfile);
+  assert.ok(existsSync(chromeProfile));
+  assert.ok(!existsSync(join(chromeProfile, "user.js")));
+});
+
+test("each family's own renderer process is followed", () => {
+  // Chromium: the GPU process, but not the second one Chrome starts to collect GPU information.
+  assert.deepEqual(CHROMIUM_FOLLOW, ["--type=gpu-process", "!--use-gl=disabled"]);
+  assert.deepEqual(browserFollow(CHROME), CHROMIUM_FOLLOW);
+  // Firefox: its children end with their type, and that leading space keeps a "gpu" elsewhere in
+  // the command line (a profile path, say) from matching every tab.
+  assert.deepEqual(FIREFOX_FOLLOW, [" gpu"]);
+  assert.deepEqual(browserFollow(NIGHTLY), FIREFOX_FOLLOW);
 });
 
 test("each browser gets a profile directory of its own", () => {
-  const chrome = browserProfileDir("C:\\data", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
-  const canary = browserProfileDir("C:\\data", "C:\\Users\\me\\AppData\\Local\\Google\\Chrome SxS\\Application\\chrome.exe");
+  const chrome = browserProfileDir("C:\\data", CHROME);
+  const canary = browserProfileDir("C:\\data", CANARY);
+  const firefox = browserProfileDir("C:\\data", FIREFOX);
+  const nightly = browserProfileDir("C:\\data", NIGHTLY);
   assert.notEqual(chrome, canary);
+  // Firefox keeps its executable one directory up from Chromium's, so the install's own directory
+  // is what tells a Firefox profile from a Nightly one.
+  assert.notEqual(firefox, nightly);
+  assert.ok(nightly.endsWith("Firefox_Nightly"));
   assert.ok(chrome.startsWith(join("C:\\data", "browser-profiles")));
   // No spaces or separators from the browser's own directory name.
   assert.ok(/^[\w.-]+$/.test(canary.slice(canary.lastIndexOf("\\") + 1) || canary));

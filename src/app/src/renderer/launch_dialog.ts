@@ -9,6 +9,7 @@ import { Checkbox } from "./widget/checkbox.js";
 import { Select } from "./widget/select.js";
 import { TextArea } from "./widget/text_area.js";
 import { TextInput } from "./widget/text_input.js";
+import { browserInstallName } from "../shared/protocol.js";
 import type { AndroidDevice, BrowserInstall, LaunchConfig, QueuedCapture, UserEnvironmentStatus } from "../shared/protocol.js";
 
 const DEFAULT_PORT = 47531;
@@ -51,17 +52,11 @@ function hostTargets(): Target[] {
 
 export function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
-  if (c.target === "browser") return `${c.args || "a page"} in ${browserName(c.exe)}`;
+  if (c.target === "browser") return `${c.args || "a page"} in ${browserInstallName(c.exe)}`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
   if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = c.exe.replace(/\\/g, "/").split("/").pop() || c.exe;
   return c.args ? `${base} ${c.args}` : base;
-}
-
-/** "Google Chrome Canary" out of ...\Google\Chrome SxS\Application\chrome.exe, for a recent launch's name. */
-function browserName(exe: string): string {
-  const parts = exe.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 3] ?? parts[parts.length - 1] ?? "a browser";
 }
 
 function browserLabel(b: BrowserInstall): string {
@@ -261,13 +256,14 @@ export class LaunchDialog extends Dialog {
     this._browserPath = this._pathRow(this._browserRows, "Browser Path", "path to chrome.exe", "Choose a browser executable", false);
     this._browserPathRow = this._browserPath.element.parentElement as HTMLElement;
     this._url = this._inputRow(this._browserRows, "Page URL", "https://example.com/webgpu-page, or a file:/// path");
-    this._url.tooltip = "The page to open. The browser is started with a profile of its own, so the browser you already have open keeps its windows and its session.";
+    this._url.tooltip = "The page to open. The browser is started with a profile of its own, so the browser you already have open keeps its windows and its session; for Firefox that profile also carries the preferences a capture needs, since it has no command line switch for its GPU sandbox.";
     new Div(this._browserRows, {
       text: "The browser is launched with its GPU sandbox off and the capture library is put into its GPU process as that "
         + "process starts, which is where a page's WebGPU work is done. Captures are therefore the Direct3D 12 underneath "
-        + "WebGPU: the pipelines, passes and draws Dawn made of the page's WebGPU calls, with frames ending at each "
-        + "submission rather than at a present, since the browser's compositor presents rather than Dawn. For a browser "
-        + "with extra switches, use This computer and put --type=gpu-process in Follow child processes.",
+        + "WebGPU: the pipelines, passes and draws that Chrome's Dawn (or Firefox's wgpu) made of the page's WebGPU calls, "
+        + "with frames ending at each submission rather than at a present, since the browser's compositor presents rather "
+        + "than the renderer. For a browser with extra switches, use This computer and put --type=gpu-process (or \" gpu\" "
+        + "for Firefox) in Follow child processes.",
       class: "launch-dialog-hint",
     });
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
