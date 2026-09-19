@@ -138,6 +138,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     gpuValidation: c.gpuValidation ?? false,
     symbolDirs: c.symbolDirs ?? "",
     sourceRoots: c.sourceRoots ?? "",
+    follow: c.follow ?? "",
     stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
@@ -510,6 +511,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   if (process.platform === "win32") {
     const launch = windowsLaunch({
       exe: config.exe, args, cwd, env: base, vulkan,
+      follow: config.follow?.trim() ? splitArgs(config.follow) : undefined,
       d3d12: d3d12 ? {
         tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
         symbolDirs: launchSymbolDirs(config),
@@ -1488,6 +1490,8 @@ void app.whenReady().then(() => {
         gpuValidation: cliFlag("gpu-validation"),
         symbolDirs: cliOption("symbol-dirs") ?? "",
         sourceRoots: cliOption("source-roots") ?? "",
+        // --follow=<text>: the dialog's "Follow child processes" (a browser's --type=gpu-process).
+        follow: cliOption("follow") ?? "",
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }

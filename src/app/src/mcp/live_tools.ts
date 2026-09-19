@@ -3,6 +3,7 @@
 // objects, images and descriptor sets, capturing frames into .gpucap files that the capture tools
 // then read, and replacing a pipeline's shader while the application runs.
 import { listPackages } from "../main/android.js";
+import { splitArgs } from "../main/launch_env.js";
 import { compileDxil, compileShader } from "../main/shader_tools.js";
 import { fetchBlob } from "../renderer/capture_file.js";
 import { REFRESH_SOURCE_NOTE } from "../renderer/capture_statistics.js";
@@ -162,6 +163,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         shaderStatistics: { type: "boolean", description: "Vulkan: ask the driver what its shader compiler made of each pipeline stage (registers used, code size, spilled memory), shown on the pipeline object by get_live_object under updates.executables. Costs compile time and driver memory; default false." },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
         layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
+        follow: { type: "string", description: "Windows: also put the capture library into the child processes the application starts whose command line contains this text, for an application that renders in a process of its own making. Several patterns separated by spaces are allowed, and \"!text\" excludes a child instead. \"--type=gpu-process !--use-gl=disabled\" captures the GPU process of a Chromium browser (its WebGPU work, as D3D12), which has to be launched with --disable-gpu-sandbox for the library to open its port, and is best given --disable-gpu-watchdog so a capture does not trip the watchdog." },
         waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." },
       }, ["exe"]),
       handler: async (args) => {
@@ -172,6 +174,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
           gpuValidation: boolArg(args, "gpuValidation", false),
           stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), breadcrumbs: boolArg(args, "breadcrumbs", false), shaderStatistics: boolArg(args, "shaderStatistics", false),
           port: optionalInt(args, "port"), layerDir: stringArg(args, "layerDir"),
+          follow: stringArg(args, "follow") ? splitArgs(stringArg(args, "follow")!) : undefined,
         }, (numberArg(args, "waitSeconds") ?? 60) * 1000);
         const result = jsonResult({
           ...sessionStatus(s),

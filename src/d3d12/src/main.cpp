@@ -60,7 +60,9 @@ extern "C" __declspec(dllexport) DWORD WINAPI DxinspInitialize(LPVOID settings) 
     g_initialized = true;
     // Before the first log line: the log's own variables are read once, on first use.
     const std::string applied = ApplySettings((const wchar_t*)settings);
-    dxinsp::LogAlways("loaded into pid %lu", GetCurrentProcessId());
+    // The command line as well as the pid: one target can be a tree of processes (a browser's
+    // renderers and its GPU process), and the log is otherwise a column of numbers.
+    dxinsp::LogAlways("loaded into pid %lu: %s", GetCurrentProcessId(), dxinsp::Narrow(GetCommandLineW()).c_str());
     if (!applied.empty()) dxinsp::LogAlways("settings from the launcher: %s", applied.c_str());
     // The listener comes up before the application has a device, so the UI can be waiting when the
     // process starts, or attach later and get a snapshot either way. It starts listening only once

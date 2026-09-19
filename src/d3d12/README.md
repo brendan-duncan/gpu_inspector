@@ -35,6 +35,16 @@ and every swap chain passes through — `D3D12CreateDevice`, `CreateDXGIFactory`
   Vulkan application launched the same way keeps working.
 * **Or the launcher waits for the application to start** (`--watch`, below), for an application the
   inspector does not start itself.
+* **Or it follows the target's own children** (`--follow <text>`), for an application that renders
+  in a process it starts itself. A Chromium browser's WebGPU and compositing work is in its GPU
+  process, which the browser spawns: `--follow --type=gpu-process` injects into every descendant
+  whose command line holds that text, frozen as it appears exactly as a watched process is, which
+  puts the hooks in well before the child's `D3D12CreateDevice` (Chrome's GPU process is caught
+  some 6 ms after it starts and makes its device a few hundred milliseconds later). The children
+  that do not match — a browser's renderers and utility processes — are left alone, and a child
+  that never creates a device never opens the port, so only the one that renders connects. A
+  pattern can also exclude (`--follow !--use-gl=disabled`, for the second `--type=gpu-process`
+  Chrome starts to collect GPU information and then exits).
 * **The entry points are hooked inline** (MinHook, `third_party/minhook`, BSD-2-Clause): the
   library loads `d3d12.dll` and `dxgi.dll` itself at initialization and patches the four exports,
   which covers a static import, a `LoadLibrary` + `GetProcAddress` (Unity), and the Agility SDK

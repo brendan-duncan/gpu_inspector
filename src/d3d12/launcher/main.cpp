@@ -1,9 +1,11 @@
 // dxinsp_launch: gets the D3D12 capture library into an application, either by starting the
 // application itself or by watching for one to start.
 //
-//   dxinsp_launch.exe --dll <path to dxinsp_capture.dll> [--cwd <dir>] -- <exe> [args...]
+//   dxinsp_launch.exe --dll <path to dxinsp_capture.dll> [--cwd <dir>] [--follow <text>]...
+//                     -- <exe> [args...]
 //   dxinsp_launch.exe --watch <image name or full path> --dll <path to dxinsp_capture.dll>
 //                     [--env NAME=VALUE]... [--timeout <seconds>] [--poll <ms>] [--once]
+//                     [--follow <text>]...
 //
 // **Launch.** The target is created suspended, the library is loaded into it with a remote
 // LoadLibraryW thread, its DxinspInitialize export runs in a second remote thread (which installs
@@ -13,6 +15,17 @@
 // the target as one process. A target the library cannot be injected into is still started, with
 // the reason on stderr: a Vulkan application launched this way with the Vulkan layer in its
 // environment must keep working.
+//
+// **Follow.** The application renders in a process it starts itself: Chrome's GPU process, where
+// Dawn's WebGPU work lands, is a child of the browser the user launched. --follow <text> injects
+// into every process the target spawns whose command line contains <text>, caught and frozen as it
+// appears the way a watch catches one (so `--follow --type=gpu-process` leaves a browser's
+// renderers and utility processes alone). It can be given more than once, and `--follow !<text>`
+// excludes instead: a child whose command line holds an excluded text is left alone whatever else
+// it matches. This is how PIX and RenderDoc get into Chrome; Chromium's
+// own --gpu-launcher hook, which would start the GPU process through this launcher, is not a
+// working configuration on current Chrome -- the GPU process exits within a fraction of a second
+// however it is wrapped, and the browser respawns it in a loop.
 //
 // **Watch.** The application is started by something else (an editor, a launcher, Steam), which is
 // the D3D12 counterpart of the Vulkan implicit layer: there is no loader to insert us, so instead
@@ -39,12 +52,16 @@
 #include <psapi.h>
 #include <timeapi.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cwchar>
+#include <cwctype>
+#include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -381,6 +398,8 @@ struct WatchOptions {
     bool fullPath = false;
     std::wstring dll;
     std::vector<std::wstring> env;
+    /** --follow: the children of the watched process to inject into as well (Follower). */
+    std::vector<std::wstring> follow;
     int timeoutSeconds = 0;
     int pollMs = 2;
     bool once = false;
@@ -420,7 +439,7 @@ std::wstring ImagePath(HANDLE process) {
  * when the injection worked and the caller wants to wait for it (--once); otherwise the handle is
  * closed here.
  */
-bool InjectRunning(const WatchOptions& o, uintptr_t offset, DWORD pid, const std::wstring& image,
+bool InjectRunning(const std::wstring& dll, uintptr_t offset, DWORD pid, const std::wstring& image,
                    const std::vector<wchar_t>& settings, HANDLE* keep) {
     const DWORD rights = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
                          PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_SUSPEND_RESUME | SYNCHRONIZE;
@@ -451,7 +470,7 @@ bool InjectRunning(const WatchOptions& o, uintptr_t offset, DWORD pid, const std
     }
     const ULONGLONG begun = GetTickCount64();
     std::wstring why;
-    const bool ok = Inject(process, pid, o.dll, offset, settings, &freezer, why);
+    const bool ok = Inject(process, pid, dll, offset, settings, &freezer, why);
     const int bursts = freezer.bursts();
     freezer.Release();
     if (!ok) {
@@ -459,7 +478,7 @@ bool InjectRunning(const WatchOptions& o, uintptr_t offset, DWORD pid, const std
         CloseHandle(process);
         return false;
     }
-    Note(L"injected %s into pid %lu (%s), %llu ms after it started, in %llu ms (%s)", o.dll.c_str(), pid, image.c_str(), age,
+    Note(L"injected %s into pid %lu (%s), %llu ms after it started, in %llu ms (%s)", dll.c_str(), pid, image.c_str(), age,
          GetTickCount64() - begun,
          !held ? L"the application could not be held meanwhile, so this raced it"
                : (L"held meanwhile, let go " + std::to_wstring(bursts) + L" times for its own libraries").c_str());
@@ -488,6 +507,147 @@ public:
 private:
     bool _ok;
 };
+
+// ---------------------------------------------------------------------------------------------
+// Follow mode: the processes the target starts
+
+/** How often the target's children are looked for, in milliseconds. */
+constexpr DWORD kFollowPollMs = 5;
+
+using PFN_NtQueryInformationProcess = LONG(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+/**
+ * Another process's command line, read out of its PEB the way Task Manager reads one; empty when
+ * it cannot be (a process of another user, or one exiting as we look). The image name would not
+ * do for a browser, whose every process is chrome.exe and whose --type says which is which.
+ */
+std::wstring RemoteCommandLine(HANDLE process) {
+    static auto query = (PFN_NtQueryInformationProcess)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+    if (!query) return std::wstring();
+    PROCESS_BASIC_INFORMATION basic{};
+    ULONG written = 0;
+    if (query(process, ProcessBasicInformation, &basic, sizeof(basic), &written) < 0 || !basic.PebBaseAddress) return std::wstring();
+    PEB peb{};
+    if (!ReadProcessMemory(process, basic.PebBaseAddress, &peb, sizeof(peb), nullptr) || !peb.ProcessParameters) return std::wstring();
+    RTL_USER_PROCESS_PARAMETERS parameters{};
+    if (!ReadProcessMemory(process, peb.ProcessParameters, &parameters, sizeof(parameters), nullptr)) return std::wstring();
+    const USHORT bytes = parameters.CommandLine.Length;
+    if (bytes == 0 || !parameters.CommandLine.Buffer) return std::wstring();
+    std::wstring line(bytes / sizeof(wchar_t), L'\0');
+    if (!ReadProcessMemory(process, parameters.CommandLine.Buffer, line.data(), bytes, nullptr)) return std::wstring();
+    return line;
+}
+
+/** Whether `line` holds `text` anywhere, without regard to case; an empty `text` matches anything. */
+bool ContainsNoCase(const std::wstring& line, const std::wstring& text) {
+    if (text.empty()) return true;
+    if (text.size() > line.size()) return false;
+    auto lower = [](wchar_t c) { return (wchar_t)towlower(c); };
+    auto at = std::search(line.begin(), line.end(), text.begin(), text.end(),
+                          [&](wchar_t a, wchar_t b) { return lower(a) == lower(b); });
+    return at != line.end();
+}
+
+/**
+ * Injects into the processes the target starts, for as long as the target runs. Each pass takes a
+ * process snapshot (a few tenths of a millisecond), looks only at the processes that have appeared
+ * since the last one, and follows each one's parents back to the target: a browser's GPU process is
+ * its child, a grandchild would be a relaunched browser's. A match is injected into exactly as a
+ * watched process is, frozen while the library goes in, which is what gets the hooks in before the
+ * child's D3D12CreateDevice -- Chrome's GPU process makes its device a few hundred milliseconds
+ * after it starts, so a poll every few milliseconds is in time with room to spare.
+ */
+class Follower {
+public:
+    Follower(std::wstring dll, uintptr_t offset, std::vector<wchar_t> settings,
+             std::vector<std::wstring> patterns, DWORD root)
+        : _dll(std::move(dll)), _offset(offset), _settings(std::move(settings)),
+          _patterns(std::move(patterns)), _root(root) {
+        _known.insert(root);
+    }
+
+    void Poll() {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return;
+        std::map<DWORD, DWORD> parents;
+        std::vector<std::pair<DWORD, std::wstring>> fresh;
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(snap, &pe)) {
+            do {
+                parents[pe.th32ProcessID] = pe.th32ParentProcessID;
+                // A pid names one process for its lifetime, so each is considered once.
+                if (!_known.count(pe.th32ProcessID)) fresh.emplace_back(pe.th32ProcessID, pe.szExeFile);
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+        for (const auto& [pid, image] : fresh) {
+            _known.insert(pid);
+            if (Descendant(pid, parents)) Consider(pid, image);
+        }
+    }
+
+private:
+    /** The target's, through at most eight generations (a parent that has exited ends the walk). */
+    bool Descendant(DWORD pid, const std::map<DWORD, DWORD>& parents) const {
+        for (int generation = 0; generation < 8 && pid != 0; ++generation) {
+            auto it = parents.find(pid);
+            if (it == parents.end()) return false;
+            if (it->second == _root) return true;
+            pid = it->second;
+        }
+        return false;
+    }
+
+    /**
+     * A child is followed when its command line holds one of the wanted texts and none of the
+     * excluded ones (a pattern written "!text"). Chrome starts a second --type=gpu-process to
+     * collect GPU information, which makes a device of its own and exits again; "!--use-gl=disabled"
+     * leaves that one alone, so the port belongs to the process that renders whichever starts first.
+     */
+    void Consider(DWORD pid, const std::wstring& image) {
+        HANDLE query = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (!query) return;
+        const std::wstring line = RemoteCommandLine(query);
+        CloseHandle(query);
+        bool wanted = false;
+        for (const std::wstring& pattern : _patterns) {
+            const bool excluding = !pattern.empty() && pattern[0] == L'!';
+            const std::wstring text = excluding ? pattern.substr(1) : pattern;
+            if (!ContainsNoCase(line, text)) continue;
+            if (excluding) return;
+            wanted = true;
+        }
+        if (wanted) InjectRunning(_dll, _offset, pid, image, _settings, nullptr);
+    }
+
+    std::wstring _dll;
+    uintptr_t _offset;
+    std::vector<wchar_t> _settings;
+    std::vector<std::wstring> _patterns;
+    DWORD _root;
+    std::set<DWORD> _known;
+};
+
+/**
+ * Waits for the target and returns its exit code, injecting into the children it starts meanwhile
+ * when --follow asked for them. Without --follow (or without a library to inject) this is the plain
+ * wait the launcher has always done.
+ */
+DWORD WaitForTarget(HANDLE process, DWORD pid, const std::wstring& dll, uintptr_t offset,
+                    const std::vector<std::wstring>& patterns, const std::vector<wchar_t>& settings,
+                    DWORD pollMs) {
+    if (patterns.empty() || dll.empty() || offset == SIZE_MAX) {
+        WaitForSingleObject(process, INFINITE);
+    } else {
+        FineTimer timer;   // or the poll sleeps a scheduler tick, and children start in less
+        Follower follower(dll, offset, settings, patterns, pid);
+        while (WaitForSingleObject(process, pollMs) == WAIT_TIMEOUT) follower.Poll();
+    }
+    DWORD code = 0;
+    GetExitCodeProcess(process, &code);
+    return code;
+}
 
 /** Polls the process list and injects into each new match; see the exit codes at the top. */
 int Watch(const WatchOptions& o) {
@@ -534,7 +694,7 @@ int Watch(const WatchOptions& o) {
                 const std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
                 if (_wcsicmp(name.c_str(), o.image.c_str()) != 0) continue;
                 if (o.fullPath && _wcsicmp(Normalized(path).c_str(), o.wanted.c_str()) != 0) continue;
-                if (InjectRunning(o, offset, pid, name, settings, o.once ? &injected : nullptr)) {
+                if (InjectRunning(o.dll, offset, pid, name, settings, o.once ? &injected : nullptr)) {
                     injectedPid = pid;
                     if (o.once) break;
                 }
@@ -555,8 +715,7 @@ int Watch(const WatchOptions& o) {
     // it does for one it started, so the session sees it exit when the application does.
     DWORD code = 0;
     if (injected) {
-        WaitForSingleObject(injected, INFINITE);
-        GetExitCodeProcess(injected, &code);
+        code = WaitForTarget(injected, injectedPid, o.dll, offset, o.follow, settings, (DWORD)o.pollMs);
         CloseHandle(injected);
         Note(L"pid %lu exited with code %lu", injectedPid, code);
     }
@@ -564,9 +723,14 @@ int Watch(const WatchOptions& o) {
 }
 
 int Usage() {
-    fwprintf(stderr, L"usage: dxinsp_launch.exe --dll <dxinsp_capture.dll> [--cwd <dir>] -- <exe> [args...]\n");
+    fwprintf(stderr, L"usage: dxinsp_launch.exe --dll <dxinsp_capture.dll> [--cwd <dir>] [--follow <text>]...\n");
+    fwprintf(stderr, L"                         -- <exe> [args...]\n");
     fwprintf(stderr, L"       dxinsp_launch.exe --watch <image name or full path> --dll <dxinsp_capture.dll>\n");
     fwprintf(stderr, L"                         [--env NAME=VALUE]... [--timeout <seconds>] [--poll <ms>] [--once]\n");
+    fwprintf(stderr, L"                         [--follow <text>]...\n");
+    fwprintf(stderr, L"       --follow also injects into the processes the target starts whose command line holds\n");
+    fwprintf(stderr, L"       <text>, such as --follow --type=gpu-process for a browser's GPU process;\n");
+    fwprintf(stderr, L"       --follow !<text> leaves a child holding <text> alone instead.\n");
     return kExitUsage;
 }
 
@@ -576,7 +740,9 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring dll;
     std::wstring cwd;
     WatchOptions watch;
+    std::vector<std::wstring> follow;
     bool watching = false;
+    int followPollMs = (int)kFollowPollMs;
     int i = 1;
     for (; i < argc; ++i) {
         std::wstring a = argv[i];
@@ -584,8 +750,9 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--cwd" && i + 1 < argc) cwd = argv[++i];
         else if (a == L"--watch" && i + 1 < argc) { watching = true; watch.wanted = argv[++i]; }
         else if (a == L"--env" && i + 1 < argc) watch.env.push_back(argv[++i]);
+        else if (a == L"--follow" && i + 1 < argc) follow.push_back(argv[++i]);
         else if (a == L"--timeout" && i + 1 < argc) watch.timeoutSeconds = _wtoi(argv[++i]);
-        else if (a == L"--poll" && i + 1 < argc) watch.pollMs = _wtoi(argv[++i]);
+        else if (a == L"--poll" && i + 1 < argc) { watch.pollMs = _wtoi(argv[++i]); followPollMs = watch.pollMs; }
         else if (a == L"--once") watch.once = true;
         else if (a == L"--") { ++i; break; }
         // An option of ours with its value missing, or one we do not know: saying so beats
@@ -605,6 +772,7 @@ int wmain(int argc, wchar_t** argv) {
             return kExitFailed;
         }
         watch.dll = dll;
+        watch.follow = follow;
         size_t slash = watch.wanted.find_last_of(L"\\/");
         watch.fullPath = slash != std::wstring::npos;
         watch.image = watch.fullPath ? watch.wanted.substr(slash + 1) : watch.wanted;
@@ -652,11 +820,16 @@ int wmain(int argc, wchar_t** argv) {
     } else {
         Note(L"injected %s into pid %lu", dll.c_str(), pi.dwProcessId);
     }
+    if (!follow.empty()) {
+        Note(L"following the children of pid %lu every %d ms, injecting into those whose command line matches",
+             pi.dwProcessId, followPollMs);
+    }
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
+    // A launched target inherited our environment, so its children have the library's settings
+    // already and nothing has to be handed to their initializer.
+    const DWORD code = WaitForTarget(pi.hProcess, pi.dwProcessId, dll, offset, follow,
+                                     std::vector<wchar_t>(), (DWORD)(followPollMs > 0 ? followPollMs : (int)kFollowPollMs));
     CloseHandle(pi.hProcess);
     return (int)code;
 }

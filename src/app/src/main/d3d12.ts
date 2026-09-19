@@ -26,6 +26,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { vulkanLayerEnvironment, type VulkanLayerOptions } from "./launch_env.js";
 
+/**
+ * What to follow for a Chromium browser: its WebGPU and compositing work is in the GPU process,
+ * which the browser starts itself. Chromium's own --gpu-launcher hook cannot be used for this --
+ * a GPU process started through any wrapper exits at once and the browser respawns it forever --
+ * so the browser is launched normally and its GPU process is injected into as it appears, the way
+ * PIX and RenderDoc do it.
+ */
+export const FOLLOW_GPU_PROCESS = "--type=gpu-process";
+
 export const CAPTURE_LIBRARY = "dxinsp_capture.dll";
 export const LAUNCHER = "dxinsp_launch.exe";
 export const SHADER_TOOL = "dxinsp_shader.exe";
@@ -112,14 +121,23 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
  * The command line that starts `exe` through the launcher with the library injected. Quoting is
  * the launcher's business (it rebuilds the target's command line from its arguments); this is
  * only the argument list.
+ *
+ * `follow` is for a target that renders in a process it starts itself: the launcher injects into
+ * the children whose command line holds one of those strings as they appear, which is how a
+ * browser's GPU process is captured (`--type=gpu-process`; see FOLLOW_GPU_PROCESS).
  */
-export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string): { exe: string; args: string[] } {
-  return { exe: tools.launcher, args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []), "--", exe, ...args] };
+export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string, follow: string[] = []): { exe: string; args: string[] } {
+  return {
+    exe: tools.launcher,
+    args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []), ...follow.flatMap((f) => ["--follow", f]), "--", exe, ...args],
+  };
 }
 
 export interface D3D12WatchOptions extends D3D12EnvironmentOptions {
   /** The application's image name ("TestVulkan.exe"), or its full path to match only that build. */
   image: string;
+  /** Command line fragments naming the watched process's own children to inject into as well. */
+  follow?: string[];
   /** Give up after this many seconds with nothing injected (the watcher then exits with WATCH_TIMED_OUT). */
   timeoutSeconds: number;
   /**
@@ -142,18 +160,20 @@ export const WATCH_TIMED_OUT = 3;
  * the library.
  */
 export function watchLaunch(tools: D3D12Tools, o: D3D12WatchOptions): { exe: string; args: string[] } {
-  const { image, timeoutSeconds, once, ...environment } = o;
+  const { image, timeoutSeconds, once, follow, ...environment } = o;
   const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
     args: ["--watch", image, "--dll", tools.library, ...(timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : []),
-      ...(once ? ["--once"] : []), ...env],
+      ...(once ? ["--once"] : []), ...(follow ?? []).flatMap((f) => ["--follow", f]), ...env],
   };
 }
 
 export interface WindowsLaunchOptions {
   exe: string;
   args: string[];
+  /** Command line fragments naming the target's own child processes to inject into as well. */
+  follow?: string[];
   /** The target's working directory; also passed to the launcher. */
   cwd: string;
   /** The environment to start from (the inspector's own, plus the user's additions). */
@@ -191,8 +211,9 @@ export function windowsLaunch(o: WindowsLaunchOptions): WindowsLaunch {
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? []));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? (options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)") : ""}`);
+    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
   }
