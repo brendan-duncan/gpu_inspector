@@ -36,6 +36,7 @@ import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
+import { exportReportHtml } from "./report_export.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
 import {
   isMeasured, measuresWhileCapturing, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary,
@@ -53,13 +54,18 @@ import { hwCountersSummary, parseHwCounters } from "./hw_counters.js";
 import type { ShaderMeasureTarget } from "./shader_ablation.js";
 import { parsePixelHistory, type PixelHistory, type PixelRequest } from "./pixel_history.js";
 
-/** A tab a capture opens beside its own: a render target (its overlays and pixel history), a draw's mesh, or the shader debugger. */
+/**
+ * A tab a capture opens beside its own: a render target (its overlays and pixel history), a draw's
+ * mesh, the shader debugger, or one of the whole-capture reports.
+ */
 interface CaptureSubTab {
   readonly root: Div;
+  /** What the tab is called, before the capture's own label ("Overdraw", "Frame Stats"). */
+  readonly label: string;
   dispose(): void;
   debugState(): Record<string, unknown>;
 }
-type SubTabKind = "texture" | "mesh" | "debugger";
+type SubTabKind = "texture" | "mesh" | "debugger" | `report:${string}`;
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -117,6 +123,73 @@ const MESH_BATCH = 16;
 /** Stacked squares: fragments landing on the same pixels. */
 const ICON_OVERDRAW = '<svg viewBox="0 0 16 16"><rect x="2" y="6.5" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="4.25" y="4.25" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="6.5" y="2" width="7.5" height="7.5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3"/></svg>';
 
+/**
+ * The Reports menu: the whole-capture views, each of which opens in a tab of its own beside the
+ * capture's (see ReportView and CaptureView.openReport). `detail` is the one-line gloss under the
+ * name in the menu; `tooltip` the full sentence on hover, so the menu stays scannable without
+ * losing what each report actually contains.
+ */
+const REPORTS: { id: string; icon: string; label: string; detail: string; tooltip: string }[] = [
+  { id: "stats", icon: ICON_STATS, label: "Frame Stats",
+    detail: "Commands, passes, bindings, memory, geometry",
+    tooltip: "Statistics of the captured frame: commands by kind, passes and attachments, pipelines and stages bound, descriptor sets, memory traffic and geometry" },
+  { id: "shaders", icon: ICON_ANALYZE, label: "Analyze Shaders",
+    detail: "Static analysis of every shader the frame used",
+    tooltip: "Static performance analysis of every shader the frame's draws and dispatches used, worst first" },
+  { id: "flame", icon: ICON_FLAME, label: "Shader Flame Graph",
+    detail: "GPU time by pass, pipeline, stage and function",
+    tooltip: "The frame's GPU work by pass, pipeline, shader stage and function: measured pass times with the cost model's split within each" },
+  { id: "bottlenecks", icon: ICON_BOTTLENECK, label: "GPU Bottlenecks",
+    detail: "What limits each pass, and what to do about it",
+    tooltip: "Each pass measured in the terms a bottleneck is described in: which stage it waits on, how many times each pixel is shaded, how large its triangles are, and whether the depth test is rejecting work" },
+  { id: "graph", icon: ICON_GRAPH, label: "Render Graph",
+    detail: "Passes and the resources connecting them",
+    tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
+  { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw",
+    detail: "Fragments per pixel, over the pass's render target",
+    tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
+];
+
+/** A report's name, for its tab and for the file it is exported to. */
+const reportLabel = (id: string): string => REPORTS.find((r) => r.id === id)?.label ?? id;
+
+/** An arrow leaving a frame: the report in a window of its own. */
+const ICON_NEW_WINDOW = '<svg viewBox="0 0 16 16" aria-label="Open in new window"><path d="M8.5 3H3.2v9.8H13V7.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 2.6H13.4V6.2M13.4 2.6 8.4 7.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+/** A page with an arrow leaving it: the report written out as a file. */
+const ICON_EXPORT = '<svg viewBox="0 0 16 16" aria-label="Export HTML"><path d="M9 2H4v12h8V5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.8 2v3.2H12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 7.4v4.4M6.2 10l1.8 1.9L9.8 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/**
+ * One of the whole-capture reports, in a tab beside the capture's: a header with the report's name
+ * and the two things that can be done with a report as a whole, and the report itself below.
+ *
+ * Reports are tabs rather than the command details pane they used to replace, so that a report and
+ * a command's details can be read side by side, a second report can be opened beside the first,
+ * and a report can be taken out into a window of its own or written to a file.
+ */
+class ReportView implements CaptureSubTab {
+  readonly root: Div;
+  /** Where the report renders; the header is not part of what is exported. */
+  readonly body: Div;
+
+  constructor(readonly id: string, readonly label: string, o: { onExport: () => void; onNewWindow: () => void }) {
+    this.root = new Div(null, { class: "report-tab" });
+    const head = new Div(this.root, { class: "report-tab-head" });
+    new Span(head, { text: label, class: "report-tab-title" });
+    new Button(head, { html: ICON_NEW_WINDOW, class: "btn btn-sm btn-icon",
+      tooltip: "Open in a new window: a copy of this capture in a window of its own, showing this report", callback: o.onNewWindow });
+    new Button(head, { html: ICON_EXPORT, class: "btn btn-sm btn-icon",
+      tooltip: "Export to HTML: write this report to a standalone file, what is on screen here with the application's styles in it, readable anywhere",
+      callback: o.onExport });
+    this.body = new Div(this.root, { class: "report-tab-body" });
+  }
+
+  dispose(): void {}
+
+  debugState(): Record<string, unknown> {
+    return { report: this.id, label: this.label };
+  }
+}
+
 export class CapturePanel {
   readonly window: SessionContext;
   readonly parent: Widget;
@@ -172,6 +245,8 @@ export class CapturePanel {
       textureTab: this._subTab(v, "texture")?.tab.debugState() ?? null,
       meshTab: this._subTab(v, "mesh")?.tab.debugState() ?? null,
       debuggerTab: this._subTab(v, "debugger")?.tab.debugState() ?? null,
+      // The reports open in tabs beside the capture's, in the order they were opened.
+      reportTabs: [...(this._subTabs.get(v)?.keys() ?? [])].filter((k) => k.startsWith("report:")).map((k) => k.slice("report:".length)),
     }));
   }
 
@@ -370,6 +445,8 @@ export class CapturePanel {
     view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
     view.onOpenMesh.addListener((draw, options) => this._openMesh(view, draw, options));
     view.onDebugShader.addListener((request, options) => this._openDebugger(view, request, options));
+    view.onOpenReport.addListener((report) => this._openReport(view, report));
+    view.onOpenReportWindow.addListener((id) => void this._openInNewWindow(view, id));
     handle.element.oncontextmenu = (e: MouseEvent) => {
       e.preventDefault();
       this._tabs.setHandleActive(handle);
@@ -408,11 +485,18 @@ export class CapturePanel {
   }
 
   /** Copies a tab through the file format into a new, independent tab. */
-  /** A copy of the capture in a window of its own (serialized, handed to the main process as a temporary file). */
-  private async _openInNewWindow(view: CaptureView): Promise<void> {
+  /**
+   * A copy of the capture in a window of its own (serialized, handed to the main process as a
+   * temporary file). `report` names one of the reports for the new window to open on it, which is
+   * what a report tab's "Open in New Window" asks for: the report there is live, not a snapshot,
+   * so the capture goes with it.
+   */
+  private async _openInNewWindow(view: CaptureView, report?: string): Promise<void> {
     const bytes = await this._serialize(view);
     if (!bytes) return;
-    const ok = await window.inspector.openCaptureWindow({ data: bytes, name: captureFileName(this.window.name, view.data.frame, view.data.frames) });
+    const ok = await window.inspector.openCaptureWindow({
+      data: bytes, name: captureFileName(this.window.name, view.data.frame, view.data.frames), ...(report ? { view: report } : {}),
+    });
     this._statusLabel.text = ok ? view.status : "could not open a window for the capture";
   }
 
@@ -469,6 +553,8 @@ export class CapturePanel {
       drawsOfPass: (k) => view.drawsOfPass(k),
       drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
       debugPixel: (command, x, y) => view.debugShader({ stage: "fragment", command, x, y }),
+      // The Overdraw report opens this tab, so it exports the way the reports in tabs of their own do.
+      exportHtml: () => { if (tab) void view.exportTabHtml(tab.label, tab.root.element); },
     }, target, options);
     this._addSubTab(view, "texture", tab, `${tab.label}: ${view.label}`);
   }
@@ -532,6 +618,32 @@ export class CapturePanel {
     const entry = this._addSubTab(view, "debugger", tab, `${tab.label}: ${view.label}`);
     const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
     relabel.observe(tab.root.element, { childList: true });
+  }
+
+  /**
+   * Shows one of the capture's reports in a tab beside the capture's; one tab per report, so a
+   * report reopened from the menu comes forward rather than being opened twice. The view has
+   * already rendered into it — this only places it and gives its handle the report's menu.
+   */
+  private _openReport(view: CaptureView, report: ReportView): void {
+    const kind: SubTabKind = `report:${report.id}`;
+    const existing = this._subTab<ReportView>(view, kind);
+    if (existing) {
+      existing.handle.textElement.text = `${report.label}: ${view.label}`;
+      this._tabs.setHandleActive(existing.handle);
+      return;
+    }
+    const entry = this._addSubTab(view, kind, report, `${report.label}: ${view.label}`);
+    entry.handle.element.oncontextmenu = (e: MouseEvent) => {
+      e.preventDefault();
+      this._tabs.setHandleActive(entry.handle);
+      showContextMenu(e.clientX, e.clientY, [
+        { label: "Open in New Window", callback: () => void this._openInNewWindow(view, report.id) },
+        { label: "Export to HTML...", callback: () => void view.exportReport(report.id) },
+        { separator: true },
+        { label: "Close", callback: () => this._tabs.closeTabHandle(entry.handle) },
+      ]);
+    };
   }
 
   /** Runs a pixel's history for the capture's render target tab (a Vulkan replay, or Metal's own). */
@@ -653,6 +765,25 @@ export class CapturePanel {
     return entry;
   }
 
+  /**
+   * Writes the active tab to a standalone HTML file: a report's tab, or the render target tab the
+   * Overdraw report opens (--debug-export, tools/ui_tests.py). Null when the active tab is not one
+   * that can be exported, the capture's own tab among them.
+   */
+  async exportActive(path?: string): Promise<string | null> {
+    const index = this._tabs.activeTab;
+    const handle = index >= 0 ? this._tabs.tabListElement.children[index] : null;
+    for (const [view, tabs] of this._subTabs) {
+      for (const t of tabs.values()) {
+        if (t.handle !== handle) continue;
+        // A report's header is its tab's, not part of the report; everything else exports whole.
+        const element = t.tab instanceof ReportView ? t.tab.body.element : t.tab.root.element;
+        return view.exportTabHtml(t.tab.label, element, path);
+      }
+    }
+    return null;
+  }
+
   private _tabMenu(view: CaptureView): ContextMenuItem[] {
     const empty = !view.data.commands.length;
     return [
@@ -672,11 +803,13 @@ export class CapturePanel {
   }
 
   private _tabClosed(panel: Widget): void {
-    for (const tabs of this._subTabs.values()) {
+    for (const [view, tabs] of this._subTabs) {
       for (const [kind, t] of tabs) {
         if (t.tab.root !== panel) continue;
         t.tab.dispose();
         tabs.delete(kind);
+        // The capture keeps the report tabs it has open, for the Reports menu's marks.
+        if (kind.startsWith("report:")) view.reportClosed(kind.slice("report:".length));
         this._updateStatus();
         return;
       }
@@ -768,6 +901,10 @@ export class CaptureView implements CaptureHost {
   readonly onOpenMesh = new Signal<(draw: CaptureCommand, options: MeshViewOptions) => void>();
   /** The shader debugger asked for, on an invocation of a draw or dispatch (shader_debugger_view.ts). */
   readonly onDebugShader = new Signal<(request: DebugRequest, options: ShaderDebuggerOptions) => void>();
+  /** A whole-capture report asked to be shown in a tab beside the capture's (the panel places it). */
+  readonly onOpenReport = new Signal<(report: ReportView) => void>();
+  /** A report tab asked for a window of its own: a copy of the capture there, opened on that report. */
+  readonly onOpenReportWindow = new Signal<(reportId: string) => void>();
   /** The capture library marked the end of the capture's stream (CaptureComplete). */
   readonly onCaptureComplete = new Signal<() => void>();
   /** The capture serialized for vkinsp_replay, kept for the next replay of the same capture. */
@@ -803,8 +940,15 @@ export class CaptureView implements CaptureHost {
   _analysis: { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } | null = null;
   /** The capture's render graph, built on demand (see renderGraph()). */
   private _renderGraph: RenderGraph | null = null;
-  /** Entries of the Reports menu by id, for marking the one being shown. */
+  /** Entries of the Reports menu by id, for marking the ones whose tab is open. */
   private _reportItems = new Map<string, Div>();
+  /** The report tabs this capture has open, by report id (the panel owns the tab, this owns its contents). */
+  private _reportTabs = new Map<string, ReportView>();
+  /**
+   * Counts openings of each report, so a report that gathers its data asynchronously drops its
+   * result when the report was closed or opened again while it was working.
+   */
+  private _reportRuns = new Map<string, number>();
   private _validationListener: (entry: ValidationEntry) => void;
   private _timeline: TimelineWidget;
   private _profile: boolean;
@@ -1006,6 +1150,9 @@ export class CaptureView implements CaptureHost {
     const began = performance.now();
     this._listPanel.html = "";
     this._infoPanel.html = "";
+    // A report describes the capture that was listed when it was opened. A new one in this tab
+    // leaves the open reports stale rather than describing a frame that is no longer here.
+    for (const [id, tab] of this._reportTabs) this._staleReport(id, tab);
     this._selectedRow = null;
     this._rows = [];
     this._lazyBodies = [];
@@ -1465,7 +1612,6 @@ export class CaptureView implements CaptureHost {
     if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
     this._selectedRow = row;
     row.classList.add("capture_command_selected");
-    this._markReport(null);
     this._showCommand(row.command);
   }
 
@@ -1492,11 +1638,15 @@ export class CaptureView implements CaptureHost {
    */
   expandSection(text: string): boolean {
     const needle = text.toLowerCase();
-    for (const bar of this._infoPanel.element.querySelectorAll(".title_bar")) {
-      if (!(bar.textContent ?? "").toLowerCase().includes(needle)) continue;
-      const body = bar.parentElement?.querySelector(".collapsible_body");
-      if (body?.classList.contains("collapsed")) (bar as HTMLElement).click();
-      return true;
+    // The command's details first, then the reports' tabs, which have sections of their own.
+    const panels = [this._infoPanel, ...[...this._reportTabs.values()].map((t) => t.body)];
+    for (const panel of panels) {
+      for (const bar of panel.element.querySelectorAll(".title_bar")) {
+        if (!(bar.textContent ?? "").toLowerCase().includes(needle)) continue;
+        const body = bar.parentElement?.querySelector(".collapsible_body");
+        if (body?.classList.contains("collapsed")) (bar as HTMLElement).click();
+        return true;
+      }
     }
     return false;
   }
@@ -1518,15 +1668,108 @@ export class CaptureView implements CaptureHost {
     this.info.show(this._infoPanel, cmd);
   }
 
-  /** Replaces the command details with the capture's statistics (WebGPU Inspector's Frame Stats). */
+  // ---------------------------------------------------------------------------------------
+  // Reports over the whole capture, each in a tab beside this one (see ReportView)
+
+  /**
+   * Opens one of the capture's reports: the Reports menu, --debug-view, a report tab's refresh,
+   * and a window opened on a report all come through here.
+   */
+  openReport(id: string): void {
+    switch (id) {
+      case "stats": this._showStats(); break;
+      case "shaders": void this._analyzeShaders(); break;
+      case "flame": void this._showFlameGraph(); break;
+      case "bottlenecks": this._showBottlenecks(); break;
+      case "graph": this._showRenderGraph(); break;
+      // Overdraw is the pass's render target with the heat over it, so it opens the target's tab.
+      case "overdraw": void this.openOverdraw(); break;
+      default: break;
+    }
+  }
+
+  /**
+   * Opens this capture's tab for a report, and returns its body emptied and ready to render into.
+   * `status` is shown in it meanwhile by a report that has to fetch shaders first. Null when there
+   * is nothing to report on yet, a note having been shown in the tab instead.
+   */
+  private _reportBody(id: string, status?: string): Div | null {
+    let tab = this._reportTabs.get(id);
+    if (!tab) {
+      tab = new ReportView(id, reportLabel(id), {
+        onExport: () => void this.exportReport(id),
+        onNewWindow: () => { this.onOpenReportWindow.emit(id); },
+      });
+      this._reportTabs.set(id, tab);
+    }
+    tab.body.html = "";
+    this._reportRuns.set(id, (this._reportRuns.get(id) ?? 0) + 1);
+    this.onOpenReport.emit(tab);
+    this._markReports();
+    if (!this.data.commands.length) {
+      new Div(tab.body, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
+      return null;
+    }
+    if (status !== undefined) new Div(tab.body, { text: status, class: "text-muted", style: "padding: 12px;" });
+    return tab.body;
+  }
+
+  /**
+   * True if the report is still the one that opening `run` started: it was not closed, and it was
+   * not opened again while this one was fetching what it needed.
+   */
+  private _reportCurrent(id: string, run: number | undefined): boolean {
+    return this._reportTabs.has(id) && this._reportRuns.get(id) === run;
+  }
+
+  /** An open report after a new capture arrived in this tab: what it says is of the previous one. */
+  private _staleReport(id: string, tab: ReportView): void {
+    tab.body.html = "";
+    // The run counter moves on, so anything still gathering data for the old capture drops it.
+    this._reportRuns.set(id, (this._reportRuns.get(id) ?? 0) + 1);
+    const note = new Div(tab.body, { class: "text-muted", style: "padding: 12px;" });
+    new Div(note, { text: `This ${tab.label} report was of the previous capture in this tab.` });
+    new Button(note, { label: "Rebuild for this capture", class: "btn btn-sm", style: "margin-top: 8px;",
+      callback: () => this.openReport(id) });
+  }
+
+  /** The panel closed a report's tab: the capture keeps no contents for it any more. */
+  reportClosed(id: string): void {
+    this._reportTabs.delete(id);
+    this._markReports();
+  }
+
+  /** Writes a report's tab to a standalone HTML file (report_export.ts); `path` skips the dialog. */
+  async exportReport(id: string, path?: string): Promise<string | null> {
+    const tab = this._reportTabs.get(id);
+    if (!tab) return null;
+    return this.exportTabHtml(tab.label, tab.body.element, path);
+  }
+
+  /** Writes a tab's contents to a standalone HTML file: a report's, or the render target tab's. */
+  async exportTabHtml(label: string, element: HTMLElement, path?: string): Promise<string | null> {
+    try {
+      const saved = await exportReportHtml({
+        title: label, subtitle: `${this.window.name} · ${this.label}`, element,
+        fileName: `${label} ${this.label}`, ...(path ? { path } : {}),
+      });
+      if (saved) this._setStatus(`exported ${saved}`);
+      return saved;
+    } catch (e) {
+      this._setStatus(`export failed: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
   /**
    * "Analyze Shaders": the pipelines the frame's draws and dispatches used (bound pipeline per
    * command stream and bind point), each stage's SPIR-V analyzed statically (see
-   * renderer/vulkan/spirv_analysis.ts), reported worst first in the details panel.
+   * renderer/vulkan/spirv_analysis.ts), reported worst first.
    */
   private async _analyzeShaders(): Promise<void> {
-    const status = this._startReport("Analyzing shaders...", "shaders");
-    if (!status) return;
+    const body = this._reportBody("shaders", "Analyzing shaders...");
+    if (!body) return;
+    const run = this._reportRuns.get("shaders");
     const db = this.window.database;
     const reports: FrameShaderReport[] = [];
     for (const [key, count] of pipelineUses(this.data)) {
@@ -1540,13 +1783,13 @@ export class CaptureView implements CaptureHost {
         });
       }
     }
-    status.remove();
-    if (this._selectedRow) return;   // the user moved on while shaders were fetched
+    if (!this._reportCurrent("shaders", run)) return;   // closed or reopened while shaders were fetched
+    body.html = "";
     if (!reports.length) {
-      new Div(this._infoPanel, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
+      new Div(body, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
-    renderFrameReport(this._infoPanel, reports, (id) => this.window.showObject(id));
+    renderFrameReport(body, reports, (id) => this.window.showObject(id));
   }
 
   /**
@@ -1554,8 +1797,9 @@ export class CaptureView implements CaptureHost {
    * pass timings and the static cost model of every shader the frame used (frame_cost_tree.ts).
    */
   private async _showFlameGraph(): Promise<void> {
-    const status = this._startReport("Analyzing shaders...", "flame");
-    if (!status) return;
+    const body = this._reportBody("flame", "Analyzing shaders...");
+    if (!body) return;
+    const run = this._reportRuns.get("flame");
     const db = this.window.database;
     const models = new Map<number, StageModel[]>();
     for (const pipelineId of pipelineUses(this.data).keys()) {
@@ -1574,13 +1818,13 @@ export class CaptureView implements CaptureHost {
       }
       models.set(pipelineId, stages);
     }
-    status.remove();
-    if (this._selectedRow) return;
+    if (!this._reportCurrent("flame", run)) return;
+    body.html = "";
     if (!models.size) {
-      new Div(this._infoPanel, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
+      new Div(body, { text: "No pipelines or shader objects were bound by the frame's draws or dispatches.", class: "text-muted", style: "padding: 12px;" });
       return;
     }
-    renderFrameFlameGraph(this._infoPanel, {
+    renderFrameFlameGraph(body, {
       data: this.data, db, models,
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
@@ -1589,72 +1833,31 @@ export class CaptureView implements CaptureHost {
     });
   }
 
-  /** Clears the details panel for a frame-wide report; null (a note shown instead) without a capture. */
-  private _startReport(text: string, report: string): Div | null {
-    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
-    this._selectedRow = null;
-    this._markReport(report);
-    this._infoPanel.html = "";
-    if (!this.data.commands.length) {
-      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
-      return null;
-    }
-    return new Div(this._infoPanel, { text, class: "text-muted", style: "padding: 12px;" });
-  }
-
+  /** "Frame Stats": the capture in numbers (WebGPU Inspector's Frame Stats). */
   private _showStats(): void {
-    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
-    this._selectedRow = null;
-    this._markReport("stats");
-    this._infoPanel.html = "";
-    if (!this.data.commands.length) {
-      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
-      return;
-    }
+    const body = this._reportBody("stats");
+    if (!body) return;
     const db = this.window.database;
     if (!this._analysis) this._analysis = analyzeFrame(this.data, db, this.renderGraph());
-    renderFrameStats(this._infoPanel, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
+    renderFrameStats(body, new CaptureStatistics().compute(this.data, db), this.timingSummary(),
       { findings: this._analysis.findings, onJump: (index) => this.selectCommand(index) }, this.data.cpuTimeline,
       this.gpuTrack());
   }
 
   /**
-   * The Reports menu: the whole-capture views, which all replace the command details. One menu
-   * rather than one button each, so the filter row holds them however many there come to be. The
-   * entry whose report is showing is marked, and the mark clears as soon as a command is selected
-   * and the details pane is that command's again.
+   * The Reports menu (REPORTS): one menu rather than one button each, so the filter row holds them
+   * however many there come to be. Each opens in a tab beside the capture's, and the entries whose
+   * tab is open are marked.
    */
   private _buildReportsMenu(row: Widget): void {
     const container = new Div(row, { class: "menu-container" });
     const button = new Button(container, {
       html: `${ICON_REPORTS}<span>Reports</span><span class="menu-caret">▾</span>`,
-      class: "btn btn-sm btn-menu", tooltip: "Reports over the whole capture, instead of one command",
+      class: "btn btn-sm btn-menu", tooltip: "Reports over the whole capture, instead of one command. Each opens in a tab of its own.",
     });
     const menu = new Div(container, { class: "menu-dropdown reports-menu" });
     button.callback = () => menu.classList.toggle("open");
-    // `detail` is the one-line gloss under the name; `tooltip` the full sentence on hover, so
-    // the menu stays scannable without losing what each report actually contains.
-    const reports: { id: string; icon: string; label: string; detail: string; tooltip: string; open: () => void }[] = [
-      { id: "stats", icon: ICON_STATS, label: "Frame Stats", open: () => this._showStats(),
-        detail: "Commands, passes, bindings, memory, geometry",
-        tooltip: "Statistics of the captured frame: commands by kind, passes and attachments, pipelines and stages bound, descriptor sets, memory traffic and geometry" },
-      { id: "shaders", icon: ICON_ANALYZE, label: "Analyze Shaders", open: () => void this._analyzeShaders(),
-        detail: "Static analysis of every shader the frame used",
-        tooltip: "Static performance analysis of every shader the frame's draws and dispatches used, worst first" },
-      { id: "flame", icon: ICON_FLAME, label: "Shader Flame Graph", open: () => void this._showFlameGraph(),
-        detail: "GPU time by pass, pipeline, stage and function",
-        tooltip: "The frame's GPU work by pass, pipeline, shader stage and function: measured pass times with the cost model's split within each" },
-      { id: "bottlenecks", icon: ICON_BOTTLENECK, label: "GPU Bottlenecks", open: () => this._showBottlenecks(),
-        detail: "What limits each pass, and what to do about it",
-        tooltip: "Each pass measured in the terms a bottleneck is described in: which stage it waits on, how many times each pixel is shaded, how large its triangles are, and whether the depth test is rejecting work" },
-      { id: "graph", icon: ICON_GRAPH, label: "Render Graph", open: () => this._showRenderGraph(),
-        detail: "Passes and the resources connecting them",
-        tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
-      { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw", open: () => void this.openOverdraw(),
-        detail: "Fragments per pixel, over the pass's render target",
-        tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
-    ];
-    for (const report of reports) {
+    for (const report of REPORTS) {
       const item = new Div(menu, { class: "menu-item reports-menu-item" });
       new Span(item, { html: report.icon, class: "reports-menu-icon" });
       const text = new Div(item, { class: "reports-menu-text" });
@@ -1663,7 +1866,7 @@ export class CaptureView implements CaptureHost {
       item.tooltip = report.tooltip;
       item.element.onclick = () => {
         menu.classList.remove("open");
-        report.open();
+        this.openReport(report.id);
       };
       this._reportItems.set(report.id, item);
     }
@@ -1673,36 +1876,24 @@ export class CaptureView implements CaptureHost {
     });
   }
 
-  /** Marks the menu entry whose report the details pane is showing, or none. */
-  private _markReport(id: string | null): void {
-    for (const [key, item] of this._reportItems) item.classList.toggle("active", key === id);
+  /** Marks the menu entries whose report has a tab open, so the menu says what is already there. */
+  private _markReports(): void {
+    for (const [key, item] of this._reportItems) item.classList.toggle("active", this._reportTabs.has(key));
   }
 
   /** "GPU Bottlenecks": what limits each pass, measured (metal/bottleneck_report.ts). */
   private _showBottlenecks(): void {
-    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
-    this._selectedRow = null;
-    this._markReport("bottlenecks");
-    this._infoPanel.html = "";
-    if (!this.data.commands.length) {
-      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
-      return;
-    }
-    renderBottleneckReport(this._infoPanel, this.data, this.window.database, (index) => this.selectCommand(index),
+    const body = this._reportBody("bottlenecks");
+    if (!body) return;
+    renderBottleneckReport(body, this.data, this.window.database, (index) => this.selectCommand(index),
       this.data.api === "vulkan" ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
   }
 
   /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
   private _showRenderGraph(): void {
-    if (this._selectedRow) this._selectedRow.classList.remove("capture_command_selected");
-    this._selectedRow = null;
-    this._markReport("graph");
-    this._infoPanel.html = "";
-    if (!this.data.commands.length) {
-      new Div(this._infoPanel, { text: "No commands captured yet.", class: "text-muted", style: "padding: 12px;" });
-      return;
-    }
-    renderRenderGraph(this._infoPanel, this.renderGraph(), {
+    const body = this._reportBody("graph");
+    if (!body) return;
+    renderRenderGraph(body, this.renderGraph(), {
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
       onShowFrameStats: () => this._showStats(),
@@ -1724,14 +1915,16 @@ export class CaptureView implements CaptureHost {
   showView(name: string): void {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
     else if (name === "bottlenecks") this._showBottlenecks();
+    else if (name === "shaders") void this._analyzeShaders();
     else if (name === "stats" || name.startsWith("stats:")) {
       // Testing aid (--debug-view=stats[:<card>]): Frame Stats, scrolled to the card whose heading
       // contains the text, since a screenshot otherwise only ever shows the top of the report.
       this._showStats();
       const heading = name.split(":")[1];
-      if (heading) {
+      const body = this._reportTabs.get("stats")?.body;
+      if (heading && body) {
         const needle = heading.toLowerCase();
-        for (const h of this._infoPanel.element.querySelectorAll(".frame-stats-heading")) {
+        for (const h of body.element.querySelectorAll(".frame-stats-heading")) {
           if (!(h.textContent ?? "").toLowerCase().includes(needle)) continue;
           h.scrollIntoView({ block: "start" });
           break;

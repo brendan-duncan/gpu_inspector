@@ -134,7 +134,8 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
     new Span(item, { class: "flame-legend-swatch", style: `background: ${DIMENSION_COLORS[dim as keyof typeof DIMENSION_COLORS]};` });
     new Span(item, { text: label });
   }
-  new Span(legend, { text: "Click a frame to zoom in; a draw frame selects the draw, a shader frame reveals the shader.", class: "flame-legend-hint text-muted font-sm" });
+  new Span(legend, { text: "Click a frame to zoom in; Ctrl+Wheel zooms about the pointer and dragging pans. A draw frame selects the draw, a shader frame reveals the shader.",
+    class: "flame-legend-hint text-muted font-sm" });
 
   const graph = new FlameGraph<FlameNode>(root, {
     formatValue: (n) => formatCostValue(n.totalCost, units),

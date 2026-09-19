@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("inspector", {
   openSessionWindow: (sessionId: number) => ipcRenderer.invoke("inspector:openSessionWindow", sessionId),
   moveSessionToMain: (sessionId: number) => ipcRenderer.invoke("inspector:moveSessionToMain", sessionId),
   openCaptureWindow: (opts: unknown) => ipcRenderer.invoke("inspector:openCaptureWindow", opts),
+  appStyles: () => ipcRenderer.invoke("inspector:appStyles"),
   measureOverdraw: (opts: unknown) => ipcRenderer.invoke("inspector:measureOverdraw", opts),
   pixelHistory: (opts: unknown) => ipcRenderer.invoke("inspector:pixelHistory", opts),
   measureDraws: (opts: unknown) => ipcRenderer.invoke("inspector:measureDraws", opts),

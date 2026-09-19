@@ -66,6 +66,8 @@ export interface CaptureTextureHost {
   drawOverlay(command: number, passDraws: CaptureCommand[]): Promise<DrawOverlay>;
   /** Vulkan: opens the shader debugger on a draw's fragment at a pixel. */
   debugPixel?(command: number, x: number, y: number): void;
+  /** Writes this tab to a standalone HTML file, the way a report's tab does (report_export.ts). */
+  exportHtml?(): void;
 }
 
 export interface CaptureTextureOptions {
@@ -78,6 +80,9 @@ export interface CaptureTextureOptions {
   /** Open following this pixel (the capture's own pixel history, or --debug-view). */
   pixel?: PixelRequest;
 }
+
+/** A page with an arrow leaving it: the tab written out as a file (the same icon a report's tab has). */
+const ICON_EXPORT_HTML = '<svg viewBox="0 0 16 16" aria-label="Export HTML"><path d="M9 2H4v12h8V5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.8 2v3.2H12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 7.4v4.4M6.2 10l1.8 1.9L9.8 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const COUNT_LABELS = ["Fragments passing depth and stencil", "Every rasterized fragment"];
 
@@ -335,6 +340,13 @@ export class CaptureTextureView {
     select.tooltip = "Draw over the image: the pass's overdraw, or where one of its draws landed";
     new Button(bar, { label: "Go to Pass", class: "btn btn-sm", tooltip: "Select the pass's first command in the capture's tab",
       callback: () => this.host.selectPass(this._target.key) });
+    // The Overdraw report is this tab, so it exports the way the other reports do.
+    const exportHtml = this.host.exportHtml;
+    if (exportHtml) {
+      new Button(bar, { html: ICON_EXPORT_HTML, class: "btn btn-sm btn-icon",
+        tooltip: "Export to HTML: write this tab to a standalone file, the image and the pixel history as they are here, readable anywhere",
+        callback: () => exportHtml.call(this.host) });
+    }
   }
 
   private _setOverlay(kind: TextureOverlayKind): void {

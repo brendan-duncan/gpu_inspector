@@ -6,9 +6,22 @@ The **Reports** menu in a capture answers questions about the whole frame instea
 Every report links back into the command list, so a number you want to understand is one click
 from the draw that produced it.
 
+Each report opens in a tab beside the capture's own, so a report and the command details stay on
+screen together and two reports can be open at once. The menu marks the reports that already have
+a tab. Every report's tab carries two controls, and its handle's context menu the same two:
+
+- **Open in New Window** puts a copy of the capture in a window of its own, opened on that report —
+  a live report, not a picture of one, so it still links back into its own command list. Use it to
+  put two captures' reports side by side.
+- **Export to HTML** writes the report to a standalone HTML file: what is on screen, with the
+  application's styles in it, readable in any browser and with nothing else needed. The file is a
+  snapshot — sections are written out open, controls are inert, and nothing in it measures anything
+  again. It is what to attach to a bug or a review.
+
 Some answers are about one render target or one draw rather than the whole frame. They open in
 tabs beside the capture's own: the [render target tab](#the-render-target-tab) (overdraw, draw
 overlays and pixel history), the [mesh view](#mesh-view) and the [shader debugger](#shader-debugger).
+The render target tab exports to HTML the same way.
 
 For the order to use them in when a frame is slow, see
 [Finding GPU bottlenecks](PROFILING.md).
@@ -63,6 +76,12 @@ source line. The pass level is measured time (from **Profile passes**); inside a
 model splits it across the draws and the functions they ran. It also lists the hottest functions
 and lines of the frame. Clicking a frame zooms in; a draw frame selects the draw, and a shader
 frame opens the shader.
+
+Two zooms, which combine: clicking a frame makes it the whole width and leaves a breadcrumb to
+walk back out, and **Ctrl+Wheel** zooms continuously about the pointer, with dragging to pan. Use
+the wheel for the frames a pass is too small to show — the graph says how many it left out — and
+the breadcrumb or **Reset zoom** to get back. The breadcrumb shows how far the wheel has zoomed in,
+and clicking that shows the whole of the frame in focus again.
 
 ![The Shader Flame Graph of a Unity frame: passes, pipelines and the fragment stages inside them, sized by GPU time](images/flame-graph.png)
 

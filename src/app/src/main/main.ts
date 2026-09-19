@@ -1015,6 +1015,25 @@ const windowPrefs = (): electron.BrowserWindowConstructorOptions => ({
 
 const rendererHtml = (): string => path.join(__dirname, "..", "renderer", "index.html");
 
+/**
+ * The application's stylesheets as one string, for the renderer to inline when it exports a report
+ * as a standalone HTML file (renderer/report_export.ts). The renderer cannot read them itself: its
+ * document is a file:// one, where fetch and the CSSOM of a linked stylesheet are both closed off.
+ */
+const APP_STYLESHEETS = ["theme.css", "inspector.css", "app.css"];
+function appStyles(): string {
+  const dir = path.join(__dirname, "..", "renderer", "css");
+  const parts: string[] = [];
+  for (const name of APP_STYLESHEETS) {
+    try {
+      parts.push(`/* ${name} */\n${fs.readFileSync(path.join(dir, name), "utf8")}`);
+    } catch (err) {
+      console.error(`appStyles ${name}: ${err}`);
+    }
+  }
+  return parts.join("\n");
+}
+
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow(windowPrefs());
   win.setMenuBarVisibility(false);
@@ -1051,9 +1070,10 @@ function openSessionWindow(s: Session): void {
  * Opens a capture file in a window of its own (the renderer there opens the path as a file
  * session and has no launcher). Bytes handed over from a live capture go to a temporary file
  * that is removed when the application quits; the window is told not to list it as recent.
+ * `view` names a report to open there (a report tab's "Open in New Window", capture_panel.ts).
  */
 const tempCaptures: string[] = [];
-function openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): boolean {
+function openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string; view?: string }): boolean {
   let file = opts.path ?? null;
   let temp = false;
   if (!file && opts.data) {
@@ -1071,7 +1091,7 @@ function openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: stri
   if (!file) return false;
   const win = new BrowserWindow({ ...windowPrefs(), title: `${path.basename(file)} - GPU Inspector` });
   win.setMenuBarVisibility(false);
-  void win.loadFile(rendererHtml(), { query: { capture: file, ...(temp ? { temp: "1" } : {}), theme: appTheme() } });
+  void win.loadFile(rendererHtml(), { query: { capture: file, ...(temp ? { temp: "1" } : {}), ...(opts.view ? { view: opts.view } : {}), theme: appTheme() } });
   if (process.env.INSPECTOR_DEVTOOLS) win.webContents.openDevTools({ mode: "detach" });
   return true;
 }
@@ -1141,6 +1161,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),
+      exportReport: cliOption("debug-export"),
     },
   };
 });
@@ -1259,7 +1280,8 @@ ipcMain.handle("inspector:shaderSource", (_e, names: string[], roots: string[]) 
   return findShaderSources(names, list);
 });
 
-ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string }) => openCaptureWindow(opts));
+ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?: Uint8Array; name?: string; view?: string }) => openCaptureWindow(opts));
+ipcMain.handle("inspector:appStyles", () => appStyles());
 // Vulkan overdraw: the capture replayed on this machine's GPU (src/main/replay.ts, docs/REPLAY.md).
 /** What every replay request names: the renderer's key for its capture, and the capture's bytes when the main process asked for them. */
 interface ReplayRequest { key: string; data?: Uint8Array; name?: string }

@@ -38,8 +38,13 @@ export interface InspectorApi {
   /** Terminates the application and removes the session. */
   closeSession(sessionId: number): Promise<boolean>;
   openSessionWindow(sessionId: number): Promise<boolean>;
-  /** Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file). */
-  openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string }): Promise<boolean>;
+  /**
+   * Opens a capture in a window of its own: a file by path, or bytes (written to a temporary file).
+   * `view` names a report for the new window to open on it (see CapturePanel's report tabs).
+   */
+  openCaptureWindow(opts: { path?: string; data?: Uint8Array; name?: string; view?: string }): Promise<boolean>;
+  /** The application's stylesheets, for a report exported as a standalone HTML file (report_export.ts). */
+  appStyles(): Promise<string>;
   /*
    * Vulkan replays, on this machine's GPU with vkinsp_replay (main/replay.ts). Each names the capture
    * by a key its view chose: the main process keeps a replay alive for it, and answers `needData`

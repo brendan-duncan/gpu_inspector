@@ -967,6 +967,8 @@ export interface AppConfig {
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
+    /** --debug-export=<file>: write the report --debug-view opened to that standalone HTML file. */
+    exportReport: string | null;
   };
 }
 

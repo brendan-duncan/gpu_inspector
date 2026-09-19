@@ -596,9 +596,24 @@ See [REPLAY.md](REPLAY.md).
   tables, reflection and resource source; `src/d3d12/` the D3D12 command tables and the reader of the
   reflection the D3D12 library sends with each pipeline.
 
+#### Reports in tabs
+
+The whole-capture reports (`REPORTS` in `capture_panel.ts`) each open in a tab beside the
+capture's, next to the render target, mesh and shader debugger tabs a capture opens
+(`CaptureSubTab`, keyed `report:<id>`). `CaptureView.openReport` renders into the tab's body and
+emits `onOpenReport`; `CapturePanel` places the tab and gives its handle a context menu. The tab's
+header carries the two things that apply to a report as a whole: **Open in New Window**, which
+serializes the capture and opens it in a window of its own with `?view=<id>` (a live report there,
+not a snapshot), and **Export to HTML** (`report_export.ts`), which clones the report's DOM,
+replaces canvases with the images they were showing, writes collapsed sections out open, disables
+the controls, and inlines the application's stylesheets (read by the main process: a `file://`
+document can reach them through neither `fetch` nor the CSSOM). A new capture in the tab leaves
+its open reports stale, with a button to rebuild them. `--debug-export=<file>` writes the tab
+`--debug-view` opened, for the UI tests.
+
 #### Frame Stats
 
-The Frame Stats button of a capture tab replaces the command details with statistics of the
+The Frame Stats report of a capture tab shows statistics of the
 capture (`capture_statistics.ts`, after WebGPU Inspector's): commands by kind, passes and
 attachments, pipelines and stages bound, descriptor sets and what they held, push constants,
 memory traffic (update/fill/copy bytes, and what the capture read back), and geometry. Vertex,
@@ -691,6 +706,12 @@ cut, children squeezed to fit their parent). Items are grouped per pipeline (or 
 When every pass has a measured duration the tree is in milliseconds: each pass subtree is
 scaled to its measured time, so the root and pass widths are real and only the split within a
 pass is modeled; otherwise it stays in modeled op units.
+
+The widget has two zooms. Clicking a frame pushes it on a focus stack (the breadcrumb walks back
+out); Ctrl+Wheel narrows a window over the focused frame's cost span about the pointer, and
+dragging slides that window. The window is a range in cost units, not a wider canvas: frames are
+laid out as percentages of it and clipped to it, so nothing scrolls sideways and the sub-pixel
+frames the cull drops come back as it narrows.
 
 #### Stack traces
 
