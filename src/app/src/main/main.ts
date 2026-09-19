@@ -28,6 +28,7 @@ import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironm
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
+import { BROWSER_FOLLOW, browserArgs, browserProfileDir, installedBrowsers } from "./browsers.js";
 import {
   THEMES,
   type AndroidDeviceList,
@@ -121,7 +122,7 @@ function removeRecentCapture(index: number): string[] {
 
 function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
   return {
-    target: c.target === "android" || c.target === "implicit" || c.target === "waitD3D12" ? c.target : "native",
+    target: c.target === "android" || c.target === "implicit" || c.target === "waitD3D12" || c.target === "browser" ? c.target : "native",
     exe: c.exe ?? "",
     args: c.args ?? "",
     cwd: c.cwd ?? "",
@@ -249,6 +250,7 @@ function findAndroidLayerFiles(): AndroidLayerFiles | null {
 
 function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
+  if (c.target === "browser") return `${c.args || "a page"} in ${path.basename(path.dirname(path.dirname(c.exe))) || path.basename(c.exe)}`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
   if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = path.basename(c.exe) || c.exe;
@@ -506,12 +508,19 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
     validation: config.validation, syncValidation: !!config.syncValidation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.layer.log` } : {}),
   } : null;
   const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };
-  const args = splitArgs(config.args ?? "");
+  // A browser target is this launch with its command line composed rather than typed: the page's
+  // WebGPU work is in the GPU process the browser starts, which `follow` puts the library into
+  // (main/browsers.ts). Everything below — the environment, the ports, the session — is the same.
+  const browser = config.target === "browser";
+  const args = browser
+    ? browserArgs(config.args ?? "", browserProfileDir(app.getPath("userData"), config.exe))
+    : splitArgs(config.args ?? "");
+  const follow = browser ? BROWSER_FOLLOW : config.follow?.trim() ? splitArgs(config.follow) : undefined;
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
+  if (browser) s.appendLog(`${path.basename(config.exe)} ${args.join(" ")}`);
   if (process.platform === "win32") {
     const launch = windowsLaunch({
-      exe: config.exe, args, cwd, env: base, vulkan,
-      follow: config.follow?.trim() ? splitArgs(config.follow) : undefined,
+      exe: config.exe, args, cwd, env: base, vulkan, follow,
       d3d12: d3d12 ? {
         tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
         symbolDirs: launchSymbolDirs(config),
@@ -719,6 +728,11 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
     if (!config.exe) return { error: "no package name given" };
     return { kind: "android", adb, layer };
   }
+  if (config.target === "browser") {
+    if (process.platform !== "win32") return { error: "capturing a browser's GPU process is a Windows target" };
+    if (!config.exe) return { error: "no browser chosen" };
+    if (!config.args.trim()) return { error: "no page to open: give the URL of a page that uses WebGPU" };
+  }
   if (!config.exe || !fs.existsSync(config.exe)) return { error: `executable not found: ${config.exe}` };
   if (process.platform === "darwin") {
     const library = findCaptureLibrary();
@@ -806,6 +820,15 @@ function waitForD3D12Application(s: Session, d3d12: D3D12Tools): LaunchResult {
       }, D3D12_DEVICE_WAIT_MS);
     },
   });
+}
+
+/** The browser a --browser option names (by name, in part, or by path), or the first installed one. */
+function chooseBrowser(wanted: string | null): string | null {
+  const installed = installedBrowsers();
+  if (!wanted) return installed[0]?.path ?? null;
+  if (fs.existsSync(wanted)) return wanted;
+  const match = installed.find((b) => b.name.toLowerCase().includes(wanted.toLowerCase()));
+  return match?.path ?? installed[0]?.path ?? null;
 }
 
 async function launch(config: LaunchConfig): Promise<LaunchResult> {
@@ -1206,6 +1229,7 @@ ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<Im
 // The implicit layer's variables for the whole account, for applications started by a launcher.
 ipcMain.handle("inspector:userEnvironment", () => userEnvironmentStatus());
 ipcMain.handle("inspector:setUserEnvironment", (_e, port: number | null) => setUserEnvironment(port === null ? null : Number(port)));
+ipcMain.handle("inspector:browsers", () => installedBrowsers());
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
   const layer = findAndroidLayerFiles() !== null;
@@ -1475,14 +1499,18 @@ void app.whenReady().then(() => {
   mainWin.webContents.on("did-finish-load", () => {
     const exe = cliOption("launch");
     const androidPackage = cliOption("launch-android");
-    if (exe || androidPackage) {
+    // --launch-browser=<url> opens a page in a browser with its GPU process captured, the launch
+    // dialog's browser target; --browser=<name or path> picks one when several are installed.
+    const browserUrl = cliOption("launch-browser");
+    const browser = browserUrl !== null ? chooseBrowser(cliOption("browser")) : null;
+    if (exe || androidPackage || browserUrl !== null) {
       const config = normalizeLaunch({
-        target: androidPackage ? "android" : "native",
-        exe: androidPackage ?? exe ?? "",
+        target: browserUrl !== null ? "browser" : androidPackage ? "android" : "native",
+        exe: browserUrl !== null ? browser ?? "" : androidPackage ?? exe ?? "",
         device: cliOption("device") ?? "",
         activity: cliOption("activity") ?? "",
         // --args is the launch dialog's field; --launch-args is the spelling src/metal/README.md uses.
-        args: cliOption("args") ?? cliOption("launch-args") ?? "",
+        args: browserUrl !== null ? browserUrl : cliOption("args") ?? cliOption("launch-args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,
         recordAlways: cliFlag("record-always"),
         validation: cliFlag("validation"),
