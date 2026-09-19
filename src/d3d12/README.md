@@ -257,7 +257,12 @@ one `<unrecorded command list>` entry, unless `DXINSP_RECORD_ALWAYS` is on. The 
 bundle recorded before the capture: `ExecuteBundle` carries its commands as `children` only when the
 bundle had a recorder when it was recorded, which for a bundle an engine records at start-up means
 record-always from launch (the launch dialog's "Record all command buffers"), read at the bundle's
-creation rather than at the first capture for that reason. A list is recorded
+creation rather than at the first capture for that reason. Such a bundle's snapshots were taken when
+no capture was on, so they hold no contents, and they are of another time anyway: during a capture
+the list that executes the bundle takes them again (`RecordedCommand::refresh`), with the copies
+recorded into that list, which is how the bundle's vertex and index buffers get into the capture. A
+table the bundle set before any root signature of its own is then read with the executing list's.
+A list is recorded
 under the method the application called (`DrawIndexedInstanced`, `SetGraphicsRootDescriptorTable`,
 `ResourceBarrier`, ...) with its parameters under their names.
 
@@ -306,7 +311,11 @@ larger than `maxTextureSize`, or of a format with no mapping, is reported with t
 bound with `SetGraphicsRootDescriptorTable` / `SetComputeRootDescriptorTable` and every root view
 (`SetGraphicsRootConstantBufferView` and the rest) gets a `descriptors` snapshot on the binding
 command in the shape of a Vulkan descriptor set snapshot, so `draw_state.ts` reconstructs a
-draw's bindings unchanged:
+draw's bindings unchanged. A root view is snapshot at its bind. A table is snapshot when the list
+next draws with it (a graphics table) or dispatches (a compute one), or at `Close` if nothing did:
+a table names slots of a heap, and what is in them counts when the GPU reads them. An engine may
+bind the table and write its descriptors afterwards (Unity does, for every draw), and a snapshot at
+the bind then holds what the slots had the frame before (`CommandRecorder::DeferSnapshot`):
 
 ```
 descriptors: { bindPoint: "graphics" | "compute", sets: [ {
@@ -482,6 +491,26 @@ results (`D3D12_OPTIONS` through the latest the runtime answers, `SHADER_MODEL`,
 `ROOT_SIGNATURE`) as an `ObjectUpdate` named `features`, which the Inspect panel lists as a
 sections of the device the way it lists a physical device's limits.
 
+## Replay and Export to C++
+
+`replay/` builds `dxinsp_replay.exe`, which re-executes a capture on this machine's GPU, compares
+every render target with the capture's copy, and with `--export <directory>` writes the frame as a
+standalone C++ project ([docs/REPLAY.md](../../docs/REPLAY.md#direct3d-12)). It links none of the
+capture library: it shares `formats.*`, `log.*` and the generated enum tables with it, and the
+capture reader with `src/replay`.
+
+| File | What it holds |
+|---|---|
+| `src/dx_reflect.h` | one description of every D3D12 struct a capture holds, visited by the two below |
+| `src/dx_decode.*` | the visitor that fills a struct from the capture's JSON: enums and flags by name, objects by id, GPU addresses and descriptor handles resolved to the replay's own |
+| `src/dx_source.*` | the visitor that spells a struct as C++ |
+| `src/dx_replayer.*` | objects, contents, initial states, descriptors, command lists, read-backs and their comparison |
+| `src/dx_exporter.*` | the project: sections, parts and files, the data file, `frame_objects.*`, CMake and README |
+| `export_template/` | the exported project's hand-written part (`main.cpp`, `dx_support.*`), embedded into the tool |
+
+A command the replayer does not issue is reported with its index and left out, never guessed at;
+adding one is a case in `DxReplayer::IssueCommand`, and a struct is a `Reflect` in `dx_reflect.h`.
+
 ## Test application
 
 `test/d3d12_triangle` is the D3D12 counterpart of `test/triangle`: a window and a swap chain, a
@@ -603,9 +632,8 @@ A multisampled stencil is not read back (nor a multisampled depth, outside the m
 compute resolve). Sampler feedback, video, the work graph and mesh shader nodes, and the
 raytracing state objects are recorded as commands and objects but their contents are not read
 back. Enhanced barriers (`Barrier`) are tracked for state only as far as their layouts map to
-legacy states. Bundles inherit the caller's root signature but the snapshot on a table bound
-inside a bundle needs the root signature bound in the bundle itself; a table set in a bundle
-before the bundle set a root signature is recorded without contents. Only x64 targets are
+legacy states. A table a bundle set before any root signature of its own has contents only in a
+capture that executes the bundle, where the executing list's root signature reads it. Only x64 targets are
 injected. A process that is **already running** cannot be attached to: the hooks go on the entry
 points before the device exists, and a device that exists cannot be found afterwards. `--watch`
 covers what the implicit layer covers for Vulkan — an application the inspector did not start — but

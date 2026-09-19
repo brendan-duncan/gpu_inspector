@@ -37,7 +37,7 @@ import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { exportReportHtml } from "./report_export.js";
-import { exportFolderName, exportSummaryText, parseExportSummary } from "./export_cpp.js";
+import { exportFolderName, exportSummaryText, exportsToCpp, parseExportSummary } from "./export_cpp.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
 import {
   isMeasured, measuresWhileCapturing, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary,
@@ -795,7 +795,7 @@ export class CapturePanel {
     const empty = !view.data.commands.length;
     return [
       { label: "Save Capture...", disabled: empty, callback: () => void this.saveActive() },
-      { label: "Export to C++...", disabled: empty || view.data.api !== "vulkan", callback: () => void this.exportCppActive() },
+      { label: "Export to C++...", disabled: empty || !exportsToCpp(view.data.api), callback: () => void this.exportCppActive() },
       { label: "Open in New Tab", disabled: empty, callback: () => void this._openInNewTab(view) },
       { label: "Open in New Window", disabled: empty, callback: () => void this._openInNewWindow(view) },
       { separator: true },
@@ -845,7 +845,7 @@ export class CapturePanel {
     const view = this.activeView;
     this._statusLabel.text = view?.status ?? "";
     this._saveButton.disabled = !view || !view.data.commands.length;
-    this._exportCppButton.disabled = !view || !view.data.commands.length || view.data.api !== "vulkan";
+    this._exportCppButton.disabled = !view || !view.data.commands.length || !exportsToCpp(view.data.api);
   }
 
   /**
@@ -859,8 +859,8 @@ export class CapturePanel {
       this._statusLabel.text = "nothing to export";
       return null;
     }
-    if (view.data.api !== "vulkan") {
-      this._statusLabel.text = `Export to C++ replays the capture to write it, and ${view.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay`;
+    if (!exportsToCpp(view.data.api)) {
+      this._statusLabel.text = "Export to C++ replays the capture to write it, and Metal captures do not replay";
       return null;
     }
     const chosen = parent ?? await window.inspector.chooseFile({ title: "Export to C++: choose where the project's folder goes", directory: true });
@@ -2333,8 +2333,8 @@ export class CaptureView implements CaptureHost {
   }
 
   /**
-   * Vulkan: replays the capture and writes it, as it replays, as a standalone C++ project in `dir`
-   * (src/replay/src/exporter.h): every object, what the frame's images and buffers held, and every
+   * Vulkan and Direct3D 12: replays the capture and writes it, as it replays, as a standalone C++ project in `dir`
+   * (src/replay/src/exporter.h, src/d3d12/replay/src/dx_exporter.h): every object, what the frame's images and buffers held, and every
    * command, with a program that compares its render targets with the capture's. The directory, or null.
    */
   async exportCpp(dir: string): Promise<string | null> {
@@ -2342,7 +2342,7 @@ export class CaptureView implements CaptureHost {
     this._exportRunning = true;
     this._setStatus("exporting to C++: replaying the capture on this machine's GPU...");
     try {
-      const result = await this._replay((r) => window.inspector.exportCpp({ ...r, dir }));
+      const result = await this._replay((r) => window.inspector.exportCpp({ ...r, dir, api: this.data.api }));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no project");
       const summary = parseExportSummary(result.data);
       this._setStatus(exportSummaryText(summary));

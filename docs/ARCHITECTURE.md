@@ -34,7 +34,7 @@ Everything that is built lives under `src/`; everything around the build stays a
 src/app/        the Electron UI (main, renderer, preload) and the MCP server of the plugin
 src/vulkan/     the Vulkan capture layer, and the code generated from vk.xml
 src/metal/      the Metal capture library (macOS)
-src/d3d12/      the Direct3D 12 capture library, its launcher and its shader tool (Windows)
+src/d3d12/      the Direct3D 12 capture library, its launcher, its shader tool and its replay tool (Windows)
 src/replay/     vkinsp_replay, which re-executes a Vulkan capture
 test/           the test applications each backend is exercised against
 tools/          the generators, the build and setup scripts, and the UI test harness

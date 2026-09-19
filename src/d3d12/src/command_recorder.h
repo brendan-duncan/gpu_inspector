@@ -11,16 +11,27 @@
 #include "descriptors.h"
 #include "stacktrace.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace dxinsp {
 
+class CommandRecorder;
+
+/** Takes a command's snapshot (its descriptors, the contents of the buffers it binds) again, queued on the list given. */
+using ExtraRefresh = std::function<std::string(CommandRecorder*)>;
+
 struct RecordedCommand {
     std::string method;
     std::string args;      // JSON object with the command's arguments, or empty
     std::string extra;     // pre-separated member list merged into the entry: ,"descriptors":{...},"stack":[...]
+    // A bundle's command only. A bundle is recorded once and executed for many frames, so what it
+    // snapshot when it was recorded is of another time, and holds no contents when no capture was
+    // on: the list that executes it takes `extra` from `refreshFrom` on again (OnExecuteBundle).
+    std::shared_ptr<const ExtraRefresh> refresh;
+    size_t refreshFrom = 0;
 };
 
 using CommandList = std::vector<RecordedCommand>;
@@ -105,6 +116,40 @@ public:
     void SetExtraOnLast(std::string extra) {
         if (!_commands->empty()) _commands->back().extra += extra;
     }
+    /** The same for a snapshot, `take(recorder)`: a bundle keeps how to take it again (RecordedCommand::refresh), which costs the others nothing. */
+    template <typename F> void SetSnapshotOnLast(F&& take) {
+        if (!_commands->empty()) SetSnapshotOn(_commands->size() - 1, take);
+    }
+    template <typename F> void SetSnapshotOn(size_t slot, F&& take) {
+        if (slot >= _commands->size()) return;
+        RecordedCommand& c = (*_commands)[slot];
+        if (_bundle && !c.refresh) {
+            c.refreshFrom = c.extra.size();
+            c.refresh = std::make_shared<const ExtraRefresh>(take);
+        }
+        c.extra += take(this);
+    }
+    /**
+     * A descriptor table's snapshot, held until the list next draws (or dispatches, for a compute
+     * table). A table names slots of a heap, and what is in them counts when the GPU reads them:
+     * an engine binds the table and then writes its descriptors (Unity does, every draw), so a
+     * snapshot taken at the bind holds what the slots had the frame before.
+     */
+    void DeferSnapshot(bool compute, ExtraRefresh take) {
+        if (!_commands->empty()) _deferred.push_back({_commands->size() - 1, compute, std::move(take)});
+    }
+    /** Takes the held snapshots: before a draw (graphics), a dispatch (compute), or what may be either. */
+    void FlushSnapshots(bool graphics, bool compute) {
+        if (_deferred.empty()) return;
+        size_t kept = 0;
+        for (size_t i = 0; i < _deferred.size(); ++i) {
+            DeferredSnapshot& d = _deferred[i];
+            if (d.compute ? compute : graphics) SetSnapshotOn(d.slot, d.take);
+            else if (kept != i) _deferred[kept++] = std::move(d);
+            else ++kept;
+        }
+        _deferred.resize(kept);
+    }
     void SetCaptureStacks(bool on) { _captureStacks = on; }
 
     /** Frozen snapshot of the commands recorded so far (shared with the capture; a Reset starts a new list). */
@@ -119,6 +164,7 @@ public:
         _computeCount = 0;
         _state = ListState{};
         _closed = false;
+        _deferred.clear();
     }
 
     ID3D12Device* device() const { return _device; }
@@ -146,6 +192,12 @@ private:
     ActiveComputePass _compute;
     uint32_t _computeCount = 0;
     ListState _state;
+    struct DeferredSnapshot {
+        size_t slot;
+        bool compute;
+        ExtraRefresh take;
+    };
+    std::vector<DeferredSnapshot> _deferred;
     bool _captureStacks = false;
     bool _closed = false;
 };

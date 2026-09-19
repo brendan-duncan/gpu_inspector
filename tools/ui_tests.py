@@ -65,6 +65,11 @@ def find_replay():
     return None
 
 
+def find_d3d12_replay():
+    c = os.path.join(ROOT, "build", "bin", "Release", "dxinsp_replay.exe")
+    return c if os.path.isfile(c) else None
+
+
 def electron():
     exe = os.path.join(APP, "node_modules", ".bin", "electron.cmd" if IS_WIN else "electron")
     return exe if os.path.isfile(exe) else None
@@ -928,7 +933,29 @@ def d3d12_cases(triangle):
     def d3d12_open(state, log):
         c = capture(state)
         return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") +             expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") +             expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws in the reopened file") +             expect((c.get("texturesLoaded") or 0) >= 2, "the reopened file lost its render targets")
-    return [
+    exported_cpp = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_export_cpp")
+
+    def remove_exported_cpp():
+        shutil.rmtree(exported_cpp, ignore_errors=True)
+
+    def d3d12_export_cpp(state, log):
+        # Export to C++ of a D3D12 capture (src/d3d12/replay/src/dx_exporter.h), which dxinsp_replay
+        # writes. The frame draws from a bundle recorded at start-up, so the project holds the
+        # bundle's recording, and its vertex data is what the list that executed it read back.
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        data = os.path.join(project, "frame_data.bin")
+        return check_connected(state, log) + check_capture_basic(state, log) +             expect(len(projects) == 1 and project.endswith("_cpp"), f"one project folder named after the capture in {exported_cpp}: {projects}") +             expect(os.path.isfile(os.path.join(project, "CMakeLists.txt")), "the project has no CMakeLists.txt") +             expect(os.path.isfile(os.path.join(project, "dx_support.cpp")), "the project has no dx_support.cpp") +             expect("->ExecuteBundle(" in commands, "frame_commands.cpp does not execute the bundle") +             expect("->DrawIndexedInstanced(" in commands, "frame_commands.cpp does not hold the bundle's draw") +             expect("ReadbackTexture(" in commands, "frame_commands.cpp reads no render target back to compare") +             expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
+
+    export_cases = [Case("d3d12-export-cpp", launch + ["--args=--bundle", "--record-always", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
+                         d3d12_export_cpp, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
+    if not export_cases:
+        print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
+    return export_cases + [
         Case("d3d12-plain", launch + ["--args=--compute", "--debug-capture", "--debug-command=22", "--debug-expand=Vertex Shader",
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),

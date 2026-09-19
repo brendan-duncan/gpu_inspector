@@ -68,7 +68,7 @@ export interface InspectorApi {
   /** A shader stage measured by ablation at a draw (--ablate-data, main/shader_ablation_run.ts); `ablation` when it was. */
   measureShader(opts: { key: string; data?: Uint8Array; name?: string; stage: ShaderMeasureTarget & { drawMs?: number | null } }): Promise<{ ablation?: ShaderAblation; error?: string; needData?: boolean }>;
   /** The frame written as a standalone C++ project into `dir` (--export; renderer/export_cpp.ts parses the summary). */
-  exportCpp(opts: { key: string; data?: Uint8Array; name?: string; dir: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  exportCpp(opts: { key: string; data?: Uint8Array; name?: string; dir: string; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Stops the replay kept for a capture key and removes its file. */
   releaseReplay(key: string): Promise<void>;
   /** Frames named by module and offset only, resolved on this machine with the unstripped libraries under the directories (empty: the last ones used). */

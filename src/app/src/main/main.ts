@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
 import {
-  NO_REPLAY_TOOL, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
+  NO_REPLAY_TOOL, findExportTool, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileDxil, compileHlslForDebugging, compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
@@ -1341,10 +1341,14 @@ ipcMain.handle("inspector:meshOutput", (_e, opts: ReplayRequest & { commands: nu
 // Vulkan pixel history: one pixel followed through the replayed frame (src/replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", (_e, opts: ReplayRequest & { pixel: PixelRequest }): Promise<ReplayRun> =>
   replayFor(opts, { kind: "pixel", ...opts.pixel }));
-// Vulkan Export to C++: the frame replayed and written, as it replays, as a standalone C++ project in
-// `dir` (src/replay/src/exporter.h). The data is the export's summary (renderer/export_cpp.ts).
-ipcMain.handle("inspector:exportCpp", (_e, opts: ReplayRequest & { dir: string }): Promise<ReplayRun> =>
-  replayFor(opts, { kind: "export", dir: opts.dir }));
+// Export to C++: the frame replayed and written, as it replays, as a standalone C++ project in `dir`
+// (src/replay/src/exporter.h; src/d3d12/replay/src/dx_exporter.h for a Direct3D 12 capture, which
+// its own tool replays). The data is the export's summary (renderer/export_cpp.ts).
+ipcMain.handle("inspector:exportCpp", (_e, opts: ReplayRequest & { dir: string; api?: string }): Promise<ReplayRun> => {
+  const found = findExportTool(opts.api ?? "vulkan", [path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!found.tool) return Promise.resolve({ data: null, output: "", error: found.missing });
+  return replayKeyed(found.tool, opts.key, opts.data, { kind: "export", dir: opts.dir }, opts.name);
+});
 // Vulkan shader cost by ablation: a stage's variants timed at one draw (src/replay/src/ablation.cpp).
 ipcMain.handle("inspector:measureShader", async (_e, opts: ReplayRequest & { stage: StageAblationRequest }) => {
   let needData = false;

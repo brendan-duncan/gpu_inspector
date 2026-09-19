@@ -1404,9 +1404,13 @@ void EndSnapshot(JsonWriter& w) {
 
 void CaptureManager::SnapshotRootTable(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE base) {
     if (!rec) return;
+    // A bundle that sets no root signature inherits the executing list's.
+    const std::shared_ptr<const RootSignatureInfo> ownLayout = compute ? rec->state().computeLayout : rec->state().graphicsLayout;
+    ID3D12RootSignature* ownSignature = compute ? rec->state().computeRootSignature : rec->state().graphicsRootSignature;
+    rec->DeferSnapshot(compute, [this, compute, parameterIndex, base, ownLayout, ownSignature](CommandRecorder* rec) {
     ListState& state = rec->state();
-    const std::shared_ptr<const RootSignatureInfo> layout = compute ? state.computeLayout : state.graphicsLayout;
-    ID3D12RootSignature* signature = compute ? state.computeRootSignature : state.graphicsRootSignature;
+    const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout : state.graphicsLayout;
+    ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature : state.graphicsRootSignature;
     HeapInfo heap;
     uint32_t index = 0;
     const bool located = DescriptorTracker::Get().Locate(base, heap, index);
@@ -1440,14 +1444,18 @@ void CaptureManager::SnapshotRootTable(CommandRecorder* rec, bool compute, uint3
         }
     }
     EndSnapshot(w);
-    rec->SetExtraOnLast(",\"descriptors\":" + w.str());
+    return ",\"descriptors\":" + w.str();
+    });
 }
 
 void CaptureManager::SnapshotRootView(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address) {
     if (!rec) return;
+    const std::shared_ptr<const RootSignatureInfo> ownLayout = compute ? rec->state().computeLayout : rec->state().graphicsLayout;
+    ID3D12RootSignature* ownSignature = compute ? rec->state().computeRootSignature : rec->state().graphicsRootSignature;
+    rec->SetSnapshotOnLast([this, compute, parameterIndex, address, ownLayout, ownSignature](CommandRecorder* rec) {
     ListState& state = rec->state();
-    const std::shared_ptr<const RootSignatureInfo> layout = compute ? state.computeLayout : state.graphicsLayout;
-    ID3D12RootSignature* signature = compute ? state.computeRootSignature : state.graphicsRootSignature;
+    const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout : state.graphicsLayout;
+    ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature : state.graphicsRootSignature;
     const RootParameterInfo* param = layout && parameterIndex < layout->parameters.size() ? &layout->parameters[parameterIndex] : nullptr;
 
     JsonWriter w(&Tracker::Get());
@@ -1482,7 +1490,8 @@ void CaptureManager::SnapshotRootView(CommandRecorder* rec, bool compute, uint32
     w.EndArray();
     w.EndObject();
     EndSnapshot(w);
-    rec->SetExtraOnLast(",\"descriptors\":" + w.str());
+    return ",\"descriptors\":" + w.str();
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1641,6 +1650,13 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
     }
     std::shared_ptr<const CommandList> commands = bundleRec->Snapshot();
     if (!commands || commands->empty()) return;
+    // What the bundle binds is read when it runs, which is now: during a capture its snapshots are
+    // taken again, their copies recorded into this list (or held for its pass's end).
+    bool capturing = false;
+    {
+        std::lock_guard lock(i.mutex);
+        capturing = i.state == Impl::State::Capturing;
+    }
     JsonWriter w;
     w.BeginArray();
     w.BeginObject();
@@ -1652,7 +1668,9 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
         w.Key("method"); w.String(c.method);
         w.Key("args"); if (c.args.empty()) w.Null(); else w.Raw(c.args);
         w.Key("slot"); w.Uint(slot++);
-        if (!c.extra.empty()) w.str() += c.extra;   // a pre-separated member list: ,"descriptors":{...}
+        // A pre-separated member list: ,"descriptors":{...}
+        if (capturing && c.refresh) w.str() += c.extra.substr(0, c.refreshFrom) + (*c.refresh)(rec);
+        else if (!c.extra.empty()) w.str() += c.extra;
         w.EndObject();
     }
     w.EndArray();

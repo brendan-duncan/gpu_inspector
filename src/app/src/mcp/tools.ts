@@ -8,14 +8,14 @@ import {
   BOUND_ADVICE, BOUND_LABEL, HEALTHY_OVERDRAW, LOW_REJECTION_RATE, MICROTRIANGLE_LIMIT, OVERDRAW_LIMIT,
   frameStageVerdict, passAdvice, type PassMetrics,
 } from "../renderer/pass_metrics.js";
-import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
+import { NO_REPLAY_TOOL, findExportTool, findReplayTool, replayServers } from "../main/replay.js";
 import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel, type PixelHistory } from "../renderer/pixel_history.js";
 import {
   OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
 } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
-import { exportFolderName, parseExportSummary } from "../renderer/export_cpp.js";
+import { exportFolderName, exportsToCpp, parseExportSummary } from "../renderer/export_cpp.js";
 import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabelledPass } from "../renderer/timeline_tracks.js";
 import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
@@ -473,23 +473,24 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
     },
     {
       name: "export_cpp",
-      description: "Export to C++: writes a Vulkan capture's frame as a standalone, compilable C++ project — every object with the " +
-        "create info it was made from, what the frame's images and buffers held, every command of its command buffers, and a " +
+      description: "Export to C++: writes a Vulkan or Direct3D 12 capture's frame as a standalone, compilable C++ project — every object with the " +
+        "description it was made from, what the frame's textures and buffers held, every command of its command buffers or lists, and a " +
         "program that runs the frame and compares each render target with the capture's copy. For reproducing a problem outside " +
-        "the application, as in a driver bug report. The capture is replayed on this machine's GPU with vkinsp_replay to write " +
-        "it (a second or so), so the source is what the replay did: see the project's README.md for how that differs from the " +
-        "application, and for anything left out. Builds with CMake and a C++20 compiler alone: it carries its Vulkan headers. Not Metal or D3D12.",
+        "the application, as in a driver bug report. The capture is replayed on this machine's GPU to write it (vkinsp_replay, or " +
+        "dxinsp_replay for D3D12, on Windows; a second or so), so the source is what the replay did: see the project's README.md for how " +
+        "that differs from the application, and for anything left out. Builds with CMake and a C++20 compiler alone: a Vulkan project " +
+        "carries its Vulkan headers, a D3D12 one needs the Windows SDK. Not Metal.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         directory: { type: "string", description: "Where the project's folder goes (it is created, named after the capture). Default: beside the capture file." },
       }),
       handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
-        if (c.data.api !== "vulkan") {
-          return jsonResult({ capture: c.id, note: `Export to C++ replays the capture to write it, and ${c.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay.` });
+        if (!exportsToCpp(c.data.api)) {
+          return jsonResult({ capture: c.id, note: "Export to C++ replays the capture to write it, and Metal captures do not replay." });
         }
-        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
-        if (!tool) return jsonResult({ capture: c.id, note: `Export to C++ needs the capture replayed, and ${NO_REPLAY_TOOL}` });
+        const { tool, missing } = findExportTool(c.data.api, checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c.id, note: `Export to C++ needs the capture replayed, and ${missing}` });
         const parent = stringArg(args, "directory") ?? path.dirname(c.path);
         const dir = path.join(parent, exportFolderName(path.basename(c.path)));
         const run = await replayServers.run(tool, c.path, { kind: "export", dir });
@@ -501,7 +502,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           objects: e.objects, commands: e.commands, submissions: e.submissions, renderTargetsCompared: e.targets,
           commandsLeftOut: e.leftOut, dataMB: Number((e.dataBytes / (1024 * 1024)).toFixed(1)), files: e.files,
           build: `cmake -S "${e.directory}" -B "${e.directory}/build" && cmake --build "${e.directory}/build" --config Release`,
-          run: "The program prints each render target compared with the capture's copy and exits 0 when all are identical; --validate enables the validation layer.",
+          run: `The program prints each render target compared with the capture's copy and exits 0 when all are identical; ${c.data.api === "d3d12" ? "--debug-layer enables the D3D12 debug layer" : "--validate enables the validation layer"}.`,
           ...(e.notes.length ? { notes: e.notes.slice(0, 20) } : {}),
           ...(e.problems.length ? { replayProblems: e.problems.slice(0, 20), problemCount: e.problems.length } : {}),
         });

@@ -33,11 +33,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--symbol", default="kEmbeddedFiles")
+    ap.add_argument("--namespace", default="vkreplay")
     ap.add_argument("files", nargs="+")
     args = ap.parse_args()
 
-    lines = ["// GENERATED FILE - do not edit. Produced by tools/embed_files.py from src/replay/export_template.",
-             "#include <cstddef>", "", "namespace vkreplay {", "",
+    lines = ["// GENERATED FILE - do not edit. Produced by tools/embed_files.py from an export_template directory.",
+             "#include <cstddef>", "", f"namespace {args.namespace} {{", "",
              "struct EmbeddedFile { const char* name; const char* const* pieces; size_t count; };", ""]
     entries = []
     for i, spec in enumerate(args.files):
@@ -57,7 +58,7 @@ def main():
     lines += ["", f"extern const EmbeddedFile {args.symbol}[];", f"extern const size_t {args.symbol}Count;",
               f"const EmbeddedFile {args.symbol}[] = {{"] + entries + ["};",
               f"const size_t {args.symbol}Count = sizeof({args.symbol}) / sizeof({args.symbol}[0]);", "",
-              "} // namespace vkreplay", ""]
+              f"}} // namespace {args.namespace}", ""]
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", newline="\n", encoding="utf-8") as f:
         f.write("\n".join(lines))

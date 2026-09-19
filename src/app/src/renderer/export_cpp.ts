@@ -51,6 +51,11 @@ export function exportSummaryText(e: ExportCppSummary): string {
 }
 
 /** A folder name for a capture's project, from the capture's label. */
+/** The APIs whose captures Export to C++ writes: those with a replay to write it from (vkinsp_replay, dxinsp_replay). */
+export function exportsToCpp(api: string | undefined): boolean {
+  return api === "vulkan" || api === "d3d12";
+}
+
 export function exportFolderName(label: string): string {
   const stem = label.replace(/\.gpucap$/i, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
   return `${stem || "frame"}_cpp`;

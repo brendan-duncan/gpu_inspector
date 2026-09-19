@@ -3,6 +3,7 @@
 ### Added
 - **A web page in a browser (WebGPU)** in the launch dialog captures a page's WebGPU work as Direct3D 12: pick one of the Chrome, Chrome Canary, Edge, Brave, Firefox or Firefox Nightly installs found on this machine, type a URL, and the library goes into the browser's GPU process (docs/BROWSER.md).
 - **Export to C++** writes a Vulkan capture's frame as a standalone CMake project that re-creates its objects, runs the frame and compares its render targets with the capture's, for driver bug reports (`vkinsp_replay --export`, `export_cpp`).
+- **Export to C++** writes Direct3D 12 captures too, from `dxinsp_replay`, a new tool that replays a D3D12 capture and compares its render targets with the capture's.
 - A Windows launch can follow the target's own child processes, which is how that works: **Follow child processes** in the launch dialog, `follow` from `launch_app`, `--follow` in `dxinsp_launch`.
 - A followed launch waits for the target's whole process tree, so a target whose first process starts the real one and exits (Firefox, a game's launcher) is followed into the process that renders.
 - Each of a capture's reports opens in a tab beside the capture's, with **Open in New Window** on the tab (a copy of the capture there, opened on that report) and on its context menu.
@@ -10,6 +11,8 @@
 - The Shader Flame Graph zooms continuously with **Ctrl+Wheel** about the pointer and pans by dragging, besides the click zoom it already had.
 
 ### Fixed
+- A D3D12 draw shows the textures its descriptor table held when it drew, not when the table was bound: an engine that binds first and writes descriptors after (Unity) showed the previous frame's.
+- A D3D12 bundle recorded before the capture has its vertex, index and constant buffer contents in the capture, read back by the list that executes it.
 - A capture of an application launched with a long command line is saved again: the file name is cut to the application's own part of it rather than the whole line.
 - A capture whose manifest passes 512 MB can be saved and opened: it is written and read a batch of commands at a time rather than as one JSON string, which V8 could not hold (`src/app/src/renderer/utils/json_stream.ts`).
 - Opening and saving a capture no longer copy the whole command list, which cost 34 MB and 40 MB on a 400k-command frame.

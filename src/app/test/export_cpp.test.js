@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "exportcpp-"));
 const out = join(dir, "export_cpp.mjs");
 buildSync({ entryPoints: [join(here, "..", "src", "renderer", "export_cpp.ts")], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
-const { parseExportSummary, exportSummaryText, exportFolderName } = await import(pathToFileURL(out).href);
+const { parseExportSummary, exportSummaryText, exportFolderName, exportsToCpp } = await import(pathToFileURL(out).href);
 
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value));
 const summary = {
@@ -57,4 +57,8 @@ test("a capture's project folder is named after the capture, safely", () => {
   assert.equal(exportFolderName("vkinsp_triangle_frame_108.gpucap"), "vkinsp_triangle_frame_108_cpp");
   assert.equal(exportFolderName("My Game (dev) frame 12.GPUCAP"), "My_Game_dev_frame_12_cpp");
   assert.equal(exportFolderName("///"), "frame_cpp");
+});
+
+test("the captures with a replay export: Vulkan and Direct3D 12, not Metal", () => {
+  assert.deepEqual(["vulkan", "d3d12", "metal", undefined].map(exportsToCpp), [true, true, false, false]);
 });

@@ -6,7 +6,8 @@
 application. It is the basis for the analyses that have to run a frame again with something
 changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output (which the shader
 debugger's pixels are rasterized from), per-draw timing and shader cost by ablation. It also writes a
-frame out as a C++ project ([Export to C++](#export-to-c)).
+frame out as a C++ project ([Export to C++](#export-to-c)). A Direct3D 12 capture has a replay tool of
+its own, `dxinsp_replay`, which replays, compares and exports ([Direct3D 12](#direct3d-12)).
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
@@ -541,7 +542,8 @@ images and buffers held, and every command of its command buffers as plain Vulka
 program that runs the frame and compares each render target with the capture's copy. It is for
 reproducing a problem outside the application, above all in a driver bug report, where the vendor
 wants something to build and run rather than a capture in someone else's format. In GPU Inspector it
-is **Export to C++** in the capture bar and on a capture tab's menu.
+is **Export to C++** in the capture bar and on a capture tab's menu. This section is the Vulkan
+export; a Direct3D 12 capture exports the same way through its own tool ([Direct3D 12](#direct3d-12)).
 
 The source is emitted from the replay's own walk, not from the capture a second way. The exporter
 (`src/replay/src/exporter.h`) watches the replay create the device and each object, upload each
@@ -618,6 +620,102 @@ Limits:
   shader group handle, which the replay finds at run time, and the source has no spelling for that
   yet. Those commands are left out with a comment, and an image only a shader writes is then not
   compared: it would still hold the contents uploaded for it, and match the capture for no reason.
+
+## Direct3D 12
+
+`dxinsp_replay` (`src/d3d12/replay/`, Windows) re-executes a Direct3D 12 capture, and is what
+**Export to C++** runs for one. It replays the frame and compares its render targets, and it writes
+the frame out as a C++ project; the analyses above are `vkinsp_replay`'s and stay Vulkan-only.
+
+```
+dxinsp_replay <capture.gpucap> [--debug-layer] [--trace]
+dxinsp_replay <capture.gpucap> --export <directory> [--export-data <file>]
+```
+
+- `--debug-layer` runs the replay under the D3D12 debug layer and prints its messages, grouped.
+- `--trace` names each command on stderr before it is issued, to find the one a driver dies in.
+- The exit code is 0 when every compared target is identical, 1 when some differ or could not be
+  compared, 2 when the replay could not run. `DXINSP_REPLAY_DUMP=<directory>` writes both sides of a
+  target that differs as raw bytes.
+
+It shares the capture reader with `vkinsp_replay` (`gpucap.*`, `json.*`: no graphics API in them).
+The rest is its own, because a D3D12 capture's arguments are written by hand
+(`src/d3d12/src/serialize.cpp`) rather than generated from a registry. One description per struct
+(`dx_reflect.h`) is visited twice: by the decoder, which fills the struct from the capture's JSON,
+and by the emitter, which spells the same struct as C++.
+
+How the frame is rebuilt:
+
+- **Resources** are all committed, whatever they were: a placed or reserved resource needs its heap
+  and its offset only to alias another, which a frame's replay does not depend on. A swap chain's
+  buffers become textures of their description.
+- **States.** The capture records no resource states, so each subresource starts in the state the
+  frame first expects of it: the `StateBefore` of its first transition, else what its first use
+  needs. Upload and readback heaps keep the state they require.
+- **Contents** are what the capture read back: a sampled texture as it was when a table that holds
+  it was drawn with, a buffer range where a command read it (a vertex or index buffer at its bind,
+  a constant buffer at its root bind or in its table, indirect arguments at the call).
+- **Descriptors.** The capture holds no `CreateShaderResourceView` calls, only what each bound
+  table held. The replay writes those views into its own heaps at the same slots as it records the
+  bind, and leaves a slot alone that already holds the same view. A slot given other contents after
+  a draw of the same submission bound it is reported, since every write lands before the
+  submission runs.
+- **Root signatures** are serialized again from their description, **pipelines** created from their
+  description with the capture's bytecode (a pipeline stream becomes the graphics or compute
+  description it amounts to, and one loaded from a pipeline library is created from the
+  description it was loaded with).
+- **Command lists** are recorded from their `Reset` to their `Close` and executed where the capture
+  executed them, each submission waited for. A list or an allocator the capture has no object for
+  (an engine that releases them as it goes may have released one before the capture was saved) is
+  made from its type. A bundle is recorded from the commands the capture inlines after its
+  `ExecuteBundle`, once.
+- **Read-backs** are taken where the capture took them: when a pass ends (the capture's
+  `EndRenderTargets` marker, or `EndRenderPass`), a multisampled colour target through a resolve,
+  depth and stencil as their planes. The top byte of a 24-bit depth texel is undefined and ignored.
+  A target its render pass ends by discarding is not compared, since what it holds afterwards is
+  undefined (the debug layer overwrites it), and neither is one the capture failed to read back;
+  neither counts against the exit code.
+
+Two things in the capture library exist for the replay, and improve what GPU Inspector shows too:
+
+- A **descriptor table is snapshot when the list next draws or dispatches** with it, not when it is
+  bound. A table names slots of a heap, and an engine may bind it and then write the descriptors
+  (Unity does, for every draw), so a snapshot at the bind held what the slots had the frame before.
+  Captures taken before this show, and replay with, the wrong textures in such a frame.
+- A **bundle's snapshots are taken again by the list that executes it**, during a capture. A bundle
+  is recorded once, usually before any capture (keep its recording with **Record always**), so what
+  it snapshot then held no contents: its vertex and index buffers were not in the capture at all.
+
+The exported project is the same idea as Vulkan's: `frame_create*.cpp` makes the objects,
+`frame_contents.cpp` uploads the textures, `frame_commands*.cpp` uploads buffer ranges, writes
+descriptors and records and executes the lists, and `main.cpp` compares each target with the
+capture's copy and writes them to `out/`. Structs are declared zeroed and assigned member by
+member, which is what D3D12's anonymous unions allow, leaving out members that are zero. Objects are
+named by type and capture id (`texture_186`), a GPU address is its buffer's address plus an offset,
+a descriptor handle is a slot of its heap. It needs CMake, a C++20 compiler and the Windows SDK, and
+links `d3d12`, `dxgi` and `dxguid`. `--debug-layer` runs it under the debug layer. The hand-written
+part is `src/d3d12/replay/export_template`. The sources split as Vulkan's do, with the same
+`VKINSP_EXPORT_PART_LINES` and `VKINSP_EXPORT_FILE_LINES`.
+
+Checked on an RTX 4080 with the debug layer, replayed and then exported, built and run:
+
+| Capture | The replay, and the exported program |
+|---|---|
+| test/triangle/d3d12 (table of a constant buffer and a texture, root constants, static sampler) | identical, colour and depth, no debug layer errors |
+| `--msaa` | the resolved colour identical; the capture does not read multisampled depth back |
+| `--bundle` with **Record always** | identical: the draw is in a bundle recorded at start-up |
+| `--indirect`, `--compute`, `--offscreen` (no swap chain) | identical |
+| `--render-pass` (`BeginRenderPass`), `--stencil` (D24S8, depth and stencil planes) | identical |
+| Unity URP player frame (9 passes, pipeline library, root constant buffer views, D32S8, BC1 and BC3, SSAO, bloom) | all 17 targets identical; the 2 a pass discards are not compared. Cut into parts of 40 lines and files of 300 it builds and runs the same |
+
+Limits:
+- Ray tracing is left out (state objects, builds, `DispatchRays`), as are video, work graphs and
+  meta commands: each such command is reported, and in the export is a comment where it would be.
+- What the frame reads with no command naming it is not in the capture: a buffer reached through
+  a GPU address inside another buffer, a descriptor indexed out of the heap directly (shader model
+  6.6). Multisampled textures are not uploaded, and multisampled depth is not compared.
+- Queries are issued but their results are not compared, and fences, tiled resource mappings and
+  residency are not replayed.
 
 ## Where it stands
 

@@ -137,3 +137,52 @@ target_include_directories(dxinsp_shader PRIVATE
 target_compile_definitions(dxinsp_shader PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS DXINSP_SHADER_TOOL)
 target_link_libraries(dxinsp_shader PRIVATE d3d12 dxgi dxguid)
 set_target_properties(dxinsp_shader PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# dxinsp_replay: re-executes a Direct3D 12 capture on this machine's GPU, and writes it out as a
+# C++ project (replay/, docs/REPLAY.md "Direct3D 12"). The capture file, its JSON and the arena are
+# the Vulkan replay's (src/replay/src), which have no graphics API in them; the format tables and
+# the generated enum names are the capture library's. The exported project's hand-written files
+# live in replay/export_template as real sources, embedded into the tool as strings.
+if(Python3_Interpreter_FOUND)
+    set(DXREPLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/replay")
+    set(VKREPLAY_SRC "${DXINSP_ROOT}/src/replay/src")
+    set(DXREPLAY_TEMPLATES
+        "${DXREPLAY_DIR}/export_template/main.cpp"
+        "${DXREPLAY_DIR}/export_template/dx_support.h"
+        "${DXREPLAY_DIR}/export_template/dx_support.cpp")
+    set(DXREPLAY_TEMPLATES_CPP "${CMAKE_CURRENT_BINARY_DIR}/dx_export_templates.gen.cpp")
+    add_custom_command(
+        OUTPUT "${DXREPLAY_TEMPLATES_CPP}"
+        COMMAND ${Python3_EXECUTABLE} "${DXINSP_ROOT}/tools/embed_files.py" --out "${DXREPLAY_TEMPLATES_CPP}" --symbol kDxExportTemplates --namespace dxreplay ${DXREPLAY_TEMPLATES}
+        DEPENDS "${DXINSP_ROOT}/tools/embed_files.py" ${DXREPLAY_TEMPLATES}
+        COMMENT "Embedding the exported D3D12 project's support files"
+        VERBATIM)
+    add_executable(dxinsp_replay
+        replay/src/main.cpp
+        replay/src/dx_reflect.h
+        replay/src/dx_decode.h
+        replay/src/dx_decode.cpp
+        replay/src/dx_source.h
+        replay/src/dx_source.cpp
+        replay/src/dx_replayer.h
+        replay/src/dx_replayer.cpp
+        replay/src/dx_exporter.h
+        replay/src/dx_exporter.cpp
+        "${VKREPLAY_SRC}/json.cpp"
+        "${VKREPLAY_SRC}/gpucap.cpp"
+        "${VKREPLAY_SRC}/decode.cpp"
+        src/formats.cpp
+        src/log.cpp
+        "${GEN_DIR}/d3d12_enums.gen.cpp"
+        "${DXREPLAY_TEMPLATES_CPP}")
+    set_target_properties(dxinsp_replay PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    target_include_directories(dxinsp_replay PRIVATE
+        "${DXREPLAY_DIR}/src"
+        "${VKREPLAY_SRC}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${GEN_DIR}"
+        "${DXINSP_ROOT}/src/vulkan/src")
+    target_compile_definitions(dxinsp_replay PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(dxinsp_replay PRIVATE /W3 /bigobj)
+    target_link_libraries(dxinsp_replay PRIVATE d3d12 dxgi dxguid)
+endif()

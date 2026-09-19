@@ -788,7 +788,11 @@ std::string Exporter::Readme(const ReplayReport& report, const ExportReport& sum
          "C++ with no dependency but the Vulkan headers. It was written by GPU Inspector's Export to C++\n"
          "(`vkinsp_replay --export`) from a capture, for reproducing a problem outside the application.\n\n";
     s += "| | |\n|---|---|\n";
-    if (!text("application").empty()) s += "| Application | " + text("application") + " |\n";
+    // The manifest's `application` is what wrote the file (GPU Inspector); the captured application is its `source`.
+    std::string application;
+    if (const auto* source = _capture.Manifest().Get("source"); source && source->Get("name") && source->Get("name")->IsString())
+        application = std::string(source->Get("name")->Str());
+    if (!application.empty()) s += "| Application | `" + application + "` |\n";
     if (!text("savedAt").empty()) s += "| Captured | " + text("savedAt") + " |\n";
     if (!_capturedDevice.empty()) s += "| Captured on | " + _capturedDevice + " |\n";
     s += "| Exported from a replay on | " + _replayDevice + " |\n";

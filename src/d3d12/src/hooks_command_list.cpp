@@ -424,6 +424,8 @@ HRESULT STDMETHODCALLTYPE Hook_Close(List* This) {
     auto orig = ORIG(Close);
     if (Internal()) return orig(This);
     CommandRecorder* rec = Rec(This);
+    // A table nothing drew with still shows what it named.
+    if (rec) rec->FlushSnapshots(true, true);
     // Ends the open passes and appends their read-backs, so the stream reads [..., EndRenderTargets, Close].
     Cap().OnBeforeClose(This);
     CommandScope scope(rec);
@@ -465,6 +467,7 @@ void STDMETHODCALLTYPE Hook_DrawInstanced(List* This, UINT VertexCountPerInstanc
     auto orig = ORIG(DrawInstanced);
     if (Internal()) return orig(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     CommandRecorder* rec = Rec(This);
+    if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
     orig(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     if (!rec) return;
@@ -486,6 +489,7 @@ void STDMETHODCALLTYPE Hook_DrawIndexedInstanced(List* This, UINT IndexCountPerI
     auto orig = ORIG(DrawIndexedInstanced);
     if (Internal()) return orig(This, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
     CommandRecorder* rec = Rec(This);
+    if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
     orig(This, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
     if (!rec) return;
@@ -510,6 +514,7 @@ void STDMETHODCALLTYPE Hook_Dispatch(List* This, UINT ThreadGroupCountX, UINT Th
     if (Internal()) return orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     CommandRecorder* rec = Rec(This);
     if (rec) Cap().OnBeforeDispatch(rec);
+    if (rec) rec->FlushSnapshots(false, true);
     CommandScope scope(rec);
     orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     if (!rec) return;
@@ -522,6 +527,7 @@ void STDMETHODCALLTYPE Hook_DispatchMesh(List* This, UINT ThreadGroupCountX, UIN
     auto orig = ORIG(DispatchMesh);
     if (Internal()) return orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     CommandRecorder* rec = Rec(This);
+    if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
     orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     if (!rec) return;
@@ -542,6 +548,7 @@ void STDMETHODCALLTYPE Hook_DispatchRays(List* This, const D3D12_DISPATCH_RAYS_D
     if (Internal()) return orig(This, pDesc);
     CommandRecorder* rec = Rec(This);
     if (rec) Cap().OnBeforeDispatch(rec);
+    if (rec) rec->FlushSnapshots(false, true);
     CommandScope scope(rec);
     orig(This, pDesc);
     if (!rec) return;
@@ -555,6 +562,7 @@ void STDMETHODCALLTYPE Hook_DispatchGraph(List* This, const D3D12_DISPATCH_GRAPH
     if (Internal()) return orig(This, pDesc);
     CommandRecorder* rec = Rec(This);
     if (rec) Cap().OnBeforeDispatch(rec);
+    if (rec) rec->FlushSnapshots(false, true);
     CommandScope scope(rec);
     orig(This, pDesc);
     if (!rec) return;
@@ -570,6 +578,7 @@ void STDMETHODCALLTYPE Hook_ExecuteIndirect(List* This, ID3D12CommandSignature* 
     // Inside a render pass an indirect execution is a batch of draws; outside one it is compute work.
     bool inPass = rec && rec->pass().active;
     if (rec && !inPass) Cap().OnBeforeDispatch(rec);
+    if (rec) rec->FlushSnapshots(true, true);   // the signature may draw or dispatch
     CommandScope scope(rec);
     orig(This, pCommandSignature, MaxCommandCount, pArgumentBuffer, ArgumentBufferOffset, pCountBuffer, CountBufferOffset);
     if (!rec) return;
@@ -1298,7 +1307,7 @@ void STDMETHODCALLTYPE Hook_IASetIndexBuffer(List* This, const D3D12_INDEX_BUFFE
         list->IASetIndexBuffer(haveView ? &view : nullptr);
     });
     if (pView && pView->BufferLocation) {
-        rec->SetExtraOnLast(BufferDataExtra({Cap().QueueAddressCapture(rec, pView->BufferLocation, pView->SizeInBytes)}));
+        rec->SetSnapshotOnLast([view](CommandRecorder* on) { return BufferDataExtra({Cap().QueueAddressCapture(on, view.BufferLocation, view.SizeInBytes)}); });
     }
 }
 
@@ -1335,11 +1344,19 @@ void STDMETHODCALLTYPE Hook_IASetVertexBuffers(List* This, UINT StartSlot, UINT 
               });
     }
     if (!pViews) return;
-    std::vector<uint32_t> ids;
-    for (UINT i = 0; i < NumViews; ++i) {
-        ids.push_back(pViews[i].BufferLocation ? Cap().QueueAddressCapture(rec, pViews[i].BufferLocation, pViews[i].SizeInBytes) : 0);
+    if (!rec->bundle()) {
+        std::vector<uint32_t> ids;
+        for (UINT i = 0; i < NumViews; ++i) {
+            ids.push_back(pViews[i].BufferLocation ? Cap().QueueAddressCapture(rec, pViews[i].BufferLocation, pViews[i].SizeInBytes) : 0);
+        }
+        rec->SetExtraOnLast(BufferDataExtra(ids));
+        return;
     }
-    rec->SetExtraOnLast(BufferDataExtra(ids));
+    rec->SetSnapshotOnLast([bound = std::vector<D3D12_VERTEX_BUFFER_VIEW>(pViews, pViews + NumViews)](CommandRecorder* on) {
+        std::vector<uint32_t> ids;
+        for (const D3D12_VERTEX_BUFFER_VIEW& v : bound) ids.push_back(v.BufferLocation ? Cap().QueueAddressCapture(on, v.BufferLocation, v.SizeInBytes) : 0);
+        return BufferDataExtra(ids);
+    });
 }
 
 void STDMETHODCALLTYPE Hook_SOSetTargets(List* This, UINT StartSlot, UINT NumViews, const D3D12_STREAM_OUTPUT_BUFFER_VIEW* pViews) {
@@ -1602,6 +1619,7 @@ void STDMETHODCALLTYPE Hook_ExecuteBundle(List* This, ID3D12GraphicsCommandList*
     if (Internal()) return orig(This, pCommandList);
     CommandRecorder* rec = Rec(This);
     if (rec) Cap().OnComputePassEnd(rec);
+    if (rec) rec->FlushSnapshots(true, true);   // a bundle draws with the tables of the list that executes it
     CommandScope scope(rec);
     orig(This, pCommandList);
     if (!rec) return;

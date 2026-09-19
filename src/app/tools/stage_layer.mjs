@@ -60,6 +60,13 @@ if (process.platform === "darwin") {
   // without the shader tool a D3D12 shader has no text; the log says which is missing.
   if (process.platform === "win32") {
     const d3d12Src = process.env.INSPECTOR_D3D12_DIR ?? src;
+    // The D3D12 replay tool, as optional as Vulkan's: without it a D3D12 capture has no Export to C++.
+    if (fs.existsSync(path.join(d3d12Src, "dxinsp_replay.exe"))) {
+      fs.copyFileSync(path.join(d3d12Src, "dxinsp_replay.exe"), path.join(dst, "dxinsp_replay.exe"));
+      console.log(`staged dxinsp_replay.exe from ${d3d12Src}`);
+    } else {
+      console.log(`no dxinsp_replay.exe in ${d3d12Src}: the package will not export D3D12 captures to C++`);
+    }
     for (const f of ["dxinsp_capture.dll", "dxinsp_launch.exe", "dxinsp_shader.exe"]) {
       if (fs.existsSync(path.join(d3d12Src, f))) {
         fs.copyFileSync(path.join(d3d12Src, f), path.join(dst, f));

@@ -15,7 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "replayserver-"));
 const out = join(dir, "replay.mjs");
 buildSync({ entryPoints: [join(here, "..", "src", "main", "replay.ts")], bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent" });
-const { ReplayServerPool, replayKeyed, releaseReplayKey, replayServers } = await import(pathToFileURL(out).href);
+const { ReplayServerPool, replayKeyed, releaseReplayKey, replayServers, findExportTool } = await import(pathToFileURL(out).href);
 
 // The fake tool. FAKE_MODE: "serve" answers requests; "crash" exits on its first request; anything
 // else behaves like a tool from before --serve (prints usage). Without --serve it is a one-shot replay
@@ -129,5 +129,23 @@ test("a renderer's capture is sent once under its key, and removed when released
     assert.equal((await replayKeyed(process.execPath, key, undefined, { kind: "draws" }, "cap")).needData, true);
   } finally {
     replayServers.disposeAll();
+  }
+});
+
+test("Export to C++ asks the tool of the capture's API, and says what is missing", () => {
+  // No checkout and no package here: each API names its own tool, and Metal has none to name.
+  const none = (api) => findExportTool(api, [join(tmpdir(), "no-such-checkout")], []);
+  const saved = [process.env.INSPECTOR_REPLAY, process.env.INSPECTOR_D3D12_REPLAY];
+  delete process.env.INSPECTOR_REPLAY;
+  delete process.env.INSPECTOR_D3D12_REPLAY;
+  try {
+    assert.equal(none("vulkan").tool, null);
+    assert.match(none("vulkan").missing, /vkinsp_replay/);
+    assert.equal(none("d3d12").tool, null);
+    assert.match(none("d3d12").missing, process.platform === "win32" ? /dxinsp_replay/ : /Windows only/);
+    assert.match(none("metal").missing, /Metal captures do not replay/);
+  } finally {
+    if (saved[0] !== undefined) process.env.INSPECTOR_REPLAY = saved[0];
+    if (saved[1] !== undefined) process.env.INSPECTOR_D3D12_REPLAY = saved[1];
   }
 });

@@ -109,7 +109,7 @@ cd src/app && npm install && npm start
 ```
 
 Use the generator name of the Visual Studio you installed. The build puts the Vulkan layer, the
-D3D12 capture library with `dxinsp_launch.exe` and `dxinsp_shader.exe`, and the test
+D3D12 capture library with `dxinsp_launch.exe`, `dxinsp_shader.exe` and `dxinsp_replay.exe`, and the test
 applications (`vkinsp_triangle.exe`, `dxinsp_triangle.exe`, and the ray tracing
 `vkinsp_path_tracer.exe` and `dxinsp_path_tracer.exe`) in `build\bin\Release`.
 

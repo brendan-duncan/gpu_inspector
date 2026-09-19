@@ -592,7 +592,18 @@ vendor's driver is listed at the end so nobody spends time on it.
       `address of buffer N + offset` and a binding table built at start-up); a frame that crashes
       the driver, which is the bug report that most wants a repro and the one case the export cannot
       write, since it needs the replay to finish (a checkpoint before each pipeline creation and
-      each submit would do); and D3D12 and Metal, which do not replay.
+      each submit would do); and Metal, which does not replay.
+- [x] D3D12 replay and Export to C++ (`src/d3d12/replay/`, `dxinsp_replay`, docs/REPLAY.md
+      "Direct3D 12"): a capture re-executed and compared, and written as a CMake project. One
+      `Reflect` per struct (`dx_reflect.h`) serves the decoder and the source emitter, since the
+      D3D12 arguments are serialized by hand and there is no registry to generate from. Worth
+      keeping: the first engine frame differed in every pass that sampled anything, and the fault
+      was the capture's, which snapshot a descriptor table when it was bound while Unity writes
+      the descriptors after the bind; tables are now snapshot at the next draw.
+- [ ] D3D12 replay, the rest: ray tracing, mesh shader pipelines from a stream, the analyses
+      `vkinsp_replay` serves (overlays, mesh output, per-draw timing), descriptors indexed out of
+      the heap (shader model 6.6), which no table snapshot covers, and a slot rewritten within one
+      submission, which needs descriptors staged per draw rather than written at record time.
 - [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
       time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
       graphics API in it, so the three libraries only differ in how they put flat rectangles on the
