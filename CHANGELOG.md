@@ -1,11 +1,13 @@
 ## v0.17.0
 
 ### Added
+- A Windows launch can follow the target's own child processes, so a Chromium browser's GPU process is captured: **Follow child processes** in the launch dialog (`--type=gpu-process`), `follow` from `launch_app`, `--follow` in `dxinsp_launch`.
 - Each of a capture's reports opens in a tab beside the capture's, with **Open in New Window** on the tab (a copy of the capture there, opened on that report) and on its context menu.
 - Every report, and the render target tab, has an **Export to HTML** control: the report as it is on screen, with the application's styles in it, as a standalone file.
 - The Shader Flame Graph zooms continuously with **Ctrl+Wheel** about the pointer and pans by dragging, besides the click zoom it already had.
 
 ### Fixed
+- A capture of an application launched with a long command line is saved again: the file name is cut to the application's own part of it rather than the whole line.
 - A capture whose manifest passes 512 MB can be saved and opened: it is written and read a batch of commands at a time rather than as one JSON string, which V8 could not hold (`src/app/src/renderer/utils/json_stream.ts`).
 - Opening and saving a capture no longer copy the whole command list, which cost 34 MB and 40 MB on a 400k-command frame.
 

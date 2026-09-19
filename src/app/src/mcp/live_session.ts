@@ -59,6 +59,12 @@ export interface LaunchOptions {
   shaderStatistics?: boolean;
   /** The directory holding VK_LAYER_INSPECTOR_capture.json, when it is not found by itself. */
   layerDir?: string;
+  /**
+   * Windows and D3D12: command line fragments naming child processes of the target to inject into
+   * as well, for an application that renders in a process it starts itself (a browser's GPU
+   * process, `--type=gpu-process`; main/d3d12.ts, FOLLOW_GPU_PROCESS).
+   */
+  follow?: string[];
 }
 
 export interface CaptureOptions {
@@ -597,7 +603,7 @@ export class SessionManager {
       const validationNote = o.validation && layerDir ? (validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)") : null;
       if (process.platform === "win32") {
         const launch = windowsLaunch({
-          exe: requested, args, cwd, env: { ...process.env, ...o.env }, vulkan,
+          exe: requested, args, cwd, env: { ...process.env, ...o.env }, vulkan, follow: o.follow,
           d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
             symbolDirs: searchPaths("symbolDirs").dirs.join(";"), validation: !!o.validation } : null,
         });

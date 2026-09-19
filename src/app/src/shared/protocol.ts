@@ -848,6 +848,12 @@ export interface LaunchConfig {
   gpuValidation?: boolean;
   /** Capture a stack trace at every object creation (VKINSP_STACKTRACES). */
   stacktraces: boolean;
+  /**
+   * Windows: also put the D3D12 capture library into the child processes the target starts whose
+   * command line holds this text, for an application that renders in a process of its own making
+   * (a browser's GPU process, "--type=gpu-process"; src/d3d12/launcher/main.cpp, follow mode).
+   */
+  follow?: string;
   capture: QueuedCapture;
 }
 

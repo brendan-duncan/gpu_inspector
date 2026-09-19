@@ -100,6 +100,7 @@ export class LaunchDialog extends Dialog {
   private _sourceRoots!: TextInput;
   private _port: TextInput;
   private _log: Checkbox;
+  private _follow: TextInput;
   private _recordAlways: Checkbox;
   private _breadcrumbs: Checkbox;
   private _shaderStatistics: Checkbox;
@@ -235,6 +236,11 @@ export class LaunchDialog extends Dialog {
       + "than beside its module is still found. Searched five levels deep.";
     this._sourceRoots = this._inputRow(body, "Source roots", "(directories with the shader sources, separated by ;)");
     this._sourceRoots.tooltip = "Where the shader sources live on this machine: a shader compiled with line information but without embedded text (dxc -Zi, a stripped build) then gets its Source view, line costs and findings from the file its debug information names.";
+    this._follow = this._inputRow(body, "Follow child processes", "(part of a child process's command line, such as --type=gpu-process)");
+    this._follow.tooltip = "For an application that renders in a process it starts itself: the capture library also goes into the children whose command line contains this text, caught as they start. "
+      + "Several patterns can be given, separated by spaces, and one written !text excludes a child instead. "
+      + "A Chromium browser's WebGPU and compositing work is in its GPU process, so \"--type=gpu-process\" captures it (launch the browser with --disable-gpu-sandbox, or the library cannot open its port). Windows and Direct3D 12 only.";
+    if (hostPlatform !== "win32") this._follow.element.parentElement?.style.setProperty("display", "none");
     {
       const row = new Div(body, { class: "launch-dialog-row launch-dialog-options" });
       this._recordAlways = new Checkbox(row, { label: "Record all command buffers", checked: false,
@@ -465,6 +471,7 @@ export class LaunchDialog extends Dialog {
       gpuValidation: !android && this._validation.checked && this._gpuValidation.checked,
       symbolDirs: this._symbolDirs.value.trim(),
       sourceRoots: this._sourceRoots.value.trim(),
+      follow: android ? "" : this._follow.value.trim(),
       stacktraces: this._stacktraces.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
@@ -498,6 +505,7 @@ export class LaunchDialog extends Dialog {
     this._syncValidation.checked = c.syncValidation ?? false;
     this._gpuValidation.checked = c.gpuValidation ?? false;
     this._symbolDirs.value = c.symbolDirs ?? "";
+    this._follow.value = c.follow ?? "";
     this._sourceRoots.value = c.sourceRoots ?? "";
     this._stacktraces.checked = c.stacktraces ?? true;
     const mode = c.capture?.mode ?? "none";

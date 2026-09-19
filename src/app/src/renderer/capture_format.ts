@@ -118,9 +118,14 @@ export interface LoadedCapture {
   api: CaptureApi;
 }
 
-/** A file name for a capture: "<application>_frame_<N>.gpucap". */
+/**
+ * A file name for a capture: "<application>_frame_<N>.gpucap". The name a session carries is the
+ * command line, and a browser's is hundreds of characters of switches, which would make a path no
+ * Windows API could open: the application's own part of it is kept and the rest cut.
+ */
 export function captureFileName(source: string, frame: number, frames: number): string {
-  const base = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
+  const cleaned = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
+  const base = cleaned.length > 64 ? cleaned.slice(0, 64).replace(/_+$/, "") : cleaned;
   return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
 

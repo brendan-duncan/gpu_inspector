@@ -2493,7 +2493,8 @@ var MAGIC2 = "GPUCAP 1\n";
 var CAPTURE_FORMAT = "gpu-inspector-capture";
 var CAPTURE_VERSION = 1;
 function captureFileName(source, frame, frames) {
-  const base = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
+  const cleaned = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
+  const base = cleaned.length > 64 ? cleaned.slice(0, 64).replace(/_+$/, "") : cleaned;
   return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
 function encodeCaptureFile(manifest, payloads, options = {}) {
@@ -12070,11 +12071,14 @@ function d3d12Environment(o) {
     ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
   };
 }
-function wrapLaunch(tools, exe, args, cwd) {
-  return { exe: tools.launcher, args: ["--dll", tools.library, ...cwd ? ["--cwd", cwd] : [], "--", exe, ...args] };
+function wrapLaunch(tools, exe, args, cwd, follow = []) {
+  return {
+    exe: tools.launcher,
+    args: ["--dll", tools.library, ...cwd ? ["--cwd", cwd] : [], ...follow.flatMap((f) => ["--follow", f]), "--", exe, ...args]
+  };
 }
 function watchLaunch(tools, o) {
-  const { image, timeoutSeconds, once, ...environment } = o;
+  const { image, timeoutSeconds, once, follow, ...environment } = o;
   const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
@@ -12085,6 +12089,7 @@ function watchLaunch(tools, o) {
       tools.library,
       ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
       ...once ? ["--once"] : [],
+      ...(follow ?? []).flatMap((f) => ["--follow", f]),
       ...env
     ]
   };
@@ -12103,8 +12108,9 @@ function windowsLaunch(o) {
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? []));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
+    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
   }
@@ -27669,6 +27675,7 @@ var SessionManager = class {
           cwd,
           env: { ...process.env, ...o.env },
           vulkan,
+          follow: o.follow,
           d3d12: d3d12 ? {
             tools: d3d12,
             port,
@@ -31172,6 +31179,7 @@ function liveTools(sessions2, store) {
         shaderStatistics: { type: "boolean", description: "Vulkan: ask the driver what its shader compiler made of each pipeline stage (registers used, code size, spilled memory), shown on the pipeline object by get_live_object under updates.executables. Costs compile time and driver memory; default false." },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "Port for the capture library (default 47531, or the next free one)." },
         layerDir: { type: "string", description: "The directory holding VK_LAYER_INSPECTOR_capture.json, when neither a GPU Inspector checkout nor an installed GPU Inspector provides it." },
+        follow: { type: "string", description: 'Windows: also put the capture library into the child processes the application starts whose command line contains this text, for an application that renders in a process of its own making. Several patterns separated by spaces are allowed, and "!text" excludes a child instead. "--type=gpu-process !--use-gl=disabled" captures the GPU process of a Chromium browser (its WebGPU work, as D3D12), which has to be launched with --disable-gpu-sandbox for the library to open its port, and is best given --disable-gpu-watchdog so a capture does not trip the watchdog.' },
         waitSeconds: { type: "number", minimum: 1, maximum: 600, description: "How long to wait for the capture library to connect (default 60)." }
       }, ["exe"]),
       handler: async (args) => {
@@ -31189,7 +31197,8 @@ function liveTools(sessions2, store) {
           breadcrumbs: boolArg(args, "breadcrumbs", false),
           shaderStatistics: boolArg(args, "shaderStatistics", false),
           port: optionalInt(args, "port"),
-          layerDir: stringArg(args, "layerDir")
+          layerDir: stringArg(args, "layerDir"),
+          follow: stringArg(args, "follow") ? splitArgs(stringArg(args, "follow")) : void 0
         }, (numberArg(args, "waitSeconds") ?? 60) * 1e3);
         const result = jsonResult({
           ...sessionStatus(s),
