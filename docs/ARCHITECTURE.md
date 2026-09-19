@@ -775,6 +775,18 @@ targets, the buffer ranges, the pass timings, and the frame and submit times beh
 Bound card. Saving (`renderer/capture_file.ts`) fetches the SPIR-V of the referenced pipelines
 and modules from the layer first (`RequestBlob`, cached in `ObjectDatabase.blobData`).
 
+The manifest is one JSON object, but never one JSON string: V8 caps a string at about 512 MB, so a
+capture past that could once be neither saved (`JSON.stringify` throws) nor opened
+(`TextDecoder.decode` throws), whatever the machine had. `renderer/utils/json_stream.ts` scans the
+manifest bytes structurally and hands `JSON.parse` / `JSON.stringify` one batch of array elements at
+a time, which also keeps only a batch of them alive rather than the whole decoded manifest. Batches
+are bounded in bytes rather than in calls, since those functions cost more per call than per byte: a
+call per command would add seconds to a million-command frame. The scan is not free either (a byte
+loop against a native parser, 15-38% of `JSON.parse`'s own time), so both directions keep the
+single-call path for anything that comfortably fits and batch only when the alternative is failing:
+reading, by the manifest's byte length; writing, by trying one `JSON.stringify` first. The bytes are
+identical either way, so the format did not change and older builds still read what this one writes.
+
 A loaded file becomes a session of its own (`FileSessionPanel`): its object database is built
 from the manifest with the same snapshot path as a live connection, and its Capture tab holds the
 loaded capture. Its `send()` answers `RequestBlob` from the file, so shader views, reflection,

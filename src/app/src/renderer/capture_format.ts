@@ -18,6 +18,7 @@ import type { HwCounters } from "./hw_counters.js";
 import type { CpuTimelineMessage } from "../shared/protocol.js";
 import type { ShaderAblation } from "./shader_ablation.js";
 import type { ArgObject, ArgValue, BlobInfo, CaptureApi, CaptureBufferInfo, CaptureCommand, CaptureTextureInfo, OverdrawMeasurement, PassTiming, StackFrame, ValidationMessage } from "../shared/protocol.js";
+import { parseJsonObject, stringifyJsonObject, type ParseOptions, type StringifyOptions } from "./utils/json_stream.js";
 
 export const CAPTURE_FILE_EXTENSION = "gpucap";
 export const CAPTURE_FILE_FILTERS = [{ name: "GPU Inspector captures", extensions: [CAPTURE_FILE_EXTENSION] }, { name: "All files", extensions: ["*"] }];
@@ -123,19 +124,26 @@ export function captureFileName(source: string, frame: number, frames: number): 
   return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
 
-/** The file's bytes: the header, the manifest, then `payloads` back to back in the order the manifest's offsets count them. */
-export function encodeCaptureFile(manifest: CaptureFileManifest, payloads: Uint8Array[]): Uint8Array {
-  const json = new TextEncoder().encode(JSON.stringify(manifest));
+/**
+ * The file's bytes: the header, the manifest, then `payloads` back to back in the order the
+ * manifest's offsets count them. The manifest is written in chunks (utils/json_stream.ts) so a
+ * capture too large to hold as one string can still be saved; the bytes are the same either way.
+ */
+export function encodeCaptureFile(manifest: CaptureFileManifest, payloads: Uint8Array[], options: StringifyOptions = {}): Uint8Array {
+  const json = stringifyJsonObject(manifest as unknown as Record<string, unknown>, options);
   const magic = new TextEncoder().encode(MAGIC);
+  const jsonBytes = json.reduce((n, c) => n + c.byteLength, 0);
   const payloadBytes = payloads.reduce((n, p) => n + p.byteLength, 0);
-  const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + payloadBytes);
+  const out = new Uint8Array(magic.byteLength + 4 + jsonBytes + payloadBytes);
   let pos = 0;
   out.set(magic, pos);
   pos += magic.byteLength;
-  new DataView(out.buffer).setUint32(pos, json.byteLength, true);
+  new DataView(out.buffer).setUint32(pos, jsonBytes, true);
   pos += 4;
-  out.set(json, pos);
-  pos += json.byteLength;
+  for (const chunk of json) {
+    out.set(chunk, pos);
+    pos += chunk.byteLength;
+  }
   for (const p of payloads) {
     out.set(p, pos);
     pos += p.byteLength;
@@ -144,7 +152,7 @@ export function encodeCaptureFile(manifest: CaptureFileManifest, payloads: Uint8
 }
 
 /** Parses a capture file; throws with a readable message when it is not one. */
-export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
+export function parseCaptureFile(bytes: Uint8Array, options: ParseOptions = {}): LoadedCapture {
   const magic = new TextEncoder().encode(MAGIC);
   if (bytes.byteLength < magic.byteLength + 4) throw new Error("The file is too short to be a capture.");
   for (let i = 0; i < magic.byteLength; i++) {
@@ -157,7 +165,7 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   if (base > bytes.byteLength) throw new Error("The capture file is truncated.");
   let manifest: CaptureFileManifest;
   try {
-    manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(jsonStart, base))) as CaptureFileManifest;
+    manifest = parseJsonObject<CaptureFileManifest>(bytes, jsonStart, base, options);
   } catch (e) {
     throw new Error(`The capture's manifest is not valid JSON: ${(e as Error).message}`);
   }
@@ -183,7 +191,10 @@ export function parseCaptureFile(bytes: Uint8Array): LoadedCapture {
   const passTimings = new Map<string, PassTiming>();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
-  const commands = (manifest.commands ?? []).map((c, i) => ({ ...c, index: i }));
+  // Numbered in place: the manifest was just parsed here and belongs to this function, so a
+  // capture's whole command list does not need copying to renumber it.
+  const commands = manifest.commands ?? [];
+  for (let i = 0; i < commands.length; i++) commands[i].index = i;
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings, passTimingOrigin: manifest.passTimingOrigin ?? null,
          overdraw, pixelHistory: manifest.pixelHistory ?? null, drawStats: manifest.drawStats ?? null, hwCounters: manifest.hwCounters ?? null, cpuTimeline: manifest.cpuTimeline ?? null, ablations: manifest.ablations ?? [],
          api: manifest.api ?? "vulkan" };

@@ -7,7 +7,7 @@ import type { CaptureData } from "./capture_data.js";
 import { CAPTURE_FORMAT, CAPTURE_VERSION, encodeCaptureFile, type CaptureFileBlob, type CaptureFileManifest, type CaptureFileObject, type Payload } from "./capture_format.js";
 import { requestStacks, resolveSymbols, type LayerSession } from "./stack_requests.js";
 import type { VulkanObject } from "./vulkan/vulkan_object.js";
-import type { StackFrame } from "../shared/protocol.js";
+import type { CaptureCommand, StackFrame } from "../shared/protocol.js";
 
 const BLOB_TIMEOUT_MS = 15000;
 
@@ -151,11 +151,7 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
     frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource,
     displayRefreshMs: db.displayRefreshMs, frameBoundary: db.frameBoundary,
     objects: records,
-    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
-    commands: data.commands.map((c) => {
-      const { children: _children, ...rest } = c;
-      return rest;
-    }),
+    commands: data.commands,
     textures: data.textures.map((t) => ({ info: t.info, ...(t.data ? { payload: addPayload(t.data) } : {}) })),
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...(b.data ? { payload: addPayload(b.data) } : {}) })),
     passTimings: [...data.passTimings.values()],
@@ -170,5 +166,9 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
     ...(symbols ? { symbols } : {}),
     ...(stacks ? { stacks } : {}),
   };
-  return encodeCaptureFile(manifest, payloads);
+  return encodeCaptureFile(manifest, payloads, {
+    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
+    // As a hook rather than a map over the list, so a large capture never holds a second copy of it.
+    element: { commands: (c) => { const { children: _children, ...rest } = c as CaptureCommand; return rest; } },
+  });
 }
