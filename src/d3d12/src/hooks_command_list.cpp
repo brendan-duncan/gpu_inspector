@@ -1387,10 +1387,7 @@ void STDMETHODCALLTYPE Hook_OMSetRenderTargets(List* This, UINT NumRenderTargetD
     auto orig = ORIG(OMSetRenderTargets);
     if (Internal()) return orig(This, NumRenderTargetDescriptors, pRenderTargetDescriptors, RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
     CommandRecorder* rec = Rec(This);
-    if (rec) {
-        Cap().EndPass(rec, true);
-        Cap().OnComputePassEnd(rec);
-    }
+    Cap().EndOpenPass(This, true);
     CommandScope scope(rec);
     orig(This, NumRenderTargetDescriptors, pRenderTargetDescriptors, RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
     if (!rec) return;
@@ -1453,9 +1450,8 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     // measurement starts from have to be taken while the list is still outside the render-pass
     // region: a copy may not interrupt one. The command itself is recorded after the forward, so
     // the stream keeps the order the application made its calls in.
+    Cap().EndOpenPass(This, true);
     if (rec) {
-        Cap().EndPass(rec, true);
-        Cap().OnComputePassEnd(rec);
         argsJson = BeginRenderPassArgs(rec, NumRenderTargets, pRenderTargets, pDepthStencil, Flags, targets);
         if (!split) PrepareMeasuredPass(rec, targets);
     }

@@ -290,6 +290,18 @@ the boundaries the UI's pass model needs, and says so in the stream:
   split pass is recorded like any other and has no timings, no counters and no render target
   read-back; the app's `suspended-pass` finding says how many there were.
 
+**A pass the capture began outlives the capture.** A capture ends at a frame boundary, and an
+engine that builds its command lists on worker threads (Unity again) has a dozen of them open at
+that moment, several in the middle of a pass -- a pass this capture began, whose `PIPELINE_STATISTICS`
+and `OCCLUSION` queries it began with it. A command list closed with a query still open returns
+`E_FAIL` from `Close`, which Unity reports as `Device failed error (80004005)` and then exits, so
+those queries have to be ended even though the capture is over and nothing records any more. The
+recorders of lists still open therefore survive the end of the capture (`Impl::Finish` keeps them,
+where it drops every recorder whose list is closed), the hooks reach them through
+`EndOpenPass` / `OnBeforeClose` rather than through `RecorderFor`, which answers only while
+something records, and each one is dropped at its own `Close`. `EndPass` ends the queries whichever
+state the capture is in; only the timing they measured is thrown away.
+
 **Render target read-back.** When a render pass ends the library appends to the application's
 list: transition barriers of every color target and the depth target into `COPY_SOURCE`,
 `CopyTextureRegion` into a readback-heap staging buffer, and barriers back to the states they were

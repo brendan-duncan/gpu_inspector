@@ -6,6 +6,7 @@
 ### Fixed
 - A Metal capture's colour attachment holds its own contents, not the depth attachment's: a depth attachment is announced under attachment index 0, the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect to tell the two apart, so the depth read-back landed on the colour entry. Found by the new replay, which read back a colour target full of floats.
 - A Metal library built ahead of time (`newLibraryWithURL:`, `newLibraryWithFile:`, `newDefaultLibrary`, `newDefaultLibraryWithBundle:` — what a shipped player uses) carries its metallib bytes in the capture, so it can be re-created without the file it was loaded from.
+- Capturing a Direct3D 12 frame no longer crashes a Unity player: a list left open at the frame boundary kept the capture's queries open and failed to close, which Unity read as a lost device.
 
 ## v0.17.0
 

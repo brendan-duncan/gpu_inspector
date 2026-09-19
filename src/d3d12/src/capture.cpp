@@ -616,6 +616,7 @@ void CaptureManager::SetRecordAlways(bool on) {
 }
 
 CommandRecorder* CaptureManager::LookupRecorder(ID3D12GraphicsCommandList* list) {
+    if (!_recorderCount.load(std::memory_order_relaxed)) return nullptr;   // the common case: nothing recorded
     Impl& i = impl();
     std::shared_lock lock(i.recorderMutex);
     auto it = i.recorders.find(list);
@@ -645,6 +646,7 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
         else slot.rec->Reset();
         slot.deferred.clear();
         rec = slot.rec.get();
+        _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
     rec->SetCaptureStacks(stacks);
     if (initialState) rec->state().pipeline = initialState;
@@ -656,6 +658,7 @@ void CaptureManager::OnListReleased(ID3D12GraphicsCommandList* list) {
     Impl& i = impl();
     std::unique_lock lock(i.recorderMutex);
     i.recorders.erase(list);
+    _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
 }
 
 ID3D12CommandQueue* CaptureManager::PresentQueue(IDXGISwapChain* swapChain) {
@@ -718,6 +721,7 @@ void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
             if (it->second.rec && it->second.rec->device() == device) it = i.recorders.erase(it);
             else ++it;
         }
+        _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
     {
         std::lock_guard lock(i.mutex);
@@ -804,6 +808,13 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
         if (pass.occlusionQuery != UINT32_MAX) list->BeginQuery(dc->occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, pass.occlusionQuery);
     }
     return pass.passIndex;
+}
+
+void CaptureManager::EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic) {
+    CommandRecorder* rec = LookupRecorder(list);
+    if (!rec) return;
+    EndPass(rec, synthetic);
+    OnComputePassEnd(rec);
 }
 
 void CaptureManager::OnDraw(CommandRecorder* rec) {
@@ -1100,7 +1111,9 @@ void CaptureManager::OnComputePassEnd(CommandRecorder* rec) {
 }
 
 void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list) {
-    CommandRecorder* rec = RecorderFor(list);
+    // LookupRecorder, not RecorderFor: a list left open when the capture finished keeps its
+    // recorder exactly so that this runs, whether or not anything is recording now (EndOpenPass).
+    CommandRecorder* rec = LookupRecorder(list);
     if (!rec) return;
     EndPass(rec, true);
     OnComputePassEnd(rec);
@@ -1112,6 +1125,14 @@ void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list) {
         for (auto& fn : pending) fn(rec->list());
     }
     rec->MarkClosed();
+    // The list is closed and nothing records any more: this recorder was only kept for the pass
+    // just ended (Impl::Finish), so it goes now rather than waiting for the list to be released.
+    if (!ShouldRecord()) {
+        Impl& i = impl();
+        std::unique_lock lock(i.recorderMutex);
+        i.recorders.erase(list);
+        _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2260,9 +2281,19 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     }
 
     for (DeviceCapture* dc : captures) ReleaseCaptureObjects(*dc);
+    // Not a clear. A capture ends at a frame boundary, and an engine that builds its lists on
+    // worker threads has several of them open at that moment, in the middle of a pass this capture
+    // began -- and so holding the queries it began with them. Only the list's own recorder knows to
+    // end those, at its Close (OnBeforeClose), and a list closed with a query still open fails with
+    // E_FAIL, which the application reads as a lost device. So the recorders of lists still open
+    // stay until each one closes; the rest go here.
     if (!cm.RecordAlways()) {
         std::unique_lock lock(recorderMutex);
-        recorders.clear();
+        for (auto it = recorders.begin(); it != recorders.end();) {
+            if (it->second.rec && !it->second.rec->closed()) ++it;
+            else it = recorders.erase(it);
+        }
+        cm._recorderCount.store(recorders.size(), std::memory_order_relaxed);
     }
     LogAlways("capture sent: %llu commands in %.1f s", (unsigned long long)data.commandTotal,
               std::chrono::duration<double>(std::chrono::steady_clock::now() - finishBegan).count());

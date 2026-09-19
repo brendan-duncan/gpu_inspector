@@ -107,6 +107,14 @@ public:
      */
     void EndPass(CommandRecorder* rec, bool synthetic);
     /**
+     * The same for a list named rather than a recorder, and without asking whether anything is
+     * recording now. A capture ends at a frame boundary, which on an engine that builds its lists
+     * on worker threads (Unity does) is in the middle of several of them: the pass those lists
+     * have open was begun while the capture ran and holds its queries, and a list closed with a
+     * query still open fails with E_FAIL, which the application reads as a lost device.
+     */
+    void EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic);
+    /**
      * After OMSetRenderTargets / BeginRenderPass was forwarded and recorded: opens a pass on the
      * targets (already resolved through the descriptor tracker), reserving its queries and writing
      * the begin timestamp. Returns the pass index within the list.
@@ -186,6 +194,8 @@ private:
     Impl* _impl = nullptr;
     Impl& impl();
     std::atomic<bool> _capturing{false};
+    /** Recorders in the table, so a lookup made while nothing is recorded costs one atomic load. */
+    std::atomic<size_t> _recorderCount{0};
     std::atomic<bool> _recordActive{false};
     std::atomic<uint64_t> _frameCounter{0};
 };
