@@ -884,12 +884,18 @@ void MtlReplayer::BeginCommandBuffer(uint64_t captureId) {
     _commandBuffer = [_queue commandBuffer];
     _passCounter = 0;
     if (_x) {
-        _commandBufferVar = "commands";
+        // A global for the same reason the encoders are: the parts `Frame` is cut into are
+        // functions, and a command buffer outlives any one of them. One name serves every command
+        // buffer, since the replay commits and waits for each before opening the next.
+        if (_commandBufferVar.empty()) {
+            _commandBufferVar = "commands";
+            _x->Global("id<MTLCommandBuffer>", _commandBufferVar);
+        }
         _x->Blank(MtlExporter::Frame);
         _x->Comment(MtlExporter::Frame, "command buffer " + std::to_string(captureId) +
                                             (LabelOf(captureId).empty() ? "" : " \"" + LabelOf(captureId) + "\""));
         _x->Block(MtlExporter::Frame, "", [&](Source& w) {
-            w.Line("id<MTLCommandBuffer> " + _commandBufferVar + " = [queue commandBuffer];");
+            w.Line(_commandBufferVar + " = [queue commandBuffer];");
         });
     }
 }

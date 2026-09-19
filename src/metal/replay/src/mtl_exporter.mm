@@ -94,6 +94,10 @@ std::string MtlExporter::Declare(const std::string& type, const std::string& ste
     return name;
 }
 
+void MtlExporter::Global(const std::string& type, const std::string& name) {
+    _globals.emplace_back(type, name);
+}
+
 void MtlExporter::Alias(::id object, const std::string& name) { _names[(__bridge const void*)object] = name; }
 
 std::string MtlExporter::NameOf(::id object) const {

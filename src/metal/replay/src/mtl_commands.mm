@@ -171,8 +171,9 @@ bool MtlReplayer::OpenEncoder(const std::string& m, const Decoder& d, uint32_t i
         kind = "id<MTLRenderCommandEncoder>";
         if (_x && encoder) {
             pass.variable = "encoder" + std::to_string(index);
+            DeclareEncoder(kind, pass.variable);
             _x->Block(MtlExporter::Frame, "[" + std::to_string(index) + "]", [&](Source& w) {
-                w.Line(kind + " " + pass.variable + " = [" + _parallelPass.variable + " renderCommandEncoder];");
+                w.Line(pass.variable + " = [" + _parallelPass.variable + " renderCommandEncoder];");
             });
         }
     } else if (m.compare(0, 20, "computeCommandEncoder") == 0 || m == "computeCommandEncoder") {
@@ -201,8 +202,9 @@ bool MtlReplayer::OpenEncoder(const std::string& m, const Decoder& d, uint32_t i
         kind = "id<MTLBlitCommandEncoder>";
         if (_x && encoder) {
             pass.variable = "encoder" + std::to_string(index);
+            DeclareEncoder(kind, pass.variable);
             _x->Block(MtlExporter::Frame, "[" + std::to_string(index) + "]", [&](Source& w) {
-                w.Line(kind + " " + pass.variable + " = [" + _commandBufferVar + " blitCommandEncoder];");
+                w.Line(pass.variable + " = [" + _commandBufferVar + " blitCommandEncoder];");
             });
         }
     } else {
@@ -223,10 +225,15 @@ bool MtlReplayer::OpenEncoder(const std::string& m, const Decoder& d, uint32_t i
     return true;
 }
 
-/** `id<MTLxEncoder> encoderN = nil;`, outside the block that builds the pass and assigns it. */
+/**
+ * An encoder's variable, as a global of the exported project rather than a local of `Frame`.
+ *
+ * `Frame` is cut into parts, and a part is a function, so a pass with more commands than a part
+ * holds — an engine frame has many — would declare its encoder in one function and send to it from
+ * the next. A global is in scope wherever the split lands.
+ */
 void MtlReplayer::DeclareEncoder(const std::string& type, const std::string& name) {
-    if (!_x) return;
-    _x->Block(MtlExporter::Frame, "", [&](Source& w) { w.Line(type + " " + name + " = nil;"); });
+    if (_x) _x->Global(type, name);
 }
 
 /** Whether the pass descriptor's JSON names any colour attachment. */

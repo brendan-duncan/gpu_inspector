@@ -52,6 +52,16 @@ public:
     /** Declares a global for a captured object and returns its name (texture_12); `type` is its
      *  Objective-C type, `stem` the kind the name is built from. */
     std::string Declare(const std::string& type, const std::string& stem, uint64_t captureId, id object);
+    /**
+     * Declares a global of the frame's own — an encoder, the command buffer — that is not one of
+     * the capture's objects.
+     *
+     * A global rather than a local because `Frame` is cut into parts, and a part is a function: a
+     * local declared in one part is out of scope in the next, and a pass with thousands of commands
+     * spans several. The D3D12 export does not meet this because a command list is a captured
+     * object, so `Declare` has already made it a global there.
+     */
+    void Global(const std::string& type, const std::string& name);
     /** A name for an object that is not the capture's (the device, the replay's own queue). */
     void Alias(id object, const std::string& name);
     std::string NameOf(id object) const;

@@ -17,6 +17,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -691,7 +692,19 @@ def metal_export_cpp(state, log):
             contents = f.read()
     data = os.path.join(project, "frame_data.bin")
     shaders = os.path.join(project, "shaders")
+    # Every encoder and the command buffer are globals, not locals of Frame. Frame is cut into
+    # parts and a part is a function, so a local would go out of scope wherever the cut lands —
+    # which on an engine frame, whose passes are longer than one part, it does.
+    objects = ""
+    if project and os.path.isfile(os.path.join(project, "frame_objects.h")):
+        with open(os.path.join(project, "frame_objects.h"), encoding="utf-8") as f:
+            objects = f.read()
     return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect("id<MTLCommandBuffer> commands;" in objects.replace("extern ", ""),
+               "the command buffer is not a global of frame_objects.h") + \
+        expect("encoder" in objects, "the encoders are not globals of frame_objects.h") + \
+        expect(not re.search(r"^    id<MTL\w*CommandEncoder> \w+ =", commands, re.M),
+               "an encoder is declared inside Frame, so a part split would put it out of scope") + \
         expect(len(projects) == 1 and project.endswith("_cpp"), f"one project folder named after the capture in {exported_metal_cpp}: {projects}") + \
         expect(os.path.isfile(os.path.join(project, "CMakeLists.txt")), "the project has no CMakeLists.txt") + \
         expect(os.path.isfile(os.path.join(project, "mtl_support.mm")), "the project has no mtl_support.mm") + \
