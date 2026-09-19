@@ -57,7 +57,9 @@ function roots(): string[] {
 
 /** Which of the two a browser belongs to, by its executable, for one chosen by path as well. */
 export function browserFamily(exe: string): BrowserFamily {
-  return path.basename(exe).toLowerCase() === "firefox.exe" ? "firefox" : "chromium";
+  // A browser's path is a Windows path whatever this runs on (the unit tests run on every platform),
+  // and only path.win32 takes one apart there.
+  return path.win32.basename(exe).toLowerCase() === "firefox.exe" ? "firefox" : "chromium";
 }
 
 /**
@@ -163,7 +165,7 @@ export function prepareProfile(exe: string, profileDir: string): void {
 export function browserProfileDir(parent: string, exe: string): string {
   // "Chrome SxS" out of ...\Google\Chrome SxS\Application\chrome.exe, "Firefox Nightly" out of
   // ...\Firefox Nightly\firefox.exe: the directory that names the install either way.
-  const up = browserFamily(exe) === "firefox" ? path.dirname(exe) : path.dirname(path.dirname(exe));
-  const name = path.basename(up) || "browser";
+  const up = browserFamily(exe) === "firefox" ? path.win32.dirname(exe) : path.win32.dirname(path.win32.dirname(exe));
+  const name = path.win32.basename(up) || "browser";
   return path.join(parent, "browser-profiles", name.replace(/[^\w.-]+/g, "_"));
 }

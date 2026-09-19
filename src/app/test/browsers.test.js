@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { basename, join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 
@@ -129,5 +129,5 @@ test("each browser gets a profile directory of its own", () => {
   assert.ok(nightly.endsWith("Firefox_Nightly"));
   assert.ok(chrome.startsWith(join("C:\\data", "browser-profiles")));
   // No spaces or separators from the browser's own directory name.
-  assert.ok(/^[\w.-]+$/.test(canary.slice(canary.lastIndexOf("\\") + 1) || canary));
+  assert.ok(/^[\w.-]+$/.test(basename(canary)));
 });
