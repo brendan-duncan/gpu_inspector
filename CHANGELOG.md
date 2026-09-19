@@ -1,3 +1,10 @@
+## v0.17.0
+
+### Added
+- Each of a capture's reports opens in a tab beside the capture's, with **Open in New Window** on the tab (a copy of the capture there, opened on that report) and on its context menu.
+- Every report, and the render target tab, has an **Export to HTML** control: the report as it is on screen, with the application's styles in it, as a standalone file.
+- The Shader Flame Graph zooms continuously with **Ctrl+Wheel** about the pointer and pans by dragging, besides the click zoom it already had.
+
 ## v0.16.0
 
 ### Added

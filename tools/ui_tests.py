@@ -7,7 +7,7 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-dump, --debug-view, --debug-expand, --debug-settle, --screenshot, --quit-after-screenshot), then checks the JSON
+--debug-dump, --debug-view, --debug-expand, --debug-export, --debug-settle, --screenshot, --quit-after-screenshot), then checks the JSON
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
 expected of it ({"findings": {"rule": count, ...}}); without one the file only has to open with
@@ -733,10 +733,26 @@ def triangle_sources(state, log):
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
     source_root = os.path.join(ROOT, "test")
+    exported = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_report.html")
 
     def start_triangle():
         env = dict(os.environ, VKINSP_ENABLE="1", VKINSP_PORT="47531")
         return subprocess.Popen([triangle, "--frames", "5000"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def remove_exported():
+        if os.path.exists(exported):
+            os.remove(exported)
+
+    def triangle_report_export(state, log):
+        # Reports open in tabs beside the capture's, and each exports to a standalone HTML file
+        # (renderer/report_export.ts). The flame graph is the report that fetches its shaders
+        # before it renders, so it is the one worth exercising here.
+        c = capture(state)
+        html = ""
+        if os.path.isfile(exported):
+            with open(exported, encoding="utf-8") as f:
+                html = f.read()
+        return check_connected(state, log) + check_capture_basic(state, log) +             expect("flame" in (c.get("reportTabs") or []), f"the flame graph did not open in a tab of its own: {c.get('reportTabs')}") +             expect(len(html) > 2000, f"{len(html)} bytes exported to {exported}") +             expect("flamegraph-frame" in html, "the exported report has no flame graph frames in it") +             expect("--bg-primary" in html, "the exported report has no stylesheet inlined, so it reads as unstyled text")
     cases = [
         # The implicit layer: registered for the case, the triangle started outside the inspector.
         Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
@@ -762,6 +778,9 @@ def triangle_cases(triangle):
         # details pane empty and the renderer's console with the error.
         Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
         Case("mesh-in", launch + ["--debug-capture", "--debug-view=mesh:in"], triangle_mesh_input, delay_ms=16000),
+        # Reports in tabs and the HTML export, on the flame graph (the report that fetches shaders first).
+        Case("report-export", launch + ["--debug-capture", "--debug-view=flame", f"--debug-export={exported}"],
+             triangle_report_export, delay_ms=18000, before=remove_exported),
         Case("debug-compute", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-view=debugger:compute::end"],
              triangle_debug_compute, delay_ms=16000),
         Case("debug-decompiled", launch + ["--debug-capture", "--debug-view=debugger:compute::end:decompiled", "--debug-settle=4000"],

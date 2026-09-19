@@ -40,6 +40,8 @@ export class InspectorWindow extends Window {
   /** ?capture=<path>: a window opened on one capture file (temp: a hand-over from a live capture, not a recent). */
   private _captureParam: string | null = null;
   private _tempCapture = false;
+  /** ?view=<report>: the report to open the capture on (a report tab's "Open in New Window"). */
+  private _viewParam: string | null = null;
 
   private _recents: LaunchConfig[] = [];
   private _recentCaptures: string[] = [];
@@ -67,6 +69,7 @@ export class InspectorWindow extends Window {
     this._mode = params.has("session") || params.has("capture") ? "session" : "main";
     this._captureParam = params.get("capture");
     this._tempCapture = params.has("temp");
+    this._viewParam = params.get("view");
 
     if (this._mode === "main") {
       this._buildToolbar();
@@ -235,6 +238,22 @@ export class InspectorWindow extends Window {
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.selectCommand !== null && this._debug?.selectCommand !== undefined) panel.capturePanel.activeView?.selectCommand(this._debug.selectCommand);
     if (this._debug?.showView) panel.capturePanel.activeView?.showView(this._debug.showView);
+    // A window opened on one of the capture's reports (?view=): the report's tab opens with it.
+    if (this._viewParam) panel.capturePanel.activeView?.openReport(this._viewParam);
+    this._debugExport(panel, 1500);
+  }
+
+  /**
+   * --debug-export=<file>: write the tab --debug-view (or ?view=) opened to a standalone HTML
+   * file, after long enough for a report that fetches its shaders to have finished (ui_tests.py).
+   */
+  private _debugExport(panel: SessionPanel, delayMs: number): void {
+    const file = this._debug?.exportReport;
+    if (!file) return;
+    setTimeout(() => {
+      void panel.capturePanel.exportActive(file)
+        .then((p) => console.log(p ? `report exported: ${p}` : "report export failed"));
+    }, delayMs);
   }
 
   private async _openCaptureDialog(): Promise<void> {
@@ -556,6 +575,7 @@ export class InspectorWindow extends Window {
       // A Metal or D3D12 pixel history needs a second capture, which the tab offers as a button
       // rather than taking by itself: a capture of the application's next frame costs it a frame.
       if (view === "pixel-history") setTimeout(() => panel.capturePanel.debugCaptureHistory(), 5000);
+      this._debugExport(panel, 5000);
       // --debug-save=<file>: save the capture once its data has had time to arrive.
       const save = this._debug?.saveCapture;
       if (save) {
