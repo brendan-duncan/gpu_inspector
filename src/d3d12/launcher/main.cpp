@@ -564,6 +564,7 @@ public:
         : _dll(std::move(dll)), _offset(offset), _settings(std::move(settings)),
           _patterns(std::move(patterns)), _root(root) {
         _known.insert(root);
+        _tree.insert(root);
     }
 
     void Poll() {
@@ -573,9 +574,11 @@ public:
         std::vector<std::pair<DWORD, std::wstring>> fresh;
         PROCESSENTRY32W pe{};
         pe.dwSize = sizeof(pe);
+        _live = 0;
         if (Process32FirstW(snap, &pe)) {
             do {
                 parents[pe.th32ProcessID] = pe.th32ParentProcessID;
+                if (_tree.count(pe.th32ProcessID)) ++_live;
                 // A pid names one process for its lifetime, so each is considered once.
                 if (!_known.count(pe.th32ProcessID)) fresh.emplace_back(pe.th32ProcessID, pe.szExeFile);
             } while (Process32NextW(snap, &pe));
@@ -583,17 +586,30 @@ public:
         CloseHandle(snap);
         for (const auto& [pid, image] : fresh) {
             _known.insert(pid);
-            if (Descendant(pid, parents)) Consider(pid, image);
+            if (!InTree(pid, parents)) continue;
+            _tree.insert(pid);
+            ++_live;
+            Consider(pid, image);
         }
     }
 
+    /** How many of the target's processes were running at the last poll. */
+    size_t live() const { return _live; }
+
 private:
-    /** The target's, through at most eight generations (a parent that has exited ends the walk). */
-    bool Descendant(DWORD pid, const std::map<DWORD, DWORD>& parents) const {
+    /**
+     * Whether the process belongs to the target's tree: one of its ancestors is the target or a
+     * process already in the tree. Membership is kept rather than walked back to the target every
+     * time because the target itself may be gone — Firefox's first process re-launches the browser
+     * and exits, so the browser's own children descend from a pid that no longer exists — and
+     * because only a process that appeared while we were watching is ever considered, which is
+     * what keeps a reused pid from being taken for the target's.
+     */
+    bool InTree(DWORD pid, const std::map<DWORD, DWORD>& parents) const {
         for (int generation = 0; generation < 8 && pid != 0; ++generation) {
             auto it = parents.find(pid);
             if (it == parents.end()) return false;
-            if (it->second == _root) return true;
+            if (_tree.count(it->second)) return true;
             pid = it->second;
         }
         return false;
@@ -627,25 +643,55 @@ private:
     std::vector<std::wstring> _patterns;
     DWORD _root;
     std::set<DWORD> _known;
+    /** The target and every process descended from it that we have seen, and how many still run. */
+    std::set<DWORD> _tree;
+    size_t _live = 0;
 };
 
+/** How long the tree may be empty before a followed target counts as finished. */
+constexpr DWORD kTreeGraceMs = 2000;
+
 /**
- * Waits for the target and returns its exit code, injecting into the children it starts meanwhile
+ * Waits for the target and returns its exit code, injecting into the processes it starts meanwhile
  * when --follow asked for them. Without --follow (or without a library to inject) this is the plain
  * wait the launcher has always done.
+ *
+ * With --follow the wait is for the target's whole tree, not the process we started: Firefox's
+ * first process launches the browser and exits within a second, and the browser's GPU process — the
+ * one worth following — starts after that. So once the target is gone the poll goes on while any of
+ * its processes are still running, and the launcher stands in for the tree the way it stands in for
+ * a single target (the session's log, its status and its Stop then apply to the whole browser).
  */
 DWORD WaitForTarget(HANDLE process, DWORD pid, const std::wstring& dll, uintptr_t offset,
                     const std::vector<std::wstring>& patterns, const std::vector<wchar_t>& settings,
                     DWORD pollMs) {
     if (patterns.empty() || dll.empty() || offset == SIZE_MAX) {
         WaitForSingleObject(process, INFINITE);
-    } else {
-        FineTimer timer;   // or the poll sleeps a scheduler tick, and children start in less
-        Follower follower(dll, offset, settings, patterns, pid);
-        while (WaitForSingleObject(process, pollMs) == WAIT_TIMEOUT) follower.Poll();
+        DWORD code = 0;
+        GetExitCodeProcess(process, &code);
+        return code;
     }
+    FineTimer timer;   // or the poll sleeps a scheduler tick, and children start in less
+    Follower follower(dll, offset, settings, patterns, pid);
+    while (WaitForSingleObject(process, pollMs) == WAIT_TIMEOUT) follower.Poll();
     DWORD code = 0;
     GetExitCodeProcess(process, &code);
+    follower.Poll();
+    if (follower.live() == 0) return code;
+    Note(L"pid %lu exited with code %lu, leaving %zu process(es) of its own running: following those",
+         pid, code, follower.live());
+    ULONGLONG emptySince = 0;
+    for (;;) {
+        Sleep(pollMs);
+        follower.Poll();
+        if (follower.live() > 0) {
+            emptySince = 0;
+            continue;
+        }
+        // A tree can be briefly empty between one process exiting and the next appearing.
+        if (emptySince == 0) emptySince = GetTickCount64();
+        else if (GetTickCount64() - emptySince >= kTreeGraceMs) break;
+    }
     return code;
 }
 
