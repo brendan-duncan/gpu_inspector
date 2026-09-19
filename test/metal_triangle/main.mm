@@ -15,6 +15,10 @@
 //   mtlinsp_triangle --compile-hitch
 //                                 compile a library and a pipeline inside every frame, so the CPU
 //                                 timeline has a stall in it to attribute
+//   mtlinsp_triangle --occluded   draw the triangles twice, the second set behind the first, in a
+//                                 pass with a depth attachment: every fragment of the second draw
+//                                 is rejected, which is what an overdraw measurement counting with
+//                                 and without the depth test has to tell apart
 //
 // Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See src/metal/README.md.
 #import <Cocoa/Cocoa.h>
@@ -43,7 +47,8 @@ using namespace metal;
 
 struct VertexIn  { float2 position [[attribute(0)]]; float3 colour [[attribute(1)]]; };
 struct VertexOut { float4 position [[position]];     float3 colour; };
-struct Uniforms  { float angle; float scale; };
+// `depth` is 0 except under --occluded, which draws the triangle twice at two depths.
+struct Uniforms  { float angle; float scale; float depth; };
 struct BlitOut   { float4 position [[position]];     float2 uv; };
 
 vertex BlitOut blit_vertex(uint vid [[vertex_id]]) {
@@ -69,7 +74,7 @@ vertex VertexOut vertex_main(VertexIn in [[stage_in]],
     float2 p = float2(in.position.x * c - in.position.y * s,
                       in.position.x * s + in.position.y * c) * u.scale;
     VertexOut out;
-    out.position = float4(p, 0.0, 1.0);
+    out.position = float4(p, u.depth, 1.0);
     out.colour = in.colour;
     return out;
 }
@@ -110,6 +115,7 @@ kernel void hitch_main(device float *values [[buffer(0)]],
 struct Uniforms {
     float angle;
     float scale;
+    float depth;
 };
 
 constexpr NSUInteger kWaveCount = 256;
@@ -124,9 +130,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 // ------------------------------------------------------------------------------------------
 
 @interface Renderer : NSObject
-- (instancetype)initWithLayer:(CAMetalLayer *)layer;
+/** `occluded` is an initializer argument rather than a property: it decides the pipeline's depth
+ *  attachment format, which is fixed when the pipeline is built. */
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
+/** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
+@property(nonatomic, readonly) BOOL occluded;
 /** --present-direct: present through the drawable, the way Unity's macOS player does. */
 @property(nonatomic) BOOL presentDirect;
 /** --compile-hitch: build a library and a pipeline inside every frame. */
@@ -156,6 +166,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLHeap> _heap;
     id<MTLBuffer> _heapBuffer;
     id<MTLTexture> _heapTexture;
+    // --occluded: a depth attachment on the triangle pass and a state that tests and writes it,
+    // so the second draw is behind the first and the depth test has something to reject.
+    id<MTLTexture> _depthTarget;
+    id<MTLDepthStencilState> _depthState;
     // Resources allocated while running rather than at start-up, so that a capture library has
     // something to stream to a UI that is already connected — the snapshot path and the live path
     // are different code and only one of them is exercised by start-up allocations.
@@ -163,8 +177,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     NSUInteger _frameCount;
 }
 
-- (instancetype)initWithLayer:(CAMetalLayer *)layer {
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded {
     if (!(self = [super init])) return nil;
+    _occluded = occluded;
     _layer = layer;
     _device = layer.device;
     _queue = [_device newCommandQueue];
@@ -207,7 +222,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     }
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
     pipelineDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
-    pipelineDescriptor.rasterSampleCount = 4;
+    pipelineDescriptor.rasterSampleCount = occluded ? 1 : 4;
+    if (occluded) pipelineDescriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     _pipeline = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     if (!_pipeline) {
         NSLog(@"pipeline creation failed: %@", error);
@@ -316,6 +332,25 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         _heapTexture.label = @"heap lightmap";
     }
 
+    if (self.occluded) {
+        // A depth attachment for the triangle pass and a state that tests and writes it: without
+        // the write the second draw could not be rejected by the first.
+        MTLTextureDescriptor *depth =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                               width:(NSUInteger)size.width
+                                                              height:(NSUInteger)size.height
+                                                           mipmapped:NO];
+        depth.usage = MTLTextureUsageRenderTarget;
+        depth.storageMode = MTLStorageModePrivate;
+        _depthTarget = [_device newTextureWithDescriptor:depth];
+        _depthTarget.label = @"triangle depth";
+        MTLDepthStencilDescriptor *depthState = [[MTLDepthStencilDescriptor alloc] init];
+        depthState.label = @"less, writing";
+        depthState.depthCompareFunction = MTLCompareFunctionLess;
+        depthState.depthWriteEnabled = YES;
+        _depthState = [_device newDepthStencilStateWithDescriptor:depthState];
+    }
+
     _later = [NSMutableArray array];
     return self;
 }
@@ -348,7 +383,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<CAMetalDrawable> drawable = [_layer nextDrawable];
     if (!drawable) return;
 
-    Uniforms uniforms = { .angle = (float)_frameCount * 0.02f, .scale = 0.8f };
+    Uniforms uniforms = { .angle = (float)_frameCount * 0.02f, .scale = 0.8f,
+                          .depth = self.occluded ? 0.4f : 0.0f };
     memcpy(_uniforms.contents, &uniforms, sizeof(uniforms));
 
     id<MTLCommandBuffer> commandBuffer = [_queue commandBuffer];
@@ -369,11 +405,25 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // multisample texture cannot be copied to a buffer. Through a parallel encoder, whose
     // sub-encoder does the drawing, the way a multithreaded engine records a pass.
     MTLRenderPassDescriptor *trianglePass = [MTLRenderPassDescriptor renderPassDescriptor];
-    trianglePass.colorAttachments[0].texture = _msaaTarget;
-    trianglePass.colorAttachments[0].resolveTexture = _resolved;
     trianglePass.colorAttachments[0].loadAction = MTLLoadActionClear;
     trianglePass.colorAttachments[0].clearColor = MTLClearColorMake(0.08, 0.09, 0.11, 1.0);
-    trianglePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+    if (self.occluded) {
+        // Single-sampled under --occluded: a multisampled pass's depth is deliberately not copied
+        // for the overdraw measurement (src/metal/src/overdraw.mm), which is the one thing this
+        // mode exists to exercise, so it renders straight into the resolve target instead.
+        trianglePass.colorAttachments[0].texture = _resolved;
+        trianglePass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    } else {
+        trianglePass.colorAttachments[0].texture = _msaaTarget;
+        trianglePass.colorAttachments[0].resolveTexture = _resolved;
+        trianglePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+    }
+    if (self.occluded) {
+        trianglePass.depthAttachment.texture = _depthTarget;
+        trianglePass.depthAttachment.loadAction = MTLLoadActionClear;
+        trianglePass.depthAttachment.clearDepth = 1.0;
+        trianglePass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    }
 
     id<MTLParallelRenderCommandEncoder> parallel =
         [commandBuffer parallelRenderCommandEncoderWithDescriptor:trianglePass];
@@ -382,6 +432,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     encoder.label = @"triangle";
     [encoder pushDebugGroup:@"triangles"];
     [encoder setRenderPipelineState:_pipeline];
+    if (self.occluded) [encoder setDepthStencilState:_depthState];
     [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
     [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -390,6 +441,20 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                        indexBuffer:_indices
                  indexBufferOffset:0
                      instanceCount:3];
+    if (self.occluded) {
+        // The same triangles again, behind the ones just drawn: every fragment is rasterized and
+        // every one of them fails the depth test, so a measurement that counts fragments with the
+        // pass's depth test must come out half of the one that counts without it.
+        Uniforms behind = uniforms;
+        behind.depth = 0.8f;
+        [encoder setVertexBytes:&behind length:sizeof(behind) atIndex:1];
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                            indexCount:sizeof(kIndices) / sizeof(kIndices[0])
+                             indexType:MTLIndexTypeUInt16
+                           indexBuffer:_indices
+                     indexBufferOffset:0
+                         instanceCount:3];
+    }
     [encoder popDebugGroup];
     [encoder endEncoding];
     [parallel endEncoding];
@@ -440,6 +505,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) NSUInteger frameLimit;  // 0: run until the window is closed
 @property(nonatomic) BOOL presentDirect;
 @property(nonatomic) BOOL compileHitch;
+@property(nonatomic) BOOL occluded;
 @end
 
 @implementation AppDelegate {
@@ -477,7 +543,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    _renderer = [[Renderer alloc] initWithLayer:layer];
+    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
@@ -502,10 +568,12 @@ int main(int argc, const char *argv[]) {
     NSUInteger frameLimit = 0;
     BOOL presentDirect = NO;
     BOOL compileHitch = NO;
+    BOOL occluded = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
+        else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
     }
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
@@ -514,6 +582,7 @@ int main(int argc, const char *argv[]) {
         delegate.frameLimit = frameLimit;
         delegate.presentDirect = presentDirect;
         delegate.compileHitch = compileHitch;
+        delegate.occluded = occluded;
         app.delegate = delegate;
         [app run];
     }

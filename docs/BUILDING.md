@@ -168,6 +168,7 @@ to both; the rest draw the cube differently or misbehave on purpose.
 |---|---|
 | `--present-direct` | Presents through `[drawable present]` from a scheduled handler, the way Unity's macOS player does |
 | `--compile-hitch` | Compiles a library and a pipeline inside every frame, so the CPU timeline has a stall to attribute |
+| `--occluded` | Draws the triangles twice, the second set behind the first with a depth test, so overdraw has fragments to reject |
 
 `dxinsp_triangle`:
 
@@ -193,6 +194,9 @@ npm test             # renderer and MCP server unit tests
 ```
 
 `python tools/ui_tests.py` runs the UI end to end against the built test application.
+`--unity <player.app>` adds two cases against a real Unity player — overdraw measured over its
+frame, and a pixel followed through it — which has passes the samples do not. Opt-in: the player
+is not part of the repository.
 
 `python tools/doc_screenshots.py` regenerates the screenshots in `docs/images` from the built UI:
 each is a run of the app with its testing aids, quitting once the shot is written.

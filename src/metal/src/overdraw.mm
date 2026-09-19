@@ -282,13 +282,18 @@ void MeasurePass(OverdrawPass &pass) {
 // --------------------------------------------------------------------------------------------
 // Shared with pixel_history.mm (pass_record.h)
 
-id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height) {
+id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height,
+                                uint32_t sampleCount) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
                                                                                  width:width
                                                                                 height:height
                                                                              mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget;
     d.storageMode = MTLStorageModePrivate;
+    if (sampleCount > 1) {
+        d.textureType = MTLTextureType2DMultisample;
+        d.sampleCount = sampleCount;
+    }
     return [device newTextureWithDescriptor:d];
 }
 
