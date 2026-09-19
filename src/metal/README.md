@@ -6,6 +6,11 @@ request with its render targets, bound buffers and GPU pass timings, and streams
 inspector over the same protocol the Vulkan layer speaks. The Inspect and Capture panels both
 work against a Metal application.
 
+`replay/` is the other half: `mtlinsp_replay` re-executes a saved capture on this machine's GPU
+without the application, compares every render target it read back, and writes the frame out as a
+standalone Objective-C++ project ([Export to C++](../../docs/REPLAY.md#metal)). Nothing in the
+capture library is involved at replay time except its pixel format tables.
+
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
 cd build/bin
@@ -833,6 +838,29 @@ Limits:
 - Only the first 1024 draws of a pass are followed. Each costs an encoder and seven draws in the
   captured frame.
 - Writes outside render passes (blits, compute) are not events.
+
+## Replay
+
+`replay/` builds `mtlinsp_replay` alongside the capture library (`VKINSP_BUILD_REPLAY`, on by
+default). It reads a `.gpucap` back, re-creates every object from the descriptor the capture
+recorded, re-encodes the frame's commands against the encoders the command stream names, and reads
+back the same targets at the same points to compare them:
+
+```
+build/bin/mtlinsp_replay /tmp/frame.gpucap --validate
+build/bin/mtlinsp_replay /tmp/frame.gpucap --export /tmp/frame_cpp
+```
+
+Two files carry the design. `src/mtl_reflect.h` describes each descriptor once for two visitors —
+the filler, which sets its properties from the capture's JSON, and the emitter, which spells it as
+source — so the replay and the export cannot drift apart. `src/mtl_commands.mm` dispatches the
+commands the same way: decode the arguments once into locals, send the message, then spell those
+same locals, which is why the exported program does what the replay did rather than what the JSON
+said. `docs/REPLAY.md` has the rest, including what is not replayed.
+
+The enum name tables both directions need are generated from the Metal SDK headers by
+`tools/gen_metal_enums.py` into `gen/`, and committed: `formats.mm`'s switches only go from value
+to name, and a decoder needs the other direction.
 
 ## Not done
 

@@ -388,6 +388,28 @@ id D_newLibraryWithData(id self, SEL _cmd, dispatch_data_t data, NSError **error
     return library;
 }
 
+/**
+ * The metallib bytes of a library that was loaded from a file, as the blob `newLibraryWithData:`
+ * attaches from the data it was handed.
+ *
+ * A library built ahead of time — which is every shipped player's — arrives as a path rather than
+ * as bytes, so without this the capture records a path on the capture machine and holds nothing
+ * the library could be made from again. The replay and Export to C++ need the bytes themselves
+ * (src/metal/replay/), and a bug report wants them attached. A file that cannot be read leaves the
+ * library with no blob, which the replay reports rather than fails on.
+ */
+void AddLibraryFileBlob(id library, NSURL *url) {
+    if (library == nil || url == nil) return;
+    NSData *data = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
+    if (data.length != 0) AddBlob(library, "metallib", data.bytes, data.length);
+}
+
+/** Where Metal itself looks for a bundle's default library; the main bundle for `newDefaultLibrary`. */
+NSURL *DefaultLibraryURL(NSBundle *bundle) {
+    NSBundle *from = bundle == nil ? NSBundle.mainBundle : bundle;
+    return [from URLForResource:@"default" withExtension:@"metallib"];
+}
+
 id D_newLibraryWithURL(id self, SEL _cmd, NSURL *url, NSError **error) {
     Reentry reentry(self, _cmd);
     id library = ORIG(id (*)(id, SEL, NSURL *, NSError **))(self, _cmd, url, error);
@@ -395,6 +417,7 @@ id D_newLibraryWithURL(id self, SEL _cmd, NSURL *url, NSError **error) {
         Log("device.newLibraryWithURL: %s -> %s", url.path.UTF8String, ClassName(library));
         Track(library, "MTLLibrary", "newLibraryWithURL:error:", self,
               LibraryArgs((id<MTLLibrary>)library, url.path.UTF8String, 0));
+        AddLibraryFileBlob(library, url);
     }
     HookLibraryClass(library);
     return library;
@@ -406,6 +429,7 @@ id D_newLibraryWithFile(id self, SEL _cmd, NSString *path, NSError **error) {
     if (reentry.outermost()) {
         Track(library, "MTLLibrary", "newLibraryWithFile:error:", self,
               LibraryArgs((id<MTLLibrary>)library, path == nil ? "" : path.UTF8String, 0));
+        if (path != nil) AddLibraryFileBlob(library, [NSURL fileURLWithPath:path]);
     }
     HookLibraryClass(library);
     return library;
@@ -418,6 +442,7 @@ id D_newDefaultLibrary(id self, SEL _cmd) {
         Log("device.newDefaultLibrary -> %s", ClassName(library));
         Track(library, "MTLLibrary", "newDefaultLibrary", self,
               LibraryArgs((id<MTLLibrary>)library, "default.metallib", 0));
+        AddLibraryFileBlob(library, DefaultLibraryURL(nil));
     }
     HookLibraryClass(library);
     return library;
@@ -430,6 +455,7 @@ id D_newDefaultLibraryWithBundle(id self, SEL _cmd, NSBundle *bundle, NSError **
         Track(library, "MTLLibrary", "newDefaultLibraryWithBundle:error:", self,
               LibraryArgs((id<MTLLibrary>)library,
                           bundle.bundlePath == nil ? "bundle" : bundle.bundlePath.UTF8String, 0));
+        AddLibraryFileBlob(library, DefaultLibraryURL(bundle));
     }
     HookLibraryClass(library);
     return library;

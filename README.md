@@ -8,7 +8,7 @@ Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on *
 * **Object inspection**: every GPU object, with how it was created and what it uses.
 * **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
 * **Saved captures**: reopen them later, anywhere, without the application.
-* **Export to C++**: a Vulkan or Direct3D 12 frame as a standalone project that runs it again, for driver bug reports.
+* **Export to C++**: a Vulkan, Direct3D 12 or Metal frame as a standalone project that runs it again, for driver bug reports.
 * **Validation**: validation layer errors, linked to the objects and commands they name.
 * **Shader editing**: change a shader and see the running application use it.
 * **Shader debugger**: step through a vertex, pixel or compute shader line by line.

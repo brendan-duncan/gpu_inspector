@@ -309,7 +309,8 @@ application with injected state. Route (a) is the general one and is the prerequ
   - Parts inside control flow: measure a branch's arms by forcing the condition, rather than
     skipping everything a branch depends on.
   - More than one draw of a pipeline: several targets per request exist, but nothing sends them.
-  - Metal, which has no replay to time variants in.
+  - Metal: `mtlinsp_replay` replays a capture now, but serves no analyses, so there is still
+    nothing to time the variants in.
   - Engine shaders with no line information: steps through GLSL decompiled by spirv-cross, the
     way the shader debugger does.
 
@@ -592,7 +593,7 @@ vendor's driver is listed at the end so nobody spends time on it.
       `address of buffer N + offset` and a binding table built at start-up); a frame that crashes
       the driver, which is the bug report that most wants a repro and the one case the export cannot
       write, since it needs the replay to finish (a checkpoint before each pipeline creation and
-      each submit would do); and Metal, which does not replay.
+      each submit would do).
 - [x] D3D12 replay and Export to C++ (`src/d3d12/replay/`, `dxinsp_replay`, docs/REPLAY.md
       "Direct3D 12"): a capture re-executed and compared, and written as a CMake project. One
       `Reflect` per struct (`dx_reflect.h`) serves the decoder and the source emitter, since the
@@ -600,6 +601,27 @@ vendor's driver is listed at the end so nobody spends time on it.
       keeping: the first engine frame differed in every pass that sampled anything, and the fault
       was the capture's, which snapshot a descriptor table when it was bound while Unity writes
       the descriptors after the bind; tables are now snapshot at the next draw.
+- [x] Metal replay and Export to C++ (`src/metal/replay/`, `mtlinsp_replay`, docs/REPLAY.md
+      "Metal"): a capture re-executed and compared, and written as a CMake project of
+      Objective-C++. The D3D12 shape, with one difference that decided the design: a Metal
+      descriptor is an object, not a C struct, so a visitor cannot bind to its members. A property
+      reaches the two visitors of `mtl_reflect.h` as the value it holds, the value a freshly
+      allocated descriptor of the same class holds, and a block that sets it — which also gives
+      the emitter, for free, the thing that makes the source readable: only the properties the
+      application actually set, out of the dozens Metal defaults. Verified on an M1 Max by
+      building and running what it wrote: the triangle, `--occluded` (depth) and
+      `--present-direct` all replay and re-run with every target identical. Worth keeping: the
+      first frame with a depth attachment differed in **every texel of its colour target**, and
+      the fault was the capture's — a depth attachment is announced under attachment index 0 like
+      colour attachment 0, and `CaptureTextureData` carried no aspect, so the depth read-back
+      landed on the colour entry. The Vulkan layer had always sent the aspect for exactly this
+      reason. Nothing in the UI had shown it, because a depth image and a colour image of the same
+      pass both render as an image.
+- [ ] Metal replay, the rest: acceleration structures and ray tracing, indirect command buffers,
+      argument encoders, mesh shader draws, and the analyses `vkinsp_replay` serves (overdraw is
+      measured while capturing on Metal already, but overlays, mesh output, per-draw timing and
+      ablation are not). Tile shading is recorded but is not on `MTLRenderCommandEncoder` in the
+      macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: ray tracing, mesh shader pipelines from a stream, the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing), descriptors indexed out of
       the heap (shader model 6.6), which no table snapshot covers, and a slot rewritten within one

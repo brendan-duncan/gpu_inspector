@@ -70,6 +70,12 @@ def find_d3d12_replay():
     return c if os.path.isfile(c) else None
 
 
+def find_metal_replay():
+    """mtlinsp_replay (src/metal/replay/), which Export to C++ on a Metal capture needs."""
+    c = os.path.join(ROOT, "build", "bin", "mtlinsp_replay")
+    return c if os.path.isfile(c) else None
+
+
 def electron():
     exe = os.path.join(APP, "node_modules", ".bin", "electron.cmd" if IS_WIN else "electron")
     return exe if os.path.isfile(exe) else None
@@ -662,9 +668,49 @@ def unity_cases(player):
     ]
 
 
+exported_metal_cpp = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_metal_export_cpp")
+
+
+def remove_exported_metal_cpp():
+    shutil.rmtree(exported_metal_cpp, ignore_errors=True)
+
+
+def metal_export_cpp(state, log):
+    # Export to C++ of a Metal capture (src/metal/replay/src/mtl_exporter.h), which mtlinsp_replay
+    # writes. The frame's first pass is multisampled through a parallel encoder and resolves, so the
+    # project holds the sub-encoder's draw and reads the resolve back; the second samples that
+    # resolve, which is why there is an upload before the frame.
+    projects = [os.path.join(exported_metal_cpp, d) for d in os.listdir(exported_metal_cpp)] if os.path.isdir(exported_metal_cpp) else []
+    project = projects[0] if projects else ""
+    commands = contents = ""
+    if project and os.path.isfile(os.path.join(project, "frame_commands.mm")):
+        with open(os.path.join(project, "frame_commands.mm"), encoding="utf-8") as f:
+            commands = f.read()
+    if project and os.path.isfile(os.path.join(project, "frame_contents.mm")):
+        with open(os.path.join(project, "frame_contents.mm"), encoding="utf-8") as f:
+            contents = f.read()
+    data = os.path.join(project, "frame_data.bin")
+    shaders = os.path.join(project, "shaders")
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(len(projects) == 1 and project.endswith("_cpp"), f"one project folder named after the capture in {exported_metal_cpp}: {projects}") + \
+        expect(os.path.isfile(os.path.join(project, "CMakeLists.txt")), "the project has no CMakeLists.txt") + \
+        expect(os.path.isfile(os.path.join(project, "mtl_support.mm")), "the project has no mtl_support.mm") + \
+        expect("parallelRenderCommandEncoderWithDescriptor:" in commands, "frame_commands.mm does not open the parallel encoder") + \
+        expect("drawIndexedPrimitives:" in commands, "frame_commands.mm does not hold the triangle draw") + \
+        expect("dispatchThreads:" in commands, "frame_commands.mm does not hold the compute dispatch") + \
+        expect("ReadbackTexture(" in commands, "frame_commands.mm reads no render target back to compare") + \
+        expect("UploadTexture(" in contents, "frame_contents.mm uploads none of the sampled texture") + \
+        expect(os.path.isdir(shaders) and any(f.endswith(".metal") for f in os.listdir(shaders)), "the project has no .metal shader source") + \
+        expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
+
+
 def metal_cases(triangle):
     launch = [f"--launch={triangle}"]
-    return [
+    export_cases = [Case("metal-export-cpp", launch + ["--debug-capture", f"--debug-export-cpp={exported_metal_cpp}"],
+                         metal_export_cpp, delay_ms=22000, before=remove_exported_metal_cpp)] if find_metal_replay() else []
+    if not export_cases:
+        print("  (no mtlinsp_replay build: skipping the Metal Export to C++ case)")
+    return export_cases + [
         Case("metal-debug-compute", launch + ["--debug-capture", "--debug-view=debugger:compute::end"],
              metal_debug_compute, delay_ms=16000),
         Case("metal-debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::end"],

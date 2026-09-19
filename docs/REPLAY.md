@@ -6,8 +6,9 @@
 application. It is the basis for the analyses that have to run a frame again with something
 changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output (which the shader
 debugger's pixels are rasterized from), per-draw timing and shader cost by ablation. It also writes a
-frame out as a C++ project ([Export to C++](#export-to-c)). A Direct3D 12 capture has a replay tool of
-its own, `dxinsp_replay`, which replays, compares and exports ([Direct3D 12](#direct3d-12)).
+frame out as a C++ project ([Export to C++](#export-to-c)). Direct3D 12 and Metal captures have replay
+tools of their own, `dxinsp_replay` and `mtlinsp_replay`, which replay, compare and export
+([Direct3D 12](#direct3d-12), [Metal](#metal)).
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
@@ -543,7 +544,8 @@ program that runs the frame and compares each render target with the capture's c
 reproducing a problem outside the application, above all in a driver bug report, where the vendor
 wants something to build and run rather than a capture in someone else's format. In GPU Inspector it
 is **Export to C++** in the capture bar and on a capture tab's menu. This section is the Vulkan
-export; a Direct3D 12 capture exports the same way through its own tool ([Direct3D 12](#direct3d-12)).
+export; Direct3D 12 and Metal captures export the same way through their own tools
+([Direct3D 12](#direct3d-12), [Metal](#metal)).
 
 The source is emitted from the replay's own walk, not from the capture a second way. The exporter
 (`src/replay/src/exporter.h`) watches the replay create the device and each object, upload each
@@ -716,6 +718,91 @@ Limits:
   6.6). Multisampled textures are not uploaded, and multisampled depth is not compared.
 - Queries are issued but their results are not compared, and fences, tiled resource mappings and
   residency are not replayed.
+
+## Metal
+
+`mtlinsp_replay` (`src/metal/replay/`, macOS) re-executes a Metal capture, and is what **Export to
+C++** runs for one. Like `dxinsp_replay` it replays the frame, compares its render targets and
+writes the frame out as a project; the analyses above are `vkinsp_replay`'s and stay Vulkan-only.
+
+```
+mtlinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--trace]
+mtlinsp_replay <capture.gpucap> --export <directory> [--export-data <file>]
+```
+
+- `--validate` sets `METAL_DEVICE_WRAPPER_TYPE=1` before the device is made, so the replay runs
+  under Metal's API validation. Metal has no message list to read back, as D3D12's info queue is, so
+  what it finds goes to stderr and a hard error aborts the process.
+- `--dump <dir>` writes both copies of every compared target as raw bytes.
+- `--trace` names each object and command on stderr before it is replayed, to find the one a driver
+  dies in.
+- The exit code is 0 when every compared target is identical, 1 when some differ or could not be
+  compared, 2 when the replay could not run.
+
+It shares the capture reader with `vkinsp_replay` (`gpucap.*`, `json.*`, `arena.h`: no graphics API
+in them) and the pixel format tables with the capture library (`src/metal/src/formats.h`). The rest
+is its own. A Metal capture's arguments are written by hand
+(`src/metal/src/hooks_descriptors.mm`), as D3D12's are, so one description per descriptor
+(`mtl_reflect.h`) is visited twice: by the filler, which sets the descriptor's properties from the
+capture's JSON, and by the emitter, which spells the filled descriptor as Objective-C++. Metal's
+descriptors are objects rather than C structs, so a property reaches the visitor as the value it
+holds, the value a freshly allocated descriptor of the same class holds, and a block that sets it —
+which is what lets the emitter write only what the application actually set. The enum name tables
+the two directions share are generated from the Metal SDK headers by `tools/gen_metal_enums.py` and
+committed (`src/metal/gen/`).
+
+How the frame is rebuilt:
+
+- **Objects** are re-created in the order the capture created them. A library is compiled from the
+  Metal Shading Language the capture kept with it, or loaded from its metallib bytes; a function is
+  specialized again from the constants the capture watched the application set
+  (`src/metal/src/function_constants.h`), since Metal will not report them.
+- **The drawable** has no window here, so its texture becomes an ordinary render target and the
+  `presentDrawable:` that would have shown it is left out and reported.
+- **Buffers** keep the storage mode they had, except that a memoryless one becomes private: the
+  contents the capture read are written straight into a shared or managed buffer, and through a
+  staging blit into a private one.
+- **Contents** are what the capture read back: the textures a draw sampled, uploaded before the
+  frame, and each buffer range a command bound, written before the command buffer that binds it is
+  committed. The same range bound at every draw is uploaded once.
+- **Encoders** come from the command stream: every command names its command buffer and its encoder
+  (`CaptureCommand.encoder`), and a pass counter per command buffer matches the capture's, which is
+  what the read-backs are keyed by. A parallel encoder's sub-encoder has no recorded `endEncoding` —
+  its end is not the pass's (`E_endEncoding` in `src/metal/src/hooks_encoders.mm`) — so it is closed
+  when the stream moves back to its parent.
+- **Store actions.** A target the pass would discard is stored instead, by the same rule the capture
+  applied when it took the frame (`ForceStore`), so the two read the same targets: one the capture
+  declined to force is one it also declined to read.
+- **Read-back.** Every target the capture read at the end of a pass is read here at the same point,
+  through a blit into a staging buffer, and compared byte for byte. A multisampled attachment is
+  read through its resolve, which is what the capture read.
+
+Checked on an Apple M1 Max, replayed and then exported, built and run:
+
+| Capture | The replay, and the exported program |
+|---|---|
+| test/metal_triangle (compute pass, multisampled pass through a parallel encoder resolving into a texture the next pass samples, function constants, a sampler, inline bytes) | both targets identical |
+| `--occluded` (a depth attachment the pass discards, two draws) | all three targets identical, depth included |
+| `--present-direct` (the drawable presented by the application rather than the command buffer) | both targets identical |
+
+Limits:
+- Acceleration structures and ray tracing, indirect command buffers, argument encoders and mesh
+  shader draws are not replayed: each such object or command is reported, and in the export is a
+  comment where it would be.
+- Tile shading (`setImageblockWidth:height:`, `dispatchThreadsPerTile:`) is recorded by the capture
+  but is not on `MTLRenderCommandEncoder` in the macOS SDK, so it is left out.
+- Events and fences within the frame are replayed; the replay commits each command buffer and waits
+  for it before the next, so cross-frame synchronization does not arise.
+- What the frame reads with no command naming it is not in the capture — a buffer reached through a
+  `gpuAddress` held in another buffer, or through an argument buffer.
+
+Worth keeping: the first frame with a depth attachment differed in every texel of its **colour**
+target, and the fault was the capture's. A depth attachment is announced under attachment index 0,
+the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect — so the depth
+read-back matched the colour entry and landed on top of it. The Vulkan layer had always sent the
+aspect for exactly this reason; the Metal one now does too (`SendTextures` in
+`src/metal/src/capture.mm`). Nothing in the UI had shown it, because a depth image and a colour
+image of the same pass both render as an image.
 
 ## Where it stands
 

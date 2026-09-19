@@ -348,7 +348,7 @@ export class CapturePanel {
     c.push(this._bufferSizeInput);
     this._saveButton = new Button(row, { html: ICON_SAVE, class: "btn btn-icon", tooltip: "Save the capture in the active tab to a file (.gpucap)", disabled: true, callback: () => void this.saveActive() });
     this._exportCppButton = new Button(row, { html: ICON_EXPORT_CPP, class: "btn btn-icon", disabled: true,
-      tooltip: "Export to C++: write the capture in the active tab as a standalone C++ project that re-creates its objects and runs its frame again, for reproducing a problem outside the application (a driver bug report). Vulkan captures; the frame is replayed on this machine's GPU to write it.",
+      tooltip: "Export to C++: write the capture in the active tab as a standalone C++ project that re-creates its objects and runs its frame again, for reproducing a problem outside the application (a driver bug report). Vulkan, Direct3D 12 and Metal captures; the frame is replayed on this machine's GPU to write it.",
       callback: () => void this.exportCppActive() });
     // A timing capture is a different question from a frame capture — minutes of frame times
     // rather than every call of one frame — so it is its own control and its own report.
@@ -860,7 +860,7 @@ export class CapturePanel {
       return null;
     }
     if (!exportsToCpp(view.data.api)) {
-      this._statusLabel.text = "Export to C++ replays the capture to write it, and Metal captures do not replay";
+      this._statusLabel.text = `Export to C++ replays the capture to write it, and there is no replay for a ${view.data.api ?? "capture"} capture`;
       return null;
     }
     const chosen = parent ?? await window.inspector.chooseFile({ title: "Export to C++: choose where the project's folder goes", directory: true });

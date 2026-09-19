@@ -133,19 +133,23 @@ test("a renderer's capture is sent once under its key, and removed when released
 });
 
 test("Export to C++ asks the tool of the capture's API, and says what is missing", () => {
-  // No checkout and no package here: each API names its own tool, and Metal has none to name.
+  // No checkout and no package here: each API names its own tool, and says so when it is absent.
   const none = (api) => findExportTool(api, [join(tmpdir(), "no-such-checkout")], []);
-  const saved = [process.env.INSPECTOR_REPLAY, process.env.INSPECTOR_D3D12_REPLAY];
+  const saved = [process.env.INSPECTOR_REPLAY, process.env.INSPECTOR_D3D12_REPLAY, process.env.INSPECTOR_METAL_REPLAY];
   delete process.env.INSPECTOR_REPLAY;
   delete process.env.INSPECTOR_D3D12_REPLAY;
+  delete process.env.INSPECTOR_METAL_REPLAY;
   try {
     assert.equal(none("vulkan").tool, null);
     assert.match(none("vulkan").missing, /vkinsp_replay/);
     assert.equal(none("d3d12").tool, null);
     assert.match(none("d3d12").missing, process.platform === "win32" ? /dxinsp_replay/ : /Windows only/);
-    assert.match(none("metal").missing, /Metal captures do not replay/);
+    assert.equal(none("metal").tool, null);
+    assert.match(none("metal").missing, process.platform === "darwin" ? /mtlinsp_replay/ : /macOS only/);
+    assert.match(none("webgpu").missing, /no replay for a webgpu capture/);
   } finally {
     if (saved[0] !== undefined) process.env.INSPECTOR_REPLAY = saved[0];
     if (saved[1] !== undefined) process.env.INSPECTOR_D3D12_REPLAY = saved[1];
+    if (saved[2] !== undefined) process.env.INSPECTOR_METAL_REPLAY = saved[2];
   }
 });

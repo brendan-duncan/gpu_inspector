@@ -11621,10 +11621,22 @@ function findD3D12ReplayTool(roots, layerDirs) {
   return candidates.find((f) => fs5.existsSync(f)) ?? null;
 }
 var NO_D3D12_REPLAY_TOOL = process.platform === "win32" ? `${D3D12_REPLAY_TOOL} not found. Build it (cmake --build build --target dxinsp_replay), or set INSPECTOR_D3D12_REPLAY to its path.` : "a Direct3D 12 capture replays on Windows only.";
+var METAL_REPLAY_TOOL = "mtlinsp_replay";
+function findMetalReplayTool(roots, layerDirs) {
+  if (process.platform !== "darwin") return null;
+  const candidates = [
+    process.env.INSPECTOR_METAL_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path4.join(dir, METAL_REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+}
+var NO_METAL_REPLAY_TOOL = process.platform === "darwin" ? `${METAL_REPLAY_TOOL} not found. Build it (cmake --build build --target mtlinsp_replay), or set INSPECTOR_METAL_REPLAY to its path.` : "a Metal capture replays on macOS only.";
 function findExportTool(api, roots, layerDirs) {
   if (api === "d3d12") return { tool: findD3D12ReplayTool(roots, layerDirs), missing: NO_D3D12_REPLAY_TOOL };
+  if (api === "metal") return { tool: findMetalReplayTool(roots, layerDirs), missing: NO_METAL_REPLAY_TOOL };
   if (api === "vulkan") return { tool: findReplayTool(roots, layerDirs), missing: NO_REPLAY_TOOL };
-  return { tool: null, missing: "Metal captures do not replay, and Export to C++ writes what the replay does." };
+  return { tool: null, missing: `Export to C++ writes what a replay does, and there is no replay for a ${api ?? "capture"} capture.` };
 }
 function needsOwnProcess(analysis) {
   return analysis.kind === "export";
@@ -30067,7 +30079,7 @@ function parseExportSummary(data) {
   };
 }
 function exportsToCpp(api) {
-  return api === "vulkan" || api === "d3d12";
+  return api === "vulkan" || api === "d3d12" || api === "metal";
 }
 function exportFolderName(label) {
   const stem = label.replace(/\.gpucap$/i, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
@@ -30675,7 +30687,7 @@ function captureTools(store) {
     },
     {
       name: "export_cpp",
-      description: "Export to C++: writes a Vulkan or Direct3D 12 capture's frame as a standalone, compilable C++ project \u2014 every object with the description it was made from, what the frame's textures and buffers held, every command of its command buffers or lists, and a program that runs the frame and compares each render target with the capture's copy. For reproducing a problem outside the application, as in a driver bug report. The capture is replayed on this machine's GPU to write it (vkinsp_replay, or dxinsp_replay for D3D12, on Windows; a second or so), so the source is what the replay did: see the project's README.md for how that differs from the application, and for anything left out. Builds with CMake and a C++20 compiler alone: a Vulkan project carries its Vulkan headers, a D3D12 one needs the Windows SDK. Not Metal.",
+      description: "Export to C++: writes a Vulkan, Direct3D 12 or Metal capture's frame as a standalone, compilable C++ project \u2014 every object with the description it was made from, what the frame's textures and buffers held, every command of its command buffers or lists, and a program that runs the frame and compares each render target with the capture's copy. For reproducing a problem outside the application, as in a driver bug report. The capture is replayed on this machine's GPU to write it (vkinsp_replay, dxinsp_replay for D3D12 on Windows, or mtlinsp_replay for Metal on macOS; a second or so), so the source is what the replay did: see the project's README.md for how that differs from the application, and for anything left out. Builds with CMake and a C++20 compiler alone: a Vulkan project carries its Vulkan headers, a D3D12 one needs the Windows SDK, and a Metal one is Objective-C++ against the Metal framework.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         directory: { type: "string", description: "Where the project's folder goes (it is created, named after the capture). Default: beside the capture file." }
@@ -30683,7 +30695,7 @@ function captureTools(store) {
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         if (!exportsToCpp(c2.data.api)) {
-          return jsonResult({ capture: c2.id, note: "Export to C++ replays the capture to write it, and Metal captures do not replay." });
+          return jsonResult({ capture: c2.id, note: `Export to C++ replays the capture to write it, and there is no replay for a ${c2.data.api ?? "capture"} capture.` });
         }
         const { tool, missing } = findExportTool(c2.data.api, checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `Export to C++ needs the capture replayed, and ${missing}` });
@@ -30725,7 +30737,7 @@ function captureTools(store) {
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, note: `Hardware counters are read by replaying the capture, and ${c2.data.api === "metal" ? "Metal captures do not replay; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
+          return jsonResult({ capture: c2.id, note: `Hardware counters are read by replaying the capture, and ${c2.data.api === "metal" ? "the Metal replay serves no analyses; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `Hardware counters need the capture replayed, and ${NO_REPLAY_TOOL}` });

@@ -59,6 +59,6 @@ test("a capture's project folder is named after the capture, safely", () => {
   assert.equal(exportFolderName("///"), "frame_cpp");
 });
 
-test("the captures with a replay export: Vulkan and Direct3D 12, not Metal", () => {
-  assert.deepEqual(["vulkan", "d3d12", "metal", undefined].map(exportsToCpp), [true, true, false, false]);
+test("the captures with a replay export: Vulkan, Direct3D 12 and Metal", () => {
+  assert.deepEqual(["vulkan", "d3d12", "metal", "webgpu", undefined].map(exportsToCpp), [true, true, true, false, false]);
 });

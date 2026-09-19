@@ -72,7 +72,7 @@ about a capture takes a moment while its replay starts; the replay is kept for t
   Nsight Perf SDK or `VK_KHR_performance_query`, and GPU counter access enabled; `list: true` names
   what the GPU offers
 
-- `export_cpp` — a Vulkan or Direct3D 12 frame written as a standalone C++ project that re-creates
+- `export_cpp` — a Vulkan, Direct3D 12 or Metal frame written as a standalone C++ project that re-creates
   its objects and runs it again, for a driver bug report ([Export to C++](REPLAY.md#export-to-c))
 
 They need `vkinsp_replay`: GPU Inspector's Windows and Linux installers put it beside the layer, and a checkout

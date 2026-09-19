@@ -47,11 +47,30 @@ export const NO_D3D12_REPLAY_TOOL = process.platform === "win32"
   ? `${D3D12_REPLAY_TOOL} not found. Build it (cmake --build build --target dxinsp_replay), or set INSPECTOR_D3D12_REPLAY to its path.`
   : "a Direct3D 12 capture replays on Windows only.";
 
+/** The Metal replay tool (src/metal/replay/): it replays a capture to compare it and to export it, and serves no analyses. */
+export const METAL_REPLAY_TOOL = "mtlinsp_replay";
+
+/** mtlinsp_replay: INSPECTOR_METAL_REPLAY, a checkout's build tree, or beside the layer of a packaged GPU Inspector. macOS only. */
+export function findMetalReplayTool(roots: string[], layerDirs: string[]): string | null {
+  if (process.platform !== "darwin") return null;
+  const candidates = [
+    process.env.INSPECTOR_METAL_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path.join(dir, METAL_REPLAY_TOOL)),
+  ].filter((f): f is string => !!f);
+  return candidates.find((f) => fs.existsSync(f)) ?? null;
+}
+
+export const NO_METAL_REPLAY_TOOL = process.platform === "darwin"
+  ? `${METAL_REPLAY_TOOL} not found. Build it (cmake --build build --target mtlinsp_replay), or set INSPECTOR_METAL_REPLAY to its path.`
+  : "a Metal capture replays on macOS only.";
+
 /** The tool that replays a capture of `api` for Export to C++, or why there is none. */
 export function findExportTool(api: string | undefined, roots: string[], layerDirs: string[]): { tool: string | null; missing: string } {
   if (api === "d3d12") return { tool: findD3D12ReplayTool(roots, layerDirs), missing: NO_D3D12_REPLAY_TOOL };
+  if (api === "metal") return { tool: findMetalReplayTool(roots, layerDirs), missing: NO_METAL_REPLAY_TOOL };
   if (api === "vulkan") return { tool: findReplayTool(roots, layerDirs), missing: NO_REPLAY_TOOL };
-  return { tool: null, missing: "Metal captures do not replay, and Export to C++ writes what the replay does." };
+  return { tool: null, missing: `Export to C++ writes what a replay does, and there is no replay for a ${api ?? "capture"} capture.` };
 }
 
 /** What a replay wrote for the analysis it was asked for. */

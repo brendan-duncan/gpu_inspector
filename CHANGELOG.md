@@ -1,3 +1,12 @@
+## Unreleased
+
+### Added
+- **Metal replay and Export to C++** (`mtlinsp_replay`, `src/metal/replay/`, docs/REPLAY.md "Metal"): a Metal capture is re-executed on this machine's GPU, every render target it read back is compared byte for byte, and the frame is written out as a standalone CMake project of Objective-C++ that runs it again — the third backend to have both, after Vulkan and Direct3D 12. The capture bar's **Export to C++** and the MCP server's `export_cpp` now take Metal captures.
+
+### Fixed
+- A Metal capture's colour attachment holds its own contents, not the depth attachment's: a depth attachment is announced under attachment index 0, the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect to tell the two apart, so the depth read-back landed on the colour entry. Found by the new replay, which read back a colour target full of floats.
+- A Metal library built ahead of time (`newLibraryWithURL:`, `newLibraryWithFile:`, `newDefaultLibrary`, `newDefaultLibraryWithBundle:` — what a shipped player uses) carries its metallib bytes in the capture, so it can be re-created without the file it was loaded from.
+
 ## v0.17.0
 
 ### Added

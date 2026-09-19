@@ -115,7 +115,7 @@ Captures are what to attach to a bug report, and what Claude reads.
 
 ### Export to C++
 
-The button beside save, **Export to C++**, writes a Vulkan or Direct3D 12 capture as a standalone
+The button beside save, **Export to C++**, writes a Vulkan, Direct3D 12 or Metal capture as a standalone
 C++ project instead: a CMake project that re-creates the frame's objects, uploads what its images and buffers
 held, records and submits its command buffers, and compares every render target with the capture's
 copy. It is what to send a GPU vendor with a driver bug, who wants something to build and run

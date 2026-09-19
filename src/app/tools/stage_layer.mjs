@@ -34,6 +34,16 @@ if (process.platform === "darwin") {
   }
   fs.copyFileSync(metalSrc, path.join(dst, metalLib));
   console.log(`staged Metal capture library from ${metalSrc} -> ${dst}`);
+  // The Metal replay tool beside it, as optional as the other two backends': without it a Metal
+  // capture has no Export to C++ (findMetalReplayTool in src/main/replay.ts).
+  const metalReplay = path.join(path.dirname(metalSrc), "mtlinsp_replay");
+  if (fs.existsSync(metalReplay)) {
+    fs.copyFileSync(metalReplay, path.join(dst, "mtlinsp_replay"));
+    fs.chmodSync(path.join(dst, "mtlinsp_replay"), 0o755);
+    console.log(`staged mtlinsp_replay from ${metalReplay}`);
+  } else {
+    console.log(`no mtlinsp_replay in ${path.dirname(metalSrc)}: the package will not export Metal captures to C++`);
+  }
 } else {
   const candidates = process.env.INSPECTOR_LAYER_DIR
     ? [process.env.INSPECTOR_LAYER_DIR]

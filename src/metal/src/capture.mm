@@ -612,6 +612,11 @@ void SendTextures(std::vector<PendingTexture> &textures) {
             h.Key("commandBuffer"); h.Uint(t.commandBufferId);
             h.Key("passIndex"); h.Uint(t.passIndex);
             h.Key("attachment"); h.Uint(t.attachment);
+            // A depth attachment is announced under attachment index 0, the same as colour
+            // attachment 0, so the aspect is what tells the two entries of one pass apart. Without
+            // it the depth read-back matches the colour entry and lands on top of it — which is
+            // what the Vulkan layer sends it for too (src/vulkan/src/capture.cpp).
+            h.Key("aspect"); h.String(t.aspect);
             // A sampled texture is matched by its own id: several may share one pass, where an
             // attachment is told apart by its index.
             if (t.captureId != 0) { h.Key("capture"); h.Uint(t.captureId); }

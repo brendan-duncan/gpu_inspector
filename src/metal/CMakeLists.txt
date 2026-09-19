@@ -78,3 +78,78 @@ target_link_libraries(${CAPTURE_LIB} PRIVATE
 
 set_target_properties(${CAPTURE_LIB} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ------------------------------------------------------------------------------------------------
+# mtlinsp_replay: re-executes a Metal capture on this machine's GPU and writes it out as a C++
+# project (replay/, docs/REPLAY.md "Metal"). The capture file, its JSON and the arena are the Vulkan
+# replay's (src/replay/src), which have no graphics API in them; the pixel format tables are the
+# capture library's. The exported project's hand-written files live in replay/export_template as
+# real sources, embedded into the tool as strings.
+set(MTLINSP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(MTL_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/gen")
+
+# The generated enum tables come from the Metal SDK headers (tools/gen_metal_enums.py) and are
+# committed, so a build needs neither Python nor a particular SDK to compile them; they are
+# regenerated when the generator changes.
+find_package(Python3 COMPONENTS Interpreter)
+set(MTL_ENUMS "${MTL_GEN_DIR}/metal_enums.gen.h" "${MTL_GEN_DIR}/metal_enums.gen.cpp")
+if(Python3_Interpreter_FOUND)
+    add_custom_command(
+        OUTPUT ${MTL_ENUMS}
+        COMMAND ${Python3_EXECUTABLE} "${MTLINSP_ROOT}/tools/gen_metal_enums.py" --out "${MTL_GEN_DIR}"
+        DEPENDS "${MTLINSP_ROOT}/tools/gen_metal_enums.py"
+        COMMENT "Generating Metal enum tables from the Metal SDK"
+        VERBATIM)
+endif()
+
+if(VKINSP_BUILD_REPLAY AND Python3_Interpreter_FOUND)
+    set(MTLREPLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/replay")
+    set(VKREPLAY_SRC "${MTLINSP_ROOT}/src/replay/src")
+    set(MTLREPLAY_TEMPLATES
+        "${MTLREPLAY_DIR}/export_template/main.mm"
+        "${MTLREPLAY_DIR}/export_template/mtl_support.h"
+        "${MTLREPLAY_DIR}/export_template/mtl_support.mm")
+    set(MTLREPLAY_TEMPLATES_CPP "${CMAKE_CURRENT_BINARY_DIR}/mtl_export_templates.gen.cpp")
+    add_custom_command(
+        OUTPUT "${MTLREPLAY_TEMPLATES_CPP}"
+        COMMAND ${Python3_EXECUTABLE} "${MTLINSP_ROOT}/tools/embed_files.py" --out "${MTLREPLAY_TEMPLATES_CPP}"
+                --symbol kMtlExportTemplates --namespace mtlreplay ${MTLREPLAY_TEMPLATES}
+        DEPENDS "${MTLINSP_ROOT}/tools/embed_files.py" ${MTLREPLAY_TEMPLATES}
+        COMMENT "Embedding the exported Metal project's support files"
+        VERBATIM)
+
+    add_executable(mtlinsp_replay
+        replay/src/main.mm
+        replay/src/mtl_reflect.h
+        replay/src/mtl_decode.h
+        replay/src/mtl_decode.mm
+        replay/src/mtl_source.h
+        replay/src/mtl_source.mm
+        replay/src/mtl_replayer.h
+        replay/src/mtl_replayer.mm
+        replay/src/mtl_commands.mm
+        replay/src/mtl_exporter.h
+        replay/src/mtl_exporter.mm
+        src/formats.mm
+        "${VKREPLAY_SRC}/json.cpp"
+        "${VKREPLAY_SRC}/gpucap.cpp"
+        "${VKREPLAY_SRC}/decode.cpp"
+        "${MTL_GEN_DIR}/metal_enums.gen.cpp"
+        "${MTLREPLAY_TEMPLATES_CPP}")
+    set_target_properties(mtlinsp_replay PROPERTIES
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    target_include_directories(mtlinsp_replay PRIVATE
+        "${MTLREPLAY_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${MTL_GEN_DIR}"
+        "${VKREPLAY_SRC}"
+        "${MTLINSP_ROOT}/src/vulkan/src")
+    # ARC, unlike the capture library: nothing here is hooked or forwarded, so letting the compiler
+    # own the objects is simply safer, and the replay holds every object for its whole run.
+    target_compile_options(mtlinsp_replay PRIVATE -fobjc-arc -Wall -Wno-unused-parameter)
+    target_link_libraries(mtlinsp_replay PRIVATE
+        "-framework Foundation"
+        "-framework Metal")
+endif()
