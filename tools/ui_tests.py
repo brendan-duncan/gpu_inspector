@@ -601,6 +601,62 @@ def metal_memory(state, log):
         expect((s.get("memorySamples") or 0) > 0, "no memory samples arrived, so the series under the rows is empty")
 
 
+def metal_pixel_history(state, log):
+    # The pixel history of the centre of the first colour target, which in this sample is the
+    # multisampled one — the pass the library used to decline ("a multisampled pass is not
+    # followed yet"). Two captures: the first names the pixel, the second follows it through the
+    # application's next frame, which is what --debug-view=pixel-history asks for on a backend
+    # that measures while capturing.
+    caps = session(state).get("captures") or []
+    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
+              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    touched = h.get("touched") or []
+    notes = h.get("notes") or []
+    return check_connected(state, log) + \
+        expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(not any("multisampled" in n for n in notes), f"the multisampled pass was declined: {notes}") + \
+        expect(bool(touched), f"the pixel history lists no events: {h}") + \
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}") + \
+        expect(any("wrote the pixel" in e for e in touched), f"no draw wrote the pixel: {touched}")
+
+
+def unity_overdraw(state, log):
+    c = capture(state)
+    t = c.get("textureTab") or {}
+    # A real frame's passes, measured while capturing. Unlike the sample this has passes that draw
+    # nothing into the target being viewed, which is what the report opening on the worst pass
+    # rather than the first measured one is for.
+    return check_connected(state, log) + \
+        expect((c.get("draws") or 0) >= 2, f"{c.get('draws')} draws: this is not a frame of the game") + \
+        expect((c.get("overdraw") or 0) >= 2, f"{c.get('overdraw')} overdraw measurements") + \
+        expect((c.get("overdrawCounts") or 0) == (c.get("overdraw") or 0), "not every measurement carries counts") + \
+        expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw: {t}")
+
+
+def unity_pixel_history(state, log):
+    caps = session(state).get("captures") or []
+    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
+              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    notes = h.get("notes") or []
+    return check_connected(state, log) + \
+        expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect((h.get("events") or 0) > 0, f"the pixel history of a real frame is empty: {h}") + \
+        expect(not any("not followed yet" in n for n in notes), f"a pass of a real frame was declined: {notes}")
+
+
+def unity_cases(player):
+    """Opt-in (--unity <path>): a real application's frame, which has passes the sample has not."""
+    launch = [f"--launch={player}", "--debug-capture", "--debug-capture-delay=20000"]
+    return [
+        Case("unity-overdraw", launch + ["--debug-capture-with=overdraw", "--debug-view=overdraw"],
+             unity_overdraw, delay_ms=42000),
+        Case("unity-pixel-history", launch + ["--debug-view=pixel-history", "--debug-settle=12000"],
+             unity_pixel_history, delay_ms=52000),
+    ]
+
+
 def metal_cases(triangle):
     launch = [f"--launch={triangle}"]
     return [
@@ -625,6 +681,10 @@ def metal_cases(triangle):
         # application's timeline. Overdraw is what makes it compile.
         Case("metal-self-compile", launch + ["--debug-capture", "--debug-capture-with=overdraw", "--debug-view=stats"],
              metal_no_self_compile, delay_ms=20000),
+        # One pixel of the multisampled target followed through the frame, which needs a second
+        # capture: the library follows a pixel while it captures, so the first only names one.
+        Case("metal-pixel-history", launch + ["--debug-capture", "--debug-view=pixel-history", "--debug-settle=10000"],
+             metal_pixel_history, delay_ms=26000),
         # Memory Use on the MTLDevice. No --debug-capture: the checks read the live object graph,
         # and taking a capture would leave the Capture tab in front so the screenshot would not
         # show the rows this case is about.
@@ -873,6 +933,7 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     ap.add_argument("--no-triangle", action="store_true", help="skip the live triangle cases")
     ap.add_argument("--no-metal", action="store_true", help="skip the live Metal cases (macOS)")
+    ap.add_argument("--unity", help="a Unity player (.app) to run the Metal cases against a real frame too")
     ap.add_argument("--no-d3d12", action="store_true", help="skip the live Direct3D 12 cases (Windows)")
     args = ap.parse_args()
     if not electron():
@@ -891,6 +952,12 @@ def main():
             cases += metal_cases(metal_triangle)
         elif sys.platform == "darwin":
             print("  (mtlinsp_triangle not built: skipping the Metal cases)")
+    if args.unity:
+        # Independent of --no-metal: a Unity player is a different target, not another sample case.
+        if not os.path.exists(args.unity):
+            print(f"--unity: {args.unity} does not exist", file=sys.stderr)
+            return 2
+        cases += unity_cases(args.unity)
     if not args.no_d3d12:
         d3d12_triangle = find_d3d12_triangle()
         if d3d12_triangle:

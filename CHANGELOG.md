@@ -16,6 +16,10 @@
 - `mtlinsp_triangle --compile-hitch` compiles a library and a pipeline inside every frame, and the sample reserves a heap and suballocates from it, so the Metal CPU timeline and memory breakdown have something to report.
 - The Metal CPU timeline and Memory Use are checked end to end on a Mac (`tools/ui_tests.py`, the `metal-cpu-timeline`, `metal-compile-hitch`, `metal-self-compile` and `metal-memory` cases), including that the capture library's own pipeline compiles stay out of the application's timeline.
 - A capture library says how long it took to send a frame, so a capture that seems to hang says whether the wait is in the application or in the app reading it.
+- Metal pixel history follows a multisampled pass, which it used to decline: the copies it draws into are made with the pass's sample count and resolved before the pixel is read, so the sample's own multisampled triangle pass reports the draw that wrote the pixel and how many of its samples passed.
+- Metal overdraw and pixel history are checked against a real Unity player, opt-in through `tools/ui_tests.py --unity <player.app>`.
+- `mtlinsp_triangle --occluded` draws the triangles twice, the second set behind the first in a pass with a depth attachment, so an overdraw measurement has fragments the depth test must reject.
+- `--debug-capture-delay=<ms>` takes the debug capture that long after the application connects, for a real application that is still on its loading screen 1.5 seconds in.
 
 ### Changed
 - The outermost debug label group in the command list is blue rather than red, which read as an error on every frame that has one.
@@ -34,6 +38,7 @@
 - The memory accounting asked the runtime to size a resource whose description uses tight alignment, which it refuses.
 - Metal's Memory Use reported every heap as entirely empty: it looked for the heap's live usage under the key the library groups those fields by, but an `ObjectUpdate` carries them flat beside the id, so what it read was the creation-time zero.
 - The Frame Bound card told the reader of a Metal or D3D12 capture that the CPU bar is time inside `vkQueueSubmit`, naming a function their application never calls.
+- The Overdraw report opened on the first measured pass, which in a real frame is a prepass that drew nothing into the target being viewed and whose heatmap is an empty image; it opens on the pass with the most overdraw now.
 
 ## v0.15.0
 

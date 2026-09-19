@@ -17,7 +17,7 @@ import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { renderTimingReport, timingButtonLabel } from "./timing_view.js";
 import type { FrameRange } from "./frame_timing.js";
-import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedTexture } from "./capture_data.js";
+import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
 import { fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
 import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, type LoadedCapture } from "./capture_format.js";
@@ -550,6 +550,21 @@ export class CapturePanel {
    * new capture's tab when it arrives. A pixel of a Metal drawable, or of a D3D12 swap chain's back
    * buffer, follows whichever one that frame renders into.
    */
+  /**
+   * Testing aid (--debug-view=pixel-history on Metal or D3D12): ask for the second capture the
+   * history needs. On those backends the library follows the pixel while it captures, so the first
+   * capture only names one — the history comes from capturing the next frame, which is what the
+   * "Capture Next Frame" button in the render target tab does. The pixel is the centre of the
+   * first colour target, the same one `showView("pixel-history")` opened the tab on.
+   */
+  debugCaptureHistory(): void {
+    const view = this.activeView;
+    if (!view || !measuresWhileCapturing(view.data.api) || view.data.pixelHistory) return;
+    const t = view.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
+    if (!t) return;
+    this._captureWithPixelHistory({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+  }
+
   private _captureWithPixelHistory(request: PixelRequest): void {
     const live = this.capture(undefined, undefined, undefined,
       { texture: request.image, x: request.x, y: request.y, mip: request.mip ?? 0, layer: request.layer ?? 0 });
@@ -2043,8 +2058,17 @@ export class CaptureView implements CaptureHost {
       }
       if (!(await this.measureOverdraw())) return;
     }
-    const first = (this.data.overdraw.find((o) => o.info.measured !== false) ?? this.data.overdraw[0])?.info;
-    if (first) this.openPassOverdraw({ frame: first.frame, commandBuffer: first.commandBuffer, passIndex: first.passIndex }, true);
+    // The pass with the most overdraw to show, rather than the first measured one: a real frame
+    // opens with a depth prepass or a shadow pass that drew nothing into the target being viewed,
+    // whose heatmap is an empty image, and the report is meant to open on the problem.
+    const measured = this.data.overdraw.filter((o) => o.info.measured !== false && o.info.coveredPixels);
+    const best = measured.reduce<CapturedOverdraw | null>((worst, o) => {
+      const perPixel = o.info.fragments / o.info.coveredPixels;
+      const worstPerPixel = worst ? worst.info.fragments / worst.info.coveredPixels : -1;
+      return perPixel > worstPerPixel ? o : worst;
+    }, null);
+    const open = (best ?? this.data.overdraw.find((o) => o.info.measured !== false) ?? this.data.overdraw[0])?.info;
+    if (open) this.openPassOverdraw({ frame: open.frame, commandBuffer: open.commandBuffer, passIndex: open.passIndex }, true);
     else this._setStatus("the replay measured no pass");
   }
 

@@ -1208,6 +1208,8 @@ the commands carrying stacks or validation messages, the CPU timeline's categori
 Timeline card's lanes: `debugState()` on the session and capture views, read through
 `window.__inspectorDebugState`); `--debug-capture-with=overdraw,stacks` turns on the capture
 options that are off by default, as `--debug-capture-without=<list>` turns the default ones off;
+`--debug-capture-delay=<ms>` waits that long after the application connects before capturing,
+which a real application needs to be past its loading screen;
 `--debug-mouse=x,y[;x,y...]` clicks points on the window before
 the dump, and `--debug-settle=<ms>` waits after them for work a click set going (a pixel history's
 replay). `tools/ui_tests.py` builds its cases on these flags: the triangle application's options

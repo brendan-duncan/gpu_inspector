@@ -934,6 +934,13 @@ export interface AppConfig {
     /** --debug-capture-stacks: the debug capture records command stack traces. */
     captureStacks: boolean;
     /**
+     * --debug-capture-delay=<ms>: how long after the application connects the debug capture is
+     * taken, 1500 by default. A real application is still on its loading screen then — a Unity
+     * player spends its first seconds on the splash — so capturing a frame of the actual
+     * application means waiting for it.
+     */
+    captureDelayMs: number | null;
+    /**
      * --debug-capture-without=<list>: what the debug capture leaves out, of "textures", "buffers",
      * "images" and "profile" (comma separated), for measuring what each read-back costs on a frame
      * that is slow to capture.

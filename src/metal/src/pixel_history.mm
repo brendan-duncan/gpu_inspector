@@ -55,8 +55,16 @@ struct HistoryPass {
     std::string note;
     struct Attachment {
         id<MTLTexture> shadow = nil;   // retained
+        /**
+         * Single-sample copy of `shadow`, for a multisampled attachment the pixel is read from:
+         * nothing can be blitted out of a multisampled texture, so the samples are resolved into
+         * this first. Only the attachments read back have one. Retained.
+         */
+        id<MTLTexture> resolve = nil;
         MTLPixelFormat format = MTLPixelFormatInvalid;
         MTLLoadAction loadAction = MTLLoadActionDontCare;
+        /** 1 unless the pass is multisampled, when the shadow has to match its sample count. */
+        uint32_t sampleCount = 1;
         /** The shadow holds the attachment's pixel from before the pass (it loads). */
         bool loads = false;
         MTLClearColor clearColor = MTLClearColorMake(0, 0, 0, 0);
@@ -69,9 +77,11 @@ struct HistoryPass {
     bool combined = false;
 
     ~HistoryPass() {
-        for (Attachment &a : colors) [a.shadow release];
+        for (Attachment &a : colors) { [a.shadow release]; [a.resolve release]; }
         [depth.shadow release];
+        [depth.resolve release];
         [stencil.shadow release];
+        [stencil.resolve release];
     }
 };
 
@@ -293,10 +303,6 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
         h->note = "the pixel is outside the pass's render target";
         return;
     }
-    if (pass.multisampled) {
-        h->note = "a multisampled pass is not followed yet";
-        return;
-    }
     if (pass.layered) {
         h->note = "a layered pass is not followed yet";
         return;
@@ -317,11 +323,14 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
         }
         out.format = a.texture.pixelFormat;
         out.loadAction = a.loadAction;
-        out.shadow = NewRenderTexture(device, out.format, width, height);
+        out.sampleCount = (uint32_t)std::max<NSUInteger>(1, a.texture.sampleCount);
+        out.shadow = NewRenderTexture(device, out.format, width, height, out.sampleCount);
         if (out.shadow == nil) {
             h->note = "no memory for copies of the pass's attachments";
             return false;
         }
+        // A multisampled shadow cannot be blitted out of, so the attachments whose pixel is read
+        // back get a single-sample texture to resolve into (FollowPixel's readback).
         out.loads = a.loadAction == MTLLoadActionLoad && a.texture.storageMode != MTLStorageModeMemoryless;
         if (out.loads) {
             if (blit == nil) {
@@ -365,6 +374,15 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
             shadow(s, h->stencil);
         }
     }
+    // The two attachments the pixel is read from need somewhere to resolve into when the pass is
+    // multisampled. The others do not: nothing is ever copied out of them.
+    auto resolveTarget = [&](HistoryPass::Attachment &out) {
+        if (out.shadow == nil || out.sampleCount <= 1 || !h->note.empty()) return;
+        out.resolve = NewRenderTexture(device, out.format, h->width, h->height);
+        if (out.resolve == nil) h->note = "no memory for the resolve of the pass's multisampled attachments";
+    };
+    resolveTarget(h->colors[h->target]);
+    resolveTarget(h->depth);
     [blit endEncoding];
 }
 
@@ -450,19 +468,49 @@ void FollowPixel(OverdrawPass &pass) {
         if (visibility != nil) rp.visibilityResultBuffer = visibility;
         return rp;
     };
+    // Nothing can be copied out of a multisampled texture, so a multisampled shadow is resolved
+    // into the single-sample copy beside it first: a render pass that draws nothing, keeping the
+    // samples (the next event draws into them again) and resolving them as it stores. The colour
+    // is resolved the way the hardware would have; the depth is sample 0, since averaging depths
+    // would invent a value no fragment wrote.
+    auto resolveShadows = [&]() {
+        const bool colorMs = target.resolve != nil;
+        const bool depthMs = h.depth.resolve != nil && out.depthBytes;
+        if (!colorMs && !depthMs) return;
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (colorMs) {
+            rp.colorAttachments[0].texture = target.shadow;
+            rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            rp.colorAttachments[0].resolveTexture = target.resolve;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        }
+        if (depthMs) {
+            rp.depthAttachment.texture = h.depth.shadow;
+            rp.depthAttachment.loadAction = MTLLoadActionLoad;
+            rp.depthAttachment.resolveTexture = h.depth.resolve;
+            rp.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+            rp.depthAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        }
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:rp];
+        encoder.label = @"gpu-inspector pixel history resolve";
+        [encoder endEncoding];
+    };
     // The pixel, and the depth under it, into the staging buffer after an encoder has ended.
     auto readback = [&](int64_t slot) {
         if (slotBytes == 0) return;
+        resolveShadows();
+        id<MTLTexture> colorFrom = target.resolve != nil ? target.resolve : target.shadow;
+        id<MTLTexture> depthFrom = h.depth.resolve != nil ? h.depth.resolve : h.depth.shadow;
         id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
         blit.label = @"gpu-inspector pixel history readback";
         const NSUInteger offset = (NSUInteger)slot * slotBytes;
         if (out.colorBytes) {
-            [blit copyFromTexture:target.shadow sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
+            [blit copyFromTexture:colorFrom sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
                        sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out.staging destinationOffset:offset
            destinationBytesPerRow:out.colorBytes destinationBytesPerImage:out.colorBytes];
         }
         if (out.depthBytes) {
-            [blit copyFromTexture:h.depth.shadow sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
+            [blit copyFromTexture:depthFrom sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
                        sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out.staging destinationOffset:offset + out.colorBytes
            destinationBytesPerRow:out.depthBytes destinationBytesPerImage:out.depthBytes options:depthOption];
         }

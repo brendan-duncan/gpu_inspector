@@ -534,6 +534,8 @@ export class InspectorWindow extends Window {
   }
 
   private _debugCapture(panel: SessionPanel): void {
+    // --debug-capture-delay=<ms>: a real application is still loading 1.5 s after it connects, so
+    // a case that wants a frame of the application itself rather than of its splash says when.
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
@@ -551,6 +553,9 @@ export class InspectorWindow extends Window {
       // --debug-view=<name>: open one of the capture's reports, so a screenshot shows it.
       const view = this._debug?.showView;
       if (view) setTimeout(() => panel.capturePanel.activeView?.showView(view), 3500);
+      // A Metal or D3D12 pixel history needs a second capture, which the tab offers as a button
+      // rather than taking by itself: a capture of the application's next frame costs it a frame.
+      if (view === "pixel-history") setTimeout(() => panel.capturePanel.debugCaptureHistory(), 5000);
       // --debug-save=<file>: save the capture once its data has had time to arrive.
       const save = this._debug?.saveCapture;
       if (save) {
@@ -558,7 +563,7 @@ export class InspectorWindow extends Window {
           void panel.capturePanel.saveActive(save).then((p) => console.log(p ? `capture saved: ${p}` : "capture save failed"));
         }, 4000);
       }
-    }, 1500);
+    }, this._debug?.captureDelayMs ?? 1500);
   }
 }
 

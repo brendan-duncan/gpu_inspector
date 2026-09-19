@@ -70,8 +70,13 @@ struct OverdrawPass {
     }
 };
 
-/** A private render target texture of one level; +1, the caller releases it. */
-id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height);
+/**
+ * A private render target texture of one level; +1, the caller releases it. `sampleCount` above 1
+ * makes it multisampled, which a copy of a multisampled pass's attachment has to be: the pipelines
+ * drawn into it are the application's, and a pipeline's sample count has to match its attachment.
+ */
+id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height,
+                                uint32_t sampleCount = 1);
 
 /** A function of Metal Shading Language compiled once per device; nil when it does not compile. Not retained for the caller. */
 id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char *name, NSString *source);

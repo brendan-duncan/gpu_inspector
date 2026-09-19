@@ -823,21 +823,74 @@ backend does. Ordered by value per effort.
       without its depth and stencil tests. Heatmaps in the pass's details, the measured figure in
       the pass header and GPU Bottlenecks, kept in capture files, `get_overdraw` in the MCP server.
 - [x] Run Metal overdraw on a Mac: the heatmaps show in the pass details (2026-09-11).
-- [ ] Metal overdraw on a Unity player, and against the pass's `fragmentsPassed` counter.
+- [x] Metal overdraw on a Unity player (2026-09-18): a frame of `fps_microgame` measures, every
+      measurement carries its counts, and the figures are sane — one pass 2,116,655 fragments over
+      518,400 pixels, max 7. `tools/ui_tests.py --unity <player.app>` keeps it (`unity-overdraw`).
+      Running it found the report opening on the *first* measured pass, which in a real frame is a
+      prepass that drew nothing into the target being viewed and whose heatmap is an empty image;
+      it opens on the pass with the most overdraw now. The depth-tested and untested counts come
+      out equal on that frame, which is correct and not the bug it looks like:
+      `mtlinsp_triangle --occluded` draws the triangles twice, the second set behind the first, and
+      there they are 183,366 against 707,881, max 1 against 6.
+- [ ] Metal overdraw against the pass's `fragmentsPassed` counter. **Needs an Intel Mac or an AMD
+      eGPU**: the statistic counter set that `fragmentsPassed` comes from is not supported on Apple
+      Silicon, which the layer reports as `statistics 0` in its `pass timings:` log line, so there
+      is nothing on this machine to compare the measurement against.
 - [x] Pixel history for Metal, the same way (`src/metal/src/pixel_history.mm`): a pixel picked in a
       capture captures the next frame with every pass that renders to the texture drawn again one
       draw at a time at the pixel, into copies of its attachments, with a one-pixel scissor,
       visibility results in counting mode, and cull mode and depth-stencil state varied on the
       encoder. The same JSON as `vkinsp_replay --pixel-data`, the same tab, `get_pixel_history`.
 - [x] Run Metal pixel history on a Mac (2026-09-12).
-- [ ] Metal pixel history on a Unity player, and a pass that loads rather than clears.
-- [ ] Metal pixel history, the rest: multisampled and layered passes, indirect command buffers'
-      draws, and writes outside render passes (blits, compute).
+- [x] Metal pixel history follows a **multisampled** pass (2026-09-18), which was the first thing
+      both the sample and a Unity frame hit — the sample's own triangle pass is multisampled, so
+      `--debug-view=pixel-history` had never produced a single event on it. The shadows are made
+      with the attachment's sample count, since the draws re-issued into them are the
+      application's and a pipeline's sample count has to match its attachment; nothing can be
+      blitted out of a multisampled texture, so the two attachments the pixel is read from resolve
+      into a single-sample copy first (colour the way the hardware would, depth sample 0). The
+      sample now reports "wrote the pixel (12 samples passed)" — three instances over four
+      samples. `metal-pixel-history` in `tools/ui_tests.py`.
+- [ ] Metal pixel history on a Unity player: it runs, follows the drawable and declines no pass,
+      but attributes no *draw* to the pixel — three passes render to the drawable in that frame
+      and all three report only their pass start. Whether those passes genuinely have no draw
+      covering the pixel or the draws are not being followed is unsettled; the library's own log
+      is the way to tell (`MTLINSP_LOG=1`, launched by hand), which this did not get to.
+      `unity-pixel-history` keeps it honest: it asserts events arrive and no pass is declined,
+      not that a draw wrote the pixel.
+- [ ] Metal pixel history, the rest: **layered** passes, indirect command buffers' draws, and
+      writes outside render passes (blits, compute). The renderer is already waiting for the last
+      of these — `PixelEventKind` in `renderer/pixel_history.ts` has `"copy"`, `"blit"`,
+      `"resolve"` and `"compute"`, and `passLabelOf` renders an event with no pass index as
+      "Outside a render pass" — so that one is library-side only. A blit encoder's commands can be
+      bracketed per command (a 1×1 copy into the shadow before and after, on the application's own
+      encoder); a compute encoder cannot, and either needs the bound state saved and restored
+      around a copy kernel or has to settle for per-encoder granularity.
+      Layered passes want array shadows and a way to exercise them: neither the sample nor the
+      Unity frame has one, so writing it now would repeat the "Untested on a Mac" mistake.
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
       `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
       rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.
-- [ ] Pass dependency graph from the recorded attachments and bound textures, doubling as the
-      "Affected by" section the Vulkan side shows on buffers.
+      **Needs an Intel Mac or an AMD eGPU**: Apple Silicon supports stage-boundary sampling only,
+      which the layer reports as `draw 0, dispatch 0, blit 0` in its `pass timings:` log line, so
+      none of it can be exercised here. When it is written, it should fill `DrawStat`
+      (`renderer/draw_stats.ts`) — the shape `vkinsp_replay --draws` already produces and the
+      Shader Flame Graph and `frame_cost_tree.ts` already consume — and arrive as a
+      `CaptureDrawStats` message the way `CapturePixelHistory` does, rather than a shape of its
+      own. `capture_panel.ts` refuses per-draw measurements on Metal today ("Metal captures do not
+      replay yet"), which is what would lift.
+- [x] Pass dependency graph from the recorded attachments and bound textures: already built, and
+      it works on a Metal capture — `frame_graph.ts` picks `MetalResourceSource`
+      (`renderer/metal/frame_resources.ts`) and a capture of the sample makes 3 nodes, 7
+      resources, 1 edge.
+- [ ] The "Affected by" section the Vulkan side shows on buffers, on a Metal capture. Its table
+      (`BUFFER_WRITE_METHODS`, `capture_command_info.ts`) holds `vkCmd*` selectors only and its
+      walk reads `c.descriptors`, the Vulkan shape, so the section finds nothing on Metal. Not
+      derivable from the graph above, which is per pass where this lists individual commands, but
+      the tables it needs are written: `BLITS` in `metal/frame_resources.ts` maps each blit
+      selector to its destination, and which *bound* resources a draw writes comes from the
+      pipeline reflection Metal captures already carry (`access` in `src/metal/src/reflection.mm`,
+      mapped in `metal/reflection.ts`).
 
 ### Robustness
 - [ ] Intel and AMD class trees and the encoder-boundary timing path (only Apple Silicon and
