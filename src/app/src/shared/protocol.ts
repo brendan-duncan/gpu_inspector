@@ -816,10 +816,14 @@ export interface LaunchConfig {
    *  layer connects (started with VKINSP_ENABLE=1 and VKINSP_PORT).
    *  "waitD3D12" (Windows): nothing is started either; dxinsp_launch.exe --watch waits for a process
    *  with `exe`'s image name to appear and injects the D3D12 capture library into it as it starts,
-   *  which is what D3D12 has in place of an implicit layer (src/d3d12/README.md, docs/D3D12.md). */
-  target: "native" | "android" | "implicit" | "waitD3D12";
-  /** Executable path, the package name for an Android target, or the image name to wait for ("waitD3D12"). */
+   *  which is what D3D12 has in place of an implicit layer (src/d3d12/README.md, docs/D3D12.md).
+   *  "browser" (Windows): a page in a Chromium browser, which is a native launch whose arguments
+   *  and `follow` the main process composes (main/browsers.ts): `exe` is the browser and `args` is
+   *  the URL, and the capture library goes into the GPU process, where the page's WebGPU work is. */
+  target: "native" | "android" | "implicit" | "waitD3D12" | "browser";
+  /** Executable path, the package name for an Android target, the image name to wait for ("waitD3D12"), or the browser ("browser"). */
   exe: string;
+  /** The command line, or the URL to open for a "browser" target. */
   args: string;
   cwd: string;
   /** Extra environment variables, one KEY=VALUE per line. */
@@ -895,6 +899,16 @@ export interface AndroidDevice {
   /** Android API level and primary ABI; 0 / "" when the device could not be queried. */
   sdk: number;
   abi: string;
+}
+
+/** A Chromium browser found on this machine (main/browsers.ts), for the launch dialog. */
+export interface BrowserInstall {
+  /** "Google Chrome Canary". */
+  name: string;
+  /** The executable. */
+  path: string;
+  /** Its build's version, from the versioned directory beside the executable; empty when unknown. */
+  version: string;
 }
 
 export interface AndroidDeviceList {

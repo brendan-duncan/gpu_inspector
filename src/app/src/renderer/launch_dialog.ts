@@ -9,7 +9,7 @@ import { Checkbox } from "./widget/checkbox.js";
 import { Select } from "./widget/select.js";
 import { TextArea } from "./widget/text_area.js";
 import { TextInput } from "./widget/text_input.js";
-import type { AndroidDevice, LaunchConfig, QueuedCapture, UserEnvironmentStatus } from "../shared/protocol.js";
+import type { AndroidDevice, BrowserInstall, LaunchConfig, QueuedCapture, UserEnvironmentStatus } from "../shared/protocol.js";
 
 const DEFAULT_PORT = 47531;
 
@@ -24,6 +24,7 @@ const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", 
 type Target = [string, LaunchConfig["target"]];
 const TARGETS: Target[] = [
   ["This computer", "native"],
+  ["A web page in a browser (WebGPU)", "browser"],
   ["Android device (adb)", "android"],
   ["An application started elsewhere (implicit layer)", "implicit"],
   ["An application started elsewhere (Direct3D 12)", "waitD3D12"],
@@ -42,15 +43,29 @@ export function getHostPlatform(): string {
   return hostPlatform;
 }
 function hostTargets(): Target[] {
-  return TARGETS.filter(([, t]) => (t === "implicit" ? hostPlatform !== "darwin" : t === "waitD3D12" ? hostPlatform === "win32" : true));
+  // A browser is captured through its GPU process, which the D3D12 launcher's follow mode reaches;
+  // that is Windows only, as is waiting for a D3D12 application.
+  return TARGETS.filter(([, t]) => (t === "implicit" ? hostPlatform !== "darwin"
+    : t === "waitD3D12" || t === "browser" ? hostPlatform === "win32" : true));
 }
 
 export function launchDisplayName(c: LaunchConfig): string {
   if (c.target === "android") return `${c.exe} (Android)`;
+  if (c.target === "browser") return `${c.args || "a page"} in ${browserName(c.exe)}`;
   if (c.target === "implicit") return `any application (port ${c.port})`;
   if (c.target === "waitD3D12") return `${c.exe || "an application"} when it starts (D3D12)`;
   const base = c.exe.replace(/\\/g, "/").split("/").pop() || c.exe;
   return c.args ? `${base} ${c.args}` : base;
+}
+
+/** "Google Chrome Canary" out of ...\Google\Chrome SxS\Application\chrome.exe, for a recent launch's name. */
+function browserName(exe: string): string {
+  const parts = exe.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 3] ?? parts[parts.length - 1] ?? "a browser";
+}
+
+function browserLabel(b: BrowserInstall): string {
+  return b.version ? `${b.name} ${b.version}` : b.name;
 }
 
 function deviceLabel(d: AndroidDevice): string {
@@ -101,6 +116,14 @@ export class LaunchDialog extends Dialog {
   private _port: TextInput;
   private _log: Checkbox;
   private _follow: TextInput;
+  private _followRow: HTMLElement | null = null;
+  private _browserRows: Div;
+  private _browserSelect: Select;
+  private _browserPath: TextInput;
+  private _browserPathRow: HTMLElement;
+  private _url: TextInput;
+  private _browsers: BrowserInstall[] = [];
+  private _loadingBrowsers = false;
   private _recordAlways: Checkbox;
   private _breadcrumbs: Checkbox;
   private _shaderStatistics: Checkbox;
@@ -224,6 +247,29 @@ export class LaunchDialog extends Dialog {
         + "This is Direct3D 12 only — for Vulkan, use the implicit layer above.",
       class: "launch-dialog-hint",
     });
+    // Browser: the page's WebGPU work is in the GPU process the browser starts, so all this needs
+    // is which browser and which page — the command line and the follow pattern are the main
+    // process's to compose (main/browsers.ts).
+    this._browserRows = new Div(body);
+    section(this._browserRows, "Web Page");
+    {
+      const row = new Div(this._browserRows, { class: "launch-dialog-row" });
+      new Span(row, { text: "Browser", class: "launch-dialog-label" });
+      this._browserSelect = new Select(row, { options: [], class: "launch-dialog-select", onChange: () => this._updateBrowser() });
+      new Button(row, { label: "Refresh", class: "btn", tooltip: "Look for installed browsers again", callback: () => void this._loadBrowsers(true) });
+    }
+    this._browserPath = this._pathRow(this._browserRows, "Browser Path", "path to chrome.exe", "Choose a browser executable", false);
+    this._browserPathRow = this._browserPath.element.parentElement as HTMLElement;
+    this._url = this._inputRow(this._browserRows, "Page URL", "https://example.com/webgpu-page, or a file:/// path");
+    this._url.tooltip = "The page to open. The browser is started with a profile of its own, so the browser you already have open keeps its windows and its session.";
+    new Div(this._browserRows, {
+      text: "The browser is launched with its GPU sandbox off and the capture library is put into its GPU process as that "
+        + "process starts, which is where a page's WebGPU work is done. Captures are therefore the Direct3D 12 underneath "
+        + "WebGPU: the pipelines, passes and draws Dawn made of the page's WebGPU calls, with frames ending at each "
+        + "submission rather than at a present, since the browser's compositor presents rather than Dawn. For a browser "
+        + "with extra switches, use This computer and put --type=gpu-process in Follow child processes.",
+      class: "launch-dialog-hint",
+    });
     this._activity = this._inputRow(this._androidRows, "Activity", "(the package's launcher activity)");
     this._activity.tooltip = "Activity to start, as com.example.Activity or .Activity; empty for the launcher activity";
 
@@ -240,7 +286,8 @@ export class LaunchDialog extends Dialog {
     this._follow.tooltip = "For an application that renders in a process it starts itself: the capture library also goes into the children whose command line contains this text, caught as they start. "
       + "Several patterns can be given, separated by spaces, and one written !text excludes a child instead. "
       + "A Chromium browser's WebGPU and compositing work is in its GPU process, so \"--type=gpu-process\" captures it (launch the browser with --disable-gpu-sandbox, or the library cannot open its port). Windows and Direct3D 12 only.";
-    if (hostPlatform !== "win32") this._follow.element.parentElement?.style.setProperty("display", "none");
+    this._followRow = this._follow.element.parentElement;
+    if (hostPlatform !== "win32") this._followRow?.style.setProperty("display", "none");
     {
       const row = new Div(body, { class: "launch-dialog-row launch-dialog-options" });
       this._recordAlways = new Checkbox(row, { label: "Record all command buffers", checked: false,
@@ -340,13 +387,46 @@ export class LaunchDialog extends Dialog {
     const android = this.target === "android";
     const implicit = this.target === "implicit";
     const waitD3D12 = this.target === "waitD3D12";
-    this._nativeRows.style.display = android || implicit || waitD3D12 ? "none" : "";
+    const browser = this.target === "browser";
+    this._nativeRows.style.display = android || implicit || waitD3D12 || browser ? "none" : "";
     this._androidRows.style.display = android ? "" : "none";
     this._implicitRows.style.display = implicit ? "" : "none";
     this._waitD3D12Rows.style.display = waitD3D12 ? "" : "none";
+    this._browserRows.style.display = browser ? "" : "none";
+    // A browser launch follows its own GPU process, so the field is not the user's to fill in.
+    if (hostPlatform === "win32") this._followRow?.style.setProperty("display", browser ? "none" : "");
     this._launchButton.text = implicit || waitD3D12 ? "Wait" : "Launch";
     if (android && !this._devices.length) void this._loadDevices();
+    if (browser && !this._browsers.length) void this._loadBrowsers(false);
     if (implicit) void this._refreshImplicit();
+  }
+
+  /**
+   * The browsers installed on this machine, in the dropdown with "Other" last so one that was not
+   * found (a portable build, a Chromium of one's own) can be chosen by path.
+   */
+  private async _loadBrowsers(refresh: boolean): Promise<void> {
+    if (this._loadingBrowsers) return;
+    this._loadingBrowsers = true;
+    const chosen = this._browserPath.value;
+    try {
+      this._browsers = await window.inspector.browsers();
+    } catch {
+      this._browsers = [];
+    }
+    this._loadingBrowsers = false;
+    setOptions(this._browserSelect, [...this._browsers.map(browserLabel), this._browsers.length ? "Other..." : "No browser found: choose one..."]);
+    // Keep the browser a recent launch (or the last refresh) chose, when it is still there.
+    const index = this._browsers.findIndex((b) => b.path.toLowerCase() === chosen.toLowerCase());
+    this._browserSelect.index = index >= 0 ? index : refresh || !chosen ? 0 : this._browsers.length;
+    this._updateBrowser();
+  }
+
+  /** The chosen browser's path, and the path row only when "Other" is chosen. */
+  private _updateBrowser(): void {
+    const other = this._browserSelect.index >= this._browsers.length;
+    this._browserPathRow.style.display = other ? "" : "none";
+    if (!other) this._browserPath.value = this._browsers[this._browserSelect.index]?.path ?? "";
   }
 
   private async _refreshImplicit(): Promise<void> {
@@ -455,8 +535,9 @@ export class LaunchDialog extends Dialog {
       exe: android ? this._package.value.trim()
         : target === "implicit" ? ""
           : target === "waitD3D12" ? this._waitD3D12Exe.value.trim()
-            : this._exe.value.trim(),
-      args: android ? "" : this._args.value,
+            : target === "browser" ? this._browserPath.value.trim()
+              : this._exe.value.trim(),
+      args: android ? "" : target === "browser" ? this._url.value.trim() : this._args.value,
       cwd: android ? "" : this._cwd.value.trim(),
       env: android ? "" : this._env.value,
       device: android ? (this._devices[this._device.index]?.serial ?? this._pendingDevice) : "",
@@ -492,6 +573,10 @@ export class LaunchDialog extends Dialog {
       if (index >= 0) this._device.index = index;
     } else if (this.target === "waitD3D12") {
       this._waitD3D12Exe.value = c.exe ?? "";
+    } else if (this.target === "browser") {
+      this._browserPath.value = c.exe ?? "";
+      this._url.value = c.args ?? "";
+      void this._loadBrowsers(false);
     } else {
       this._exe.value = c.exe ?? "";
       this._args.value = c.args ?? "";

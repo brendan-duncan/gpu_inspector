@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("inspector", {
   launch: (config: unknown) => ipcRenderer.invoke("inspector:launch", config),
   connect: (port: number) => ipcRenderer.invoke("inspector:connect", port),
   androidDevices: () => ipcRenderer.invoke("inspector:androidDevices"),
+  browsers: () => ipcRenderer.invoke("inspector:browsers"),
   implicitLayer: () => ipcRenderer.invoke("inspector:implicitLayer"),
   setImplicitLayer: (on: boolean) => ipcRenderer.invoke("inspector:setImplicitLayer", on),
   userEnvironment: () => ipcRenderer.invoke("inspector:userEnvironment"),

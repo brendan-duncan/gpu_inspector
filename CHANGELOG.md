@@ -1,7 +1,8 @@
 ## v0.17.0
 
 ### Added
-- A Windows launch can follow the target's own child processes, so a Chromium browser's GPU process is captured: **Follow child processes** in the launch dialog (`--type=gpu-process`), `follow` from `launch_app`, `--follow` in `dxinsp_launch`.
+- **A web page in a browser (WebGPU)** in the launch dialog captures a page's WebGPU work as Direct3D 12: pick one of the Chrome, Chrome Canary, Edge or Brave installs found on this machine, type a URL, and the library goes into the browser's GPU process.
+- A Windows launch can follow the target's own child processes, which is how that works: **Follow child processes** in the launch dialog, `follow` from `launch_app`, `--follow` in `dxinsp_launch`.
 - Each of a capture's reports opens in a tab beside the capture's, with **Open in New Window** on the tab (a copy of the capture there, opened on that report) and on its context menu.
 - Every report, and the render target tab, has an **Export to HTML** control: the report as it is on screen, with the application's styles in it, as a standalone file.
 - The Shader Flame Graph zooms continuously with **Ctrl+Wheel** about the pointer and pans by dragging, besides the click zoom it already had.

@@ -1,5 +1,5 @@
 import type {
-  AndroidDeviceList, AppConfig, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
+  AndroidDeviceList, AppConfig, BrowserInstall, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
   CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus, UserEnvironmentStatus,
 } from "../shared/protocol.js";
 import type { ShaderAblation, ShaderMeasureTarget } from "./shader_ablation.js";
@@ -23,6 +23,8 @@ export interface InspectorApi {
   connect(port: number): Promise<LaunchResult>;
   /** Android devices reachable through adb (launch dialog). */
   androidDevices(): Promise<AndroidDeviceList>;
+  /** The Chromium browsers installed on this machine (launch dialog, Windows). */
+  browsers(): Promise<BrowserInstall[]>;
   /** The implicit registration of the capture layer for this user, and switching it. */
   implicitLayer(): Promise<ImplicitLayerStatus>;
   setImplicitLayer(on: boolean): Promise<ImplicitLayerStatus>;

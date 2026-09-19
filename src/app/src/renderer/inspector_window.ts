@@ -157,7 +157,8 @@ export class InspectorWindow extends Window {
           const [target, text] = cfg.debug.launchDialog.split(":", 2);
           this.showLaunchDialog(target === "android" ? { ...emptyLaunchConfig(), target: "android", exe: text ?? "" }
             : target === "implicit" ? { ...emptyLaunchConfig(), target: "implicit" }
-              : target === "waitD3D12" ? { ...emptyLaunchConfig(), target: "waitD3D12", exe: text ?? "" } : null);
+              : target === "waitD3D12" ? { ...emptyLaunchConfig(), target: "waitD3D12", exe: text ?? "" }
+                : target === "browser" ? { ...emptyLaunchConfig(), target: "browser", args: text ?? "" } : null);
         }
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
         // On macOS there is no capture layer to build, so its absence is the expected state and
