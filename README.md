@@ -42,5 +42,5 @@ GPU includes **no analytics** on use or installation. I have no idea who is usin
 
 I would love to hear if you are using it and find it useful, so feel free to reach out to me either in the [Discussions](https://github.com/brendan-duncan/gpu_inspector/discussions) or via [email](<mailto:brendandduncan@gmail.com?subject=GPU%20Inspector%20feedback>).
 
-GPU Inspector is built on the shoulders of giants and wouldn't exist if not for the inspiration of others. The libraries used, and projects that code has been adapted from, is lsited in the 
+GPU Inspector is built on the shoulders of giants and wouldn't exist if not for the inspiration of others. The libraries used, and projects that code has been adapted from, is listed in the 
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
