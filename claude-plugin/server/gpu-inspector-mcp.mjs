@@ -387,10 +387,10 @@ var APPEND_ALIGNED = 4294967295;
 function d3d12InputElements(pipeline) {
   const d = pipeline?.descriptor;
   const layout = d && isObject(d.InputLayout) ? d.InputLayout : null;
-  const elements = layout && Array.isArray(layout.pInputElementDescs) ? layout.pInputElementDescs : [];
+  const elements2 = layout && Array.isArray(layout.pInputElementDescs) ? layout.pInputElementDescs : [];
   const out = [];
   const running = /* @__PURE__ */ new Map();
-  elements.forEach((e, location) => {
+  elements2.forEach((e, location) => {
     if (!isObject(e)) return;
     const slot = num(e.InputSlot);
     const format = str(e.Format);
@@ -492,9 +492,9 @@ function withLibraries(info, db, depth = 0) {
     const own = withLibraries(raw, db, depth + 1) ?? raw;
     const flags = String(pNextEntry(raw, "VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT")?.flags ?? "");
     const holds = (part) => own !== raw ? true : flags.includes(part);
-    for (const [part, members] of LIBRARY_PARTS) {
+    for (const [part, members2] of LIBRARY_PARTS) {
       if (!holds(part)) continue;
-      for (const m of members) if (!isObject(out[m]) && isObject(own[m])) out[m] = own[m];
+      for (const m of members2) if (!isObject(out[m]) && isObject(own[m])) out[m] = own[m];
     }
     for (const s of Array.isArray(own.pStages) ? own.pStages : []) {
       if (!isObject(s)) continue;
@@ -2279,6 +2279,214 @@ var CaptureData = class {
   }
 };
 
+// src/renderer/utils/json_stream.ts
+var TAB = 9;
+var LF = 10;
+var CR = 13;
+var SPACE = 32;
+var QUOTE = 34;
+var COMMA = 44;
+var COLON = 58;
+var BACKSLASH = 92;
+var LBRACE = 123;
+var RBRACE = 125;
+var LBRACKET = 91;
+var RBRACKET = 93;
+var STREAM_THRESHOLD_BYTES = 256 * 1024 * 1024;
+var BATCH_BYTES = 32 * 1024 * 1024;
+var BATCH_ELEMENTS = 8192;
+var MAX_DIRECT_ELEMENTS = 5e5;
+var FLUSH_CHARS = 1 << 20;
+var decoder = new TextDecoder();
+var encoder = new TextEncoder();
+function isWhitespace(c2) {
+  return c2 === SPACE || c2 === TAB || c2 === LF || c2 === CR;
+}
+function skipWhitespace(b, i, end) {
+  while (i < end && isWhitespace(b[i])) i++;
+  return i;
+}
+function skipString(b, i, end) {
+  i++;
+  while (i < end) {
+    const c2 = b[i];
+    if (c2 === BACKSLASH) {
+      i += 2;
+      continue;
+    }
+    if (c2 === QUOTE) return i + 1;
+    i++;
+  }
+  throw new Error("unterminated string");
+}
+function skipValue(b, i, end) {
+  const c2 = b[i];
+  if (c2 === QUOTE) return skipString(b, i, end);
+  if (c2 === LBRACE || c2 === LBRACKET) {
+    let depth = 0;
+    while (i < end) {
+      const d = b[i];
+      if (d === QUOTE) {
+        i = skipString(b, i, end);
+        continue;
+      }
+      if (d === LBRACE || d === LBRACKET) {
+        depth++;
+        i++;
+        continue;
+      }
+      if (d === RBRACE || d === RBRACKET) {
+        depth--;
+        i++;
+        if (depth === 0) return i;
+        continue;
+      }
+      i++;
+    }
+    throw new Error("unterminated object or array");
+  }
+  while (i < end) {
+    const d = b[i];
+    if (d === COMMA || d === RBRACE || d === RBRACKET || isWhitespace(d)) break;
+    i++;
+  }
+  return i;
+}
+function* members(b, start, end) {
+  let i = skipWhitespace(b, start + 1, end);
+  if (i >= end || b[i] === RBRACE) return;
+  for (; ; ) {
+    i = skipWhitespace(b, i, end);
+    const keyStart = i;
+    const keyEnd = skipString(b, i, end);
+    i = skipWhitespace(b, keyEnd, end);
+    if (b[i] !== COLON) throw new Error("expected ':' after an object key");
+    i = skipWhitespace(b, i + 1, end);
+    const valueStart = i;
+    const valueEnd = skipValue(b, i, end);
+    yield { key: { start: keyStart, end: keyEnd }, value: { start: valueStart, end: valueEnd } };
+    i = skipWhitespace(b, valueEnd, end);
+    if (i < end && b[i] === COMMA) {
+      i++;
+      continue;
+    }
+    return;
+  }
+}
+function* elements(b, start, end) {
+  let i = skipWhitespace(b, start + 1, end);
+  if (i >= end || b[i] === RBRACKET) return;
+  for (; ; ) {
+    i = skipWhitespace(b, i, end);
+    const valueStart = i;
+    const valueEnd = skipValue(b, i, end);
+    yield { start: valueStart, end: valueEnd };
+    i = skipWhitespace(b, valueEnd, end);
+    if (i < end && b[i] === COMMA) {
+      i++;
+      continue;
+    }
+    return;
+  }
+}
+function parseArrayBatched(b, start, end, batchBytes) {
+  const out = [];
+  let batchStart = -1;
+  let batchEnd = -1;
+  const flush = () => {
+    if (batchStart < 0) return;
+    for (const v of JSON.parse(`[${decoder.decode(b.subarray(batchStart, batchEnd))}]`)) out.push(v);
+    batchStart = -1;
+  };
+  for (const e of elements(b, start, end)) {
+    if (batchStart < 0) {
+      batchStart = e.start;
+      batchEnd = e.end;
+      continue;
+    }
+    if (e.end - batchStart > batchBytes) {
+      flush();
+      batchStart = e.start;
+    }
+    batchEnd = e.end;
+  }
+  flush();
+  return out;
+}
+function parseJsonObject(bytes, start, end, options = {}) {
+  if (end - start < (options.threshold ?? STREAM_THRESHOLD_BYTES)) {
+    return JSON.parse(decoder.decode(bytes.subarray(start, end)));
+  }
+  const batchBytes = options.batchBytes ?? BATCH_BYTES;
+  const out = {};
+  for (const m of members(bytes, start, end)) {
+    const key = JSON.parse(decoder.decode(bytes.subarray(m.key.start, m.key.end)));
+    out[key] = m.value.end - m.value.start > batchBytes && bytes[m.value.start] === LBRACKET ? parseArrayBatched(bytes, m.value.start, m.value.end, batchBytes) : JSON.parse(decoder.decode(bytes.subarray(m.value.start, m.value.end)));
+  }
+  return out;
+}
+function applyElementHooks(obj, element) {
+  const keys = Object.keys(element).filter((k) => element[k] && Array.isArray(obj[k]));
+  if (!keys.length) return obj;
+  const out = { ...obj };
+  for (const k of keys) out[k] = obj[k].map(element[k]);
+  return out;
+}
+function stringifyBatched(obj, batch, element) {
+  const batchElements = Math.max(1, Math.floor(batch));
+  const chunks = [];
+  let parts2 = [];
+  let pending = 0;
+  const flush = () => {
+    if (!parts2.length) return;
+    chunks.push(encoder.encode(parts2.join("")));
+    parts2 = [];
+    pending = 0;
+  };
+  const emit = (s) => {
+    parts2.push(s);
+    pending += s.length;
+    if (pending >= FLUSH_CHARS) flush();
+  };
+  emit("{");
+  let first = true;
+  for (const key of Object.keys(obj)) {
+    const value = obj[key];
+    if (value === void 0 || typeof value === "function" || typeof value === "symbol") continue;
+    if (!first) emit(",");
+    first = false;
+    emit(`${JSON.stringify(key)}:`);
+    const hook = element[key];
+    if (Array.isArray(value) && value.length > batchElements) {
+      emit("[");
+      for (let i = 0; i < value.length; i += batchElements) {
+        const batch2 = value.slice(i, i + batchElements);
+        emit((i ? "," : "") + JSON.stringify(hook ? batch2.map(hook) : batch2).slice(1, -1));
+        flush();
+      }
+      emit("]");
+    } else {
+      emit(JSON.stringify(hook && Array.isArray(value) ? value.map(hook) : value));
+    }
+  }
+  emit("}");
+  flush();
+  return chunks;
+}
+function stringifyJsonObject(obj, options = {}) {
+  const element = options.element ?? {};
+  const maxDirect = options.maxDirectElements ?? MAX_DIRECT_ELEMENTS;
+  const huge = Object.keys(obj).some((k) => Array.isArray(obj[k]) && obj[k].length > maxDirect);
+  if (!huge) {
+    try {
+      return [encoder.encode(JSON.stringify(applyElementHooks(obj, element)))];
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+    }
+  }
+  return stringifyBatched(obj, options.batchElements ?? BATCH_ELEMENTS, element);
+}
+
 // src/renderer/capture_format.ts
 var CAPTURE_FILE_EXTENSION = "gpucap";
 var MAGIC2 = "GPUCAP 1\n";
@@ -2288,25 +2496,28 @@ function captureFileName(source, frame, frames) {
   const base = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
   return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
-function encodeCaptureFile(manifest, payloads) {
-  const json = new TextEncoder().encode(JSON.stringify(manifest));
+function encodeCaptureFile(manifest, payloads, options = {}) {
+  const json = stringifyJsonObject(manifest, options);
   const magic = new TextEncoder().encode(MAGIC2);
+  const jsonBytes = json.reduce((n, c2) => n + c2.byteLength, 0);
   const payloadBytes = payloads.reduce((n, p) => n + p.byteLength, 0);
-  const out = new Uint8Array(magic.byteLength + 4 + json.byteLength + payloadBytes);
+  const out = new Uint8Array(magic.byteLength + 4 + jsonBytes + payloadBytes);
   let pos = 0;
   out.set(magic, pos);
   pos += magic.byteLength;
-  new DataView(out.buffer).setUint32(pos, json.byteLength, true);
+  new DataView(out.buffer).setUint32(pos, jsonBytes, true);
   pos += 4;
-  out.set(json, pos);
-  pos += json.byteLength;
+  for (const chunk2 of json) {
+    out.set(chunk2, pos);
+    pos += chunk2.byteLength;
+  }
   for (const p of payloads) {
     out.set(p, pos);
     pos += p.byteLength;
   }
   return out;
 }
-function parseCaptureFile(bytes) {
+function parseCaptureFile(bytes, options = {}) {
   const magic = new TextEncoder().encode(MAGIC2);
   if (bytes.byteLength < magic.byteLength + 4) throw new Error("The file is too short to be a capture.");
   for (let i = 0; i < magic.byteLength; i++) {
@@ -2319,7 +2530,7 @@ function parseCaptureFile(bytes) {
   if (base > bytes.byteLength) throw new Error("The capture file is truncated.");
   let manifest;
   try {
-    manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(jsonStart, base)));
+    manifest = parseJsonObject(bytes, jsonStart, base, options);
   } catch (e) {
     throw new Error(`The capture's manifest is not valid JSON: ${e.message}`);
   }
@@ -2344,7 +2555,8 @@ function parseCaptureFile(bytes) {
   const passTimings = /* @__PURE__ */ new Map();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const overdraw = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
-  const commands = (manifest.commands ?? []).map((c2, i) => ({ ...c2, index: i }));
+  const commands = manifest.commands ?? [];
+  for (let i = 0; i < commands.length; i++) commands[i].index = i;
   return {
     manifest,
     validation: manifest.validation ?? [],
@@ -3407,8 +3619,8 @@ var MetalResourceSource = class {
         if (isObject(d)) this._attachment(d, key === "depthAttachment" ? "depth" : "stencil", accesses, targets);
       }
     }
-    const encoder = this._db.getObject(cmd.encoder?.__id ?? null);
-    const name = encoder?.label || targets.join(", ");
+    const encoder2 = this._db.getObject(cmd.encoder?.__id ?? null);
+    const name = encoder2?.label || targets.join(", ");
     const what = kind === "render" ? "Pass" : kind === "compute" ? "Compute" : "Blit";
     return { kind, label: `${what} ${ordinal}${name ? `: ${name}` : ""}`, accesses };
   }
@@ -5267,8 +5479,8 @@ function analyzeSpirv(data) {
     if (direct !== void 0) return direct;
     const arr = typeArrays.get(type);
     if (arr) return sizeOf3(arr[0], depth + 1) * (constantValues.get(arr[1]) ?? 0);
-    const members = typeStructs.get(type);
-    if (members) return members.reduce((acc, m) => acc + sizeOf3(m, depth + 1), 0);
+    const members2 = typeStructs.get(type);
+    if (members2) return members2.reduce((acc, m) => acc + sizeOf3(m, depth + 1), 0);
     return 0;
   };
   const defs = /* @__PURE__ */ new Map();
@@ -6102,7 +6314,7 @@ var MetalFrameAnalysis = class {
     for (const cmd of commands) {
       const a = cmd.args;
       const cb = cmd.object?.__id ?? 0;
-      const encoder = cmd.encoder?.__id ?? 0;
+      const encoder2 = cmd.encoder?.__id ?? 0;
       const m = cmd.method;
       if (sets.PASS_BEGIN.has(m)) {
         const previous = lastPass.get(cb);
@@ -6161,14 +6373,14 @@ var MetalFrameAnalysis = class {
       if (sets.BIND_PIPELINE.has(m)) {
         const id = refId(a.pipeline);
         if (id !== null) {
-          if (boundPipeline.get(encoder) === id) redundantPipeline.add(cmd);
-          boundPipeline.set(encoder, id);
+          if (boundPipeline.get(encoder2) === id) redundantPipeline.add(cmd);
+          boundPipeline.set(encoder2, id);
         }
         continue;
       }
       if (sets.BIND_STAGE_BUFFER?.has(m) && sets.stageBuffersOf) {
-        let binds = boundBuffers.get(encoder);
-        if (!binds) boundBuffers.set(encoder, binds = /* @__PURE__ */ new Map());
+        let binds = boundBuffers.get(encoder2);
+        if (!binds) boundBuffers.set(encoder2, binds = /* @__PURE__ */ new Map());
         for (const sb of sets.stageBuffersOf(cmd)) {
           if (sb.inline) continue;
           const slot = `${sb.stage}:${sb.index}`;
@@ -7885,14 +8097,14 @@ var Parser = class {
       if (structName && !this.names.has(structId)) this.names.set(structId, structName);
       const fields = composite.members.map((id) => this.debugMembers.get(id)).filter((id) => id !== void 0);
       if (!fields.length) continue;
-      let members = this.memberNames.get(structId);
-      if (!members) {
-        members = /* @__PURE__ */ new Map();
-        this.memberNames.set(structId, members);
+      let members2 = this.memberNames.get(structId);
+      if (!members2) {
+        members2 = /* @__PURE__ */ new Map();
+        this.memberNames.set(structId, members2);
       }
       fields.forEach((nameId, index) => {
         const name = this.strings.get(nameId);
-        if (name && !members.has(index)) members.set(index, name);
+        if (name && !members2.has(index)) members2.set(index, name);
       });
     }
   }
@@ -7964,7 +8176,7 @@ var Parser = class {
         return { kind: "array", element, count: 0, stride, size: 0 };
       }
       case 30 /* TypeStruct */: {
-        const members = [];
+        const members2 = [];
         let running = 0;
         let size2 = 0;
         for (let i = 1; i < o.length; i++) {
@@ -7973,11 +8185,11 @@ var Parser = class {
           const rm = this.memberDecoration(typeId, m, 4 /* RowMajor */) !== void 0;
           const type = this.resolve(o[i], ms, rm);
           const offset = this.memberDecoration(typeId, m, 35 /* Offset */)?.[0] ?? running;
-          members.push({ name: this.memberNames.get(typeId)?.get(m) ?? `member${m}`, offset, type });
+          members2.push({ name: this.memberNames.get(typeId)?.get(m) ?? `member${m}`, offset, type });
           running = offset + sizeOf2(type);
           if (running > size2) size2 = running;
         }
-        return { kind: "struct", name: this.names.get(typeId) ?? "", members, size: size2 };
+        return { kind: "struct", name: this.names.get(typeId) ?? "", members: members2, size: size2 };
       }
       case 25 /* TypeImage */:
         return { kind: "opaque", name: this.imageName(t, false) };
@@ -10060,10 +10272,10 @@ function findPass(data, cmd) {
 }
 function vertexLayout(state, binding, vb) {
   if (state.pipeline && isD3D12Type(state.pipeline.type)) {
-    const elements = d3d12InputElements(state.pipeline).filter((e) => e.slot === binding);
-    if (!elements.length) return null;
-    const attributes2 = elements.map((e) => ({ location: e.location, format: vkFormatOfDxgi(e.format) ?? e.format, offset: e.offset })).sort((x, y) => x.offset - y.offset);
-    const perInstance = elements.some((e) => e.perInstance);
+    const elements2 = d3d12InputElements(state.pipeline).filter((e) => e.slot === binding);
+    if (!elements2.length) return null;
+    const attributes2 = elements2.map((e) => ({ location: e.location, format: vkFormatOfDxgi(e.format) ?? e.format, offset: e.offset })).sort((x, y) => x.offset - y.offset);
+    const perInstance = elements2.some((e) => e.perInstance);
     return { stride: vb.stride ?? 0, rate: perInstance ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX", attributes: attributes2 };
   }
   const vd = state.pipeline?.descriptor?.vertexDescriptor;
@@ -15581,7 +15793,7 @@ var Parser2 = class _Parser {
       return name ? { name, members: [], span } : null;
     }
     this._take();
-    const members = [];
+    const members2 = [];
     while (!this._done && !this._is("}")) {
       if (this._eat(";")) continue;
       if (this._is("struct") || this._is("class") || this._is("union")) {
@@ -15616,13 +15828,13 @@ var Parser2 = class _Parser {
           break;
         }
         const arrayDims = this._arrayDims();
-        members.push({ name: memberName, type, attributes: [...attributes, ...this._attributes()], arrayDims, span: memberSpan });
+        members2.push({ name: memberName, type, attributes: [...attributes, ...this._attributes()], arrayDims, span: memberSpan });
         if (!this._eat(",")) break;
       }
       this._eat(";");
     }
     this._expect("}", `after the members of struct ${name}`);
-    const struct = { name, members, span };
+    const struct = { name, members: members2, span };
     if (name) this.unit.structs.push(struct);
     return struct;
   }
@@ -18328,7 +18540,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
   const returnType = types.get(entry2.returnType);
   const outputs = [];
   let stride = 0;
-  const members = returnType?.kind === "struct" ? returnType.members : [];
+  const members2 = returnType?.kind === "struct" ? returnType.members : [];
   const flatten = (name, type, attributes) => {
     const t = types.get(type);
     const components = t?.kind === "vector" ? t.count : t?.kind === "scalar" ? 1 : 0;
@@ -18343,7 +18555,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
     });
     stride += components * 4;
   };
-  if (members.length) for (const m of members) flatten(m.name, m.type, m.attributes);
+  if (members2.length) for (const m of members2) flatten(m.name, m.type, m.attributes);
   else flatten("return", entry2.returnType, entry2.returnAttributes);
   const instances = Math.max(1, num(a.instanceCount) || 1);
   const perInstance = Math.min(input.ids.length, Math.max(3, Math.floor(MAX_INTERPRETED_VERTICES / instances)));
@@ -18376,7 +18588,7 @@ async function interpretedMeshOutput(ctx, cmd, state) {
       for (const w of invocation.warnings) warnings.add(w);
       const written = invocation.outputs();
       records.push(outputs.map((o) => {
-        const value = members.length ? written.find((v) => v.name === o.name)?.value : written[0]?.value;
+        const value = members2.length ? written.find((v) => v.name === o.name)?.value : written[0]?.value;
         return scalarsOf(value, o.components);
       }).flat());
     }
@@ -21055,14 +21267,14 @@ function d3d12Bindings(ctx, state) {
     specialization: /* @__PURE__ */ new Map()
   };
 }
-function vertexAttributeMap(module, elements, input, notes) {
+function vertexAttributeMap(module, elements2, input, notes) {
   const out = /* @__PURE__ */ new Map();
   for (const [id, g] of module.globals) {
     if (g.storage !== 1 /* Input */) continue;
     const location = module.decoration(id, 30 /* Location */)?.[0];
     if (location === void 0) continue;
     const semantic = semanticOf(module, id);
-    const element = semantic ? elements.find((e) => normalizeSemantic(e.name) === semantic) : void 0;
+    const element = semantic ? elements2.find((e) => normalizeSemantic(e.name) === semantic) : void 0;
     const k = element ? input.attributes.findIndex((a) => a.location === element.location) : -1;
     if (k < 0) {
       notes.push(`The input layout has no element for the vertex shader's ${semantic ?? module.nameOf(id)}: it reads as zero.`);
@@ -26945,11 +27157,7 @@ async function serializeCapture(session, data, options = {}) {
     displayRefreshMs: db.displayRefreshMs,
     frameBoundary: db.frameBoundary,
     objects: records,
-    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
-    commands: data.commands.map((c2) => {
-      const { children: _children, ...rest } = c2;
-      return rest;
-    }),
+    commands: data.commands,
     textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
     buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
     passTimings: [...data.passTimings.values()],
@@ -26964,7 +27172,14 @@ async function serializeCapture(session, data, options = {}) {
     ...symbols ? { symbols } : {},
     ...stacks ? { stacks } : {}
   };
-  return encodeCaptureFile(manifest, payloads);
+  return encodeCaptureFile(manifest, payloads, {
+    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
+    // As a hook rather than a map over the list, so a large capture never holds a second copy of it.
+    element: { commands: (c2) => {
+      const { children: _children, ...rest } = c2;
+      return rest;
+    } }
+  });
 }
 
 // src/mcp/live_session.ts
@@ -28455,7 +28670,7 @@ function parseLayout(text, rules, preferredName) {
   let match;
   while (match = re.exec(src)) {
     const name = match[1];
-    const members = [];
+    const members2 = [];
     let offset = 0;
     let maxAlign = 1;
     for (const decl of match[2].split(";")) {
@@ -28474,12 +28689,12 @@ function parseLayout(text, rules, preferredName) {
       }
       const a = alignment(type, rules);
       offset = alignUp(offset, a);
-      members.push({ name: dm[2], offset, type });
+      members2.push({ name: dm[2], offset, type });
       offset += sizeOfType(type);
       maxAlign = Math.max(maxAlign, a);
     }
     const structAlign = rules === "std140" ? Math.max(16, maxAlign) : maxAlign;
-    const st = { kind: "struct", name, members, size: alignUp(offset, structAlign) };
+    const st = { kind: "struct", name, members: members2, size: alignUp(offset, structAlign) };
     structs.set(name, st);
     last = st;
   }
