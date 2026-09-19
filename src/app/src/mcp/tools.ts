@@ -15,6 +15,7 @@ import {
 } from "../renderer/overdraw.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
+import { exportFolderName, parseExportSummary } from "../renderer/export_cpp.js";
 import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabelledPass } from "../renderer/timeline_tracks.js";
 import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
@@ -467,6 +468,42 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           total: p.total, offset: p.offset, nextOffset: p.nextOffset,
           passes: p.items.map((x) => passMeasurements(c, x.p, x.i, m.gpuMs)),
           notes,
+        });
+      },
+    },
+    {
+      name: "export_cpp",
+      description: "Export to C++: writes a Vulkan capture's frame as a standalone, compilable C++ project — every object with the " +
+        "create info it was made from, what the frame's images and buffers held, every command of its command buffers, and a " +
+        "program that runs the frame and compares each render target with the capture's copy. For reproducing a problem outside " +
+        "the application, as in a driver bug report. The capture is replayed on this machine's GPU with vkinsp_replay to write " +
+        "it (a second or so), so the source is what the replay did: see the project's README.md for how that differs from the " +
+        "application, and for anything left out. Builds with CMake and a C++20 compiler alone: it carries its Vulkan headers. Not Metal or D3D12.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        directory: { type: "string", description: "Where the project's folder goes (it is created, named after the capture). Default: beside the capture file." },
+      }),
+      handler: async (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        if (c.data.api !== "vulkan") {
+          return jsonResult({ capture: c.id, note: `Export to C++ replays the capture to write it, and ${c.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay.` });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c.id, note: `Export to C++ needs the capture replayed, and ${NO_REPLAY_TOOL}` });
+        const parent = stringArg(args, "directory") ?? path.dirname(c.path);
+        const dir = path.join(parent, exportFolderName(path.basename(c.path)));
+        const run = await replayServers.run(tool, c.path, { kind: "export", dir });
+        if (!run.data) return jsonResult({ capture: c.id, note: `The replay could not export the capture: ${run.error ?? "no project was written"}` });
+        const e = parseExportSummary(run.data);
+        if (!e.ok) return jsonResult({ capture: c.id, note: `The export failed: ${e.error}` });
+        return jsonResult({
+          capture: c.id, directory: e.directory, replayedOn: e.device,
+          objects: e.objects, commands: e.commands, submissions: e.submissions, renderTargetsCompared: e.targets,
+          commandsLeftOut: e.leftOut, dataMB: Number((e.dataBytes / (1024 * 1024)).toFixed(1)), files: e.files,
+          build: `cmake -S "${e.directory}" -B "${e.directory}/build" && cmake --build "${e.directory}/build" --config Release`,
+          run: "The program prints each render target compared with the capture's copy and exits 0 when all are identical; --validate enables the validation layer.",
+          ...(e.notes.length ? { notes: e.notes.slice(0, 20) } : {}),
+          ...(e.problems.length ? { replayProblems: e.problems.slice(0, 20), problemCount: e.problems.length } : {}),
         });
       },
     },

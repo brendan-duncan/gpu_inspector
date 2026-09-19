@@ -5,7 +5,8 @@
 `vkinsp_replay` re-executes a Vulkan capture (`.gpucap`) on this machine's GPU, without the
 application. It is the basis for the analyses that have to run a frame again with something
 changed: the overdraw heatmap, pixel history, draw-call overlays, mesh output (which the shader
-debugger's pixels are rasterized from), per-draw timing and shader cost by ablation.
+debugger's pixels are rasterized from), per-draw timing and shader cost by ablation. It also writes a
+frame out as a C++ project ([Export to C++](#export-to-c)).
 
 ```
 vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]
@@ -13,6 +14,7 @@ vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [-
               [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]
               [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]
               [--counters [--counter <name>]... [--counter-data <file>]] [--list-counters [--counter-data <file>]] [--trace]
+              [--export <directory> [--export-data <file>]]
 vkinsp_replay <capture.gpucap> --check
 vkinsp_replay <capture.gpucap> --serve [--validate]
 ```
@@ -66,6 +68,9 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
 - **`--list-counters`:** lists every counter the GPU offers, without replaying the frame's work.
 - **`--counter-data <file>`:** with `--counters` or `--list-counters`, writes the result as JSON.
   GPU Inspector and the MCP server's `get_hw_counters` run the tool this way.
+- **`--export <directory>`:** writes the frame, as it replays, as a standalone C++ project (see
+  [Export to C++](#export-to-c)). `--export-data <file>` writes a JSON summary of what was written,
+  which is how GPU Inspector and the MCP server's `export_cpp` run the tool.
 - **`--serve`:** keeps the replay alive for many analyses of the capture (see
   [Kept alive](#kept-alive)). GPU Inspector and its MCP server run the tool this way.
 - **`--check`:** only decodes every creation argument and command argument, and lists what cannot
@@ -528,6 +533,91 @@ verdict; the `VK_KHR_performance_query` path has no portable default counter set
 command-scoped counters) and has not yet been run against a driver that offers the extension, only
 as far as its precondition check. Metal and D3D12 captures do not replay, so this is Vulkan only; on Metal, the capture
 bar's **Xcode Trace** writes a `.gputrace` whose counter sets are Apple's equivalent.
+
+## Export to C++
+
+`--export <directory>` writes the frame as a standalone C++ project: every object, what the frame's
+images and buffers held, and every command of its command buffers as plain Vulkan calls, with a
+program that runs the frame and compares each render target with the capture's copy. It is for
+reproducing a problem outside the application, above all in a driver bug report, where the vendor
+wants something to build and run rather than a capture in someone else's format. In GPU Inspector it
+is **Export to C++** in the capture bar and on a capture tab's menu.
+
+The source is emitted from the replay's own walk, not from the capture a second way. The exporter
+(`src/replay/src/exporter.h`) watches the replay create the device and each object, upload each
+image and buffer range, write each descriptor set, record each command, submit, and read each
+target back; and it spells every one of them as it happens, with the create info the replay
+actually handed the driver. So the program does what the replay did: where the replay reproduces a
+fault, so does the source, and what the replay left out is left out with a comment saying why.
+
+The spelling is generated from vk.xml, like the decoders. `tools/vkgen/emit_source.py` writes an
+emitter for every struct, union, `pNext` chain and `vkCmd*` (`src/replay/gen/vk_emit.gen.*`) that
+turns a decoded value into source text:
+
+- **Structs** are designated initializers, so they read like the specification. A struct with few
+  members and no pointers goes on one line; a features struct lists only what is on.
+- **Pointers** become locals declared ahead of the statement: a struct by address, an array as an
+  array, a `pNext` chain struct by struct.
+- **Enums and flags** by name, **handles** as the variable of their object, named by type and
+  capture id: `image_18` is image 18 in GPU Inspector.
+- **Blobs** (SPIR-V, push constants, `vkCmdUpdateBuffer` data) and long scalar arrays are
+  `Data(offset, size)` into `frame_data.bin`, which also holds the image and buffer contents and the
+  captured targets. Identical contents are stored once.
+- **Unions without a selector** by their largest member, as the decoder fills them, so a clear
+  value is its exact bits, with the float reading in a comment.
+
+```
+vkinsp_replay frame.gpucap --export frame_cpp
+export to C++: frame_cpp
+  31 objects, 18 commands in 1 submission, 2 render targets compared, 2.4 MB of data, 30 files
+
+cmake -S frame_cpp -B frame_cpp/build && cmake --build frame_cpp/build --config Release
+frame_cpp/build/Release/frame --validate
+device: NVIDIA GeForce RTX 4080
+render targets: 2
+  image18_cb7_pass0_att0 (640x480): identical to the capture (307200 texels)
+  image22_cb7_pass0_att1_depth (640x480): identical to the capture (307200 texels)
+```
+
+The project needs CMake and a C++20 compiler and nothing else: it carries the Vulkan headers it was
+written against (`vulkan_headers/`, embedded into the tool from `third_party/Vulkan-Headers`), opens
+the loader at run time and links against nothing. An SDK a year older than these headers lacks names
+the source uses (a promoted extension's struct), which is why it does not rely on one. Its hand-written part (`vk_support.*`, `main.cpp`: memory, uploads,
+layout tracking, read-backs, PNG output) lives in `src/replay/export_template` as real sources and
+is embedded into the tool. The generated part is split into functions of about two thousand lines
+and files of about twenty-four thousand, so a large frame compiles in ordinary memory. The project's
+README says how the frame differs from the application's (memory per resource, no swapchain,
+pipelines one at a time from the capture's SPIR-V, no semaphores) and lists what was left out.
+
+Checked by building and running the exported program, with the validation layer, on an RTX 4080:
+
+| Capture | The exported program |
+|---|---|
+| test/triangle (render pass, compute, texture, push constants) | identical, no validation messages |
+| test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical, no validation messages |
+| test/triangle `--msaa`, and with `--stencil` | identical: the multisampled colour, depth and stencil through their resolves, and the resolve target |
+| test/triangle `--shader-object`, `--suspend` (dynamic rendering, suspended and resumed) | identical, no validation messages |
+| test/triangle `--pipeline-library`, `--push-template`, `--stencil`, `--occluded` | identical, no validation messages |
+| test/triangle `--second-queue`, `--second-device` | all 3 targets identical, no validation messages |
+| test/triangle `--persistent` (frame-start contents, a mip in another layout) | all 5 targets identical, no validation messages |
+| test/triangle `--ray-tracing` | the raster targets identical; the builds and the trace are left out, and the traced image is not compared (see the limits) |
+| test/triangle `--descriptor-buffer` | differs in exactly the 53,759 texels the replay differs in, which does not replay descriptor buffers |
+| Unity player frame (secondary command buffers, two subpasses, MRT, BC1) | all 8 replayed targets identical, no validation messages; the 8 commands the replay left out are left out |
+| XR frames captured on an Adreno 740 (multiview, two layers) | differ from the capture in exactly the texels the replay differs in |
+
+The Unity frame was also exported with parts of 150 lines and files of 700
+(`VKINSP_EXPORT_PART_LINES`, `VKINSP_EXPORT_FILE_LINES`), which cuts it into 9 functions over 2
+files and its objects over 5, and builds and runs the same. The generated sources of the Unity,
+multisampled and ray tracing projects also pass clang 18 with `-Wall -Wextra`, which is stricter
+than MSVC about narrowing and designator order.
+
+Limits:
+- The export needs the replay to run to the end, so a frame that crashes the driver is not
+  written; `--trace` names the call it dies in.
+- Ray tracing is not exported: a build and a trace name what they read by device address and by
+  shader group handle, which the replay finds at run time, and the source has no spelling for that
+  yet. Those commands are left out with a comment, and an image only a shader writes is then not
+  compared: it would still hold the contents uploaded for it, and match the capture for no reason.
 
 ## Where it stands
 

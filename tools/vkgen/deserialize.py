@@ -435,3 +435,4 @@ def emit(reg, cmds, out):
         f.write("\n".join(h))
     with open(os.path.join(out, "vk_decode.gen.cpp"), "w", newline="\n") as f:
         f.write("\n".join(cpp))
+    return d

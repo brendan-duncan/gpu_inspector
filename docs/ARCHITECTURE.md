@@ -609,7 +609,8 @@ replaces canvases with the images they were showing, writes collapsed sections o
 the controls, and inlines the application's stylesheets (read by the main process: a `file://`
 document can reach them through neither `fetch` nor the CSSOM). A new capture in the tab leaves
 its open reports stale, with a button to rebuild them. `--debug-export=<file>` writes the tab
-`--debug-view` opened, for the UI tests.
+`--debug-view` opened, for the UI tests, and `--debug-export-cpp=<directory>` exports the opened
+capture to C++ there, as the capture bar's **Export to C++** does ([Capture replay](REPLAY.md#export-to-c)).
 
 #### Frame Stats
 

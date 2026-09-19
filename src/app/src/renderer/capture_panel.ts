@@ -37,6 +37,7 @@ import { frameRenderGraph } from "./frame_graph.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { exportReportHtml } from "./report_export.js";
+import { exportFolderName, exportSummaryText, parseExportSummary } from "./export_cpp.js";
 import { collectPassMetrics, formatPercent, formatRatio, type PassMetrics } from "./pass_metrics.js";
 import {
   isMeasured, measuresWhileCapturing, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary,
@@ -104,6 +105,8 @@ const ICON_SAVE = '<svg viewBox="0 0 16 16" aria-label="Save"><path d="M2.5 2.5h
 
 // The Reports menu and its entries. Four reports as four buttons filled the filter row and
 // wrapped it; one menu holds them, and the next report to be added as well.
+// Export to C++: braces, for source, with the arrow of an export.
+const ICON_EXPORT_CPP = '<svg viewBox="0 0 16 16" aria-label="Export to C++"><path d="M5.2 2.5c-1.6 0-1.9.8-1.9 2v1.6c0 .9-.4 1.5-1.3 1.9.9.4 1.3 1 1.3 1.9v1.6c0 1.2.3 2 1.9 2M10.8 2.5c1.6 0 1.9.8 1.9 2v1.6c0 .9.4 1.5 1.3 1.9-.9.4-1.3 1-1.3 1.9v1.6c0 1.2-.3 2-1.9 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 4.8v5.4M6.2 8.6 8 10.5l1.8-1.9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_REPORTS = '<svg viewBox="0 0 16 16" aria-label="Reports"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 /** Bar chart: counts of things in the frame. */
 const ICON_STATS = '<svg viewBox="0 0 16 16"><path d="M3 13.2V8.5M8 13.2V3.2M13 13.2V6.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
@@ -216,6 +219,7 @@ export class CapturePanel {
   private _overdrawCheck: Checkbox | null = null;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
+  private _exportCppButton!: Button;
   /** The live-capture controls of the bar, hidden for capture files. */
   private _captureControls: Widget[] = [];
   private _tabs!: TabWidget;
@@ -343,6 +347,9 @@ export class CapturePanel {
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
     this._saveButton = new Button(row, { html: ICON_SAVE, class: "btn btn-icon", tooltip: "Save the capture in the active tab to a file (.gpucap)", disabled: true, callback: () => void this.saveActive() });
+    this._exportCppButton = new Button(row, { html: ICON_EXPORT_CPP, class: "btn btn-icon", disabled: true,
+      tooltip: "Export to C++: write the capture in the active tab as a standalone C++ project that re-creates its objects and runs its frame again, for reproducing a problem outside the application (a driver bug report). Vulkan captures; the frame is replayed on this machine's GPU to write it.",
+      callback: () => void this.exportCppActive() });
     // A timing capture is a different question from a frame capture — minutes of frame times
     // rather than every call of one frame — so it is its own control and its own report.
     this._timingButton = new Button(row, { label: timingButtonLabel(false), class: "btn",
@@ -788,6 +795,7 @@ export class CapturePanel {
     const empty = !view.data.commands.length;
     return [
       { label: "Save Capture...", disabled: empty, callback: () => void this.saveActive() },
+      { label: "Export to C++...", disabled: empty || view.data.api !== "vulkan", callback: () => void this.exportCppActive() },
       { label: "Open in New Tab", disabled: empty, callback: () => void this._openInNewTab(view) },
       { label: "Open in New Window", disabled: empty, callback: () => void this._openInNewWindow(view) },
       { separator: true },
@@ -837,6 +845,30 @@ export class CapturePanel {
     const view = this.activeView;
     this._statusLabel.text = view?.status ?? "";
     this._saveButton.disabled = !view || !view.data.commands.length;
+    this._exportCppButton.disabled = !view || !view.data.commands.length || view.data.api !== "vulkan";
+  }
+
+  /**
+   * Export to C++: the capture in the active tab written as a standalone C++ project (CaptureView.exportCpp).
+   * The project goes into a folder of its own, named after the capture, inside the directory chosen;
+   * `parent` skips the dialog.
+   */
+  async exportCppActive(parent?: string): Promise<string | null> {
+    const view = this.activeView;
+    if (!view || !view.data.commands.length) {
+      this._statusLabel.text = "nothing to export";
+      return null;
+    }
+    if (view.data.api !== "vulkan") {
+      this._statusLabel.text = `Export to C++ replays the capture to write it, and ${view.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay`;
+      return null;
+    }
+    const chosen = parent ?? await window.inspector.chooseFile({ title: "Export to C++: choose where the project's folder goes", directory: true });
+    if (!chosen) return null;
+    // A capture opened from a file is named after the file, which says its frame already.
+    const source = this.window.name;
+    const name = exportFolderName(/\.gpucap$/i.test(source) ? source : captureFileName(source, view.data.frame, view.data.frames));
+    return view.exportCpp(`${chosen.replace(/[\\/]+$/, "")}/${name}`);
   }
 }
 
@@ -911,6 +943,8 @@ export class CaptureView implements CaptureHost {
   private _replayFile: Promise<Uint8Array> | null = null;
   /** The key the main process keeps this capture's replay under; null until a replay is asked for. */
   private _replayKey: string | null = null;
+  /** An export to C++ is running: a second one would write into the same folder. */
+  private _exportRunning = false;
   /** Vulkan: the replay measuring overdraw, while it runs or after it failed. */
   private _overdrawRun: { running: boolean; error?: string } | null = null;
   /** Vulkan: the replay measuring the frame's draws, while it runs or after it failed. */
@@ -2295,6 +2329,30 @@ export class CaptureView implements CaptureHost {
       this._refreshSelection();
       this._setStatus(`overdraw not measured: ${message.split("\n")[0]}`);
       return false;
+    }
+  }
+
+  /**
+   * Vulkan: replays the capture and writes it, as it replays, as a standalone C++ project in `dir`
+   * (src/replay/src/exporter.h): every object, what the frame's images and buffers held, and every
+   * command, with a program that compares its render targets with the capture's. The directory, or null.
+   */
+  async exportCpp(dir: string): Promise<string | null> {
+    if (this._exportRunning) return null;
+    this._exportRunning = true;
+    this._setStatus("exporting to C++: replaying the capture on this machine's GPU...");
+    try {
+      const result = await this._replay((r) => window.inspector.exportCpp({ ...r, dir }));
+      if (!result.data) throw new Error(result.error ?? "the replay wrote no project");
+      const summary = parseExportSummary(result.data);
+      this._setStatus(exportSummaryText(summary));
+      return summary.ok ? summary.directory : null;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this._setStatus(`export to C++ failed: ${message.split("\n")[0]}`);
+      return null;
+    } finally {
+      this._exportRunning = false;
     }
   }
 

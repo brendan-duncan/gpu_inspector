@@ -1005,6 +1005,8 @@ export interface AppConfig {
     openCapture: string | null; saveCapture: string | null;
     /** --debug-export=<file>: write the report --debug-view opened to that standalone HTML file. */
     exportReport: string | null;
+    /** --debug-export-cpp=<directory>: export the opened capture to C++ into a folder of its own there. */
+    exportCpp: string | null;
   };
 }
 

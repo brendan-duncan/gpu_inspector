@@ -98,6 +98,12 @@ device really has been removed, and says so until then.
 texture is read back at the end of the pass it was used in, and the debug layer, when on, checks
 every call. Untick **Validation layer**, and lower the capture's buffer and texture limits.
 
+**A browser, or a WebGPU page, does not connect or does not capture.** A browser renders in a GPU
+process it starts itself, and that process needs its sandbox off before the library can open its
+port. Use *Run On* › **A web page in a browser (WebGPU)** rather than launching the browser as an
+ordinary application, and see [Web pages and WebGPU](BROWSER.md#if-it-does-not-work) for what each
+symptom means.
+
 ## macOS
 
 **The target starts but never connects.** Almost always the hardened runtime: dyld dropped

@@ -1,7 +1,8 @@
 ## v0.17.0
 
 ### Added
-- **A web page in a browser (WebGPU)** in the launch dialog captures a page's WebGPU work as Direct3D 12: pick one of the Chrome, Chrome Canary, Edge, Brave, Firefox or Firefox Nightly installs found on this machine, type a URL, and the library goes into the browser's GPU process.
+- **A web page in a browser (WebGPU)** in the launch dialog captures a page's WebGPU work as Direct3D 12: pick one of the Chrome, Chrome Canary, Edge, Brave, Firefox or Firefox Nightly installs found on this machine, type a URL, and the library goes into the browser's GPU process (docs/BROWSER.md).
+- **Export to C++** writes a Vulkan capture's frame as a standalone CMake project that re-creates its objects, runs the frame and compares its render targets with the capture's, for driver bug reports (`vkinsp_replay --export`, `export_cpp`).
 - A Windows launch can follow the target's own child processes, which is how that works: **Follow child processes** in the launch dialog, `follow` from `launch_app`, `--follow` in `dxinsp_launch`.
 - A followed launch waits for the target's whole process tree, so a target whose first process starts the real one and exits (Firefox, a game's launcher) is followed into the process that renders.
 - Each of a capture's reports opens in a tab beside the capture's, with **Open in New Window** on the tab (a copy of the capture there, opened on that report) and on its context menu.

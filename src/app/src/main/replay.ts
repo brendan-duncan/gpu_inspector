@@ -1,7 +1,8 @@
 // Running vkinsp_replay (src/replay/, docs/REPLAY.md) from GPU Inspector and its MCP server: finding the
 // built tool, and replaying a Vulkan capture for an analysis (overdraw, a pixel's history, draw
-// overlays, vertex shader outputs, per-draw timing). A Metal capture measures overdraw while it is
-// taken (src/metal/src/overdraw.h); a Vulkan capture has to be replayed on this machine's GPU.
+// overlays, vertex shader outputs, per-draw timing), or to export it as a C++ project. A Metal capture
+// measures overdraw while it is taken (src/metal/src/overdraw.h); a Vulkan capture has to be replayed
+// on this machine's GPU.
 //
 // Analyses of a capture go to a replay kept alive for it (`vkinsp_replay --serve`, ReplayServer):
 // its device and objects are created once, and each analysis replays only the frame, in tens of
@@ -59,7 +60,17 @@ export interface PixelRequest {
 export type ReplayAnalysis =
   | { kind: "overdraw" } | { kind: "draws" } | { kind: "overlay"; commands: number[] } | { kind: "mesh"; commands: number[] }
   | ({ kind: "pixel" } & PixelRequest) | { kind: "ablate"; request: Uint8Array }
-  | { kind: "counters"; counters?: string[]; perDraw?: boolean } | { kind: "list-counters" };
+  | { kind: "counters"; counters?: string[]; perDraw?: boolean } | { kind: "list-counters" }
+  // Export to C++ (src/replay/src/exporter.h): the frame written into `dir` as a standalone project; the data is its summary.
+  | { kind: "export"; dir: string };
+
+/**
+ * Whether an analysis needs a replay of its own. The export writes the capture's objects as they are
+ * created, which a replay kept alive did once, before any request: it always runs one-shot.
+ */
+function needsOwnProcess(analysis: ReplayAnalysis): boolean {
+  return analysis.kind === "export";
+}
 
 /** The last lines of the tool's output, for an error message. */
 function tail(text: string, lines = 12): string {
@@ -92,6 +103,7 @@ function analysisArgs(analysis: ReplayAnalysis, out: string, input: string | nul
             ...(analysis.perDraw ? ["--counter-draws"] : []), "--counter-data", out];
   }
   if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
+  if (analysis.kind === "export") return ["--export", analysis.dir, "--export-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;
     return [...analysis.commands.flatMap((c) => [flag, String(Math.max(0, Math.floor(c)))]), `${flag}-data`, out];
@@ -315,6 +327,7 @@ export class ReplayServerPool {
     } catch {
       return { data: null, output: "", error: `${capturePath} does not exist` };
     }
+    if (needsOwnProcess(analysis)) return runReplay(tool, capturePath, analysis, timeoutMs);
     const key = `${tool}\n${path.resolve(capturePath)}\n${stamp}`;
     let server = this._servers.get(key);
     if (!server || !server.alive) {

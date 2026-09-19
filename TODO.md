@@ -575,9 +575,24 @@ vendor's driver is listed at the end so nobody spends time on it.
       so the reverse mapping is derivable); the series in a saved capture, which today holds one
       instant; and per-heap lines rather than one total.
 
-- [ ] Export to C++: a frame serialized into a standalone compilable project, mainly for driver
-      bug reports. The replay engine already recreates every object, so emitting source from the
-      same walk is feasible; lower priority.
+- [x] Export to C++ (`src/replay/src/exporter.h`, `tools/vkgen/emit_source.py`, **Export to C++** in
+      the capture bar, `vkinsp_replay --export`, `export_cpp`): a frame written as a standalone CMake
+      project, mainly for driver bug reports. The source is emitted from the replay's own walk — the
+      exporter watches it create, upload, record, submit and read back, and spells each step with
+      emitters generated from vk.xml — so the program does what the replay did, and compares its
+      render targets with the capture's. Verified by building and running the exported program with
+      the validation layer on an RTX 4080: the triangle, `--hazard` and `--msaa` identical, a Unity
+      frame's replayed passes identical, and an XR frame captured on an Adreno differing in exactly
+      the texels the replay differs in. Worth keeping: `EmitPNext` as one function of several hundred
+      cases had a stack frame of hundreds of kilobytes, and it recurses along the chain, so the first
+      engine capture (a dozen structs on its device create info) overflowed the stack with no output
+      at all; each case is now a small function of its own.
+- [ ] Export to C++, the rest: ray tracing (builds and traces name what they read by device address
+      and shader group handle, which the replay finds at run time; the source needs a spelling for
+      `address of buffer N + offset` and a binding table built at start-up); a frame that crashes
+      the driver, which is the bug report that most wants a repro and the one case the export cannot
+      write, since it needs the replay to finish (a checkpoint before each pipeline creation and
+      each submit would do); and D3D12 and Metal, which do not replay.
 - [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
       time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
       graphics API in it, so the three libraries only differ in how they put flat rectangles on the

@@ -11610,6 +11610,9 @@ function findReplayTool(roots, layerDirs) {
   return candidates.find((f) => fs5.existsSync(f)) ?? null;
 }
 var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
+function needsOwnProcess(analysis) {
+  return analysis.kind === "export";
+}
 function tail(text, lines = 12) {
   return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
@@ -11639,6 +11642,7 @@ function analysisArgs(analysis, out, input) {
     ];
   }
   if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
+  if (analysis.kind === "export") return ["--export", analysis.dir, "--export-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;
     return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
@@ -11831,6 +11835,7 @@ var ReplayServerPool = class {
     } catch {
       return { data: null, output: "", error: `${capturePath} does not exist` };
     }
+    if (needsOwnProcess(analysis)) return runReplay(tool, capturePath, analysis, timeoutMs);
     const key = `${tool}
 ${path4.resolve(capturePath)}
 ${stamp}`;
@@ -30022,6 +30027,34 @@ function texelValues(format, bytes, depth = false) {
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
+// src/renderer/export_cpp.ts
+function parseExportSummary(data) {
+  const root = JSON.parse(new TextDecoder().decode(data));
+  if (root.format !== "gpu-inspector-export-cpp") throw new Error("not an export summary");
+  const n = (v) => typeof v === "number" && Number.isFinite(v) ? v : 0;
+  const s = (v) => typeof v === "string" ? v : "";
+  const list = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  return {
+    device: s(root.device),
+    directory: s(root.directory),
+    ok: root.ok === true,
+    error: s(root.error),
+    objects: n(root.objects),
+    commands: n(root.commands),
+    submissions: n(root.submissions),
+    targets: n(root.targets),
+    leftOut: n(root.leftOut),
+    dataBytes: n(root.dataBytes),
+    files: list(root.files),
+    notes: list(root.notes),
+    problems: list(root.problems)
+  };
+}
+function exportFolderName(label) {
+  const stem = label.replace(/\.gpucap$/i, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
+  return `${stem || "frame"}_cpp`;
+}
+
 // src/renderer/timeline_tracks.ts
 function defaultPassLabel(t) {
   return `${t.kind === "compute" ? "Compute" : "Render"} pass ${t.passIndex} (frame ${t.frame})`;
@@ -30618,6 +30651,44 @@ function captureTools(store) {
           nextOffset: p.nextOffset,
           passes: p.items.map((x) => passMeasurements(c2, x.p, x.i, m.gpuMs)),
           notes
+        });
+      }
+    },
+    {
+      name: "export_cpp",
+      description: "Export to C++: writes a Vulkan capture's frame as a standalone, compilable C++ project \u2014 every object with the create info it was made from, what the frame's images and buffers held, every command of its command buffers, and a program that runs the frame and compares each render target with the capture's copy. For reproducing a problem outside the application, as in a driver bug report. The capture is replayed on this machine's GPU with vkinsp_replay to write it (a second or so), so the source is what the replay did: see the project's README.md for how that differs from the application, and for anything left out. Builds with CMake and a C++20 compiler alone: it carries its Vulkan headers. Not Metal or D3D12.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        directory: { type: "string", description: "Where the project's folder goes (it is created, named after the capture). Default: beside the capture file." }
+      }),
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, note: `Export to C++ replays the capture to write it, and ${c2.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay.` });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c2.id, note: `Export to C++ needs the capture replayed, and ${NO_REPLAY_TOOL}` });
+        const parent = stringArg(args, "directory") ?? path11.dirname(c2.path);
+        const dir = path11.join(parent, exportFolderName(path11.basename(c2.path)));
+        const run2 = await replayServers.run(tool, c2.path, { kind: "export", dir });
+        if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not export the capture: ${run2.error ?? "no project was written"}` });
+        const e = parseExportSummary(run2.data);
+        if (!e.ok) return jsonResult({ capture: c2.id, note: `The export failed: ${e.error}` });
+        return jsonResult({
+          capture: c2.id,
+          directory: e.directory,
+          replayedOn: e.device,
+          objects: e.objects,
+          commands: e.commands,
+          submissions: e.submissions,
+          renderTargetsCompared: e.targets,
+          commandsLeftOut: e.leftOut,
+          dataMB: Number((e.dataBytes / (1024 * 1024)).toFixed(1)),
+          files: e.files,
+          build: `cmake -S "${e.directory}" -B "${e.directory}/build" && cmake --build "${e.directory}/build" --config Release`,
+          run: "The program prints each render target compared with the capture's copy and exits 0 when all are identical; --validate enables the validation layer.",
+          ...e.notes.length ? { notes: e.notes.slice(0, 20) } : {},
+          ...e.problems.length ? { replayProblems: e.problems.slice(0, 20), problemCount: e.problems.length } : {}
         });
       }
     },

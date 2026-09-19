@@ -28,7 +28,8 @@ const args = process.argv.slice(2);
 const mode = process.env.FAKE_MODE;
 if (!args.includes("--serve")) {
   const flag = args.findIndex((a) => a.endsWith("-data"));
-  writeFileSync(args[flag + 1], JSON.stringify({ oneShot: true, flag: args[flag] }));
+  const exportAt = args.indexOf("--export");
+  writeFileSync(args[flag + 1], JSON.stringify({ oneShot: true, flag: args[flag], ...(exportAt >= 0 ? { exportDir: args[exportAt + 1] } : {}) }));
   process.exit(0);
 }
 if (mode !== "serve" && mode !== "crash") {
@@ -67,6 +68,22 @@ test("analyses of one capture go to one process, each answered with its own data
     assert.deepEqual([pixel.request.image, pixel.request.x, pixel.request.y, pixel.request.mip, pixel.request.layer], [17, 3, 4, 0, 0]);
     assert.deepEqual(mesh.request.commands, [9, 10]);
     assert.ok([pixel, mesh, overlay].every((r) => r.pid === first.pid), "the same process answered every request");
+  } finally {
+    pool.disposeAll();
+  }
+});
+
+test("an export to C++ runs in a process of its own, beside the replay kept for the capture", async () => {
+  // The export writes the capture's objects as they are created, which a kept replay did before any request.
+  process.env.FAKE_MODE = "serve";
+  const pool = new ReplayServerPool();
+  try {
+    const served = json(await pool.run(process.execPath, fake, { kind: "overdraw" }));
+    assert.equal(served.request.kind, "overdraw");
+    const exported = json(await pool.run(process.execPath, fake, { kind: "export", dir: "out/frame_cpp" }));
+    assert.deepEqual(exported, { oneShot: true, flag: "--export-data", exportDir: "out/frame_cpp" });
+    const later = json(await pool.run(process.execPath, fake, { kind: "draws" }));
+    assert.equal(later.pid, served.pid, "the kept replay still answers the analyses");
   } finally {
     pool.disposeAll();
   }

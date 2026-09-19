@@ -1189,6 +1189,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),
       exportReport: cliOption("debug-export"),
+      exportCpp: cliOption("debug-export-cpp"),
     },
   };
 });
@@ -1340,6 +1341,10 @@ ipcMain.handle("inspector:meshOutput", (_e, opts: ReplayRequest & { commands: nu
 // Vulkan pixel history: one pixel followed through the replayed frame (src/replay/src/history.cpp).
 ipcMain.handle("inspector:pixelHistory", (_e, opts: ReplayRequest & { pixel: PixelRequest }): Promise<ReplayRun> =>
   replayFor(opts, { kind: "pixel", ...opts.pixel }));
+// Vulkan Export to C++: the frame replayed and written, as it replays, as a standalone C++ project in
+// `dir` (src/replay/src/exporter.h). The data is the export's summary (renderer/export_cpp.ts).
+ipcMain.handle("inspector:exportCpp", (_e, opts: ReplayRequest & { dir: string }): Promise<ReplayRun> =>
+  replayFor(opts, { kind: "export", dir: opts.dir }));
 // Vulkan shader cost by ablation: a stage's variants timed at one draw (src/replay/src/ablation.cpp).
 ipcMain.handle("inspector:measureShader", async (_e, opts: ReplayRequest & { stage: StageAblationRequest }) => {
   let needData = false;
@@ -1411,7 +1416,8 @@ ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   // macOS: an application is a .app bundle, which is a directory. treatPackageAsDirectory would
   // make the panel descend into it; without it the bundle is chosen as one item, which is what
   // the launch path wants (metal.ts resolves the executable inside).
-  const properties: Array<"openFile" | "openDirectory"> = opts?.directory ? ["openDirectory"] : ["openFile"];
+  // createDirectory: macOS shows no New Folder button without it, and a directory is often chosen to write into.
+  const properties: Array<"openFile" | "openDirectory" | "createDirectory"> = opts?.directory ? ["openDirectory", "createDirectory"] : ["openFile"];
   const r = await dialog.showOpenDialog(win, {
     title: opts?.title ?? "Choose executable",
     properties,

@@ -743,6 +743,31 @@ def triangle_cases(triangle):
         if os.path.exists(exported):
             os.remove(exported)
 
+    exported_cpp = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_export_cpp")
+
+    def remove_exported_cpp():
+        shutil.rmtree(exported_cpp, ignore_errors=True)
+
+    def triangle_export_cpp(state, log):
+        # Export to C++ (renderer/export_cpp.ts, src/replay/src/exporter.h): the capture bar's button
+        # replays the capture and writes a project into a folder named after the capture. Building it
+        # is the replay's own test (docs/REPLAY.md); here it has to have been written, with the
+        # frame's draw in it and the data the source points into.
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        data = os.path.join(project, "frame_data.bin")
+        return check_connected(state, log) + check_capture_basic(state, log) + \
+            expect(len(projects) == 1 and project.endswith("_cpp"), f"one project folder named after the capture in {exported_cpp}: {projects}") + \
+            expect(os.path.isfile(os.path.join(project, "CMakeLists.txt")), "the project has no CMakeLists.txt") + \
+            expect(os.path.isfile(os.path.join(project, "vulkan_headers", "vulkan", "vulkan_core.h")), "the project does not carry its Vulkan headers") + \
+            expect("vkCmdDrawIndexed(" in commands, "frame_commands.cpp does not hold the cube's draw") + \
+            expect("ReadbackImage(" in commands, "frame_commands.cpp reads no render target back to compare") + \
+            expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
+
     def triangle_report_export(state, log):
         # Reports open in tabs beside the capture's, and each exports to a standalone HTML file
         # (renderer/report_export.ts). The flame graph is the report that fetches its shaders
@@ -790,6 +815,8 @@ def triangle_cases(triangle):
     # one only runs where vkinsp_replay is built (src/replay/, docs/REPLAY.md). The click lands on the
     # image, which fits its pane; --debug-settle waits for the replay the click set going.
     if find_replay():
+        cases.append(Case("export-cpp", launch + ["--debug-capture", f"--debug-export-cpp={exported_cpp}"],
+                          triangle_export_cpp, delay_ms=20000, before=remove_exported_cpp))
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))

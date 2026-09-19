@@ -14,6 +14,10 @@
 //   vkinsp_replay <capture.gpucap> --check
 //       Decodes every object's creation arguments and every command's arguments with the
 //       generated decoders, and reports what the capture lacks for a replay.
+//
+//   vkinsp_replay <capture.gpucap> --export <directory>
+//       Export to C++: also writes the frame, as it is replayed, as a standalone C++ project that
+//       re-creates its objects and re-issues its commands (exporter.h), mainly for driver bug reports.
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
@@ -45,6 +49,7 @@ void PrintUsage() {
                          "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
                          "                     [--counters [--counter <name>]... [--counter-draws] [--counter-backend nvperf|khr] [--counter-data <file>]]\n"
                          "                     [--list-counters [--counter-data <file>]]\n"
+                         "                     [--export <directory> [--export-data <file>]]\n"
                          "                     [--trace] | --check | --serve [--validate]\n");
 }
 
@@ -324,6 +329,46 @@ bool WriteCounterData(const ReplayReport& report, const std::string& path) {
     if (!out) return false;
     out.write(json.data(), (std::streamsize)json.size());
     return (bool)out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// --export: the frame as a C++ project (exporter.h). --export-data is the summary GPU Inspector reads
+// (parseExportSummary in src/app/src/renderer/export_cpp.ts).
+
+bool WriteExportData(const ReplayReport& report, const std::string& path) {
+    const ExportReport& e = report.exported;
+    std::string json = "{\"format\":\"gpu-inspector-export-cpp\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"directory\":" + JsonString(e.directory) + ",\"ok\":" + (e.error.empty() ? "true" : "false") +
+                       ",\"error\":" + JsonString(e.error) + ",\"objects\":" + std::to_string(e.objects) +
+                       ",\"commands\":" + std::to_string(e.commands) + ",\"submissions\":" + std::to_string(e.submissions) +
+                       ",\"targets\":" + std::to_string(e.targets) + ",\"leftOut\":" + std::to_string(e.leftOut) +
+                       ",\"dataBytes\":" + std::to_string(e.dataBytes) + ",\"files\":[";
+    for (size_t i = 0; i < e.files.size(); ++i) json += (i ? "," : "") + JsonString(e.files[i]);
+    json += "],\"notes\":[";
+    for (size_t i = 0; i < e.notes.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(e.notes[i]);
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
+void PrintExport(const ReplayReport& report) {
+    const ExportReport& e = report.exported;
+    if (!e.error.empty()) {
+        std::printf("export to C++: failed: %s\n", e.error.c_str());
+        return;
+    }
+    std::printf("export to C++: %s\n", e.directory.c_str());
+    std::printf("  %zu objects, %zu commands in %zu submission%s, %zu render target%s compared, %.1f MB of data, %zu files\n", e.objects,
+                e.commands, e.submissions, e.submissions == 1 ? "" : "s", e.targets, e.targets == 1 ? "" : "s", e.dataBytes / (1024.0 * 1024.0),
+                e.files.size());
+    if (e.leftOut) std::printf("  %zu command%s left out, each with a comment where it would be\n", e.leftOut, e.leftOut == 1 ? "" : "s");
+    for (size_t i = 0; i < e.notes.size() && i < 20; ++i) std::printf("  note: %s\n", e.notes[i].c_str());
+    std::printf("  build it: cmake -S \"%s\" -B \"%s/build\" && cmake --build \"%s/build\" --config Release\n", e.directory.c_str(),
+                e.directory.c_str(), e.directory.c_str());
 }
 
 void PrintCounters(const ReplayReport& report) {
@@ -882,7 +927,7 @@ int Check(const CaptureFile& capture) {
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
            const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
-           const std::string& meshData, const std::string& ablationData, const std::string& counterData) {
+           const std::string& meshData, const std::string& ablationData, const std::string& counterData, const std::string& exportData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -971,6 +1016,13 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
         if (!counterData.empty()) {
             if (WriteCounterData(report, counterData)) std::printf("  wrote %s\n", counterData.c_str());
             else std::printf("  could not write %s\n", counterData.c_str());
+        }
+    }
+    if (report.exported.requested) {
+        PrintExport(report);
+        if (!exportData.empty()) {
+            if (WriteExportData(report, exportData)) std::printf("  wrote %s\n", exportData.c_str());
+            else std::printf("  could not write %s\n", exportData.c_str());
         }
     }
     if (report.history.requested) {
@@ -1138,6 +1190,7 @@ int main(int argc, char** argv) {
     std::string ablationRequest;
     std::string ablationData;
     std::string counterData;
+    std::string exportData;
     bool check = false;
     bool serve = false;
     ReplayOptions options;
@@ -1193,6 +1246,8 @@ int main(int argc, char** argv) {
             options.counters.enabled = true;
             counterData = argv[++i];
         }
+        else if (!std::strcmp(argv[i], "--export") && i + 1 < argc) options.exportDir = argv[++i];
+        else if (!std::strcmp(argv[i], "--export-data") && i + 1 < argc) exportData = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) {
             dumpDir = argv[++i];
             options.keepPixels = true;
@@ -1225,6 +1280,20 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --pixel-data needs --pixel <image> <x> <y>\n");
         return 2;
     }
+    if (!exportData.empty() && options.exportDir.empty()) {
+        std::fprintf(stderr, "vkinsp_replay: --export-data needs --export <directory>\n");
+        return 2;
+    }
+    if (options.counters.enabled && !options.exportDir.empty()) {
+        // Counters replay the frame once per collection pass; the export is of one frame.
+        std::fprintf(stderr, "vkinsp_replay: --export cannot be combined with hardware counters\n");
+        return 2;
+    }
+    if (serve && !options.exportDir.empty()) {
+        // The objects are exported as they are created, which a served replay does once, before any request.
+        std::fprintf(stderr, "vkinsp_replay: --export replays the capture once and cannot be combined with --serve\n");
+        return 2;
+    }
     if (serve) return Serve(capture, options.validation);
     if (!meshData.empty() && !options.mesh.enabled) {
         std::fprintf(stderr, "vkinsp_replay: --mesh-data needs --mesh <command>\n");
@@ -1243,5 +1312,6 @@ int main(int argc, char** argv) {
         return 2;
     }
     return check ? Check(capture)
-                 : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData, counterData);
+                 : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData, counterData,
+                          exportData);
 }

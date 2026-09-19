@@ -107,11 +107,29 @@ reopens on any machine, on any platform, without the application and without the
 - A capture file opens as its own session. Its objects are still browsable in the **Inspect**
   tab; what is gone is capturing more frames and reading anything back live, since there is no
   application behind it.
-- Tab right-click has **Save Capture...**, **Open in New Tab**, **Open in New Window** and the
-  close commands. Opening two captures in two windows is how a before-and-after comparison is
+- Tab right-click has **Save Capture...**, **Export to C++...**, **Open in New Tab**, **Open in
+  New Window** and the close commands. Opening two captures in two windows is how a before-and-after comparison is
   made by eye; [Claude](MCP.md) can compare them numerically.
 
 Captures are what to attach to a bug report, and what Claude reads.
+
+### Export to C++
+
+The button beside save, **Export to C++**, writes a Vulkan capture as a standalone C++ project
+instead: a CMake project that re-creates the frame's objects, uploads what its images and buffers
+held, records and submits its command buffers, and compares every render target with the capture's
+copy. It is what to send a GPU vendor with a driver bug, who wants something to build and run
+rather than a capture in a format of ours.
+
+- It asks where the project's folder should go, and names the folder after the capture.
+- The capture is replayed on this machine's GPU to write it, so it takes a moment, and the source
+  is what the replay did: the project's `README.md` says how that differs from the application,
+  and lists anything left out.
+- The project needs CMake and a C++20 compiler and nothing else. It carries the Vulkan headers it
+  was written against.
+
+[Capture replay](REPLAY.md#export-to-c) has the details. Metal and D3D12 captures do not replay,
+so they are not exported.
 
 ---
 

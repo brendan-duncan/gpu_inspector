@@ -30,6 +30,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <memory>
+
 #include "arena.h"
 #include "decode.h"
 #include "gpucap.h"
@@ -38,9 +40,17 @@
 
 namespace vkreplay {
 
+class Exporter;
+
 struct ReplayOptions {
     /** Enable the Khronos validation layer and report its messages. */
     bool validation = false;
+    /**
+     * Export to C++ (exporter.h): write the frame as a standalone C++ project into this directory
+     * while it is replayed. Set for Setup as well as the frame, since the objects are exported as
+     * they are created.
+     */
+    std::string exportDir;
     /** Create the device with every feature an analysis may use, for a replay that serves many (--serve). */
     bool allFeatures = false;
     /** Read back the render targets the capture read back and compare them with its copies (TargetComparison). */
@@ -122,6 +132,25 @@ struct ReplayOptions {
          */
         std::string backend;
     } counters;
+};
+
+/** What Export to C++ wrote (ReplayOptions::exportDir). */
+struct ExportReport {
+    bool requested = false;
+    std::string directory;
+    /** Why nothing, or not everything, was written. */
+    std::string error;
+    std::vector<std::string> files;
+    size_t objects = 0;
+    size_t commands = 0;
+    size_t submissions = 0;
+    /** Render targets the exported program reads back and compares. */
+    size_t targets = 0;
+    /** Commands left out of the source, as the replay left them out. */
+    size_t leftOut = 0;
+    uint64_t dataBytes = 0;
+    /** What the source could not spell. */
+    std::vector<std::string> notes;
 };
 
 /** One hardware counter: the name the backend knows it by, and what it measures. */
@@ -420,6 +449,8 @@ struct ReplayReport {
     std::vector<AblationResult> ablations;
     /** With ReplayOptions::counters: the vendor's counters per pass and per draw. */
     HwCounterReport counters;
+    /** With ReplayOptions::exportDir: the project written. */
+    ExportReport exported;
 };
 
 class Replayer {
@@ -604,7 +635,8 @@ private:
     void CreateObject(const JValue& object);
     uint64_t CreateImage(uint64_t id, const VkImageCreateInfo& info);
     uint64_t CreateBuffer(uint64_t id, const VkBufferCreateInfo& info);
-    VkShaderModule ModuleFromBlob(const JValue& object, const std::string& blobName);
+    /** A module from one of an object's SPIR-V payloads; `code` and `size`, when given, get the payload's bytes. */
+    VkShaderModule ModuleFromBlob(const JValue& object, const std::string& blobName, const uint8_t** code = nullptr, size_t* size = nullptr);
     uint64_t CreatePipeline(const JValue& object, std::string_view cmd, uint32_t index, const JValue& args, size_t unresolvedBefore);
     /** A VkShaderEXT (VK_EXT_shader_object), from its payload's SPIR-V, made unlinked. */
     uint64_t CreateShaderObject(const JValue& object, uint32_t index, const JValue& args, size_t unresolvedBefore);
@@ -793,7 +825,11 @@ private:
     };
     void BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, DescriptorWrites& out);
     /** Issues a captured command: a push through an update template is pushed from its snapshot. */
-    void IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb);
+    /**
+     * `index` is the command's index in the capture when it is issued as part of the frame, which is what
+     * Export to C++ writes; an analysis issuing a command again (overdraw, pixel history) passes none.
+     */
+    void IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb, uint32_t index = UINT32_MAX);
     void BeginPass(const JValue& command, uint32_t index, uint64_t commandBuffer);
     void BeginDynamicPass(const JValue& command, uint32_t index, uint64_t commandBuffer, VkCommandBuffer cb);
     /** Copies the pass's captured targets for comparison; with a reason, only reports them as not compared. */
@@ -890,6 +926,11 @@ private:
 
     Arena _arena;
     DecodeContext _ctx{_arena};
+    /** Export to C++: the project being written while the capture replays, and the context its commands are decoded with. */
+    std::unique_ptr<Exporter> _exporter;
+    DecodeContext _exportCtx{_arena};
+    /** What the exported source says about the image CreateImage is making (a swapchain's). */
+    std::string _exportComment;
     std::unordered_map<uint64_t, uint64_t> _handles;    // tracker id -> replay handle
     std::unordered_set<uint64_t> _skipped;              // ids left out on purpose
     std::unordered_map<uint64_t, ImageRecord> _images;

@@ -10,6 +10,7 @@
 #include <memory>
 #include <unordered_set>
 
+#include "exporter.h"
 #include "format_info.h"
 #include "hw_counters.h"
 #include "util.h"
@@ -44,6 +45,11 @@ Replayer::Replayer() {
         return _skipped.count(id) != 0 || (className == "VkShaderModule" && !_capture->Object(id));
     };
     _ctx.fns = &_fns;
+    // Export to C++ decodes each command a second time, with the same handles but problems of its own:
+    // what the replay reports it has reported already.
+    _exportCtx.resolve = _ctx.resolve;
+    _exportCtx.quiet = _ctx.quiet;
+    _exportCtx.fns = &_fns;
 }
 
 Replayer::~Replayer() {
@@ -142,6 +148,14 @@ bool Replayer::CreateInstance() {
         return false;
     }
     LoadInstanceFunctions(_fns, _instance, _fns.GetInstanceProcAddr);
+    if (_exporter) {
+        // Debug utils and the surface extension are the replay's own needs; a profiler's extensions are not the frame's.
+        std::vector<const char*> exported;
+        for (const char* e : extensions)
+            if (!std::strcmp(e, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) || !std::strcmp(e, VK_KHR_SURFACE_EXTENSION_NAME)) exported.push_back(e);
+        _exporter->Instance(app.apiVersion, exported);
+        _exporter->Name("VkInstance", (uint64_t)(uintptr_t)_instance, "instance");
+    }
     if (!extensions.empty() && _fns.CreateDebugUtilsMessengerEXT) {
         VkDebugUtilsMessengerCreateInfoEXT m{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
         m.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
@@ -380,8 +394,8 @@ bool Replayer::CreateDevice() {
         _nvperfReady = _perfQueryAvailable = false;
         r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     }
-    _arena.Reset();
     if (r != VK_SUCCESS) {
+        _arena.Reset();
         Problem("vkCreateDevice failed (" + std::to_string(r) + ")");
         return false;
     }
@@ -389,6 +403,16 @@ bool Replayer::CreateDevice() {
     LoadDeviceFunctions(_fns, _device, gdpa);
     _queueFamily = queues[0].queueFamilyIndex;
     _fns.GetDeviceQueue(_device, _queueFamily, 0, &_queue);
+    if (_exporter) {
+        // The create info the driver accepted: the capture's, less what this GPU lacks.
+        _exporter->Device(capturedName, chosenProps.deviceName, info, _queueFamily);
+        _exporter->Name("VkPhysicalDevice", (uint64_t)(uintptr_t)_physical, "physicalDevice");
+        _exporter->Name("VkDevice", (uint64_t)(uintptr_t)_device, "device");
+        _exporter->Name("VkQueue", (uint64_t)(uintptr_t)_queue, "queue");
+    }
+
+    // The captured create info was decoded into the arena, and the export above was the last to read it.
+    _arena.Reset();
 
     VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -604,6 +628,7 @@ uint64_t Replayer::CreateImage(uint64_t id, const VkImageCreateInfo& captured) {
     rec.storage = (info.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
     rec.layouts.assign((size_t)rec.mips * rec.layers, VK_IMAGE_LAYOUT_UNDEFINED);
     _images[id] = rec;
+    if (_exporter) _exporter->CreateImage(id, image, info, _exportComment);
     return (uint64_t)image;
 }
 
@@ -627,13 +652,16 @@ uint64_t Replayer::CreateBuffer(uint64_t id, const VkBufferCreateInfo& captured)
         return 0;
     }
     _buffers[id] = {buffer, info.size};
+    if (_exporter) _exporter->CreateBuffer(id, buffer, info);
     return (uint64_t)buffer;
 }
 
-VkShaderModule Replayer::ModuleFromBlob(const JValue& object, const std::string& blobName) {
+VkShaderModule Replayer::ModuleFromBlob(const JValue& object, const std::string& blobName, const uint8_t** code, size_t* codeSize) {
     const uint8_t* data = nullptr;
     size_t size = 0;
     if (!_capture->Blob(object, blobName, data, size) || size < 4) return VK_NULL_HANDLE;
+    if (code) *code = data;
+    if (codeSize) *codeSize = size;
     auto* words = _arena.Make<uint32_t>(size / 4);
     std::memcpy(words, data, size / 4 * 4);
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -646,11 +674,15 @@ VkShaderModule Replayer::ModuleFromBlob(const JValue& object, const std::string&
 
 uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, uint32_t index, const JValue& args, size_t unresolvedBefore) {
     std::vector<VkShaderModule> temporary;
+    std::vector<Exporter::StageModule> exportedModules;
     auto stageModule = [&](VkPipelineShaderStageCreateInfo& stage) {
         std::string name = std::string(StageName(stage.stage)) + ":" + (stage.pName ? stage.pName : "main");
-        VkShaderModule module = ModuleFromBlob(object, name);
+        const uint8_t* code = nullptr;
+        size_t codeSize = 0;
+        VkShaderModule module = ModuleFromBlob(object, name, &code, &codeSize);
         if (module) {
             temporary.push_back(module);
+            exportedModules.push_back({module, StageName(stage.stage), code, codeSize});
             stage.module = module;
             // Inline code (VkShaderModuleCreateInfo in pNext) is replaced by the payload's module.
             stage.pNext = nullptr;
@@ -672,6 +704,7 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
         info.basePipelineHandle = VK_NULL_HANDLE;
         info.basePipelineIndex = -1;
         r = _fns.CreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+        if (_exporter && pipeline) _exporter->CreatePipeline(object.Get("id")->Uint(), pipeline, std::string(cmd), &info, nullptr, nullptr, exportedModules);
     } else if (cmd == "vkCreateComputePipelines") {
         Args_vkCreateComputePipelines a{};
         DecodeArgs(_ctx, args, a);
@@ -682,6 +715,7 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
         info.basePipelineHandle = VK_NULL_HANDLE;
         info.basePipelineIndex = -1;
         r = _fns.CreateComputePipelines(_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+        if (_exporter && pipeline) _exporter->CreatePipeline(object.Get("id")->Uint(), pipeline, std::string(cmd), nullptr, &info, nullptr, exportedModules);
     } else if (cmd == "vkCreateRayTracingPipelinesKHR") {
         Args_vkCreateRayTracingPipelinesKHR a{};
         DecodeArgs(_ctx, args, a);
@@ -702,6 +736,7 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
                     + ": this device has no ray tracing pipelines");
         } else {
             r = _fns.CreateRayTracingPipelinesKHR(_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+            if (_exporter && pipeline) _exporter->CreatePipeline(object.Get("id")->Uint(), pipeline, std::string(cmd), nullptr, nullptr, &info, exportedModules);
         }
     } else {
         Problem("pipeline " + std::to_string(object.Get("id")->Uint()) + ": " + std::string(cmd) + " is not replayed yet");
@@ -746,6 +781,7 @@ uint64_t Replayer::CreateShaderObject(const JValue& object, uint32_t index, cons
         Problem("shader " + id + ": vkCreateShadersEXT failed (" + std::to_string(r) + ")");
         return 0;
     }
+    if (_exporter) _exporter->CreateShaderObject(object.Get("id")->Uint(), shader, info);
     return (uint64_t)shader;
 }
 
@@ -781,6 +817,7 @@ void Replayer::CreateObject(const JValue& o) {
         VkQueue q = VK_NULL_HANDLE;
         _fns.GetDeviceQueue(d, family, qi, &q);
         handle = (uint64_t)(uintptr_t)(q ? q : _queue);
+        if (_exporter) _exporter->Queue(id, (VkQueue)(uintptr_t)handle, family, qi);
     } else if (type == "VkSurfaceKHR" || type == "VkSwapchainKHR" || type == "VkDeviceMemory" || type == "VkPipelineCache" ||
                type == "VkDebugUtilsMessengerEXT" || type == "VkDebugReportCallbackEXT" ||
                // Sets are written from their snapshots and template pushes pushed as writes (IssueCommand).
@@ -789,6 +826,7 @@ void Replayer::CreateObject(const JValue& o) {
                type == "VkAccelerationStructureNV" || type == "VkDeferredOperationKHR") {
         _skipped.insert(id);
         _report->objectsSkipped++;
+        if (_exporter) _exporter->Skipped(type, id, "left out on purpose: the frame does not need it to run again");
         return;
     } else if (type == "VkAccelerationStructureKHR") {
         // The structure sits in a buffer the replay already made; only the handle is new. Its
@@ -816,6 +854,7 @@ void Replayer::CreateObject(const JValue& o) {
         }
         // Tracked by the common path below, with every other created object.
         handle = (uint64_t)(uintptr_t)structure;
+        if (_exporter) _exporter->Create(type, id, handle, "vkCreateAccelerationStructureKHR", info, "placed by the driver, not at the captured address");
     } else if (type == "VkImage" && cmd == "vkGetSwapchainImagesKHR") {
         const JValue* swapchain = _capture->Object(o.Get("parent") ? o.Get("parent")->Uint() : 0);
         const JValue* sargs = swapchain ? swapchain->Get("args") : nullptr;
@@ -835,7 +874,10 @@ void Replayer::CreateObject(const JValue& o) {
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = a.pCreateInfo->imageUsage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        _exportComment = "an image of swapchain " + std::to_string(o.Get("parent") ? o.Get("parent")->Uint() : 0) +
+                         ", as an ordinary image of its format and size";
         handle = CreateImage(id, info);
+        _exportComment.clear();
     } else if (type == "VkImage" && cmd == "vkCreateImage") {
         Args_vkCreateImage a{};
         DecodeArgs(_ctx, *args, a);
@@ -850,6 +892,7 @@ void Replayer::CreateObject(const JValue& o) {
         VkImageView view = VK_NULL_HANDLE;
         if (a.pCreateInfo && a.pCreateInfo->image && resolved() && _fns.CreateImageView(d, a.pCreateInfo, nullptr, &view) == VK_SUCCESS) {
             handle = (uint64_t)view;
+            if (_exporter) _exporter->Create(type, id, handle, "vkCreateImageView", *a.pCreateInfo);
             ViewRecord rec;
             rec.image = IdOf(args->Get("pCreateInfo")->Get("image"));
             rec.range = a.pCreateInfo->subresourceRange;
@@ -860,26 +903,31 @@ void Replayer::CreateObject(const JValue& o) {
         DecodeArgs(_ctx, *args, a);
         VkBufferView view = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateBufferView(d, a.pCreateInfo, nullptr, &view) == VK_SUCCESS) handle = (uint64_t)view;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateBufferView", *a.pCreateInfo);
     } else if (type == "VkSampler") {
         Args_vkCreateSampler a{};
         DecodeArgs(_ctx, *args, a);
         VkSampler s = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateSampler(d, a.pCreateInfo, nullptr, &s) == VK_SUCCESS) handle = (uint64_t)s;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateSampler", *a.pCreateInfo);
     } else if (type == "VkDescriptorSetLayout") {
         Args_vkCreateDescriptorSetLayout a{};
         DecodeArgs(_ctx, *args, a);
         VkDescriptorSetLayout l = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateDescriptorSetLayout(d, a.pCreateInfo, nullptr, &l) == VK_SUCCESS) handle = (uint64_t)l;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateDescriptorSetLayout", *a.pCreateInfo);
     } else if (type == "VkPipelineLayout") {
         Args_vkCreatePipelineLayout a{};
         DecodeArgs(_ctx, *args, a);
         VkPipelineLayout l = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreatePipelineLayout(d, a.pCreateInfo, nullptr, &l) == VK_SUCCESS) handle = (uint64_t)l;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreatePipelineLayout", *a.pCreateInfo);
     } else if (type == "VkDescriptorPool") {
         Args_vkCreateDescriptorPool a{};
         DecodeArgs(_ctx, *args, a);
         VkDescriptorPool p = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateDescriptorPool(d, a.pCreateInfo, nullptr, &p) == VK_SUCCESS) handle = (uint64_t)p;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateDescriptorPool", *a.pCreateInfo);
     } else if (type == "VkCommandPool") {
         Args_vkCreateCommandPool a{};
         DecodeArgs(_ctx, *args, a);
@@ -888,6 +936,7 @@ void Replayer::CreateObject(const JValue& o) {
             info.flags |= VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
             VkCommandPool p = VK_NULL_HANDLE;
             if (_fns.CreateCommandPool(d, &info, nullptr, &p) == VK_SUCCESS) handle = (uint64_t)p;
+            if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateCommandPool", info, "its command buffers can be reset one at a time");
         }
     } else if (type == "VkCommandBuffer") {
         Args_vkAllocateCommandBuffers a{};
@@ -897,6 +946,7 @@ void Replayer::CreateObject(const JValue& o) {
             info.commandBufferCount = 1;
             VkCommandBuffer cb = VK_NULL_HANDLE;
             if (_fns.AllocateCommandBuffers(d, &info, &cb) == VK_SUCCESS) handle = (uint64_t)(uintptr_t)cb;
+            if (handle && _exporter) _exporter->AllocateCommandBuffer(id, cb, info);
         }
     } else if (type == "VkDescriptorSet") {
         Args_vkAllocateDescriptorSets a{};
@@ -908,28 +958,33 @@ void Replayer::CreateObject(const JValue& o) {
             VkDescriptorSet set = VK_NULL_HANDLE;
             VkResult r = _fns.AllocateDescriptorSets(d, &info, &set);
             if (r == VK_SUCCESS) handle = (uint64_t)set;
-            else Problem("descriptor set " + std::to_string(id) + ": vkAllocateDescriptorSets failed (" + std::to_string(r) + ")");
+            if (handle && _exporter) _exporter->AllocateDescriptorSet(id, set, info);
+            if (r != VK_SUCCESS) Problem("descriptor set " + std::to_string(id) + ": vkAllocateDescriptorSets failed (" + std::to_string(r) + ")");
         }
     } else if (type == "VkFence") {
         Args_vkCreateFence a{};
         DecodeArgs(_ctx, *args, a);
         VkFence f = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateFence(d, a.pCreateInfo, nullptr, &f) == VK_SUCCESS) handle = (uint64_t)f;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateFence", *a.pCreateInfo);
     } else if (type == "VkSemaphore") {
         Args_vkCreateSemaphore a{};
         DecodeArgs(_ctx, *args, a);
         VkSemaphore s = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateSemaphore(d, a.pCreateInfo, nullptr, &s) == VK_SUCCESS) handle = (uint64_t)s;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateSemaphore", *a.pCreateInfo);
     } else if (type == "VkEvent") {
         Args_vkCreateEvent a{};
         DecodeArgs(_ctx, *args, a);
         VkEvent e = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateEvent(d, a.pCreateInfo, nullptr, &e) == VK_SUCCESS) handle = (uint64_t)e;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateEvent", *a.pCreateInfo);
     } else if (type == "VkQueryPool") {
         Args_vkCreateQueryPool a{};
         DecodeArgs(_ctx, *args, a);
         VkQueryPool q = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateQueryPool(d, a.pCreateInfo, nullptr, &q) == VK_SUCCESS) handle = (uint64_t)q;
+        if (handle && _exporter) _exporter->Create(type, id, handle, "vkCreateQueryPool", *a.pCreateInfo);
     } else if (type == "VkRenderPass" && cmd == "vkCreateRenderPass") {
         Args_vkCreateRenderPass a{};
         DecodeArgs(_ctx, *args, a);
@@ -958,6 +1013,7 @@ void Replayer::CreateObject(const JValue& o) {
             if (_fns.CreateRenderPass(d, &info, nullptr, &rp) == VK_SUCCESS) {
                 handle = (uint64_t)rp;
                 _renderPasses[id] = rec;
+                if (_exporter) _exporter->Create(type, id, handle, "vkCreateRenderPass", info, "every attachment stored, so each pass's result can be read");
             }
         }
     } else if (type == "VkRenderPass" && (cmd == "vkCreateRenderPass2" || cmd == "vkCreateRenderPass2KHR")) {
@@ -983,6 +1039,7 @@ void Replayer::CreateObject(const JValue& o) {
             if (_fns.CreateRenderPass2(d, &info, nullptr, &rp) == VK_SUCCESS) {
                 handle = (uint64_t)rp;
                 _renderPasses[id] = rec;
+                if (_exporter) _exporter->Create(type, id, handle, "vkCreateRenderPass2", info, "every attachment stored, so each pass's result can be read");
             }
         }
     } else if (type == "VkFramebuffer") {
@@ -991,6 +1048,7 @@ void Replayer::CreateObject(const JValue& o) {
         VkFramebuffer fb = VK_NULL_HANDLE;
         if (a.pCreateInfo && resolved() && _fns.CreateFramebuffer(d, a.pCreateInfo, nullptr, &fb) == VK_SUCCESS) {
             handle = (uint64_t)fb;
+            if (_exporter) _exporter->Create(type, id, handle, "vkCreateFramebuffer", *a.pCreateInfo);
             _framebufferExtents[id] = {a.pCreateInfo->width, a.pCreateInfo->height};
             std::vector<uint64_t> views;
             if (const JValue* list = args->Get("pCreateInfo")->Get("pAttachments"); list && list->IsArray())
@@ -998,7 +1056,15 @@ void Replayer::CreateObject(const JValue& o) {
             _framebufferViews[id] = std::move(views);
         }
     } else if (type == "VkShaderModule") {
-        VkShaderModule m = ModuleFromBlob(o, "SPIR-V");
+        const uint8_t* blobCode = nullptr;
+        size_t blobSize = 0;
+        VkShaderModule m = ModuleFromBlob(o, "SPIR-V", &blobCode, &blobSize);
+        if (m && _exporter) {
+            VkShaderModuleCreateInfo exported{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            exported.codeSize = blobSize / 4 * 4;
+            exported.pCode = reinterpret_cast<const uint32_t*>(blobCode);
+            _exporter->Create(type, id, (uint64_t)m, "vkCreateShaderModule", exported);
+        }
         // Whether the capture holds this module's code at all. A module created before the capture
         // started has no payload, and the layer summarizes an oversized pCode away (json_writer.h,
         // maxScalarArray), which every real shader exceeds — so there is nothing to build it from.
@@ -1015,6 +1081,7 @@ void Replayer::CreateObject(const JValue& o) {
                 DecodeArgs(_ctx, *args, a);
                 if (a.pCreateInfo && a.pCreateInfo->pCode && a.pCreateInfo->codeSize >= 20 && a.pCreateInfo->pCode[0] == 0x07230203)
                     _fns.CreateShaderModule(d, a.pCreateInfo, nullptr, &m);
+                if (m && _exporter) _exporter->Create(type, id, (uint64_t)m, "vkCreateShaderModule", *a.pCreateInfo);
             }
         }
         handle = (uint64_t)m;
@@ -1036,6 +1103,7 @@ void Replayer::CreateObject(const JValue& o) {
     if (!known) {
         Problem(type + " " + std::to_string(id) + " (" + cmd + ") is not replayed yet");
         _report->objectsSkipped++;
+        if (_exporter) _exporter->Skipped(type, id, "left out: the replay does not make objects of this type yet");
         return;
     }
     if (!handle) {
@@ -1043,6 +1111,10 @@ void Replayer::CreateObject(const JValue& o) {
             Problem(type + " " + std::to_string(id) + " (" + cmd + ") " +
                     (resolved() ? "could not be created" : "was not created: it names objects the replay does not have"));
         _report->objectsSkipped++;
+        if (_exporter)
+            _exporter->Skipped(type, id, quiet ? "left out: the capture holds no code for it, and pipelines carry their own"
+                                       : resolved() ? "left out: the replay could not create it"
+                                                    : "left out: it names objects the replay does not have");
         return;
     }
     _handles[id] = handle;
@@ -1291,12 +1363,14 @@ void Replayer::UploadImageContents() {
             _fns.CmdCopyBufferToImage(cb, staging.buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regions.size(), regions.data());
         });
         DestroyStaging(staging);
+        if (_exporter) _exporter->UploadImage(info->Get("id")->Uint(), image.image, initial, regions, data, (size_t)offset);
         if (initial) _report->initialImagesUploaded++;
         else _report->texturesUploaded++;
     }
 }
 
 void Replayer::TransitionToInitialLayouts() {
+    if (_exporter) _exporter->BeginInitialLayouts();
     RunOneTime([&](VkCommandBuffer cb) {
         for (auto& [id, image] : _images) {
             auto it = _initialLayouts.find(id);
@@ -1305,9 +1379,11 @@ void Replayer::TransitionToInitialLayouts() {
             if (!_hasSwapchainExtension)
                 for (VkImageLayout& t : targets)
                     if (t == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) t = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (_exporter) _exporter->InitialLayouts(id, image.image, targets);
             TransitionSubresources(cb, image, targets);
         }
     });
+    if (_exporter) _exporter->EndInitialLayouts();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1357,6 +1433,7 @@ void Replayer::ApplyBufferData(const CommandGroup& group) {
         VkDeviceSize offset = info->Get("offset")->Uint();
         if (offset + size > bit->second.size) size = (size_t)(bit->second.size - offset);
         UploadToBuffer(bit->second.buffer, offset, data, size);
+        if (_exporter) _exporter->UploadBuffer(bit->first, bit->second.buffer, offset, data, size);
         _report->bufferUploads++;
     };
     for (uint32_t i = group.first; i <= group.last && i < commands->count; ++i) {
@@ -1403,6 +1480,7 @@ void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
         if (last == w.key) continue;  // rewriting a bound set would invalidate the command buffers that bound it
         last = w.key;
         if (!w.writes.empty()) _fns.UpdateDescriptorSets(_device, (uint32_t)w.writes.size(), w.writes.data(), 0, nullptr);
+        if (_exporter) _exporter->UpdateDescriptorSets(setId, w.writes);
     }
     _arena.Reset();
 }
@@ -1840,8 +1918,10 @@ bool Replayer::EnsureBindingTable(VkDeviceSize size) {
     return true;
 }
 
-void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb) {
+void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& args, VkCommandBuffer cb, uint32_t index) {
     const std::string m = Str(command.Get("method"));
+    // Only the frame's own commands are exported, not an analysis issuing one of them again.
+    Exporter* const exporter = index != UINT32_MAX ? _exporter.get() : nullptr;
     // Ray tracing is not replayed: its pipelines and acceleration structures are not made, and
     // these commands name device addresses of the captured process's buffers, which mean nothing here.
     static const std::unordered_set<std::string> kRayTracing = {
@@ -1859,18 +1939,27 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
     }
     if (m == "vkCmdBuildAccelerationStructuresKHR") {
         BuildAccelerationStructures(command, args, cb);
+        // A build names what it reads by device address, which the replay finds again at run time
+        // (its own buffers' addresses, scratch of its own): nothing the source can spell as constants.
+        if (exporter) exporter->NotExported(index, m, "acceleration structure builds are not exported yet (their device addresses are found at run time)");
         return;
     }
     if (m == "vkCmdTraceRaysKHR") {
         TraceRays(command, args, cb);
+        if (exporter) exporter->NotExported(index, m, "ray traces are not exported yet (the shader binding table is rebuilt at run time)");
         return;
     }
     if (kRayTracing.count(m)) {
         _ctx.Problem("left out: ray tracing is not replayed yet");
+        if (exporter) exporter->LeftOut(index, m, "the replay does not issue it");
         return;
     }
     if (!StartsWith(m, "vkCmdPushDescriptorSetWithTemplate")) {
         fn(_ctx, args, cb);
+        if (exporter) {
+            exporter->Command(index, m, args, _exportCtx);
+            _exportCtx.problems.clear();
+        }
         return;
     }
     // A push through an update template passes its descriptors as a pointer to application memory
@@ -1897,6 +1986,8 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
     if (_fns.CmdPushDescriptorSetKHR) _fns.CmdPushDescriptorSetKHR(cb, bindPoint, layout, set, (uint32_t)w.writes.size(), w.writes.data());
     else if (_fns.CmdPushDescriptorSet) _fns.CmdPushDescriptorSet(cb, bindPoint, layout, set, (uint32_t)w.writes.size(), w.writes.data());
     else _ctx.Problem("left out: push descriptors are not available on this device");
+    if (exporter && (_fns.CmdPushDescriptorSetKHR || _fns.CmdPushDescriptorSet))
+        exporter->PushDescriptors(index, bindPoint, layout, set, w.writes, _fns.CmdPushDescriptorSetKHR != nullptr);
 }
 
 void Replayer::BuildDescriptorWrites(const JValue& set, VkDescriptorSet handle, DescriptorWrites& out) {
@@ -2045,6 +2136,10 @@ void Replayer::InjectStorageReadbacks(VkCommandBuffer cb, const CommandGroup& gr
         b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
                                 0, nullptr, 1, &b);
+        if (_exporter)
+            _exporter->Readback(image.image, "image" + std::to_string(cmp.image) + "_cb" + std::to_string(group.commandBuffer) + "_storage", aspect, 0, 0, 1,
+                                {std::max(1u, width), std::max(1u, height)}, VK_IMAGE_LAYOUT_GENERAL, image.samples, image.format, captured, capturedSize,
+                                /* shaderWritten */ true);
         _report->targets.push_back(cmp);
         readbacks.push_back(pending);
     }
@@ -2100,6 +2195,16 @@ void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::v
         if (!CreateStaging(size, pending.staging)) { skip("no staging memory"); continue; }
         VkBufferImageCopy copy{};
         copy.imageExtent = {std::max(1u, image.extent.width >> mip), std::max(1u, image.extent.height >> mip), 1};
+        if (_exporter) {
+            const uint8_t* captured = nullptr;
+            size_t capturedSize = 0;
+            if (_capture->Payload(t.Get("payload"), captured, capturedSize) && capturedSize)
+                _exporter->Readback(image.image,
+                                    "image" + std::to_string(cmp.image) + "_cb" + std::to_string(cmp.commandBuffer) + "_pass" + std::to_string(cmp.passIndex) +
+                                        "_att" + std::to_string(cmp.attachment) + (resolve ? "_resolve" : "") + (cmp.aspect == "color" ? "" : "_" + cmp.aspect),
+                                    aspect, mip, baseLayer, layers, {copy.imageExtent.width, copy.imageExtent.height}, layout, image.samples, image.format,
+                                    captured, capturedSize);
+        }
         if (image.samples != VK_SAMPLE_COUNT_1_BIT) {
             // The capture read it back through a resolve (sample zero for depth), and so does the replay.
             std::string why;
@@ -2306,9 +2411,11 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 Args_vkBeginCommandBuffer a{};
                 if (args) DecodeArgs(_ctx, *args, a);
                 _fns.BeginCommandBuffer(cb, a.pBeginInfo);
+                if (_exporter && a.pBeginInfo) _exporter->BeginCommandBuffer(id, cb, *a.pBeginInfo, i, i, true);
                 begun = true;
             } else if (m == "vkEndCommandBuffer") {
                 if (begun) _fns.EndCommandBuffer(cb);
+                if (begun && _exporter) _exporter->EndCommandBuffer(cb);
                 begun = false;
             } else if (ReplayFn fn = FindReplayCommand(m); fn && args && begun) {
                 ApplyDescriptorSnapshot(c.Get("descriptors"));
@@ -2322,7 +2429,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 // Hardware counters: a draw's range, here too (a Unity player records every draw in a secondary).
                 const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
                 const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, commandBuffer, passIndex) : -1;
-                IssueCommand(fn, c, *args, cb);
+                IssueCommand(fn, c, *args, cb, i);
                 if (countDraw) EndCounterDraw(cb, counterRange);
                 if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
                 if (StartsWith(m, "vkCmdBeginQuery")) ++_appQueryDepth;
@@ -2332,6 +2439,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
             _arena.Reset();
         }
         if (begun) _fns.EndCommandBuffer(cb);
+        if (begun && _exporter) _exporter->EndCommandBuffer(cb);
     }
 }
 
@@ -2358,6 +2466,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
     if (begin.pBeginInfo) beginInfo = *begin.pBeginInfo;
     _fns.ResetCommandBuffer(cb, 0);
     _fns.BeginCommandBuffer(cb, &beginInfo);
+    if (_exporter) _exporter->BeginCommandBuffer(group.commandBuffer, cb, beginInfo, group.first, group.last, false);
     // The submission's first command buffer resets the pools its actions write into.
     if (_options.drawStats && _drawQueryCapacity && _drawSlot == 0) ResetDrawQueries(cb);
     if (_options.ablation.enabled) ResetAblationQueries(cb, group);
@@ -2382,6 +2491,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         }
         if (!args) continue;
         if (skippingPass) {
+            if (_exporter) _exporter->LeftOut(i, m, "with its pass, whose begin names objects the replay does not have");
             if (IsEndPass(m)) {
                 if (_options.compareTargets) InjectReadbacks(cb, pass, readbacks, "the replay left this pass out");
                 pass.active = false;
@@ -2451,6 +2561,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             DecodeArgs(_ctx, *args, a);
             if (_ctx.unresolved != unresolvedBefore) {
                 Problem("command " + std::to_string(i) + ": the pass was left out, with the commands inside it (it names objects the replay does not have)");
+                if (_exporter) _exporter->LeftOut(i, m, "it names objects the replay does not have");
                 skippingPass = true;
             } else if (a.pRenderingInfo) {
                 VkRenderingInfo info = *a.pRenderingInfo;
@@ -2517,6 +2628,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                 // the pass begins so it stays outside the render pass instance.
                 if (_options.counters.enabled && _hw) BeginCounterPass(cb, pass);
                 _fns.CmdBeginRendering(cb, &info);
+                if (_exporter) _exporter->CmdBeginRendering(i, info);
                 _report->commandsRecorded++;
             }
             _arena.Reset();
@@ -2532,6 +2644,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         ReplayFn fn = FindReplayCommand(m);
         if (!fn) {
             Problem("command " + std::to_string(i) + ": " + m + " is not replayed");
+            if (_exporter) _exporter->LeftOut(i, m, "the replay does not record it");
             continue;
         }
         NoteStreamCommand(stream, m, *args, i);
@@ -2552,7 +2665,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         // says whether it wrote the pixel at all.
         const DirectWrite direct = _options.history.enabled && !pass.active && _ctx.unresolved == unresolvedBefore
             ? HistoryDirectWrite(m, *args) : DirectWrite{};
-        IssueCommand(fn, c, *args, cb);
+        IssueCommand(fn, c, *args, cb, i);
         if (direct.writes) HistoryDirectPixel(cb, group, direct, histories, i, m, frame);
         if (countDraw) EndCounterDraw(cb, counterRange);
         if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
@@ -2586,6 +2699,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
     // dispatch writes a storage image, which is no pass's attachment and so is compared here.
     if (_options.compareTargets) InjectStorageReadbacks(cb, group, readbacks);
     _fns.EndCommandBuffer(cb);
+    if (_exporter) _exporter->EndCommandBuffer(cb);
 }
 
 void Replayer::ReplayCommands() {
@@ -2606,6 +2720,7 @@ void Replayer::ReplayCommands() {
         std::vector<PendingOverdraw> overdraws;
         std::vector<PendingHistory> histories;
         std::vector<VkCommandBuffer> cbs;
+        if (_exporter) _exporter->BeginSubmission(i, m);
         _drawSlot = 0;
         _pendingDraws.clear();
         _pendingDrawSlots.clear();
@@ -2647,6 +2762,7 @@ void Replayer::ReplayCommands() {
         info.pNext = _submitNext;
         info.commandBufferCount = (uint32_t)cbs.size();
         info.pCommandBuffers = cbs.data();
+        if (_exporter) _exporter->Submit(queue, cbs);
         VkResult r = _fns.QueueSubmit(queue, 1, &info, VK_NULL_HANDLE);
         if (r != VK_SUCCESS) {
             Problem("submission " + std::to_string(i) + ": vkQueueSubmit failed (" + std::to_string(r) + ")");
@@ -2680,6 +2796,15 @@ bool Replayer::Setup(const CaptureFile& capture, const ReplayOptions& options, R
     _options = options;
     _setupOptions = options;
     _report = &report;
+    if (!options.exportDir.empty()) {
+        report.exported.requested = true;
+        report.exported.directory = options.exportDir;
+        _exporter = std::make_unique<Exporter>(options.exportDir, capture);
+        if (!_exporter->Open(report.exported.error)) {
+            Problem("export to C++: " + report.exported.error);
+            _exporter.reset();
+        }
+    }
     if (!LoadVulkan() || !CreateInstance() || !CreateDevice()) {
         for (auto& p : _ctx.problems) report.problems.push_back(p);
         _ctx.problems.clear();
@@ -2804,6 +2929,12 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
     }
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();
+    // Export to C++: the frame is the last thing the project holds. The objects were exported as
+    // Setup created them, so one project is written per Setup and a later frame exports nothing.
+    if (_exporter) {
+        if (!_exporter->Finish(report, report.exported)) Problem("export to C++: " + report.exported.error);
+        _exporter.reset();
+    }
 }
 
 void Replayer::ResetFrameState() {

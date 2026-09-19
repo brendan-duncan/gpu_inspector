@@ -249,6 +249,14 @@ export class InspectorWindow extends Window {
    * file, after long enough for a report that fetches its shaders to have finished (ui_tests.py).
    */
   private _debugExport(panel: SessionPanel, delayMs: number): void {
+    // --debug-export-cpp=<directory>: Export to C++ as the capture bar's button does it, without the dialog.
+    const cppDir = this._debug?.exportCpp;
+    if (cppDir) {
+      setTimeout(() => {
+        void panel.capturePanel.exportCppActive(cppDir)
+          .then((p) => console.log(p ? `C++ project exported: ${p}` : `C++ export failed: ${panel.capturePanel.activeView?.status ?? ""}`));
+      }, delayMs);
+    }
     const file = this._debug?.exportReport;
     if (!file) return;
     setTimeout(() => {
