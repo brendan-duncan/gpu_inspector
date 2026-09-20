@@ -69,6 +69,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -142,10 +143,59 @@ bool IsX64Image(const std::wstring& exe, std::wstring& why) {
  * what a process that has just started (or has just been given a library) is doing — and a watched
  * process is caught milliseconds after its first instruction.
  */
-HMODULE RemoteModuleByName(DWORD pid, const std::wstring& name, int tries) {
+/**
+ * The module called `name` in an already-open process, through psapi rather than Toolhelp.
+ *
+ * The two read the same loader data by different routes, and they do not fail together: a process
+ * held still in the middle of its own start-up regularly refuses a Toolhelp snapshot with
+ * ERROR_PARTIAL_COPY while EnumProcessModulesEx answers, and the whole injection turned on which
+ * of the two was asked. So both are asked.
+ */
+HMODULE ModuleByNameViaPsapi(HANDLE process, const std::wstring& name, DWORD* error) {
+    HMODULE modules[1024];
+    DWORD needed = 0;
+    if (!EnumProcessModulesEx(process, modules, sizeof(modules), &needed, LIST_MODULES_ALL)) {
+        if (error) *error = GetLastError();
+        return nullptr;
+    }
+    if (error) *error = 0;
+    const size_t count = (needed / sizeof(HMODULE)) < 1024 ? needed / sizeof(HMODULE) : 1024;
+    for (size_t i = 0; i < count; ++i) {
+        wchar_t path[MAX_PATH];
+        if (!GetModuleBaseNameW(process, modules[i], path, MAX_PATH)) continue;
+        if (_wcsicmp(path, name.c_str()) == 0) return modules[i];
+    }
+    return nullptr;
+}
+
+/**
+ * The module in `pid` called `name`, looked for until it appears.
+ *
+ * `betweenTries` is called before each new look, to let a held target run for a moment. A frozen
+ * process that was caught in the middle of its own loader work keeps an inconsistent module list
+ * for as long as it is held, and the snapshot of it then fails with ERROR_PARTIAL_COPY however
+ * many times it is retried -- which is how a library that had loaded perfectly well was reported
+ * as one that would not load. Minecraft, caught two milliseconds after it started, does this
+ * every time; the test applications, caught at the same age but with a handful of libraries
+ * rather than a hundred, almost never do.
+ */
+HMODULE RemoteModuleByName(DWORD pid, const std::wstring& name, int tries, DWORD* snapshotError,
+                           const std::function<void()>& betweenTries, HANDLE process) {
+    if (snapshotError) *snapshotError = 0;
     for (int attempt = 0; attempt < tries; ++attempt) {
+        if (process) {
+            DWORD psapiError = 0;
+            if (HMODULE found = ModuleByNameViaPsapi(process, name, &psapiError)) {
+                if (snapshotError) *snapshotError = 0;
+                return found;
+            }
+            if (snapshotError && psapiError) *snapshotError = psapiError;
+        }
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        if (snap != INVALID_HANDLE_VALUE) {
+        if (snap == INVALID_HANDLE_VALUE) {
+            if (snapshotError) *snapshotError = GetLastError();
+        } else {
+            if (snapshotError) *snapshotError = 0;
             MODULEENTRY32W me{};
             me.dwSize = sizeof(me);
             HMODULE found = nullptr;
@@ -157,13 +207,18 @@ HMODULE RemoteModuleByName(DWORD pid, const std::wstring& name, int tries) {
             CloseHandle(snap);
             if (found) return found;
         }
-        if (attempt + 1 < tries) Sleep(5);
+        if (attempt + 1 < tries) {
+            if (betweenTries) betweenTries();
+            Sleep(5);
+        }
     }
     return nullptr;
 }
 
-HMODULE RemoteModule(DWORD pid, const std::wstring& dllPath) {
-    return RemoteModuleByName(pid, dllPath.substr(dllPath.find_last_of(L"\\/") + 1), 40);
+HMODULE RemoteModule(DWORD pid, const std::wstring& dllPath, DWORD* snapshotError = nullptr,
+                     const std::function<void()>& betweenTries = nullptr, HANDLE process = nullptr) {
+    return RemoteModuleByName(pid, dllPath.substr(dllPath.find_last_of(L"\\/") + 1), 40, snapshotError,
+                              betweenTries, process);
 }
 
 /**
@@ -382,8 +437,29 @@ bool Inject(HANDLE process, DWORD pid, const std::wstring& dllPath, uintptr_t of
     DWORD code = 0;
     if (!RunRemote(process, loadLibrary, remotePath, &code, why, freezer)) return false;
     VirtualFreeEx(process, remotePath, 0, MEM_RELEASE);
-    HMODULE remote = RemoteModule(pid, dllPath);
-    if (!remote) { why = L"LoadLibraryW in the target failed (is the library's directory readable, and are its dependencies present?)"; return false; }
+    DWORD snapshotError = 0;
+    HMODULE remote = RemoteModule(pid, dllPath, &snapshotError,
+                                  // Growing bursts, not the smallest one: an application held in the
+                                  // middle of its own loader work keeps a module list neither
+                                  // Toolhelp nor psapi will read, and only running lets it finish.
+                                  freezer ? [freezer, burst = kFirstBurstUs]() mutable {
+                                      freezer->Burst(burst);
+                                      burst = burst < kMaxBurstUs ? burst * 2 : kMaxBurstUs;
+                                  } : std::function<void()>(),
+                                  process);
+    if (!remote) {
+        if (snapshotError) {
+            why = L"the target's module list could not be read, so whether the library loaded is unknown "
+                  L"(CreateToolhelp32Snapshot: " + std::to_wstring(snapshotError) + L")";
+        } else if (code) {
+            why = L"the library loaded (LoadLibraryW returned 0x" + std::to_wstring(code)
+                  + L") but it is not in the target's module list";
+        } else {
+            why = L"LoadLibraryW in the target returned null: it could not load " + dllPath
+                  + L" (is that path readable by the target, and are the library's dependencies present?)";
+        }
+        return false;
+    }
     LPVOID remoteSettings = nullptr;
     if (!settings.empty()) {
         remoteSettings = WriteRemote(process, settings.data(), settings.size() * sizeof(wchar_t), why);
