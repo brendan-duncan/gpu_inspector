@@ -95,8 +95,11 @@ test("a listener that says nothing is not a target", async () => {
 test("the range walked is the one the capture libraries pick from", async () => {
   assert.equal(FIRST_PORT, 47531);
   assert.equal(PORT_COUNT, 8);
-  // Nothing of ours is running under the test, so the range comes back empty rather than hanging.
-  assert.deepEqual(await listTargets(250), []);
+  // Whatever is found is from that range and nowhere else. It is not asserted to be empty: a
+  // developer running this has inspected applications of their own open often enough.
+  for (const target of await listTargets(250)) {
+    assert.ok(target.port >= FIRST_PORT && target.port < FIRST_PORT + PORT_COUNT, `port ${target.port} is in the range`);
+  }
 });
 
 test("a target is named by the application, falling back to the executable", () => {
@@ -104,5 +107,10 @@ test("a target is named by the application, falling back to the executable", () 
   assert.equal(targetDisplayName({ ...base, name: "Shipping Game", exe: "game.exe" }), "Shipping Game (game.exe)");
   assert.equal(targetDisplayName({ ...base, name: "", exe: "game.exe" }), "game.exe", "Direct3D 12 has no name of its own");
   assert.equal(targetDisplayName({ ...base, name: "game.exe", exe: "game.exe" }), "game.exe", "not said twice");
+  // An application usually names itself after its executable, which is not worth saying twice
+  // either: the real case is a Vulkan pApplicationName of "game" beside "game.exe".
+  assert.equal(targetDisplayName({ ...base, name: "game", exe: "game.exe" }), "game.exe");
+  assert.equal(targetDisplayName({ ...base, name: "Game", exe: "game.exe" }), "game.exe", "and case is not a difference");
+  assert.equal(targetDisplayName({ ...base, name: "game2", exe: "game.exe" }), "game2 (game.exe)", "a real difference is kept");
   assert.equal(targetDisplayName({ ...base, name: "", exe: "" }), "port 47531");
 });

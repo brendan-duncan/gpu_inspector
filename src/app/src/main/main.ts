@@ -1191,6 +1191,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
+      attachDialog: cliFlag("debug-attach-dialog"),
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),
       exportReport: cliOption("debug-export"),
@@ -1226,6 +1227,9 @@ ipcMain.handle("inspector:clearRecents", () => {
 });
 ipcMain.handle("inspector:launch", (_e, config: LaunchConfig) => launch(config));
 ipcMain.handle("inspector:connect", (_e, port: number) => connectOnly(port));
+// The attach dialog's list: every application a capture library is serving right now. Probing is
+// safe for a session in progress (src/vulkan/src/target_probe.h), so this needs no state of its own.
+ipcMain.handle("inspector:listTargets", () => listTargets());
 ipcMain.handle("inspector:implicitLayer", async (): Promise<ImplicitLayerStatus> => {
   const dir = findLayerDir();
   return dir ? implicitLayerStatus(dir) : { registered: false, manifest: "", error: NO_VULKAN_LAYER_ERROR };
@@ -1634,8 +1638,9 @@ void app.whenReady().then(() => {
       return;
     }
     // --connect=<port>: attach to an application that is already listening, the command-line form
-    // of the Connect button. Unlike --wait-for-app it needs no layer of ours in the process, so it
-    // is the way in for a capture library the inspector did not launch — the Metal one today.
+    // of the attach dialog's port box. Unlike --wait-for-app it needs no layer of ours in the
+    // process, so it is the way in for a capture library the inspector did not launch — the Metal
+    // one today, which does not answer a probe and so is not in the dialog's list.
     const connectPort = cliOption("connect");
     if (connectPort) connectOnly(Number(connectPort) || DEFAULT_PORT);
     // --wait-for-app: a session that waits for an application started with VKINSP_ENABLE=1.

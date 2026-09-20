@@ -154,8 +154,8 @@ open and says why.
 For **Wait**, the session appears the same way and sits waiting; **Stop** ends the wait, not the
 application, which the inspector did not start.
 
-To pick up an application that is already running with a capture library enabled, use **Port** and
-**Connect** on the main bar instead of this window.
+To pick up an application that is already running with a capture library in it, use **Attach...**
+on the main bar instead of this window: it lists what is running and attaches to the one picked.
 
 ## From the command line
 
@@ -171,7 +171,7 @@ takes them after `npm start --`; an installed build takes them directly
 | `--wait-for-app` | Implicit layer, waiting |
 | `--wait-for-d3d12=<image>` | Direct3D 12, waiting for that process |
 | `--implicit-layer=on\|off` | Registers or unregisters the layer, then quits |
-| `--connect=<port>` | The main bar's **Connect** |
+| `--connect=<port>` | The attach window's **Or attach to port** |
 | `--list-targets` | Names the applications a capture library is serving, then quits |
 | `--port=N` | Port |
 | `--record-always` `--validation` `--sync-validation` `--gpu-validation` | The matching options |

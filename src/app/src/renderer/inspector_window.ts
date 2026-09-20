@@ -6,7 +6,6 @@ import { Window } from "./widget/window.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Button } from "./widget/button.js";
-import { TextInput } from "./widget/text_input.js";
 import { TabWidget } from "./widget/tab_widget.js";
 import { TabHandle } from "./widget/tab_handle.js";
 import { Dialog } from "./widget/dialog.js";
@@ -14,6 +13,7 @@ import { Widget } from "./widget/widget.js";
 import { showContextMenu, type ContextMenuItem } from "./widget/context_menu.js";
 import { FileSessionPanel, SessionPanel } from "./session_panel.js";
 import { CAPTURE_FILE_EXTENSION, CAPTURE_FILE_FILTERS, parseCaptureFile } from "./capture_format.js";
+import { AttachDialog } from "./attach_dialog.js";
 import { LaunchDialog, emptyLaunchConfig, launchDisplayName, setHostPlatform } from "./launch_dialog.js";
 import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { THEMES, type AppConfig, type LaunchConfig, type LaunchResult, type SessionInfo, type ThemeName, type UpdateStatus } from "../shared/protocol.js";
@@ -47,7 +47,6 @@ export class InspectorWindow extends Window {
   private _recentCaptures: string[] = [];
   private _lastLaunch: LaunchConfig | null = null;
   private _recentMenu: Div | null = null;
-  private _portInput: TextInput | null = null;
   private _themeButton: Button | null = null;
   private _themeMenu: Div | null = null;
   private _debug: AppConfig["debug"] | null = null;
@@ -83,7 +82,7 @@ export class InspectorWindow extends Window {
     this._placeholder = new Div(this, { class: "main-placeholder" });
     const intro = new Div(this._placeholder);
     new Div(intro, { text: this._mode === "main"
-      ? "No application is being inspected. Use Launch... to start one, Recent to relaunch a previous one, or Connect to attach to a running application with the layer enabled."
+      ? "No application is being inspected. Use Launch... to start one, Recent to relaunch a previous one, or Attach... to pick one that is already running with a capture library in it."
       : "No sessions in this window.", class: "text-muted" });
     if (this._mode === "main") {
       const docs = new Div(intro, { class: "main-placeholder-docs" });
@@ -160,6 +159,7 @@ export class InspectorWindow extends Window {
               : target === "waitD3D12" ? { ...emptyLaunchConfig(), target: "waitD3D12", exe: text ?? "" }
                 : target === "browser" ? { ...emptyLaunchConfig(), target: "browser", args: text ?? "" } : null);
         }
+        if (cfg.debug?.attachDialog) this.showAttachDialog();
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
         // On macOS there is no capture layer to build, so its absence is the expected state and
         // not worth a dialog on every start; the launch dialog says what the mac build can do.
@@ -340,11 +340,7 @@ export class InspectorWindow extends Window {
       if (!menu.element.contains(e.target as Node)) this._recentMenu?.classList.remove("open");
     });
 
-    new Span(row, { text: "Port", class: "launch-label" });
-    this._portInput = new TextInput(row, { class: "launch-input launch-input-narrow", value: "47531" });
-    new Button(row, { label: "Connect", class: "btn", tooltip: "Connect to an already running application that has the layer enabled", callback: () => {
-      void window.inspector.connect(Number(this._portInput?.value));
-    }});
+    new Button(row, { label: "Attach...", class: "btn", tooltip: "Attach to an application that is already running with a capture library in it", callback: () => this.showAttachDialog() });
     new Button(row, { label: "Open Capture...", class: "btn", tooltip: `Open a saved capture file (.${CAPTURE_FILE_EXTENSION}); files can also be dropped onto the window`, callback: () => void this._openCaptureDialog() });
 
     // Theme picker, right-aligned (margin-left: auto). The choice is saved and applied to every
@@ -521,9 +517,13 @@ export class InspectorWindow extends Window {
     new LaunchDialog(this._recents, initial ?? this._lastLaunch, (config) => this.launch(config));
   }
 
+  /** The attach dialog: an application already running with a capture library, picked from a list. */
+  showAttachDialog(): void {
+    new AttachDialog((port) => void window.inspector.connect(port));
+  }
+
   launch(config: LaunchConfig): void {
     this._lastLaunch = config;
-    if (this._portInput) this._portInput.value = String(config.port);
     void window.inspector.launch(config).then((r: LaunchResult) => {
       if (!r.ok) this._showMessage("Launch failed", r.error ?? "unknown error");
     });

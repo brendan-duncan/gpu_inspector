@@ -18,7 +18,7 @@ The bar along the top is where sessions begin:
 |---|---|
 | **Launch...** | Opens the [launch window](LAUNCH.md): pick an application and start it with the inspector |
 | **Recent** | Relaunches a previous configuration |
-| **Port** + **Connect** | Connects to an application that is already running with the capture library enabled |
+| **Attach...** | Lists the applications already running with a capture library in them, to attach to one |
 | **Open Capture...** | Opens a saved `.gpucap` file. Dropping a file on the window does the same |
 
 

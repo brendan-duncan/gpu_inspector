@@ -1160,10 +1160,12 @@ export interface AppConfig {
   version: string;
   /** Whether this build can update itself (installed builds only, not `npm start`). */
   canUpdate: boolean;
-  /** launchDialog: open the launch dialog at startup, on the "native", "android", "implicit" or
+  /** attachDialog: open the attach dialog at startup (--debug-attach-dialog), for a screenshot of the
+   *  applications a capture library is serving.
+   *  launchDialog: open the launch dialog at startup, on the "native", "android", "implicit" or
    *  "waitD3D12" target ("android:<text>" and "waitD3D12:<text>" prefill the name field) (testing aid). */
   debug: {
-    select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null;
+    select: string | null; capture: boolean; captureFrames: number; launchDialog: string | null; attachDialog: boolean;
     /** --debug-capture-stacks: the debug capture records command stack traces. */
     captureStacks: boolean;
     /**
@@ -1233,6 +1235,36 @@ export type UpdateStatus =
   | { state: "downloading"; percent: number }
   | { state: "downloaded"; version: string }
   | { state: "error"; message: string };
+
+/**
+ * An application a capture library is serving right now, as the attach list shows it
+ * (src/main/target_probe.ts finds them by probing the ports).
+ */
+export interface InspectableTarget {
+  port: number;
+  /** "Vulkan", "D3D12" or "Metal"; "" from a capture library too old to answer a probe. */
+  api: string;
+  /** The application's own name for itself, empty when it has none (or has not started yet). */
+  name: string;
+  /** The executable's base name; the fallback identity, and never empty in practice. */
+  exe: string;
+  pid: number;
+  /** Whether an inspector is attached already: attaching takes the connection from it. */
+  busy: boolean;
+}
+
+/**
+ * How the attach list names a target: its own name when it has one, else the executable, and both
+ * when they differ. An application usually names itself after its executable, so the extension is
+ * ignored in that comparison — "Game (Game.exe)" says nothing twice over.
+ */
+export function targetDisplayName(t: InspectableTarget): string {
+  if (!t.name) return t.exe || `port ${t.port}`;
+  if (!t.exe) return t.name;
+  const name = t.name.toLowerCase();
+  const exe = t.exe.toLowerCase();
+  return name === exe || name === exe.replace(/\.[^.]*$/, "") ? t.exe : `${t.name} (${t.exe})`;
+}
 
 export interface LaunchResult {
   ok: boolean;

@@ -1,5 +1,5 @@
 import type {
-  AndroidDeviceList, AppConfig, BrowserInstall, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
+  AndroidDeviceList, AppConfig, BrowserInstall, InspectableTarget, LaunchConfig, LaunchResult, SessionInfo, SessionLogMessage, SessionMessages, SessionStatusMessage,
   CompileShaderResult, DebugTranslationResult, OpenFileOptions, SaveFileOptions, ShaderLanguage, ShaderTextMode, ShaderTextResult, ThemeName, UiRequest, UpdateStatus, StackFrame, ImplicitLayerStatus, UserEnvironmentStatus,
 } from "../shared/protocol.js";
 import type { ShaderAblation, ShaderMeasureTarget } from "./shader_ablation.js";
@@ -21,6 +21,8 @@ export interface InspectorApi {
   launch(config: LaunchConfig): Promise<LaunchResult>;
   /** Connects to an already running application in a new session, shown in the main window. */
   connect(port: number): Promise<LaunchResult>;
+  /** The applications a capture library is serving right now, for the attach dialog. */
+  listTargets(): Promise<InspectableTarget[]>;
   /** Android devices reachable through adb (launch dialog). */
   androidDevices(): Promise<AndroidDeviceList>;
   /** The Chromium browsers installed on this machine (launch dialog, Windows). */

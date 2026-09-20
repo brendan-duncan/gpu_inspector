@@ -813,6 +813,40 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .launch-dialog-package { flex: 1 1 auto; }
 .launch-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* Attach dialog: the running applications a capture library is serving */
+.attach-dialog { width: 620px; top: 14%; }
+.attach-dialog-body { max-height: none; padding: 6px 14px 10px 14px; }
+.attach-dialog-hint { color: var(--fg-secondary); font-size: 8.5pt; margin: 4px 0 8px 0; }
+.attach-dialog-list {
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  min-height: 132px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.attach-dialog-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; }
+.attach-dialog-item:hover { background: var(--bg-hover); }
+.attach-dialog-item.selected { background: var(--accent-primary); color: var(--fg-on-accent); }
+.attach-dialog-item-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.attach-dialog-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-dialog-item-detail { color: var(--fg-secondary); font-size: 8.5pt; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-dialog-item.selected .attach-dialog-item-detail { color: var(--fg-on-accent); opacity: 0.85; }
+.attach-dialog-item-busy {
+  flex: 0 0 auto;
+  font-size: 8pt;
+  padding: 1px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--fg-secondary);
+}
+.attach-dialog-item.selected .attach-dialog-item-busy { color: var(--fg-on-accent); border-color: var(--fg-on-accent); opacity: 0.85; }
+.attach-dialog-status { display: block; color: var(--fg-secondary); font-size: 8.5pt; margin: 6px 0; }
+.attach-dialog-port-row { display: flex; align-items: center; gap: 6px; margin: 10px 0 2px 0; }
+.attach-dialog-port-label { color: var(--fg-secondary); font-size: 8.5pt; }
+.attach-dialog-port { flex: 0 0 70px; min-width: 0; }
+.attach-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
+.attach-dialog, .attach-dialog * { box-sizing: border-box; }
+
 /* Recents menu */
 .recent-menu { min-width: 340px; max-width: 600px; }
 .theme-menu { min-width: 120px; left: auto; right: 0; }

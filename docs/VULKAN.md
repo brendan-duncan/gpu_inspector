@@ -80,19 +80,25 @@ launcher:
 From the command line: `npm start -- --wait-for-app --port=<port>`, and
 `--implicit-layer=on|off` switches the registration.
 
-## Connecting to a running application
+## Attaching to a running application
 
-To pick up an application already running with the layer enabled, enter its port in the launch
-bar and press **Connect**.
+**Attach...** on the main bar lists the applications running with a capture library in them --
+each with its name, the API, its process id and its port -- and attaches to the one picked. An
+application started with the layer enabled turns up there on its own; it does not have to have
+drawn anything yet.
 
-An application started without `VKINSP_PORT` listens on the first free port from 47531 upwards
-(eight in all), so several started by hand are all reachable at once rather than fighting over
-one port. `npm start -- --list-targets` names what is listening on each of them -- the
-application, the API, and whether an inspector is attached to it already -- so the port can be
-read off rather than guessed. Asking is safe for a session in progress: the inspector's question
-is answered and the connection dropped, without the capture library taking it for a client.
+The list is possible because an application started without `VKINSP_PORT` listens on the first
+free port from 47531 upwards (eight in all), so several started by hand are all reachable at once
+rather than fighting over one port, and each answers the question "what are you?". A row marked
+**in use** already has an inspector attached: attaching takes the connection from it. Asking is
+safe for a session in progress -- the question is answered and the connection dropped, without
+the capture library taking it for a client -- so nothing is disturbed by looking.
+
 A port named in `VKINSP_PORT` is used exactly as given, and the layer says so and gives up if
-something else is already serving it.
+something else is already serving it. **Or attach to port** at the bottom of the window reaches
+what the list cannot see: an Android device through an `adb forward`, or an application on a port
+of its own outside the range. From the command line, `npm start -- --list-targets` prints the
+same list and `--connect=<port>` is the port box.
 
 ## Shader sources
 

@@ -14,6 +14,10 @@ import net from "node:net";
 
 import { FrameReader, encodeRequest } from "./layer_protocol.js";
 import { DEFAULT_PORT } from "./launch_env.js";
+import { targetDisplayName, type InspectableTarget } from "../shared/protocol.js";
+
+export { targetDisplayName };
+export type { InspectableTarget };
 
 /** The ports a capture library may pick, matching kFirstPort/kPortCount in target_probe.h. */
 export const FIRST_PORT = DEFAULT_PORT;
@@ -21,20 +25,6 @@ export const PORT_COUNT = 8;
 
 /** How long one port has to answer, over loopback. */
 const PROBE_TIMEOUT_MS = 500;
-
-/** An application that a capture library is serving, as the attach list shows it. */
-export interface InspectableTarget {
-  port: number;
-  /** "Vulkan", "D3D12" or "Metal"; "" from a library too old to answer a probe. */
-  api: string;
-  /** The application's own name for itself, empty when it has none (or has not started yet). */
-  name: string;
-  /** The executable's base name; the fallback identity, and never empty in practice. */
-  exe: string;
-  pid: number;
-  /** Whether an inspector is attached already: attaching takes the connection from it. */
-  busy: boolean;
-}
 
 /** What one port answered, or null when nothing there answers a probe. */
 export function probePort(port: number, timeoutMs = PROBE_TIMEOUT_MS): Promise<InspectableTarget | null> {
@@ -86,10 +76,4 @@ export async function listTargets(timeoutMs = PROBE_TIMEOUT_MS): Promise<Inspect
   const ports = Array.from({ length: PORT_COUNT }, (_, i) => FIRST_PORT + i);
   const found = await Promise.all(ports.map((port) => probePort(port, timeoutMs)));
   return found.filter((t): t is InspectableTarget => t !== null);
-}
-
-/** How the attach list names a target: its own name when it has one, else the executable. */
-export function targetDisplayName(t: InspectableTarget): string {
-  const name = t.name || t.exe || `port ${t.port}`;
-  return t.name && t.exe && t.exe !== t.name ? `${t.name} (${t.exe})` : name;
 }

@@ -40,7 +40,7 @@ its signature and notarization. Do it to a development build, not to a shipped c
 ## Starting an application by hand
 
 An application the inspector cannot launch itself can be started with these variables set, then
-picked up with **Connect** (or `npm start -- --connect=<port>`):
+picked up with the port box of **Attach...** on the main bar (or `npm start -- --connect=<port>`):
 
 | Variable | Value |
 |---|---|

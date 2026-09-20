@@ -4,6 +4,7 @@
 - Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
 - DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
 - `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
+- **Attach...** on the main bar lists the applications already running with a capture library in them -- name, API, process id, port -- and attaches to the one picked, in place of the bar's port box and **Connect**.
 - A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
 - `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.
 - **Timing Capture** on Direct3D 12: every frame's time and CPU split over minutes, as on Vulkan.
