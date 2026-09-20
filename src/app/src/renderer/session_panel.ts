@@ -12,10 +12,12 @@ import { InspectPanel } from "./inspect_panel.js";
 import { CapturePanel } from "./capture_panel.js";
 import { ShaderReflectionCache } from "./shader_cache.js";
 import { heapOccupancy, metalMemory } from "./metal/metal_memory.js";
+import { summarizeMemoryCapture } from "./memory_capture.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { CapturedTexture } from "./capture_data.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import type { LayerMessage, SessionInfo, StackFrame, StatusMessage, UiRequest } from "../shared/protocol.js";
+import type { ShaderReplacement } from "./shader_replay.js";
 
 /** What the Inspect and Capture panels need from the session that owns them. */
 export interface SessionContext {
@@ -38,6 +40,14 @@ export interface SessionContext {
    * buffer contents, and for a structure whose build the capture does not hold.
    */
   accelerationScene(structureId: number): AccelerationScene | null;
+  /**
+   * Whether the capture in front can be replayed with an edited shader: a Vulkan or D3D12 capture
+   * that has arrived. The shader editor offers it beside applying the edit to the application,
+   * and instead of it where there is no application (a capture file).
+   */
+  readonly canReplayCapture: boolean;
+  /** Replays that capture with other code for some pipelines' stages, and shows what changed; resolves to a line saying so. */
+  replayWithShaders(replacements: ShaderReplacement[]): Promise<string>;
   /** Directories with the application's unstripped libraries (launch configuration), for host-side symbolization. */
   readonly symbolDirs: string[];
   /** Directories with the shader sources (launch configuration), for modules without embedded text. */
@@ -257,6 +267,26 @@ export class SessionPanel extends Div implements SessionContext {
         } : null;
       })(),
       memorySamples: db.memorySamples?.length ?? 0,
+      // A timing capture's frames and a memory capture's findings (--debug-timing, --debug-memory).
+      timingFrames: db.timing.frames.length,
+      // Call stacks sampled with them: how many, over how many threads, and whether any were named.
+      timingSamples: {
+        records: db.timingSamples.samples.length, threads: db.timingSamples.threads.length, stacks: db.timingSamples.stacks.size,
+        running: db.timingSamples.samples.reduce((n, s) => n + (s[3] ? s[4] : 0), 0),
+        waiting: db.timingSamples.samples.reduce((n, s) => n + (s[3] ? 0 : s[4]), 0),
+        named: [...db.timingSamples.stacks.values()].filter((s) => s.some((a) => !!db.symbols.get(a)?.function)).length,
+      },
+      timingCategories: db.timing.categories,
+      memoryCapture: (() => {
+        const m = summarizeMemoryCapture(db.memoryCapture);
+        return m ? {
+          events: db.memoryCapture.events.length, allocations: m.allocations, frees: m.frees, frames: m.frames,
+          startBytes: m.startBytes, netBytes: m.netBytes, unnamed: m.unnamed,
+          survivors: m.survivors.length, survivorBytes: m.survivorBytes,
+          survivorNames: m.survivors.slice(0, 3).map((v) => db.getObject(v.id)?.name ?? null),
+          transient: m.transient.count, verdict: m.verdict,
+        } : null;
+      })(),
       captures: this.capturePanel.debugState(),
       log: this.info.log.slice(-40),
     };
@@ -296,6 +326,18 @@ export class SessionPanel extends Div implements SessionContext {
 
   capturedImage(imageId: number): CapturedTexture | null {
     return this.capturePanel.capturedImage(imageId);
+  }
+
+  get canReplayCapture(): boolean {
+    return this.capturePanel.activeView?.canReplay ?? false;
+  }
+
+  replayWithShaders(replacements: ShaderReplacement[]): Promise<string> {
+    const view = this.capturePanel.activeView;
+    if (!view?.canReplay) return Promise.resolve("there is no capture open that can be replayed");
+    // The result is a tab beside the capture's, so that is where to look.
+    this.showCaptureTab();
+    return view.replayWithShaders(replacements);
   }
 
   accelerationScene(structureId: number): AccelerationScene | null {
@@ -338,6 +380,7 @@ export class SessionPanel extends Div implements SessionContext {
     this._statusLabel.text = s.detail ? `${s.state}: ${s.detail}` : s.state;
     this._statusLabel.element.className = `launch-status status-${s.state}`;
     if (s.state !== "connected") this._frameLabel.text = "";
+    if (s.state !== "connected" && wasConnected) this.capturePanel.connectionLost();
     const pid = /^pid (\d+)/.exec(s.detail);
     if (pid) this.info = { ...this.info, pid: Number(pid[1]) };
     const port = /^port (\d+)/.exec(s.detail);

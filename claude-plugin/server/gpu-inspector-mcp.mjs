@@ -7832,7 +7832,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
   }
   const debug = analysis.hasLines ? parseSpirvDebugInfo(spirv) : null;
   if (debug) {
-    const baseName = (file) => debug.files[file]?.name.replace(/^.*[\\/]/, "") ?? "";
+    const baseName2 = (file) => debug.files[file]?.name.replace(/^.*[\\/]/, "") ?? "";
     const lineOf = (ins) => {
       const loc = debug.locations[ins.ordinal];
       return loc ? `${loc.file}:${loc.line}` : "";
@@ -7881,7 +7881,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
       for (const ins of m.instructions) {
         if (ins.fn !== f.id) continue;
         const loc = debug.locations[ins.ordinal];
-        if (!loc || loc.line !== l.line || baseName(loc.file) !== l.file) continue;
+        if (!loc || loc.line !== l.line || baseName2(loc.file) !== l.file) continue;
         instructions.push(ins);
         if (!isValueOp(ins.op)) continue;
         if (ins.op === 57 /* FunctionCall */ && m.isVoid(w[ins.start + 1])) {
@@ -8711,6 +8711,16 @@ var ProgramTracker = class {
     const a = c2.args;
     if (!a) return false;
     const stream = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
+    if (sets.RECORD_BEGIN.has(c2.method) && "pInitialState" in a) {
+      for (const point of /* @__PURE__ */ new Set([sets.graphicsBindPoint, sets.bindPointOf("Dispatch")])) {
+        this._bound.delete(`${stream}:${point}`);
+        this._shaders.delete(`${stream}:${point}`);
+      }
+      const initial = refId(a.pInitialState);
+      if (initial === null) return false;
+      for (const point of /* @__PURE__ */ new Set([sets.graphicsBindPoint, sets.bindPointOf("Dispatch")])) this._bound.set(`${stream}:${point}`, initial);
+      return true;
+    }
     if (sets.BIND_PIPELINE.has(c2.method)) {
       const id = refId(boundPipelineOf(a));
       const at = `${stream}:${sets.pipelineBindPointOf(c2.method, a)}`;
@@ -9405,6 +9415,32 @@ function gpuTicksToCpuMs(timeline, ticks) {
 // src/renderer/frame_timing.ts
 var MAX_TIMING_FRAMES = 72e3;
 
+// src/renderer/memory_capture.ts
+function emptyMemoryCapture() {
+  return { baseline: [], events: [], dropped: 0 };
+}
+function appendMemoryEvents(capture, msg) {
+  if (msg.baseline) capture.baseline = msg.baseline.map((h) => ({ allocated: h.allocated ?? 0, allocations: h.allocations ?? 0 }));
+  if (typeof msg.dropped === "number") capture.dropped = msg.dropped;
+  for (const e of msg.events ?? []) capture.events.push(e);
+  if (capture.events.length > MAX_MEMORY_EVENTS) capture.events.splice(0, capture.events.length - MAX_MEMORY_EVENTS);
+}
+var MAX_MEMORY_EVENTS = 1 << 20;
+
+// src/renderer/timing_samples.ts
+function emptyTimingSamples() {
+  return { periodMs: 0, threads: [], stacks: /* @__PURE__ */ new Map(), samples: [], dropped: 0 };
+}
+var MAX_SAMPLE_RECORDS = 1 << 21;
+function appendTimingSamples(store, msg) {
+  if (msg.periodMs > 0) store.periodMs = msg.periodMs;
+  if (msg.threads?.length) store.threads = msg.threads.map((t) => ({ id: t.id, ...t.name ? { name: t.name } : {} }));
+  for (const s of msg.stacks ?? []) store.stacks.set(s.id, s.addresses);
+  for (const s of msg.samples ?? []) store.samples.push(s);
+  if (typeof msg.dropped === "number") store.dropped = msg.dropped;
+  if (store.samples.length > MAX_SAMPLE_RECORDS) store.samples.splice(0, store.samples.length - MAX_SAMPLE_RECORDS);
+}
+
 // src/renderer/vulkan/object_database.ts
 var HELD_REFERENCES = {
   VkImageView: /* @__PURE__ */ new Set(["VkImage"]),
@@ -9484,6 +9520,10 @@ var ObjectDatabase = class _ObjectDatabase {
    * (renderer/frame_timing.ts). Empty until one is started.
    */
   timing = { categories: [], frames: [] };
+  /** Call stacks sampled during the running (or last) timing capture (renderer/timing_samples.ts). */
+  timingSamples = emptyTimingSamples();
+  /** The running (or last) memory capture's allocations and frees (renderer/memory_capture.ts). */
+  memoryCapture = emptyMemoryCapture();
   _snapshotRemaining = 0;
   onReset = new Signal();
   onSnapshotBegin = new Signal();
@@ -9505,6 +9545,7 @@ var ObjectDatabase = class _ObjectDatabase {
   /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
   onMemorySample = new Signal();
   onTimingFrames = new Signal();
+  onMemoryEvents = new Signal();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = /* @__PURE__ */ new Map();
   stacksAvailable = null;
@@ -9783,6 +9824,14 @@ var ObjectDatabase = class _ObjectDatabase {
           this.timing.frames.splice(0, this.timing.frames.length - MAX_TIMING_FRAMES);
         }
         this.onTimingFrames.emit();
+        break;
+      case "TimingSamples":
+        appendTimingSamples(this.timingSamples, msg);
+        this.onTimingFrames.emit();
+        break;
+      case "MemoryEvents":
+        appendMemoryEvents(this.memoryCapture, msg);
+        this.onMemoryEvents.emit();
         break;
       case "MemorySample":
         this.memorySamples.push(msg);
@@ -11782,14 +11831,14 @@ function findExportTool(api, roots, layerDirs) {
   return { tool: null, missing: `Export to C++ writes what a replay does, and there is no replay for a ${api ?? "capture"} capture.` };
 }
 function needsOwnProcess(analysis) {
-  return analysis.kind === "export";
+  return analysis.kind === "export" || analysis.kind === "replace";
 }
 function tail(text, lines = 12) {
   return text.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
 function inputFile(analysis) {
-  if (analysis.kind !== "ablate") return null;
-  const file = tempOutput("ablate_request");
+  if (analysis.kind !== "ablate" && analysis.kind !== "replace") return null;
+  const file = tempOutput(`${analysis.kind}_request`);
   fs5.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
   return file;
 }
@@ -11802,6 +11851,7 @@ function removeFile(file) {
 }
 function analysisArgs(analysis, out, input) {
   if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
+  if (analysis.kind === "replace") return ["--replace", input ?? "", "--target-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
   if (analysis.kind === "counters") {
@@ -11870,6 +11920,7 @@ function serveRequest(id, analysis, out, input) {
     return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
   }
   if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
+  if (analysis.kind === "replace") return { id, kind: "replace", in: input, out };
   return { id, ...analysis, out };
 }
 function tempOutput(kind) {
@@ -12408,6 +12459,36 @@ ${s.text.endsWith("\n") ? s.text : `${s.text}
       }
       if (err) resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+function disassembleDxil(container) {
+  return dxbcText(container, "dis");
+}
+function assembleDxil(text) {
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, error: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const source = `${base}.ll`;
+    const out = `${base}.dxil`;
+    fs8.writeFileSync(source, text);
+    execFile3(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      let container = null;
+      if (!err) {
+        try {
+          container = new Uint8Array(fs8.readFileSync(out));
+        } catch {
+        }
+      }
+      for (const f of [source, out]) {
+        try {
+          fs8.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (container) resolve({ ok: true, container });
+      else resolve({ ok: false, error: (stderr || err?.message || "no container was written").trim().split(/\r?\n/).slice(0, 3).join(" ") });
     });
   });
 }
@@ -25366,7 +25447,7 @@ function decodePvrtc(s, width, height, twoBpp, values) {
       const qb = blockAt(bx + 1, by);
       const r = blockAt(bx, by + 1);
       const sb = blockAt(bx + 1, by + 1);
-      const { weight, punch } = modulation(x, y, blockAt(Math.floor(x / bw), Math.floor(y / bh)));
+      const { weight: weight2, punch } = modulation(x, y, blockAt(Math.floor(x / bw), Math.floor(y / bh)));
       const o = (y * width + x) * 4;
       for (let c2 = 0; c2 < 4; c2++) {
         const top = p.a[c2] * bw + fx * (qb.a[c2] - p.a[c2]);
@@ -25375,7 +25456,7 @@ function decodePvrtc(s, width, height, twoBpp, values) {
         const topB = p.b[c2] * bw + fx * (qb.b[c2] - p.b[c2]);
         const bottomB = r.b[c2] * bw + fx * (sb.b[c2] - r.b[c2]);
         const cb = widen(topB * 4 + fy * (bottomB - topB), c2 === 3);
-        let v = ca * (8 - weight) + cb * weight >> 3;
+        let v = ca * (8 - weight2) + cb * weight2 >> 3;
         if (punch && c2 === 3) v = 0;
         values[o + c2] = v / 255;
       }
@@ -28257,12 +28338,771 @@ function debugTools(store) {
   ];
 }
 
+// src/renderer/d3d12/dxil_ablate.ts
+var NAME = /%(?:"(?:[^"\\]|\\.)*"|[-a-zA-Z$._0-9]+)/g;
+var SCALAR = /* @__PURE__ */ new Set(["float", "half", "double", "i1", "i8", "i16", "i32", "i64"]);
+var BINARY = /* @__PURE__ */ new Set(["add", "fadd", "sub", "fsub", "mul", "fmul", "udiv", "sdiv", "fdiv", "urem", "srem", "frem", "shl", "lshr", "ashr", "and", "or", "xor"]);
+var CAST = /* @__PURE__ */ new Set(["trunc", "zext", "sext", "fptrunc", "fpext", "fptoui", "fptosi", "uitofp", "sitofp", "bitcast", "ptrtoint", "inttoptr", "addrspacecast"]);
+var FLAGS = /* @__PURE__ */ new Set(["fast", "nnan", "ninf", "nsz", "arcp", "nuw", "nsw", "exact"]);
+var TEXTURE_READS = /* @__PURE__ */ new Set([
+  "sample",
+  "sampleBias",
+  "sampleLevel",
+  "sampleGrad",
+  "sampleCmp",
+  "sampleCmpLevelZero",
+  "sampleCmpLevel",
+  "sampleCmpBias",
+  "sampleCmpGrad",
+  "textureLoad",
+  "textureGather",
+  "textureGatherCmp",
+  "textureGatherRaw"
+]);
+var STORES = {
+  bufferStore: { first: 4, count: 4 },
+  textureStore: { first: 5, count: 4 },
+  rawBufferStore: { first: 4, count: 4 },
+  textureStoreSample: { first: 5, count: 4 }
+};
+var KEPT_OUTPUTS = /* @__PURE__ */ new Set(["DEPTH", "DEPTHGE", "DEPTHLE", "COVERAGE", "STENCILREF"]);
+function splitTopLevel(text) {
+  const out = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c2 = text[i];
+    if (quoted) {
+      if (c2 === "\\") i++;
+      else if (c2 === '"') quoted = false;
+      continue;
+    }
+    if (c2 === '"') quoted = true;
+    else if (c2 === "(" || c2 === "[" || c2 === "{" || c2 === "<") depth++;
+    else if (c2 === ")" || c2 === "]" || c2 === "}" || c2 === ">") depth--;
+    else if (c2 === "," && depth === 0) {
+      out.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) out.push(last);
+  return out;
+}
+function stripComment(line) {
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c2 = line[i];
+    if (quoted) {
+      if (c2 === "\\") i++;
+      else if (c2 === '"') quoted = false;
+    } else if (c2 === '"') quoted = true;
+    else if (c2 === ";") return line.slice(0, i).trimEnd();
+  }
+  return line.trimEnd();
+}
+function closing(text, open) {
+  let depth = 0;
+  let quoted = false;
+  for (let i = open; i < text.length; i++) {
+    const c2 = text[i];
+    if (quoted) {
+      if (c2 === "\\") i++;
+      else if (c2 === '"') quoted = false;
+      continue;
+    }
+    if (c2 === '"') quoted = true;
+    else if (c2 === "(") depth++;
+    else if (c2 === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+var Module2 = class {
+  lines;
+  instructions = [];
+  byResult = /* @__PURE__ */ new Map();
+  structs = /* @__PURE__ */ new Map();
+  locations = /* @__PURE__ */ new Map();
+  scopes = /* @__PURE__ */ new Map();
+  files = /* @__PURE__ */ new Map();
+  /** Metadata nodes that are plain tuples, as their elements' text. */
+  tuples = /* @__PURE__ */ new Map();
+  /** Where the entry function's first instruction is, for the stand-in to go before. */
+  entryStart = -1;
+  entryName = "";
+  functions = 0;
+  /** Blocks by label, in order; the entry block is 0 and has no label. */
+  blockOf = /* @__PURE__ */ new Map();
+  /** Output signature elements by id: their system value name ("TARGET", "DEPTH", ...). */
+  outputs = [];
+  constructor(text) {
+    this.lines = text.split(/\r?\n/);
+    this._readHeader();
+    this._readBody();
+    this._readMetadata();
+  }
+  /**
+   * The signatures the disassembler prints as comments at the top. The order of the rows is the
+   * order of the element ids storeOutput names.
+   */
+  _readHeader() {
+    let inOutput = false;
+    let read = false;
+    for (const line of this.lines) {
+      if (!line.startsWith(";")) {
+        if (line.trim()) break;
+        continue;
+      }
+      if (/^; Output signature:/.test(line)) {
+        inOutput = !read;
+        read = true;
+        continue;
+      }
+      if (/^; (Input signature|shader (debug name|hash)|Pipeline Runtime|Buffer Definitions|Resource Bindings)/.test(line)) {
+        inOutput = false;
+        continue;
+      }
+      if (!inOutput) continue;
+      const row = /^;\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/.exec(line);
+      if (row && row[1] !== "Name" && !/^-+$/.test(row[1])) this.outputs.push(row[5].toUpperCase());
+    }
+  }
+  _readBody() {
+    let inFunction = false;
+    let block = 0;
+    this.lines.forEach((raw, at) => {
+      const struct = /^(%(?:"(?:[^"\\]|\\.)*"|[-a-zA-Z$._0-9]+)) = type \{(.*)\}\s*$/.exec(raw);
+      if (struct) {
+        this.structs.set(struct[1], splitTopLevel(struct[2]));
+        return;
+      }
+      if (raw.startsWith("define ")) {
+        this.functions++;
+        inFunction = true;
+        block = 0;
+        const name = /@(?:"((?:[^"\\]|\\.)*)"|([-a-zA-Z$._0-9]+))\s*\(/.exec(raw);
+        this.entryName = name ? name[1] ?? name[2] : "";
+        this.entryStart = -1;
+        return;
+      }
+      if (!inFunction) return;
+      if (raw.startsWith("}")) {
+        inFunction = false;
+        return;
+      }
+      const numbered = /^; <label>:(\d+)/.exec(raw);
+      if (numbered) {
+        block++;
+        this.blockOf.set(`%${numbered[1]}`, block);
+        return;
+      }
+      const code = stripComment(raw);
+      if (!code.trim()) return;
+      const label = /^(?:"((?:[^"\\]|\\.)*)"|([-a-zA-Z$._0-9]+)):/.exec(code);
+      if (label) {
+        block++;
+        this.blockOf.set(`%${label[1] !== void 0 ? `"${label[1]}"` : label[2]}`, block);
+        return;
+      }
+      if (!/^\s/.test(raw)) return;
+      if (this.entryStart < 0) this.entryStart = at;
+      const ins = this._instruction(code.trim(), at, block);
+      this.instructions.push(ins);
+      if (ins.result) this.byResult.set(ins.result, ins);
+    });
+  }
+  _instruction(code, at, block) {
+    let body = code;
+    let result = null;
+    const assign = /^(%(?:"(?:[^"\\]|\\.)*"|[-a-zA-Z$._0-9]+)) = /.exec(code);
+    if (assign) {
+      result = assign[1];
+      body = code.slice(assign[0].length);
+    }
+    const dbgMatch = /, !dbg !(\d+)\s*$/.exec(body);
+    const dbg = dbgMatch ? Number(dbgMatch[1]) : null;
+    const words2 = body.split(/\s+/);
+    let opcode = words2[0];
+    if (opcode === "tail" || opcode === "musttail" || opcode === "notail") opcode = words2[1];
+    let callee = null;
+    let args = [];
+    if (opcode === "call") {
+      const fn = /@(?:"((?:[^"\\]|\\.)*)"|([-a-zA-Z$._0-9]+))\s*\(/.exec(body);
+      if (fn) {
+        callee = fn[1] ?? fn[2];
+        const open = fn.index + fn[0].length - 1;
+        const close = closing(body, open);
+        if (close > open) args = splitTopLevel(body.slice(open + 1, close));
+      }
+    }
+    const debugOnly = callee !== null && callee.startsWith("llvm.dbg.");
+    const operands = [];
+    for (const m of body.matchAll(NAME)) operands.push(m[0]);
+    return { at, code, result, type: result ? this._resultType(opcode, body) : null, opcode, operands, callee, args, dbg, block, debugOnly };
+  }
+  /** The type of what an instruction defines, when it is a scalar; null for anything else. */
+  _resultType(opcode, body) {
+    const rest = body.slice(body.indexOf(opcode) + opcode.length).trim();
+    const words2 = rest.split(/\s+/);
+    let type = null;
+    if (BINARY.has(opcode)) {
+      type = words2.find((w) => !FLAGS.has(w)) ?? null;
+    } else if (opcode === "icmp" || opcode === "fcmp") {
+      type = "i1";
+    } else if (opcode === "select") {
+      const parts2 = splitTopLevel(rest);
+      type = parts2[1]?.split(/\s+/)[0] ?? null;
+    } else if (CAST.has(opcode)) {
+      const to = / to (\S+?)(?:,|$)/.exec(rest);
+      type = to ? to[1] : null;
+    } else if (opcode === "phi" || opcode === "load") {
+      type = words2[0]?.replace(/,$/, "") ?? null;
+    } else if (opcode === "call") {
+      const ret = /^(.*?)\s+@/.exec(rest);
+      type = ret ? ret[1].trim() : null;
+    } else if (opcode === "extractvalue") {
+      const parts2 = splitTopLevel(rest);
+      const aggregate = parts2[0]?.split(/\s+/)[0];
+      const index = Number(parts2[1]);
+      const fields = aggregate ? this.structs.get(aggregate) : void 0;
+      type = fields && Number.isInteger(index) ? fields[index] ?? null : null;
+    }
+    return type && SCALAR.has(type) ? type : null;
+  }
+  _readMetadata() {
+    for (const raw of this.lines) {
+      const node2 = /^!(\d+) = (distinct )?(.*)$/.exec(raw);
+      if (!node2) continue;
+      const id = Number(node2[1]);
+      const body = node2[3];
+      const field2 = (name) => {
+        const m = new RegExp(`\\b${name}: ([^,)]+)`).exec(body);
+        return m ? m[1].trim() : null;
+      };
+      const ref = (name) => {
+        const v = field2(name);
+        return v && /^!\d+$/.test(v) ? Number(v.slice(1)) : null;
+      };
+      if (body.startsWith("!DILocation(")) {
+        this.locations.set(id, { line: Number(field2("line") ?? 0), scope: ref("scope") ?? -1, inlinedAt: ref("inlinedAt") });
+      } else if (body.startsWith("!DIFile(")) {
+        const name = /filename: "((?:[^"\\]|\\.)*)"/.exec(body);
+        this.files.set(id, name ? name[1].replace(/\\5C/gi, "\\").replace(/\\\\/g, "\\") : "");
+      } else if (/^!DI(Subprogram|LexicalBlock|LexicalBlockFile|Namespace)\(/.test(body)) {
+        const name = /\bname: "((?:[^"\\]|\\.)*)"/.exec(body);
+        this.scopes.set(id, { kind: body.slice(1, body.indexOf("(")), name: name ? name[1] : "", file: ref("file"), parent: ref("scope") });
+      } else if (body.startsWith("!{")) {
+        this.tuples.set(id, splitTopLevel(body.slice(2, body.lastIndexOf("}"))));
+      }
+    }
+  }
+  /** The function a scope belongs to, through its lexical blocks. */
+  subprogramOf(scope) {
+    for (let id = scope, guard = 0; id !== null && guard < 64; guard++) {
+      const s = this.scopes.get(id);
+      if (!s) return null;
+      if (s.kind === "DISubprogram") return { id, scope: s };
+      id = s.parent;
+    }
+    return null;
+  }
+  /** The file a scope is in: its own, else its function's. */
+  fileOf(scope) {
+    for (let id = scope, guard = 0; id !== null && guard < 64; guard++) {
+      const s = this.scopes.get(id);
+      if (!s) return "";
+      if (s.file !== null) return this.files.get(s.file) ?? "";
+      id = s.parent;
+    }
+    return "";
+  }
+  /**
+   * The functions an instruction's location runs through, innermost first: the one its line is in,
+   * then the ones that one was inlined into.
+   */
+  functionChain(dbg) {
+    const out = [];
+    for (let id = dbg, guard = 0; id !== null && guard < 64; guard++) {
+      const loc = this.locations.get(id);
+      if (!loc) break;
+      const fn = this.subprogramOf(loc.scope);
+      if (fn) out.push({ id: fn.id, name: fn.scope.name });
+      id = loc.inlinedAt;
+    }
+    return out;
+  }
+};
+function valueIn(operand) {
+  const names = operand?.match(NAME);
+  return names?.length ? names[names.length - 1] : null;
+}
+function baseName(file) {
+  return file.replace(/^.*[\\/]/, "");
+}
+function controlSlice(m, labels, stage) {
+  const slice = /* @__PURE__ */ new Set();
+  const work = [];
+  const add = (v) => {
+    if (labels.has(v) || slice.has(v)) return;
+    slice.add(v);
+    work.push(v);
+  };
+  const baseOf = (pointer) => {
+    for (let v = pointer, guard = 0; guard < 16; guard++) {
+      const def = m.byResult.get(v);
+      if (!def || def.opcode !== "getelementptr" && def.opcode !== "bitcast") return v;
+      v = def.operands[0] ?? v;
+    }
+    return pointer;
+  };
+  const stored = /* @__PURE__ */ new Map();
+  for (const ins of m.instructions) {
+    if (ins.opcode !== "store") continue;
+    const parts2 = splitTopLevel(ins.code.slice(ins.code.indexOf("store") + 5));
+    const value = valueIn(parts2[0]);
+    const pointer = valueIn(parts2[1]);
+    if (!value || !pointer) continue;
+    const base = baseOf(pointer);
+    let list = stored.get(base);
+    if (!list) stored.set(base, list = []);
+    list.push(value);
+  }
+  for (const ins of m.instructions) {
+    if (ins.opcode === "br" || ins.opcode === "switch" || ins.opcode === "indirectbr") {
+      for (const o of ins.operands) add(o);
+    } else if (ins.callee?.startsWith("dx.op.discard")) {
+      for (const o of ins.operands) add(o);
+    } else if (stage === "fragment" && ins.callee?.startsWith("dx.op.storeOutput")) {
+      const id = Number(ins.args[1]?.split(/\s+/).pop());
+      if (KEPT_OUTPUTS.has(m.outputs[id] ?? "")) for (const o of ins.operands) add(o);
+    }
+  }
+  while (work.length) {
+    const v = work.pop();
+    const def = m.byResult.get(v);
+    if (!def) continue;
+    for (const o of def.operands) add(o);
+    if (def.opcode === "load") {
+      const pointer = def.operands[0];
+      if (pointer) for (const value of stored.get(baseOf(pointer)) ?? []) add(value);
+    }
+  }
+  return slice;
+}
+var SOURCES = [
+  { match: /^dx\.op\.loadInput\.f32$/, type: "float" },
+  { match: /^dx\.op\.(threadId|flattenedThreadIdInGroup|threadIdInGroup|groupId)\.i32$/, type: "i32" },
+  { match: /^dx\.op\.loadInput\.i32$/, type: "i32" },
+  { match: /^dx\.op\.loadInput\.f16$/, type: "half" }
+];
+var CONSTANTS = {
+  float: "5.000000e-01",
+  half: "0xH3800",
+  double: "5.000000e-01",
+  i1: "true",
+  i8: "1",
+  i16: "1",
+  i32: "1",
+  i64: "1"
+};
+function standIns(m, types) {
+  const operand = /* @__PURE__ */ new Map();
+  const lines = [];
+  if (!types.size) return { lines, operand };
+  let source = null;
+  let sourceType = "";
+  for (const candidate of SOURCES) {
+    source = m.instructions.find((ins) => ins.callee !== null && candidate.match.test(ins.callee) && ins.result !== null && !ins.operands.length) ?? null;
+    if (source) {
+      sourceType = candidate.type;
+      break;
+    }
+  }
+  if (!source) {
+    for (const t of types) operand.set(t, CONSTANTS[t] ?? "undef");
+    return { lines, operand };
+  }
+  const dbg = source.dbg !== null ? `, !dbg !${source.dbg}` : "";
+  const call = source.code.slice(source.code.indexOf("=") + 1).trim().replace(/, !dbg !\d+\s*$/, "");
+  const base = "%ablate.src";
+  lines.push(`  ${base} = ${call}${dbg}`);
+  const isFloat = (t) => t === "float" || t === "half" || t === "double";
+  const bits = (t) => t === "half" ? 16 : t === "float" ? 32 : t === "double" ? 64 : Number(t.slice(1));
+  for (const t of types) {
+    if (t === sourceType) {
+      operand.set(t, base);
+      continue;
+    }
+    const name = `%ablate.${t}`;
+    let cast;
+    if (t === "i1") {
+      cast = isFloat(sourceType) ? `fcmp ogt ${sourceType} ${base}, 5.000000e-01` : `icmp ne ${sourceType} ${base}, 0`;
+    } else if (isFloat(sourceType) && isFloat(t)) {
+      cast = `${bits(t) < bits(sourceType) ? "fptrunc" : "fpext"} ${sourceType} ${base} to ${t}`;
+    } else if (isFloat(sourceType)) {
+      cast = `fptosi ${sourceType} ${base} to ${t}`;
+    } else if (isFloat(t)) {
+      cast = `uitofp ${sourceType} ${base} to ${t}`;
+    } else {
+      cast = `${bits(t) < bits(sourceType) ? "trunc" : "zext"} ${sourceType} ${base} to ${t}`;
+    }
+    lines.push(`  ${name} = ${cast}${dbg}`);
+    operand.set(t, name);
+  }
+  return { lines, operand };
+}
+function escape(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function rewrite2(m, replace, constants) {
+  const types = /* @__PURE__ */ new Set();
+  for (const v of replace) {
+    const t = m.byResult.get(v)?.type;
+    if (t) types.add(t);
+  }
+  const { lines: prologue, operand } = standIns(m, types);
+  const out = m.lines.slice();
+  let edits = 0;
+  for (const ins of m.instructions) {
+    if (ins.debugOnly) continue;
+    if (ins.result && replace.has(ins.result)) continue;
+    const used = ins.operands.filter((o) => replace.has(o));
+    const positions = constants.get(ins);
+    if (!used.length && !positions) continue;
+    const raw = out[ins.at];
+    const commentAt = stripComment(raw).length;
+    let code = raw.slice(0, commentAt);
+    const comment = raw.slice(commentAt);
+    if (positions && ins.callee) {
+      const fn = code.indexOf(`@${ins.callee}`) >= 0 ? code.indexOf(`@${ins.callee}`) : code.indexOf(`@"${ins.callee}"`);
+      const open = code.indexOf("(", fn);
+      const close = closing(code, open);
+      if (open >= 0 && close > open) {
+        const args = splitTopLevel(code.slice(open + 1, close));
+        for (const p of positions) {
+          const arg = args[p];
+          if (!arg) continue;
+          const space = arg.indexOf(" ");
+          const type = space > 0 ? arg.slice(0, space) : "";
+          const value = arg.slice(space + 1).trim();
+          if (!type || value === "undef" || !value.startsWith("%") || !CONSTANTS[type]) continue;
+          args[p] = `${type} ${CONSTANTS[type]}`;
+          edits++;
+        }
+        code = `${code.slice(0, open + 1)}${args.join(", ")}${code.slice(close)}`;
+      }
+    }
+    for (const v of new Set(used)) {
+      const t = m.byResult.get(v)?.type;
+      const stand = t ? operand.get(t) : void 0;
+      if (!stand) continue;
+      const pattern2 = new RegExp(`${escape(v)}(?![-a-zA-Z$._0-9])`, "g");
+      const head = ins.result ? code.indexOf("=") + 1 : 0;
+      const before = code.slice(0, head);
+      const after = code.slice(head).replace(pattern2, () => {
+        edits++;
+        return stand;
+      });
+      code = before + after;
+    }
+    out[ins.at] = code + comment;
+  }
+  if (prologue.length && m.entryStart >= 0) out.splice(m.entryStart, 0, ...prologue);
+  return { text: out.join("\n"), edits };
+}
+function shaderResourceViews(m) {
+  const out = /* @__PURE__ */ new Map();
+  const named = m.lines.find((l) => l.startsWith("!dx.resources = "));
+  const root = named ? /!(\d+)/.exec(named.slice(named.indexOf("{"))) : null;
+  const classes = root ? m.tuples.get(Number(root[1])) : void 0;
+  const srvs = classes && /^!\d+$/.test(classes[0] ?? "") ? m.tuples.get(Number(classes[0].slice(1))) : void 0;
+  for (const entry2 of srvs ?? []) {
+    const fields = /^!\d+$/.test(entry2) ? m.tuples.get(Number(entry2.slice(1))) : void 0;
+    if (!fields || fields.length < 6) continue;
+    const number = (f) => Number(f.trim().split(/\s+/).pop());
+    const name = /^!"((?:[^"\\]|\\.)*)"$/.exec(fields[2].trim());
+    out.set(number(fields[0]), { name: name ? name[1] : "", space: number(fields[3]), register: number(fields[4]) });
+  }
+  return out;
+}
+function textureOf2(m, handle, srvs) {
+  for (let v = handle, guard = 0; guard < 8; guard++) {
+    const def = m.byResult.get(v);
+    if (!def?.callee) return null;
+    const last = (arg) => arg?.trim().split(/\s+/).pop() ?? "";
+    if (def.callee.startsWith("dx.op.annotateHandle")) {
+      v = valueIn(def.args[1]) ?? "";
+      continue;
+    }
+    if (def.callee.startsWith("dx.op.createHandleFromBinding")) {
+      const bind = /\{\s*i32 (\d+), i32 (\d+), i32 (\d+), i8 (\d+)\s*\}/.exec(def.args[1] ?? "");
+      if (!bind || bind[4] !== "0") return null;
+      for (const t of srvs.values()) if (t.space === Number(bind[3]) && t.register === Number(bind[1])) return t;
+      return { name: "", space: Number(bind[3]), register: Number(bind[1]) };
+    }
+    if (def.callee.startsWith("dx.op.createHandle")) {
+      if (last(def.args[1]) !== "0") return null;
+      return srvs.get(Number(last(def.args[2]))) ?? null;
+    }
+    return null;
+  }
+  return null;
+}
+function weight(ins) {
+  if (ins.debugOnly || !ins.result) return 0;
+  if (ins.callee) {
+    const op = /^dx\.op\.([A-Za-z]+)/.exec(ins.callee)?.[1] ?? "";
+    if (TEXTURE_READS.has(op)) return 16;
+    if (op === "unary" || op === "binary" || op === "tertiary" || op === "dot2" || op === "dot3" || op === "dot4") return 4;
+    return 1;
+  }
+  if (ins.opcode === "fdiv" || ins.opcode === "sdiv" || ins.opcode === "udiv" || ins.opcode === "frem") return 3;
+  if (ins.opcode === "extractvalue" || ins.opcode === "phi" || CAST.has(ins.opcode)) return 0.25;
+  return 1;
+}
+function planDxilAblation(disassembly, stage, entryPoint, limits = {}) {
+  const plan = { variants: [], skipped: [] };
+  const stagePart = { kind: "stage", name: `${stage}: ${entryPoint}` };
+  let m;
+  try {
+    m = new Module2(disassembly);
+  } catch {
+    plan.skipped.push({ ...stagePart, reason: "the module's disassembly could not be read" });
+    return plan;
+  }
+  if (m.functions !== 1 || m.entryStart < 0) {
+    plan.skipped.push({ ...stagePart, reason: m.functions ? "the module defines more than one function (a library), which is not measured" : "the disassembly holds no function" });
+    return plan;
+  }
+  if (stage !== "fragment" && stage !== "compute") {
+    plan.skipped.push({ ...stagePart, reason: "only pixel and compute stages are measured: another stage's outputs decide what is rasterized" });
+    return plan;
+  }
+  const labels = new Set(m.blockOf.keys());
+  for (const ins of m.instructions) ins.operands = ins.operands.filter((o) => o !== ins.result && !labels.has(o) && m.byResult.has(o));
+  const slice = controlSlice(m, labels, stage);
+  const READS = /^dx\.op\.(loadInput|cbufferLoad|cbufferLoadLegacy|threadId|groupId|threadIdInGroup|flattenedThreadIdInGroup|viewID|primitiveID|sampleIndex|coverage|innerCoverage|isFrontFace|createHandle|createHandleFromBinding|createHandleFromHeap|annotateHandle)\b/;
+  const isRead = (ins) => {
+    if (ins.callee) return READS.test(ins.callee);
+    if (ins.opcode !== "extractvalue") return false;
+    const from = m.byResult.get(ins.operands[0] ?? "");
+    return !!from?.callee && READS.test(from.callee);
+  };
+  const replaceable = (ins) => !!ins.result && !!ins.type && !slice.has(ins.result) && !ins.debugOnly && !isRead(ins);
+  const candidates = [];
+  {
+    const constants = /* @__PURE__ */ new Map();
+    for (const ins of m.instructions) {
+      if (!ins.callee) continue;
+      const op = /^dx\.op\.([A-Za-z]+)/.exec(ins.callee)?.[1] ?? "";
+      if (stage === "fragment" && op === "storeOutput") {
+        const id = Number(ins.args[1]?.split(/\s+/).pop());
+        if (!KEPT_OUTPUTS.has(m.outputs[id] ?? "")) constants.set(ins, [ins.args.length - 1]);
+      } else if (stage === "compute" && STORES[op]) {
+        constants.set(ins, Array.from({ length: STORES[op].count }, (_, k) => STORES[op].first + k));
+      }
+    }
+    const written2 = constants.size ? rewrite2(m, /* @__PURE__ */ new Set(), constants) : null;
+    if (!written2 || !written2.edits) plan.skipped.push({ ...stagePart, reason: "the stage writes no outputs that can be left out" });
+    else plan.variants.push({ ...stagePart, text: written2.text, edits: written2.edits, upstream: [] });
+  }
+  const hasLocations = m.instructions.some((ins) => ins.dbg !== null && m.locations.has(ins.dbg));
+  if (hasLocations) {
+    const entry2 = m.instructions.map((ins) => m.functionChain(ins.dbg)).find((c2) => c2.length)?.slice(-1)[0] ?? null;
+    const functions = /* @__PURE__ */ new Map();
+    const lines = /* @__PURE__ */ new Map();
+    for (const ins of m.instructions) {
+      if (ins.debugOnly) continue;
+      const chain = m.functionChain(ins.dbg);
+      if (!chain.length) continue;
+      const cost = weight(ins);
+      for (const fn of new Map(chain.map((f) => [f.id, f])).values()) {
+        if (entry2 && fn.id === entry2.id) continue;
+        let f = functions.get(fn.id);
+        if (!f) functions.set(fn.id, f = { name: fn.name, instructions: [], cost: 0 });
+        f.instructions.push(ins);
+        f.cost += cost;
+      }
+      const loc = m.locations.get(ins.dbg);
+      if (!loc.line) continue;
+      const file = baseName(m.fileOf(loc.scope));
+      const key = `${chain[0].id}|${file}|${loc.line}`;
+      let l = lines.get(key);
+      if (!l) lines.set(key, l = { functionName: chain[0].name, file, line: loc.line, instructions: [], cost: 0 });
+      l.instructions.push(ins);
+      l.cost += cost;
+    }
+    for (const f of [...functions.values()].sort((a, b) => b.cost - a.cost).slice(0, limits.functions ?? 16)) {
+      const part = { kind: "function", name: f.name, functionName: f.name };
+      const own = new Set(f.instructions);
+      const mixesOutsideWork = (ins) => ins.operands.some((o) => {
+        const def = m.byResult.get(o);
+        return !!def && !own.has(def) && !isRead(def);
+      });
+      const replace = new Set(f.instructions.filter((ins) => replaceable(ins) && !mixesOutsideWork(ins)).map((ins) => ins.result));
+      const controlled = f.instructions.some((ins) => ins.result && slice.has(ins.result));
+      if (!replace.size) plan.skipped.push({ ...part, reason: controlled ? "control flow depends on what it returns" : "it computes nothing that can be replaced" });
+      else candidates.push({ part, replace, instructions: f.instructions });
+    }
+    const users = /* @__PURE__ */ new Map();
+    for (const ins of m.instructions) {
+      if (ins.debugOnly) continue;
+      for (const o of ins.operands) {
+        let list = users.get(o);
+        if (!list) users.set(o, list = []);
+        list.push(ins);
+      }
+    }
+    const lineKey = (ins) => {
+      const loc = ins.dbg !== null ? m.locations.get(ins.dbg) : void 0;
+      const chain = m.functionChain(ins.dbg);
+      return loc && chain.length ? `${chain[0].id}|${loc.line}` : "";
+    };
+    const recurrence = (instructions) => instructions.some((ins) => {
+      if (!ins.result) return false;
+      const here = lineKey(ins);
+      return (users.get(ins.result) ?? []).some((phi) => {
+        if (phi.opcode !== "phi") return false;
+        const pairs = [...phi.code.matchAll(/\[\s*([^,\]]+),\s*([^\]]+?)\s*\]/g)];
+        const back = pairs.some((p) => p[1].trim() === ins.result && (m.blockOf.get(p[2].trim()) ?? -1) >= phi.block);
+        return back && (users.get(phi.result ?? "") ?? []).some((u) => lineKey(u) !== here && lineKey(u) !== "");
+      });
+    });
+    for (const l of [...lines.values()].sort((a, b) => b.cost - a.cost).slice(0, limits.lines ?? 32)) {
+      const part = { kind: "line", name: `${l.file ? `${l.file}:` : "line "}${l.line}`, functionName: l.functionName, file: l.file, line: l.line };
+      const replace = new Set(l.instructions.filter(replaceable).map((ins) => ins.result));
+      const controlled = l.instructions.some((ins) => ins.result && slice.has(ins.result));
+      if (!replace.size) {
+        plan.skipped.push({ ...part, reason: controlled ? "control flow depends on what the line computes" : "the line computes nothing that can be replaced" });
+      } else if (recurrence(l.instructions)) {
+        plan.skipped.push({ ...part, reason: "it updates a value that other lines of its loop read every iteration: taking it out would let the compiler hoist the loop's work, and charge that to the line" });
+      } else {
+        candidates.push({ part, replace, instructions: l.instructions });
+      }
+    }
+  } else {
+    plan.skipped.push({ kind: "line", name: "source lines", reason: "the module has no line information (it was not compiled with -Zi or -Zs)" });
+  }
+  const srvs = shaderResourceViews(m);
+  const textures = /* @__PURE__ */ new Map();
+  for (const ins of m.instructions) {
+    if (!ins.callee) continue;
+    const op = /^dx\.op\.([A-Za-z]+)/.exec(ins.callee)?.[1] ?? "";
+    if (!TEXTURE_READS.has(op)) continue;
+    const handle = valueIn(ins.args[1]);
+    const binding = handle ? textureOf2(m, handle, srvs) : null;
+    if (!binding) continue;
+    const key = `${binding.space}|${binding.register}`;
+    let t = textures.get(key);
+    if (!t) textures.set(key, t = { binding, reads: [] });
+    t.reads.push(ins);
+  }
+  const extracts = (read) => m.instructions.filter((ins) => ins.opcode === "extractvalue" && ins.operands[0] === read.result);
+  for (const t of [...textures.values()].sort((a, b) => b.reads.length - a.reads.length).slice(0, limits.textures ?? 16)) {
+    const name = t.binding.name || `t${t.binding.register}${t.binding.space ? `, space${t.binding.space}` : ""}`;
+    const part = { kind: "texture", name, set: t.binding.space, binding: t.binding.register };
+    const values = t.reads.flatMap(extracts);
+    const replace = new Set(values.filter(replaceable).map((ins) => ins.result));
+    if (!replace.size) plan.skipped.push({ ...part, reason: values.length ? "control flow depends on what is read from it" : "nothing reads what it returns" });
+    else candidates.push({ part, replace, instructions: [...t.reads, ...values] });
+  }
+  const taint = /* @__PURE__ */ new Map();
+  candidates.forEach((c2, i) => {
+    for (const v of c2.replace) taint.set(v, (taint.get(v) ?? 0n) | 1n << BigInt(i));
+  });
+  for (let pass = 0; pass < 16; pass++) {
+    let changed = false;
+    for (const ins of m.instructions) {
+      if (!ins.result || ins.debugOnly) continue;
+      let bits = taint.get(ins.result) ?? 0n;
+      const before = bits;
+      for (const o of ins.operands) bits |= taint.get(o) ?? 0n;
+      if (bits !== before) {
+        taint.set(ins.result, bits);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const written = candidates.map((c2) => rewrite2(m, c2.replace, /* @__PURE__ */ new Map()));
+  const indexOf = /* @__PURE__ */ new Map();
+  written.forEach((w, i) => {
+    if (w.edits) indexOf.set(i, plan.variants.length + indexOf.size);
+  });
+  candidates.forEach((c2, i) => {
+    if (!written[i].edits) {
+      plan.skipped.push({ ...c2.part, reason: "nothing outside it reads what it computes" });
+      return;
+    }
+    let bits = 0n;
+    for (const ins of c2.instructions) for (const o of ins.operands) bits |= taint.get(o) ?? 0n;
+    bits &= ~(1n << BigInt(i));
+    const upstream = [];
+    for (let k = 0; k < candidates.length; k++) if (bits & 1n << BigInt(k) && indexOf.has(k)) upstream.push(indexOf.get(k));
+    plan.variants.push({ ...c2.part, text: written[i].text, edits: written[i].edits, upstream });
+  });
+  return plan;
+}
+
 // src/main/shader_ablation_run.ts
 function ablationRepeat(drawMs) {
   if (!drawMs || drawMs <= 0) return 8;
   return Math.min(64, Math.max(4, Math.ceil(2 / drawMs)));
 }
+async function measureDxilStageByAblation(run2, req) {
+  const text = await disassembleDxil(req.dxil);
+  if (!text.ok) throw new Error(`The stage's DXIL could not be disassembled: ${text.text}`);
+  const plan = planDxilAblation(text.text, req.stage, req.entryPoint, { functions: req.functions, lines: req.lines, textures: req.textures });
+  const model = analyzeSpirvCached(req.spirv);
+  const functionIds = /* @__PURE__ */ new Map();
+  for (const f of model?.functions ?? []) {
+    functionIds.set(f.name, f.id);
+    if (f.name.startsWith("src.")) functionIds.set(f.name.slice(4), f.id);
+  }
+  const assembled = await Promise.all(plan.variants.map((v) => assembleDxil(v.text)));
+  const kept = /* @__PURE__ */ new Map();
+  const codes = [];
+  assembled.forEach((a, i) => {
+    const { text: _text, edits: _edits, upstream: _upstream, ...part } = plan.variants[i];
+    if (a.ok) {
+      kept.set(i, codes.length);
+      codes.push(a.container);
+    } else {
+      plan.skipped.push({ ...part, reason: `the variant does not assemble or validate: ${a.error}` });
+    }
+  });
+  const variants = plan.variants.filter((_, i) => kept.has(i)).map((v) => {
+    const { text: _text, ...part } = v;
+    const functionId = part.functionName !== void 0 ? functionIds.get(part.functionName) : void 0;
+    return {
+      ...part,
+      ...functionId !== void 0 ? { functionId } : {},
+      spirv: new Uint8Array(0),
+      upstream: v.upstream.filter((k) => kept.has(k)).map((k) => kept.get(k))
+    };
+  });
+  if (!variants.length) {
+    const reasons = plan.skipped.map((s) => `${s.name}: ${s.reason}`).slice(0, 8).join("; ");
+    throw new Error(`Nothing in the ${req.stage} stage can be measured${reasons ? ` (${reasons})` : ""}.`);
+  }
+  const repeat = req.repeat ?? ablationRepeat(req.drawMs);
+  const request = encodeAblationRequest(
+    [{ command: req.command, stage: req.stage, repeat, variants: variants.map((v, i) => ({ name: v.name, spirv: codes[i] })) }],
+    Math.max(1, Math.min(32, req.rounds ?? 5))
+  );
+  const result = await run2({ kind: "ablate", request });
+  if (!result.data) throw new Error(`The replay could not time the variants: ${result.error ?? "no data"}`);
+  const file = parseAblationResult(result.data);
+  const target = file.targets.find((t) => t.command === req.command);
+  if (!target) throw new Error("The replay did not answer for the command.");
+  if (!target.baseline.measured) throw new Error(`The replay did not time the command: ${target.note ?? "no timings"}.`);
+  const measured = measuredAblation(req.pipeline, req.stage, req.entryPoint, { variants, skipped: plan.skipped }, target, file.device);
+  measured.repeat = repeat;
+  return measured;
+}
 async function measureStageByAblation(run2, req) {
+  if (req.dxil) return measureDxilStageByAblation(run2, req);
   const analysis = analyzeSpirvCached(req.spirv);
   if (!analysis) throw new Error("The stage's SPIR-V could not be analyzed.");
   const plan = planAblation(req.spirv, req.stage, req.entryPoint, analysis, { functions: req.functions, lines: req.lines, textures: req.textures });

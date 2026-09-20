@@ -1471,7 +1471,7 @@ export class InspectPanel {
         view.text = view.disText;
         view.pre.text = view.disText || "Disassembly not available.";
       }
-      view.editButton.disabled = !this.window.connected;
+      view.editButton.disabled = !this._canEdit();
       return;
     }
     if (mode === "source") {
@@ -1499,7 +1499,7 @@ export class InspectPanel {
     } else {
       view.pre.text = r.text;
     }
-    view.editButton.disabled = !r.ok || !this.window.connected;
+    view.editButton.disabled = !r.ok || !this._canEdit();
   }
 
   private _objectBlob(id: number, index: number, data: Uint8Array | null): void {
@@ -1610,9 +1610,9 @@ export class InspectPanel {
     const language = sourceLanguageOf(info);
     view.text = file.text;
     renderSourceLines(view.pre, info, view.sourceFile, { activeLine, onMappedLine: (f, line) => void this._jumpToDisassembly(view, f, line) });
-    view.editButton.disabled = !language || !this.window.connected;
+    view.editButton.disabled = !language || !this._canEdit();
     view.editButton.tooltip = language
-      ? "Edit the embedded source and compile it into the running application"
+      ? "Edit the embedded source and compile it into the running application, or run it in the open capture"
       : `The shader editor cannot compile ${info.language}; edit the GLSL, HLSL or SPIR-V view instead`;
   }
 
@@ -1691,7 +1691,16 @@ export class InspectPanel {
     }
     view.text = view.disText;
     this._renderDisassembly(view, { file, line });
-    view.editButton.disabled = !this.window.connected;
+    view.editButton.disabled = !this._canEdit();
+  }
+
+  /**
+   * An edit has somewhere to go: the running application, which draws its next frame with it, or
+   * the capture that is open, which is replayed with it (renderer/shader_replay.ts). A capture file
+   * has only the second, and that is the case the second exists for.
+   */
+  private _canEdit(): boolean {
+    return this.window.connected || this.window.canReplayCapture;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1792,7 +1801,8 @@ export class InspectPanel {
     };
     const bytecodeWord = view.d3d12 ? "DXIL" : "SPIR-V";
 
-    new Button(buttons, { label: "Compile & Apply", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length, callback: () => {
+    /** Compiles the text, marks what the compiler complained of, and hands the bytecode on when there is some. */
+    const compileThen = (then: (code: Uint8Array, tool: string, edit: ShaderEdit) => void): void => {
       if (!targets) return;
       const edit: ShaderEdit = { language, source: text.value, results: new Map(), applied: false };
       this._shaderEdits.set(key, edit);
@@ -1818,15 +1828,32 @@ export class InspectPanel {
           if (first !== undefined) text.goToLine(first);
           return;
         }
-        const spirv = encodeBase64(r.spirv);
-        status.text = `${r.tool}: ${r.spirv.byteLength} bytes of ${bytecodeWord}. Applying to ${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"}...`;
+        then(r.spirv, r.tool, edit);
+      });
+    };
+
+    new Button(buttons, { label: "Compile & Apply", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length || !this.window.connected,
+      tooltip: "Compile the text and have the running application draw with it from its next frame", callback: () => compileThen((code, tool, edit) => {
+        if (!targets) return;
+        const spirv = encodeBase64(code);
+        status.text = `${tool}: ${code.byteLength} bytes of ${bytecodeWord}. Applying to ${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"}...`;
         for (const p of targets.pipelines) {
           edit.results.set(p.id, `${p.name}: applying...`);
           void this.window.send({ action: "ReplaceShader", pipeline: p.id, stage: targets.stageFlag, spirv });
         }
-      });
-    } });
-    new Button(buttons, { label: "Restore Original", class: "btn btn-sm", disabled: !targets || !targets.pipelines.length,
+      }) });
+    // The other place an edit can run: the captured frame, replayed with it. What it changed is
+    // exact there, since every render target of that frame was read back (shader_replay.ts).
+    new Button(buttons, { label: "Compile & Replay", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length || !this.window.canReplayCapture,
+      tooltip: "Compile the text and replay the open capture with it on this machine's GPU: every render target the edit changes is shown as captured, with the edit, and where the two differ. The application is not touched.",
+      callback: () => compileThen((code, tool) => {
+        if (!targets) return;
+        status.text = `${tool}: ${code.byteLength} bytes of ${bytecodeWord}. Replaying the capture with it...`;
+        void this.window.replayWithShaders(targets.pipelines.map((p) => ({ pipeline: p.id, stage: targets.stage, code }))).then((summary) => {
+          status.text = `${tool}: ${code.byteLength} bytes of ${bytecodeWord}. In the capture: ${summary}.`;
+        });
+      }) });
+    new Button(buttons, { label: "Restore Original", class: "btn btn-sm", disabled: !targets || !targets.pipelines.length || !this.window.connected,
       tooltip: "Bind the application's own pipeline again", callback: () => {
       if (!targets) return;
       const edit = this._shaderEdits.get(key) ?? { language, source: text.value, results: new Map<number, string>(), applied: false };

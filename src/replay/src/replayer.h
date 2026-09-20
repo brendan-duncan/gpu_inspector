@@ -42,9 +42,22 @@ namespace vkreplay {
 
 class Exporter;
 
+/**
+ * A pipeline's stage given other code for the whole replay (--replace): a shader edited in GPU
+ * Inspector and run in the captured frame instead of in the application. What the frame's targets
+ * hold with it is compared with what the capture read back, which is the edit's effect.
+ */
+struct ShaderReplacement {
+    uint64_t pipeline = 0;
+    /** "vertex", "fragment", "compute", ...: the stage's name in the pipeline's blobs ("fragment:main"). */
+    std::string stage;
+    std::vector<uint32_t> words;
+};
+
 struct ReplayOptions {
     /** Enable the Khronos validation layer and report its messages. */
     bool validation = false;
+    std::vector<ShaderReplacement> replacements;
     /**
      * Export to C++ (exporter.h): write the frame as a standalone C++ project into this directory
      * while it is replayed. Set for Setup as well as the frame, since the objects are exported as

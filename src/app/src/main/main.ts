@@ -1186,6 +1186,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       showView: cliOption("debug-view"),
       timingMs: cliOption("debug-timing") ? Number(cliOption("debug-timing")) : null,
+      memoryMs: cliOption("debug-memory") ? Number(cliOption("debug-memory")) : null,
       expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),
       launchDialog: cliFlag("debug-launch-dialog") ? cliOption("debug-launch-dialog") ?? "native" : null,
@@ -1319,6 +1320,13 @@ ipcMain.handle("inspector:appStyles", () => appStyles());
 interface ReplayRequest { key: string; data?: Uint8Array; name?: string; api?: string }
 
 /** Runs an analysis in the replay kept alive for a renderer's capture (replayKeyed in replay.ts). */
+/** The same for a D3D12 capture: `dxinsp_replay` started for the one analysis (replayKeyedOnce in replay.ts). */
+function replayOnceD3D12(opts: ReplayRequest, analysis: ReplayAnalysis): Promise<ReplayRun> {
+  const tool = findD3D12ReplayTool([path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+  if (!tool) return Promise.resolve({ data: null, output: "", error: NO_D3D12_REPLAY_TOOL });
+  return replayKeyedOnce(tool, opts.key, opts.data, analysis, opts.name);
+}
+
 function replayFor(opts: ReplayRequest, analysis: ReplayAnalysis): Promise<ReplayRun> {
   const tool = findReplayTool([path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
   if (!tool) return Promise.resolve({ data: null, output: "", error: NO_REPLAY_TOOL });
@@ -1330,7 +1338,10 @@ ipcMain.handle("inspector:measureOverdraw", (_e, opts: ReplayRequest): Promise<O
 ipcMain.handle("inspector:releaseReplay", (_e, key: string) => releaseReplayKey(key));
 // Vulkan per-draw timing and counters: the frame replayed with queries around each draw
 // (src/replay/src/draw_stats.cpp), for the Shader Flame Graph.
-ipcMain.handle("inspector:measureDraws", (_e, opts: ReplayRequest): Promise<ReplayRun> => replayFor(opts, { kind: "draws" }));
+// A D3D12 capture's come from dxinsp_replay (src/d3d12/replay/src/dx_measure.cpp), which has no
+// --serve mode and so runs one-shot.
+ipcMain.handle("inspector:measureDraws", (_e, opts: ReplayRequest): Promise<ReplayRun> =>
+  opts.api === "d3d12" ? replayOnceD3D12(opts, { kind: "draws" }) : replayFor(opts, { kind: "draws" }));
 // Vulkan hardware counters: the GPU's own counters around each render pass, collected by replaying
 // the frame once per collection pass (src/replay/src/hw_counters.cpp).
 ipcMain.handle("inspector:measureHwCounters", (_e, opts: ReplayRequest & { perDraw?: boolean }): Promise<ReplayRun> => {
@@ -1362,18 +1373,24 @@ ipcMain.handle("inspector:exportCpp", (_e, opts: ReplayRequest & { dir: string; 
   if (!found.tool) return Promise.resolve({ data: null, output: "", error: found.missing });
   return replayKeyed(found.tool, opts.key, opts.data, { kind: "export", dir: opts.dir }, opts.name);
 });
+// A shader edited and run in the capture: the frame replayed with other code for some pipelines'
+// stages, and its render targets against what the capture read back (renderer/shader_replay.ts).
+ipcMain.handle("inspector:replayEdited", (_e, opts: ReplayRequest & { request: Uint8Array }): Promise<ReplayRun> => {
+  const analysis: ReplayAnalysis = { kind: "replace", request: new Uint8Array(opts.request) };
+  return opts.api === "d3d12" ? replayOnceD3D12(opts, analysis) : replayFor(opts, analysis);
+});
 // Vulkan shader cost by ablation: a stage's variants timed at one draw (src/replay/src/ablation.cpp).
 ipcMain.handle("inspector:measureShader", async (_e, opts: ReplayRequest & { stage: StageAblationRequest }) => {
   let needData = false;
   try {
     const ablation = await measureStageByAblation(async (analysis) => {
-      const run = await replayFor(opts, analysis);
+      const run = await (opts.api === "d3d12" ? replayOnceD3D12(opts, analysis) : replayFor(opts, analysis));
       if (run.needData) {
         needData = true;
         throw new Error("the replay needs the capture");
       }
       return run;
-    }, { ...opts.stage, spirv: new Uint8Array(opts.stage.spirv) });
+    }, { ...opts.stage, spirv: new Uint8Array(opts.stage.spirv), ...(opts.stage.dxil ? { dxil: new Uint8Array(opts.stage.dxil) } : {}) });
     return { ablation };
   } catch (e) {
     return needData ? { needData: true } : { error: (e as Error).message };

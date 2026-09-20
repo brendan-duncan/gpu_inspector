@@ -196,6 +196,7 @@ export class InspectorWindow extends Window {
     panel.debugCaptureWithout = this._debug?.captureWithout ?? null;
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
     if (this._debug?.timingMs) this._debugTiming(panel, this._debug.timingMs);
+    if (this._debug?.memoryMs) this._debugMemory(panel, this._debug.memoryMs);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -558,6 +559,16 @@ export class InspectorWindow extends Window {
       panel.showCaptureTab();
       panel.capturePanel.toggleTiming();
       setTimeout(() => panel.capturePanel.toggleTiming(), Math.max(500, ms));
+    }, 1500);
+  }
+
+  /** --debug-memory=<ms>: a memory capture driven from the command line, for screenshots and tests. */
+  private _debugMemory(panel: SessionPanel, ms: number): void {
+    setTimeout(() => {
+      if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
+      panel.showCaptureTab();
+      panel.capturePanel.toggleMemoryCapture();
+      setTimeout(() => panel.capturePanel.toggleMemoryCapture(), Math.max(500, ms));
     }, 1500);
   }
 

@@ -15,7 +15,13 @@ import { TabWidget } from "./widget/tab_widget.js";
 import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
-import { renderTimingReport, timingButtonLabel } from "./timing_view.js";
+import { renderTimingReport, sampledStretch, timingButtonLabel } from "./timing_view.js";
+import { emptyTimingSamples, summarizeSamples, summaryAddresses } from "./timing_samples.js";
+import { memoryButtonLabel, renderMemoryCaptureReport } from "./memory_capture_view.js";
+import { encodeReplaceRequest, parseReplayedTargets, replayedTargetsSummary, type ReplayedTargets, type ShaderReplacement } from "./shader_replay.js";
+import { renderShaderReplay } from "./shader_replay_view.js";
+import { emptyMemoryCapture } from "./memory_capture.js";
+import { memoryHeaps } from "./memory_heaps.js";
 import type { FrameRange } from "./frame_timing.js";
 import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
 import { capturedIds, fetchBlob, serializeCapture } from "./capture_file.js";
@@ -25,7 +31,7 @@ import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_vie
 import { renderFrameFlameGraph } from "./frame_flamegraph.js";
 import type { StageModel } from "./frame_cost_tree.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
-import { pipelineUses, programStages, shaderProgram, stageLabel } from "./shader_cache.js";
+import { pipelineUses, programStages, shaderProgram, stageLabel, stateStages } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, SUBMIT_CALL, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
@@ -154,8 +160,11 @@ const REPORTS: { id: string; icon: string; label: string; detail: string; toolti
     tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
 ];
 
+/** Tabs of the same kind that are the result of something done rather than a report asked for, so the menu does not list them. */
+const RESULT_LABELS: Record<string, string> = { "shader-edit": "Shader Edit" };
+
 /** A report's name, for its tab and for the file it is exported to. */
-const reportLabel = (id: string): string => REPORTS.find((r) => r.id === id)?.label ?? id;
+const reportLabel = (id: string): string => REPORTS.find((r) => r.id === id)?.label ?? RESULT_LABELS[id] ?? id;
 
 /** An arrow leaving a frame: the report in a window of its own. */
 const ICON_NEW_WINDOW = '<svg viewBox="0 0 16 16" aria-label="Open in new window"><path d="M8.5 3H3.2v9.8H13V7.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 2.6H13.4V6.2M13.4 2.6 8.4 7.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -202,6 +211,12 @@ export class CapturePanel {
   private _timingButton!: Button;
   private _timingPanel!: Div;
   private _timingRunning = false;
+  private _sampleCheck: Checkbox | null = null;
+  /** Addresses the timing report has asked the library to name, so each is asked for once. */
+  private _timingSymbolsAsked = new Set<string>();
+  private _memoryButton: Button | null = null;
+  private _memoryPanel!: Div;
+  private _memoryRunning = false;
   /**
    * The stretch of the timing run the report's figures are of, dragged out on its graph. Held by
    * frame number rather than by position because the ring drops the oldest frames out of the front
@@ -230,6 +245,8 @@ export class CapturePanel {
   private _handles = new Map<CaptureView, TabHandle>();
   /** The capture the layer is streaming to (the most recently requested one). */
   private _live: CaptureView | null = null;
+  /** The live capture's stream has not ended yet, so the capture library would ignore another request. */
+  private _liveStreaming = false;
   private _captureCount = 0;
   /** The tabs each capture opened beside its own, at most one of each kind. */
   private _subTabs = new Map<CaptureView, Map<SubTabKind, { tab: CaptureSubTab; handle: TabHandle }>>();
@@ -366,10 +383,30 @@ export class CapturePanel {
       tooltip: "Record every frame's time and where its CPU went, for as long as it runs. A frame report averages five or six frames together and a hitch is one frame, so this is what finds one.",
       callback: () => this.toggleTiming() });
     c.push(this._timingButton);
+    // Call stacks sampled with it (src/vulkan/src/cpu_sampler.h), where the capture library can: the
+    // Windows ones. On by default, since the hitch nothing timed explains is the common one; off
+    // for a run whose frame times must not be touched at all (a sample stops a thread for microseconds).
+    if (getHostPlatform() === "win32") {
+      this._sampleCheck = new Checkbox(row, { label: "Sample stacks", checked: true,
+        tooltip: "Timing Capture: also sample every thread's call stack 250 times a second, and whether it was running or blocked there. The report then says what each thread was doing in the worst hitch, or in the stretch you drag out. Each sample stops a thread for a few microseconds." });
+      c.push(this._sampleCheck);
+    }
+    // The same shape of question about memory: not what is held now (Inspect's memory view) but
+    // what was allocated and freed over a stretch of the run. The Metal library does not record
+    // one, so a Mac is not offered it.
+    if (getHostPlatform() !== "darwin") {
+      this._memoryButton = new Button(row, { label: memoryButtonLabel(false), class: "btn",
+        tooltip: "Vulkan and D3D12: record every allocation and free for as long as it runs, and report what made here is still held (a leak, by name), what was made and freed again within a few frames (churn a pool would remove), and which frames allocated most.",
+        callback: () => this.toggleMemoryCapture() });
+      c.push(this._memoryButton);
+    }
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
     this._timingPanel = new Div(this.parent, { class: "timing-panel" });
     this._timingPanel.element.hidden = true;
     this.window.database.onTimingFrames.addListener(() => this._refreshTiming());
+    this._memoryPanel = new Div(this.parent, { class: "timing-panel" });
+    this._memoryPanel.element.hidden = true;
+    this.window.database.onMemoryEvents.addListener(() => this._refreshMemoryCapture());
 
     this._tabs = new TabWidget(this.parent, { class: "capture-tabs tabs-fill", displayCloseButton: true });
     this._tabs.onTabClosed.addListener((panel) => this._tabClosed(panel));
@@ -402,6 +439,8 @@ export class CapturePanel {
     if (atFrame !== undefined) view.status = `waiting for frame ${atFrame}...`;
     this._addView(view);
     this._live = view;
+    this._liveStreaming = true;
+    view.onCaptureComplete.addListener(() => { if (this._live === view) this._liveStreaming = false; });
     this._statusLabel.text = view.status;
     const maxKb = Math.max(1, Number(this._bufferSizeInput.value) || 128);
     void this.window.send({
@@ -421,6 +460,21 @@ export class CapturePanel {
       ...(meshOutput ? { meshOutput } : {}),
     });
     return view;
+  }
+
+  /** The application went away: a capture that was streaming in will never finish. */
+  connectionLost(): void {
+    this._liveStreaming = false;
+    // Whatever was recording went with the process; what it recorded stays on screen.
+    if (this._timingRunning) {
+      this._timingRunning = false;
+      this._timingButton.text = timingButtonLabel(false);
+    }
+    if (this._memoryRunning) {
+      this._memoryRunning = false;
+      if (this._memoryButton) this._memoryButton.text = memoryButtonLabel(false);
+      this._refreshMemoryCapture();
+    }
   }
 
   /**
@@ -533,6 +587,14 @@ export class CapturePanel {
     if (msg.action === "ImageData") {
       // Live image readbacks (descriptor set thumbnails) may be waited for by any capture.
       for (const v of this._views) v.info.handleImageData(msg);
+      return;
+    }
+    if (msg.action === "AppCaptureRequest") {
+      // The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture
+      // the button takes, with the bar's options. One already streaming in would make the capture
+      // library ignore the request, and this would leave an empty tab behind.
+      if (this._liveStreaming) this._statusLabel.text = "the application asked for a capture while one was being taken";
+      else this.capture(Math.max(1, Math.floor(msg.frameCount) || 1));
       return;
     }
     this._live?.handleMessage(msg);
@@ -830,6 +892,8 @@ export class CapturePanel {
     this._timingRunning = !this._timingRunning;
     if (this._timingRunning) {
       this.window.database.timing.frames.length = 0;
+      this.window.database.timingSamples = emptyTimingSamples();
+      this._timingSymbolsAsked.clear();
       // Two runs are two questions, and a range dragged out of the last one names frames this one
       // will number again from somewhere else.
       this._timingRange = null;
@@ -837,13 +901,56 @@ export class CapturePanel {
     }
     this._timingButton.text = timingButtonLabel(this._timingRunning);
     this._statusLabel.text = this._timingRunning ? "recording frame times..." : "";
-    void this.window.send({ action: "TimingCapture", start: this._timingRunning });
+    void this.window.send({ action: "TimingCapture", start: this._timingRunning, ...(this._timingRunning && this._sampleCheck?.checked ? { sampleHz: 250 } : {}) });
     this._refreshTiming();
+  }
+
+  /**
+   * Starts or stops a memory capture (the button, and --debug-memory). Starting clears what the
+   * last one recorded, as a timing capture does.
+   */
+  toggleMemoryCapture(): void {
+    if (!this.window.connected) {
+      this._statusLabel.text = "not connected";
+      return;
+    }
+    this._memoryRunning = !this._memoryRunning;
+    if (this._memoryRunning) {
+      this.window.database.memoryCapture = emptyMemoryCapture();
+      this._memoryPanel.element.hidden = false;
+    }
+    if (this._memoryButton) this._memoryButton.text = memoryButtonLabel(this._memoryRunning);
+    this._statusLabel.text = this._memoryRunning ? "recording allocations..." : "";
+    void this.window.send({ action: "MemoryCapture", start: this._memoryRunning });
+    this._refreshMemoryCapture();
+  }
+
+  private _refreshMemoryCapture(): void {
+    if (this._memoryPanel.element.hidden) return;
+    const db = this.window.database;
+    const heaps = memoryHeaps(db);
+    renderMemoryCaptureReport(this._memoryPanel, db.memoryCapture, this._memoryRunning, {
+      getObject: (id) => db.getObject(id),
+      onInspect: (id) => this.window.showObject(id),
+      ...(heaps ? { heapNames: heaps.heaps.map((h) => `Heap ${h.index}${h.deviceLocal ? " (device local)" : ""}`) } : {}),
+    });
   }
 
   private _refreshTiming(): void {
     if (this._timingPanel.element.hidden) return;
+    const db = this.window.database;
+    // The stacks the report is about to show, named: asked of the library once each, and the
+    // report drawn again when the names arrive.
+    const stretch = db.timingSamples.samples.length ? sampledStretch(db.timing, this._timingRange) : null;
+    const shown = stretch ? summarizeSamples(db.timingSamples, stretch.fromFrame, stretch.toFrame) : null;
+    const unnamed = shown ? summaryAddresses(shown).filter((a) => !db.symbols.has(a) && !this._timingSymbolsAsked.has(a)) : [];
+    if (unnamed.length && this.window.connected) {
+      for (const a of unnamed) this._timingSymbolsAsked.add(a);
+      void resolveSymbols(this.window, unnamed).then(() => this._refreshTiming());
+    }
     renderTimingReport(this._timingPanel, this.window.database.timing, {
+      samples: db.timingSamples,
+      symbolOf: (a) => db.symbols.get(a),
       range: this._timingRange,
       onRange: (range) => {
         this._timingRange = range;
@@ -1677,7 +1784,19 @@ export class CaptureView implements CaptureHost {
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
-      // Draws measured one by one: the D3D12 capture's own queries, or a Vulkan replay's (Measure draws).
+      // A shader edited and run in the capture (Compile & Replay): what it did to the render targets.
+      shaderReplay: this.shaderReplay ? {
+        targets: this.shaderReplay.targets.length, compared: this.shaderReplay.targets.filter((t) => t.compared).length,
+        changed: this.shaderReplay.targets.filter((t) => t.differingTexels > 0).map((t) => ({ image: t.image, aspect: t.aspect, differingTexels: t.differingTexels, pixels: t.pixels?.byteLength ?? 0 })),
+        problems: this.shaderReplay.problems.length,
+      } : null,
+      // Shader stages measured by ablation (Measure shader), with what each part saved.
+      ablations: d.ablations.map((a) => ({
+        pipeline: a.pipeline, stage: a.stage, command: a.command, baselineMs: a.baselineMs, stageMs: a.stageMs,
+        parts: a.parts.map((p) => ({ kind: p.kind, name: p.name, functionId: p.functionId ?? null, savedMs: p.savedMs })),
+        skipped: a.skipped.length,
+      })),
+      // Draws measured one by one: the D3D12 capture's own queries, or a replay's (Measure draws).
       drawStats: d.drawStats?.length ?? 0,
       drawStatsTimed: d.drawStats?.filter((s) => s.timed).length ?? 0,
       drawStatsCounted: d.drawStats?.filter((s) => s.counted).length ?? 0,
@@ -1967,9 +2086,15 @@ export class CaptureView implements CaptureHost {
         // Compute stages need the workgroup size (invocations = groups x size), from reflection.
         const reflection = source.stage === "compute" ? await this.window.shaders.get(source.object, source.blobIndex) : null;
         const entry = reflection?.entryPoints.find((e) => e.name === source.entryPoint) ?? reflection?.entryPoints[0] ?? null;
+        // The cost model reads SPIR-V. A D3D12 stage's is what its HLSL compiles to, which is what
+        // the shader debugger steps as well (d3d12/shader_debug.ts): a stage with no source anywhere
+        // stays unanalyzed. What is measured by ablation is the DXIL itself.
+        const dxil = this.data.api === "d3d12" ? data : null;
+        const spirv = dxil ? await this._hlslAsSpirv(source.object.id, source.blobIndex, dxil, source.stage, source.entryPoint) : data;
         stages.push({
           stage: source.stage, entryPoint: source.entryPoint, objectId: source.object.id,
-          analysis: data ? analyzeSpirvCached(data) : null, workgroupSize: entry?.workgroupSize ?? null, spirv: data,
+          analysis: spirv ? analyzeSpirvCached(spirv) : null, workgroupSize: entry?.workgroupSize ?? null, spirv,
+          ...(dxil ? { dxil } : {}),
         });
       }
       models.set(pipelineId, stages);
@@ -1984,9 +2109,23 @@ export class CaptureView implements CaptureHost {
       data: this.data, db, models,
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
-      // Per-draw and per-shader measurements replay the capture, which only Vulkan captures can be.
-      ...(this.data.api === "vulkan" ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
+      // Per-draw and per-shader measurements replay the capture, which a Metal capture cannot be.
+      ...(this.data.api === "vulkan" || this.data.api === "d3d12"
+        ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
     });
+  }
+
+  /** A D3D12 stage's HLSL compiled to SPIR-V for the cost model, once per stage; null when it has no source or does not compile. */
+  private _hlslSpirv = new Map<string, Promise<Uint8Array | null>>();
+  private _hlslAsSpirv(objectId: number, blobIndex: number, dxil: Uint8Array, stage: string, entryPoint: string): Promise<Uint8Array | null> {
+    const key = `${objectId}:${blobIndex}:${entryPoint}`;
+    let pending = this._hlslSpirv.get(key);
+    if (!pending) {
+      pending = window.inspector.compileHlslForDebugging(dxil, stage, entryPoint, undefined, this.window.symbolDirs)
+        .then((r) => (r.ok && r.spirv ? new Uint8Array(r.spirv) : null), () => null);
+      this._hlslSpirv.set(key, pending);
+    }
+    return pending;
   }
 
   /** "Frame Stats": the capture in numbers (WebGPU Inspector's Frame Stats). */
@@ -2089,6 +2228,19 @@ export class CaptureView implements CaptureHost {
       }
     }
     else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
+    else if (name === "shader-edit") void this._debugShaderEdit();
+    else if (name.startsWith("flame:")) {
+      // Testing aid (--debug-view=flame:draws|shader): the flame graph, then its Measure draws or
+      // Measure shader button pressed, which is the whole of what a person does to measure.
+      const wanted = name.split(":")[1] === "draws" ? "Measure draws" : "Measure ";
+      void this._showFlameGraph().then(() => setTimeout(() => {
+        const body = this._reportTabs.get("flame")?.body;
+        const buttons = [...(body?.element.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
+        const button = buttons.find((b) => (b.textContent ?? "").startsWith(wanted) && (wanted !== "Measure " || !(b.textContent ?? "").startsWith("Measure draws")));
+        if (button && !button.disabled) button.click();
+        else this._setStatus(`the flame graph offers no "${wanted.trim()}" to press`);
+      }, 500));
+    }
     else if (name === "overdraw") void this.openOverdraw();
     else if (name.startsWith("mesh")) {
       // Testing aid (--debug-view=mesh[:in|out[:<command>|last]]): the mesh tab on the first draw, or the one named.
@@ -2483,19 +2635,109 @@ export class CaptureView implements CaptureHost {
   }
 
   /**
-   * Vulkan: replays the capture with a timestamp pair and a pipeline statistics query around every
-   * draw and dispatch (src/replay/src/draw_stats.cpp), for the Shader Flame Graph's per-draw weights.
+   * Testing aid (--debug-view=shader-edit): the first draw's pixel shader edited to write magenta,
+   * compiled, and the capture replayed with it — what Edit and Compile & Replay do in the Inspect
+   * panel, with the edit made here instead of typed.
+   */
+  private async _debugShaderEdit(): Promise<void> {
+    const db = this.window.database;
+    const draw = this.data.commands.find((c) => this.data.sets.DRAW.has(c.method));
+    const state = draw ? drawState(this.data, db, draw) : null;
+    const source = state ? stateStages(state, db).find((s) => s.stage === "fragment") : undefined;
+    const bytes = source ? await fetchBlob(this.window, source.object, source.blobIndex) : null;
+    if (!state?.pipeline || !source || !bytes) {
+      this._setStatus("shader edit: the first draw has no pixel shader the capture holds");
+      return;
+    }
+    const d3d12 = this.data.api === "d3d12";
+    const text = await window.inspector.shaderText(bytes, d3d12 ? "hlsl" : "glsl", this.window.symbolDirs);
+    if (!text.ok) {
+      this._setStatus(`shader edit: no source to edit: ${text.text.split("\n")[0]}`);
+      return;
+    }
+    // The last thing the entry point writes: HLSL returns its colour, GLSL assigns its output.
+    const edited = d3d12
+      ? text.text.replace(/return\s+float4\s*\([^;]*\)\s*;(?![\s\S]*return\s+float4)/, "return float4(1.0, 0.0, 1.0, 1.0);")
+      : text.text.replace(/(\b\w+)\s*=\s*vec4\s*\([^;]*\)\s*;(?![\s\S]*=\s*vec4\s*\()/, "$1 = vec4(1.0, 0.0, 1.0, 1.0);");
+    if (edited === text.text) {
+      this._setStatus("shader edit: the source has no colour written the way this testing aid edits one");
+      return;
+    }
+    const compiled = d3d12
+      ? await window.inspector.compileDxil(edited, "fragment", source.entryPoint, "6_0")
+      : await window.inspector.compileShader(edited, "glsl", "fragment", source.entryPoint, "1.3");
+    if (!compiled.ok || !compiled.spirv) {
+      this._setStatus(`shader edit: the edit did not compile: ${compiled.log.split("\n")[0]}`);
+      return;
+    }
+    await this.replayWithShaders([{ pipeline: state.pipeline.id, stage: "fragment", code: new Uint8Array(compiled.spirv) }]);
+  }
+
+  /** Whether this capture can be run again: a Vulkan or a D3D12 one, once its commands are here. */
+  get canReplay(): boolean {
+    return (this.data.api === "vulkan" || this.data.api === "d3d12") && this.data.commands.length > 0;
+  }
+
+  /** The last shader edit's effect on the frame, for the debug dump. */
+  shaderReplay: ReplayedTargets | null = null;
+
+  /**
+   * A shader edited and run in the capture (renderer/shader_replay.ts): the frame replayed with
+   * other code for some pipelines' stages, and its render targets against what the capture read
+   * back, in a tab beside this one. Resolves to a line saying what happened.
+   */
+  async replayWithShaders(replacements: ShaderReplacement[]): Promise<string> {
+    if (!this.canReplay) return "this capture cannot be replayed";
+    const db = this.window.database;
+    const edited = replacements.map((r) => `${r.stage} stage of ${db.getObject(r.pipeline)?.name ?? `pipeline ${r.pipeline}`}`);
+    const body = this._reportBody("shader-edit", "Replaying the frame with the edited shader...");
+    this._setStatus(`replaying the frame with the edited ${edited.join(", ")}...`);
+    try {
+      const request = encodeReplaceRequest(replacements);
+      const run = await this._replay((r) => window.inspector.replayEdited({ ...r, api: this.data.api, request }));
+      if (!run.data) throw new Error(run.error ?? "the replay wrote no render targets");
+      const result = parseReplayedTargets(run.data);
+      this.shaderReplay = result;
+      const pipelines = replacements.map((r) => r.pipeline);
+      if (body) {
+        renderShaderReplay(body, result, {
+          edited, pipelines,
+          captured: (t) => this.data.textures.find((c) => c.info.id === t.image && c.info.commandBuffer === t.commandBuffer && c.info.frame === t.frame
+            && c.info.passIndex === t.passIndex && c.info.attachment === t.attachment && c.info.aspect === t.aspect && (c.info.kind ?? "attachment") === "attachment") ?? null,
+          imageName: (id) => db.getObject(id)?.name ?? `Image ${id}`,
+          onInspect: (id) => this.window.showObject(id),
+        });
+      }
+      const summary = replayedTargetsSummary(result, pipelines);
+      this._setStatus(summary);
+      return summary;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (body) {
+        body.html = "";
+        new Div(body, { text: `The frame could not be replayed with the edit: ${message}`, class: "text-muted", style: "padding: 12px; white-space: pre-wrap;" });
+      }
+      this._setStatus(`not replayed: ${message.split("\n")[0]}`);
+      return `not replayed: ${message.split("\n")[0]}`;
+    }
+  }
+
+  /**
+   * Replays the capture with a timestamp pair and a pipeline statistics query around every draw
+   * and dispatch (src/replay/src/draw_stats.cpp, src/d3d12/replay/src/dx_measure.cpp), for the
+   * Shader Flame Graph's per-draw weights. A D3D12 capture can also measure them while it is
+   * taken (Measure draws in the capture bar); this measures one that did not, or a file.
    */
   async measureDraws(): Promise<boolean> {
     if (this._drawRun?.running) return false;
-    if (this.data.api !== "vulkan") {
-      this._setStatus(`per-draw measurements need the capture replayed, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay yet`);
+    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") {
+      this._setStatus("per-draw measurements need the capture replayed, and Metal captures do not replay yet");
       return false;
     }
     this._drawRun = { running: true };
     this._setStatus("measuring draws: replaying the capture on this machine's GPU...");
     try {
-      const result = await this._replay((r) => window.inspector.measureDraws(r));
+      const result = await this._replay((r) => window.inspector.measureDraws({ ...r, api: this.data.api }));
       if (!result.data) throw new Error(result.error ?? "the replay wrote no draw measurements");
       const file = parseDrawStats(result.data);
       this._drawRun = null;
@@ -2548,11 +2790,11 @@ export class CaptureView implements CaptureHost {
    * replaying the draw with variants of the stage that leave each out (vkinsp_replay --ablate).
    */
   async measureShader(target: ShaderMeasureTarget): Promise<boolean> {
-    if (this.data.api !== "vulkan") return false;
+    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") return false;
     const drawMs = this.data.drawStats?.find((d) => d.command === target.command)?.ms ?? null;
     this._setStatus(`measuring the ${target.stage} shader at draw #${target.command}: replaying its variants...`);
     try {
-      const result = await this._replay((r) => window.inspector.measureShader({ ...r, stage: { ...target, drawMs } }));
+      const result = await this._replay((r) => window.inspector.measureShader({ ...r, api: this.data.api, stage: { ...target, drawMs } }));
       if (!result.ablation) throw new Error(result.error ?? "the replay did not measure the shader");
       this.data.addAblation(result.ablation);
       const a = result.ablation;

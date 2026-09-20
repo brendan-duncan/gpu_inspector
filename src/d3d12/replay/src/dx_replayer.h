@@ -58,6 +58,40 @@ struct DxCounterOptions {
     std::vector<std::string> names;
 };
 
+/** Draws timed again with variants of one of their shader stages (--ablate, dx_measure.cpp). */
+struct DxAblationOptions {
+    struct Variant {
+        std::string name;
+        /** The variant's DXIL container. */
+        std::vector<uint8_t> code;
+    };
+    struct Target {
+        uint32_t command = 0;
+        /** "fragment", "compute", "vertex": the names the capture keeps a pipeline's code under. */
+        std::string stage;
+        /** Draws issued between one pair of timestamps. */
+        uint32_t repeat = 1;
+        std::vector<Variant> variants;
+    };
+    bool enabled = false;
+    /** Timed rounds; one more runs first, untimed. */
+    uint32_t rounds = 5;
+    std::vector<Target> targets;
+};
+
+/**
+ * A pipeline's stage given other code for the whole replay (--replace): a shader edited in GPU
+ * Inspector and run in the captured frame instead of in the application. What the frame's targets
+ * hold with it is compared with what the capture read back, which is the edit's effect.
+ */
+struct DxShaderReplacement {
+    uint64_t pipeline = 0;
+    /** "vertex", "fragment", "compute", ...: the names the capture keeps a pipeline's code under. */
+    std::string stage;
+    /** The DXBC or DXIL container. */
+    std::vector<uint8_t> code;
+};
+
 struct DxReplayOptions {
     /** Enable the D3D12 debug layer and report its messages. */
     bool debugLayer = false;
@@ -70,6 +104,51 @@ struct DxReplayOptions {
     std::string exportDir;
     /** Hardware counters: the frame is replayed once per collection pass and nothing else runs. */
     DxCounterOptions counters;
+    /** Every draw and dispatch timed and counted as the frame replays (--draws, dx_measure.cpp). */
+    bool drawStats = false;
+    DxAblationOptions ablation;
+    std::vector<DxShaderReplacement> replacements;
+};
+
+/** One draw or dispatch as the replay measured it (the Vulkan replay's DrawResult). */
+struct DxDrawResult {
+    uint32_t command = 0;
+    uint32_t frame = 0;
+    uint64_t commandList = 0;
+    /** The pass it is in, counted per command list as the counters count them; UINT32_MAX outside one. */
+    uint32_t passIndex = UINT32_MAX;
+    bool timed = false;
+    double durationMs = 0;
+    bool counted = false;
+    uint64_t vertexInvocations = 0;
+    uint64_t primitives = 0;
+    uint64_t fragmentInvocations = 0;
+    uint64_t computeInvocations = 0;
+    bool sampled = false;
+    uint64_t samplesPassed = 0;
+};
+
+struct DxAblationTiming {
+    std::string name;
+    bool measured = false;
+    /** Per draw: the median of the rounds. */
+    double ms = 0;
+    std::vector<double> samples;
+    std::string note;
+};
+
+struct DxAblationResult {
+    uint32_t command = 0;
+    std::string stage;
+    uint64_t pipeline = 0;
+    uint32_t frame = 0;
+    uint64_t commandList = 0;
+    uint32_t passIndex = UINT32_MAX;
+    uint32_t rounds = 0;
+    uint32_t repeat = 1;
+    DxAblationTiming baseline;
+    std::vector<DxAblationTiming> variants;
+    std::string note;
 };
 
 /** One measured range's counter values, in the order of DxCounterReport::counters. */
@@ -146,7 +225,14 @@ struct DxReplayReport {
     std::vector<DxTargetComparison> targets;
     DxExportReport exported;
     DxCounterReport counters;
+    std::vector<DxDrawResult> draws;
+    /** Why some of the draws' measurements are missing. */
+    std::string drawStatsNote;
+    std::vector<DxAblationResult> ablations;
 };
+
+/** A command that draws, dispatches or runs a bundle: what --draws puts queries around. */
+bool IsActionMethod(const std::string& method);
 
 class DxReplayer {
 public:
@@ -185,7 +271,31 @@ private:
      */
     bool _inCounterRound = false;
 
-public:
+    // --- Per-draw measurements and ablation (dx_measure.cpp) -----------------------------------
+    struct MeasureState;
+    bool PrepareMeasurements();
+    void DestroyMeasurements();
+    /** A list is about to be recorded: the query slots it takes start here. */
+    void BeginListMeasurements();
+    /** Queries around one action; the index to end them with, or -1 when it is not measured. */
+    int BeginDrawQuery(ID3D12GraphicsCommandList* list, uint32_t command, uint32_t frame, uint64_t listId, uint32_t passIndex);
+    void EndDrawQuery(ID3D12GraphicsCommandList* list, int pending);
+    /** Resolves what the list's queries wrote, before it closes. */
+    void ResolveListMeasurements(ID3D12GraphicsCommandList* list);
+    /** Reads the submission's results once it has been waited for; `ran` false when it never ran. */
+    void CompleteMeasurements(ID3D12CommandQueue* queue, bool ran);
+    /** A copy of a pipeline with a variant's code for one stage (-1: the capture's own), writing no depth. */
+    ID3D12PipelineState* AblationPipeline(uint64_t pipelineId, size_t target, int variant);
+    /** Times the command with its ablation target's variants, right before it is issued as captured. */
+    void IssueAblation(uint32_t index, const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
+                       ID3D12GraphicsCommandList* list, uint64_t listId, uint32_t frame, uint32_t passIndex);
+    MeasureState* _measure = nullptr;
+    /** Per list being recorded: the pipeline set, and how many of the capture's own queries are open. */
+    uint64_t _boundPipeline = 0;
+    uint32_t _appQueryDepth = 0;
+    /** While a pipeline is decoded for an ablation: the stage whose code is the variant's. */
+    std::string _overrideStage;
+    const std::vector<uint8_t>* _overrideCode = nullptr;
 
 private:
     struct Resource {

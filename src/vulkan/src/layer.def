@@ -3,3 +3,5 @@ EXPORTS
     vkGetInstanceProcAddr
     vkGetDeviceProcAddr
     vkinspDeviceCount
+    GpuInspectorConnected
+    GpuInspectorCapture

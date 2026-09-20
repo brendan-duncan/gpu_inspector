@@ -90,7 +90,8 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
     const withSpirv = (n: FlameNode): ShaderMeasureTarget | null => {
       const model = o.models.get(n.pipelineId!)?.find((m) => m.stage === n.stage && m.entryPoint === n.entryPoint && m.objectId === n.objectId);
       if (!model?.spirv) return null;
-      return { command: n.command!.index, pipeline: n.pipelineId!, stage: n.stage!, entryPoint: n.entryPoint!, spirv: model.spirv };
+      return { command: n.command!.index, pipeline: n.pipelineId!, stage: n.stage!, entryPoint: n.entryPoint!, spirv: model.spirv,
+               ...(model.dxil ? { dxil: model.dxil } : {}) };
     };
     const picked = selected ? stages.find((s) => s.nodes.has(selected!)) : undefined;
     const candidates = picked ? [picked] : stages.slice().sort((a, b) => b.stage.totalCost - a.stage.totalCost);

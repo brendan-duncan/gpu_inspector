@@ -44,7 +44,9 @@ foreach(s ${SHADERS})
 endforeach()
 
 add_executable(vkinsp_triangle WIN32 main.cpp ${SPV_OUTPUTS})
-target_link_libraries(vkinsp_triangle PRIVATE Vulkan::Vulkan)
+# include/gpu_inspector.h, for --capture-at.
+target_include_directories(vkinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
+target_link_libraries(vkinsp_triangle PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
 if(WIN32)
     target_link_libraries(vkinsp_triangle PRIVATE winmm)   # timeBeginPeriod for --offscreen pacing
     target_compile_definitions(vkinsp_triangle PRIVATE VK_USE_PLATFORM_WIN32_KHR NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)

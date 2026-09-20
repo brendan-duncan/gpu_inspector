@@ -50,6 +50,7 @@ void PrintUsage() {
                          "                     [--counters [--counter <name>]... [--counter-draws] [--counter-backend nvperf|khr] [--counter-data <file>]]\n"
                          "                     [--list-counters [--counter-data <file>]]\n"
                          "                     [--export <directory> [--export-data <file>]]\n"
+                         "                     [--replace <request> [--target-data <file>]]\n"
                          "                     [--trace] | --check | --serve [--validate]\n");
 }
 
@@ -402,6 +403,100 @@ void PrintCounters(const ReplayReport& report) {
         std::printf("\n");
     }
     for (const std::string& note : h.notes) std::printf("  note: %s\n", note.c_str());
+}
+
+// ---------------------------------------------------------------------------------------------
+// --replace: the frame replayed with other code for some pipelines' stages, which is a shader
+// edited in GPU Inspector run in the capture. The request (encodeReplaceRequest in
+// src/app/src/renderer/shader_replay.ts) is in --ablate's layout: "REPLACE 1\n", a little-endian
+// u32 manifest length, the JSON manifest
+//   {"replacements": [{"pipeline": 27, "stage": "fragment", "payload": [0, 7288]}]}
+// and the SPIR-V, which the manifest names as [offset, length] after it.
+
+bool ReadReplaceRequest(const std::string& path, ReplayOptions& options, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string magic = "REPLACE 1\n";
+    if (bytes.size() < magic.size() + 4 || std::memcmp(bytes.data(), magic.data(), magic.size()) != 0) {
+        error = "not a shader replacement request: " + path;
+        return false;
+    }
+    uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + magic.size(), 4);
+    const size_t start = magic.size() + 4;
+    if (start + length > bytes.size()) {
+        error = "the replacement request is truncated";
+        return false;
+    }
+    JsonDocument doc;
+    if (!doc.Parse(bytes.data() + start, length, error)) {
+        error = "the replacement request's manifest is not valid JSON: " + error;
+        return false;
+    }
+    const size_t base = start + length;
+    const JValue* list = doc.Root().Get("replacements");
+    for (uint32_t i = 0; list && list->IsArray() && i < list->count; ++i) {
+        const JValue& item = list->items[i];
+        ShaderReplacement r;
+        r.pipeline = item.Get("pipeline") ? item.Get("pipeline")->Uint() : 0;
+        r.stage = Str(item.Get("stage"));
+        const JValue* payload = item.Get("payload");
+        if (payload && payload->IsArray() && payload->count == 2) {
+            const uint64_t offset = payload->items[0].Uint();
+            const uint64_t size = payload->items[1].Uint();
+            if (base + offset + size <= bytes.size() && size % 4 == 0) {
+                r.words.resize((size_t)size / 4);
+                std::memcpy(r.words.data(), bytes.data() + base + offset, (size_t)size);
+            }
+        }
+        if (!r.pipeline || r.stage.empty() || r.words.empty()) {
+            error = "replacement " + std::to_string(i) + " names no pipeline, no stage or no code";
+            return false;
+        }
+        options.replacements.push_back(std::move(r));
+    }
+    if (options.replacements.empty()) {
+        error = "the replacement request replaces nothing";
+        return false;
+    }
+    return true;
+}
+
+/**
+ * --target-data: what the replayed frame's render targets hold, against what the capture read back
+ * (parseReplayedTargets in src/app/src/renderer/shader_replay.ts). "TARGETS 1\n", a little-endian
+ * u32 manifest length, the JSON manifest, and after it the replayed pixels of each target that
+ * differs, in the layout of the capture's own read-back of it, which is how they are decoded.
+ */
+bool WriteTargetData(const ReplayReport& report, const std::string& path) {
+    std::string payloads;
+    std::string json = "{\"format\":\"gpu-inspector-replayed-targets\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"targets\":[";
+    for (size_t i = 0; i < report.targets.size(); ++i) {
+        const TargetComparison& t = report.targets[i];
+        json += std::string(i ? "," : "") + "{\"image\":" + std::to_string(t.image) + ",\"commandBuffer\":" + std::to_string(t.commandBuffer) +
+                ",\"frame\":" + std::to_string(t.frame) + ",\"passIndex\":" + std::to_string(t.passIndex) + ",\"attachment\":" + std::to_string(t.attachment) +
+                ",\"aspect\":" + JsonString(t.aspect) + ",\"format\":" + JsonString(t.format) + ",\"width\":" + std::to_string(t.width) +
+                ",\"height\":" + std::to_string(t.height) + ",\"compared\":" + (t.compared ? "true" : "false") +
+                ",\"texels\":" + std::to_string(t.texels) + ",\"differingTexels\":" + std::to_string(t.differingTexels) +
+                ",\"maxByteDelta\":" + std::to_string(t.maxByteDelta);
+        if (!t.note.empty()) json += ",\"note\":" + JsonString(t.note);
+        if (t.differingTexels && !t.replayed.empty()) {
+            json += ",\"payload\":[" + std::to_string(payloads.size()) + "," + std::to_string(t.replayed.size()) + "]";
+            payloads.append(reinterpret_cast<const char*>(t.replayed.data()), t.replayed.size());
+        }
+        json += "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const uint32_t length = (uint32_t)json.size();
+    out.write("TARGETS 1\n", 10);
+    out.write(reinterpret_cast<const char*>(&length), 4);
+    out.write(json.data(), (std::streamsize)json.size());
+    out.write(payloads.data(), (std::streamsize)payloads.size());
+    return (bool)out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -941,7 +1036,8 @@ int Check(const CaptureFile& capture) {
 
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
            const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
-           const std::string& meshData, const std::string& ablationData, const std::string& counterData, const std::string& exportData) {
+           const std::string& meshData, const std::string& ablationData, const std::string& counterData, const std::string& exportData,
+           const std::string& targetData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -1053,7 +1149,10 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
         PrintGrouped(report.validation, 40);
     }
     if (!dumpDir.empty()) DumpTargets(report, dumpDir);
+    if (!targetData.empty()) std::printf(WriteTargetData(report, targetData) ? "wrote %s\n" : "could not write %s\n", targetData.c_str());
     if (!ran) return 2;
+    // A frame replayed with an edited shader is meant to differ.
+    if (!options.replacements.empty()) return 0;
     return differing == 0 && skipped == 0 ? 0 : 1;
 }
 
@@ -1205,6 +1304,8 @@ int main(int argc, char** argv) {
     std::string ablationData;
     std::string counterData;
     std::string exportData;
+    std::string replaceRequest;
+    std::string targetData;
     bool check = false;
     bool serve = false;
     ReplayOptions options;
@@ -1238,6 +1339,11 @@ int main(int argc, char** argv) {
         }
         else if (!std::strcmp(argv[i], "--mesh-data") && i + 1 < argc) meshData = argv[++i];
         else if (!std::strcmp(argv[i], "--ablate") && i + 1 < argc) ablationRequest = argv[++i];
+        else if (!std::strcmp(argv[i], "--replace") && i + 1 < argc) replaceRequest = argv[++i];
+        else if (!std::strcmp(argv[i], "--target-data") && i + 1 < argc) {
+            targetData = argv[++i];
+            options.keepPixels = true;   // the pixels of what differs are what the file is for
+        }
         else if (!std::strcmp(argv[i], "--ablate-data") && i + 1 < argc) ablationData = argv[++i];
         else if (!std::strcmp(argv[i], "--counters")) options.counters.enabled = true;
         else if (!std::strcmp(argv[i], "--counter") && i + 1 < argc) {
@@ -1308,6 +1414,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "vkinsp_replay: --export replays the capture once and cannot be combined with --serve\n");
         return 2;
     }
+    if (serve && !replaceRequest.empty()) {
+        // A served replay makes the capture's pipelines once, before any request names another shader for one.
+        std::fprintf(stderr, "vkinsp_replay: --replace replays the capture once and cannot be combined with --serve\n");
+        return 2;
+    }
+    if (!replaceRequest.empty() && !ReadReplaceRequest(replaceRequest, options, error)) {
+        std::fprintf(stderr, "vkinsp_replay: %s\n", error.c_str());
+        return 2;
+    }
     if (serve) return Serve(capture, options.validation);
     if (!meshData.empty() && !options.mesh.enabled) {
         std::fprintf(stderr, "vkinsp_replay: --mesh-data needs --mesh <command>\n");
@@ -1327,5 +1442,5 @@ int main(int argc, char** argv) {
     }
     return check ? Check(capture)
                  : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData, counterData,
-                          exportData);
+                          exportData, targetData);
 }

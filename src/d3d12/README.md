@@ -500,10 +500,11 @@ conventions. dxc wraps the HLSL entry point in a SPIR-V one that loads the input
 `src.<name>`; stepping starts inside the latter. A shader with no HLSL anywhere cannot be
 debugged, and the tab says so.
 
-Not done for D3D12: the replay-based analyses that are left -- draw overlays, mesh output, draw
-timings and ablation -- which `vkinsp_replay` does for Vulkan captures only. Overdraw and pixel
-history are measured in the application while it captures instead; see "Overdraw" and "Pixel
-history" below. The capture panel and the MCP server say so where the rest are offered.
+Replayed for D3D12 (`replay/src/dx_measure.cpp`): per-draw timings and counters, and shader cost
+by ablation, whose variants are DXIL edited as its disassembly and assembled again by dxc
+(`AssembleDxil` in `src/shader_reflect.cpp`, `dxinsp_shader --assemble`). Overdraw, pixel history,
+draw overlays and mesh output are measured in the application while it captures instead; see
+"Overdraw" and "Pixel history" below.
 
 ## Validation messages
 

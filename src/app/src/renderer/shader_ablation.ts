@@ -15,6 +15,7 @@ export interface AblationTarget {
   stage: ShaderStage;
   /** Draws issued between one pair of timestamps, so a cheap draw is long enough to time (results are per draw). */
   repeat?: number;
+  /** Each variant's code: SPIR-V for `vkinsp_replay`, a DXIL container for `dxinsp_replay`. */
   variants: { name: string; spirv: Uint8Array }[];
 }
 
@@ -151,8 +152,10 @@ export interface ShaderMeasureTarget {
   pipeline: number;
   stage: ShaderStage;
   entryPoint: string;
-  /** The stage's SPIR-V as the capture holds it. */
+  /** The stage's SPIR-V as the capture holds it; for a D3D12 stage, the SPIR-V its HLSL compiles to. */
   spirv: Uint8Array;
+  /** D3D12: the stage's DXIL container, which is what is measured (d3d12/dxil_ablate.ts). */
+  dxil?: Uint8Array;
 }
 
 /** The key a measured stage is found by. */

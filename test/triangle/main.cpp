@@ -2,13 +2,15 @@
 // its command buffer every frame. Exercises what the inspector needs: buffers, images, samplers,
 // descriptor sets, push constants, debug labels, per-frame command recording and presentation.
 //
-// Usage: vkinsp_triangle [--frames N] [--width W] [--height H]
+// Usage: vkinsp_triangle [--frames N] [--width W] [--height H] [--capture-at N] [--churn]
 //
 // The window is resizable: the swapchain, depth buffer and framebuffers are recreated when the
 // window size changes (or when acquire/present report the swapchain out of date), which also
 // exercises the inspector's handling of object destruction and swapchain replacement.
 
 #include <vulkan/vulkan.h>
+
+#include "gpu_inspector.h"
 
 #include <algorithm>
 #include <chrono>
@@ -122,6 +124,14 @@ constexpr uint32_t kTextureMips = 4;
 struct App {
     uint32_t width = 640, height = 480;
     int maxFrames = -1;
+    int captureAt = 0;        // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
+    bool captureAsked = false;
+    // --churn: what a memory capture is for. Every frame makes a small buffer with its own
+    // allocation and frees the one made two frames before (transient allocations), and every 30th
+    // frame makes one that is kept until exit (a slow leak).
+    bool churn = false;
+    struct ChurnBuffer { VkBuffer buffer = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; };
+    std::vector<ChurnBuffer> churnRecent, churnKept;
     bool badScissor = false;
     bool leak = false;
     // --hazard: every frame the vertex buffer is written with vkCmdUpdateBuffer in a command
@@ -2352,6 +2362,24 @@ struct App {
         vkDestroyShaderModule(device, cs, nullptr);
     }
 
+    void Churn() {
+        const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        ChurnBuffer scratch;
+        CreateBuffer(64 * 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, scratch.buffer, scratch.memory, "Churn: per-frame scratch");
+        churnRecent.push_back(scratch);
+        if (churnRecent.size() > 2) {
+            // Never bound to anything the GPU runs, so it can go without waiting for the frame.
+            vkDestroyBuffer(device, churnRecent.front().buffer, nullptr);
+            vkFreeMemory(device, churnRecent.front().memory, nullptr);
+            churnRecent.erase(churnRecent.begin());
+        }
+        if (frameCount % 30 == 0) {
+            ChurnBuffer kept;
+            CreateBuffer(1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, kept.buffer, kept.memory, "Churn: kept forever");
+            churnKept.push_back(kept);
+        }
+    }
+
     bool DrawFrame(float t) {
         if (resized && !RecreateSwapchain()) return false;
         CompileHitch();
@@ -2469,6 +2497,13 @@ struct App {
 
     void Cleanup() {
         vkDeviceWaitIdle(device);
+        for (auto* list : {&churnRecent, &churnKept}) {
+            for (const ChurnBuffer& b : *list) {
+                vkDestroyBuffer(device, b.buffer, nullptr);
+                vkFreeMemory(device, b.memory, nullptr);
+            }
+            list->clear();
+        }
         DestroySide();
         DestroyRayTracing();
         // --leak: leave the sampler and the wave buffer alive so the inspector's leak report has
@@ -2550,6 +2585,10 @@ struct App {
         while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
             PumpEvents();
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+            // Asked again each frame until somebody is there to hear it: the inspector connects a
+            // few frames after the device is made.
+            if (captureAt > 0 && (int)frameCount >= captureAt && !captureAsked) captureAsked = gpu_inspector_capture(1) != 0;
+            if (churn) Churn();
             if (!DrawFrame(t)) std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
         Cleanup();
@@ -2563,6 +2602,8 @@ int RunApp(int argc, char** argv) {
     App app;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--churn")) app.churn = true;
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;

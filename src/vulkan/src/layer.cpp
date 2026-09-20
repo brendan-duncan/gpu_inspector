@@ -310,7 +310,9 @@ static void HandleUiMessage(const std::string& text) {
         }
         CaptureManager::Get().Request(o);
     } else if (action == "TimingCapture") {
-        if (msg.GetBool("start", false)) BeginTimingCapture(); else EndTimingCapture();
+        if (msg.GetBool("start", false)) BeginTimingCapture((uint32_t)msg.GetNumber("sampleHz", 0)); else EndTimingCapture();
+    } else if (action == "MemoryCapture") {
+        if (msg.GetBool("start", false)) BeginMemoryCapture(); else EndMemoryCapture();
     } else if (action == "RequestStacktraces") {
         // Creation stacks of objects, symbolized: {stacks: [{id, frames}]}; `available` says
         // whether the layer captured any (the launch option).
@@ -836,6 +838,8 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             // The frames recorded since the last report, batched onto the same interval so a
             // timing capture adds no traffic of its own.
             SendTimingFrames();
+            SendTimingSamples();
+            SendMemoryEvents(data);
             ValidationLog::Get().Flush();
         }
     } else {
@@ -996,6 +1000,25 @@ VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDev
  */
 VKINSP_EXPORT uint32_t vkinspDeviceCount(void) {
     return vkinsp::DeviceCount();
+}
+
+// The application's side of a capture (include/gpu_inspector.h), which finds these by name. The
+// request goes to the inspector rather than straight to the capture manager: the capture bar's
+// options are the inspector's to choose, and a tab has to be waiting for what comes back.
+VKINSP_EXPORT int GpuInspectorConnected(void) {
+    return vkinsp::Transport::Get().Connected() ? 1 : 0;
+}
+
+VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount) {
+    if (!vkinsp::Transport::Get().Connected()) return 0;
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("AppCaptureRequest");
+    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    w.EndObject();
+    vkinsp::Transport::Get().SendJson(std::move(w.str()));
+    vkinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    return 1;
 }
 
 #if defined(__ANDROID__)

@@ -165,6 +165,47 @@ async function dxbcText(bytes: Uint8Array, mode: ShaderTextMode, pdbDirs: string
   });
 }
 
+/** A DXIL container's module as LLVM IR text, which is what a variant of it is written in (renderer/d3d12/dxil_ablate.ts). */
+export function disassembleDxil(container: Uint8Array): Promise<ShaderTextResult> {
+  return dxbcText(container, "dis");
+}
+
+/**
+ * A module's LLVM IR text assembled into a container, validated and signed: `dxinsp_shader
+ * --assemble` (AssembleDxil in src/d3d12/src/shader_reflect.cpp). The assembler's or the
+ * validator's own message when it is refused, which is how a variant the runtime would reject is
+ * found before the driver sees it — what spirv-val is for on Vulkan.
+ */
+export function assembleDxil(text: string): Promise<{ ok: true; container: Uint8Array } | { ok: false; error: string }> {
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, error: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const source = `${base}.ll`;
+    const out = `${base}.dxil`;
+    fs.writeFileSync(source, text);
+    execFile(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      let container: Uint8Array | null = null;
+      if (!err) {
+        try {
+          container = new Uint8Array(fs.readFileSync(out));
+        } catch {
+          // not written
+        }
+      }
+      for (const f of [source, out]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          // ignore
+        }
+      }
+      if (container) resolve({ ok: true, container });
+      else resolve({ ok: false, error: (stderr || err?.message || "no container was written").trim().split(/\r?\n/).slice(0, 3).join(" ") });
+    });
+  });
+}
+
 export interface ShaderTextOptions {
   /** spirv-cross: the entry point to translate, of a module with several ("vertex", "main"). */
   entry?: { stage: string; name: string };

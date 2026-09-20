@@ -9,6 +9,7 @@
 
 #include "capture.h"
 #include "common.h"
+#include "cpu_timeline.h"
 #include "descriptors.h"
 #include "frame_pause.h"
 #include "hud.h"
@@ -302,6 +303,10 @@ void Dispatch(const std::string& text) {
             SendPauseState();
         }
         HandleCapture(msg);
+    } else if (action == "TimingCapture") {
+        if (msg.GetBool("start", false)) BeginTimingCapture((uint32_t)msg.GetNumber("sampleHz", 0)); else EndTimingCapture();
+    } else if (action == "MemoryCapture") {
+        if (msg.GetBool("start", false)) BeginMemoryCapture(); else EndMemoryCapture();
     } else if (action == "RequestStacktraces") {
         HandleRequestStacktraces(msg);
     } else if (action == "RequestSymbols") {
@@ -334,3 +339,22 @@ void StartTracking() {
 }
 
 }  // namespace dxinsp
+
+// The application's side of a capture (include/gpu_inspector.h), which finds these by name. The
+// request goes to the inspector rather than straight to the capture manager: the capture bar's
+// options are the inspector's to choose, and a tab has to be waiting for what comes back.
+extern "C" __declspec(dllexport) int GpuInspectorConnected(void) {
+    return dxinsp::Transport::Get().Connected() ? 1 : 0;
+}
+
+extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount) {
+    if (!dxinsp::Transport::Get().Connected()) return 0;
+    dxinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("AppCaptureRequest");
+    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    w.EndObject();
+    dxinsp::Transport::Get().SendJson(std::move(w.str()));
+    dxinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    return 1;
+}

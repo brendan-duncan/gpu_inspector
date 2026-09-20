@@ -113,6 +113,18 @@ here and sent to the device, and for [Direct3D 12](D3D12.md), where the HLSL is 
 `dxc` for the stage's profile and the library rebuilds the pipeline state with it. It does not
 apply to [Metal](METAL.md).
 
+**Compile & Replay** runs the edit somewhere else: in the capture that is open, replayed on this
+machine's GPU with your version of the stage ([Capture replay](REPLAY.md#a-shader-edited-in-the-capture)).
+The application is not touched, and does not have to be there — this is how a shader is edited
+in a capture *file*, where there is no next frame to look at. Because every render target of the
+captured frame was read back, the answer is exact. A **Shader Edit** tab opens beside the capture
+with each target the edit changed: as captured, with the edit, and the texels that differ picked
+out, with how many there are. Targets that came out identical are counted, which is an answer too
+— nothing the frame shows depends on the change. If the driver refuses the edited stage (its
+inputs no longer match the stage before it, its bindings the layout), the tab says that first:
+the pipeline is then left out of the replay, and the targets differ by its draws being missing
+rather than by what the edit computes. Vulkan and Direct3D 12.
+
 A pipeline linked from graphics pipeline libraries shows and edits the stages its libraries hold.
 An application drawing with shader objects (`VK_EXT_shader_object`) edits a **VkShaderEXT** the
 same way, unless it was created from a binary. A shader object created linked to others is

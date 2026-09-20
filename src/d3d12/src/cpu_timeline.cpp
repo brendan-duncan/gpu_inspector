@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "capture.h"
+#include "cpu_sampler.h"
 #include "device_info.h"
+#include "stacktrace.h"
 #include "tracker.h"
 #include "hook.h"
 #include "json.h"
@@ -42,6 +44,22 @@ bool g_running = false;
 /** Set while a capture wants events, read without the lock on the hot path. */
 std::atomic<bool> g_recording{false};
 size_t g_dropped = 0;
+
+// Timing captures (cpu_timeline.h). `g_timing` is read on the hot path beside g_recording; the
+// clock is read when either wants it.
+std::atomic<bool> g_timing{false};
+/** The frame being accumulated: category totals in milliseconds, rolled up at the frame boundary. */
+double g_frameCategoryMs[(size_t)CpuCategory::Count] = {};
+std::vector<FrameTiming> g_frames;
+/** How many of `g_frames` have been sent, so each report carries only what is new. */
+size_t g_framesSent = 0;
+/** About twenty minutes at 60 Hz, after which the oldest are dropped. */
+constexpr size_t kMaxFrames = 72000;
+
+/** Whether anything wants a timed call: a capture (every call) or a timing capture (frame totals). */
+inline bool TimingWanted() {
+    return g_recording.load(std::memory_order_relaxed) || g_timing.load(std::memory_order_relaxed);
+}
 
 std::vector<uint32_t> g_threadIds;
 
@@ -133,8 +151,8 @@ struct WaitScope {
 };
 
 DWORD WINAPI Hook_WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
-    // The fast path for every wait in the process that is not ours: one relaxed load.
-    if (!g_recording.load(std::memory_order_relaxed)) return g_WaitForSingleObject(handle, milliseconds);
+    // The fast path for every wait in the process that is not ours: two relaxed loads.
+    if (!TimingWanted()) return g_WaitForSingleObject(handle, milliseconds);
     const CpuCategory category = WaitCategory(handle);
     WaitScope scope(category != CpuCategory::Count);
     if (!scope.timing) return g_WaitForSingleObject(handle, milliseconds);
@@ -145,7 +163,7 @@ DWORD WINAPI Hook_WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
 }
 
 DWORD WINAPI Hook_WaitForSingleObjectEx(HANDLE handle, DWORD milliseconds, BOOL alertable) {
-    if (!g_recording.load(std::memory_order_relaxed)) return g_WaitForSingleObjectEx(handle, milliseconds, alertable);
+    if (!TimingWanted()) return g_WaitForSingleObjectEx(handle, milliseconds, alertable);
     const CpuCategory category = WaitCategory(handle);
     WaitScope scope(category != CpuCategory::Count);
     if (!scope.timing) return g_WaitForSingleObjectEx(handle, milliseconds, alertable);
@@ -156,7 +174,7 @@ DWORD WINAPI Hook_WaitForSingleObjectEx(HANDLE handle, DWORD milliseconds, BOOL 
 }
 
 DWORD WINAPI Hook_WaitForMultipleObjectsEx(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD milliseconds, BOOL alertable) {
-    if (!g_recording.load(std::memory_order_relaxed) || !handles) {
+    if (!TimingWanted() || !handles) {
         return g_WaitForMultipleObjectsEx(count, handles, waitAll, milliseconds, alertable);
     }
     // A wait on several handles is ours if any of them is: an application waiting on its fence and
@@ -194,15 +212,24 @@ void InstallWaitHooks() {
 }
 
 uint64_t CpuEventBegin() {
-    if (!g_recording.load(std::memory_order_relaxed)) return 0;
+    // Either a capture (which keeps every call) or a timing capture (which keeps per-frame totals)
+    // needs the clock; neither means this costs two relaxed reads and nothing else.
+    if (!TimingWanted()) return 0;
     return (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
 void CpuEventEnd(ID3D12Device* /*device*/, uint64_t started, CpuCategory category) {
-    if (!started || !g_recording.load(std::memory_order_relaxed)) return;
+    if (!started) return;
+    const bool recording = g_recording.load(std::memory_order_relaxed);
+    const bool timing = g_timing.load(std::memory_order_relaxed);
+    if (!recording && !timing) return;
     const uint64_t now = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_running) return;
+    // The frame's running total, which is all a timing capture keeps of an individual call.
+    if (timing && (size_t)category < (size_t)CpuCategory::Count) {
+        g_frameCategoryMs[(size_t)category] += (double)(now > started ? now - started : 0) / 1e6;
+    }
+    if (!recording || !g_running) return;
     const uint64_t originNs = (uint64_t)g_origin.time_since_epoch().count();
     if (started < originNs) return;   // began before the capture did
     if (g_events.size() >= kMaxEvents) {
@@ -216,6 +243,117 @@ void CpuEventEnd(ID3D12Device* /*device*/, uint64_t started, CpuCategory categor
     e.category = (uint16_t)category;
     e.frame = (uint32_t)CaptureManager::Get().FrameCounter();
     g_events.push_back(e);
+}
+
+void BeginTimingCapture(uint32_t sampleHz) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_frames.clear();
+        g_framesSent = 0;
+        for (double& v : g_frameCategoryMs) v = 0;
+        g_timing.store(true, std::memory_order_relaxed);
+    }
+    const bool sampling = sampleHz > 0 && gpuinsp::CpuSampler::Get().Start(sampleHz);
+    Log("timing capture: started%s", sampling ? ", sampling call stacks" : "");
+}
+
+void EndTimingCapture() {
+    gpuinsp::CpuSampler::Get().Stop();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_timing.store(false, std::memory_order_relaxed);
+    Log("timing capture: stopped after %zu frames", g_frames.size());
+}
+
+bool TimingCaptureRunning() {
+    return g_timing.load(std::memory_order_relaxed);
+}
+
+void NoteFrameTiming(uint32_t frame, double frameMs) {
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    // The frame that ends here is `frame`; what is sampled from now on is the next one's.
+    gpuinsp::CpuSampler::Get().NoteFrame(frame + 1);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    FrameTiming t;
+    t.frame = frame;
+    t.durationMs = (float)frameMs;
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) {
+        t.categoryMs[i] = (float)g_frameCategoryMs[i];
+        g_frameCategoryMs[i] = 0;
+    }
+    // The oldest go when the ring is full: a timing capture left running should not grow without
+    // bound, and what matters is the recent minutes.
+    if (g_frames.size() >= kMaxFrames) {
+        g_frames.erase(g_frames.begin(), g_frames.begin() + (ptrdiff_t)(g_frames.size() - kMaxFrames + 1));
+        if (g_framesSent > g_frames.size()) g_framesSent = 0;
+    }
+    g_frames.push_back(t);
+}
+
+void SendTimingFrames() {
+    std::vector<FrameTiming> batch;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_framesSent >= g_frames.size()) return;
+        batch.assign(g_frames.begin() + (ptrdiff_t)g_framesSent, g_frames.end());
+        g_framesSent = g_frames.size();
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingFrames");
+    w.Key("categories"); w.BeginArray();
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.String(kCpuCategoryNames[i]);
+    w.EndArray();
+    w.Key("frames"); w.BeginArray();
+    for (const FrameTiming& t : batch) {
+        w.BeginObject();
+        w.Key("frame"); w.Uint(t.frame);
+        w.Key("durationMs"); w.Double(t.durationMs);
+        w.Key("categoryMs"); w.BeginArray();
+        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.Double(t.categoryMs[i]);
+        w.EndArray();
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
+void SendTimingSamples() {
+    gpuinsp::CpuSampler::Batch batch;
+    if (!gpuinsp::CpuSampler::Get().Take(batch)) return;
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingSamples");
+    w.Key("periodMs"); w.Double(batch.periodMs);
+    w.Key("threads"); w.BeginArray();
+    for (const auto& t : batch.threads) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(t.id);
+        if (!t.name.empty()) { w.Key("name"); w.String(t.name); }
+        w.EndObject();
+    }
+    w.EndArray();
+    // Only the stacks this batch is the first to use: an id means the same stack for the whole capture.
+    w.Key("stacks"); w.BeginArray();
+    for (const auto& s : batch.stacks) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(s.id);
+        w.Key("addresses"); WriteStackAddresses(w, s.addresses);
+        w.EndObject();
+    }
+    w.EndArray();
+    // [frame, thread (an index into threads), stack id, running (1) or waiting (0), samples]
+    w.Key("samples"); w.BeginArray();
+    for (const auto& s : batch.samples) {
+        w.BeginArray();
+        w.Uint(s.frame); w.Uint(s.thread); w.Uint(s.stack); w.Uint(s.running ? 1 : 0); w.Uint(s.count);
+        w.EndArray();
+    }
+    w.EndArray();
+    if (batch.dropped) { w.Key("dropped"); w.Uint(batch.dropped); }
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void BeginCpuTimeline() {
@@ -486,52 +624,176 @@ void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, con
 
 namespace {
 
+/** What an object holds, and the tracker's id for it. */
+struct Held {
+    uint64_t bytes = 0;
+    uint32_t segment = 0;
+    uint64_t id = 0;
+};
+
 std::mutex g_memoryMutex;
-std::unordered_map<void*, std::pair<uint64_t, uint32_t>> g_held;   // object -> (bytes, segment)
+std::unordered_map<void*, Held> g_held;
 uint64_t g_segmentBytes[2] = {0, 0};
 uint32_t g_segmentCount[2] = {0, 0};
+
+// Memory captures (cpu_timeline.h).
+struct MemoryEvent {
+    uint32_t frame = 0;
+    float ms = 0;          // since the capture began
+    uint64_t id = 0;       // the tracker's id
+    uint64_t bytes = 0;
+    uint8_t segment = 0;
+    bool released = false;
+};
+
+std::atomic<bool> g_memoryCapture{false};
+std::chrono::steady_clock::time_point g_memoryOrigin{};
+std::vector<MemoryEvent> g_memoryEvents;   // recorded and not yet sent
+/** The first message of a capture carries what was held when it began, so totals can be absolute. */
+bool g_memoryBaselinePending = false;
+size_t g_memoryEventsTotal = 0;
+size_t g_memoryEventsDropped = 0;
+/** A capture left running keeps recording; past this many events it counts the rest instead. */
+constexpr size_t kMaxMemoryEvents = 1u << 20;
+
+/** Under g_memoryMutex. */
+void RecordMemoryEvent(uint64_t id, uint64_t bytes, uint32_t segment, bool released) {
+    if (!g_memoryCapture.load(std::memory_order_relaxed)) return;
+    if (g_memoryEventsTotal >= kMaxMemoryEvents) {
+        ++g_memoryEventsDropped;
+        return;
+    }
+    ++g_memoryEventsTotal;
+    MemoryEvent e;
+    e.frame = (uint32_t)CaptureManager::Get().FrameCounter();
+    e.ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - g_memoryOrigin).count();
+    e.id = id;
+    e.bytes = bytes;
+    e.segment = (uint8_t)segment;
+    e.released = released;
+    g_memoryEvents.push_back(e);
+}
 
 /** Which segment a heap type draws on: DEFAULT is the GPU's own, UPLOAD and READBACK system memory. */
 uint32_t SegmentOf(D3D12_HEAP_TYPE type) {
     return type == D3D12_HEAP_TYPE_DEFAULT ? 0u : 1u;
 }
 
-void AddHeld(void* object, uint64_t bytes, uint32_t segment) {
+void AddHeld(void* object, uint64_t bytes, uint32_t segment, uint64_t id) {
     if (!object || segment >= 2) return;
     std::lock_guard<std::mutex> lock(g_memoryMutex);
     auto it = g_held.find(object);
     // A pointer the allocator has handed out again without the release being seen: the old entry
     // would otherwise be counted twice.
     if (it != g_held.end()) {
-        g_segmentBytes[it->second.second] -= (std::min)(g_segmentBytes[it->second.second], it->second.first);
-        if (g_segmentCount[it->second.second]) --g_segmentCount[it->second.second];
+        g_segmentBytes[it->second.segment] -= (std::min)(g_segmentBytes[it->second.segment], it->second.bytes);
+        if (g_segmentCount[it->second.segment]) --g_segmentCount[it->second.segment];
     }
-    g_held[object] = {bytes, segment};
+    g_held[object] = Held{bytes, segment, id};
     g_segmentBytes[segment] += bytes;
     ++g_segmentCount[segment];
+    RecordMemoryEvent(id, bytes, segment, false);
 }
 
 }  // namespace
 
 void NoteHeapAllocation(ID3D12Heap* heap, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType) {
-    AddHeld(heap, sizeBytes, SegmentOf(heapType));
+    AddHeld(heap, sizeBytes, SegmentOf(heapType), Tracker::Get().IdOf(heap));
 }
 
 void NoteHeldAllocation(void* object, uint64_t sizeBytes, D3D12_HEAP_TYPE heapType) {
-    AddHeld(object, sizeBytes, SegmentOf(heapType));
+    AddHeld(object, sizeBytes, SegmentOf(heapType), Tracker::Get().IdOf(object));
 }
 
 void NoteMemoryReleased(void* object) {
     if (!object) return;
+    // Still tracked at this point (hooks_object.cpp releases the tracker's record last), and looked
+    // up before the lock: the tracker has its own.
+    const uint64_t known = g_memoryCapture.load(std::memory_order_relaxed) ? Tracker::Get().IdOf(object) : 0;
     std::lock_guard<std::mutex> lock(g_memoryMutex);
     auto it = g_held.find(object);
     if (it == g_held.end()) return;
-    const uint32_t segment = it->second.second;
+    const uint32_t segment = it->second.segment;
     if (segment < 2) {
-        g_segmentBytes[segment] -= (std::min)(g_segmentBytes[segment], it->second.first);
+        g_segmentBytes[segment] -= (std::min)(g_segmentBytes[segment], it->second.bytes);
         if (g_segmentCount[segment]) --g_segmentCount[segment];
     }
+    RecordMemoryEvent(it->second.id ? it->second.id : known, it->second.bytes, segment, true);
     g_held.erase(it);
+}
+
+void BeginMemoryCapture() {
+    std::lock_guard<std::mutex> lock(g_memoryMutex);
+    g_memoryEvents.clear();
+    g_memoryEventsTotal = 0;
+    g_memoryEventsDropped = 0;
+    g_memoryBaselinePending = true;
+    g_memoryOrigin = std::chrono::steady_clock::now();
+    g_memoryCapture.store(true, std::memory_order_relaxed);
+    Log("memory capture: started");
+}
+
+void EndMemoryCapture() {
+    std::lock_guard<std::mutex> lock(g_memoryMutex);
+    g_memoryCapture.store(false, std::memory_order_relaxed);
+    Log("memory capture: stopped after %zu events (%zu not recorded)", g_memoryEventsTotal, g_memoryEventsDropped);
+}
+
+void SendMemoryEvents() {
+    std::vector<MemoryEvent> batch;
+    bool baseline = false;
+    uint64_t bytes[2] = {0, 0};
+    uint32_t counts[2] = {0, 0};
+    size_t dropped = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_memoryMutex);
+        if (g_memoryEvents.empty() && !g_memoryBaselinePending) return;
+        batch.swap(g_memoryEvents);
+        baseline = g_memoryBaselinePending;
+        g_memoryBaselinePending = false;
+        dropped = g_memoryEventsDropped;
+        // What is held now, less what this batch did, is what was held before it: the totals the
+        // capture began with, which the first message carries.
+        if (baseline) {
+            bytes[0] = g_segmentBytes[0]; bytes[1] = g_segmentBytes[1];
+            counts[0] = g_segmentCount[0]; counts[1] = g_segmentCount[1];
+        }
+    }
+    if (baseline) {
+        for (const MemoryEvent& e : batch) {
+            if (e.segment >= 2) continue;
+            if (e.released) { bytes[e.segment] += e.bytes; ++counts[e.segment]; }
+            else { bytes[e.segment] -= (std::min)(bytes[e.segment], e.bytes); if (counts[e.segment]) --counts[e.segment]; }
+        }
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("MemoryEvents");
+    if (baseline) {
+        w.Key("baseline"); w.BeginArray();
+        for (size_t i = 0; i < 2; ++i) {
+            w.BeginObject();
+            w.Key("allocated"); w.Uint(bytes[i]);
+            w.Key("allocations"); w.Uint(counts[i]);
+            w.EndObject();
+        }
+        w.EndArray();
+    }
+    if (dropped) { w.Key("dropped"); w.Uint(dropped); }
+    w.Key("events"); w.BeginArray();
+    for (const MemoryEvent& e : batch) {
+        w.BeginObject();
+        w.Key("frame"); w.Uint(e.frame);
+        w.Key("ms"); w.Double(e.ms);
+        w.Key("id"); w.Uint(e.id);
+        w.Key("bytes"); w.Uint(e.bytes);
+        w.Key("heap"); w.Uint(e.segment);
+        if (e.released) { w.Key("free"); w.Boolean(true); }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void SendMemorySample(ID3D12Device* device) {

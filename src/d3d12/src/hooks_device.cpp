@@ -348,12 +348,6 @@ HRESULT STDMETHODCALLTYPE Hook_CreateReservedResource2(ID3D12Device14* This, con
 
 void OnHeapCreated(ID3D12Device* device, ID3D12Heap* heap, const char* cmd, Args& a, const D3D12_HEAP_DESC* desc) {
     HookHeap(heap);
-    {
-        // The heap's own bytes in the running total behind the memory series (cpu_timeline.h).
-        ScopedInternal internal;
-        const D3D12_HEAP_DESC d = desc ? *desc : heap->GetDesc();
-        NoteHeapAllocation(heap, d.SizeInBytes, d.Properties.Type);
-    }
     if (desc) {
         Write(a.key("pDesc"), *desc);
     } else {
@@ -366,6 +360,13 @@ void OnHeapCreated(ID3D12Device* device, ID3D12Heap* heap, const char* cmd, Args
         Write(a.key("pDesc"), actual);
     }
     Tracker::Get().Track(heap, "ID3D12Heap", cmd, device, a.str());
+    {
+        // The heap's own bytes in the running total behind the memory series (cpu_timeline.h),
+        // once the tracker has it: a memory capture names the heap by the tracker's id.
+        ScopedInternal internal;
+        const D3D12_HEAP_DESC d = desc ? *desc : heap->GetDesc();
+        NoteHeapAllocation(heap, d.SizeInBytes, d.Properties.Type);
+    }
     Log("%s -> ID3D12Heap %p", cmd, (void*)heap);
 }
 

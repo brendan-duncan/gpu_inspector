@@ -566,7 +566,10 @@ writes them to a temporary file, and keeps the replay and the file until the vie
 (its tab closed, or the capture rebuilt). Each analysis is a request line; the data file it writes
 is parsed by `renderer/overdraw.ts`, `pixel_history.ts`, `draw_overlay.ts`, `mesh_output.ts` or
 `draw_stats.ts`, or by `shader_ablation.ts` for the shader variants `vulkan/spirv_ablate.ts` wrote
-(the request's SPIR-V goes in an input file). The MCP server uses the same pool from `get_overdraw`,
+(the request's SPIR-V goes in an input file). A D3D12 capture's replays (`dxinsp_replay`: draws,
+counters, the variants `d3d12/dxil_ablate.ts` wrote) and a replay with an edited shader
+(`shader_replay.ts`, either API) run the tool once each instead: the first has no `--serve`, and
+the second needs pipelines a kept replay has already made otherwise. The MCP server uses the same pool from `get_overdraw`,
 `get_pixel_history`, `get_mesh_output`, `debug_shader` (a pixel's inputs), `get_shader_flame_graph`
 and `measure_shader_cost`. `src/app/tools/stage_layer.mjs` ships the tool beside
 the layer.

@@ -22,7 +22,9 @@ The bar above it controls what is recorded:
 | **Measure draws** | Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph can split a pass's time between its draws. Costs GPU and CPU time in the captured frame ([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)) |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |
-| **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). Vulkan only |
+| **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). Vulkan and Direct3D 12 |
+| **Sample stacks** | Windows, with Timing Capture: every thread's call stack sampled 250 times a second, and whether it was running or blocked there, so the report says what each thread was doing in a hitch. Each sample stops a running thread for a few microseconds |
+| **Memory Capture** | Not a frame capture either: records every allocation and free for as long as it runs, and reports what made here is still held, what was made and freed again within a few frames, and which frames allocated most. See [what is allocating](PROFILING.md#what-is-allocating). Vulkan and Direct3D 12 |
 
 On macOS there are also **Overdraw** and **Xcode Trace**; see [Metal](METAL.md#metal-only-capture-options).
 
@@ -31,6 +33,25 @@ GPUs. Leaving everything on is the right default on a desktop.
 
 To catch a frame that goes by before you can press anything, use **Queued Capture** in the launch
 dialog — it captures automatically as soon as the application connects.
+
+### Capturing from the application
+
+When the frame worth capturing is one only the application can recognize — the first frame of a
+level, the frame after an assertion — it can ask for the capture itself. `include/gpu_inspector.h`
+is one header with no library to link (the installers put it in the app's `resources/include`):
+
+```c
+#include "gpu_inspector.h"
+
+if (the_frame_i_care_about) gpu_inspector_capture(1);   // frames to capture
+```
+
+The capture library is already in the process when GPU Inspector started it, and the header finds it
+there; in a build nobody is inspecting the call returns 0 and does nothing, so it can stay in the
+code. The request goes to the inspector, which takes the capture with the capture bar's options as
+if **Capture** had been pressed at that moment, so it begins at a frame boundary a frame or two
+after the call. `gpu_inspector_connected()` says whether anyone is listening. Vulkan and
+Direct3D 12; the samples' `--capture-at N` does it at frame N.
 
 ## Reading the frame
 
@@ -97,9 +118,10 @@ Overdraw, pixel history, draw overlays, the mesh view's VS Out, the shader debug
 capture on this machine's GPU with `vkinsp_replay`, which the Windows and Linux installers include. The application
 does not need to be running; see [Capture replay](REPLAY.md). A [Metal](METAL.md) or [Direct3D 12](D3D12.md) capture
 measures inside the application instead, so what it measures is asked for before, or while, the frame is captured:
-Metal measures overdraw and pixel history that way, and Direct3D 12 those two plus draw overlays, the mesh view's
-VS Out and per-draw timings ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)).
-Shader cost by ablation and hardware counters are Vulkan only.
+Metal measures overdraw and pixel history that way, and Direct3D 12 those two plus draw overlays and the mesh view's
+VS Out ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)). A Direct3D 12 capture
+also replays, with `dxinsp_replay`: **Measure draws** for a capture that did not measure them while it was taken,
+**Measure shader**, hardware counters, and a [shader edited in the capture](INSPECT.md#editing-a-shader).
 
 ## Capture files
 

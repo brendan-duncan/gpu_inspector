@@ -16,6 +16,7 @@ import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import type { Widget } from "./widget/widget.js";
 import { hitchThresholdMs, rangeIndices, summarizeTiming, type FrameRange, type TimingCapture } from "./frame_timing.js";
+import { stackText, summarizeSamples, type NamedFrame, type SampleSummary, type TimingSamples } from "./timing_samples.js";
 
 /** Drawn at this many device pixels per frame at most, so a short run does not become a smear. */
 const MAX_BAR_WIDTH = 4;
@@ -31,6 +32,47 @@ export interface TimingViewOptions {
   range?: FrameRange | null;
   /** A range dragged out on the graph, or null when the drag was a click: the caller stores it. */
   onRange?: (range: FrameRange | null) => void;
+  /** Call stacks sampled during the capture (renderer/timing_samples.ts), and what is known of their addresses. */
+  samples?: TimingSamples;
+  symbolOf?: (address: string) => NamedFrame | undefined;
+}
+
+/**
+ * The frames whose samples are worth showing: the stretch that was dragged out, else the worst
+ * hitch on its own, else the whole run. The worst hitch rather than all of them, because what
+ * threads did over twenty hitches is an average again, and an average is what hid the hitch.
+ */
+export function sampledStretch(capture: TimingCapture, range: FrameRange | null | undefined): { fromFrame: number; toFrame: number; what: string } | null {
+  if (!capture.frames.length) return null;
+  const selected = range ? rangeIndices(capture, range) : null;
+  if (selected) {
+    return { fromFrame: capture.frames[selected.from].frame, toFrame: capture.frames[selected.to - 1].frame, what: "the selected frames" };
+  }
+  const worst = summarizeTiming(capture)?.hitches[0];
+  if (worst) return { fromFrame: worst.frame, toFrame: worst.frame, what: `the worst hitch, frame ${worst.frame}` };
+  return { fromFrame: capture.frames[0].frame, toFrame: capture.frames[capture.frames.length - 1].frame, what: "the run" };
+}
+
+/** What each thread was doing over the stretch, from the sampled stacks. */
+function renderThreads(container: Widget, summary: SampleSummary, what: string, periodMs: number, symbolOf: (address: string) => NamedFrame | undefined): void {
+  new Div(container, { text: `Threads during ${what}`, class: "frame-stats-heading" });
+  const ms = (v: number): string => `${v.toFixed(v < 10 ? 1 : 0)} ms`;
+  for (const t of summary.threads.slice(0, 8)) {
+    const r = new Div(container, { class: "draw-state-row" });
+    new Span(r, { text: t.thread.name ? `${t.thread.name} (${t.thread.id})` : `Thread ${t.thread.id}`, class: "draw-state-label device-info-label" });
+    const lines = new Div(r, { class: "device-info-value" });
+    new Div(lines, { text: `ran ${ms(t.runningMs)}, blocked ${ms(t.waitingMs)}` });
+    for (const s of t.ranIn) new Div(lines, { text: `${ms(s.samples * periodMs)} in ${stackText(s.addresses, symbolOf)}`, class: "font-sm" });
+    // Where it was blocked matters when it was blocked for most of the stretch: that is a thread
+    // waiting for the answer rather than producing it, and what it waited on says for whom.
+    if (t.waitingMs > t.runningMs) for (const s of t.waitedIn.slice(0, 1)) new Div(lines, { text: `blocked ${ms(s.samples * periodMs)} in ${stackText(s.addresses, symbolOf)}`, class: "font-sm text-muted" });
+  }
+  const more = summary.threads.length - 8;
+  const notes: string[] = [];
+  if (more > 0) notes.push(`${more} more threads ran less`);
+  if (summary.idle) notes.push(`${summary.idle} thread${summary.idle === 1 ? "" : "s"} never ran while this was recording`);
+  notes.push(`sampled every ${periodMs.toFixed(periodMs < 10 ? 1 : 0)} ms, so a time here is a count of samples: good to a sample or two`);
+  new Div(container, { text: `${notes.join("; ")}.`, class: "text-muted font-sm" });
 }
 
 /**
@@ -202,6 +244,12 @@ export function renderTimingReport(container: Widget, capture: TimingCapture,
   for (const c of s.categories) {
     row(c.label, `${ms(c.ms)} over ${over}, ${(100 * c.share).toFixed(1)}% of its wall time`);
   }
+
+  // What the threads were doing, where the capture sampled them: the part of a hitch none of the
+  // timed calls explains.
+  const stretch = options.samples?.samples.length ? sampledStretch(capture, options.range) : null;
+  const threads = stretch && options.samples ? summarizeSamples(options.samples, stretch.fromFrame, stretch.toFrame) : null;
+  if (stretch && threads && options.samples) renderThreads(container, threads, stretch.what, options.samples.periodMs || 4, options.symbolOf ?? (() => undefined));
 
   if (!s.hitches.length) return;
   new Div(container, { text: `Hitches (${s.hitches.length})`, class: "frame-stats-heading" });

@@ -65,6 +65,15 @@ ShaderInfo ReflectShader(const void* bytecode, size_t size);
 bool DisassembleShader(const void* bytecode, size_t size, std::string& text, std::string& error);
 
 /**
+ * The other direction, for DXIL: a module's disassembly (LLVM IR as text, edited or not) assembled
+ * into a container, validated and signed, which is what makes it a shader the runtime will take.
+ * This is how a shader is changed with no source for it (the app's dxil_ablate.ts): dxc has no
+ * editor for DXIL, but it has both halves of one. False with `error` holding the assembler's or
+ * the validator's own message, which names the line.
+ */
+bool AssembleDxil(const std::string& text, std::vector<uint8_t>& container, std::string& error);
+
+/**
  * How dxc was run, as the debug information records it: what a compile of the same source again
  * needs (the shader debugger compiles the HLSL to SPIR-V to step it). Empty where the container
  * or PDB does not say (DXBC from fxc, an old dxc).

@@ -106,14 +106,17 @@ export type ReplayAnalysis =
   | ({ kind: "pixel" } & PixelRequest) | { kind: "ablate"; request: Uint8Array }
   | { kind: "counters"; counters?: string[]; perDraw?: boolean } | { kind: "list-counters" }
   // Export to C++ (src/replay/src/exporter.h): the frame written into `dir` as a standalone project; the data is its summary.
-  | { kind: "export"; dir: string };
+  | { kind: "export"; dir: string }
+  // A shader edited and run in the capture (`request`: encodeReplaceRequest in renderer/shader_replay.ts); the data is its render targets.
+  | { kind: "replace"; request: Uint8Array };
 
 /**
  * Whether an analysis needs a replay of its own. The export writes the capture's objects as they are
- * created, which a replay kept alive did once, before any request: it always runs one-shot.
+ * created, which a replay kept alive did once, before any request: it always runs one-shot. So does
+ * a replaced shader, which is a different pipeline from the one a kept replay already made.
  */
 function needsOwnProcess(analysis: ReplayAnalysis): boolean {
-  return analysis.kind === "export";
+  return analysis.kind === "export" || analysis.kind === "replace";
 }
 
 /** The last lines of the tool's output, for an error message. */
@@ -123,8 +126,8 @@ function tail(text: string, lines = 12): string {
 
 /** An analysis's input written to a temporary file (an ablation's variants), or null; the caller removes it. */
 function inputFile(analysis: ReplayAnalysis): string | null {
-  if (analysis.kind !== "ablate") return null;
-  const file = tempOutput("ablate_request");
+  if (analysis.kind !== "ablate" && analysis.kind !== "replace") return null;
+  const file = tempOutput(`${analysis.kind}_request`);
   fs.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
   return file;
 }
@@ -140,6 +143,7 @@ function removeFile(file: string | null): void {
 
 function analysisArgs(analysis: ReplayAnalysis, out: string, input: string | null): string[] {
   if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
+  if (analysis.kind === "replace") return ["--replace", input ?? "", "--target-data", out];
   if (analysis.kind === "overdraw") return ["--overdraw-data", out];
   if (analysis.kind === "draws") return ["--draw-data", out];
   if (analysis.kind === "counters") {
@@ -220,6 +224,7 @@ function serveRequest(id: number, analysis: ReplayAnalysis, out: string, input: 
     return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
   }
   if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
+  if (analysis.kind === "replace") return { id, kind: "replace", in: input, out };   // never served (needsOwnProcess)
   return { id, ...analysis, out };
 }
 

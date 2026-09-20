@@ -204,6 +204,20 @@ export class ProgramTracker {
     const a = c.args;
     if (!a) return false;
     const stream = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
+    if (sets.RECORD_BEGIN.has(c.method) && "pInitialState" in a) {
+      // A D3D12 list's Reset starts the recording over and sets its initial pipeline state, which
+      // a list that draws with one pipeline never sets again. The recording does not say which
+      // kind it is, and need not: a pipeline state of the other kind cannot be drawn or dispatched
+      // with, so naming it under both costs nothing a valid frame can show.
+      for (const point of new Set([sets.graphicsBindPoint, sets.bindPointOf("Dispatch")])) {
+        this._bound.delete(`${stream}:${point}`);
+        this._shaders.delete(`${stream}:${point}`);
+      }
+      const initial = refId(a.pInitialState);
+      if (initial === null) return false;
+      for (const point of new Set([sets.graphicsBindPoint, sets.bindPointOf("Dispatch")])) this._bound.set(`${stream}:${point}`, initial);
+      return true;
+    }
     if (sets.BIND_PIPELINE.has(c.method)) {
       const id = refId(boundPipelineOf(a));
       const at = `${stream}:${sets.pipelineBindPointOf(c.method, a)}`;

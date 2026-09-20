@@ -461,6 +461,14 @@ def emit_entry_cpp(reg, cmds, out):
             body.append(f"    PreHook_{c.name}({args});")
             record_args = ", ".join(f"vkinsp_orig_{p.name}" for p in c.params)
 
+        # Memory is kept as a running total per heap so it can be plotted over time rather than
+        # only sampled (src/cpu_timeline.h): counting the tracked allocations on demand would
+        # walk a renderer's tens of thousands of them ten times a second. The free is noted
+        # while the handle is still valid, and before the tracker forgets it: a memory capture
+        # names the allocation by the tracker's id.
+        if c.name == "vkFreeMemory":
+            body.append("    NoteFree(vkinsp_dev, memory);")
+
         # Destroy hooks run before the downstream call, while the handle is still valid.
         for p in destroys:
             real = reg.handle_aliases.get(p.type, p.type)
@@ -479,13 +487,6 @@ def emit_entry_cpp(reg, cmds, out):
         if cpuTimed:
             body.append("    const uint64_t vkinsp_cpu = CpuEventBegin();")
 
-        # Memory is kept as a running total per heap so it can be plotted over time rather than
-        # only sampled (src/cpu_timeline.h): counting the tracked allocations on demand would
-        # walk a renderer's tens of thousands of them ten times a second. The free is noted
-        # while the handle is still valid, as the destroy hooks above are.
-        if c.name == "vkFreeMemory":
-            body.append("    NoteFree(vkinsp_dev, memory);")
-
         crumb = c.name in BREADCRUMB_COMMANDS
         if crumb:
             body.append(f"    const uint32_t vkinsp_crumb = BeginBreadcrumb(vkinsp_dev, {first.name}, (uint32_t)VkCmdId::{short(c.name)});")
@@ -498,8 +499,6 @@ def emit_entry_cpp(reg, cmds, out):
 
         if cpuTimed:
             body.append(f"    CpuEventEnd(vkinsp_dev, vkinsp_cpu, CpuCategory::{cpuTimed});")
-        if c.name == "vkAllocateMemory":
-            body.append("    if ((int)result >= 0 && pMemory) NoteAllocation(vkinsp_dev, *pMemory, pAllocateInfo);")
         if crumb:
             body.append(f"    EndBreadcrumb(vkinsp_dev, {first.name}, vkinsp_crumb);")
         # A call that can report the device has gone: read the breadcrumbs and say what it was on.
@@ -530,6 +529,10 @@ def emit_entry_cpp(reg, cmds, out):
                     body.append(f"        if ({p.name} && *{p.name}) t.OnCreate(HT_{real}, (uint64_t)(uintptr_t)*{p.name}, {pexpr}, VkCmdId::{short(c.name)}, 0, w.str());")
             body.append("        t.EndArgs();")
             body.append("    }")
+
+        # After the tracker has the allocation, whose id a memory capture records (see NoteFree).
+        if c.name == "vkAllocateMemory":
+            body.append("    if ((int)result >= 0 && pMemory) NoteAllocation(vkinsp_dev, *pMemory, pAllocateInfo);")
 
         if c.name in EXTRA_HOOKS:
             body.append(f"    Hook_{c.name}({args});")

@@ -89,13 +89,17 @@ Inside a pass, the split between draws is modelled until something measures it:
 
 - **Profile passes** counters, where the capture has them, give each pass's fragment shader
   invocations, and the fragment stages are weighted by those instead of by scissor area.
-- **Measure draws** (Vulkan) replays the capture on this machine's GPU with a timer and a pipeline
-  statistics query around every draw. Each draw then takes its share of the pass by its measured
+- **Measure draws** (Vulkan and Direct3D 12) replays the capture on this machine's GPU with a timer
+  and a pipeline statistics query around every draw. A D3D12 capture taken with the capture bar's
+  **Measure draws** already has them; this is for one that was not. Each draw then takes its share of the pass by its measured
   time, and each stage its measured invocation count. The measurements are saved with the capture.
   They also fill in the depth rejection figure for passes whose draws are recorded into secondary
   command buffers, which the capture itself cannot measure (see
   [Finding GPU bottlenecks](PROFILING.md)).
-- **Measure shader** (Vulkan) measures what a stage's functions, source lines and textures cost.
+- **Measure shader** (Vulkan and Direct3D 12) measures what a stage's functions, source lines and
+  textures cost. On D3D12 the variants are of the stage's DXIL
+  ([how](D3D12.md#shader-cost-by-ablation)), and the stage needs its HLSL for the graph to have
+  frames to size.
   It replays one draw of the stage with variants of its shader, each missing one part: a function's
   calls, a line's values, or every read of one texture. The time a variant saves is that part's
   cost. The button measures the stage of the selected frame, or the widest fragment or compute

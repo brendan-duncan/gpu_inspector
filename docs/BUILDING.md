@@ -152,6 +152,8 @@ to both; the rest draw the cube differently or misbehave on purpose.
 | `--bad-scissor` | A negative scissor offset, a validation error |
 | `--occluded` | Draws the cube twice in the same place, so every fragment is overdrawn |
 | `--heavy` | A costly fragment shader with known per-function costs, for shader analysis |
+| `--churn` | A buffer made and freed every frame and one kept every 30th, for a Memory Capture to find |
+| `--capture-at <frame>` | Asks the inspector for a capture at that frame itself (`include/gpu_inspector.h`) |
 | `--msaa`, `--stencil` | Multisampled and stencil attachments, for the read-back paths |
 | `--push-template` | Pushes its descriptors through an update template |
 | `--pipeline-library` | Links the pipeline from graphics pipeline libraries |
@@ -178,7 +180,7 @@ to both; the rest draw the cube differently or misbehave on purpose.
 | `--compute`, `--bundle`, `--indirect` | A dispatch, a bundle, and an indirect draw |
 | `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |
-| `--msaa`, `--stencil`, `--leak`, `--offscreen` | As above |
+| `--msaa`, `--stencil`, `--leak`, `--offscreen`, `--heavy`, `--churn`, `--capture-at <frame>` | As above |
 
 ## Other commands
 

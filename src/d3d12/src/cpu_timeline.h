@@ -61,6 +61,50 @@ bool SampleCalibration(ID3D12CommandQueue* queue);
 void SendCpuTimeline();
 
 // ---------------------------------------------------------------------------------------------
+// Timing captures, as the Vulkan layer keeps them (src/vulkan/src/cpu_timeline.h) and sending the
+// same TimingFrames message.
+//
+// A frame report averages over its interval (about 100 ms), and a hitch is one frame: averaged
+// with five good ones it disappears. A capture keeps every call of a few frames — all the detail,
+// none of the duration. A timing capture is the shape in between: for every frame, its wall time
+// and how long the CPU spent in each category during it. That is 32 bytes a frame, so minutes of
+// it fit in memory.
+//
+// It is a mode rather than something always on: recording needs a clock read in every timed call
+// and in every wait on a fence, and the library's whole cost when idle is one relaxed atomic read.
+
+/** One frame: how long it took, and where its CPU time went. */
+struct FrameTiming {
+    uint32_t frame = 0;
+    float durationMs = 0;
+    float categoryMs[(size_t)CpuCategory::Count] = {};
+};
+
+/**
+ * Starts recording per-frame timings, discarding anything held from a previous one. `sampleHz`
+ * above zero also samples every thread's call stack that often (cpu_sampler.h), which is what says
+ * what the CPU was doing in a frame none of the timed calls account for. Windows only; elsewhere
+ * the timings are recorded without it.
+ */
+void BeginTimingCapture(uint32_t sampleHz = 0);
+/** Stops recording. The records already taken stay until the next Begin. */
+void EndTimingCapture();
+/** Whether a timing capture is running. */
+bool TimingCaptureRunning();
+
+/**
+ * Closes off the frame that just ended: called from the frame boundary with its wall time. Quiet
+ * unless a timing capture is running.
+ */
+void NoteFrameTiming(uint32_t frame, double frameMs);
+
+/** Writes the records taken since the last call as a TimingFrames message; quiet when there are none. */
+void SendTimingFrames();
+
+/** Writes the call stacks sampled since the last call as a TimingSamples message; quiet when there are none. */
+void SendTimingSamples();
+
+// ---------------------------------------------------------------------------------------------
 // The waits, which happen in Win32 rather than in D3D12 (see the note above).
 
 /**
@@ -132,5 +176,26 @@ void NoteMemoryReleased(void* object);
  * says is resident and allowed. Called with the frame report.
  */
 void SendMemorySample(ID3D12Device* device);
+
+// ---------------------------------------------------------------------------------------------
+// Memory captures.
+//
+// The series above says which way memory is going; it cannot say *what* is going. A total that
+// climbs a megabyte a second is one allocation a frame that is never freed, or a thousand that
+// mostly are, and the fix for each is nowhere near the other. A memory capture is the record that
+// tells them apart: every allocation and every free while it runs, with the frame it happened in
+// and the object it was, so what is still held at the end can be named, and what was made and
+// thrown away within a frame or two can be counted.
+//
+// A mode rather than always on, like a timing capture: idle, it costs the allocation paths one
+// relaxed atomic read. The events ride on the frame report's interval as a MemoryEvents message.
+
+/** Starts recording allocations and frees, discarding what a previous capture held. */
+void BeginMemoryCapture();
+/** Stops recording; what was recorded and not yet sent goes with the next report. */
+void EndMemoryCapture();
+
+/** Writes the events recorded since the last call as a MemoryEvents message; quiet when there are none. */
+void SendMemoryEvents();
 
 }  // namespace dxinsp

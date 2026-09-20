@@ -26,7 +26,7 @@ The user documentation is in [docs](docs/README.md):
 | | |
 |---|---|
 | [Install](docs/INSTALL.md) · [Getting started](docs/GETTING_STARTED.md) | the first session, start to a saved capture |
-| [The launch window](docs/LAUNCH.md) | every field of the launch window, and its command-line forms |
+| [The launch window](docs/LAUNCH.md) | launch apps for inspection and capture |
 | [Vulkan](docs/VULKAN.md) · [Direct3D 12](docs/D3D12.md) · [Metal](docs/METAL.md) · [Android and Quest](docs/ANDROID.md) · [Web pages and WebGPU](docs/BROWSER.md) | the workflow for each platform |
 | [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
 | [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |

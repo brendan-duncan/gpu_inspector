@@ -176,6 +176,7 @@ if(Python3_Interpreter_FOUND)
         replay/src/dx_counters.h
         replay/src/dx_counters.cpp
         replay/src/dx_nvperf.cpp
+        replay/src/dx_measure.cpp
         "${VKREPLAY_SRC}/json.cpp"
         "${VKREPLAY_SRC}/gpucap.cpp"
         "${VKREPLAY_SRC}/decode.cpp"

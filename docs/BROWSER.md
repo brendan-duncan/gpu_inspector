@@ -210,10 +210,9 @@ is where a surprising `@group`/`@binding` cost or an unexpected dynamic offset s
 
 Beyond the [D3D12 limits](D3D12.md#what-is-not-there-yet), which all apply:
 
-- **Timing Capture** (frame times over minutes, for hitches) is Vulkan-only, so a browser session
-  does not have it.
-- The replay-based reports — draw overlays, mesh output, **Measure draws**, **Measure shader**,
-  hardware counters — replay Vulkan captures, and are not offered.
+- **Measure shader** needs the stage's HLSL for the flame graph's frames, and browser-generated
+  shaders have none, so their stages stay unweighted and are not measured. **Measure draws** and
+  hardware counters replay the capture as they do any D3D12 one.
 - **The shader debugger needs HLSL source**, and browser-generated shaders have none. Stepping a
   WebGPU shader is not possible this way.
 - Dropped frames, vsync rate and the present-based figures need a swap chain (above).

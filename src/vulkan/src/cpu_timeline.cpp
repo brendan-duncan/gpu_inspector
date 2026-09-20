@@ -9,8 +9,10 @@
 #include <unordered_map>
 
 #include "capture.h"
+#include "cpu_sampler.h"
 #include "json_writer.h"
 #include "layer.h"
+#include "stacktrace.h"
 #include "resources.h"
 #include "tracker.h"
 #include "transport.h"
@@ -144,16 +146,20 @@ void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category) {
     g_events.push_back(e);
 }
 
-void BeginTimingCapture() {
-    std::lock_guard lock(g_mutex);
-    g_frames.clear();
-    g_framesSent = 0;
-    for (double& v : g_frameCategoryMs) v = 0;
-    g_timing.store(true, std::memory_order_relaxed);
-    Log("timing capture: started");
+void BeginTimingCapture(uint32_t sampleHz) {
+    {
+        std::lock_guard lock(g_mutex);
+        g_frames.clear();
+        g_framesSent = 0;
+        for (double& v : g_frameCategoryMs) v = 0;
+        g_timing.store(true, std::memory_order_relaxed);
+    }
+    const bool sampling = sampleHz > 0 && gpuinsp::CpuSampler::Get().Start(sampleHz);
+    Log("timing capture: started%s", sampling ? ", sampling call stacks" : sampleHz ? " (call stacks are not sampled on this platform)" : "");
 }
 
 void EndTimingCapture() {
+    gpuinsp::CpuSampler::Get().Stop();
     std::lock_guard lock(g_mutex);
     g_timing.store(false, std::memory_order_relaxed);
     Log("timing capture: stopped after %zu frames", g_frames.size());
@@ -165,6 +171,8 @@ bool TimingCaptureRunning() {
 
 void NoteFrameTiming(uint32_t frame, double frameMs) {
     if (!g_timing.load(std::memory_order_relaxed)) return;
+    // The frame that ends here is `frame`; what is sampled from now on is the next one's.
+    gpuinsp::CpuSampler::Get().NoteFrame(frame + 1);
     std::lock_guard lock(g_mutex);
     if (!g_timing.load(std::memory_order_relaxed)) return;
     FrameTiming t;
@@ -208,6 +216,43 @@ void SendTimingFrames() {
         w.EndObject();
     }
     w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
+void SendTimingSamples() {
+    gpuinsp::CpuSampler::Batch batch;
+    if (!gpuinsp::CpuSampler::Get().Take(batch)) return;
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingSamples");
+    w.Key("periodMs"); w.Double(batch.periodMs);
+    w.Key("threads"); w.BeginArray();
+    for (const auto& t : batch.threads) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(t.id);
+        if (!t.name.empty()) { w.Key("name"); w.String(t.name); }
+        w.EndObject();
+    }
+    w.EndArray();
+    // Only the stacks this batch is the first to use: an id means the same stack for the whole capture.
+    w.Key("stacks"); w.BeginArray();
+    for (const auto& s : batch.stacks) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(s.id);
+        w.Key("addresses"); WriteStackAddresses(w, s.addresses);
+        w.EndObject();
+    }
+    w.EndArray();
+    // [frame, thread (an index into threads), stack id, running (1) or waiting (0), samples]
+    w.Key("samples"); w.BeginArray();
+    for (const auto& s : batch.samples) {
+        w.BeginArray();
+        w.Uint(s.frame); w.Uint(s.thread); w.Uint(s.stack); w.Uint(s.running ? 1 : 0); w.Uint(s.count);
+        w.EndArray();
+    }
+    w.EndArray();
+    if (batch.dropped) { w.Key("dropped"); w.Uint(batch.dropped); }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
@@ -375,12 +420,52 @@ namespace {
 struct AllocationRecord {
     uint64_t size = 0;
     uint32_t heap = 0;
+    /** The tracker's id, read while a memory capture runs; 0 for an allocation older than it. */
+    uint64_t id = 0;
 };
 
 std::mutex g_memoryMutex;
 std::unordered_map<uint64_t, AllocationRecord> g_allocations;   // VkDeviceMemory handle -> what it took
 uint64_t g_heapBytes[VK_MAX_MEMORY_HEAPS] = {};
 uint32_t g_heapCount[VK_MAX_MEMORY_HEAPS] = {};
+
+// Memory captures (cpu_timeline.h).
+struct MemoryEvent {
+    uint32_t frame = 0;
+    float ms = 0;          // since the capture began
+    uint64_t id = 0;       // the tracker's id
+    uint64_t bytes = 0;
+    uint8_t heap = 0;
+    bool released = false;
+};
+
+std::atomic<bool> g_memoryCapture{false};
+std::chrono::steady_clock::time_point g_memoryOrigin{};
+std::vector<MemoryEvent> g_memoryEvents;   // recorded and not yet sent
+/** The first message of a capture carries what was held when it began, so totals can be absolute. */
+bool g_memoryBaselinePending = false;
+size_t g_memoryEventsTotal = 0;
+size_t g_memoryEventsDropped = 0;
+/** A capture left running keeps recording; past this many events it counts the rest instead. */
+constexpr size_t kMaxMemoryEvents = 1u << 20;
+
+/** Under g_memoryMutex. */
+void RecordMemoryEvent(DeviceData* dev, uint64_t id, uint64_t bytes, uint32_t heap, bool released) {
+    if (!g_memoryCapture.load(std::memory_order_relaxed)) return;
+    if (g_memoryEventsTotal >= kMaxMemoryEvents) {
+        ++g_memoryEventsDropped;
+        return;
+    }
+    ++g_memoryEventsTotal;
+    MemoryEvent e;
+    e.frame = dev ? (uint32_t)dev->frameIndex : 0;
+    e.ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - g_memoryOrigin).count();
+    e.id = id;
+    e.bytes = bytes;
+    e.heap = (uint8_t)heap;
+    e.released = released;
+    g_memoryEvents.push_back(e);
+}
 
 }  // namespace
 
@@ -395,6 +480,11 @@ void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAlloca
         (dev->memoryProperties.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0);
     const uint32_t heap = dev->memoryProperties.memoryTypes[type].heapIndex;
     if (heap >= VK_MAX_MEMORY_HEAPS) return;
+    // The tracker already has the allocation (vk_entry.gen.cpp notes it after), and is asked
+    // before the lock: it has its own. A driver hands the same handle out again within a frame or
+    // two of a free, so the id has to be read while the handle still means this allocation.
+    const uint64_t id = g_memoryCapture.load(std::memory_order_relaxed)
+                            ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory) : 0;
     std::lock_guard lock(g_memoryMutex);
     AllocationRecord& r = g_allocations[(uint64_t)(uintptr_t)memory];
     // A handle the driver has handed out again after a free it did not report: the old record would
@@ -405,13 +495,18 @@ void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAlloca
     }
     r.size = info->allocationSize;
     r.heap = heap;
+    r.id = id;
     g_heapBytes[heap] += r.size;
     ++g_heapCount[heap];
+    RecordMemoryEvent(dev, id, r.size, heap, false);
 }
 
 void NoteFree(DeviceData* dev, VkDeviceMemory memory) {
-    (void)dev;
     if (!memory) return;
+    // Still tracked here (vk_entry.gen.cpp notes the free first): an allocation made before the
+    // capture began has no id on its record.
+    const uint64_t known = g_memoryCapture.load(std::memory_order_relaxed)
+                               ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory) : 0;
     std::lock_guard lock(g_memoryMutex);
     auto it = g_allocations.find((uint64_t)(uintptr_t)memory);
     if (it == g_allocations.end()) return;
@@ -420,7 +515,83 @@ void NoteFree(DeviceData* dev, VkDeviceMemory memory) {
         g_heapBytes[r.heap] -= std::min(g_heapBytes[r.heap], r.size);
         if (g_heapCount[r.heap]) --g_heapCount[r.heap];
     }
+    RecordMemoryEvent(dev, r.id ? r.id : known, r.size, r.heap, true);
     g_allocations.erase(it);
+}
+
+void BeginMemoryCapture() {
+    std::lock_guard lock(g_memoryMutex);
+    g_memoryEvents.clear();
+    g_memoryEventsTotal = 0;
+    g_memoryEventsDropped = 0;
+    g_memoryBaselinePending = true;
+    g_memoryOrigin = std::chrono::steady_clock::now();
+    g_memoryCapture.store(true, std::memory_order_relaxed);
+    Log("memory capture: started");
+}
+
+void EndMemoryCapture() {
+    std::lock_guard lock(g_memoryMutex);
+    g_memoryCapture.store(false, std::memory_order_relaxed);
+    Log("memory capture: stopped after %zu events (%zu not recorded)", g_memoryEventsTotal, g_memoryEventsDropped);
+}
+
+void SendMemoryEvents(DeviceData* dev) {
+    const uint32_t heaps = dev ? std::min<uint32_t>(dev->memoryProperties.memoryHeapCount, VK_MAX_MEMORY_HEAPS) : 0;
+    std::vector<MemoryEvent> batch;
+    bool baseline = false;
+    uint64_t bytes[VK_MAX_MEMORY_HEAPS] = {};
+    uint32_t counts[VK_MAX_MEMORY_HEAPS] = {};
+    size_t dropped = 0;
+    {
+        std::lock_guard lock(g_memoryMutex);
+        if (g_memoryEvents.empty() && !g_memoryBaselinePending) return;
+        batch.swap(g_memoryEvents);
+        baseline = g_memoryBaselinePending;
+        g_memoryBaselinePending = false;
+        dropped = g_memoryEventsDropped;
+        if (baseline) {
+            std::copy(std::begin(g_heapBytes), std::end(g_heapBytes), std::begin(bytes));
+            std::copy(std::begin(g_heapCount), std::end(g_heapCount), std::begin(counts));
+        }
+    }
+    // What is held now, less what this batch did, is what was held before it: the totals the
+    // capture began with, which the first message carries.
+    if (baseline) {
+        for (const MemoryEvent& e : batch) {
+            if (e.heap >= VK_MAX_MEMORY_HEAPS) continue;
+            if (e.released) { bytes[e.heap] += e.bytes; ++counts[e.heap]; }
+            else { bytes[e.heap] -= std::min(bytes[e.heap], e.bytes); if (counts[e.heap]) --counts[e.heap]; }
+        }
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("MemoryEvents");
+    if (baseline) {
+        w.Key("baseline"); w.BeginArray();
+        for (uint32_t i = 0; i < heaps; ++i) {
+            w.BeginObject();
+            w.Key("allocated"); w.Uint(bytes[i]);
+            w.Key("allocations"); w.Uint(counts[i]);
+            w.EndObject();
+        }
+        w.EndArray();
+    }
+    if (dropped) { w.Key("dropped"); w.Uint(dropped); }
+    w.Key("events"); w.BeginArray();
+    for (const MemoryEvent& e : batch) {
+        w.BeginObject();
+        w.Key("frame"); w.Uint(e.frame);
+        w.Key("ms"); w.Double(e.ms);
+        w.Key("id"); w.Uint(e.id);
+        w.Key("bytes"); w.Uint(e.bytes);
+        w.Key("heap"); w.Uint(e.heap);
+        if (e.released) { w.Key("free"); w.Boolean(true); }
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void SendMemorySample(DeviceData* dev) {

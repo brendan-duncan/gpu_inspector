@@ -100,7 +100,7 @@ following the pixel, so it needs the application to still be running.
 
 - No **Timing Capture**: recording every frame's time and CPU split over minutes
   ([a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame)) is
-  Vulkan only so far. The library already times the same categories, so what is missing is the
+  Vulkan and Direct3D 12 only so far. The library already times the same categories, so what is missing is the
   per-frame ring and the message that carries it.
 - Depth attachments and sampled images are not read back.
 - Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.

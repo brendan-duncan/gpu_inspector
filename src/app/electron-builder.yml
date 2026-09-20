@@ -38,6 +38,9 @@ extraResources:
     filter:
       - icon.ico
       - icon.png
+  # The header an application includes to ask for a capture itself (docs/CAPTURE.md).
+  - from: ../../include
+    to: include
   - from: ../../LICENSE
     to: LICENSE
   - from: ../../THIRD_PARTY_LICENSES.md

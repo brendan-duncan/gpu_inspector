@@ -56,7 +56,7 @@ export interface InspectorApi {
   /** Every pass's overdraw (--overdraw-data; renderer/overdraw.ts parses it). */
   measureOverdraw(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Every draw measured (--draw-data). */
-  measureDraws(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  measureDraws(opts: { key: string; data?: Uint8Array; name?: string; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** The GPU's own hardware counters per render pass, and per draw with `perDraw` (--counter-data). */
   /** `api` picks the tool: a D3D12 capture is replayed by dxinsp_replay, a Vulkan one by vkinsp_replay. */
   measureHwCounters(opts: { key: string; data?: Uint8Array; name?: string; perDraw?: boolean; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
@@ -67,7 +67,9 @@ export interface InspectorApi {
   /** One pixel of an image followed through the frame (--pixel-data; renderer/pixel_history.ts parses it). */
   pixelHistory(opts: { key: string; data?: Uint8Array; name?: string; pixel: { image: number; x: number; y: number; mip?: number; layer?: number } }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** A shader stage measured by ablation at a draw (--ablate-data, main/shader_ablation_run.ts); `ablation` when it was. */
-  measureShader(opts: { key: string; data?: Uint8Array; name?: string; stage: ShaderMeasureTarget & { drawMs?: number | null } }): Promise<{ ablation?: ShaderAblation; error?: string; needData?: boolean }>;
+  /** A capture replayed with other code for some pipelines' stages (renderer/shader_replay.ts): its render targets. */
+  replayEdited(opts: { key: string; data?: Uint8Array; name?: string; api?: string; request: Uint8Array }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  measureShader(opts: { key: string; data?: Uint8Array; name?: string; api?: string; stage: ShaderMeasureTarget & { drawMs?: number | null } }): Promise<{ ablation?: ShaderAblation; error?: string; needData?: boolean }>;
   /** The frame written as a standalone C++ project into `dir` (--export; renderer/export_cpp.ts parses the summary). */
   exportCpp(opts: { key: string; data?: Uint8Array; name?: string; dir: string; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Stops the replay kept for a capture key and removes its file. */

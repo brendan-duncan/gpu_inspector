@@ -87,6 +87,21 @@ DxReplayer::DxReplayer() {
         return h;
     };
     _env.bytecode = [this](const char* stage, const uint8_t*& data, size_t& size) {
+        // An ablation's copy of a pipeline takes one stage's code from the request (dx_measure.cpp).
+        if (_overrideCode && _overrideStage == stage) {
+            data = _overrideCode->data();
+            size = _overrideCode->size();
+            return size > 0;
+        }
+        // A stage replaced for the whole replay (--replace): every pipeline made from this object,
+        // an ablation's baseline included, runs the edited code.
+        const uint64_t id = _currentObject && _currentObject->Get("id") ? _currentObject->Get("id")->Uint() : 0;
+        for (const DxShaderReplacement& r : _options.replacements) {
+            if (r.pipeline != id || r.stage != stage || r.code.empty()) continue;
+            data = r.code.data();
+            size = r.code.size();
+            return true;
+        }
         // The blob is named "<stage>:<entry point>", and the description does not say the entry point.
         const JValue* blobs = _currentObject ? _currentObject->Get("blobs") : nullptr;
         const std::string prefix = std::string(stage) + ":";
@@ -1843,6 +1858,9 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
         });
     }
     _graphicsRoot = _computeRoot = 0;
+    _boundPipeline = resetArgs ? IdOf(resetArgs->Get("pInitialState")) : 0;
+    _appQueryDepth = 0;
+    BeginListMeasurements();
     Pass pass;
     uint32_t passCount = 0;
     for (uint32_t i = group.first + 1; i < group.last; ++i) {
@@ -1908,7 +1926,28 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
             for (uint32_t k = 0; k < colorCount; ++k) writeTarget(&targets->items[k], false, k);
             writeTarget(args ? args->Get(pass.realPass ? "pDepthStencil" : "pDepthStencilDescriptor") : nullptr, true, colorCount);
         }
+        // What the measurements need to know of the list's state (dx_measure.cpp).
+        if (m == "SetPipelineState") _boundPipeline = args ? IdOf(args->Get("pPipelineState")) : 0;
+        else if (m == "BeginQuery") ++_appQueryDepth;
+        else if (m == "EndQuery" && _appQueryDepth) --_appQueryDepth;
+        int drawQuery = -1;
+        if (_measure && IsActionMethod(m)) {
+            const uint32_t passIndex = pass.active ? pass.index : UINT32_MAX;
+            IssueAblation(i, m, c, args, list, group.list, frame, passIndex);
+            // A bundle's draws cannot hold queries, so the bundle is measured whole and the time
+            // goes to the first draw it holds, which is a command the capture lists after it.
+            uint32_t measured = i;
+            if (m == "ExecuteBundle") {
+                for (uint32_t k = i + 1; k < commands->count && commands->items[k].Get("secondary"); ++k) {
+                    if (!IsActionMethod(Str(commands->items[k].Get("method")))) continue;
+                    measured = k;
+                    break;
+                }
+            }
+            drawQuery = BeginDrawQuery(list, measured, frame, group.list, passIndex);
+        }
         const bool issued = IssueCommand(i, m, c, args, list, group.list);
+        if (drawQuery >= 0) EndDrawQuery(list, drawQuery);
         if (issued) _report->commandsRecorded++;
         if (m == "EndRenderPass") {
             if (pass.active && _options.compareTargets) InjectReadbacks(list, pass, readbacks);
@@ -1916,6 +1955,7 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
         }
         _arena.Reset();
     }
+    ResolveListMeasurements(list);
     if (FAILED(list->Close())) Problem("command list " + std::to_string(group.list) + ": Close failed, so what it recorded is not valid");
     if (_x) _x->Block(DxExporter::Frame, "[" + std::to_string(group.last) + "]", [&](Source& s) { s.Line("DX_CHECK(" + listName + "->Close());"); });
 }
@@ -2153,6 +2193,7 @@ void DxReplayer::ReplayCommands() {
         queue->ExecuteCommandLists((UINT)lists.size(), lists.data());
         // Inside a counter collection pass the wait belongs after the pass, not here (_inCounterRound).
         if (!_inCounterRound) WaitForQueue(queue);
+        CompleteMeasurements(queue, !_deviceLost);
         for (auto& [heapId, heap] : _heaps) heap.bound.clear();
         _report->submissions++;
         if (_x) {
@@ -2246,7 +2287,14 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
         CollectMessages();
         return true;
     }
+    if (options.drawStats || options.ablation.enabled) {
+        // An ablation issues a draw many times over, so what the targets hold afterwards is not the
+        // capture's and is not compared. Queries around the draws change nothing they draw.
+        if (options.ablation.enabled) _options.compareTargets = false;
+        PrepareMeasurements();
+    }
     ReplayCommands();
+    DestroyMeasurements();
     if (!_deviceLost) EmitFrameEnd();
     for (auto& p : _env.problems) report.problems.push_back(p);
     _env.problems.clear();

@@ -7,6 +7,7 @@
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
 //                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
+//                        [--capture-at N] [--churn] [--heavy]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -14,6 +15,8 @@
 
 #include <windows.h>
 #include <d3d12.h>
+
+#include "gpu_inspector.h"
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
@@ -140,6 +143,8 @@ constexpr uint32_t kHeapSize = kHeapUav + 1;
 struct App {
     uint32_t width = 640, height = 480;
     uint32_t maxFrames = 0;   // 0: until the window is closed
+    uint64_t captureAt = 0;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
+    bool captureAsked = false;
     // --stall <ms>: sleep this long before each frame, so a vsynced present misses refreshes
     // and the swap chain's statistics have dropped frames to report.
     uint32_t stallMs = 0;
@@ -162,6 +167,14 @@ struct App {
     // WebGPU device does. The inspector's frame boundary falls back to the per-frame submit.
     bool offscreen = false;
     bool leak = false;         // one buffer is never released (the inspector's leak report)
+    // --heavy: the cube's pixel shader is heavy.hlsl, whose functions cost known amounts (the
+    // Shader Flame Graph's measurements by ablation).
+    bool heavy = false;
+    // --churn: what a memory capture is for. Every frame makes a small upload buffer and releases
+    // the one made two frames before (transient allocations), and every 30th frame makes one that
+    // is kept until exit (a slow leak).
+    bool churn = false;
+    std::vector<ComPtr<ID3D12Resource>> churnRecent, churnKept;
     // --stencil: the depth buffer is D24S8, cleared with the depth and written with 1 wherever the
     // cube draws, so a capture reads a stencil target back beside the depth.
     bool stencil = false;
@@ -586,7 +599,7 @@ struct App {
         computeRootSignature = MakeRootSignature(rs, L"Wave root signature");
 
         std::vector<char> vs = ReadFile(ExeDir() + "cube_vs.cso");
-        std::vector<char> ps = ReadFile(ExeDir() + "cube_ps.cso");
+        std::vector<char> ps = ReadFile(ExeDir() + (heavy ? "heavy_ps.cso" : "cube_ps.cso"));
         std::vector<char> cs = ReadFile(ExeDir() + "wave_cs.cso");
 
         D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -934,6 +947,8 @@ struct App {
 
     void Cleanup() {
         WaitForGpu();
+        churnRecent.clear();
+        churnKept.clear();
         constantBuffer->Unmap(0, nullptr);
         CloseHandle(fenceEvent);
         // Everything else is released by the members' destructors, the device last.
@@ -953,6 +968,18 @@ struct App {
             if (quit) break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             if (stallMs) Sleep(stallMs);
+            // Asked again each frame until somebody is there to hear it: the inspector connects a
+            // few frames after the device is made.
+            if (captureAt && frameCount >= captureAt && !captureAsked) captureAsked = gpu_inspector_capture(1) != 0;
+            if (churn) {
+                churnRecent.push_back(CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 64 * 1024, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                   D3D12_RESOURCE_FLAG_NONE, L"Churn: per-frame scratch"));
+                if (churnRecent.size() > 2) churnRecent.erase(churnRecent.begin());
+                if (frameCount % 30 == 0) {
+                    churnKept.push_back(CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, 1024 * 1024, D3D12_RESOURCE_STATE_COMMON,
+                                                     D3D12_RESOURCE_FLAG_NONE, L"Churn: kept forever"));
+                }
+            }
             if (!DrawFrame(t)) Sleep(16);
             // A swap chain paces the loop to the display; an offscreen renderer has nothing to
             // wait on and would spin a core at thousands of fps, so it is paced to ~60 the way a
@@ -980,6 +1007,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = (uint64_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--msaa")) app.msaa = true;
         else if (!strcmp(argv[i], "--bundle")) app.bundle = true;
         else if (!strcmp(argv[i], "--indirect")) app.indirect = true;
@@ -987,6 +1015,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--compute")) app.compute = true;
         else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
+        else if (!strcmp(argv[i], "--churn")) app.churn = true;
+        else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
         else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
         else if (!strcmp(argv[i], "--stencil")) { app.stencil = true; app.depthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT; }
         else {

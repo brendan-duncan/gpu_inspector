@@ -747,6 +747,56 @@ export interface TimingFramesMessage {
   frames: { frame: number; durationMs: number; categoryMs: number[] }[];
 }
 
+/**
+ * Allocations and frees from a running memory capture (src/vulkan/src/cpu_timeline.h,
+ * src/d3d12/src/cpu_timeline.h), sent in batches on the frame report's interval. MemorySample is
+ * the sum; these are what it is the sum of, which is what says whether a climbing total is one
+ * allocation never freed or a thousand that mostly are.
+ */
+export interface MemoryEventsMessage {
+  action: "MemoryEvents";
+  /** Only in a capture's first message: what each heap held when it began, in MemorySample's order. */
+  baseline?: { allocated: number; allocations: number }[];
+  /** Events past the capture library's limit, counted rather than recorded. */
+  dropped?: number;
+  events: {
+    frame: number;
+    /** Milliseconds since the capture began. */
+    ms: number;
+    /** The allocation's object id (a VkDeviceMemory, an ID3D12Heap or a committed ID3D12Resource); 0 when unknown. */
+    id: number;
+    bytes: number;
+    /** Index into the heaps, as MemorySample orders them. */
+    heap: number;
+    free?: boolean;
+  }[];
+}
+
+/**
+ * The application asked for a capture through include/gpu_inspector.h (`gpu_inspector_capture`).
+ * The capture library passes the request on rather than acting on it: the capture bar's options are
+ * the inspector's, and a tab has to be waiting for the capture's messages.
+ */
+export interface AppCaptureRequestMessage { action: "AppCaptureRequest"; frameCount: number }
+
+/**
+ * Call stacks sampled during a timing capture (src/vulkan/src/cpu_sampler.h), in batches on the
+ * frame report's interval. A stack is sent once, under an id that means it for the whole capture.
+ */
+export interface TimingSamplesMessage {
+  action: "TimingSamples";
+  /** Milliseconds between samples, so a count of them is a time. */
+  periodMs: number;
+  /** Every thread sampled so far; a sample names one by its index here. */
+  threads: { id: number; name?: string }[];
+  /** The stacks this batch is the first to use: return addresses as "0x...", innermost first. */
+  stacks: { id: number; addresses: string[] }[];
+  /** [frame, thread index, stack id, 1 when the thread was running and 0 when it was blocked, samples]. */
+  samples: [number, number, number, number, number][];
+  /** Samples not recorded because the stack table was full. */
+  dropped?: number;
+}
+
 /** One host-side call timed during a capture (src/vulkan/src/cpu_timeline.h). */
 export interface CpuEvent {
   /** Index into CpuTimeline.threads. */
@@ -783,11 +833,14 @@ export interface CpuTimelineMessage {
 }
 
 export type LayerMessage =
+  | AppCaptureRequestMessage
   | CpuTimelineMessage
   | TimingFramesMessage
   | DeviceLostMessage
   | DeviceRemovedMessage
   | MemorySampleMessage
+  | MemoryEventsMessage
+  | TimingSamplesMessage
   | SnapshotMessage
   | ValidationMessage
   | ValidationCountMessage
@@ -849,7 +902,14 @@ export interface RequestStacktracesRequest { action: "RequestStacktraces"; ids: 
 /** Asks the layer to symbolize addresses a capture's commands carry (answered by Symbols). */
 export interface RequestSymbolsRequest { action: "RequestSymbols"; addresses: string[] }
 /** Starts or stops a timing capture in the layer. */
-export interface TimingCaptureRequest { action: "TimingCapture"; start: boolean }
+export interface TimingCaptureRequest {
+  action: "TimingCapture";
+  start: boolean;
+  /** Also sample every thread's call stack this many times a second (Windows capture libraries; ignored elsewhere). */
+  sampleHz?: number;
+}
+/** Starts or stops a memory capture in the capture library (Vulkan and D3D12). */
+export interface MemoryCaptureRequest { action: "MemoryCapture"; start: boolean }
 /** Switches the in-app HUD on or off: the frame time drawn over the application's own window. */
 export interface HudRequest { action: "Hud"; enabled: boolean }
 /**
@@ -928,7 +988,7 @@ export interface SaveGpuTraceRequest { action: "SaveGpuTrace"; path?: string }
 
 export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
   | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
-  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest
+  | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest | MemoryCaptureRequest
   | HudRequest | PauseRequest;
 
 // ------------------------------------------------------------------------------------------
@@ -1130,6 +1190,8 @@ export interface AppConfig {
     showView: string | null;
     /** --debug-timing=<ms>: run a timing capture for this long once connected, then stop. */
     timingMs?: number | null;
+    /** --debug-memory=<ms>: run a memory capture for this long once connected, then stop. */
+    memoryMs?: number | null;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */

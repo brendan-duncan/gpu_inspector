@@ -15,6 +15,11 @@
 //                                        "target", "defines", "args"}} says how dxc was run, for
 //                                        compiling the same source again (the shader debugger).
 //   dxinsp_shader --info <file>          {"stage", "entryPoint", "target", "dxil", "debugName"}
+//   dxinsp_shader --assemble <file.ll> --out <file>
+//                                        a DXIL module's disassembly (as --disassemble prints it,
+//                                        edited or not) assembled into a container, validated and
+//                                        signed: a shader changed with no source for it. The
+//                                        assembler's or the validator's message goes to stderr.
 //
 // Output goes to stdout as UTF-8, errors to stderr with exit code 1.
 #include "common.h"
@@ -34,6 +39,7 @@ namespace {
 
 int Usage() {
     fputs("usage: dxinsp_shader --disassemble|--reflect|--sources|--info <bytecode file>\n"
+          "       dxinsp_shader --assemble <module.ll> --out <container file>\n"
           "       --sources also takes --pdb <file> and --pdb-dir <dir>, repeatable, for a shader\n"
           "       built with -Zs whose source dxc wrote to a PDB instead of into the container\n", stderr);
     return 1;
@@ -64,15 +70,17 @@ struct Options {
     std::wstring file;
     std::vector<std::wstring> pdbFiles;
     std::vector<std::wstring> pdbDirs;
+    std::wstring out;
 };
 
 /** The command line: the mode, one bytecode file, and repeatable --pdb / --pdb-dir. */
 bool ParseArgs(int argc, wchar_t** argv, Options& out) {
     for (int i = 1; i < argc; ++i) {
         std::wstring arg = argv[i];
-        const bool wantsValue = arg == L"--pdb" || arg == L"--pdb-dir";
+        const bool wantsValue = arg == L"--pdb" || arg == L"--pdb-dir" || arg == L"--out";
         if (wantsValue && i + 1 >= argc) return false;
         if (arg == L"--pdb") out.pdbFiles.push_back(argv[++i]);
+        else if (arg == L"--out") out.out = argv[++i];
         else if (arg == L"--pdb-dir") out.pdbDirs.push_back(argv[++i]);
         else if (arg.rfind(L"--", 0) == 0) {
             if (!out.mode.empty()) return false;
@@ -92,6 +100,17 @@ int wmain(int argc, wchar_t** argv) {
     if (!ParseArgs(argc, argv, options)) return Usage();
     std::vector<uint8_t> bytes;
     if (!ReadFile(options.file.c_str(), bytes)) return Fail("cannot read " + Narrow(options.file.c_str()));
+    if (options.mode == L"--assemble") {
+        if (options.out.empty()) return Usage();
+        std::vector<uint8_t> container;
+        std::string error;
+        if (!AssembleDxil(std::string(bytes.begin(), bytes.end()), container, error)) return Fail(error);
+        FILE* f = _wfopen(options.out.c_str(), L"wb");
+        if (!f) return Fail("cannot write " + Narrow(options.out.c_str()));
+        const bool wrote = fwrite(container.data(), 1, container.size(), f) == container.size();
+        fclose(f);
+        return wrote ? 0 : Fail("cannot write " + Narrow(options.out.c_str()));
+    }
     if (!IsShaderContainer(bytes.data(), bytes.size())) return Fail(Narrow(options.file.c_str()) + " is not a DXBC/DXIL container");
     // The disassembly and the sources may hold any UTF-8; a text-mode stdout would translate it.
     _setmode(_fileno(stdout), _O_BINARY);

@@ -9,6 +9,8 @@ import { isD3D12Texture } from "../d3d12/d3d12_object.js";
 import type { AddObjectMessage, ArgValue, DeviceLostMessage, DeviceRemovedMessage, LayerMessage, FrameStatsMessage, LeakReportMessage, MemorySampleMessage, StackFrame, TimingFramesMessage, ValidationMessage } from "../../shared/protocol.js";
 import { MAX_SAMPLES } from "../memory_timeline.js";
 import { MAX_TIMING_FRAMES, type TimingCapture as TimingCaptureData } from "../frame_timing.js";
+import { appendMemoryEvents, emptyMemoryCapture, type MemoryCapture as MemoryCaptureData } from "../memory_capture.js";
+import { appendTimingSamples, emptyTimingSamples, type TimingSamples } from "../timing_samples.js";
 import type { CaptureFileObject } from "../capture_format.js";
 
 /** A validation message with its repeat count (see ValidationMessage in protocol.ts). */
@@ -93,6 +95,10 @@ export class ObjectDatabase implements ObjectLookup {
    * (renderer/frame_timing.ts). Empty until one is started.
    */
   timing: TimingCaptureData = { categories: [], frames: [] };
+  /** Call stacks sampled during the running (or last) timing capture (renderer/timing_samples.ts). */
+  timingSamples: TimingSamples = emptyTimingSamples();
+  /** The running (or last) memory capture's allocations and frees (renderer/memory_capture.ts). */
+  memoryCapture: MemoryCaptureData = emptyMemoryCapture();
   private _snapshotRemaining = 0;
 
   readonly onReset = new Signal<() => void>();
@@ -115,6 +121,7 @@ export class ObjectDatabase implements ObjectLookup {
   /** A memory sample arrived, so the series grew (renderer/memory_timeline.ts). */
   readonly onMemorySample = new Signal<() => void>();
   readonly onTimingFrames = new Signal<() => void>();
+  readonly onMemoryEvents = new Signal<() => void>();
   /** Stack traces: creation stacks by object id, symbols by address, and whether the layer collects stacks. */
   stacks = new Map<number, StackFrame[]>();
   stacksAvailable: boolean | null = null;
@@ -397,6 +404,15 @@ export class ObjectDatabase implements ObjectLookup {
           this.timing.frames.splice(0, this.timing.frames.length - MAX_TIMING_FRAMES);
         }
         this.onTimingFrames.emit();
+        break;
+      case "TimingSamples":
+        appendTimingSamples(this.timingSamples, msg);
+        this.onTimingFrames.emit();
+        break;
+      case "MemoryEvents":
+        // Like TimingFrames, only what is new since the last report, so these append.
+        appendMemoryEvents(this.memoryCapture, msg);
+        this.onMemoryEvents.emit();
         break;
       case "MemorySample":
         this.memorySamples.push(msg);

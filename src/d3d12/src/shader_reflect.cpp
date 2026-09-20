@@ -1088,6 +1088,52 @@ bool DisassembleShader(const void* bytecode, size_t size, std::string& text, std
     return true;
 }
 
+bool AssembleDxil(const std::string& text, std::vector<uint8_t>& container, std::string& error) {
+    container.clear();
+    DxcLib& lib = Dxc();
+    if (!lib.create) { error = lib.error; return false; }
+    ComPtr<IDxcUtils> utils = DxcCreate<IDxcUtils>(CLSID_DxcUtils);
+    ComPtr<IDxcAssembler> assembler = DxcCreate<IDxcAssembler>(CLSID_DxcAssembler);
+    if (!utils || !assembler) { error = "dxcompiler.dll: DxcCreateInstance failed (no assembler in this build of it)"; return false; }
+    ComPtr<IDxcBlobEncoding> source;
+    HRESULT hr = utils->CreateBlob(text.data(), (UINT32)text.size(), DXC_CP_UTF8, source.put());
+    if (FAILED(hr) || !source) { error = "IDxcUtils::CreateBlob failed: " + HrText(hr); return false; }
+
+    /** The operation's blob when it succeeded, else its error text in `error`. */
+    auto result = [&](IDxcOperationResult* op, const char* what, ComPtr<IDxcBlob>* out) {
+        HRESULT status = E_FAIL;
+        if (op) op->GetStatus(&status);
+        if (SUCCEEDED(status)) {
+            if (out) op->GetResult(out->put());
+            return true;
+        }
+        ComPtr<IDxcBlobEncoding> errors;
+        if (op) op->GetErrorBuffer(errors.put());
+        const std::string said = errors ? BlobText(utils.get(), errors.get()) : std::string();
+        error = std::string(what) + " failed" + (said.empty() ? ": " + HrText(status) : ": " + said);
+        return false;
+    };
+
+    ComPtr<IDxcOperationResult> assembled;
+    hr = assembler->AssembleToContainer(source.get(), assembled.put());
+    if (FAILED(hr)) { error = "IDxcAssembler::AssembleToContainer failed: " + HrText(hr); return false; }
+    ComPtr<IDxcBlob> blob;
+    if (!result(assembled.get(), "assembling the module", &blob) || !blob) return false;
+
+    // Unsigned, the runtime refuses it. The validator checks the module and, editing in place,
+    // writes the container's hash. The one built into dxcompiler.dll validates the DXIL version
+    // that dxcompiler itself writes, which a separate dxil.dll of another SDK may be too old for.
+    ComPtr<IDxcValidator> validator = DxcCreate<IDxcValidator>(CLSID_DxcValidator);
+    if (!validator) { error = "dxcompiler.dll has no validator, so the module cannot be signed"; return false; }
+    ComPtr<IDxcOperationResult> validated;
+    hr = validator->Validate(blob.get(), DxcValidatorFlags_InPlaceEdit, validated.put());
+    if (FAILED(hr)) { error = "IDxcValidator::Validate failed: " + HrText(hr); return false; }
+    if (!result(validated.get(), "validating the module", nullptr)) return false;
+    const auto* bytes = static_cast<const uint8_t*>(blob->GetBufferPointer());
+    container.assign(bytes, bytes + blob->GetBufferSize());
+    return true;
+}
+
 std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size) {
     return EmbeddedSources(bytecode, size, nullptr);
 }

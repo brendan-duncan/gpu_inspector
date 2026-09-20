@@ -44,6 +44,11 @@ export interface StageModel {
   workgroupSize: [number, number, number] | null;
   /** The stage's SPIR-V, where it can be measured by ablation. */
   spirv?: Uint8Array | null;
+  /**
+   * D3D12: the stage's DXIL container. Its analysis and `spirv` are then of the SPIR-V its HLSL
+   * compiles to, which is the only form of it the cost model reads; this is what is measured.
+   */
+  dxil?: Uint8Array | null;
 }
 
 /** Line frames kept per function in the flame graph; the rest fold into one frame. */

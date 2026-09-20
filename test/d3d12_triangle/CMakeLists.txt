@@ -27,6 +27,7 @@ set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
 set(SHADERS
     "cube.hlsl|vs_6_0|VSMain|cube_vs.cso"
     "cube.hlsl|ps_6_0|PSMain|cube_ps.cso"
+    "heavy.hlsl|ps_6_0|PSMain|heavy_ps.cso"
     "wave.hlsl|cs_6_0|CSMain|wave_cs.cso")
 set(CSO_OUTPUTS)
 foreach(spec ${SHADERS})
@@ -48,9 +49,11 @@ foreach(spec ${SHADERS})
     list(APPEND CSO_OUTPUTS "${CMAKE_CURRENT_BINARY_DIR}/${out}")
 endforeach()
 
-add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl wave.hlsl ${CSO_OUTPUTS})
+add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl heavy.hlsl wave.hlsl ${CSO_OUTPUTS})
 # Visual Studio would otherwise try to compile the .hlsl files with fxc itself.
-set_source_files_properties(cube.hlsl wave.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
+set_source_files_properties(cube.hlsl heavy.hlsl wave.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
+# include/gpu_inspector.h, for --capture-at.
+target_include_directories(dxinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 target_link_libraries(dxinsp_triangle PRIVATE d3d12 dxgi dxguid)
 target_compile_definitions(dxinsp_triangle PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 # Debug information in every configuration, so the inspector's stack traces show functions and

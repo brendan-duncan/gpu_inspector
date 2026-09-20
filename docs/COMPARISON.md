@@ -106,7 +106,7 @@ while it runs.
 | Histogram per channel | ● | ● | ● | ● |
 | Per-command call stacks | ● | ● | ● | ● |
 | Custom visualization shaders over a target | ○ | ● | ● | ● |
-| Programmatic capture from the application | ○ start-time launch only | ● in-application API | ● `PIXBeginCapture` | ● |
+| Programmatic capture from the application | ● [`gpu_inspector.h`: Vulkan, D3D12](CAPTURE.md#capturing-from-the-application) | ● in-application API | ● `PIXBeginCapture` | ● |
 
 ---
 
@@ -123,7 +123,7 @@ while it runs.
 | Debug a pixel from its history | ● | ● | ● | ● |
 | Debug a compute invocation | ● | ● | ● | ● |
 | Step SPIR-V with no debug information, by line | ● [via decompiled GLSL, checked against the original](REPORTS.md#shader-debugger) | ◐ by instruction | n/a | ○ |
-| Shader edit and re-run inside the capture | ◐ [live in the application instead](INSPECT.md#editing-a-shader) | ● | ● Edit & Continue, with a diff | ● dynamic shader editing |
+| Shader edit and re-run inside the capture | ● [Compile & Replay, with the changed targets side by side: Vulkan, D3D12](INSPECT.md#editing-a-shader) | ● | ● Edit & Continue, with a diff | ● dynamic shader editing |
 | Shader edit applied to the **running application** | ● [Vulkan, D3D12, Android](INSPECT.md#editing-a-shader) | ○ | ○ | ◐ live editing during replay |
 | Acceleration structure contents and instances, drawn | ◐ [Vulkan, from the build](INSPECT.md#acceleration-structures) | ◐ | ◐ | ● the AS viewer, with overlap analysis |
 | Shader binding table records matched to their groups | ● [Vulkan](CAPTURE.md#reading-the-frame) | ◐ | ● | ● |
@@ -135,17 +135,18 @@ while it runs.
 | | GPU Inspector | RenderDoc | PIX | Nsight Graphics |
 |---|---|---|---|---|
 | GPU time per pass | ● [Profile passes](CAPTURE.md#taking-a-capture) | ◐ event timings | ● replay-based timing data | ● |
-| GPU time per draw | ● [Measure draws: Vulkan by replay, D3D12 while capturing](REPORTS.md#shader-flame-graph) | ◐ | ● | ● |
+| GPU time per draw | ● [Measure draws: Vulkan and D3D12 by replay, D3D12 also while capturing](REPORTS.md#shader-flame-graph) | ◐ | ● | ● |
 | Pipeline statistics (invocations, primitives, fragments) | ● Vulkan, Metal | ● | ● | ● |
 | Hardware counters (throughput, cache, occupancy, stall reasons) | ◐ [Vulkan and D3D12 by replay: NvPerf, or `VK_KHR_performance_query` on Vulkan](REPORTS.md#gpu-bottlenecks) | ◐ counter viewer, vendor APIs | ◐ via IHV plugins, occupancy on NVIDIA | ● GPU Trace, the deepest here |
 | Shader profiler: hot spots correlated to source | ◐ [modelled, then measured per line](REPORTS.md#shader-flame-graph) | ○ | ◐ | ● hardware sampling |
-| Measured cost of one function, source line or texture in a shader | ● [Measure shader, by ablation](REPORTS.md#shader-flame-graph) | ○ | ◐ Dr. PIX experiments | ◐ |
+| Measured cost of one function, source line or texture in a shader | ● [Measure shader, by ablation: Vulkan, D3D12](REPORTS.md#shader-flame-graph) | ○ | ◐ Dr. PIX experiments | ◐ |
 | Flame graph of the frame's GPU work | ● [pass → pipeline → stage → function → line](REPORTS.md#shader-flame-graph) | ○ | ○ | ○ |
 | Per-pass bottleneck verdict with what usually causes it | ● [GPU Bottlenecks](REPORTS.md#gpu-bottlenecks) | ○ | ● Dr. PIX | ● |
-| CPU timeline: where the frame's CPU time went | ◐ [Vulkan, Metal](REPORTS.md#frame-stats) | ○ | ● timing captures, ETW and callstacks | ● (Nsight Systems) |
+| CPU timeline: where the frame's CPU time went | ◐ [the calls the library times; no other threads](REPORTS.md#frame-stats) | ○ | ● timing captures, ETW and callstacks | ● (Nsight Systems) |
 | Is the frame CPU-bound, GPU-bound or display-bound | ● [Frame Bound card](REPORTS.md#frame-stats) | ○ | ● | ● |
-| Recording every frame's time to find a hitch | ◐ [Timing Capture, Vulkan](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● | ● |
-| Memory allocation analysis | ◐ heaps, totals, Metal memory use | ◐ | ● memory captures | ● |
+| Recording every frame's time to find a hitch | ◐ [Timing Capture: Vulkan, D3D12](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● | ● |
+| What each thread was doing in the hitch | ◐ [call stacks sampled in the process, running or blocked: Windows](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● ETW: context switches, every process | ● (Nsight Systems) |
+| Memory allocation analysis | ◐ [Memory Capture, every allocation and free: Vulkan, D3D12](PROFILING.md#what-is-allocating); no residency per resource | ◐ | ● memory captures | ● |
 | Render graph: passes, the resources between them, the critical path | ● [Render Graph](REPORTS.md#render-graph) | ○ | ○ | ○ |
 | Frame-level rules flagging waste, each linked to its command | ● [Frame Issues](REPORTS.md#frame-stats) | ○ | ● Warnings | ◐ |
 | Static shader analysis with no source needed | ● [Analyze Shaders](REPORTS.md#analyze-shaders) | ○ | ○ | ◐ |
@@ -202,8 +203,9 @@ API.
 - **You are on OpenGL or Direct3D 11.** Use RenderDoc.
 - **You need the last 10% on NVIDIA hardware** — warp stalls, unit throughput, the shader
   profiler, ray tracing in depth. Use Nsight Graphics.
-- **You want timing or memory captures of a D3D12 title.** Use PIX. Frame debugging is close to
-  parity; minutes-long timing captures and memory captures have no equivalent here.
+- **You need a kernel's view of a D3D12 title** — context switches, the other processes, the GPU's
+  hardware queues, residency per resource. Use PIX. The timing and memory captures here see inside
+  the process only.
 - **Your renderer crashed the GPU and the command it stopped on is not enough.** Use Aftermath.
 - **Your pipeline scripts a frame debugger.** Use RenderDoc's Python API.
 - **You need a tool with a decade of edge cases in it.** RenderDoc captures applications that

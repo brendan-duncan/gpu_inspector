@@ -636,6 +636,9 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
     }
     d.accumMs += ms;
     d.frames++;
+    // Per-frame rather than per-report: a hitch is one frame, and the report below averages five
+    // or six of them together (cpu_timeline.h).
+    NoteFrameTiming((uint32_t)d.frame, ms);
     const double sinceReport = std::chrono::duration<double, std::milli>(now - d.lastReport).count();
     bool reported = false;
     if (sinceReport >= 100.0) {
@@ -704,7 +707,9 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
         reported = EmitBoundary(d, now, "present", synced ? d.displayRefreshMs : 0, presentMode);
     }
     lock.unlock();
-    if (reported) { SendMemoryBudget(device); SendMemorySample(device); }
+    // The frames a timing capture recorded since the last report ride on the same interval, so it
+    // adds no traffic of its own.
+    if (reported) { SendMemoryBudget(device); SendMemorySample(device); SendTimingFrames(); SendTimingSamples(); SendMemoryEvents(); }
 }
 
 void OnFrameNoPresent(ID3D12Device* device) {
@@ -714,7 +719,7 @@ void OnFrameNoPresent(ID3D12Device* device) {
     std::unique_lock<std::mutex> lock(g_mutex);
     const bool reported = EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
     lock.unlock();
-    if (reported) { SendMemoryBudget(device); SendMemorySample(device); }
+    if (reported) { SendMemoryBudget(device); SendMemorySample(device); SendTimingFrames(); SendTimingSamples(); SendMemoryEvents(); }
 }
 
 void AddSubmitTime(ID3D12Device* device, double milliseconds) {

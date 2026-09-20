@@ -99,8 +99,13 @@ struct FrameTiming {
     float categoryMs[(size_t)CpuCategory::Count] = {};
 };
 
-/** Starts recording per-frame timings, discarding anything held from a previous one. */
-void BeginTimingCapture();
+/**
+ * Starts recording per-frame timings, discarding anything held from a previous one. `sampleHz`
+ * above zero also samples every thread's call stack that often (cpu_sampler.h), which is what says
+ * what the CPU was doing in a frame none of the timed calls account for. Windows only; elsewhere
+ * the timings are recorded without it.
+ */
+void BeginTimingCapture(uint32_t sampleHz = 0);
 /** Stops recording. The records already taken stay until the next Begin. */
 void EndTimingCapture();
 /** Whether a timing capture is running, for the frame report to say so. */
@@ -114,6 +119,9 @@ void NoteFrameTiming(uint32_t frame, double frameMs);
 
 /** Writes the records taken since the last call as a TimingFrames message; quiet when there are none. */
 void SendTimingFrames();
+
+/** Writes the call stacks sampled since the last call as a TimingSamples message; quiet when there are none. */
+void SendTimingSamples();
 
 /**
  * Relates the GPU clock to the host's, so pass timestamps can be placed on the CPU axis. Sampled
@@ -165,5 +173,26 @@ void NoteFree(DeviceData* dev, VkDeviceMemory memory);
  * says is resident and allowed where it reports that. Called with the frame report.
  */
 void SendMemorySample(DeviceData* dev);
+
+// ---------------------------------------------------------------------------------------------
+// Memory captures.
+//
+// The series above says which way memory is going; it cannot say *what* is going. A total that
+// climbs a megabyte a second is one allocation a frame that is never freed, or a thousand that
+// mostly are, and the fix for each is nowhere near the other. A memory capture is the record that
+// tells them apart: every allocation and every free while it runs, with the frame it happened in
+// and the object it was, so what is still held at the end can be named, and what was made and
+// thrown away within a frame or two can be counted.
+//
+// A mode rather than always on, like a timing capture: idle, it costs the allocation paths one
+// relaxed atomic read. The events ride on the frame report's interval as a MemoryEvents message.
+
+/** Starts recording allocations and frees, discarding what a previous capture held. */
+void BeginMemoryCapture();
+/** Stops recording; what was recorded and not yet sent goes with the next report. */
+void EndMemoryCapture();
+
+/** Writes the events recorded since the last call as a MemoryEvents message; quiet when there are none. */
+void SendMemoryEvents(DeviceData* dev);
 
 } // namespace vkinsp

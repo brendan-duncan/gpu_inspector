@@ -16,8 +16,22 @@
 //       The GPU's own hardware counters around each render pass, through NVIDIA's Nsight Perf SDK
 //       (dx_counters.h). The frame is replayed once per collection pass the counters need, and
 //       nothing else runs; --list-counters names the ones this GPU offers instead.
+//
+//   dxinsp_replay <capture.gpucap> --draws [--draw-data <file>]
+//       Every draw and dispatch of the frame with a timestamp pair, a pipeline statistics query and
+//       an occlusion query around it (dx_measure.cpp), for GPU Inspector's Shader Flame Graph.
+//
+//   dxinsp_replay <capture.gpucap> --replace <request> [--target-data <file>] [--draws]
+//       The frame replayed with other code for some pipelines' stages: a shader edited in GPU
+//       Inspector, run in the capture. --target-data writes every compared render target with
+//       how far it is from what the capture read back, and the pixels of the ones that differ.
+//
+//   dxinsp_replay <capture.gpucap> --ablate <request> [--ablate-data <file>]
+//       Draws timed again with variants of one of their shader stages, which is how a function, a
+//       source line or a texture of a shader is given a measured cost (dx_measure.cpp).
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -102,6 +116,214 @@ bool WriteExportData(const DxReplayReport& report, const std::string& path) {
     return (bool)out;
 }
 
+/**
+ * --draw-data: every draw and dispatch of the frame with the time it took and the counters it ran
+ * up, in the layout `vkinsp_replay --draw-data` writes (parseDrawStats in
+ * src/app/src/renderer/draw_stats.ts).
+ */
+bool WriteDrawData(const DxReplayReport& report, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-draw-stats\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"note\":" + JsonString(report.drawStatsNote) + ",\"draws\":[";
+    for (size_t i = 0; i < report.draws.size(); ++i) {
+        const DxDrawResult& d = report.draws[i];
+        char ms[32];
+        std::snprintf(ms, sizeof(ms), "%.6f", d.durationMs);
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(d.command) + ",\"frame\":" + std::to_string(d.frame) +
+                ",\"commandBuffer\":" + std::to_string(d.commandList) + ",\"passIndex\":" + std::to_string(d.passIndex) +
+                ",\"timed\":" + (d.timed ? "true" : "false") + ",\"ms\":" + ms +
+                ",\"counted\":" + (d.counted ? "true" : "false") +
+                ",\"vertexInvocations\":" + std::to_string(d.vertexInvocations) +
+                ",\"primitives\":" + std::to_string(d.primitives) +
+                ",\"fragmentInvocations\":" + std::to_string(d.fragmentInvocations) +
+                ",\"computeInvocations\":" + std::to_string(d.computeInvocations) +
+                ",\"sampled\":" + (d.sampled ? "true" : "false") +
+                ",\"samplesPassed\":" + std::to_string(d.samplesPassed) + "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
+// --replace: the request GPU Inspector writes (encodeReplaceRequest in
+// src/app/src/renderer/shader_replay.ts), in the layout of --ablate's: "REPLACE 1\n", a
+// little-endian u32 manifest length, the JSON manifest
+//   {"replacements": [{"pipeline": 27, "stage": "fragment", "payload": [0, 11364]}]}
+// and the code, which the manifest names as [offset, length] after it.
+bool ReadReplaceRequest(const std::string& path, std::vector<DxShaderReplacement>& out, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string magic = "REPLACE 1\n";
+    if (bytes.size() < magic.size() + 4 || std::memcmp(bytes.data(), magic.data(), magic.size()) != 0) {
+        error = "not a shader replacement request: " + path;
+        return false;
+    }
+    uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + magic.size(), 4);
+    const size_t start = magic.size() + 4;
+    if (start + length > bytes.size()) {
+        error = "the replacement request is truncated";
+        return false;
+    }
+    vkreplay::JsonDocument doc;
+    if (!doc.Parse(bytes.data() + start, length, error)) {
+        error = "the replacement request's manifest is not valid JSON: " + error;
+        return false;
+    }
+    const size_t base = start + length;
+    const vkreplay::JValue* list = doc.Root().Get("replacements");
+    for (uint32_t i = 0; list && list->IsArray() && i < list->count; ++i) {
+        const vkreplay::JValue& item = list->items[i];
+        DxShaderReplacement r;
+        r.pipeline = item.Get("pipeline") ? item.Get("pipeline")->Uint() : 0;
+        const vkreplay::JValue* stage = item.Get("stage");
+        r.stage = stage && stage->IsString() ? std::string(stage->Str()) : std::string();
+        const vkreplay::JValue* payload = item.Get("payload");
+        if (payload && payload->IsArray() && payload->count == 2) {
+            const uint64_t offset = payload->items[0].Uint();
+            const uint64_t size = payload->items[1].Uint();
+            if (base + offset + size <= bytes.size()) r.code.assign(bytes.begin() + (ptrdiff_t)(base + offset), bytes.begin() + (ptrdiff_t)(base + offset + size));
+        }
+        if (!r.pipeline || r.stage.empty() || r.code.empty()) {
+            error = "replacement " + std::to_string(i) + " names no pipeline, no stage or no code";
+            return false;
+        }
+        out.push_back(std::move(r));
+    }
+    if (out.empty()) {
+        error = "the replacement request replaces nothing";
+        return false;
+    }
+    return true;
+}
+
+/**
+ * --target-data: what the replayed frame's render targets hold, against what the capture read back
+ * (parseReplayedTargets in src/app/src/renderer/shader_replay.ts). "TARGETS 1\n", a little-endian
+ * u32 manifest length, the JSON manifest, and after it the replayed pixels of each target that
+ * differs, in the layout of the capture's own read-back of it, which is how they are decoded.
+ */
+bool WriteTargetData(const DxReplayReport& report, const std::string& path) {
+    std::string payloads;
+    std::string json = "{\"format\":\"gpu-inspector-replayed-targets\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"targets\":[";
+    for (size_t i = 0; i < report.targets.size(); ++i) {
+        const DxTargetComparison& t = report.targets[i];
+        json += std::string(i ? "," : "") + "{\"image\":" + std::to_string(t.resource) + ",\"commandBuffer\":" + std::to_string(t.commandList) +
+                ",\"frame\":" + std::to_string(t.frame) + ",\"passIndex\":" + std::to_string(t.passIndex) + ",\"attachment\":" + std::to_string(t.attachment) +
+                ",\"aspect\":" + JsonString(t.aspect) + ",\"format\":" + JsonString(t.format) + ",\"width\":" + std::to_string(t.width) +
+                ",\"height\":" + std::to_string(t.height) + ",\"compared\":" + (t.compared ? "true" : "false") +
+                ",\"texels\":" + std::to_string(t.texels) + ",\"differingTexels\":" + std::to_string(t.differingTexels) +
+                ",\"maxByteDelta\":" + std::to_string(t.maxByteDelta);
+        if (!t.note.empty()) json += ",\"note\":" + JsonString(t.note);
+        if (t.differingTexels && !t.replayed.empty()) {
+            json += ",\"payload\":[" + std::to_string(payloads.size()) + "," + std::to_string(t.replayed.size()) + "]";
+            payloads.append(reinterpret_cast<const char*>(t.replayed.data()), t.replayed.size());
+        }
+        json += "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const uint32_t length = (uint32_t)json.size();
+    out.write("TARGETS 1\n", 10);
+    out.write(reinterpret_cast<const char*>(&length), 4);
+    out.write(json.data(), (std::streamsize)json.size());
+    out.write(payloads.data(), (std::streamsize)payloads.size());
+    return (bool)out;
+}
+
+// --ablate: the request GPU Inspector writes (encodeAblationRequest in
+// src/app/src/renderer/shader_ablation.ts), the file `vkinsp_replay --ablate` reads with DXIL
+// containers where that one has SPIR-V: "ABLATE 1\n", a little-endian u32 manifest length, the JSON
+//   {"rounds": 5, "targets": [{"command": 17, "stage": "fragment", "variants": [{"name": "fbm", "payload": [0, 7288]}]}]}
+// and the variants' code, which the manifest names as [offset, length] after it.
+bool ReadAblationRequest(const std::string& path, DxAblationOptions& options, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string magic = "ABLATE 1\n";
+    if (bytes.size() < magic.size() + 4 || std::memcmp(bytes.data(), magic.data(), magic.size()) != 0) {
+        error = "not an ablation request: " + path;
+        return false;
+    }
+    uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + magic.size(), 4);
+    const size_t start = magic.size() + 4;
+    if (start + length > bytes.size()) {
+        error = "the ablation request is truncated";
+        return false;
+    }
+    vkreplay::JsonDocument doc;
+    if (!doc.Parse(bytes.data() + start, length, error)) {
+        error = "the ablation request's manifest is not valid JSON: " + error;
+        return false;
+    }
+    const size_t base = start + length;
+    const vkreplay::JValue& root = doc.Root();
+    options.enabled = true;
+    if (const vkreplay::JValue* rounds = root.Get("rounds")) options.rounds = std::clamp<uint32_t>((uint32_t)rounds->Uint(), 1, 64);
+    const vkreplay::JValue* targets = root.Get("targets");
+    for (uint32_t t = 0; targets && targets->IsArray() && t < targets->count; ++t) {
+        const vkreplay::JValue& target = targets->items[t];
+        DxAblationOptions::Target out;
+        out.command = target.Get("command") ? (uint32_t)target.Get("command")->Uint() : 0;
+        const vkreplay::JValue* stage = target.Get("stage");
+        out.stage = stage && stage->IsString() ? std::string(stage->Str()) : std::string();
+        if (const vkreplay::JValue* repeat = target.Get("repeat")) out.repeat = std::clamp<uint32_t>((uint32_t)repeat->Uint(), 1, 256);
+        const vkreplay::JValue* variants = target.Get("variants");
+        for (uint32_t v = 0; variants && variants->IsArray() && v < variants->count; ++v) {
+            const vkreplay::JValue& variant = variants->items[v];
+            DxAblationOptions::Variant vo;
+            const vkreplay::JValue* name = variant.Get("name");
+            vo.name = name && name->IsString() ? std::string(name->Str()) : std::string();
+            const vkreplay::JValue* payload = variant.Get("payload");
+            if (payload && payload->IsArray() && payload->count == 2) {
+                const uint64_t offset = payload->items[0].Uint();
+                const uint64_t size = payload->items[1].Uint();
+                if (base + offset + size <= bytes.size()) vo.code.assign(bytes.begin() + (ptrdiff_t)(base + offset), bytes.begin() + (ptrdiff_t)(base + offset + size));
+            }
+            out.variants.push_back(std::move(vo));
+        }
+        options.targets.push_back(std::move(out));
+    }
+    return true;
+}
+
+/** --ablate-data: each target's timings (parseAblationResult in src/app/src/renderer/shader_ablation.ts). */
+bool WriteAblationData(const DxReplayReport& report, const std::string& path) {
+    auto timing = [](const DxAblationTiming& t) {
+        char ms[32];
+        std::snprintf(ms, sizeof(ms), "%.6f", t.ms);
+        std::string s = "{\"name\":" + JsonString(t.name) + ",\"measured\":" + (t.measured ? "true" : "false") + ",\"ms\":" + ms + ",\"samples\":[";
+        for (size_t i = 0; i < t.samples.size(); ++i) {
+            std::snprintf(ms, sizeof(ms), "%.6f", t.samples[i]);
+            s += std::string(i ? "," : "") + ms;
+        }
+        return s + "]" + (t.note.empty() ? "" : ",\"note\":" + JsonString(t.note)) + "}";
+    };
+    std::string json = "{\"format\":\"gpu-inspector-ablation\",\"version\":1,\"device\":" + JsonString(report.device) + ",\"targets\":[";
+    for (size_t i = 0; i < report.ablations.size(); ++i) {
+        const DxAblationResult& a = report.ablations[i];
+        json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(a.command) + ",\"stage\":" + JsonString(a.stage) +
+                ",\"pipeline\":" + std::to_string(a.pipeline) + ",\"frame\":" + std::to_string(a.frame) + ",\"commandBuffer\":" +
+                std::to_string(a.commandList) + ",\"passIndex\":" + std::to_string(a.passIndex) + ",\"rounds\":" + std::to_string(a.rounds) +
+                ",\"repeat\":" + std::to_string(a.repeat) + ",\"baseline\":" + timing(a.baseline) + ",\"variants\":[";
+        for (size_t v = 0; v < a.variants.size(); ++v) json += (v ? "," : "") + timing(a.variants[v]);
+        json += "]" + (a.note.empty() ? std::string() : ",\"note\":" + JsonString(a.note)) + "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size() && i < 100; ++i) json += (i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return (bool)out;
+}
+
 // --counter-data: the GPU's own hardware counters per pass (dx_counters.cpp), for GPU Inspector's
 // GPU Bottlenecks report — the file `vkinsp_replay --counter-data` writes for a Vulkan capture
 // (parseHwCounters in src/app/src/renderer/hw_counters.ts).
@@ -171,6 +393,11 @@ int main(int argc, char** argv) {
     std::string path;
     std::string exportData;
     std::string counterData;
+    std::string drawData;
+    std::string ablateRequest;
+    std::string ablateData;
+    std::string replaceRequest;
+    std::string targetData;
     DxReplayOptions options;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--debug-layer")) options.debugLayer = true;
@@ -181,14 +408,41 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--list-counters")) options.counters.enabled = options.counters.list = true;
         else if (!std::strcmp(argv[i], "--counter") && i + 1 < argc) options.counters.names.push_back(argv[++i]);
         else if (!std::strcmp(argv[i], "--counter-data") && i + 1 < argc) counterData = argv[++i];
+        else if (!std::strcmp(argv[i], "--draws")) options.drawStats = true;
+        else if (!std::strcmp(argv[i], "--draw-data") && i + 1 < argc) { options.drawStats = true; drawData = argv[++i]; }
+        else if (!std::strcmp(argv[i], "--ablate") && i + 1 < argc) ablateRequest = argv[++i];
+        else if (!std::strcmp(argv[i], "--ablate-data") && i + 1 < argc) ablateData = argv[++i];
+        else if (!std::strcmp(argv[i], "--replace") && i + 1 < argc) replaceRequest = argv[++i];
+        else if (!std::strcmp(argv[i], "--target-data") && i + 1 < argc) targetData = argv[++i];
         else if (argv[i][0] != '-' && path.empty()) path = argv[i];
         else path.clear(), i = argc;
     }
-    if (path.empty() || (!exportData.empty() && options.exportDir.empty()) || (!counterData.empty() && !options.counters.enabled)) {
+    // Measuring and exporting are different replays: a measured frame issues work the capture never had.
+    const bool measuring = options.drawStats || !ablateRequest.empty();
+    if (path.empty() || (!exportData.empty() && options.exportDir.empty()) || (!counterData.empty() && !options.counters.enabled) ||
+        (!ablateData.empty() && ablateRequest.empty()) || (measuring && (!options.exportDir.empty() || options.counters.enabled))) {
         std::fprintf(stderr, "usage: dxinsp_replay <capture.gpucap> [--debug-layer] [--trace] [--export <directory> [--export-data <file>]]\n"
                              "       dxinsp_replay <capture.gpucap> --counters [--counter <name>]... [--counter-data <file>]\n"
-                             "       dxinsp_replay <capture.gpucap> --list-counters [--counter-data <file>]\n");
+                             "       dxinsp_replay <capture.gpucap> --list-counters [--counter-data <file>]\n"
+                             "       dxinsp_replay <capture.gpucap> [--draws [--draw-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
+                             "       dxinsp_replay <capture.gpucap> --replace <request> [--target-data <file>] [--draws [--draw-data <file>]]\n");
         return 2;
+    }
+    if (!replaceRequest.empty()) {
+        std::string error;
+        if (!ReadReplaceRequest(replaceRequest, options.replacements, error)) {
+            std::fprintf(stderr, "dxinsp_replay: %s\n", error.c_str());
+            return 2;
+        }
+    }
+    // The pixels of what differs are what --target-data is for.
+    if (!targetData.empty()) options.keepPixels = true;
+    if (!ablateRequest.empty()) {
+        std::string error;
+        if (!ReadAblationRequest(ablateRequest, options.ablation, error)) {
+            std::fprintf(stderr, "dxinsp_replay: %s\n", error.c_str());
+            return 2;
+        }
     }
     g_exportDataPath = exportData;
     g_exportDir = options.exportDir;
@@ -264,6 +518,41 @@ int main(int argc, char** argv) {
         if (!counterData.empty())
             std::printf(WriteCounterData(report, counterData) ? "  wrote %s\n" : "  could not write %s\n", counterData.c_str());
     }
+    if (!targetData.empty()) std::printf(WriteTargetData(report, targetData) ? "wrote %s\n" : "could not write %s\n", targetData.c_str());
+    if (options.drawStats) {
+        double total = 0;
+        uint64_t fragments = 0;
+        for (const DxDrawResult& d : report.draws) {
+            total += d.durationMs;
+            fragments += d.fragmentInvocations;
+        }
+        std::printf("draws measured: %zu, %.3f ms of draw time, %llu pixel shader invocations%s\n", report.draws.size(), total,
+                    (unsigned long long)fragments, report.drawStatsNote.empty() ? "" : (" (" + report.drawStatsNote + ")").c_str());
+        for (size_t i = 0; i < report.draws.size() && i < 20; ++i) {
+            const DxDrawResult& d = report.draws[i];
+            std::printf("  [%u] %.4f ms, %llu vertices, %llu primitives, %llu pixels, %llu compute, %llu samples passed\n", d.command, d.durationMs,
+                        (unsigned long long)d.vertexInvocations, (unsigned long long)d.primitives, (unsigned long long)d.fragmentInvocations,
+                        (unsigned long long)d.computeInvocations, (unsigned long long)d.samplesPassed);
+        }
+        if (report.draws.size() > 20) std::printf("  ... %zu more\n", report.draws.size() - 20);
+        if (!drawData.empty()) std::printf(WriteDrawData(report, drawData) ? "  wrote %s\n" : "  could not write %s\n", drawData.c_str());
+    }
+    if (options.ablation.enabled) {
+        std::printf("ablations: %zu\n", report.ablations.size());
+        for (const DxAblationResult& a : report.ablations) {
+            std::printf("  [%u] %s stage, pipeline %llu: ", a.command, a.stage.c_str(), (unsigned long long)a.pipeline);
+            if (!a.baseline.measured) {
+                std::printf("not measured: %s\n", a.note.c_str());
+                continue;
+            }
+            std::printf("%.4f ms as captured (median of %u rounds)\n", a.baseline.ms, a.rounds);
+            for (const DxAblationTiming& v : a.variants) {
+                if (!v.measured) std::printf("    %-40s not measured%s%s\n", v.name.c_str(), v.note.empty() ? "" : ": ", v.note.c_str());
+                else std::printf("    %-40s %.4f ms, saves %.4f ms\n", v.name.c_str(), v.ms, a.baseline.ms - v.ms);
+            }
+        }
+        if (!ablateData.empty()) std::printf(WriteAblationData(report, ablateData) ? "  wrote %s\n" : "  could not write %s\n", ablateData.c_str());
+    }
     std::printf("problems: %zu\n", report.problems.size());
     PrintGrouped(report.problems, 80);
     if (options.debugLayer) {
@@ -271,5 +560,8 @@ int main(int argc, char** argv) {
         PrintGrouped(report.messages, 40);
     }
     if (!ran) return 2;
+    // A measuring replay compares nothing, so it has nothing to differ: it ran, or it did not. And
+    // a frame replayed with an edited shader is meant to differ.
+    if (measuring || !replaceRequest.empty()) return 0;
     return differing == 0 && skipped == 0 ? 0 : 1;
 }

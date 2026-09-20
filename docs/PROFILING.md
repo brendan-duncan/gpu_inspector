@@ -176,8 +176,42 @@ every hitch with what caused it.
   that always takes 8 ms is not blamed for the frame that took 120. When nothing accounts for it,
   the report says so: the time went to the application's own work between the calls the layer times,
   and that is itself the finding.
+- **Threads**, with **Sample stacks** on (Windows): where that finding used to stop, the report
+  goes on. Every thread's call stack is sampled 250 times a second, with whether it was running or
+  blocked there, and filed under the frame it fell in. Under the figures is what each thread did in
+  the worst hitch — or in the stretch you dragged out — busiest first: how long it ran and in what,
+  and for a thread that was mostly blocked, what it was blocked in. The second matters as much as
+  the first. A render thread that spent the hitch in `WaitForSingleObject` did not cause it; it
+  was waiting for the thread that did, and that thread's line says `ReadFile`, or a lock, or a
+  shader compile. Threads that never ran while it recorded (a pool's, a driver's) are counted and
+  left out. Times here are counts of samples, good to a sample or two (4 ms each). A thread that
+  has used no CPU since its last sample is still in the same wait, so it is not stopped again:
+  only the running threads are, which is what keeps this from disturbing the frame times it is
+  there to explain. It sees inside the process only — which other process took the core, or what
+  the GPU's hardware queue was doing, takes a kernel trace (PIX's timing captures, Nsight Systems).
 
-Vulkan only so far.
+Vulkan and Direct3D 12.
+
+### What is allocating
+
+The Inspect tab's memory view says what is held now and, over time, which way it is going. A total
+that climbs cannot say *what* is climbing: one allocation a frame that is never freed and a thousand
+that mostly are look the same in a sum, and nothing about the fix for one applies to the other.
+**Memory Capture** in the capture bar records every allocation and free for as long as it runs
+(`VkDeviceMemory` on Vulkan; heaps and committed resources on Direct3D 12), and the report answers
+the three things a total cannot:
+
+- **Made here and still held**: the allocations made while it recorded that were never freed,
+  largest first, each named and a click from its object in Inspect (with its creation stack, if the
+  launch had **Stack traces** on). If the application did not mean to keep them, this is the leak.
+  Allocations in the last few frames are left out: they have not had the chance to be freed yet.
+- **Transient**: allocations freed within 3 frames of being made. That is scratch space asked of
+  the driver every frame, which costs time rather than memory, and a ring buffer or a pool removes it.
+- **Frames that allocated most**, which is where an allocation-driven hitch comes from; a
+  Timing Capture of the same stretch says whether one did.
+
+The graph is the bytes held, frame by frame, as steps; the dashed line is what was held when the
+capture began.
 
 ## Step 2: which pass
 

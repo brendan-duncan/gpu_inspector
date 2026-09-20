@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Added
+- **Timing Capture** on Direct3D 12: every frame's time and CPU split over minutes, as on Vulkan.
+- **Sample stacks** (Windows): a timing capture samples every thread's call stack, running or blocked, and the report says what each thread was doing in the worst hitch or the stretch dragged out.
+- **Memory Capture** on Vulkan and Direct3D 12: every allocation and free, and a report of what is still held, what was transient, and which frames allocated.
+- `include/gpu_inspector.h`: `gpu_inspector_capture(frames)` asks for a capture from inside the application, on Vulkan and Direct3D 12.
+- **Compile & Replay** in the shader editor: the open capture replayed with the edited stage, and each render target it changed shown as captured, with the edit, and where they differ (`--replace` in both replay tools).
+- **Measure draws** by replay on Direct3D 12 (`dxinsp_replay --draws`), for a capture that was not taken with the option, or a file.
+- **Measure shader** on Direct3D 12: variants of the stage's DXIL edited as its disassembly and assembled by dxc (`dxinsp_shader --assemble`), timed by `dxinsp_replay --ablate`.
+- The Shader Flame Graph weighs Direct3D 12 stages by function and line, from the SPIR-V their HLSL compiles to.
+- `--churn`, `--capture-at N` on both samples and `--heavy` on the D3D12 one, for the memory capture, the capture API and shader measurement.
 - **Measure draws** on Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph splits a pass between its draws.
 - Draw overlays on Direct3D 12: Highlight Draw, Depth Test and Wireframe, measured by issuing the draw again inside the application while its next frame is captured.
 - The mesh view's VS Out on Direct3D 12: the draw's vertex shader outputs streamed out of the unmodified bytecode, with the root signature copied to allow stream output.
@@ -14,6 +23,8 @@
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed
+- A Direct3D 12 command list that draws with the pipeline state its `Reset` named had no shaders in the Shader Flame Graph or Analyze Shaders.
+- The comparison page said a lost device goes undiagnosed; both backends name the command it stopped on.
 - A measurement taken inside the application is attached to the right command: a capture library names a command by its slot within its command list, which is not its index in the capture.
 - The primitive a draw's pixel history reports is the one that won the pixel: the primitive-id pass tested against the depth the draw started from, so a draw whose own fragments hid one another named the wrong one.
 - A Direct3D 12 draw overlay opens on the draw's own render target, not on whichever image of the capture came first, which could be one the frame only sampled.

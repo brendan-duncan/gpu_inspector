@@ -417,6 +417,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .timing-graph { display: block; margin: 4px 0 4px 0; background: var(--bg-primary); border-radius: var(--radius-sm); cursor: col-resize; }
 /* What stretch of the run the figures are of, and the way back to all of it. */
 .timing-range-row { display: flex; align-items: center; gap: 8px; margin: 0 0 6px 0; min-height: 20px; }
+.shader-replay-target { margin: 12px 0; padding: 8px 10px; background: var(--bg-elevated); border-radius: var(--radius-sm); }
+.shader-replay-images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.shader-replay-canvas { display: block; width: 100%; height: auto; background: var(--bg-primary); border-radius: var(--radius-sm); image-rendering: pixelated; }
 .timing-hitch { cursor: pointer; }
 .timing-hitch:hover { background: var(--bg-hover); }
 .frame-stats-section { margin-bottom: 14px; }

@@ -59,6 +59,12 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
   [Shader cost by ablation](#shader-cost-by-ablation)) and prints each variant's time.
 - **`--ablate-data <file>`:** with `--ablate`, writes the timings as JSON. GPU Inspector's
   **Measure shader** and the MCP server's `measure_shader_cost` run the tool this way.
+- **`--replace <request>`:** replays the frame with other code for some pipelines' stages (see
+  [A shader edited in the capture](#a-shader-edited-in-the-capture)). Not with `--serve`, which
+  made its pipelines before the request arrived.
+- **`--target-data <file>`:** writes every compared render target with how far it is from the
+  capture's copy, and the pixels of the ones that differ. The shader editor's **Compile & Replay**
+  runs the tool this way.
 - **`--counters`:** reads the GPU's own hardware counters around every render pass (see
   [Hardware counters](#hardware-counters)). `--counter <name>` (repeatable) picks the counters;
   without any, a default limiter set is collected.
@@ -669,14 +675,38 @@ Limits:
   yet. Those commands are left out with a comment, and an image only a shader writes is then not
   compared: it would still hold the contents uploaded for it, and match the capture for no reason.
 
+## A shader edited in the capture
+
+`--replace <request>` replays the frame with other code for some pipelines' stages, which is how
+the shader editor's **Compile & Replay** runs an edit in a capture rather than in the application
+([Inspect](INSPECT.md#editing-a-shader)). Both `vkinsp_replay` and `dxinsp_replay` take it. The
+request is in `--ablate`'s layout (`REPLACE 1`, a manifest, then the code it names):
+
+```json
+{"replacements": [{"pipeline": 48, "stage": "fragment", "payload": [0, 7288]}]}
+```
+
+Every pipeline made from that object runs the replacement — SPIR-V, or a DXBC/DXIL container — the
+copies the other analyses make included. With `--target-data <file>` the render targets the capture
+read back are compared as always, and the file (`TARGETS 1`) lists each with its differing texels
+and carries the replayed pixels of the ones that differ, in the layout of the capture's own
+read-back of them, which is how GPU Inspector decodes them. The exit code is 0 when the replay ran:
+a frame replayed with an edit is meant to differ.
+
+What differs is measured against the *capture*, not against an unedited replay, so a capture that
+does not replay exactly to begin with shows that difference too; replay it without `--replace`
+first to know. A replacement the driver refuses leaves its pipeline out, and the report's problems
+name it (`pipeline 48: ...`).
+
 ## Direct3D 12
 
-`dxinsp_replay` (`src/d3d12/replay/`, Windows) re-executes a Direct3D 12 capture. It is what
-**Export to C++** runs for one, and what **Measure hardware counters** runs; it replays the frame
-and compares its render targets, writes the frame out as a C++ project, and reads the GPU's own
-counters around each render pass. The other analyses above are `vkinsp_replay`'s: a D3D12 capture
-gets overdraw, pixel history, draw overlays, the mesh view's VS Out and per-draw timings from the
-capture library instead, measured while the frame was recorded
+`dxinsp_replay` (`src/d3d12/replay/`, Windows) re-executes a Direct3D 12 capture. It replays the
+frame and compares its render targets, writes the frame out as a C++ project (**Export to C++**),
+reads the GPU's own counters around each render pass (**Measure hardware counters**), measures
+every draw (**Measure draws**), times a draw with variants of a shader (**Measure shader**), and
+replays with an edited one ([above](#a-shader-edited-in-the-capture)). Overdraw, pixel history,
+draw overlays and the mesh view's VS Out are not replayed: a D3D12 capture gets those from the
+capture library, measured while the frame was recorded
 ([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)).
 
 ```
@@ -684,7 +714,25 @@ dxinsp_replay <capture.gpucap> [--debug-layer] [--trace]
 dxinsp_replay <capture.gpucap> --export <directory> [--export-data <file>]
 dxinsp_replay <capture.gpucap> --counters [--counter <name>]... [--counter-data <file>]
 dxinsp_replay <capture.gpucap> --list-counters [--counter-data <file>]
+dxinsp_replay <capture.gpucap> --draws [--draw-data <file>]
+dxinsp_replay <capture.gpucap> --ablate <request> [--ablate-data <file>]
+dxinsp_replay <capture.gpucap> --replace <request> [--target-data <file>]
 ```
+
+- `--draws` puts a timestamp pair, a pipeline statistics query and an occlusion query around every
+  draw and dispatch and writes the file `vkinsp_replay --draw-data` writes
+  ([Per-draw timing](#per-draw-timing-and-counters)). Queries are resolved by the command list in
+  D3D12 rather than read by the host, so each list resolves what it used before it closes, and the
+  results are read after the submission's wait. A bundle's draws cannot hold queries: the bundle is
+  measured whole, and the time goes to the first draw in it. Statistics and occlusion are a direct
+  list's; a compute list's dispatches carry timings only.
+- `--ablate` is [Shader cost by ablation](#shader-cost-by-ablation) with DXIL containers where that
+  request has SPIR-V, timed the same way: the draw issued again before it runs as captured, with a
+  copy of its pipeline per variant that writes no depth or stencil, rotated over rounds, medians
+  compared. The variants come from `src/app/src/renderer/d3d12/dxil_ablate.ts`, which edits the
+  module's disassembly; `dxinsp_shader --assemble <module.ll> --out <file>` assembles the text into
+  a container and has dxc validate and sign it, which is what makes it a shader the runtime takes
+  ([Direct3D 12](D3D12.md#shader-cost-by-ablation)).
 
 - `--debug-layer` runs the replay under the D3D12 debug layer and prints its messages, grouped.
 - `--trace` names each command on stderr before it is issued, to find the one a driver dies in.
@@ -807,7 +855,7 @@ Limits:
 
 `mtlinsp_replay` (`src/metal/replay/`, macOS) re-executes a Metal capture, and is what **Export to
 C++** runs for one. Like `dxinsp_replay` it replays the frame, compares its render targets and
-writes the frame out as a project; the analyses above are `vkinsp_replay`'s and stay Vulkan-only.
+writes the frame out as a project; it runs none of the analyses above.
 
 ```
 mtlinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--trace]

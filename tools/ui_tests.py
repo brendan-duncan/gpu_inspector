@@ -845,6 +845,72 @@ def triangle_sources(state, log):
         expect((s.get("hostSources") or 0) >= 1, "the compute shader's source was not found under the source root")
 
 
+def timing_capture(state, log):
+    # A timing capture (--debug-timing): every frame's time and where its CPU went, streamed as
+    # TimingFrames on the frame report's interval. Both capture libraries keep the same ring.
+    s = session(state)
+    frames = s.get("timingFrames") or 0
+    out = check_connected(state, log) + \
+        expect(frames > 60, f"{frames} frames recorded by a three second timing capture") + \
+        expect("present" in (s.get("timingCategories") or []), f"the categories are {s.get('timingCategories')}")
+    if IS_WIN:
+        # Call stacks sampled with it (src/vulkan/src/cpu_sampler.h): several threads, some of the
+        # samples finding one running and most finding one blocked (a sample that calls every thread
+        # running has mistaken the cost of being sampled for work), and the stacks the report shows
+        # named by the library, which is what makes them readable.
+        t = s.get("timingSamples") or {}
+        out += expect((t.get("threads") or 0) >= 2, f"{t.get('threads')} threads sampled") + \
+            expect((t.get("running") or 0) > 20, f"{t.get('running')} samples found a thread running") + \
+            expect((t.get("waiting") or 0) > (t.get("running") or 0), f"{t.get('waiting')} samples found a thread blocked, {t.get('running')} running") + \
+            expect((t.get("named") or 0) >= 1, f"{t.get('named')} of {t.get('stacks')} stacks have a named frame: the report's stacks were not symbolized")
+    return out
+
+
+def memory_capture(state, log):
+    # A memory capture (--debug-memory) of the sample's --churn: a scratch buffer made every frame
+    # and freed two frames later, and a 1 MB buffer every 30th frame that is kept. So the report
+    # has to find both halves, and name the kept ones: an id the capture library got wrong (a
+    # handle the driver reused) would leave them unnamed or named as the scratch buffers.
+    m = session(state).get("memoryCapture") or {}
+    return check_connected(state, log) + \
+        expect((m.get("allocations") or 0) > 60, f"{m.get('allocations')} allocations recorded") + \
+        expect((m.get("frees") or 0) > 60, f"{m.get('frees')} frees recorded") + \
+        expect(m.get("unnamed") == 0, f"{m.get('unnamed')} allocations could not be tied to an object") + \
+        expect((m.get("survivors") or 0) >= 2, f"{m.get('survivors')} allocations still held (the kept buffers)") + \
+        expect((m.get("survivorBytes") or 0) >= 2 * 1024 * 1024, f"{m.get('survivorBytes')} bytes still held") + \
+        expect((m.get("transient") or 0) > 60, f"{m.get('transient')} transient allocations (the scratch buffers)") + \
+        expect((m.get("startBytes") or 0) > 0, "no baseline: the totals are relative to nothing") + \
+        expect("still held" in (m.get("verdict") or "") and "pool" in (m.get("verdict") or ""), f"the verdict is {m.get('verdict')!r}")
+
+
+def app_capture(state, log):
+    # The application asked for the capture itself (include/gpu_inspector.h, the sample's
+    # --capture-at): nothing on the command line takes one, so a capture tab can only be the
+    # request's doing.
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect("capture requested by the application" in log, "the capture library never logged the application's request")
+
+
+def shader_edit(state, log):
+    # A shader edited and run in the capture (Compile & Replay; renderer/shader_replay.ts): the
+    # first draw's pixel shader made to write magenta, and the frame replayed with it. The cubes'
+    # pixels change and nothing else does: the colour target differs in the tens of thousands of
+    # texels they cover, its replayed pixels came back to be shown, and the depth target is
+    # exactly as captured, since the edit moved no geometry.
+    c = capture(state)
+    r = c.get("shaderReplay") or {}
+    changed = r.get("changed") or []
+    colour = [t for t in changed if t.get("aspect") == "color"]
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect(bool(r), f"the capture was not replayed with the edit ({c.get('status')})") + \
+        expect((r.get("compared") or 0) >= 2, f"{r.get('compared')} render targets compared") + \
+        expect(len(colour) == 1 and (colour[0].get("differingTexels") or 0) > 10000, f"the colour target's change: {colour}") + \
+        expect(bool(colour) and (colour[0].get("pixels") or 0) > 0, "the changed target's pixels did not come back") + \
+        expect(not [t for t in changed if t.get("aspect") != "color"], f"targets the edit should not have touched changed: {changed}") + \
+        expect(r.get("problems") == 0, f"{r.get('problems')} problems replaying with the edit") + \
+        expect("shader-edit" in (c.get("reportTabs") or []), f"the result did not open in a tab: {c.get('reportTabs')}")
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
     source_root = os.path.join(ROOT, "test")
@@ -900,6 +966,10 @@ def triangle_cases(triangle):
         Case("implicit", ["--wait-for-app", "--port=47531", "--debug-capture"], triangle_implicit, delay_ms=16000,
              companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
         Case("plain", launch + ["--debug-capture"], triangle_plain),
+        Case("timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
+        Case("memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
+        Case("app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
+        Case("shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("sources", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-command=5",
                                   "--debug-expand=Compute Shader"], triangle_sources, delay_ms=14000),
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
@@ -1000,6 +1070,40 @@ def d3d12_stencil(state, log):
     return check_connected(state, log) + check_capture_basic(state, log, textures=4) + \
         expect((c.get("textures") or 0) == 4, f"{c.get('textures')} textures (expected the colour, depth and stencil targets and the sampled texture)") + \
         expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
+
+
+def d3d12_replay_draws(state, log):
+    # Measure draws on a D3D12 capture that did not measure them while it was taken: dxinsp_replay
+    # runs the frame again with queries around every draw (src/d3d12/replay/src/dx_measure.cpp),
+    # and writes the file vkinsp_replay does. The draw's counters say the frame really ran: the
+    # two cubes are 72 vertices' worth of invocations and tens of thousands of pixels.
+    c = capture(state)
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect((c.get("drawStats") or 0) >= 1, f"{c.get('drawStats')} draws measured by the replay ({c.get('status')})") + \
+        expect(c.get("drawStats") == c.get("drawStatsOnDraws"), f"{c.get('drawStatsOnDraws')} of {c.get('drawStats')} measurements name a draw or a dispatch") + \
+        expect((c.get("drawStatsTimed") or 0) >= 1 and (c.get("drawStatsCounted") or 0) >= 1, f"timed {c.get('drawStatsTimed')}, counted {c.get('drawStatsCounted')}")
+
+
+def d3d12_measure_shader(state, log):
+    # Measure shader on D3D12: variants of the pixel shader's DXIL, written as LLVM IR text and
+    # assembled by dxc (renderer/d3d12/dxil_ablate.ts), timed at the draw by dxinsp_replay. The
+    # sample's --heavy shader is built so the answer is known: Fbm is nearly the whole stage, and
+    # Blurred (sixteen samples of a small texture) nearly nothing. Function parts carry the id the
+    # flame graph's frames have, which comes from the SPIR-V the same HLSL compiles to.
+    c = capture(state)
+    a = (c.get("ablations") or [{}])[0]
+    parts = {p.get("name"): p for p in a.get("parts") or []}
+    stage_ms = a.get("stageMs") or 0
+    fbm = (parts.get("Fbm") or {}).get("savedMs") or 0
+    blurred = (parts.get("Blurred") or {}).get("savedMs")
+    return check_connected(state, log) + \
+        expect(len(c.get("ablations") or []) == 1, f"{len(c.get('ablations') or [])} stages measured ({c.get('status')})") + \
+        expect(a.get("stage") == "fragment" and stage_ms > 0, f"the stage was timed at {stage_ms} ms") + \
+        expect(fbm > 0.5 * stage_ms, f"Fbm saved {fbm} ms of a {stage_ms} ms stage: it is nearly all of it") + \
+        expect(blurred is not None and blurred < 0.25 * stage_ms, f"Blurred saved {blurred} ms of a {stage_ms} ms stage: it is nearly none of it") + \
+        expect((parts.get("Fbm") or {}).get("functionId") is not None, "Fbm has no function id, so no frame of the flame graph is sized by it") + \
+        expect(any(p.get("kind") == "line" for p in parts.values()), "no source line was measured") + \
+        expect(any(p.get("kind") == "texture" for p in parts.values()), "no texture was measured")
 
 
 def d3d12_draw_timings(state, log):
@@ -1157,12 +1261,20 @@ def d3d12_cases(triangle):
         Case("d3d12-plain", launch + ["--args=--compute", "--debug-capture", "--debug-command=22", "--debug-expand=Vertex Shader",
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
+        Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
+        Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
+        Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
+        Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("d3d12-mesh-output", launch + ["--debug-capture", "--debug-view=mesh"],
              d3d12_mesh_output, delay_ms=26000),
         Case("d3d12-draw-overlay", launch + ["--debug-capture", "--debug-view=overlay:depth:last"],
              d3d12_draw_overlay, delay_ms=26000),
         Case("d3d12-draw-timings", launch + ["--args=--compute", "--debug-capture", "--debug-capture-with=draws"],
              d3d12_draw_timings, delay_ms=16000),
+        Case("d3d12-replay-draws", launch + ["--args=--compute", "--debug-capture", "--debug-view=flame:draws", "--debug-settle=8000"],
+             d3d12_replay_draws, delay_ms=24000),
+        Case("d3d12-measure-shader", launch + ["--args=--heavy", "--debug-capture", "--debug-view=flame:shader", "--debug-settle=20000"],
+             d3d12_measure_shader, delay_ms=40000),
         Case("d3d12-bundle", launch + ["--args=--bundle", "--record-always", "--debug-capture"], d3d12_bundle),
         Case("d3d12-stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], d3d12_stencil, delay_ms=16000),
         Case("d3d12-offscreen", launch + ["--args=--offscreen --compute", "--debug-capture"], d3d12_offscreen, delay_ms=14000),

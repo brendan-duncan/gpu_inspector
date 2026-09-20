@@ -659,7 +659,17 @@ uint64_t Replayer::CreateBuffer(uint64_t id, const VkBufferCreateInfo& captured)
 VkShaderModule Replayer::ModuleFromBlob(const JValue& object, const std::string& blobName, const uint8_t** code, size_t* codeSize) {
     const uint8_t* data = nullptr;
     size_t size = 0;
-    if (!_capture->Blob(object, blobName, data, size) || size < 4) return VK_NULL_HANDLE;
+    // A stage replaced for the whole replay (--replace). Every pipeline made from the object runs
+    // the edited code, the copies the analyses make included, and it stands in for a stage whose
+    // code the capture does not hold under the pipeline at all (a module object of its own).
+    const uint64_t id = object.Get("id") ? object.Get("id")->Uint() : 0;
+    for (const ShaderReplacement& r : _options.replacements) {
+        if (r.pipeline != id || r.words.empty() || blobName.rfind(r.stage + ":", 0) != 0) continue;
+        data = reinterpret_cast<const uint8_t*>(r.words.data());
+        size = r.words.size() * 4;
+        break;
+    }
+    if (!data && (!_capture->Blob(object, blobName, data, size) || size < 4)) return VK_NULL_HANDLE;
     if (code) *code = data;
     if (codeSize) *codeSize = size;
     auto* words = _arena.Make<uint32_t>(size / 4);

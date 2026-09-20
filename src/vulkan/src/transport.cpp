@@ -8,6 +8,8 @@
 
 #include "transport.h"
 
+#include "cpu_sampler.h"
+
 #include "layer.h"
 #include "tracker.h"
 #include "validation.h"
@@ -88,6 +90,7 @@ struct Transport::Impl {
     }
 
     void SenderLoop() {
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();   // the inspector's own, not the application's
         while (!stop) {
             std::string frame;
             {
@@ -107,6 +110,7 @@ struct Transport::Impl {
     }
 
     void ReceiverLoop(socket_t s) {
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
         while (!stop && connected && client == s) {
             uint8_t hdr[5];
             if (!RecvAll(s, (char*)hdr, 5)) break;
@@ -160,6 +164,7 @@ struct Transport::Impl {
     }
 
     void ListenerLoop() {
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
 #if defined(__ANDROID__)
         // An abstract Unix socket: TCP sockets need the INTERNET permission, which most
         // applications lack; `adb forward tcp:<port> localabstract:vkinsp:<port>` reaches this.
