@@ -16,7 +16,7 @@ Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on *
 * **GPU bottlenecks**: overdraw, triangle size and wasted work, with likely causes.
 * **Pixel history**: every draw that touched a pixel, and what happened to it.
 * **Render graph**: the frame's passes and the resources between them.
-* **WebGPU pages**: a page's WebGPU work in Chrome, Edge, Brave or Firefox, as the Direct3D 12 underneath it.
+* **WebGPU pages**: debug the D3D12 backend of WebGPU running in Chrome, Edge, Brave or Firefox.
 * **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
 
 ## Documentation
