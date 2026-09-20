@@ -137,6 +137,11 @@ struct App {
     // of the *same* draw -- the near face and the far one. That is what a pixel history's
     // per-fragment breakdown is for, and what a draw's own entry can only report the winner of.
     bool noCull = false;
+    // --inside-out: half the cube's faces, wound the other way, so its own cull mode throws every
+    // one of them away and the draw puts nothing on the screen -- the bug the Backface Cull overlay
+    // exists to find, which otherwise looks like a draw that ran and did nothing. A whole cube
+    // cannot show it: whichever way it is wound, some face still points at the camera.
+    bool insideOut = false;
     // --prerecord: record one command buffer per swapchain image up front and resubmit them
     // every frame (the tint and the wave then stand still), like engines with static command
     // buffers; a capture needs the inspector's "Record all command buffers". A second prerecorded
@@ -1809,7 +1814,7 @@ struct App {
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rs.polygonMode = VK_POLYGON_MODE_FILL;
         rs.cullMode = noCull ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.frontFace = insideOut ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = samples;
@@ -2267,7 +2272,7 @@ struct App {
             so.scissor(cb, 1, &scissor);
             so.rasterizerDiscard(cb, VK_FALSE);
             so.cull(cb, noCull ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-            so.frontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            so.frontFace(cb, insideOut ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
             so.depthTest(cb, VK_TRUE);
             so.depthWrite(cb, VK_TRUE);
             so.depthCompare(cb, VK_COMPARE_OP_LESS);
@@ -2320,7 +2325,7 @@ struct App {
         vkCmdBindIndexBuffer(cb, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
-        vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
+        vkCmdDrawIndexed(cb, insideOut ? 18 : 36, 1, 0, 0, 0);
         if (occluded) vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
     }
 
@@ -2565,6 +2570,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
         else if (!strcmp(argv[i], "--no-cull")) app.noCull = true;
+        else if (!strcmp(argv[i], "--inside-out")) app.insideOut = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;

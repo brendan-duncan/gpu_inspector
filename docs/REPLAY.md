@@ -227,16 +227,22 @@ pixel history and ablation, no messages.
 `--overlay <command>` shows where one draw landed, the way RenderDoc's texture viewer overlays do
 (`vk_overlay.cpp`). It is recorded right after the replay has executed the draw's pass, like
 overdraw, and `overlay.cpp` issues the pass again into an `R16_SFLOAT` target up to and including
-the draw, three times:
+the draw, five times:
 
 - **Rasterized:** the draw alone, with the counting fragment shader and no depth or stencil tests.
 - **Passed:** from a copy of the depth the pass started with, the pass's earlier draws move the
   depth and stencil without writing colour, then the draw runs with its own tests.
 - **Wireframe:** the draw alone with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid`
   feature the replay adds to its device.
+- **Stencil:** the same as Passed with the depth test off, so what it reports is the stencil test's
+  doing alone. Only where the pass's depth-stencil format has a stencil aspect.
+- **Back-facing:** the draw with nothing culled and a shader that writes only for back faces
+  (`kBackFaceFragmentSpirv`), which marks the pixels its own cull mode emptied.
 
-The three fold into one byte per pixel: bit 0 rasterized, bit 1 passed depth and stencil, bit 2 an
-edge. Each draw also reports its fragments and its covered, passed and rejected pixels:
+They fold into one byte per pixel: bit 0 rasterized, bit 1 passed depth and stencil, bit 2 an edge,
+bit 3 passed the stencil test alone, bit 4 culled away — a back face landed there and no front one
+did, so a pixel of a closed mesh never carries it. Each draw also reports its fragments and its
+covered, passed, rejected, stencil-rejected and culled-away pixels:
 
 ```
 vkinsp_replay frame.gpucap --overlay 18

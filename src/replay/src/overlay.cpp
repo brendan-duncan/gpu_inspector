@@ -68,6 +68,16 @@ void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, cons
             if (!_wireframeAvailable) result.note = "this GPU cannot draw wireframes (no fillModeNonSolid)";
             else result.wireframe = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Wireframe, false, p.wireframe);
         }
+        // The stencil test on its own, where the pass has a stencil to test against: the Depth Test
+        // overlay answers for both tests together, so a fragment the stencil alone rejected looks
+        // there exactly like one the depth killed.
+        if (pass.depthFormat != VK_FORMAT_UNDEFINED && pass.overdrawDepth.image &&
+            (vkinsp::FormatAspects(pass.depthFormat) & VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            result.stencilTested = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::StencilOnly, true, p.stencilPassed);
+        }
+        // The faces the draw's own cull mode threw away: it is issued again with nothing culled and
+        // a shader that writes only where a back-facing fragment landed.
+        result.backFaceTested = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::BackFace, false, p.backFacing);
         _report->overlays.push_back(std::move(result));
         _pendingOverlays.push_back(p);
     }
@@ -152,17 +162,30 @@ void Replayer::CompleteOverlay(bool submitted) {
             fold(p.rasterized, 1, true);
             fold(p.passed, 2, false);
             fold(p.wireframe, 4, false);
+            fold(p.stencilPassed, 8, false);
+            fold(p.backFacing, 16, false);
             for (uint8_t& m : r.mask) {
                 if (!r.depthTested && (m & 1)) m |= 2;  // no tests, nothing rejected
+                // A pass with no stencil rejects nothing by it: every rasterized pixel passed.
+                if (!r.stencilTested && (m & 1)) m |= 8;
+                // The back-facing bit is the draw with its culling off. Every pixel of a closed
+                // mesh has a back face behind it, so the bit on its own says nothing; what the
+                // overlay is for is the pixel where culling left *nothing* -- a back face landed
+                // and no front one did, which is the draw that renders inside out.
+                if ((m & 16) && !(m & 1)) ++r.pixelsBackFacing;
+                else if (m & 16) m &= (uint8_t)~16;
                 if (!(m & 1)) continue;
                 ++r.pixelsCovered;
                 if (m & 2) ++r.pixelsPassed;
                 else ++r.pixelsRejected;
+                if (r.stencilTested && !(m & 8)) ++r.pixelsStencilRejected;
             }
         }
         DestroyStaging(p.rasterized);
         DestroyStaging(p.passed);
         DestroyStaging(p.wireframe);
+        DestroyStaging(p.stencilPassed);
+        DestroyStaging(p.backFacing);
     }
     _pendingOverlays.clear();
     ReleaseTransients();

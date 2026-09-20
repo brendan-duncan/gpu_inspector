@@ -547,7 +547,11 @@ bool WriteOverlayData(const ReplayReport& report, const std::string& path) {
                 ",\"width\":" + std::to_string(o.width) + ",\"height\":" + std::to_string(o.height) +
                 ",\"fragments\":" + std::to_string(o.fragments) + ",\"pixelsCovered\":" + std::to_string(o.pixelsCovered) +
                 ",\"pixelsPassed\":" + std::to_string(o.pixelsPassed) + ",\"pixelsRejected\":" + std::to_string(o.pixelsRejected) +
-                ",\"depthTested\":" + (o.depthTested ? "true" : "false") + ",\"wireframe\":" + (o.wireframe ? "true" : "false");
+                ",\"pixelsStencilRejected\":" + std::to_string(o.pixelsStencilRejected) +
+                ",\"pixelsBackFacing\":" + std::to_string(o.pixelsBackFacing) +
+                ",\"depthTested\":" + (o.depthTested ? "true" : "false") + ",\"wireframe\":" + (o.wireframe ? "true" : "false") +
+                ",\"stencilTested\":" + (o.stencilTested ? "true" : "false") +
+                ",\"backFaceTested\":" + (o.backFaceTested ? "true" : "false");
         if (!o.note.empty()) json += ",\"note\":" + JsonString(o.note);
         if (size) json += ",\"payload\":[" + std::to_string(offset) + "," + std::to_string(size) + "]";
         json += "}";
@@ -582,6 +586,9 @@ void PrintOverlays(const ReplayReport& report) {
                     (unsigned long long)o.commandBuffer, o.passIndex, (unsigned long long)o.fragments, (unsigned long long)o.pixelsCovered, pixels,
                     pixels ? 100.0 * o.pixelsCovered / pixels : 0.0, (unsigned long long)o.pixelsPassed, (unsigned long long)o.pixelsRejected,
                     o.wireframe ? ", wireframe drawn" : "", o.note.empty() ? "" : "; ", o.note.c_str());
+        if (o.stencilTested || o.backFaceTested)
+            std::printf("      %llu rejected by the stencil test alone, %llu covered by faces its culling removed\n",
+                        (unsigned long long)o.pixelsStencilRejected, (unsigned long long)o.pixelsBackFacing);
     }
 }
 

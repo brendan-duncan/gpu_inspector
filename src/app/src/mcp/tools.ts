@@ -13,6 +13,7 @@ import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel
 import {
   OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
 } from "../renderer/overdraw.js";
+import { drawOverlaySummary, parseDrawOverlayFile } from "../renderer/draw_overlay.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import { exportFolderName, exportsToCpp, parseExportSummary } from "../renderer/export_cpp.js";
@@ -767,6 +768,58 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           replayProblems: h.problems.length ? { count: h.problems.length, first: h.problems.slice(0, 10) } : undefined,
           method: "Each draw is issued again under occlusion queries with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against what the pass held before the draw, with depth and stencil writes off. Counts are samples: two overlapping triangles of one draw that both pass count twice.",
         }));
+      },
+    },
+    {
+      name: "get_draw_overlay",
+      description: "Where one draw of a Vulkan capture landed, as RenderDoc's texture viewer overlays show it, for \"the draw ran " +
+        "and I cannot see it\": the capture is replayed with the draw issued on its own (under a second, quicker for later draws " +
+        "of the same capture). Gives the pixels it covered, how many passed its depth and stencil tests and how many were " +
+        "rejected, how many the stencil test alone rejected, and how many its own back-face culling emptied — a pixel where only " +
+        "back faces of it land, which is what a mesh wound the wrong way looks like. A closed mesh reports none of those, since " +
+        "some face always points at the camera. get_pixel_history follows one pixel through the whole frame instead.",
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw command's index." },
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        const index = requireInt(args, "command");
+        const cmd = c.data.commands[index];
+        if (!cmd || !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
+        if (c.data.api !== "vulkan") {
+          // D3D12 measures overlays inside the application while it captures, which needs the app
+          // running and a capture asked for with the draw named; Metal has neither.
+          return jsonResult({ capture: c.id, command: index, note: c.data.api === "d3d12"
+            ? "A D3D12 capture's draw overlays are measured in the application as the frame is captured, so a saved capture has none: ask for one in the app's render target tab, which captures again."
+            : "A Metal capture has no draw overlays: they need a replay, which Metal captures do not have yet." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+        const run = await replayServers.run(tool, c.path, { kind: "overlay", commands: [index] });
+        if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not draw it: ${run.error ?? "no data"}` });
+        const o = parseDrawOverlayFile(run.data).draws.find((d) => d.command === index);
+        if (!o || !o.measured) return jsonResult({ capture: c.id, command: index, method: cmd.method, note: `Not drawn: ${o?.note ?? "the replay did not reach the draw"}` });
+        const pixels = o.width * o.height;
+        const share = (n: number): string => `${((n / Math.max(1, pixels)) * 100).toFixed(2)}%`;
+        return jsonResult({
+          capture: c.id, command: index, method: cmd.method,
+          pass: c.passOf(index) >= 0 ? c.passName(c.passOf(index)) : undefined,
+          target: `${o.width}x${o.height}`,
+          summary: drawOverlaySummary(o),
+          fragments: o.fragments,
+          pixelsCovered: o.pixelsCovered, coverage: share(o.pixelsCovered),
+          // What became of them: the depth and stencil together, then the stencil on its own.
+          pixelsPassed: o.depthTested ? o.pixelsPassed : undefined,
+          pixelsRejected: o.depthTested ? o.pixelsRejected : undefined,
+          pixelsStencilRejected: o.stencilTested ? o.pixelsStencilRejected : undefined,
+          stencilTested: o.stencilTested || undefined,
+          // Pixels the draw's own culling emptied: a back face landed and no front one did.
+          pixelsCulledAway: o.backFaceTested ? o.pixelsBackFacing : undefined,
+          culledAwayShare: o.backFaceTested && o.pixelsBackFacing ? share(o.pixelsBackFacing) : undefined,
+          note: o.note || undefined,
+        });
       },
     },
     {

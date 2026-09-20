@@ -237,7 +237,16 @@ and the line under the list counts the pixels it covered, passed and had rejecte
 - **Highlight Draw** — the draw's pixels in a flat colour, the rest of the image darkened.
 - **Depth Test** — green where the draw's fragments passed the depth and stencil tests, red where
   they were rejected.
+- **Stencil Test** — the same for the stencil test *on its own*, where the pass has a stencil to
+  test against. Depth Test answers for both tests together, so a fragment the stencil alone rejected
+  looks there exactly like one the depth killed; this one separates them.
+- **Backface Cull** — green where the draw's geometry survived its own culling, red where the
+  culling left nothing: only back faces of it reach those pixels. A closed mesh is green all over —
+  whichever way it is wound, some face points at the camera — so red is the answer to "the draw
+  ran, the geometry is there, and nothing appeared".
 - **Wireframe** — the draw's triangles as lines.
+
+![The Backface Cull overlay: the part of the draw that survived culling in green, the larger part its own culling removed in red](images/backface-overlay.png)
 
 How it is measured depends on the API, and as with overdraw a fragment the draw's own shader
 discards still shows as covered:

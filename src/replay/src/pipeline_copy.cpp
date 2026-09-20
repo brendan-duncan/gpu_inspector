@@ -188,6 +188,16 @@ VkShaderModule Replayer::CountModule() {
     return _countModule;
 }
 
+VkShaderModule Replayer::BackFaceModule() {
+    if (!_backFaceModule) {
+        VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        m.codeSize = sizeof(kBackFaceFragmentSpirv);
+        m.pCode = kBackFaceFragmentSpirv;
+        _fns.CreateShaderModule(_device, &m, nullptr, &_backFaceModule);
+    }
+    return _backFaceModule;
+}
+
 VkShaderModule Replayer::PrimitiveIdModule() {
     if (!_primitiveIdModule) {
         VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};

@@ -2331,6 +2331,10 @@ var CaptureData = class {
           pixelsRejected: msg.pixelsRejected,
           depthTested: msg.depthTested,
           wireframe: msg.wireframe,
+          pixelsStencilRejected: msg.pixelsStencilRejected ?? 0,
+          pixelsBackFacing: msg.pixelsBackFacing ?? 0,
+          stencilTested: msg.stencilTested === true,
+          backFaceTested: msg.backFaceTested === true,
           ...msg.note ? { note: msg.note } : {},
           mask: null
         });
@@ -30222,6 +30226,35 @@ function texelValues(format, bytes, depth = false) {
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
+// src/renderer/draw_overlay.ts
+var DRAW_OVERLAY_MAGIC = "OVERLAY 1\n";
+function parseDrawOverlayFile(bytes) {
+  const magic = new TextEncoder().encode(DRAW_OVERLAY_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not a draw overlay file from vkinsp_replay.");
+  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length2;
+  if (base > bytes.byteLength) throw new Error("The draw overlay file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const draws = (manifest.draws ?? []).map(({ payload, ...info }) => {
+    let mask = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The draw overlay file is truncated (mask out of range).");
+      mask = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { ...info, mask };
+  });
+  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
+}
+function drawOverlaySummary(o) {
+  if (!o.measured) return `Not drawn: ${o.note ?? "the replay could not draw it"}`;
+  const pixels = o.width * o.height;
+  const share = pixels ? ` (${(o.pixelsCovered / pixels * 100).toFixed(o.pixelsCovered / pixels < 0.01 ? 2 : 1)}%)` : "";
+  const tests = o.depthTested ? `, ${o.pixelsPassed.toLocaleString()} passed depth and stencil, ${o.pixelsRejected.toLocaleString()} rejected` : "";
+  return `${o.pixelsCovered.toLocaleString()} pixels${share}, ${o.fragments.toLocaleString()} fragments${tests}`;
+}
+
 // src/renderer/export_cpp.ts
 function parseExportSummary(data) {
   const root = JSON.parse(new TextDecoder().decode(data));
@@ -31129,6 +31162,52 @@ function captureTools(store) {
           replayProblems: h.problems.length ? { count: h.problems.length, first: h.problems.slice(0, 10) } : void 0,
           method: "Each draw is issued again under occlusion queries with a one-pixel scissor and pipeline copies that add one step at a time (coverage, culling, the fragment shader, the depth and stencil tests), against what the pass held before the draw, with depth and stencil writes off. Counts are samples: two overlapping triangles of one draw that both pass count twice."
         }));
+      }
+    },
+    {
+      name: "get_draw_overlay",
+      description: `Where one draw of a Vulkan capture landed, as RenderDoc's texture viewer overlays show it, for "the draw ran and I cannot see it": the capture is replayed with the draw issued on its own (under a second, quicker for later draws of the same capture). Gives the pixels it covered, how many passed its depth and stencil tests and how many were rejected, how many the stencil test alone rejected, and how many its own back-face culling emptied \u2014 a pixel where only back faces of it land, which is what a mesh wound the wrong way looks like. A closed mesh reports none of those, since some face always points at the camera. get_pixel_history follows one pixel through the whole frame instead.`,
+      inputSchema: schema({
+        capture: CAPTURE_PARAM,
+        command: { type: "integer", minimum: 0, description: "The draw command's index." }
+      }, ["command"]),
+      readOnly: true,
+      handler: async (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const index = requireInt(args, "command");
+        const cmd = c2.data.commands[index];
+        if (!cmd || !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
+        if (c2.data.api !== "vulkan") {
+          return jsonResult({ capture: c2.id, command: index, note: c2.data.api === "d3d12" ? "A D3D12 capture's draw overlays are measured in the application as the frame is captured, so a saved capture has none: ask for one in the app's render target tab, which captures again." : "A Metal capture has no draw overlays: they need a replay, which Metal captures do not have yet." });
+        }
+        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+        if (!tool) return jsonResult({ capture: c2.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+        const run2 = await replayServers.run(tool, c2.path, { kind: "overlay", commands: [index] });
+        if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not draw it: ${run2.error ?? "no data"}` });
+        const o = parseDrawOverlayFile(run2.data).draws.find((d) => d.command === index);
+        if (!o || !o.measured) return jsonResult({ capture: c2.id, command: index, method: cmd.method, note: `Not drawn: ${o?.note ?? "the replay did not reach the draw"}` });
+        const pixels = o.width * o.height;
+        const share = (n) => `${(n / Math.max(1, pixels) * 100).toFixed(2)}%`;
+        return jsonResult({
+          capture: c2.id,
+          command: index,
+          method: cmd.method,
+          pass: c2.passOf(index) >= 0 ? c2.passName(c2.passOf(index)) : void 0,
+          target: `${o.width}x${o.height}`,
+          summary: drawOverlaySummary(o),
+          fragments: o.fragments,
+          pixelsCovered: o.pixelsCovered,
+          coverage: share(o.pixelsCovered),
+          // What became of them: the depth and stencil together, then the stencil on its own.
+          pixelsPassed: o.depthTested ? o.pixelsPassed : void 0,
+          pixelsRejected: o.depthTested ? o.pixelsRejected : void 0,
+          pixelsStencilRejected: o.stencilTested ? o.pixelsStencilRejected : void 0,
+          stencilTested: o.stencilTested || void 0,
+          // Pixels the draw's own culling emptied: a back face landed and no front one did.
+          pixelsCulledAway: o.backFaceTested ? o.pixelsBackFacing : void 0,
+          culledAwayShare: o.backFaceTested && o.pixelsBackFacing ? share(o.pixelsBackFacing) : void 0,
+          note: o.note || void 0
+        });
       }
     },
     {

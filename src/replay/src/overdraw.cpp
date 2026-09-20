@@ -188,6 +188,17 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
         } else if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) {
             return false;  // no fragments to count
         }
+        if (mode == ReissueMode::BackFace) {
+            // Its own geometry with nothing culled: what is left is where the faces the draw's cull
+            // mode threw away would have landed.
+            if (!p.hasRasterization) {
+                p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                p.rasterization.lineWidth = 1.0f;
+                p.hasRasterization = true;
+            }
+            p.rasterization.cullMode = VK_CULL_MODE_NONE;
+            p.RemoveDynamic({VK_DYNAMIC_STATE_CULL_MODE});
+        }
         if (mode == ReissueMode::Wireframe) {
             // The draw's edges, one pixel wide, whatever the application set.
             if (!p.hasRasterization) return false;
@@ -195,7 +206,8 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
             p.rasterization.lineWidth = 1.0f;
             p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
         }
-        if (mode != ReissueMode::Xfb) p.ReplaceFragment(CountModule());
+        if (mode == ReissueMode::BackFace) p.ReplaceFragment(BackFaceModule());
+        else if (mode != ReissueMode::Xfb) p.ReplaceFragment(CountModule());
         VkPipelineColorBlendAttachmentState add{};
         add.blendEnable = VK_TRUE;
         add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -214,6 +226,15 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
         } else if (!depthTested || !p.hasDepthStencil) {
             p.depthStencil = VkPipelineDepthStencilStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
             p.hasDepthStencil = true;
+        }
+        if (mode == ReissueMode::StencilOnly && p.hasDepthStencil) {
+            // The stencil test on its own: the depth test is what the Depth Test overlay answers,
+            // and a fragment rejected by both would be reported as the stencil's doing.
+            p.depthStencil.depthTestEnable = VK_FALSE;
+            p.depthStencil.depthWriteEnable = VK_FALSE;
+            p.depthStencil.depthBoundsTestEnable = VK_FALSE;
+            p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                             VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
         }
         // Dynamic states that would undo the count, or the tests the untested count leaves out.
         p.RemoveDynamic(kColorOutputDynamicStates);

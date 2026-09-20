@@ -1128,7 +1128,9 @@ void Replayer::DestroyAll() {
         _fns.DeviceWaitIdle(_device);
         ReleaseTransients();
         if (_countModule) _fns.DestroyShaderModule(_device, _countModule, nullptr);
+        if (_backFaceModule) _fns.DestroyShaderModule(_device, _backFaceModule, nullptr);
         _countModule = VK_NULL_HANDLE;
+        _backFaceModule = VK_NULL_HANDLE;
         if (_primitiveIdModule) _fns.DestroyShaderModule(_device, _primitiveIdModule, nullptr);
         _primitiveIdModule = VK_NULL_HANDLE;
         for (auto it = _created.rbegin(); it != _created.rend(); ++it) {

@@ -475,8 +475,14 @@ export interface CaptureDrawOverlayMessage {
   pixelsCovered: number;
   pixelsPassed: number;
   pixelsRejected: number;
+  /** Pixels the stencil test alone rejected, and pixels a face the draw's culling removed covered. */
+  pixelsStencilRejected: number;
+  pixelsBackFacing: number;
   depthTested: boolean;
   wireframe: boolean;
+  /** The stencil test alone was drawn, and the run with nothing culled was. */
+  stencilTested: boolean;
+  backFaceTested: boolean;
   size: number;
   note?: string;
 }

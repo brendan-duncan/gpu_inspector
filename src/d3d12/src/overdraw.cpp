@@ -278,6 +278,15 @@ const D3D12_SHADER_BYTECODE* CountingPixelShader(bool dxil, std::string& error) 
     return MeasurementPixelShader(dxil ? dxilShader : dxbcShader, kSource, dxil, error);
 }
 
+const D3D12_SHADER_BYTECODE* BackFacePixelShader(bool dxil, std::string& error) {
+    // One where the fragment came from a back face, nothing where it came from a front one: the
+    // draw is issued with its culling off, so what this leaves is what the cull mode removed.
+    static const char* kSource = "float main(bool front : SV_IsFrontFace) : SV_Target { return front ? 0.0 : 1.0; }\n";
+    static MeasurementShader dxbcShader;
+    static MeasurementShader dxilShader;
+    return MeasurementPixelShader(dxil ? dxilShader : dxbcShader, kSource, dxil, error);
+}
+
 const D3D12_SHADER_BYTECODE* CoverPixelShader(bool dxil, std::string& error) {
     // Writes nothing and discards nothing: what the pixel history counts as coverage.
     static const char* kSource = "void main() { }\n";

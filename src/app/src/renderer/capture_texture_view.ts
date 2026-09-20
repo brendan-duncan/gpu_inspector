@@ -100,6 +100,8 @@ const OVERLAYS: { kind: TextureOverlayKind; label: string; vulkanOnly: boolean }
   // (measuresOverlayWhileCapturing). Metal has neither, so they stay off there.
   { kind: "highlight", label: "Highlight Draw", vulkanOnly: true },
   { kind: "depth", label: "Depth Test", vulkanOnly: true },
+  { kind: "stencil", label: "Stencil Test", vulkanOnly: true },
+  { kind: "backface", label: "Backface Cull", vulkanOnly: true },
   { kind: "wireframe", label: "Wireframe", vulkanOnly: true },
 ];
 
@@ -108,6 +110,8 @@ const OVERLAY_TOOLTIPS: Record<TextureOverlayKind, string> = {
   overdraw: "The pass's overdraw: how many fragments landed on each pixel, with the counts in the tooltip",
   highlight: "The draw's pixels in a flat colour, the rest darkened",
   depth: "The draw's pixels by whether its fragments passed the depth and stencil tests (green) or were rejected (red)",
+  stencil: "The draw's pixels by whether its fragments passed the stencil test alone (green) or were rejected by it (red)",
+  backface: "Where the draw's own culling left nothing: only back faces of it reach those pixels",
   wireframe: "The draw's triangles as lines",
 };
 
@@ -211,6 +215,8 @@ export class CaptureTextureView {
       draw: this._draw, drawRunning: this._drawRunning, drawError: this._drawError || null,
       drawOverlay: d ? {
         measured: d.measured, pixelsCovered: d.pixelsCovered, pixelsPassed: d.pixelsPassed, pixelsRejected: d.pixelsRejected,
+        pixelsStencilRejected: d.pixelsStencilRejected, pixelsBackFacing: d.pixelsBackFacing,
+        stencilTested: d.stencilTested, backFaceTested: d.backFaceTested,
         wireframe: d.wireframe, mask: !!d.mask, note: d.note ?? null,
       } : null,
       picked: this._picked ? { x: this._picked.x, y: this._picked.y } : null,
@@ -232,7 +238,7 @@ export class CaptureTextureView {
   /** The draw overlay being shown, if the overlay is one. */
   private _drawOverlayKind(): DrawOverlayKind | null {
     const k = this._overlayKind;
-    return k === "highlight" || k === "depth" || k === "wireframe" ? k : null;
+    return k === "none" || k === "overdraw" ? null : k;
   }
 
   /** The pass's measurement the overdraw overlay draws, if the capture has it. */

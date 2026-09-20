@@ -9,6 +9,14 @@
 export const OVERLAY_COVERED = 1;
 export const OVERLAY_PASSED = 2;
 export const OVERLAY_WIREFRAME = 4;
+/** The fragment passed the stencil test on its own (the depth test is OVERLAY_PASSED's business). */
+export const OVERLAY_STENCIL_PASSED = 8;
+/**
+ * The draw's culling left nothing here: a back-facing fragment landed on the pixel and no
+ * front-facing one did. Every pixel of a closed mesh has a back face behind it, so the bit is only
+ * set where the culling actually removed what would have been drawn.
+ */
+export const OVERLAY_BACK_FACING = 16;
 
 /** One draw's overlay as the replay wrote it. */
 export interface DrawOverlay {
@@ -30,6 +38,13 @@ export interface DrawOverlay {
   depthTested: boolean;
   /** The wireframe bit was drawn. */
   wireframe: boolean;
+  /** The stencil test alone was replayed, so OVERLAY_STENCIL_PASSED means something. */
+  stencilTested: boolean;
+  /** The draw was re-issued with its culling off, so OVERLAY_BACK_FACING means something. */
+  backFaceTested: boolean;
+  /** Pixels the stencil test alone rejected, and pixels the draw's culling removed. */
+  pixelsStencilRejected: number;
+  pixelsBackFacing: number;
   note?: string;
   /** One byte per pixel, row by row: OVERLAY_* bits. */
   mask: Uint8Array | null;
@@ -42,7 +57,7 @@ export interface DrawOverlayFile {
 }
 
 /** What the overlay draws over the render target. */
-export type DrawOverlayKind = "highlight" | "depth" | "wireframe";
+export type DrawOverlayKind = "highlight" | "depth" | "stencil" | "backface" | "wireframe";
 
 export const DRAW_OVERLAY_MAGIC = "OVERLAY 1\n";
 
@@ -78,12 +93,21 @@ const PAINT: Record<DrawOverlayKind, { covered: Rgba; passed: Rgba; wire: Rgba |
   // RenderDoc's highlight: the draw in a flat colour, everything else darkened.
   highlight: { covered: [255, 40, 200, 255], passed: [255, 40, 200, 255], wire: null, outside: [0, 0, 0, 170] },
   depth: { covered: [230, 40, 40, 255], passed: [40, 210, 70, 255], wire: null, outside: [0, 0, 0, 120] },
+  // The stencil test on its own, so a draw the stencil rejected is not confused with one the
+  // depth did; and the faces the draw's own culling removed, which is the answer to "the geometry
+  // is there and nothing is drawn".
+  stencil: { covered: [230, 40, 40, 255], passed: [40, 210, 70, 255], wire: null, outside: [0, 0, 0, 120] },
+  // What the draw drew, and what its culling took away, the way RenderDoc's backface overlay
+  // reads: green is geometry that survived, red is a pixel where only back faces of it landed.
+  backface: { covered: [230, 40, 40, 255], passed: [40, 210, 70, 255], wire: null, outside: [0, 0, 0, 120] },
   wireframe: { covered: [0, 0, 0, 0], passed: [0, 0, 0, 0], wire: [255, 230, 40, 255], outside: [0, 0, 0, 0] },
 };
 
 export const DRAW_OVERLAY_LEGEND: Record<DrawOverlayKind, { label: string; color: [number, number, number] }[]> = {
   highlight: [{ label: "the draw", color: [255, 40, 200] }],
   depth: [{ label: "passed depth and stencil", color: [40, 210, 70] }, { label: "rejected", color: [230, 40, 40] }],
+  stencil: [{ label: "passed the stencil test", color: [40, 210, 70] }, { label: "rejected by it", color: [230, 40, 40] }],
+  backface: [{ label: "drawn", color: [40, 210, 70] }, { label: "culled away: only back faces here", color: [230, 40, 40] }],
   wireframe: [{ label: "edges", color: [255, 230, 40] }],
 };
 
@@ -94,8 +118,11 @@ export function drawOverlayRgba(o: DrawOverlay, kind: DrawOverlayKind): Uint8Cla
   const rgba = new Uint8ClampedArray(o.width * o.height * 4);
   for (let i = 0, n = o.width * o.height; i < n; i++) {
     const m = o.mask[i];
-    const c = kind === "wireframe"
-      ? (m & OVERLAY_WIREFRAME ? paint.wire! : paint.outside)
+    // Each overlay reads its own bit: the back-facing one marks pixels the draw's culling kept out
+    // of the rasterized mask altogether, so it is the only one not gated on OVERLAY_COVERED.
+    const c = kind === "wireframe" ? (m & OVERLAY_WIREFRAME ? paint.wire! : paint.outside)
+      : kind === "backface" ? (m & OVERLAY_BACK_FACING ? paint.covered : m & OVERLAY_COVERED ? paint.passed : paint.outside)
+      : kind === "stencil" ? (m & OVERLAY_COVERED ? (m & OVERLAY_STENCIL_PASSED ? paint.passed : paint.covered) : paint.outside)
       : m & OVERLAY_COVERED ? (m & OVERLAY_PASSED ? paint.passed : paint.covered) : paint.outside;
     rgba.set(c, i * 4);
   }
@@ -107,9 +134,15 @@ export function drawOverlayLines(o: DrawOverlay, x: number, y: number): string[]
   if (!o.mask || x < 0 || y < 0 || x >= o.width || y >= o.height) return [];
   const m = o.mask[y * o.width + x];
   const name = `Draw #${o.command}`;
-  if (!(m & OVERLAY_COVERED)) return [`${name}: not here${m & OVERLAY_WIREFRAME ? " (an edge passes)" : ""}`];
-  if (!o.depthTested) return [`${name}: rasterized here`];
-  return [`${name}: ${m & OVERLAY_PASSED ? "passed depth and stencil here" : "rasterized here, rejected by depth or stencil"}`];
+  const back = m & OVERLAY_BACK_FACING ? " (its culling removed what was here)" : "";
+  if (!(m & OVERLAY_COVERED)) {
+    if (m & OVERLAY_BACK_FACING) return [`${name}: culled away here — only back faces of it reach this pixel`];
+    return [`${name}: not here${m & OVERLAY_WIREFRAME ? " (an edge passes)" : ""}`];
+  }
+  if (!o.depthTested) return [`${name}: rasterized here${back}`];
+  const tests = m & OVERLAY_PASSED ? "passed depth and stencil here" : "rasterized here, rejected by depth or stencil";
+  const stencil = o.stencilTested ? `; the stencil test alone ${m & OVERLAY_STENCIL_PASSED ? "passed" : "rejected it"}` : "";
+  return [`${name}: ${tests}${stencil}${back}`];
 }
 
 /** One line: how much of the target the draw covers and what its tests did. */

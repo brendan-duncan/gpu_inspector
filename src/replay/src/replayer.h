@@ -394,9 +394,18 @@ struct OverlayResult {
     uint64_t pixelsCovered = 0;
     uint64_t pixelsPassed = 0;
     uint64_t pixelsRejected = 0;
+    /**
+     * Pixels the stencil test alone rejected, and pixels where the draw's culling left nothing: a
+     * back-facing fragment landed there and no front-facing one did.
+     */
+    uint64_t pixelsStencilRejected = 0;
+    uint64_t pixelsBackFacing = 0;
     /** Whether the wireframe bit was drawn, and whether the depth-tested bit means anything. */
     bool wireframe = false;
     bool depthTested = false;
+    /** The stencil test alone was replayed (the pass has a stencil aspect), and the cull-off run was. */
+    bool stencilTested = false;
+    bool backFaceTested = false;
     std::vector<uint8_t> mask;
     std::string note;
 };
@@ -589,7 +598,13 @@ private:
         size_t historyPending = 0;
     };
     /** How a reissued draw is drawn: the counting copy, depth and stencil only, or its wireframe. */
-    enum class ReissueMode { Count, DepthOnly, Wireframe, Xfb };
+    /**
+     * How a draw is re-issued for an overlay or a measurement: counting its fragments, moving only
+     * the depth and stencil the draw after it tests against, its edges as lines, its outputs through
+     * transform feedback, its fragments that the stencil test alone kept, or the ones its own cull
+     * mode would have thrown away.
+     */
+    enum class ReissueMode { Count, DepthOnly, Wireframe, Xfb, StencilOnly, BackFace };
     struct PendingOverdraw {
         Staging staging;
         size_t result = 0;
@@ -608,6 +623,9 @@ private:
         Staging rasterized;
         Staging passed;
         Staging wireframe;
+        /** The stencil test on its own, and the faces the draw's cull mode threw away. */
+        Staging stencilPassed;
+        Staging backFacing;
         size_t result = 0;
     };
     /** A pass's pixel history waiting for its submission: the pixel after each event, and the queries of each draw. */
@@ -726,6 +744,8 @@ private:
     bool PipelineDynamic(uint64_t pipelineId, std::string_view state) const;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
+    /** The fragment shader of the back-face overlay (util.h, kBackFaceFragmentSpirv). */
+    VkShaderModule BackFaceModule();
     // --- The fragment round (history.cpp) -------------------------------------------------------
     /**
      * A render pass of the replay's own for measuring one fragment: a colour attachment of `format`
@@ -1048,6 +1068,7 @@ private:
     // Overdraw
     std::unordered_map<uint64_t, VkExtent2D> _framebufferExtents;
     VkShaderModule _countModule = VK_NULL_HANDLE;
+    VkShaderModule _backFaceModule = VK_NULL_HANDLE;
     std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode>, VkPipeline> _overdrawPipelines;
     std::map<VkFormat, VkRenderPass> _overdrawRenderPasses;
     std::vector<TransientImage> _transientImages;

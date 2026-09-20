@@ -8,6 +8,9 @@
 - `dxinsp_replay --list-counters` names every metric the GPU offers, and the counter run says so up front when the machine keeps performance counters to administrators.
 
 - Pixel history lists the fragments of a draw that put several on the pixel, each with the primitive it came from and what its shader wrote, and marks the one that won.
+- **Stencil Test** and **Backface Cull** draw overlays, on Vulkan and Direct3D 12: the stencil test apart from the depth one, and the pixels a draw's own culling emptied.
+- `get_draw_overlay` gives Claude where a draw landed and what its tests and its culling did with it.
+- `test/triangle --inside-out` draws half the cube wound the other way, so its own culling throws all of it away.
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed

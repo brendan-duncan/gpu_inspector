@@ -25,6 +25,7 @@
 #include "pass_record.h"
 
 #include "common.h"
+#include "formats.h"
 #include "hooks.h"
 #include "shader_edit.h"
 #include "tracker.h"
@@ -40,10 +41,10 @@ namespace dxinsp {
 
 namespace {
 
-constexpr uint32_t kRuns = 3;   // rasterized, passed, wireframe
+constexpr uint32_t kRuns = 5;   // rasterized, passed, wireframe, stencil, back-facing
 
 /** One run of the pass: which draws it issues, and with which copy of their pipelines. */
-enum class OverlayMode : uint32_t { Rasterized = 0, Passed = 1, Wireframe = 2 };
+enum class OverlayMode : uint32_t { Rasterized = 0, Passed = 1, Wireframe = 2, Stencil = 3, BackFace = 4 };
 
 /** The pipeline copies this file asks for, beside overdraw's and the pixel history's (VariantKind). */
 enum class OverlayVariant : uint64_t {
@@ -51,6 +52,8 @@ enum class OverlayVariant : uint64_t {
     Tested = 17,      // ... with the pass's depth-stencil attached and its own tests
     Wireframe = 18,   // ... no tests, filled as lines
     Silent = 19,      // an earlier draw: its own pixel shader, one count target, no colour writes
+    Stencil = 20,     // ... the stencil test alone, against the pass's depth-stencil copy
+    BackFace = 21,    // ... nothing culled, and a shader that writes only for back faces
 };
 
 inline uint64_t OverlayKey(OverlayVariant v, DXGI_FORMAT depthFormat) {
@@ -71,6 +74,9 @@ struct PendingOverlay {
     bool measured = false;
     bool depthTested = false;
     bool wireframe = false;
+    /** The stencil test alone was drawn, and the run with nothing culled was. */
+    bool stencilTested = false;
+    bool backFaceTested = false;
     std::string note;
     uint32_t rowPitch = 0;
     ComPtr<ID3D12Resource> staging[kRuns];
@@ -165,12 +171,27 @@ private:
         OverlayVariant kind = OverlayVariant::Target;
         if (_mode == OverlayMode::Passed) {
             kind = OverlayVariant::Tested;   // its own depth and stencil state, against the copy
+        } else if (_mode == OverlayMode::Stencil) {
+            // The stencil test on its own: the depth test is what the Depth Test overlay answers,
+            // and a fragment both would have rejected must not be reported as the stencil's doing.
+            v.disableDepth = true;
+            v.disableDepthWrite = true;
+            kind = OverlayVariant::Stencil;
         } else {
             v.disableDepth = true;
             v.disableStencil = true;
             if (_mode == OverlayMode::Wireframe) {
                 v.wireframe = true;
                 kind = OverlayVariant::Wireframe;
+            } else if (_mode == OverlayMode::BackFace) {
+                // Its own geometry with nothing culled, and a shader that writes only where a
+                // back-facing fragment landed.
+                const D3D12_SHADER_BYTECODE* back = BackFacePixelShader(dxil, error);
+                if (!back) return nullptr;
+                v.pixelShader = back->pShaderBytecode;
+                v.pixelShaderSize = back->BytecodeLength;
+                v.disableCull = true;
+                kind = OverlayVariant::BackFace;
             }
         }
         return VariantOf(_pipeline, OverlayKey(kind, v.depthFormat), v, error);
@@ -297,6 +318,8 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
     for (uint32_t run = 0; run < kRuns; ++run) {
         const OverlayMode mode = (OverlayMode)run;
         if (mode == OverlayMode::Passed && !tests) continue;
+        // The stencil test alone needs a stencil aspect in the pass's depth-stencil copy.
+        if (mode == OverlayMode::Stencil && (!tests || !FormatOf(pass.depth.format).stencil)) continue;
 
         D3D12_CLEAR_VALUE clear{};
         clear.Format = DXGI_FORMAT_R16_FLOAT;
@@ -317,7 +340,8 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
 
         D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
         bool dsvBound = false;
-        if (mode == OverlayMode::Passed && MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, dsv)) {
+        if ((mode == OverlayMode::Passed || mode == OverlayMode::Stencil) &&
+            MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, dsv)) {
             D3D12_DEPTH_STENCIL_VIEW_DESC d{};
             d.Format = pass.depth.format;
             d.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
@@ -369,6 +393,8 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
         m.staging[run] = std::move(staging);
         if (mode == OverlayMode::Passed) m.depthTested = true;
         if (mode == OverlayMode::Wireframe) m.wireframe = true;
+        if (mode == OverlayMode::Stencil) m.stencilTested = true;
+        if (mode == OverlayMode::BackFace) m.backFaceTested = true;
         any = true;
     }
     m.measured = any;
@@ -400,11 +426,11 @@ void SendDrawOverlay() {
 
     // The counts of the three runs, folded into the one byte per pixel the UI draws
     // (OVERLAY_COVERED, OVERLAY_PASSED, OVERLAY_WIREFRAME in draw_overlay.ts).
-    constexpr uint8_t kCovered = 1, kPassed = 2, kWireframe = 4;
+    constexpr uint8_t kCovered = 1, kPassed = 2, kWireframe = 4, kStencilPassed = 8, kBackFacing = 16;
     for (PendingOverlay& m : pending) {
         const size_t pixels = (size_t)m.width * m.height;
         std::vector<uint8_t> mask;
-        uint64_t fragments = 0, covered = 0, passed = 0;
+        uint64_t fragments = 0, covered = 0, passed = 0, stencilRejected = 0, backFacing = 0;
         if (m.frame == UINT32_MAX) {
             m.measured = false;
             m.note = "the command list was not executed during the capture";
@@ -420,7 +446,8 @@ void SendDrawOverlay() {
                     if (SUCCEEDED(m.staging[run]->Map(0, nullptr, &p))) mapped = static_cast<const uint8_t*>(p);
                 }
                 if (!mapped) continue;
-                const uint8_t bit = run == 0 ? kCovered : run == 1 ? kPassed : kWireframe;
+                const uint8_t bit = run == 0 ? kCovered : run == 1 ? kPassed : run == 2 ? kWireframe
+                                  : run == 3 ? kStencilPassed : kBackFacing;
                 for (uint32_t y = 0; y < m.height; ++y) {
                     const uint16_t* row = reinterpret_cast<const uint16_t*>(mapped + (uint64_t)y * m.rowPitch);
                     for (uint32_t x = 0; x < m.width; ++x) {
@@ -437,6 +464,18 @@ void SendDrawOverlay() {
                 }
                 ScopedInternal internal;
                 m.staging[run]->Unmap(0, nullptr);
+            }
+        }
+
+        if (m.measured && pixels) {
+            for (uint8_t& bits : mask) {
+                if (!m.stencilTested && (bits & kCovered)) bits |= kStencilPassed;
+                else if (m.stencilTested && (bits & kCovered) && !(bits & kStencilPassed)) stencilRejected++;
+                // Every pixel of a closed mesh has a back face behind it, so the bit only says
+                // something where culling left nothing: a back face landed and no front one did.
+                if (!(bits & kBackFacing)) continue;
+                if (bits & kCovered) bits &= (uint8_t)~kBackFacing;
+                else backFacing++;
             }
         }
 
@@ -458,6 +497,10 @@ void SendDrawOverlay() {
         w.Key("pixelsRejected"); w.Uint(m.depthTested && covered >= passed ? covered - passed : 0);
         w.Key("depthTested"); w.Boolean(m.depthTested);
         w.Key("wireframe"); w.Boolean(m.wireframe);
+        w.Key("stencilTested"); w.Boolean(m.stencilTested);
+        w.Key("backFaceTested"); w.Boolean(m.backFaceTested);
+        w.Key("pixelsStencilRejected"); w.Uint(stencilRejected);
+        w.Key("pixelsBackFacing"); w.Uint(backFacing);
         w.Key("size"); w.Uint(mask.size());
         if (!m.note.empty()) { w.Key("note"); w.String(m.note); }
         w.EndObject();

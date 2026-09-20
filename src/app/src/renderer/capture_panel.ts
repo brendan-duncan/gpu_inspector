@@ -2115,7 +2115,8 @@ export class CaptureView implements CaptureHost {
       // Testing aid (--debug-view=overlay[:<kind>[:<command>|last]]): a draw overlay, on the first draw of a
       // pass with a render target unless a command (or the last such draw) is named.
       const [, kind = "highlight", at] = name.split(":");
-      const overlay = kind === "depth" || kind === "wireframe" ? kind : "highlight";
+      const kinds: DrawOverlayKind[] = ["highlight", "depth", "stencil", "backface", "wireframe"];
+      const overlay = kinds.includes(kind as DrawOverlayKind) ? (kind as DrawOverlayKind) : "highlight";
       const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this.targetOfDraw(c));
       const draw = at === "last" ? drawn[drawn.length - 1] : at !== undefined ? this.data.commands[Number(at)] : drawn[0];
       if (draw) this.openDrawOverlay(draw, overlay);
@@ -2171,7 +2172,7 @@ export class CaptureView implements CaptureHost {
   }
 
   /** Opens the render target tab with a draw overlay on a draw (Highlight Draw in a draw's render targets). */
-  openDrawOverlay(cmd: CaptureCommand, overlay: "highlight" | "depth" | "wireframe", target?: CaptureTarget): void {
+  openDrawOverlay(cmd: CaptureCommand, overlay: DrawOverlayKind, target?: CaptureTarget): void {
     const t = target ?? this.targetOfDraw(cmd);
     if (!t) {
       this._setStatus("the draw's pass has no render target read back, so there is nothing to draw the overlay over");

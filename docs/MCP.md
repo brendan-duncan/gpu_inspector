@@ -55,6 +55,7 @@ A few tools replay a Vulkan capture on this machine's GPU, the way the app does.
 about a capture takes a moment while its replay starts; the replay is kept for the ones after it:
 
 - `get_overdraw` — fragments per pixel, for every pass or as one pass's heatmap
+- `get_draw_overlay` — where one draw landed, and what its tests and its culling did with it
 - `get_pixel_history` — every clear and draw that touched a pixel, and what became of each draw's
   fragments, with the fragments of a draw that put several there listed one by one
 - `get_mesh_output` — what a draw's vertex shader wrote: vertices behind the eye, primitives

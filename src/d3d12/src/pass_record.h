@@ -112,6 +112,8 @@ void KeepMeasurementObject(ID3D12Device* device, IUnknown* object);
 /** The pixel shaders the measurements draw with, compiled once per container kind; null with `error`. */
 const D3D12_SHADER_BYTECODE* CountingPixelShader(bool dxil, std::string& error);
 const D3D12_SHADER_BYTECODE* CoverPixelShader(bool dxil, std::string& error);
+/** ... and the one that writes only where a back-facing fragment landed (the backface overlay). */
+const D3D12_SHADER_BYTECODE* BackFacePixelShader(bool dxil, std::string& error);
 
 /** The copies of the application's pipelines the measurements draw with, as they are cached. */
 enum class VariantKind : uint64_t {

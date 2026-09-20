@@ -304,9 +304,32 @@ application with injected state. Route (a) is the general one and is the prerequ
       view of a multiview pass.
 - [x] Draw-call overlays (`vkinsp_replay --overlay`, `src/replay/src/overlay.cpp`): highlight draw,
       depth test and wireframe in the render target tab, for any draw of the pass.
-- [ ] Draw overlays, the rest: stencil apart from depth, backface cull, viewport/scissor,
-      NaN/INF, clipping, triangle size and quad overdraw (RenderDoc's other overlays); discarded
-      fragments; `get_draw_overlay` in the MCP server.
+- [x] Draw overlays: the stencil test apart from the depth one, back-face culling, and
+      `get_draw_overlay` in the MCP server.
+      **Stencil Test** re-issues the draw with its depth test off and its stencil test as it is
+      (`ReissueMode::StencilOnly`), so a fragment the stencil rejected is no longer indistinguishable
+      from one the depth killed; only where the pass's format has a stencil aspect.
+      **Backface Cull** re-issues it with nothing culled and a fragment shader that writes for back
+      faces alone (`kBackFaceFragmentSpirv`), and marks the pixels where *only* back faces landed —
+      the draw's culling emptied them. The bit is cleared wherever the draw also drew, because every
+      pixel of a closed mesh has a back face behind it and the raw bit would light the whole mesh up;
+      what is left is the answer to "it ran, the geometry is there, and nothing appeared".
+      Both are measured by the Vulkan replay (`src/replay/src/overlay.cpp`, five runs now) and by the
+      D3D12 capture library (`src/d3d12/src/draw_overlay.cpp`, five runs), and both land in the same
+      mask: bit 3 passed the stencil alone, bit 4 culled away.
+      `test/triangle --inside-out` draws half the cube wound the other way, which culls away to
+      nothing; the `overlay-backface` and `overlay-stencil` UI cases cover them. The stencil case
+      holds that the run is made and reports against the stencil: the sample's own stencil test
+      compares ALWAYS, so nothing there is rejected by it.
+- [ ] Draw overlays, the rest of the rest: triangle size and quad overdraw (RenderDoc's other two
+      that need real work: a geometry shader passing the primitive's screen area, and quad-granular
+      atomics), the fragments a shader discards (the same SPIR-V edit "overdraw of fragments a
+      shader discards" needs: keep the discard, replace the output with a constant), and
+      viewport/scissor, which needs no replay at all — the rects are in the draw's own state, so it
+      is a drawing job in the render target tab.
+      Not on this list any more: **NaN/INF** and **clipping**, which the image viewer's
+      [Highlight](docs/REPORTS.md#what-the-picture-cannot-show) already marks on any render target,
+      and marks by default.
 - [x] Per-draw GPU timing and counters via replay with timestamp and pipeline-statistics queries
       (`src/replay/src/draw_stats.cpp`, `vkinsp_replay --draws`, docs/REPLAY.md): every draw and
       dispatch timed and counted, kept in capture files, read by the Shader Flame Graph.

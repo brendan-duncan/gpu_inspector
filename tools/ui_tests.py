@@ -334,6 +334,38 @@ def triangle_pixel_history(state, log):
                f"no draw names the primitive that won the pixel (the primitive-id pass): {touched}")
 
 
+def triangle_backface_overlay(state, log):
+    # The Backface Cull overlay (src/replay/src/overlay.cpp, ReissueMode::BackFace): the draw is
+    # issued again with nothing culled and a shader that writes only for back faces, so the pixels
+    # where its own culling left nothing are marked. --inside-out draws half the cube wound the
+    # other way, which is a draw that culls away to nothing -- the bug the overlay is for.
+    t = (capture(state).get("textureTab") or {})
+    d = t.get("drawOverlay") or {}
+    return check_connected(state, log) + \
+        expect(t.get("overlay") == "backface", f"the tab did not open with the backface overlay: {t.get('overlay')}") + \
+        expect(not t.get("drawError"), f"the overlay failed: {t.get('drawError')}") + \
+        expect(d.get("backFaceTested") is True, f"the cull-off run was not made: {d}") + \
+        expect((d.get("pixelsBackFacing") or 0) > 0,
+               f"the reversed half of the cube should leave pixels its culling removed: {d}") + \
+        expect((d.get("pixelsCovered") or 0) > 0, f"the rest of it should still be drawn: {d}")
+
+
+def triangle_stencil_overlay(state, log):
+    # The Stencil Test overlay: the draw re-issued with its stencil test alone, which needs a pass
+    # with a stencil aspect (--stencil). This sample's draw compares ALWAYS, so nothing is rejected;
+    # what the case holds is that the run is made and reports against the stencil rather than
+    # falling back to the depth test's answer.
+    t = (capture(state).get("textureTab") or {})
+    d = t.get("drawOverlay") or {}
+    return check_connected(state, log) + \
+        expect(t.get("overlay") == "stencil", f"the tab did not open with the stencil overlay: {t.get('overlay')}") + \
+        expect(not t.get("drawError"), f"the overlay failed: {t.get('drawError')}") + \
+        expect(d.get("stencilTested") is True, f"the stencil-only run was not made on a pass with a stencil: {d}") + \
+        expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") + \
+        expect(d.get("pixelsStencilRejected") == 0,
+               f"this sample's stencil test compares ALWAYS, so it rejects nothing: {d}")
+
+
 def triangle_pixel_fragments(state, log):
     # The fragments of one draw (src/replay/src/history.cpp, the fragment round). With --no-cull the
     # cube keeps its back faces, so the one draw puts two fragments on the centre pixel: the near
@@ -909,6 +941,12 @@ def triangle_cases(triangle):
                           triangle_pixel_history, delay_ms=20000))
         cases.append(Case("pixel-fragments", launch + ["--args=--no-cull", "--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
                           triangle_pixel_fragments, delay_ms=22000))
+        cases.append(Case("overlay-backface", launch + ["--args=--inside-out", "--debug-capture", "--debug-view=overlay:backface:last",
+                                                        "--debug-settle=9000"],
+                          triangle_backface_overlay, delay_ms=24000))
+        cases.append(Case("overlay-stencil", launch + ["--args=--stencil", "--debug-capture", "--debug-view=overlay:stencil:last",
+                                                       "--debug-settle=9000"],
+                          triangle_stencil_overlay, delay_ms=24000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh, delay_ms=20000))
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",

@@ -377,6 +377,8 @@ export class CaptureData {
           passIndex: msg.passIndex, measured: msg.measured, width: msg.width, height: msg.height,
           fragments: msg.fragments, pixelsCovered: msg.pixelsCovered, pixelsPassed: msg.pixelsPassed,
           pixelsRejected: msg.pixelsRejected, depthTested: msg.depthTested, wireframe: msg.wireframe,
+          pixelsStencilRejected: msg.pixelsStencilRejected ?? 0, pixelsBackFacing: msg.pixelsBackFacing ?? 0,
+          stencilTested: msg.stencilTested === true, backFaceTested: msg.backFaceTested === true,
           ...(msg.note ? { note: msg.note } : {}), mask: null,
         });
         this.onDrawOverlays.emit();
