@@ -6,6 +6,7 @@
 - **Metal replay and Export to C++** (`mtlinsp_replay`, `src/metal/replay/`, docs/REPLAY.md "Metal"): a Metal capture is re-executed on this machine's GPU, every render target it read back is compared byte for byte, and the frame is written out as a standalone CMake project of Objective-C++ that runs it again — the third backend to have both, after Vulkan and Direct3D 12. The capture bar's **Export to C++** and the MCP server's `export_cpp` now take Metal captures.
 
 ### Fixed
+- The launch dialog's capture options wrap onto as many rows as it needs rather than running off the side of the window.
 - A D3D12 capture of a Unity URP frame holds the whole frame: lists after a suspended render pass were lost to a vtable the hooks had missed, pooled lists had no recorder, and the draws of suspended passes had no mesh, constant or texture data.
 - A D3D12 capture keeps the objects a frame creates and releases within itself, which were gone by the time it was shown or saved.
 - A D3D12 capture reads what `CopyBufferRegion` and buffer-to-texture copies read, and vertex and index buffers whole, so a replay has them.

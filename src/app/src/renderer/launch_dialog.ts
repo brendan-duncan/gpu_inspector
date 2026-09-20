@@ -314,8 +314,11 @@ export class LaunchDialog extends Dialog {
           c.element.style.display = "none";
         }
       }
-      new Span(row, { text: "Port", class: "launch-dialog-label launch-dialog-label-inline" });
-      this._port = new TextInput(row, { value: String(DEFAULT_PORT), class: "launch-dialog-input launch-dialog-port" });
+      // The options wrap onto as many rows as the dialog's width needs; Port keeps its label and
+      // field together on whichever of them it lands on.
+      const portGroup = new Div(row, { class: "launch-dialog-option-group" });
+      new Span(portGroup, { text: "Port", class: "launch-dialog-label launch-dialog-label-inline" });
+      this._port = new TextInput(portGroup, { value: String(DEFAULT_PORT), class: "launch-dialog-input launch-dialog-port" });
     }
     {
       // Queued capture: taken automatically once the application connects.
