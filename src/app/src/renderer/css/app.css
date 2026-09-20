@@ -638,6 +638,7 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Its drawing size is set in code and repeated as the CSS size: without that the canvas is a
    flex item and stretches to the pane, pushing the image it belongs to off the bottom. */
 .image-histogram { display: block; flex: 0 0 auto; margin: 0 6px 6px 6px; background: var(--bg-primary); border-radius: var(--radius-sm); }
+.image-histogram[hidden] { display: none; }
 .image-view-scroll { overflow: auto; max-height: 70vh; padding: 6px; }
 .image-view-holder { position: relative; display: inline-block; line-height: 0; }
 /* The pixel a click picked, which the pixel history follows. */
