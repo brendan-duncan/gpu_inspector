@@ -13,6 +13,7 @@ Linux and Android, Direct3D 12 on Windows, and Metal on macOS — and, on Window
 |---|---|
 | [Install](INSTALL.md) | Installers for Windows, Linux and macOS, and updates |
 | [Getting started](GETTING_STARTED.md) | Your first session: launch an application, capture a frame, save it |
+| [The launch window](LAUNCH.md) | Every field of the launch window: the targets, the inspector options, queued captures |
 
 ## Platform workflows
 

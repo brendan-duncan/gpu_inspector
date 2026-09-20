@@ -14,7 +14,7 @@ The bar along the top is where sessions begin:
 
 | Control | What it does |
 |---|---|
-| **Launch...** | Opens the launch dialog: pick an application and start it with the inspector |
+| **Launch...** | Opens the [launch window](LAUNCH.md): pick an application and start it with the inspector |
 | **Recent** | Relaunches a previous configuration |
 | **Port** + **Connect** | Connects to an application that is already running with the capture library enabled |
 | **Open Capture...** | Opens a saved `.gpucap` file. Dropping a file on the window does the same |
@@ -34,6 +34,9 @@ What you pick depends on the platform:
   decides whether a given application can be inspected.
 - **An Android phone or headset:** choose **Android device (adb)** under *Run On*. See
   [Android and Quest](ANDROID.md).
+
+The rest of the window — the other targets, the inspector options, queued captures — is in
+[The launch window](LAUNCH.md).
 
 Each session opens as its own tab, and holds three tabs of its own:
 
@@ -82,4 +85,4 @@ for a bug report, for comparing against a later capture, or for
 
 ---
 
-Previous: [Install](INSTALL.md) · [Docs index](README.md) · Next: [Vulkan](VULKAN.md)
+Previous: [Install](INSTALL.md) · [Docs index](README.md) · Next: [The launch window](LAUNCH.md)

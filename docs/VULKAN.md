@@ -18,7 +18,7 @@ layer is never enabled system-wide or for anything else.
 
 ![The launch dialog, set to run a Vulkan executable on this computer](images/launch-dialog.png)
 
-The dialog's fields:
+The dialog's fields (every one of them is in [The launch window](LAUNCH.md)):
 
 | Field | What it is |
 |---|---|
@@ -114,4 +114,4 @@ connects".
 
 ---
 
-Previous: [Getting started](GETTING_STARTED.md) · [Docs index](README.md) · Next: [Metal](METAL.md)
+Previous: [The launch window](LAUNCH.md) · [Docs index](README.md) · Next: [Metal](METAL.md)
