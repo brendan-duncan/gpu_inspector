@@ -930,6 +930,44 @@ def d3d12_stencil(state, log):
         expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
 
 
+def d3d12_draw_timings(state, log):
+    # Measure draws on D3D12: the library puts a timestamp pair, a pipeline statistics query and an
+    # occlusion query around every draw and dispatch as the list records (capture.cpp,
+    # BeginDrawQueries), and sends them as CaptureDrawStats. The triangle's frame is small enough
+    # that every draw should be measured, and counted: it binds its targets with
+    # OMSetRenderTargets, so nothing is inside a BeginRenderPass region.
+    c = capture(state)
+    draws = c.get("draws") or 0
+    return check_connected(state, log) + check_capture_basic(state, log) +         expect((c.get("drawStats") or 0) >= draws, f"{c.get('drawStats')} draws measured of {draws} in the frame") +         expect((c.get("drawStatsTimed") or 0) >= draws, f"{c.get('drawStatsTimed')} of {c.get('drawStats')} measured draws were timed") +         expect((c.get("drawStatsCounted") or 0) >= draws, f"{c.get('drawStatsCounted')} of {c.get('drawStats')} measured draws carried counters") +         expect((c.get("drawStatsOnDraws") or 0) >= draws,
+               f"{c.get('drawStatsOnDraws')} of {c.get('drawStats')} measurements landed on a draw or dispatch command: "
+               "the library names a command by its slot within its list, which is not its index in the capture") +         expect("draw profiling" in log, "the library never reported what it measured per draw")
+
+
+def d3d12_mesh_output(state, log):
+    # VS Out on D3D12: the draw's vertex shader outputs streamed out of the unmodified bytecode
+    # while the next frame records (src/d3d12/src/mesh_output.cpp), so the last capture is the
+    # measured one and its mesh tab opens on VS Out with the records in it.
+    caps = (session(state).get("captures") or [])
+    last = caps[-1] if caps else {}
+    m = last.get("meshTab") or {}
+    o = m.get("output") or {}
+    stats = o.get("stats") or {}
+    return check_connected(state, log) +         expect(len(caps) == 2, f"{len(caps)} captures: streaming a draw out should take one more capture, and only one") +         expect(m.get("stage") == "out", f"the mesh tab did not open on VS Out: {m.get('stage')}") +         expect(o.get("measured") is True, f"the draw was not streamed out: {o.get('note') or m.get('error')}") +         expect((o.get("vertices") or 0) > 0, f"no vertices were streamed out: {o}") +         expect((o.get("stride") or 0) > 0, f"the vertex record has no size: {o}") +         expect("POSITION" in " ".join(o.get("outputs") or []), f"the outputs hold no position: {o.get('outputs')}") +         expect(bool(stats) and (stats.get("primitives") or 0) > 0,
+               "the clip-space positions were not read: the position output was not recognized") +         expect("mesh output" in log, "the library never reported streaming a draw out")
+
+
+def d3d12_draw_overlay(state, log):
+    # A draw overlay on D3D12: the render target tab asks for one, the library measures it while
+    # the *next* frame records (src/d3d12/src/draw_overlay.cpp), and that capture opens its own
+    # tab with the overlay on. So the last capture is the measured one, and there must be exactly
+    # two: a tab opened on the measured draw must not ask for a capture of its own.
+    caps = (session(state).get("captures") or [])
+    last = caps[-1] if caps else {}
+    t = last.get("textureTab") or {}
+    d = t.get("drawOverlay") or {}
+    return check_connected(state, log) +         expect(len(caps) == 2, f"{len(caps)} captures: the overlay should take one more capture, and only one") +         expect(t.get("overlay") == "depth", f"the measured capture's tab did not open with the depth test overlay: {t.get('overlay')}") +         expect(not t.get("drawError"), f"the overlay was not measured: {t.get('drawError')}") +         expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") +         expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") +         expect("draw overlay" in log, "the library never reported measuring a draw overlay")
+
+
 def d3d12_bundle(state, log):
     # The draw sits in a bundle recorded at start-up: only record-always from launch sees it.
     return check_connected(state, log) + check_capture_basic(state, log)
@@ -1020,6 +1058,12 @@ def d3d12_cases(triangle):
         Case("d3d12-plain", launch + ["--args=--compute", "--debug-capture", "--debug-command=22", "--debug-expand=Vertex Shader",
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
+        Case("d3d12-mesh-output", launch + ["--debug-capture", "--debug-view=mesh"],
+             d3d12_mesh_output, delay_ms=26000),
+        Case("d3d12-draw-overlay", launch + ["--debug-capture", "--debug-view=overlay:depth:last"],
+             d3d12_draw_overlay, delay_ms=26000),
+        Case("d3d12-draw-timings", launch + ["--args=--compute", "--debug-capture", "--debug-capture-with=draws"],
+             d3d12_draw_timings, delay_ms=16000),
         Case("d3d12-bundle", launch + ["--args=--bundle", "--record-always", "--debug-capture"], d3d12_bundle),
         Case("d3d12-stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], d3d12_stencil, delay_ms=16000),
         Case("d3d12-offscreen", launch + ["--args=--offscreen --compute", "--debug-capture"], d3d12_offscreen, delay_ms=14000),

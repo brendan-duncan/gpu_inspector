@@ -6,6 +6,7 @@ import type { CaptureApi } from "../shared/protocol.js";
 import { Signal } from "./utils/signal.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { DrawOverlay } from "./draw_overlay.js";
+import type { MeshOutput } from "./mesh_output.js";
 import type { DrawStat } from "./draw_stats.js";
 import type { HwCounters } from "./hw_counters.js";
 import { ablationKey, type ShaderAblation } from "./shader_ablation.js";
@@ -99,6 +100,30 @@ export class CaptureData {
   ablations: ShaderAblation[] = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
   drawOverlays = new Map<number, DrawOverlay>();
+  /** What a draw's vertex shader wrote, when the capture streamed it out (D3D12). */
+  meshOutputs = new Map<number, MeshOutput>();
+  readonly onMeshOutputs = new Signal<() => void>();
+  /** (command buffer, slot) -> the command's index in this capture, built on first use (_commandAt). */
+  private _slotIndex: Map<string, number> | null = null;
+
+  /**
+   * The index of the command a capture library named by its command list and the slot it took in
+   * that list's recording, which is how a measurement taken inside the application refers to a
+   * draw (src/d3d12/src/capture.cpp; validation messages name a command the same way). A slot is
+   * per list, so it is not the command's index in this capture: a frame of several lists numbers
+   * its commands across all of them. Returns the slot unchanged when nothing matches, which leaves
+   * the measurement keyed by something rather than dropping it.
+   */
+  private _commandAt(commandBuffer: number, slot: number): number {
+    if (!this._slotIndex) {
+      this._slotIndex = new Map();
+      for (const c of this.commands) {
+        const list = c.secondary ?? c.object?.__id;
+        if (list !== undefined) this._slotIndex.set(`${list}:${c.slot}`, c.index);
+      }
+    }
+    return this._slotIndex.get(`${commandBuffer}:${slot}`) ?? slot;
+  }
   private _expectedCommands = 0;
   private _pendingBuffers = 0;
 
@@ -147,6 +172,8 @@ export class CaptureData {
     this.cpuTimeline = null;
     this.ablations = [];
     this.drawOverlays = new Map();
+    this.meshOutputs = new Map();
+    this._slotIndex = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -315,6 +342,66 @@ export class CaptureData {
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
         this.onOverdraw.emit();
+        break;
+      case "CaptureMeshOutput": {
+        // Streamed out while this capture recorded (D3D12); a Vulkan capture is replayed for the
+        // same records afterwards. The data follows in CaptureMeshOutputData.
+        const meshCommand = this._commandAt(msg.commandBuffer, msg.command);
+        this.meshOutputs.set(meshCommand, {
+          command: meshCommand, method: msg.method, frame: msg.frame, commandBuffer: msg.commandBuffer,
+          passIndex: msg.passIndex, measured: msg.measured, topology: msg.topology ?? "", stride: msg.stride,
+          vertices: msg.vertices, truncated: msg.truncated,
+          outputs: (msg.outputs ?? []).map((o) => ({
+            name: o.name, offset: o.offset, components: o.components, base: o.base,
+            ...(o.builtin ? { builtin: o.builtin } : {}),
+          })),
+          ...(msg.note ? { note: msg.note } : {}), data: null,
+        });
+        this.onMeshOutputs.emit();
+        break;
+      }
+      case "CaptureMeshOutputData": {
+        const mesh = this.meshOutputs.get(this._commandAt(msg.commandBuffer, msg.command));
+        if (mesh) {
+          mesh.data = msg.__binary ?? null;
+          this.onMeshOutputs.emit();
+        }
+        break;
+      }
+      case "CaptureDrawOverlay": {
+        const command = this._commandAt(msg.commandBuffer, msg.command);
+        // Measured while this capture recorded (D3D12), rather than by replaying it afterwards.
+        // The mask arrives next, in CaptureDrawOverlayData.
+        this.drawOverlays.set(command, {
+          command, method: msg.method, frame: msg.frame, commandBuffer: msg.commandBuffer,
+          passIndex: msg.passIndex, measured: msg.measured, width: msg.width, height: msg.height,
+          fragments: msg.fragments, pixelsCovered: msg.pixelsCovered, pixelsPassed: msg.pixelsPassed,
+          pixelsRejected: msg.pixelsRejected, depthTested: msg.depthTested, wireframe: msg.wireframe,
+          ...(msg.note ? { note: msg.note } : {}), mask: null,
+        });
+        this.onDrawOverlays.emit();
+        break;
+      }
+      case "CaptureDrawOverlayData": {
+        const o = this.drawOverlays.get(this._commandAt(msg.commandBuffer, msg.command));
+        if (o) {
+          o.mask = msg.__binary ?? null;
+          this.onDrawOverlays.emit();
+        }
+        break;
+      }
+      case "CaptureDrawStats":
+        // A D3D12 capture measures its draws while it is taken; a Vulkan one is replayed for the
+        // same numbers (measureDraws). Either way they arrive as DrawStat, keyed by command.
+        this.drawStats = (msg.draws ?? []).map((d) => ({
+          command: this._commandAt(d.commandBuffer, d.command), frame: d.frame, commandBuffer: d.commandBuffer,
+          ...(d.passIndex === 0xffffffff ? {} : { passIndex: d.passIndex }),
+          timed: d.timed, ms: d.ms, counted: d.counted,
+          vertexInvocations: d.vertexInvocations, primitives: d.primitives,
+          fragmentInvocations: d.fragmentInvocations, computeInvocations: d.computeInvocations,
+          sampled: d.sampled, samplesPassed: d.samplesPassed,
+        }));
+        this.onDrawStats.emit();
         break;
       case "CapturePixelHistory":
         this.pixelHistory = msg.history ?? null;

@@ -19,6 +19,7 @@ The bar above it controls what is recorded:
 | **Buffers** | Read back the buffers bound by descriptor sets, vertex and index bindings, and indirect draws, and the source of every buffer copy |
 | **Images** | Read back the images bound by descriptor sets, so the capture shows what the shaders sampled, and what the frame found in the images it reads before writing them (a pass that loads an attachment, a copy from an image), so a [replay](REPLAY.md) can start where the frame did |
 | **Profile passes** | Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card |
+| **Measure draws** | Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph can split a pass's time between its draws. Costs GPU and CPU time in the captured frame ([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)) |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |
 | **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). Vulkan only |
@@ -94,8 +95,11 @@ draw overlays, the mesh view and the shader debugger answer questions about one 
 
 Overdraw, pixel history, draw overlays, the mesh view's VS Out, the shader debugger's pixels and **Measure draws** replay a Vulkan
 capture on this machine's GPU with `vkinsp_replay`, which the Windows and Linux installers include. The application
-does not need to be running; see [Capture replay](REPLAY.md). A [Direct3D 12](D3D12.md) capture has no
-replay, so these are not offered for it; a [Metal](METAL.md) capture measures overdraw and pixel history while capturing.
+does not need to be running; see [Capture replay](REPLAY.md). A [Metal](METAL.md) or [Direct3D 12](D3D12.md) capture
+measures inside the application instead, so what it measures is asked for before, or while, the frame is captured:
+Metal measures overdraw and pixel history that way, and Direct3D 12 those two plus draw overlays, the mesh view's
+VS Out and per-draw timings ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)).
+Shader cost by ablation and hardware counters are Vulkan only.
 
 ## Capture files
 

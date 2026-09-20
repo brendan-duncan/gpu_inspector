@@ -42,13 +42,8 @@
 
 namespace dxinsp {
 
-namespace {
-
-constexpr uint32_t kHistogramBuckets = 8;
-/** Descriptors per heap of the measurement's own; a capture that needs more gets another heap. */
-constexpr uint32_t kMeasurementHeapSize = 256;
-
-inline uint64_t Align(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
+// Shared with draw_overlay.cpp, which reads the same count targets and takes the same barriers
+// (pass_record.h); the rest of this file is its own.
 
 float HalfToFloat(uint16_t h) {
     const int sign = (h >> 15) ? -1 : 1;
@@ -58,6 +53,26 @@ float HalfToFloat(uint16_t h) {
     if (exponent == 31) return mantissa ? NAN : sign * INFINITY;
     return sign * std::ldexp((float)(mantissa + 1024), exponent - 25);
 }
+
+void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES from,
+                D3D12_RESOURCE_STATES to) {
+    if (from == to) return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = resource;
+    b.Transition.Subresource = subresource;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    list->ResourceBarrier(1, &b);
+}
+
+namespace {
+
+constexpr uint32_t kHistogramBuckets = 8;
+/** Descriptors per heap of the measurement's own; a capture that needs more gets another heap. */
+constexpr uint32_t kMeasurementHeapSize = 256;
+
+inline uint64_t Align(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
 
 // ---------------------------------------------------------------------------------------------
 // One measurement drawn into a command list, waiting for it to run
@@ -137,17 +152,6 @@ DeviceMeasurement* DeviceMeasurementFor(ID3D12Device* device) {
     return raw;
 }
 
-void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES from,
-                D3D12_RESOURCE_STATES to) {
-    if (from == to) return;
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = resource;
-    b.Transition.Subresource = subresource;
-    b.Transition.StateBefore = from;
-    b.Transition.StateAfter = to;
-    list->ResourceBarrier(1, &b);
-}
 
 // ---------------------------------------------------------------------------------------------
 // The pixel shaders the measurements draw with
@@ -815,6 +819,7 @@ void PrepareMeasuredPass(CommandRecorder* rec, const std::vector<BoundTarget>& t
         overdraw = s.overdraw;
         s.open.erase(rec->list());
     }
+    const bool overlay = DrawOverlayRequested() || MeshOutputRequested();
     if (rec->bundle()) return;   // a bundle records no pass of its own
 
     auto pass = std::make_shared<MeasuredPass>();
@@ -822,6 +827,7 @@ void PrepareMeasuredPass(CommandRecorder* rec, const std::vector<BoundTarget>& t
     pass->list = rec->list();
     pass->listId = Tracker::Get().IdOf(rec->list());
     pass->measureOverdraw = overdraw;
+    pass->measureOverlay = overlay;
     for (const BoundTarget& t : targets) {
         if (!t.resource) continue;
         PassAttachment a;
@@ -857,9 +863,10 @@ void PrepareMeasuredPass(CommandRecorder* rec, const std::vector<BoundTarget>& t
     } else {
         const int attachment = MatchPixelHistoryAttachment(*pass);
         if (attachment >= 0) PreparePixelHistory(*pass, attachment);
-        if (pass->measureOverdraw && pass->note.empty()) CopyDepthStart(*pass);
+        // The overlay's depth-test run tests against the same copy the overdraw count does.
+        if ((pass->measureOverdraw || pass->measureOverlay) && pass->note.empty()) CopyDepthStart(*pass);
     }
-    if (!pass->measureOverdraw && !pass->history) return;   // nothing the capture measures renders here
+    if (!pass->measureOverdraw && !pass->history && !pass->measureOverlay) return;   // nothing the capture measures renders here
     std::lock_guard<std::mutex> lock(s.mutex);
     if (s.active.load(std::memory_order_relaxed)) s.open[rec->list()] = std::move(pass);
 }
@@ -906,6 +913,8 @@ void EndMeasuredPass(CommandRecorder* rec, bool insideRenderPass) {
     }
     const bool measurable = pass->note.empty();
     if (pass->measureOverdraw) MeasureOverdraw(*pass, kept);
+    if (pass->measureOverlay && MatchDrawOverlayPass(*pass)) MeasureDrawOverlay(*pass, rec, kept);
+    if (pass->measureOverlay && MatchMeshOutputPass(*pass)) MeasureMeshOutput(*pass, rec, kept);
     if (pass->history) FollowPixel(*pass, rec, kept);
     if (measurable) {
         // The measurement bound its own pipelines, render targets and scissors; the application's
@@ -929,7 +938,8 @@ void EndMeasuredPass(CommandRecorder* rec, bool insideRenderPass) {
 // ---------------------------------------------------------------------------------------------
 // The capture
 
-void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, uint64_t maxDataSize) {
+void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, const DrawOverlayRequest& overlay,
+                       const MeshOutputRequest& mesh, uint64_t maxDataSize) {
     MeasurementState& s = State();
     std::vector<PendingMeasurement> pending;
     std::unordered_map<ID3D12GraphicsCommandList*, std::unique_ptr<ListOps>> lists;
@@ -941,9 +951,11 @@ void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, uint64
         open.swap(s.open);
         s.overdraw = overdraw;
         s.maxDataSize = maxDataSize;
-        s.active.store(overdraw || history.enabled, std::memory_order_relaxed);
+        s.active.store(overdraw || history.enabled || overlay.enabled || mesh.enabled, std::memory_order_relaxed);
     }
     StartPixelHistory(history);
+    StartDrawOverlay(overlay);
+    StartMeshOutput(mesh);
     if (overdraw) Log("overdraw: measuring every render pass of the capture");
 }
 
@@ -958,6 +970,8 @@ void AssignMeasurementFrame(ID3D12GraphicsCommandList* list, uint32_t frame) {
             if (m.list == list && m.frame == UINT32_MAX) m.frame = frame;
     }
     AssignPixelHistoryFrame(list, frame);
+    AssignDrawOverlayFrame(list, frame);
+    AssignMeshOutputFrame(list, frame);
 }
 
 void OnMeasurementDeviceReleased(ID3D12Device* device) {

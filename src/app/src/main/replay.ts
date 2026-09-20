@@ -455,6 +455,28 @@ export async function replayKeyed(tool: string, key: string, bytes: Uint8Array |
   return replayServers.run(tool, file, analysis);
 }
 
+/**
+ * The same, run one-shot rather than in a replay kept alive: `dxinsp_replay` has no --serve mode,
+ * so a D3D12 analysis starts the tool, reads its data file and is done (hardware counters,
+ * src/d3d12/replay/src/dx_counters.cpp).
+ */
+export async function replayKeyedOnce(tool: string, key: string, bytes: Uint8Array | undefined, analysis: ReplayAnalysis,
+                                      name = "capture", timeoutMs = 20 * 60 * 1000): Promise<ReplayRun> {
+  let file = replayFiles.get(key);
+  if (!file) {
+    if (!bytes) return { data: null, output: "", needData: true };
+    const base = name.replace(/[^\w.-]+/g, "_") || "capture";
+    file = path.join(os.tmpdir(), `vkinsp_replay_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}_${base}.gpucap`);
+    try {
+      fs.writeFileSync(file, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    } catch (e) {
+      return { data: null, output: "", error: `could not write ${file}: ${(e as Error).message}` };
+    }
+    replayFiles.set(key, file);
+  }
+  return runReplay(tool, file, analysis, timeoutMs);
+}
+
 /** Stops a renderer's capture replay and removes its file (the capture was closed or changed). */
 export function releaseReplayKey(key: string): void {
   const file = replayFiles.get(key);

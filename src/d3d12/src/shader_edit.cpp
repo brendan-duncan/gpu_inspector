@@ -392,6 +392,17 @@ D3D12_BLEND_DESC DefaultBlend() {
     return d;
 }
 
+/** The stream-output description a variant asks for: its entries, its strides, nothing rasterized. */
+D3D12_STREAM_OUTPUT_DESC VariantStreamOutput(const PipelineVariant& v) {
+    D3D12_STREAM_OUTPUT_DESC so{};
+    so.pSODeclaration = v.soEntries;
+    so.NumEntries = v.soEntryCount;
+    so.pBufferStrides = v.soStrides;
+    so.NumStrides = v.soStrideCount;
+    so.RasterizedStream = D3D12_SO_NO_RASTERIZED_STREAM;
+    return so;
+}
+
 D3D12_RASTERIZER_DESC DefaultRasterizer() {
     D3D12_RASTERIZER_DESC r{};
     r.FillMode = D3D12_FILL_MODE_SOLID;
@@ -468,9 +479,14 @@ void PatchDepthStencil(bool desc2, uint8_t* payload, const PipelineVariant& v) {
 }
 
 void PatchRasterizer(uint8_t* payload, const PipelineVariant& v) {
-    if (!v.disableCull) return;
-    const D3D12_CULL_MODE none = D3D12_CULL_MODE_NONE;
-    memcpy(payload + offsetof(D3D12_RASTERIZER_DESC, CullMode), &none, sizeof(none));
+    if (v.disableCull) {
+        const D3D12_CULL_MODE none = D3D12_CULL_MODE_NONE;
+        memcpy(payload + offsetof(D3D12_RASTERIZER_DESC, CullMode), &none, sizeof(none));
+    }
+    if (v.wireframe) {
+        const D3D12_FILL_MODE lines = D3D12_FILL_MODE_WIREFRAME;
+        memcpy(payload + offsetof(D3D12_RASTERIZER_DESC, FillMode), &lines, sizeof(lines));
+    }
 }
 
 template <typename T>
@@ -491,6 +507,7 @@ bool BuildVariantStream(const PipelineRecord& rec, const PipelineVariant& v, std
     out = rec.stream;
     ApplyEdits(rec, out.data());
     bool hasPs = false, hasBlend = false, hasFormats = false, hasDsFormat = false, hasDepthStencil = false, hasRasterizer = false;
+    bool hasRootSignature = false, hasStreamOutput = false;
     size_t pos = 0;
     while (pos < out.size()) {
         if (out.size() - pos < sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE)) {
@@ -546,6 +563,18 @@ bool BuildVariantStream(const PipelineRecord& rec, const PipelineVariant& v, std
                 hasRasterizer = true;
                 PatchRasterizer(payload, v);
                 break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE:
+                hasRootSignature = true;
+                if (v.rootSignature) memcpy(payload, &v.rootSignature, sizeof(v.rootSignature));
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT: {
+                hasStreamOutput = true;
+                if (v.soEntryCount) {
+                    const D3D12_STREAM_OUTPUT_DESC so = VariantStreamOutput(v);
+                    memcpy(payload, &so, sizeof(so));
+                }
+                break;
+            }
             case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC:
                 if (v.singleSample) {
                     const DXGI_SAMPLE_DESC one{1, 0};
@@ -576,10 +605,16 @@ bool BuildVariantStream(const PipelineRecord& rec, const PipelineVariant& v, std
         PatchDepthStencil(false, reinterpret_cast<uint8_t*>(&ds), v);
         AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, ds);
     }
-    if (!hasRasterizer && v.disableCull) {
+    if (!hasRasterizer && (v.disableCull || v.wireframe)) {
         D3D12_RASTERIZER_DESC r = DefaultRasterizer();
         r.CullMode = D3D12_CULL_MODE_NONE;
         AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, r);
+    }
+    if (!hasRootSignature && v.rootSignature) {
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, v.rootSignature);
+    }
+    if (!hasStreamOutput && v.soEntryCount) {
+        AppendSubobject(out, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT, VariantStreamOutput(v));
     }
     return true;
 }
@@ -603,6 +638,8 @@ void BuildVariant(PipelineRecord& rec, const PipelineVariant& v, PipelineRecord:
         PatchDepthStencil(false, reinterpret_cast<uint8_t*>(&d.DepthStencilState), v);
         PatchRasterizer(reinterpret_cast<uint8_t*>(&d.RasterizerState), v);
         if (v.singleSample) d.SampleDesc = {1, 0};
+        if (v.rootSignature) d.pRootSignature = v.rootSignature;
+        if (v.soEntryCount) d.StreamOutput = VariantStreamOutput(v);
         hr = rec.device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pipeline));
     } else {
         std::vector<uint8_t> stream;
@@ -911,6 +948,57 @@ bool ShaderEditor::VariantPipeline(ID3D12PipelineState* pipeline, uint64_t key, 
     }
     *out = cached->second.pipeline.get();
     return true;
+}
+
+bool ShaderEditor::StageBytecode(ID3D12PipelineState* pipeline, const char* stage, const void*& code, size_t& size) {
+    code = nullptr;
+    size = 0;
+    if (!pipeline || !stage) return false;
+    Impl& i = impl();
+    std::lock_guard<std::recursive_mutex> lock(i.mutex);
+    auto it = i.records.find(pipeline);
+    if (it == i.records.end()) return false;
+    const D3D12_SHADER_BYTECODE* bc = it->second->Stage(stage);
+    if (!bc || !bc->pShaderBytecode || !bc->BytecodeLength) return false;
+    code = bc->pShaderBytecode;
+    size = bc->BytecodeLength;
+    return true;
+}
+
+bool ShaderEditor::PrimitiveTopologyTypeOf(ID3D12PipelineState* pipeline, D3D12_PRIMITIVE_TOPOLOGY_TYPE& out) {
+    if (!pipeline) return false;
+    Impl& i = impl();
+    std::lock_guard<std::recursive_mutex> lock(i.mutex);
+    auto it = i.records.find(pipeline);
+    if (it == i.records.end()) return false;
+    const PipelineRecord& rec = *it->second;
+    if (rec.kind == PipelineRecord::Kind::Graphics) {
+        out = rec.graphics.PrimitiveTopologyType;
+        return true;
+    }
+    if (rec.kind != PipelineRecord::Kind::Stream) return false;
+    size_t pos = 0;
+    while (pos < rec.stream.size()) {
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+        if (rec.stream.size() - pos < sizeof(type)) return false;
+        memcpy(&type, rec.stream.data() + pos, sizeof(type));
+        SubobjectLayout layout;
+        if (!SubobjectLayoutFor(type, layout) || layout.size > rec.stream.size() - pos) return false;
+        if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY) {
+            memcpy(&out, rec.stream.data() + pos + layout.payload, sizeof(out));
+            return true;
+        }
+        pos += layout.size;
+    }
+    return false;
+}
+
+ID3D12RootSignature* ShaderEditor::RootSignatureOf(ID3D12PipelineState* pipeline) {
+    if (!pipeline) return nullptr;
+    Impl& i = impl();
+    std::lock_guard<std::recursive_mutex> lock(i.mutex);
+    auto it = i.records.find(pipeline);
+    return it == i.records.end() ? nullptr : it->second->rootSignature;
 }
 
 bool ShaderEditor::PipelineIsDxil(ID3D12PipelineState* pipeline) {

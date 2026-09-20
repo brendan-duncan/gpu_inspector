@@ -1,3 +1,15 @@
+## Unreleased
+
+### Added
+- **Measure draws** on Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph splits a pass between its draws.
+- Draw overlays on Direct3D 12: Highlight Draw, Depth Test and Wireframe, measured by issuing the draw again inside the application while its next frame is captured.
+- The mesh view's VS Out on Direct3D 12: the draw's vertex shader outputs streamed out of the unmodified bytecode, with the root signature copied to allow stream output.
+- **Measure hardware counters** on Direct3D 12: `dxinsp_replay --counters` reads the GPU's own counters around each render pass, as `vkinsp_replay` does for Vulkan.
+- `dxinsp_replay --list-counters` names every metric the GPU offers, and the counter run says so up front when the machine keeps performance counters to administrators.
+
+### Fixed
+- A measurement taken inside the application is attached to the right command: a capture library names a command by its slot within its command list, which is not its index in the capture.
+
 ## v0.18.0
 
 ### Added

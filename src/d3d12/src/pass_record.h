@@ -59,6 +59,8 @@ struct MeasuredPass {
     bool layered = false;
     /** The capture measures this pass's overdraw. */
     bool measureOverdraw = false;
+    /** The capture measures a draw overlay, which is this pass's when the request names its index. */
+    bool measureOverlay = false;
     /** Why the pass cannot be measured at all. */
     std::string note;
     std::vector<PassAttachment> colors;
@@ -82,6 +84,13 @@ inline void KeepObject(KeepList& keep, T* object) {
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers (overdraw.cpp)
+
+/** A half float as the count targets hold it. */
+float HalfToFloat(uint16_t h);
+
+/** A resource barrier on one subresource, for the copies a measurement reads back. */
+void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES from,
+                D3D12_RESOURCE_STATES to);
 
 /** A texture of the measurement's own, in `state`; null when it could not be created. */
 ComPtr<ID3D12Resource> NewMeasurementTexture(ID3D12Device* device, DXGI_FORMAT format, uint32_t width, uint32_t height,
@@ -152,5 +161,33 @@ void PreparePixelHistory(MeasuredPass& pass, int attachment);
 void FollowPixel(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops);
 /** A list ran in a frame: the events measured in it belong to that frame. */
 void AssignPixelHistoryFrame(ID3D12GraphicsCommandList* list, uint32_t frame);
+
+// ---------------------------------------------------------------------------------------------
+// Draw overlays (draw_overlay.cpp)
+
+/** A capture starts: the draw whose overlay it measures. */
+void StartDrawOverlay(const DrawOverlayRequest& request);
+/** Whether an overlay was asked for at all, which is what makes every pass keep its depth copy. */
+bool DrawOverlayRequested();
+/** Whether the request names this pass. */
+bool MatchDrawOverlayPass(const MeasuredPass& pass);
+/** After the application's pass has ended: the draw issued again on its own, three ways. */
+void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops);
+/** A list ran in a frame: the overlay measured in it belongs to that frame. */
+void AssignDrawOverlayFrame(ID3D12GraphicsCommandList* list, uint32_t frame);
+
+// ---------------------------------------------------------------------------------------------
+// Mesh output (mesh_output.cpp)
+
+/** A capture starts: the draw whose vertex shader outputs it streams out. */
+void StartMeshOutput(const MeshOutputRequest& request);
+/** Whether mesh output was asked for at all, which is what makes every pass keep its calls. */
+bool MeshOutputRequested();
+/** Whether the request names this pass. */
+bool MatchMeshOutputPass(const MeasuredPass& pass);
+/** After the application's pass has ended: the draw issued again with stream output bound. */
+void MeasureMeshOutput(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops);
+/** A list ran in a frame: the mesh measured in it belongs to that frame. */
+void AssignMeshOutputFrame(ID3D12GraphicsCommandList* list, uint32_t frame);
 
 }  // namespace dxinsp

@@ -44,7 +44,7 @@ import {
   parseOverdrawFile, type OverdrawPassKey,
 } from "./overdraw.js";
 import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
-import { parseDrawOverlayFile, type DrawOverlay } from "./draw_overlay.js";
+import { parseDrawOverlayFile, type DrawOverlay, type DrawOverlayKind } from "./draw_overlay.js";
 import { drawState, findPass } from "./draw_state.js";
 import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
@@ -218,6 +218,7 @@ export class CapturePanel {
   private _stacksCheck!: Checkbox;
   /** Metal and D3D12: every render pass drawn again to measure its overdraw. */
   private _overdrawCheck: Checkbox | null = null;
+  private _drawTimingsCheck: Checkbox | null = null;
   private _bufferSizeInput!: TextInput;
   private _saveButton!: Button;
   private _exportCppButton!: Button;
@@ -331,6 +332,14 @@ export class CapturePanel {
       this._overdrawCheck = new Checkbox(row, { label: "Overdraw", checked: false, tooltip: "Metal and D3D12: draw every render pass a second time with a counting fragment shader, and show how many fragments landed on each pixel (with the pass's depth and stencil tests, and without). Costs GPU and CPU time in the captured frame." });
       c.push(this._overdrawCheck);
     }
+    // D3D12 measures its draws while capturing, with queries around each one
+    // (src/d3d12/src/capture.cpp). A Vulkan capture is replayed for the same numbers afterwards
+    // (Measure draws, vkinsp_replay --draws), so the option is only offered where it is the only
+    // way to get them; the Vulkan layer ignores it.
+    if (getHostPlatform() === "win32") {
+      this._drawTimingsCheck = new Checkbox(row, { label: "Measure draws", checked: false, tooltip: "D3D12: put a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph can split a pass's time between its draws. Costs GPU and CPU time in the captured frame, and a command list recorded before the capture began carries no queries." });
+      c.push(this._drawTimingsCheck);
+    }
     // macOS: the next frame as an Xcode GPU trace document, for the shader debugger and profiler
     // this tool does not have (src/metal/src/gpu_trace.mm). Written beside the Desktop; the Log
     // tab says where.
@@ -375,7 +384,9 @@ export class CapturePanel {
    * first frame; a frame already passed captures the next one) instead of the next frame.
    */
   capture(frames?: number, atFrame?: number, stacks?: boolean,
-          pixelHistory?: { texture: number; x: number; y: number; mip?: number; layer?: number }): CaptureView | null {
+          pixelHistory?: { texture: number; x: number; y: number; mip?: number; layer?: number },
+          drawOverlay?: { passIndex: number; drawIndex: number },
+          meshOutput?: { passIndex: number; drawIndex: number }): CaptureView | null {
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return null;
@@ -404,7 +415,10 @@ export class CapturePanel {
       stacktraces: this._stacksCheck.checked,
       maxBufferSize: maxKb * 1024,
       ...(this._overdrawCheck?.checked ? { overdraw: true } : {}),
+      ...(this._drawTimingsCheck?.checked ? { drawTimings: true } : {}),
       ...(pixelHistory ? { pixelHistory } : {}),
+      ...(drawOverlay ? { drawOverlay } : {}),
+      ...(meshOutput ? { meshOutput } : {}),
     });
     return view;
   }
@@ -423,13 +437,14 @@ export class CapturePanel {
   }
 
   /**
-   * Turns on the options that are off by default, for --debug-capture-with: "overdraw" and
-   * "stacks". Only the ones the host offers — asking for overdraw on a platform whose capture bar
-   * has no such checkbox does nothing, the way ticking it by hand could not.
+   * Turns on the options that are off by default, for --debug-capture-with: "overdraw", "draws"
+   * and "stacks". Only the ones the host offers — asking for overdraw on a platform whose capture
+   * bar has no such checkbox does nothing, the way ticking it by hand could not.
    */
   setExtraCaptureOptions(on: string[]): void {
     for (const name of on) {
       if (name === "overdraw" && this._overdrawCheck) this._overdrawCheck.checked = true;
+      else if (name === "draws" && this._drawTimingsCheck) this._drawTimingsCheck.checked = true;
       else if (name === "stacks") this._stacksCheck.checked = true;
     }
   }
@@ -560,6 +575,7 @@ export class CapturePanel {
       measureOverdraw: () => view.measureOverdraw(),
       drawsOfPass: (k) => view.drawsOfPass(k),
       drawOverlay: (command, passDraws) => view.drawOverlay(command, passDraws),
+      captureDrawOverlay: (command, kind) => this._captureWithDrawOverlay(view, command, kind),
       debugPixel: (command, x, y) => view.debugShader({ stage: "fragment", command, x, y }),
       // The Overdraw report opens this tab, so it exports the way the reports in tabs of their own do.
       exportHtml: () => { if (tab) void view.exportTabHtml(tab.label, tab.root.element); },
@@ -587,6 +603,7 @@ export class CapturePanel {
         view.selectCommand(index);
       },
       meshOutput: (command, passDraws) => view.meshOutput(command, passDraws),
+      captureMeshOutput: (command) => this._captureWithMeshOutput(view, command),
       inputNames: (cmd) => view.vertexInputNames(cmd),
       debugVertex: (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
     }, draw, options);
@@ -683,6 +700,89 @@ export class CapturePanel {
     const t = view.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
     if (!t) return;
     this._captureWithPixelHistory({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+  }
+
+  /**
+   * D3D12: the overlay of one draw, measured while the application's next frame records
+   * (src/d3d12/src/draw_overlay.cpp). The draw is named by its pass and its ordinal within it,
+   * since the frame captured now numbers its commands from the start; the new capture opens on its
+   * own render target tab with the overlay on, the way a Metal pixel history does.
+   */
+  /**
+   * D3D12: one draw's vertex shader outputs, streamed out while the application's next frame
+   * records (src/d3d12/src/mesh_output.cpp). As with a draw overlay, the draw is named by its pass
+   * and its ordinal within it, and the new capture opens its own mesh tab on the result.
+   */
+  private _captureWithMeshOutput(from: CaptureView, command: number): void {
+    const draw = from.data.commands[command];
+    const pass = draw ? from.passOfDraw(draw) : null;
+    if (!pass) {
+      this._statusLabel.text = "that draw is not in a render pass";
+      return;
+    }
+    const drawIndex = from.drawsOfPass(pass).findIndex((c) => c.index === command);
+    if (drawIndex < 0) {
+      this._statusLabel.text = "that draw is not one of its pass's";
+      return;
+    }
+    const live = this.capture(undefined, undefined, undefined, undefined, undefined,
+                              { passIndex: pass.passIndex, drawIndex });
+    if (!live) {
+      this._statusLabel.text = "not connected: a D3D12 mesh output is streamed out while the application's next frame is captured";
+      return;
+    }
+    this._statusLabel.text = `capturing the next frame, streaming draw ${drawIndex} of pass ${pass.passIndex} out...`;
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      const measured = [...live.data.meshOutputs.values()][0];
+      if (!measured) return;
+      done = true;
+      const cmd = live.data.commands[measured.command];
+      if (cmd) this._openMesh(live, cmd);
+      else this._statusLabel.text = "the new capture does not hold the draw that was streamed out";
+    };
+    live.data.onMeshOutputs.addListener(finish);
+    live.onCaptureComplete.addListener(finish);
+  }
+
+  private _captureWithDrawOverlay(from: CaptureView, command: number, kind: DrawOverlayKind): void {
+    const draw = from.data.commands[command];
+    const pass = draw ? from.passOfDraw(draw) : null;
+    if (!pass) {
+      this._statusLabel.text = "that draw is not in a render pass";
+      return;
+    }
+    const draws = from.drawsOfPass(pass);
+    const drawIndex = draws.findIndex((c) => c.index === command);
+    if (drawIndex < 0) {
+      this._statusLabel.text = "that draw is not one of its pass's";
+      return;
+    }
+    const attachment = from.data.textures.findIndex((t) => t.info.frame === pass.frame && t.info.commandBuffer === pass.commandBuffer
+      && t.info.passIndex === pass.passIndex && t.info.aspect === "color");
+    const live = this.capture(undefined, undefined, undefined, undefined, { passIndex: pass.passIndex, drawIndex });
+    if (!live) {
+      this._statusLabel.text = "not connected: a D3D12 draw overlay is measured while the application's next frame is captured";
+      return;
+    }
+    this._statusLabel.text = `capturing the next frame, measuring draw ${drawIndex} of pass ${pass.passIndex}...`;
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      const measured = [...live.data.drawOverlays.values()][0];
+      if (!measured) return;
+      done = true;
+      // The overlay belongs to the new capture's own draw, so its render target tab is the one to
+      // open: the image beside it is the frame the measurement was taken in.
+      const target = live.data.textures.find((t) => t.info.passIndex === pass.passIndex && t.info.aspect === "color")
+        ?? (attachment >= 0 ? live.data.textures[attachment] : undefined);
+      if (target) live.onOpenTexture.emit({ key: { frame: target.info.frame, commandBuffer: target.info.commandBuffer, passIndex: target.info.passIndex }, texture: target },
+                                          { overlay: kind, draw: measured.command });
+      else this._statusLabel.text = "the new capture has no colour render target for that pass";
+    };
+    live.data.onDrawOverlays.addListener(finish);
+    live.onCaptureComplete.addListener(finish);
   }
 
   private _captureWithPixelHistory(request: PixelRequest): void {
@@ -1576,6 +1676,17 @@ export class CaptureView implements CaptureHost {
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
+      // Draws measured one by one: the D3D12 capture's own queries, or a Vulkan replay's (Measure draws).
+      drawStats: d.drawStats?.length ?? 0,
+      drawStatsTimed: d.drawStats?.filter((s) => s.timed).length ?? 0,
+      drawStatsCounted: d.drawStats?.filter((s) => s.counted).length ?? 0,
+      // Measurements whose command really is a draw or a dispatch: a library names a command by
+      // the slot it took in its list, which is not its index here, and a measurement keyed by the
+      // wrong one would be attributed to whatever command happens to sit at that index.
+      drawStatsOnDraws: d.drawStats?.filter((s) => {
+        const c = d.commands[s.command];
+        return !!c && (sets.DRAW.has(c.method) || sets.DISPATCH.has(c.method));
+      }).length ?? 0,
       // Passes whose GPU counters arrived: what the GPU Bottlenecks report is built from.
       passCounters: [...d.passTimings.values()].filter((t) => t.counters && Object.keys(t.counters).length).length,
       passDepthRejection: [...d.passTimings.values()].filter((t) => typeof t.counters?.fragmentsPassed === "number").length,
@@ -1930,7 +2041,8 @@ export class CaptureView implements CaptureHost {
     const body = this._reportBody("bottlenecks");
     if (!body) return;
     renderBottleneckReport(body, this.data, this.window.database, (index) => this.selectCommand(index),
-      this.data.api === "vulkan" ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
+      this.data.api === "vulkan" || this.data.api === "d3d12"
+        ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
   }
 
   /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
@@ -2404,14 +2516,16 @@ export class CaptureView implements CaptureHost {
    */
   async measureHwCounters(perDraw = false): Promise<boolean> {
     if (this._hwCounterRun?.running) return false;
-    if (this.data.api !== "vulkan") {
-      this._setStatus(`hardware counters need the capture replayed, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay yet`);
+    // Vulkan replays with vkinsp_replay; D3D12 with dxinsp_replay (dx_counters.cpp). Metal has no
+    // replay, so its captures have no counters.
+    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") {
+      this._setStatus("hardware counters need the capture replayed, and Metal captures do not replay yet");
       return false;
     }
     this._hwCounterRun = { running: true };
     this._setStatus("reading hardware counters: replaying the capture once per collection pass...");
     try {
-      const result = await this._replay((r) => window.inspector.measureHwCounters({ ...r, perDraw }));
+      const result = await this._replay((r) => window.inspector.measureHwCounters({ ...r, perDraw, api: this.data.api }));
       if (!result.data) throw new Error(result.error ?? "the replay read no hardware counters");
       const file = parseHwCounters(result.data);
       this._hwCounterRun = null;

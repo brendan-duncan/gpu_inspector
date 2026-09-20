@@ -43,6 +43,14 @@ class PassReplay {
 public:
     /** The application bound a pipeline: a measurement binds its own copy of it instead. */
     virtual void SetPipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) = 0;
+    /**
+     * The application bound a root signature. A measurement that streams a vertex shader's outputs
+     * out binds its own copy of it instead, since the copy carries the stream-output flag
+     * (mesh_output.cpp); every other measurement takes the application's.
+     */
+    virtual void SetGraphicsRootSignature(ID3D12GraphicsCommandList* list, ID3D12RootSignature* signature) {
+        list->SetGraphicsRootSignature(signature);
+    }
     /** The application set scissor rectangles; the pixel history keeps its one-pixel scissor instead. */
     virtual void SetScissors(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RECT* rects) {
         list->RSSetScissorRects(count, rects);
@@ -139,13 +147,18 @@ void BeginMeasuredPass(CommandRecorder* rec);
 void EndMeasuredPass(CommandRecorder* rec, bool insideRenderPass);
 
 /** A capture starts recording: what it measures, with nothing left from the last one. */
-void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, uint64_t maxDataSize);
+void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, const DrawOverlayRequest& overlay,
+                       const MeshOutputRequest& mesh, uint64_t maxDataSize);
 /** A list ran in a frame: the measurements drawn into it belong to that frame. */
 void AssignMeasurementFrame(ID3D12GraphicsCommandList* list, uint32_t frame);
 /** The capture's command lists have completed: CaptureOverdraw plus a CaptureOverdrawData frame per measurement. */
 void SendOverdraw();
 /** The same for the followed pixel: CapturePixelHistory, in the JSON vkinsp_replay --pixel-data writes. */
 void SendPixelHistory();
+/** The same for the measured draw: CaptureDrawOverlay and its mask (draw_overlay.cpp). */
+void SendDrawOverlay();
+/** The same for the streamed-out draw: CaptureMeshOutput and its vertex records (mesh_output.cpp). */
+void SendMeshOutput();
 /** The device is going away: the measurement's own objects on it are released. */
 void OnMeasurementDeviceReleased(ID3D12Device* device);
 

@@ -14,7 +14,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { symbolizeFrames } from "./symbolize.js";
 import {
-  NO_REPLAY_TOOL, findExportTool, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
+  NO_D3D12_REPLAY_TOOL, NO_REPLAY_TOOL, findD3D12ReplayTool, findExportTool, findReplayTool, releaseAllReplays, releaseReplayKey, replayKeyed, replayKeyedOnce,
+  type OverdrawRun, type PixelRequest, type ReplayAnalysis, type ReplayRun,
 } from "./replay.js";
 import { findShaderSources, forgetSourceIndex } from "./shader_sources.js";
 import { compileDxil, compileHlslForDebugging, compileShader, decompileForDebugging, shaderText } from "./shader_tools.js";
@@ -64,7 +65,7 @@ let mainWin: BrowserWindow | null = null;
 //               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-capture-without=textures,buffers,images,profile]
-//               [--debug-capture-with=overdraw,stacks] [--debug-capture-delay=<ms>]
+//               [--debug-capture-with=overdraw,draws,stacks] [--debug-capture-delay=<ms>]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 //               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
 function cliOption(name: string): string | null {
@@ -1315,7 +1316,7 @@ ipcMain.handle("inspector:openCaptureWindow", (_e, opts: { path?: string; data?:
 ipcMain.handle("inspector:appStyles", () => appStyles());
 // Vulkan overdraw: the capture replayed on this machine's GPU (src/main/replay.ts, docs/REPLAY.md).
 /** What every replay request names: the renderer's key for its capture, and the capture's bytes when the main process asked for them. */
-interface ReplayRequest { key: string; data?: Uint8Array; name?: string }
+interface ReplayRequest { key: string; data?: Uint8Array; name?: string; api?: string }
 
 /** Runs an analysis in the replay kept alive for a renderer's capture (replayKeyed in replay.ts). */
 function replayFor(opts: ReplayRequest, analysis: ReplayAnalysis): Promise<ReplayRun> {
@@ -1332,8 +1333,18 @@ ipcMain.handle("inspector:releaseReplay", (_e, key: string) => releaseReplayKey(
 ipcMain.handle("inspector:measureDraws", (_e, opts: ReplayRequest): Promise<ReplayRun> => replayFor(opts, { kind: "draws" }));
 // Vulkan hardware counters: the GPU's own counters around each render pass, collected by replaying
 // the frame once per collection pass (src/replay/src/hw_counters.cpp).
-ipcMain.handle("inspector:measureHwCounters", (_e, opts: ReplayRequest & { perDraw?: boolean }): Promise<ReplayRun> =>
-  replayFor(opts, { kind: "counters", perDraw: opts.perDraw }));
+ipcMain.handle("inspector:measureHwCounters", (_e, opts: ReplayRequest & { perDraw?: boolean }): Promise<ReplayRun> => {
+  // A D3D12 capture's counters come from dxinsp_replay, which has no --serve mode and so runs
+  // one-shot (src/d3d12/replay/src/dx_counters.cpp); a Vulkan capture's from the replay kept alive.
+  if (opts.api === "d3d12") {
+    const roots = [path.resolve(__dirname, "..", "..", "..", "..")];
+    const layerDirs = [path.join(process.resourcesPath ?? "", "layer")];
+    const tool = findD3D12ReplayTool(roots, layerDirs);
+    if (!tool) return Promise.resolve({ data: null, output: "", error: NO_D3D12_REPLAY_TOOL });
+    return replayKeyedOnce(tool, opts.key, opts.data, { kind: "counters" }, opts.name);
+  }
+  return replayFor(opts, { kind: "counters", perDraw: opts.perDraw });
+});
 // Vulkan draw-call overlays: where some draws landed, drawn again on their own (src/replay/src/overlay.cpp).
 ipcMain.handle("inspector:drawOverlay", (_e, opts: ReplayRequest & { commands: number[] }): Promise<ReplayRun> =>
   replayFor(opts, { kind: "overlay", commands: opts.commands }));

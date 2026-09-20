@@ -16,6 +16,15 @@ export function measuresWhileCapturing(api: string): boolean {
   return api === "metal" || api === "d3d12";
 }
 
+/**
+ * Whether the capture library measures a *draw overlay* while it captures, rather than the app
+ * replaying the capture for it (src/d3d12/src/draw_overlay.cpp). Metal measures overdraw and a
+ * pixel history that way but no overlays, so this is narrower than measuresWhileCapturing.
+ */
+export function measuresOverlayWhileCapturing(api: string): boolean {
+  return api === "d3d12";
+}
+
 /** A render pass of a capture: which frame, which command buffer, and its index in that buffer. */
 export interface OverdrawPassKey {
   frame: number;

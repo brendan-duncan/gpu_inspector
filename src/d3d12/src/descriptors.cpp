@@ -598,6 +598,12 @@ std::shared_ptr<RootSignatureInfo> RootSignatures::ParseSubobject(const void* bl
 
 std::shared_ptr<const RootSignatureInfo> RootSignatures::Register(ID3D12RootSignature* signature, const void* blob, size_t size) {
     std::shared_ptr<RootSignatureInfo> info = Parse(blob, size);
+    // The bytes as well as the layout: a mesh output measurement needs this signature again with
+    // the stream-output flag on it, which means serializing it afresh (mesh_output.cpp).
+    if (info && blob && size) {
+        const uint8_t* bytes = static_cast<const uint8_t*>(blob);
+        info->blob.assign(bytes, bytes + size);
+    }
     if (!signature) return info;
     if (info) Register(signature, info);
     return info;

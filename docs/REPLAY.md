@@ -665,17 +665,42 @@ Limits:
 
 ## Direct3D 12
 
-`dxinsp_replay` (`src/d3d12/replay/`, Windows) re-executes a Direct3D 12 capture, and is what
-**Export to C++** runs for one. It replays the frame and compares its render targets, and it writes
-the frame out as a C++ project; the analyses above are `vkinsp_replay`'s and stay Vulkan-only.
+`dxinsp_replay` (`src/d3d12/replay/`, Windows) re-executes a Direct3D 12 capture. It is what
+**Export to C++** runs for one, and what **Measure hardware counters** runs; it replays the frame
+and compares its render targets, writes the frame out as a C++ project, and reads the GPU's own
+counters around each render pass. The other analyses above are `vkinsp_replay`'s: a D3D12 capture
+gets overdraw, pixel history, draw overlays, the mesh view's VS Out and per-draw timings from the
+capture library instead, measured while the frame was recorded
+([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)).
 
 ```
 dxinsp_replay <capture.gpucap> [--debug-layer] [--trace]
 dxinsp_replay <capture.gpucap> --export <directory> [--export-data <file>]
+dxinsp_replay <capture.gpucap> --counters [--counter <name>]... [--counter-data <file>]
+dxinsp_replay <capture.gpucap> --list-counters [--counter-data <file>]
 ```
 
 - `--debug-layer` runs the replay under the D3D12 debug layer and prints its messages, grouped.
 - `--trace` names each command on stderr before it is issued, to find the one a driver dies in.
+- `--counters` collects the counters [above](#hardware-counters), a range per render pass, writing
+  the same `gpu-inspector-hw-counters` file `vkinsp_replay --counter-data` writes; `--counter`
+  names the metrics to collect instead of the default set, and `--list-counters` names every metric
+  the GPU offers. Three things differ from the Vulkan side:
+  - **NVIDIA only.** Vulkan falls back to `VK_KHR_performance_query` where the driver has it;
+    Direct3D 12 has no portable counter API, so this is NVIDIA's Nsight Perf SDK or nothing.
+  - **Passes, not draws.** There is no `--counter-draws`: a D3D12 capture's per-draw numbers come
+    from the capture library's own queries (**Measure draws**), so nesting a range per draw here
+    would double the collection passes for numbers that already exist.
+  - **A refusal looks different.** Counter access has to be allowed on the machine (NVIDIA Control
+    Panel, *Developer > Manage GPU Performance Counters*, for all users) or the replay run as
+    administrator. Vulkan is told `ERR_NVGPUCTRPERM` when the session begins; Direct3D 12's driver
+    accepts the session and then never finishes the first profiled submission, so the replay checks
+    the permission before it starts and gives up on a submission that has not finished in 30
+    seconds rather than waiting for good.
+
+  The SDK's own range profiler ships for Vulkan only, so its Direct3D 12 half — the seven calls its
+  state machine makes — is implemented in `src/d3d12/replay/src/dx_nvperf.cpp` over the
+  `NVPW_D3D12_*` entry points, which mirror the Vulkan family call for call.
 - The exit code is 0 when every compared target is identical, 1 when some differ or could not be
   compared, 2 when the replay could not run. `DXINSP_REPLAY_DUMP=<directory>` writes both sides of a
   target that differs as raw bytes.

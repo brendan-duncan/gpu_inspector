@@ -36,6 +36,25 @@ struct ShaderInfo {
     std::string error;
 };
 
+/**
+ * One output of a shader's signature, as a stream-output declaration entry needs it
+ * (D3D12_SO_DECLARATION_ENTRY): the mesh view's VS Out streams a vertex shader's own outputs out of
+ * the unmodified bytecode, so nothing but the signature is needed to ask for them.
+ */
+struct ShaderOutputParam {
+    std::string semantic;
+    uint32_t semanticIndex = 0;
+    uint32_t startComponent = 0;
+    uint32_t componentCount = 0;
+    /** "float", "int" or "uint", as the UI names the record's fields. */
+    std::string base;
+    /** The system value it carries ("SV_Position" and the rest), empty for an ordinary output. */
+    std::string systemValue;
+};
+
+/** The output signature of a shader container, empty when it could not be reflected. */
+std::vector<ShaderOutputParam> ShaderOutputSignature(const void* bytecode, size_t size);
+
 /** Whether the bytes are a DXBC/DXIL container ("DXBC" magic and a plausible size). */
 bool IsShaderContainer(const void* bytecode, size_t size);
 

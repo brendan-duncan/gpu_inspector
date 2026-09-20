@@ -133,12 +133,21 @@ the vertex and fragment spans a stage verdict needs are Metal's.
 
 **Hardware counters** at the foot of the report answer the question the rest of it can only infer:
 which unit inside the shader core a pass actually saturates — shader throughput, memory bandwidth,
-cache, occupancy, the ALU and FMA pipes. **Measure hardware counters** replays a Vulkan capture on
-this machine's GPU reading its own counters around each render pass, and the numbers appear as a
-column per counter beside each pass's GPU time. The frame is replayed once per collection pass the
-counters need, so it takes a while on a large capture, and the result is kept with the capture and
-saved into its file. It needs NVIDIA's Nsight Perf SDK or `VK_KHR_performance_query`, and GPU
-performance-counter access enabled; [Capture replay](REPLAY.md#hardware-counters) has the detail.
+cache, occupancy, the ALU and FMA pipes. **Measure hardware counters** replays the capture on this
+machine's GPU reading its own counters around each render pass, and the numbers appear as a column
+per counter beside each pass's GPU time. The frame is replayed once per collection pass the counters
+need, so it takes a while on a large capture, and the result is kept with the capture and saved into
+its file.
+
+It works on a **Vulkan** capture (`vkinsp_replay`) and on a **Direct3D 12** one (`dxinsp_replay`);
+a Metal capture has no replay to read them with. Vulkan reads them through NVIDIA's Nsight Perf SDK
+or `VK_KHR_performance_query`, whichever the device has; Direct3D 12 has no portable counter API, so
+it is the Nsight Perf SDK and therefore NVIDIA only. Either way the machine has to allow GPU
+performance-counter access — on Windows that is the NVIDIA Control Panel's *Developer > Manage GPU
+Performance Counters*, set to allow all users, or a replay run as administrator. Without it Vulkan
+says `ERR_NVGPUCTRPERM` and Direct3D 12 reports that the profiled submission never finished, which
+is what the refusal looks like from there. [Capture replay](REPLAY.md#hardware-counters) has the
+detail.
 
 ![The GPU Bottlenecks report: per-pass GPU time, overdraw and fragments per primitive, with what to look at](images/bottlenecks.png)
 
@@ -230,9 +239,15 @@ and the line under the list counts the pixels it covered, passed and had rejecte
   they were rejected.
 - **Wireframe** — the draw's triangles as lines.
 
-Vulkan only: the capture is replayed on this machine's GPU with the draw drawn on its own (see
-[Capture replay](REPLAY.md#draw-call-overlays)). As with overdraw, a fragment the draw's own shader
-discards still shows as covered.
+How it is measured depends on the API, and as with overdraw a fragment the draw's own shader
+discards still shows as covered:
+
+- **Vulkan** — the capture is replayed on this machine's GPU with the draw drawn on its own (see
+  [Capture replay](REPLAY.md#draw-call-overlays)).
+- **Direct3D 12** — the draw is issued again inside the application, so asking for an overlay
+  captures the application's next frame and shows it there
+  ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)). One draw
+  is measured per capture.
 
 ## Mesh view
 
@@ -251,8 +266,12 @@ has a wireframe preview over a table of the draw's vertices:
 - **VS Out** — what the vertex shader wrote: `gl_Position` and every output, drawn in normalized
   device coordinates inside the outline of the view volume. The status line counts what keeps a
   mesh from being seen: primitives outside the view volume, vertices behind the eye, triangles with
-  no area and NaN positions. Vulkan only: the capture is replayed with the vertex shader writing
-  its outputs to a buffer (see [Capture replay](REPLAY.md#mesh-output)).
+  no area and NaN positions. On **Vulkan** the capture is replayed with the vertex shader writing
+  its outputs to a buffer (see [Capture replay](REPLAY.md#mesh-output)); on **Direct3D 12** the
+  outputs are streamed out of the unmodified shader while the application's next frame is captured,
+  so the mesh opens in that capture
+  ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)). Metal has
+  neither yet, and opens on VS In.
 
 ![The mesh view's VS Out: the test application's cube in normalized device coordinates, inside the outline of the view volume, over its clip-space positions and outputs](images/mesh-output.png)
 

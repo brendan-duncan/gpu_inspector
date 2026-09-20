@@ -1859,6 +1859,7 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
         if (m == "EndRenderTargets") {
             // The capture's own marker: the pass OMSetRenderTargets began ends here, and here it read the targets back.
             if (pass.active && _options.compareTargets) InjectReadbacks(list, pass, readbacks);
+            if (pass.active && _counters) PopCounterRange(list);
             pass.active = false;
             continue;
         }
@@ -1869,6 +1870,9 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
             pass.index = passCount++;
             pass.frame = frame;
             pass.list = group.list;
+            // A counter range around the pass, named so its values can be matched back to it
+            // (dx_counters.cpp). It goes in before the pass's own commands are recorded.
+            if (_counters) PushCounterRange(list, pass.index, i, frame, group.list);
             // The views the pass renders to, written before the command that names them.
             const JValue* targets = args ? args->Get(pass.realPass ? "pRenderTargets" : "pRenderTargetDescriptors") : nullptr;
             const uint32_t colorCount = targets && targets->IsArray() ? targets->count : 0;
@@ -2147,7 +2151,8 @@ void DxReplayer::ReplayCommands() {
         }
         if (lists.empty()) continue;
         queue->ExecuteCommandLists((UINT)lists.size(), lists.data());
-        WaitForQueue(queue);
+        // Inside a counter collection pass the wait belongs after the pass, not here (_inCounterRound).
+        if (!_inCounterRound) WaitForQueue(queue);
         for (auto& [heapId, heap] : _heaps) heap.bound.clear();
         _report->submissions++;
         if (_x) {
@@ -2164,8 +2169,12 @@ void DxReplayer::ReplayCommands() {
         }
         CompareReadbacks(readbacks);
         CollectMessages();
-        for (ID3D12Resource* r : _transients) r->Release();
-        _transients.clear();
+        // A resource still named by work in flight must outlive it: during a counter round the
+        // frame's submissions have not been waited for yet, so its transients go at the end of it.
+        if (!_inCounterRound) {
+            for (ID3D12Resource* r : _transients) r->Release();
+            _transients.clear();
+        }
     }
     for (const Group& g : _groups)
         if (!g.used) Problem("command list " + std::to_string(g.list) + " was recorded but its submission is not in the capture");
@@ -2189,6 +2198,12 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
         }
     }
     g_currentStep = &_env.where;
+    if (options.counters.enabled) {
+        // Before the device: the SDK puts the driver into profiling mode, and a device created
+        // before that has no profiling support (dx_counters.h, LoadDriver).
+        std::string note;
+        if (!nvperf::LoadDriver(note)) report.counters.notes.push_back(note);
+    }
     if (!CreateDevice()) return false;
     if (const JValue* buffers = capture.Buffers(); buffers && buffers->IsArray())
         for (uint32_t i = 0; i < buffers->count; ++i)
@@ -2198,6 +2213,39 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
     UploadTextures();
     MoveToInitialStates();
     CollectMessages();
+    if (options.counters.enabled) {
+        // Hardware counters are their own analysis: the frame is replayed once per collection pass
+        // the counters need, and nothing else runs (dx_counters.cpp).
+        _options.compareTargets = false;
+        if (PrepareCounters()) {
+            if (options.counters.list) {
+                ListCounters();
+            } else {
+                const uint32_t rounds = std::max(2u, CounterRounds());
+                std::fprintf(stderr, "hardware counters: up to %u replays of the frame\n", rounds);
+                for (uint32_t round = 0; round < rounds; ++round) {
+                    if (round > 0) {
+                        // Each round runs the frame from where it started: the uploads again, and
+                        // the resources back in the states the frame's first commands expect.
+                        UploadTextures();
+                        MoveToInitialStates();
+                    }
+                    if (!BeginCounterRound()) break;
+                    std::fprintf(stderr, "  replay %u of at most %u\n", round + 1, rounds);
+                    std::fflush(stderr);
+                    ReplayCommands();
+                    if (_deviceLost) break;
+                    if (!EndCounterRound()) break;
+                }
+                CompleteCounters();
+            }
+        }
+        DestroyCounters();
+        for (auto& p : _env.problems) report.problems.push_back(p);
+        _env.problems.clear();
+        CollectMessages();
+        return true;
+    }
     ReplayCommands();
     if (!_deviceLost) EmitFrameEnd();
     for (auto& p : _env.problems) report.problems.push_back(p);

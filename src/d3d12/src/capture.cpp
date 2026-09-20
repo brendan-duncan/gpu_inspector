@@ -42,6 +42,30 @@ constexpr uint32_t kPassSlots = 8192;
 constexpr uint64_t kStatsOffset = 16;
 constexpr uint64_t kOcclusionOffset = kStatsOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
 constexpr uint64_t kSlotBytes = kOcclusionOffset + 8;
+
+/**
+ * Draws and dispatches measured one by one (CaptureOptions::drawTimings, **Measure draws**), per
+ * capture and per device. Their queries sit in heaps of their own, so a pass's slots and a draw's
+ * cannot run into each other; a frame with more draws than this is measured up to here, and the
+ * message it is sent in says so.
+ *
+ * Each kind of result has a region of the readback buffer to itself, tightly packed, so a run of
+ * consecutive slots resolves in one call: ResolveQueryData writes its results consecutively, which
+ * a per-draw slot stride could not hold.
+ */
+constexpr uint32_t kDrawSlots = 16384;
+constexpr uint64_t kDrawTimestampBytes = 16;   // the pair around the draw
+constexpr uint64_t kDrawStatsBytes = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+constexpr uint64_t kDrawOcclusionBytes = 8;
+constexpr uint64_t kDrawTimestampBase = 0;
+constexpr uint64_t kDrawStatsBase = kDrawTimestampBase + kDrawTimestampBytes * kDrawSlots;
+constexpr uint64_t kDrawOcclusionBase = kDrawStatsBase + kDrawStatsBytes * kDrawSlots;
+constexpr uint64_t kDrawReadbackBytes = kDrawOcclusionBase + kDrawOcclusionBytes * kDrawSlots;
+
+/** What BeginDrawQueries returns: the slot, and which of the two optional queries it began. */
+constexpr uint32_t kDrawSlotMask = 0x3fffffffu;
+constexpr uint32_t kDrawStatsBit = 0x80000000u;
+constexpr uint32_t kDrawOcclusionBit = 0x40000000u;
 constexpr uint64_t kStagingChunkBytes = 64ull << 20;
 constexpr uint64_t kStagingAlignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;   // 512: what a placed footprint needs
 constexpr uint32_t kMaxAttachmentSlices = 16;
@@ -273,6 +297,24 @@ struct TimingEntry {
     bool hasOcclusion = false;
 };
 
+/**
+ * One draw or dispatch measured by queries of its own (CaptureOptions::drawTimings). The command
+ * index is the draw's in the capture's own command list, which is what the measurements are keyed
+ * by in the UI (draw_stats.ts).
+ */
+struct DrawEntry {
+    ID3D12Device* device = nullptr;
+    uint32_t frame = UINT32_MAX;
+    ID3D12GraphicsCommandList* list = nullptr;
+    uint64_t listId = 0;
+    uint32_t command = 0;
+    uint32_t passIndex = UINT32_MAX;   // a dispatch outside a render pass has none
+    bool dispatch = false;
+    uint32_t slot = 0;
+    bool hasStats = false;
+    bool hasOcclusion = false;
+};
+
 struct SubmittedList {
     uint64_t listId = 0;
     std::shared_ptr<const CommandList> commands;   // null: recorded before the capture
@@ -309,6 +351,18 @@ struct DeviceCapture {
     std::atomic<uint32_t> slotsUsed{0};
     ComPtr<ID3D12Resource> queryReadback;
     void* queryMapped = nullptr;
+    /**
+     * The per-draw queries (drawTimings), made on the first draw of the first capture that asks
+     * for them rather than with the device: most captures never measure draws, and these heaps and
+     * their readback are larger than the pass ones.
+     */
+    ComPtr<ID3D12QueryHeap> drawTimestampHeap;
+    ComPtr<ID3D12QueryHeap> drawStatsHeap;
+    ComPtr<ID3D12QueryHeap> drawOcclusionHeap;
+    std::atomic<uint32_t> drawSlotsUsed{0};
+    ComPtr<ID3D12Resource> drawReadback;
+    void* drawMapped = nullptr;
+    std::atomic<bool> drawQueriesMade{false};
     std::vector<StagingChunk> staging;
     std::map<ResolveKey, ComPtr<ID3D12Resource>> resolves;
     /**
@@ -430,6 +484,13 @@ struct CaptureManager::Impl {
     std::vector<TextureEntry> textures;
     std::vector<BufferEntry> buffers;
     std::vector<TimingEntry> timings;
+    std::vector<DrawEntry> draws;
+    /**
+     * The draw slots each open list has taken and not resolved yet, packed as BeginDrawQueries
+     * returned them. A resolve is only allowed outside a BeginRenderPass region, so it happens at
+     * the end of a pass and before Close rather than at the draw.
+     */
+    std::unordered_map<ID3D12GraphicsCommandList*, std::vector<uint32_t>> pendingDrawSlots;
     uint64_t bufferBytes = 0;
     uint64_t imageBytes = 0;
     /** Render-target bytes read back in this capture, against CaptureOptions::maxTargetTotal. */
@@ -466,6 +527,7 @@ struct CaptureManager::Impl {
     void SendTextures(std::vector<TextureEntry>& textures);
     void SendBuffers(std::vector<BufferEntry>& buffers);
     void SendPassTimings(const std::vector<TimingEntry>& timings, ID3D12Device* home);
+    void SendDrawStats(const std::vector<DrawEntry>& draws, ID3D12Device* home);
     ID3D12CommandQueue* CalibrationQueue(ID3D12Device* device);
     /** The last captured frame ended: waits for the GPU, streams everything, releases the capture's objects. */
     void Finish(CaptureManager& cm, ID3D12Device* device);
@@ -856,6 +918,27 @@ uint32_t ReserveQueries(std::atomic<uint32_t>& used, uint32_t count, uint32_t li
     return first;
 }
 
+/**
+ * The per-draw query heaps and their readback buffer, made once per device on the first draw that
+ * is measured. False when the device would not make them, which turns the measurement off rather
+ * than failing the capture.
+ */
+bool EnsureDrawQueries(DeviceCapture& dc, ID3D12Device* device) {
+    if (dc.drawQueriesMade.load(std::memory_order_acquire)) return dc.drawTimestampHeap && dc.drawMapped;
+    std::lock_guard lock(dc.mutex);
+    if (dc.drawQueriesMade.load(std::memory_order_relaxed)) return dc.drawTimestampHeap && dc.drawMapped;
+    ScopedInternal internal;
+    CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kDrawSlots * 2, dc.drawTimestampHeap.put());
+    CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, kDrawSlots, dc.drawStatsHeap.put());
+    CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_OCCLUSION, kDrawSlots, dc.drawOcclusionHeap.put());
+    if (CreateReadbackBuffer(device, kDrawReadbackBytes, dc.drawReadback.put())) {
+        D3D12_RANGE none{0, 0};
+        if (FAILED(dc.drawReadback->Map(0, &none, &dc.drawMapped))) dc.drawMapped = nullptr;
+    }
+    dc.drawQueriesMade.store(true, std::memory_order_release);
+    return dc.drawTimestampHeap && dc.drawMapped;
+}
+
 /** Whether a list of this type can carry the capture's timestamp queries (a copy list needs a heap of another type). */
 bool TimestampsAllowed(D3D12_COMMAND_LIST_TYPE type) {
     return type == D3D12_COMMAND_LIST_TYPE_DIRECT || type == D3D12_COMMAND_LIST_TYPE_COMPUTE;
@@ -924,6 +1007,111 @@ void CaptureManager::EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic
 
 void CaptureManager::OnDraw(CommandRecorder* rec) {
     if (rec && rec->pass().active) rec->pass().drawCount++;
+}
+
+uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec) {
+    if (!rec || rec->bundle() || !TimestampsAllowed(rec->type())) return UINT32_MAX;
+    Impl& i = impl();
+    {
+        std::lock_guard lock(i.mutex);
+        if (i.state != Impl::State::Capturing || !i.options.drawTimings) return UINT32_MAX;
+    }
+    // A pass suspended across command lists takes nothing, here as in BeginPass: a query begun in
+    // one part and ended in another closes the list with E_FAIL.
+    if (rec->pass().active && rec->pass().split) return UINT32_MAX;
+    DeviceCapture* dc = i.CaptureFor(rec->device());
+    if (!dc || !EnsureDrawQueries(*dc, rec->device())) return UINT32_MAX;
+    const uint32_t slot = dc->drawSlotsUsed.fetch_add(1, std::memory_order_relaxed);
+    if (slot >= kDrawSlots) return UINT32_MAX;   // the counter keeps climbing; only the first kDrawSlots draws are measured
+    ScopedInternal internal;
+    ID3D12GraphicsCommandList* list = rec->list();
+    list->EndQuery(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
+    // Statistics and occlusion need a direct list, and are not begun while the application has a
+    // query of its own open, nor inside a BeginRenderPass region: their resolve would have to wait
+    // for EndRenderPass, which is where a pass's own queries stop for the same reason (BeginPass).
+    uint32_t packed = slot;
+    const bool graphics = rec->type() == D3D12_COMMAND_LIST_TYPE_DIRECT && !(rec->pass().active && rec->pass().renderPassApi);
+    if (graphics && dc->drawStatsHeap) {
+        list->BeginQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
+        packed |= kDrawStatsBit;
+    }
+    if (graphics && dc->drawOcclusionHeap && rec->state().appQueryDepth == 0) {
+        list->BeginQuery(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
+        packed |= kDrawOcclusionBit;
+    }
+    return packed;
+}
+
+void CaptureManager::EndDrawQueries(CommandRecorder* rec, uint32_t packed, bool dispatch) {
+    if (!rec || packed == UINT32_MAX) return;
+    Impl& i = impl();
+    DeviceCapture* dc = i.FindCapture(rec->device());
+    if (!dc || !dc->drawTimestampHeap) return;
+    const uint32_t slot = packed & kDrawSlotMask;
+    DrawEntry de;
+    de.hasStats = (packed & kDrawStatsBit) != 0;
+    de.hasOcclusion = (packed & kDrawOcclusionBit) != 0;
+    ScopedInternal internal;
+    ID3D12GraphicsCommandList* list = rec->list();
+    if (de.hasStats) list->EndQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
+    if (de.hasOcclusion) list->EndQuery(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
+    list->EndQuery(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1);
+    de.device = rec->device();
+    de.list = list;
+    de.listId = Tracker::Get().IdOf(list);
+    // The draw has been recorded by now, so it is the command the recorder last took.
+    de.command = rec->commandCount() ? (uint32_t)rec->commandCount() - 1 : 0;
+    de.passIndex = rec->pass().active ? rec->pass().passIndex : UINT32_MAX;
+    de.dispatch = dispatch;
+    de.slot = slot;
+    std::lock_guard lock(i.mutex);
+    i.draws.push_back(de);
+    i.pendingDrawSlots[list].push_back(packed);
+}
+
+void CaptureManager::ResolveDrawQueries(CommandRecorder* rec) {
+    if (!rec) return;
+    Impl& i = impl();
+    ID3D12GraphicsCommandList* list = rec->list();
+    std::vector<uint32_t> slots;
+    {
+        std::lock_guard lock(i.mutex);
+        auto it = i.pendingDrawSlots.find(list);
+        if (it == i.pendingDrawSlots.end()) return;
+        slots.swap(it->second);
+        i.pendingDrawSlots.erase(it);
+    }
+    if (slots.empty()) return;
+    DeviceCapture* dc = i.FindCapture(rec->device());
+    if (!dc || !dc->drawReadback) return;
+    std::sort(slots.begin(), slots.end(), [](uint32_t a, uint32_t b) { return (a & kDrawSlotMask) < (b & kDrawSlotMask); });
+    ScopedInternal internal;
+    /**
+     * One resolve per run of consecutive slots that all carry the query: a list recording its draws
+     * in order takes a contiguous block, so a pass of thousands of draws resolves in a call or two.
+     * A slot whose query was never begun is left out rather than resolved, since what a resolve
+     * reads from one is undefined and the debug layer says so.
+     */
+    auto resolve = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, uint32_t bit, uint32_t perSlot, uint64_t base,
+                       uint64_t bytes) {
+        if (!heap) return;
+        for (size_t first = 0; first < slots.size();) {
+            if (bit && !(slots[first] & bit)) { first++; continue; }
+            size_t last = first;
+            while (last + 1 < slots.size() && (slots[last + 1] & kDrawSlotMask) == (slots[last] & kDrawSlotMask) + 1 &&
+                   (!bit || (slots[last + 1] & bit)))
+                last++;
+            const uint32_t start = slots[first] & kDrawSlotMask;
+            const uint32_t count = (uint32_t)(last - first + 1);
+            list->ResolveQueryData(heap, type, start * perSlot, count * perSlot, dc->drawReadback.get(),
+                                   base + (uint64_t)start * bytes);
+            first = last + 1;
+        }
+    };
+    resolve(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, kDrawTimestampBase, kDrawTimestampBytes);
+    resolve(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, kDrawStatsBit, 1, kDrawStatsBase, kDrawStatsBytes);
+    resolve(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, kDrawOcclusionBit, 1, kDrawOcclusionBase,
+            kDrawOcclusionBytes);
 }
 
 namespace {
@@ -1019,6 +1207,8 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             i.timings.push_back(te);
         }
     }
+    // The draws measured inside the pass, now that the pass is over and a resolve is allowed.
+    ResolveDrawQueries(rec);
 
     // Then every target, slice by slice, into staging. A depth-stencil target is read back twice:
     // its depth plane, then its stencil plane (`asStencil`: plane 1, one byte per texel), each an
@@ -1222,6 +1412,8 @@ void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list) {
     if (!rec) return;
     EndPass(rec, true);
     OnComputePassEnd(rec);
+    // Whatever was measured outside a pass (a dispatch between them) is resolved here instead.
+    ResolveDrawQueries(rec);
     // A BeginRenderPass region left open at Close is the application's error; its deferred copies
     // still have to land somewhere, and the list is about to close.
     if (std::vector<DeferredCopy>* deferred = impl().DeferredOf(rec)) {
@@ -1776,6 +1968,7 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
                 AssignFrame(i.textures, list, s.frame);
                 AssignFrame(i.buffers, list, s.frame);
                 AssignFrame(i.timings, list, s.frame);
+                AssignFrame(i.draws, list, s.frame);
                 AssignMeasurementFrame(list, s.frame);
             }
             i.submissions.push_back(std::move(s));
@@ -1905,6 +2098,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
     bool started = false;
     bool overdraw = false;
     PixelHistoryRequest pixelHistory;
+    DrawOverlayRequest drawOverlay;
+    MeshOutputRequest meshOutput;
     uint64_t maxTextureSize = 0;
     {
         std::lock_guard lock(i.mutex);
@@ -1939,6 +2134,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 // over with it, so the frame before does not spend the captured frame's.
                 i.warmingUp = false;
                 i.timings.clear();
+                i.draws.clear();
+                i.pendingDrawSlots.clear();
                 i.bufferIds.clear();
                 i.textureIds.clear();
                 i.bufferBytes = i.imageBytes = i.targetBytes = i.commandTotal = 0;
@@ -1951,6 +2148,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 started = true;
                 overdraw = i.options.overdraw;
                 pixelHistory = i.options.pixelHistory;
+                drawOverlay = i.options.drawOverlay;
+                meshOutput = i.options.meshOutput;
                 maxTextureSize = i.options.maxTextureSize;
             }
         } else if (i.state == Impl::State::Capturing) {
@@ -1977,7 +2176,7 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
     }
     if (started) {
         // What the capture measures while it records (overdraw.h), with nothing left from the last one.
-        StartMeasurements(overdraw, pixelHistory, maxTextureSize);
+        StartMeasurements(overdraw, pixelHistory, drawOverlay, meshOutput, maxTextureSize);
         // The pass counters start over; the heaps themselves stay.
         std::lock_guard lock(i.deviceMutex);
         for (auto& [d, dc] : i.devices) {
@@ -1985,6 +2184,7 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             dc->statsUsed.store(0, std::memory_order_relaxed);
             dc->occlusionUsed.store(0, std::memory_order_relaxed);
             dc->slotsUsed.store(0, std::memory_order_relaxed);
+            dc->drawSlotsUsed.store(0, std::memory_order_relaxed);
             // The last capture's staging, which its lists have long since stopped naming.
             std::lock_guard dlock(dc->mutex);
             ScopedInternal internal;
@@ -2014,6 +2214,7 @@ struct CaptureData {
     std::vector<TextureEntry> textures;
     std::vector<BufferEntry> buffers;
     std::vector<TimingEntry> timings;
+    std::vector<DrawEntry> draws;
 };
 
 void WriteCommandEntry(JsonWriter& w, uint64_t index, uint32_t frame, int64_t slot, const char* method, const char* objectClass,
@@ -2355,6 +2556,92 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
     Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
 }
 
+/**
+ * Every draw and dispatch the capture measured, in the shape `vkinsp_replay --draws` writes for a
+ * Vulkan capture (src/replay/src/draw_stats.cpp, draw_stats.ts): a time and the counters, keyed by
+ * the command the draw is in the capture's own list.
+ *
+ * As there, a draw's time is not what that draw costs on its own -- the GPU pipelines consecutive
+ * draws, so their spans overlap and add up to more than the pass takes. It says what share of a
+ * pass a draw accounts for, which is what the Shader Flame Graph splits a pass's duration by. The
+ * counters are exact.
+ */
+void CaptureManager::Impl::SendDrawStats(const std::vector<DrawEntry>& draws, ID3D12Device* home) {
+    if (draws.empty()) return;
+    std::vector<DeviceCapture*> captures;
+    {
+        std::lock_guard lock(deviceMutex);
+        for (auto& [d, dc] : devices) captures.push_back(dc.get());
+    }
+    uint64_t frequency = 0;
+    for (DeviceCapture* dc : captures)
+        if (dc->device == home && dc->frequency) frequency = dc->frequency;
+    if (!frequency)
+        for (DeviceCapture* dc : captures)
+            if (dc->frequency) { frequency = dc->frequency; break; }
+
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("CaptureDrawStats");
+    w.Key("draws"); w.BeginArray();
+    uint32_t sent = 0, timed = 0, counted = 0;
+    for (DeviceCapture* dc : captures) {
+        const double freq = (double)(dc->frequency ? dc->frequency : frequency);
+        const uint8_t* results = static_cast<const uint8_t*>(dc->drawMapped);
+        if (!results || freq <= 0) continue;
+        for (const DrawEntry& de : draws) {
+            if (de.device != dc->device || de.frame == UINT32_MAX || de.slot >= kDrawSlots) continue;
+            uint64_t begin = 0, end = 0;
+            memcpy(&begin, results + kDrawTimestampBase + (uint64_t)de.slot * kDrawTimestampBytes, 8);
+            memcpy(&end, results + kDrawTimestampBase + (uint64_t)de.slot * kDrawTimestampBytes + 8, 8);
+            // Both zero: the list never ran, so nothing resolved into the slot (the buffer starts zeroed).
+            const bool hasTime = !(begin == 0 && end == 0) && end >= begin;
+            D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
+            if (de.hasStats) memcpy(&stats, results + kDrawStatsBase + (uint64_t)de.slot * kDrawStatsBytes, sizeof(stats));
+            uint64_t passed = 0;
+            if (de.hasOcclusion) memcpy(&passed, results + kDrawOcclusionBase + (uint64_t)de.slot * kDrawOcclusionBytes, 8);
+            w.BeginObject();
+            w.Key("command"); w.Uint(de.command);
+            w.Key("frame"); w.Uint(de.frame);
+            w.Key("commandBuffer"); w.Uint(de.listId);
+            // The sentinel draw_stats.ts reads as "in no render pass".
+            w.Key("passIndex"); w.Uint(de.passIndex);
+            w.Key("timed"); w.Boolean(hasTime);
+            w.Key("ms"); w.Double(hasTime ? (double)(end - begin) / freq * 1e3 : 0.0);
+            w.Key("counted"); w.Boolean(de.hasStats);
+            w.Key("vertexInvocations"); w.Uint(stats.VSInvocations);
+            w.Key("primitives"); w.Uint(stats.IAPrimitives);
+            w.Key("fragmentInvocations"); w.Uint(stats.PSInvocations);
+            w.Key("computeInvocations"); w.Uint(stats.CSInvocations);
+            w.Key("sampled"); w.Boolean(de.hasOcclusion);
+            w.Key("samplesPassed"); w.Uint(passed);
+            w.EndObject();
+            sent++;
+            if (hasTime) timed++;
+            if (de.hasStats) counted++;
+        }
+    }
+    w.EndArray();
+    w.Key("count"); w.Uint(sent);
+    // What the measurement could not reach, in the words the UI shows above the numbers.
+    std::string note;
+    uint32_t overflowed = 0;
+    for (DeviceCapture* dc : captures) {
+        const uint32_t used = dc->drawSlotsUsed.load(std::memory_order_relaxed);
+        if (used > kDrawSlots) overflowed = std::max(overflowed, used - kDrawSlots);
+    }
+    if (overflowed)
+        note = "the first " + std::to_string(kDrawSlots) + " draws of the frame were measured; " +
+               std::to_string(overflowed) + " more were not";
+    if (sent && !counted)
+        note += std::string(note.empty() ? "" : "; ") +
+                "the draws were timed but not counted: statistics queries are not taken inside a BeginRenderPass region";
+    if (!note.empty()) { w.Key("note"); w.String(note); }
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+    Log("draw profiling: %u of %zu draws sent, %u timed, %u with counters", sent, draws.size(), timed, counted);
+}
+
 
 void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     // Finish runs on the thread that presented, so the application is stopped for as long as it
@@ -2374,6 +2661,8 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
         data.textures.swap(textures);
         data.buffers.swap(buffers);
         data.timings.swap(timings);
+        data.draws.swap(draws);
+        pendingDrawSlots.clear();
         bufferIds.clear();
         textureIds.clear();
         bufferBytes = imageBytes = targetBytes = commandTotal = 0;
@@ -2429,6 +2718,7 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     SendTextures(data.textures);
     SendBuffers(data.buffers);
     SendPassTimings(data.timings, device);
+    SendDrawStats(data.draws, device);
     // The GPU clock related to the host's, while the queue is still alive, then the CPU events.
     SampleCalibration(CalibrationQueue(device));
     SendCpuTimeline();
@@ -2436,6 +2726,8 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     // CaptureComplete (docs/ARCHITECTURE.md, "Frame capture").
     SendOverdraw();
     SendPixelHistory();
+    SendDrawOverlay();
+    SendMeshOutput();
     // Read-backs that failed for a reason other than the capture's own limits are worth a line
     // in the validation view, where the user looks for what went wrong.
     {

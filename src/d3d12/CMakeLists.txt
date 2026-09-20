@@ -76,6 +76,8 @@ add_library(dxinsp_capture SHARED
     src/shader_edit.cpp
     src/pass_record.h
     src/overdraw.h
+    src/draw_overlay.cpp
+    src/mesh_output.cpp
     src/overdraw.cpp
     src/pixel_history.cpp
     src/device_info.h
@@ -171,6 +173,9 @@ if(Python3_Interpreter_FOUND)
         replay/src/dx_replayer.cpp
         replay/src/dx_exporter.h
         replay/src/dx_exporter.cpp
+        replay/src/dx_counters.h
+        replay/src/dx_counters.cpp
+        replay/src/dx_nvperf.cpp
         "${VKREPLAY_SRC}/json.cpp"
         "${VKREPLAY_SRC}/gpucap.cpp"
         "${VKREPLAY_SRC}/decode.cpp"
@@ -188,4 +193,20 @@ if(Python3_Interpreter_FOUND)
     target_compile_definitions(dxinsp_replay PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_compile_options(dxinsp_replay PRIVATE /W3 /bigobj)
     target_link_libraries(dxinsp_replay PRIVATE d3d12 dxgi dxguid)
+
+    # Hardware counters through NVIDIA's Nsight Perf SDK, as vkinsp_replay has them: the
+    # redistributable headers live in third_party/nvperf and its host library is loaded at run time
+    # (dx_nvperf.cpp). The SDK ships a Vulkan range profiler but no D3D12 one, so only the core
+    # headers and the API-neutral utility layer are used here.
+    set(NVPERF_DIR "${DXINSP_ROOT}/third_party/nvperf")
+    option(DXINSP_NVPERF "Build dxinsp_replay's hardware counters with NVIDIA's Nsight Perf SDK" ON)
+    if(DXINSP_NVPERF AND EXISTS "${NVPERF_DIR}/include/nvperf_d3d12_target.h")
+        target_compile_definitions(dxinsp_replay PRIVATE DXINSP_NVPERF)
+        target_include_directories(dxinsp_replay PRIVATE
+            "${NVPERF_DIR}/NvPerfUtility/include"
+            "${NVPERF_DIR}/include")
+        message(STATUS "dxinsp_replay: hardware counters with the Nsight Perf SDK (third_party/nvperf)")
+    else()
+        message(STATUS "dxinsp_replay: no hardware counters (the Nsight Perf SDK headers are not in third_party/nvperf)")
+    endif()
 endif()

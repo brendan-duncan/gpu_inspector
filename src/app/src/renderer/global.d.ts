@@ -58,7 +58,8 @@ export interface InspectorApi {
   /** Every draw measured (--draw-data). */
   measureDraws(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** The GPU's own hardware counters per render pass, and per draw with `perDraw` (--counter-data). */
-  measureHwCounters(opts: { key: string; data?: Uint8Array; name?: string; perDraw?: boolean }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** `api` picks the tool: a D3D12 capture is replayed by dxinsp_replay, a Vulkan one by vkinsp_replay. */
+  measureHwCounters(opts: { key: string; data?: Uint8Array; name?: string; perDraw?: boolean; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Each named draw drawn on its own (--overlay-data). */
   drawOverlay(opts: { key: string; data?: Uint8Array; name?: string; commands: number[] }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** What each named draw's vertex shader wrote (--mesh-data). */

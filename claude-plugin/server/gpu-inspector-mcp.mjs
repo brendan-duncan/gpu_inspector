@@ -2062,6 +2062,29 @@ var CaptureData = class {
   ablations = [];
   /** Draw-call overlays replayed so far, by command index (renderer/draw_overlay.ts); not kept in capture files. */
   drawOverlays = /* @__PURE__ */ new Map();
+  /** What a draw's vertex shader wrote, when the capture streamed it out (D3D12). */
+  meshOutputs = /* @__PURE__ */ new Map();
+  onMeshOutputs = new Signal();
+  /** (command buffer, slot) -> the command's index in this capture, built on first use (_commandAt). */
+  _slotIndex = null;
+  /**
+   * The index of the command a capture library named by its command list and the slot it took in
+   * that list's recording, which is how a measurement taken inside the application refers to a
+   * draw (src/d3d12/src/capture.cpp; validation messages name a command the same way). A slot is
+   * per list, so it is not the command's index in this capture: a frame of several lists numbers
+   * its commands across all of them. Returns the slot unchanged when nothing matches, which leaves
+   * the measurement keyed by something rather than dropping it.
+   */
+  _commandAt(commandBuffer, slot) {
+    if (!this._slotIndex) {
+      this._slotIndex = /* @__PURE__ */ new Map();
+      for (const c2 of this.commands) {
+        const list = c2.secondary ?? c2.object?.__id;
+        if (list !== void 0) this._slotIndex.set(`${list}:${c2.slot}`, c2.index);
+      }
+    }
+    return this._slotIndex.get(`${commandBuffer}:${slot}`) ?? slot;
+  }
   _expectedCommands = 0;
   _pendingBuffers = 0;
   onCaptureStatus = new Signal();
@@ -2107,6 +2130,8 @@ var CaptureData = class {
     this.cpuTimeline = null;
     this.ablations = [];
     this.drawOverlays = /* @__PURE__ */ new Map();
+    this.meshOutputs = /* @__PURE__ */ new Map();
+    this._slotIndex = null;
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
@@ -2254,6 +2279,89 @@ var CaptureData = class {
       case "CaptureOverdraw":
         this.overdraw = (msg.passes ?? []).map((info) => ({ info, data: null }));
         this.onOverdraw.emit();
+        break;
+      case "CaptureMeshOutput": {
+        const meshCommand = this._commandAt(msg.commandBuffer, msg.command);
+        this.meshOutputs.set(meshCommand, {
+          command: meshCommand,
+          method: msg.method,
+          frame: msg.frame,
+          commandBuffer: msg.commandBuffer,
+          passIndex: msg.passIndex,
+          measured: msg.measured,
+          topology: msg.topology ?? "",
+          stride: msg.stride,
+          vertices: msg.vertices,
+          truncated: msg.truncated,
+          outputs: (msg.outputs ?? []).map((o) => ({
+            name: o.name,
+            offset: o.offset,
+            components: o.components,
+            base: o.base,
+            ...o.builtin ? { builtin: o.builtin } : {}
+          })),
+          ...msg.note ? { note: msg.note } : {},
+          data: null
+        });
+        this.onMeshOutputs.emit();
+        break;
+      }
+      case "CaptureMeshOutputData": {
+        const mesh = this.meshOutputs.get(this._commandAt(msg.commandBuffer, msg.command));
+        if (mesh) {
+          mesh.data = msg.__binary ?? null;
+          this.onMeshOutputs.emit();
+        }
+        break;
+      }
+      case "CaptureDrawOverlay": {
+        const command = this._commandAt(msg.commandBuffer, msg.command);
+        this.drawOverlays.set(command, {
+          command,
+          method: msg.method,
+          frame: msg.frame,
+          commandBuffer: msg.commandBuffer,
+          passIndex: msg.passIndex,
+          measured: msg.measured,
+          width: msg.width,
+          height: msg.height,
+          fragments: msg.fragments,
+          pixelsCovered: msg.pixelsCovered,
+          pixelsPassed: msg.pixelsPassed,
+          pixelsRejected: msg.pixelsRejected,
+          depthTested: msg.depthTested,
+          wireframe: msg.wireframe,
+          ...msg.note ? { note: msg.note } : {},
+          mask: null
+        });
+        this.onDrawOverlays.emit();
+        break;
+      }
+      case "CaptureDrawOverlayData": {
+        const o = this.drawOverlays.get(this._commandAt(msg.commandBuffer, msg.command));
+        if (o) {
+          o.mask = msg.__binary ?? null;
+          this.onDrawOverlays.emit();
+        }
+        break;
+      }
+      case "CaptureDrawStats":
+        this.drawStats = (msg.draws ?? []).map((d) => ({
+          command: this._commandAt(d.commandBuffer, d.command),
+          frame: d.frame,
+          commandBuffer: d.commandBuffer,
+          ...d.passIndex === 4294967295 ? {} : { passIndex: d.passIndex },
+          timed: d.timed,
+          ms: d.ms,
+          counted: d.counted,
+          vertexInvocations: d.vertexInvocations,
+          primitives: d.primitives,
+          fragmentInvocations: d.fragmentInvocations,
+          computeInvocations: d.computeInvocations,
+          sampled: d.sampled,
+          samplesPassed: d.samplesPassed
+        }));
+        this.onDrawStats.emit();
         break;
       case "CapturePixelHistory":
         this.pixelHistory = msg.history ?? null;
@@ -27282,6 +27390,11 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
   "CapturePassTimings",
   "CaptureOverdraw",
   "CaptureOverdrawData",
+  "CaptureDrawStats",
+  "CaptureDrawOverlay",
+  "CaptureDrawOverlayData",
+  "CaptureMeshOutput",
+  "CaptureMeshOutputData",
   "CapturePixelHistory",
   "CaptureCpuTimeline"
 ]);

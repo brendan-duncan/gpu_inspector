@@ -31,6 +31,18 @@ struct PipelineVariant {
     bool disableStencil = false;       // StencilEnable FALSE
     bool disableStencilWrites = false; // every stencil write mask cleared (the operations still run)
     bool disableCull = false;          // CullMode NONE
+    bool wireframe = false;            // FillMode WIREFRAME (the wireframe draw overlay)
+    /**
+     * Stream output: the entries and strides the copy declares, and the root signature to build it
+     * with -- which has to be one carrying ALLOW_STREAM_OUTPUT, so it is a copy of the
+     * application's (mesh_output.cpp). Rasterization is turned off with them: the copy is drawn to
+     * collect what the vertex shader wrote, not to put anything on screen.
+     */
+    const D3D12_SO_DECLARATION_ENTRY* soEntries = nullptr;
+    uint32_t soEntryCount = 0;
+    const UINT* soStrides = nullptr;
+    uint32_t soStrideCount = 0;
+    ID3D12RootSignature* rootSignature = nullptr;
     bool disableColorWrites = false;   // every target's write mask cleared
     bool singleSample = false;         // one sample, no alpha to coverage
 };
@@ -72,6 +84,15 @@ public:
                          ID3D12PipelineState** out, std::string& error);
     /** Whether the pipeline's vertex (or mesh) bytecode is a DXIL container: its copy needs a DXIL pixel shader. */
     bool PipelineIsDxil(ID3D12PipelineState* pipeline);
+    /**
+     * The bytecode of one of a pipeline's stages ("Vertex Shader", as the UI names them), as the
+     * application gave it. False when the pipeline has no such stage.
+     */
+    bool StageBytecode(ID3D12PipelineState* pipeline, const char* stage, const void*& code, size_t& size);
+    /** The root signature the pipeline was created with (not AddRef'd), or null. */
+    ID3D12RootSignature* RootSignatureOf(ID3D12PipelineState* pipeline);
+    /** The kind of primitive the pipeline rasterizes; false when it does not say. */
+    bool PrimitiveTopologyTypeOf(ID3D12PipelineState* pipeline, D3D12_PRIMITIVE_TOPOLOGY_TYPE& out);
 
 private:
     ShaderEditor() = default;

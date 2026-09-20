@@ -1014,6 +1014,47 @@ ShaderInfo ReflectShader(const void* bytecode, size_t size) {
     return info;
 }
 
+std::vector<ShaderOutputParam> ShaderOutputSignature(const void* bytecode, size_t size) {
+    std::vector<ShaderOutputParam> out;
+    std::vector<Part> parts;
+    ShaderInfo info;
+    if (!ParseContainer(bytecode, size, parts) || !ProgramInfo(parts, info)) return out;
+    std::string error;
+    ComPtr<ID3D12ShaderReflection> r = info.dxil ? ReflectDxil(bytecode, size, parts, error) : ReflectDxbc(bytecode, size, error);
+    if (!r) return out;
+    D3D12_SHADER_DESC sd{};
+    if (FAILED(r->GetDesc(&sd))) return out;
+    for (UINT i = 0; i < sd.OutputParameters; ++i) {
+        D3D12_SIGNATURE_PARAMETER_DESC p{};
+        if (FAILED(r->GetOutputParameterDesc(i, &p))) continue;
+        ShaderOutputParam o;
+        o.semantic = p.SemanticName ? p.SemanticName : "";
+        o.semanticIndex = p.SemanticIndex;
+        // The write mask says which components the shader wrote, and a stream-output entry takes
+        // the first of them and how many there are (the mask is contiguous in practice).
+        uint32_t first = 0, count = 0;
+        for (uint32_t c = 0; c < 4; ++c) {
+            if (!(p.Mask & (1u << c))) continue;
+            if (!count) first = c;
+            count++;
+        }
+        if (!count) continue;
+        o.startComponent = first;
+        o.componentCount = count;
+        switch (p.ComponentType) {
+            case D3D_REGISTER_COMPONENT_UINT32: o.base = "uint"; break;
+            case D3D_REGISTER_COMPONENT_SINT32: o.base = "int"; break;
+            default: o.base = "float"; break;
+        }
+        if (p.SystemValueType != D3D_NAME_UNDEFINED) {
+            const char* sv = ToString_D3D_NAME(p.SystemValueType);
+            o.systemValue = sv ? sv : "";
+        }
+        out.push_back(std::move(o));
+    }
+    return out;
+}
+
 bool DisassembleShader(const void* bytecode, size_t size, std::string& text, std::string& error) {
     text.clear();
     std::vector<Part> parts;

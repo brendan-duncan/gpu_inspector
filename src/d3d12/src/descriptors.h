@@ -122,6 +122,12 @@ struct RootSignatureInfo {
     D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     /** The versioned description serialized, for the object's args. */
     std::string json;
+    /**
+     * The blob the signature was created from. Kept because a measurement that streams a vertex
+     * shader's outputs out needs the same signature with D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT
+     * on it, and a root signature cannot be asked what it was made of (mesh_output.cpp).
+     */
+    std::vector<uint8_t> blob;
 };
 
 class RootSignatures {

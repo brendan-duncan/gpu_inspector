@@ -28,6 +28,11 @@ export interface MeshViewHost {
   selectCommand(index: number): void;
   /** Vulkan: replays the capture for the draw's vertex shader outputs (and its pass's other draws, when there are few). */
   meshOutput(command: number, passDraws: CaptureCommand[]): Promise<MeshOutput>;
+  /**
+   * D3D12: captures the application's next frame streaming this draw's vertex shader outputs out,
+   * since the measurement happens inside the application rather than in a replay of this capture.
+   */
+  captureMeshOutput?(command: number): void;
   /** The vertex shader's input names by location. */
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
   /** Vulkan: opens the shader debugger on a vertex (a VS In row, or the VS Out record). */
@@ -71,9 +76,15 @@ export class MeshView {
   constructor(host: MeshViewHost, draw: CaptureCommand, options: MeshViewOptions = {}) {
     this.host = host;
     this._draw = draw;
-    // VS Out needs a replay, which only Vulkan captures have: the others open on VS In.
-    this._stage = options.stage ?? (host.data.api === "vulkan" ? "out" : "in");
+    // VS Out needs the vertex shader's outputs: a Vulkan capture is replayed for them and a D3D12
+    // one streams them out while capturing (mesh_output.cpp). Metal has neither, and opens on VS In.
+    this._stage = options.stage ?? (host.data.api === "vulkan" || host.data.api === "d3d12" ? "out" : "in");
     this.root = new Div(null, { class: "mesh-view" });
+    // A D3D12 capture's records arrive with the capture's own stream, which may be after the tab
+    // opened: what they are for is drawn when they land.
+    host.data.onMeshOutputs.addListener(() => {
+      if (this._stage === "out" && !this._output) this._rebuild();
+    });
     this._rebuild();
   }
 
@@ -197,25 +208,48 @@ export class MeshView {
   }
 
   private async _showOutput(token: number, draws: CaptureCommand[]): Promise<void> {
-    if (this.host.data.api !== "vulkan") {
+    if (this.host.data.api === "d3d12") {
+      // Streamed out inside the application while a frame records (src/d3d12/src/mesh_output.cpp),
+      // so it arrives with a new capture rather than with this one. A capture streams one draw, so
+      // a capture that already carries a mesh does not ask for another.
+      const measured = this.host.data.meshOutputs.get(this._draw.index);
+      if (measured) {
+        this._output = measured;
+      } else if (this.host.data.meshOutputs.size) {
+        const other = [...this.host.data.meshOutputs.values()][0];
+        this._setStatus("");
+        this._setNotes([`This capture streamed draw #${other.command} out; a D3D12 mesh output is measured while the frame is captured, one draw per capture.`]);
+        this._preview?.setMesh(null);
+        return;
+      } else if (this.host.captureMeshOutput) {
+        this._setStatus("Capturing the next frame with this draw's outputs streamed out...");
+        this._setNotes([]);
+        this.host.captureMeshOutput(this._draw.index);
+        return;
+      } else {
+        this._setStatus("");
+        this._preview?.setMesh(null);
+        return;
+      }
+    } else if (this.host.data.api !== "vulkan") {
       this._setStatus("");
-      this._setNotes([this.host.data.api === "metal"
-        ? "What a Metal draw's vertex function wrote needs a replay, which Metal captures do not have yet: VS In has the vertices it read."
-        : "What a D3D12 draw's vertex shader wrote needs a replay, which D3D12 captures do not have: VS In has the vertices it read."]);
+      this._setNotes(["What a Metal draw's vertex function wrote needs a replay, which Metal captures do not have yet: VS In has the vertices it read."]);
       this._preview?.setMesh(null);
       return;
     }
-    this._outputRunning = true;
-    this._setStatus("Replaying the capture on this machine's GPU for the vertex shader's outputs...");
-    try {
-      const output = await this.host.meshOutput(this._draw.index, draws);
-      if (token !== this._token) return;
-      this._output = output;
-    } catch (e) {
-      if (token !== this._token) return;
-      this._outputError = e instanceof Error ? e.message.split("\n")[0] : String(e);
-    } finally {
-      if (token === this._token) this._outputRunning = false;
+    if (this.host.data.api === "vulkan") {
+      this._outputRunning = true;
+      this._setStatus("Replaying the capture on this machine's GPU for the vertex shader's outputs...");
+      try {
+        const output = await this.host.meshOutput(this._draw.index, draws);
+        if (token !== this._token) return;
+        this._output = output;
+      } catch (e) {
+        if (token !== this._token) return;
+        this._outputError = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      } finally {
+        if (token === this._token) this._outputRunning = false;
+      }
     }
     const o = this._output;
     if (!o) {

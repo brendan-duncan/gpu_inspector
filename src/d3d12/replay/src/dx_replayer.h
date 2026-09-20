@@ -24,6 +24,8 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
+#include "dx_counters.h"
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -47,6 +49,15 @@ class DxExporter;
 class Source;
 using vkreplay::CaptureFile;
 
+/** What the hardware counters run asks for (dx_counters.h, --counters). */
+struct DxCounterOptions {
+    bool enabled = false;
+    /** Only list what this GPU offers, which needs no profiling session. */
+    bool list = false;
+    /** The metrics to collect; empty takes the default set (the limiters docs/PROFILING.md names). */
+    std::vector<std::string> names;
+};
+
 struct DxReplayOptions {
     /** Enable the D3D12 debug layer and report its messages. */
     bool debugLayer = false;
@@ -57,6 +68,32 @@ struct DxReplayOptions {
     bool trace = false;
     /** Export to C++: write the frame as a standalone project into this directory while it replays. */
     std::string exportDir;
+    /** Hardware counters: the frame is replayed once per collection pass and nothing else runs. */
+    DxCounterOptions counters;
+};
+
+/** One measured range's counter values, in the order of DxCounterReport::counters. */
+struct DxCounterRange {
+    uint32_t command = 0;
+    uint32_t frame = 0;
+    uint64_t commandBuffer = 0;
+    uint32_t passIndex = 0;
+    std::vector<double> values;
+};
+
+struct DxCounterReport {
+    bool requested = false;
+    /** "nvperf"; D3D12 has no portable counter API, so there is no second backend. */
+    std::string backend;
+    std::string chip;
+    /** Collection passes the counters needed, which is how often the frame was replayed. */
+    uint32_t rounds = 0;
+    std::vector<DxCounterInfo> counters;
+    std::vector<DxCounterRange> passes;
+    /** Every counter this GPU offers (--list-counters). */
+    std::vector<DxCounterInfo> available;
+    /** What could not be collected, and why. */
+    std::vector<std::string> notes;
 };
 
 struct DxTargetComparison {
@@ -108,6 +145,7 @@ struct DxReplayReport {
     std::vector<std::string> messages;
     std::vector<DxTargetComparison> targets;
     DxExportReport exported;
+    DxCounterReport counters;
 };
 
 class DxReplayer {
@@ -119,6 +157,35 @@ public:
 
     /** Replays the capture; false when it could not start. The report says what happened either way. */
     bool Run(const CaptureFile& capture, const DxReplayOptions& options, DxReplayReport& report);
+
+private:
+    // --- Hardware counters (dx_counters.cpp) ---------------------------------------------------
+    struct CounterState;
+    /** Starts the profiling session and configures the metrics; false with a note when it cannot. */
+    bool PrepareCounters();
+    /** Every counter the GPU offers, for --list-counters. */
+    void ListCounters();
+    /** How many replays of the frame the counters may need. */
+    uint32_t CounterRounds() const;
+    bool BeginCounterRound();
+    /** The round's submissions, waited for with a limit (a driver that will not profile never finishes them). */
+    bool WaitForCounterWork(CounterState& hw);
+    bool EndCounterRound();
+    /** The ranges around one render pass, recorded into the list the pass is in. */
+    void PushCounterRange(ID3D12GraphicsCommandList* list, uint32_t passIndex, uint32_t command, uint32_t frame, uint64_t listId);
+    void PopCounterRange(ID3D12GraphicsCommandList* list);
+    /** After the last round: the values, matched back to the passes they were measured around. */
+    void CompleteCounters();
+    void DestroyCounters();
+    CounterState* _counters = nullptr;
+    /**
+     * Set while a collection pass is open (BeginCounterRound..EndCounterRound). The profiler holds
+     * the queue's submissions until the pass ends, so a wait between them never returns: the
+     * frame's submissions are made back to back and waited for once, after the pass.
+     */
+    bool _inCounterRound = false;
+
+public:
 
 private:
     struct Resource {

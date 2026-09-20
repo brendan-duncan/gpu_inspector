@@ -153,6 +153,7 @@ void HandleCapture(const JsonValue& msg) {
     o.profilePasses = msg.GetBool("profilePasses", true);
     o.stacktraces = msg.GetBool("stacktraces", false);
     o.overdraw = msg.GetBool("overdraw", false);
+    o.drawTimings = msg.GetBool("drawTimings", false);
     // {texture, x, y, mip, layer}: the pixel to follow through the captured frame (pixel_history.cpp).
     if (const JsonValue* h = msg.Get("pixelHistory"); h != nullptr && h->kind == JsonValue::Object) {
         o.pixelHistory.enabled = true;
@@ -161,6 +162,20 @@ void HandleCapture(const JsonValue& msg) {
         o.pixelHistory.y = (uint32_t)h->GetNumber("y");
         o.pixelHistory.mip = (uint32_t)h->GetNumber("mip");
         o.pixelHistory.layer = (uint32_t)h->GetNumber("layer");
+    }
+    // {passIndex, drawIndex}: the draw whose overlay to measure (draw_overlay.cpp).
+    if (const JsonValue* d = msg.Get("drawOverlay"); d != nullptr && d->kind == JsonValue::Object) {
+        o.drawOverlay.enabled = true;
+        o.drawOverlay.passIndex = (uint32_t)d->GetNumber("passIndex");
+        o.drawOverlay.drawIndex = (uint32_t)d->GetNumber("drawIndex");
+    }
+    // {passIndex, drawIndex}: the draw whose vertex shader outputs to stream out (mesh_output.cpp).
+    if (const JsonValue* d = msg.Get("meshOutput"); d != nullptr && d->kind == JsonValue::Object) {
+        o.meshOutput.enabled = true;
+        o.meshOutput.passIndex = (uint32_t)d->GetNumber("passIndex");
+        o.meshOutput.drawIndex = (uint32_t)d->GetNumber("drawIndex");
+        if (const JsonValue* v = d->Get("maxVertices"); v != nullptr && v->kind == JsonValue::Number)
+            o.meshOutput.maxVertices = (uint32_t)v->num;
     }
     CaptureManager::Get().RequestCapture(o);
 }

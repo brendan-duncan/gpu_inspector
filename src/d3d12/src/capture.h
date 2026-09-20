@@ -42,6 +42,26 @@ struct PixelHistoryRequest {
     uint32_t layer = 0;
 };
 
+/**
+ * One draw's overlay, measured while the frame records (draw_overlay.cpp). The draw is named by
+ * its pass and its ordinal within that pass rather than by a command index: the measurement happens
+ * while the *next* frame records, whose commands are numbered again from the start.
+ */
+struct DrawOverlayRequest {
+    bool enabled = false;
+    uint32_t passIndex = 0;
+    uint32_t drawIndex = 0;
+};
+
+/** One draw's vertex shader outputs, streamed out while the frame records (mesh_output.cpp). */
+struct MeshOutputRequest {
+    bool enabled = false;
+    uint32_t passIndex = 0;
+    uint32_t drawIndex = 0;
+    /** Vertex records kept; a draw that writes more is reported as truncated. */
+    uint32_t maxVertices = 200000;
+};
+
 struct CaptureOptions {
     uint32_t frameCount = 1;
     /** Frame (the present counter) to start at; UINT64_MAX = the next frame. A frame already passed captures the next one. */
@@ -61,11 +81,22 @@ struct CaptureOptions {
     bool captureBuffers = true;
     bool captureImages = true;                // textures bound through SRVs and UAVs
     bool profilePasses = true;                // timestamps, pipeline statistics and occlusion per pass
+    /**
+     * A timestamp pair, a pipeline statistics query and an occlusion query around every draw and
+     * dispatch, not only around every pass (**Measure draws**). `vkinsp_replay --draws` measures
+     * the same by replaying a Vulkan capture; here the queries go into the application's own list
+     * as it records, so a list recorded before the capture began carries none.
+     */
+    bool drawTimings = false;
     bool stacktraces = false;                 // every recorded command carries the stack it was recorded from
     /** Draw every render pass again with a counting pixel shader, for its overdraw (overdraw.h). */
     bool overdraw = false;
     /** Follow one pixel of a render target through the frame (pixel_history.cpp). */
     PixelHistoryRequest pixelHistory;
+    /** Measure where one draw of one pass landed (draw_overlay.cpp). */
+    DrawOverlayRequest drawOverlay;
+    /** Stream one draw's vertex shader outputs out (mesh_output.cpp). */
+    MeshOutputRequest meshOutput;
 };
 
 class CaptureManager {
@@ -140,6 +171,19 @@ public:
     void OnComputePassEnd(CommandRecorder* rec);
     /** A draw or trace was recorded in the open pass (for its draw count). */
     void OnDraw(CommandRecorder* rec);
+    /**
+     * Before a draw or dispatch is forwarded, when the capture measures draws (`drawTimings`):
+     * reserves its queries and writes the begin timestamp. Returns the slot, or UINT32_MAX when
+     * this one is not measured (not capturing, a bundle, a copy list, or the slots are used up).
+     */
+    uint32_t BeginDrawQueries(CommandRecorder* rec);
+    /** After the draw was forwarded and recorded: its end timestamp, and the command it belongs to. */
+    void EndDrawQueries(CommandRecorder* rec, uint32_t slot, bool dispatch);
+    /**
+     * The draw queries a list has taken, resolved into the readback buffer. Called where a resolve
+     * is allowed: at the end of a pass and before Close, never inside a BeginRenderPass region.
+     */
+    void ResolveDrawQueries(CommandRecorder* rec);
 
     // --- Bindings ------------------------------------------------------------------------------
 

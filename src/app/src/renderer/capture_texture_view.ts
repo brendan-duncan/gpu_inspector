@@ -21,8 +21,8 @@ import {
 } from "./draw_overlay.js";
 import { ImageView, type ImageOverlay } from "./image_view.js";
 import {
-  OVERDRAW_LEGEND, isMeasured, measuresWhileCapturing, overdrawCount, overdrawHistogramText, overdrawRgba,
-  overdrawSummary, type OverdrawPassKey,
+  OVERDRAW_LEGEND, isMeasured, measuresOverlayWhileCapturing, measuresWhileCapturing, overdrawCount,
+  overdrawHistogramText, overdrawRgba, overdrawSummary, type OverdrawPassKey,
 } from "./overdraw.js";
 import type { PixelHistory, PixelRequest } from "./pixel_history.js";
 import { PixelHistoryView } from "./pixel_history_view.js";
@@ -64,6 +64,13 @@ export interface CaptureTextureHost {
   drawsOfPass(key: OverdrawPassKey): CaptureCommand[];
   /** Vulkan: replays the capture for a draw's overlay (and its pass's other draws, when there are few). */
   drawOverlay(command: number, passDraws: CaptureCommand[]): Promise<DrawOverlay>;
+  /**
+   * D3D12: captures the application's next frame measuring where this draw lands, and opens that
+   * capture's own render target tab on the result — the way a Metal pixel history does, and for the
+   * same reason: the measurement happens inside the application, so it is of the next frame rather
+   * than of this one.
+   */
+  captureDrawOverlay?(command: number, kind: DrawOverlayKind): void;
   /** Vulkan: opens the shader debugger on a draw's fragment at a pixel. */
   debugPixel?(command: number, x: number, y: number): void;
   /** Writes this tab to a standalone HTML file, the way a report's tab does (report_export.ts). */
@@ -89,6 +96,8 @@ const COUNT_LABELS = ["Fragments passing depth and stencil", "Every rasterized f
 const OVERLAYS: { kind: TextureOverlayKind; label: string; vulkanOnly: boolean }[] = [
   { kind: "none", label: "No Overlay", vulkanOnly: false },
   { kind: "overdraw", label: "Overdraw", vulkanOnly: false },
+  // Vulkan replays the capture for these; D3D12 measures them while capturing the next frame
+  // (measuresOverlayWhileCapturing). Metal has neither, so they stay off there.
   { kind: "highlight", label: "Highlight Draw", vulkanOnly: true },
   { kind: "depth", label: "Depth Test", vulkanOnly: true },
   { kind: "wireframe", label: "Wireframe", vulkanOnly: true },
@@ -331,7 +340,8 @@ export class CaptureTextureView {
 
   private _buildToolbar(bar: Div): void {
     // Metal and D3D12 captures have no replay to draw a single draw again with.
-    const overlays = OVERLAYS.filter((o) => !o.vulkanOnly || this.host.data.api === "vulkan");
+    const overlays = OVERLAYS.filter((o) => !o.vulkanOnly || this.host.data.api === "vulkan" ||
+                                          measuresOverlayWhileCapturing(this.host.data.api));
     const select = new Select(bar, {
       options: overlays.map((o) => o.label),
       index: Math.max(0, overlays.findIndex((o) => o.kind === this._overlayKind)),
@@ -559,7 +569,24 @@ export class CaptureTextureView {
   /** Vulkan: replays the capture for the chosen draw's overlay when it has not been drawn yet. */
   private async _ensureDrawOverlay(): Promise<void> {
     const draw = this._draw;
-    if (draw === null || this._drawOverlay() || this._drawError || this.host.data.api !== "vulkan") return;
+    if (draw === null || this._drawOverlay() || this._drawError) return;
+    if (measuresOverlayWhileCapturing(this.host.data.api)) {
+      // Nothing to replay: the library measures it inside the application, so the answer comes
+      // with the next capture rather than with this one. A capture measures one draw, so a capture
+      // that already carries an overlay asks for no further one -- otherwise a tab opened on the
+      // measured draw would capture again, and again.
+      const kind = this._drawOverlayKind();
+      if (this.host.data.drawOverlays.size) {
+        const measured = [...this.host.data.drawOverlays.values()][0];
+        this._drawError = `This capture measured draw #${measured.command}; a draw overlay is measured while the frame is captured, one draw per capture.`;
+      } else if (kind && this.host.captureDrawOverlay) {
+        this._drawError = "Measuring in a new capture: D3D12 draws the overlay inside the application, on its next frame.";
+        this.host.captureDrawOverlay(draw, kind);
+      }
+      this._renderOverlayRow();
+      return;
+    }
+    if (this.host.data.api !== "vulkan") return;
     this._drawRunning = true;
     this._renderOverlayRow();
     try {

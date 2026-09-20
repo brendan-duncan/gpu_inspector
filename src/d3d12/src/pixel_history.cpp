@@ -176,18 +176,6 @@ std::string Hex(const uint8_t* bytes, size_t size) {
     return out;
 }
 
-void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES from,
-                D3D12_RESOURCE_STATES to) {
-    if (from == to) return;
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = resource;
-    b.Transition.Subresource = subresource;
-    b.Transition.StateBefore = from;
-    b.Transition.StateAfter = to;
-    list->ResourceBarrier(1, &b);
-}
-
 /** The subresource of an attachment in the application's resource. */
 uint32_t SubresourceOfAttachment(const D3D12_RESOURCE_DESC& desc, const PassAttachment& a, uint32_t plane) {
     const uint32_t mips = std::max<uint32_t>(1, desc.MipLevels);

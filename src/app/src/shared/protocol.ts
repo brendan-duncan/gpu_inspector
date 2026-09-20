@@ -434,6 +434,104 @@ export interface OverdrawMeasurement {
 export interface CaptureOverdrawMessage { action: "CaptureOverdraw"; count: number; passes: OverdrawMeasurement[] }
 
 /**
+ * One draw or dispatch of a D3D12 capture taken with `drawTimings`, measured by queries of its own
+ * (src/d3d12/src/capture.cpp, SendDrawStats). The fields are `vkinsp_replay --draws`' (draw_stats.ts),
+ * so both APIs' measurements read the same way: `passIndex` is 0xffffffff for a dispatch that is in
+ * no render pass, and a draw's time is its share of a pass rather than what it costs alone.
+ */
+export interface CaptureDrawStat {
+  command: number;
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+  timed: boolean;
+  ms: number;
+  counted: boolean;
+  vertexInvocations: number;
+  primitives: number;
+  fragmentInvocations: number;
+  computeInvocations: number;
+  sampled: boolean;
+  samplesPassed: number;
+}
+
+/**
+ * One draw's overlay, measured while a D3D12 capture recorded (src/d3d12/src/draw_overlay.cpp).
+ * The mask follows in CaptureDrawOverlayData: one byte per pixel, row by row, of the same
+ * OVERLAY_COVERED / OVERLAY_PASSED / OVERLAY_WIREFRAME bits `vkinsp_replay --overlay` writes.
+ */
+export interface CaptureDrawOverlayMessage {
+  action: "CaptureDrawOverlay";
+  command: number;
+  method: string;
+  frame: number;
+  commandBuffer: number;
+  passIndex: number;
+  drawIndex: number;
+  measured: boolean;
+  width: number;
+  height: number;
+  fragments: number;
+  pixelsCovered: number;
+  pixelsPassed: number;
+  pixelsRejected: number;
+  depthTested: boolean;
+  wireframe: boolean;
+  size: number;
+  note?: string;
+}
+
+/**
+ * What one draw's vertex shader wrote, streamed out while a D3D12 capture recorded
+ * (src/d3d12/src/mesh_output.cpp). The records follow in CaptureMeshOutputData: `vertices` of
+ * `stride` bytes, the layout `outputs` describes, as `vkinsp_replay --mesh` writes for Vulkan.
+ */
+export interface CaptureMeshOutputMessage {
+  action: "CaptureMeshOutput";
+  /** The command's slot in its list's recording, with the list (as CaptureDrawOverlay's). */
+  command: number;
+  commandBuffer: number;
+  method: string;
+  frame: number;
+  passIndex: number;
+  drawIndex: number;
+  measured: boolean;
+  /** The pipeline's primitive kind, as a D3D_PRIMITIVE_TOPOLOGY_* name (primitiveKind reads it). */
+  topology: string;
+  stride: number;
+  vertices: number;
+  truncated: boolean;
+  outputs: { name: string; offset: number; components: number; base: "float" | "int" | "uint"; builtin?: string }[];
+  size: number;
+  note?: string;
+}
+
+export interface CaptureMeshOutputDataMessage {
+  action: "CaptureMeshOutputData";
+  command: number;
+  commandBuffer: number;
+  size: number;
+  __binary?: Uint8Array;
+}
+
+export interface CaptureDrawOverlayDataMessage {
+  action: "CaptureDrawOverlayData";
+  /** The command's slot in its list's recording, with the list: the key CaptureDrawOverlay used. */
+  command: number;
+  commandBuffer: number;
+  size: number;
+  __binary?: Uint8Array;
+}
+
+export interface CaptureDrawStatsMessage {
+  action: "CaptureDrawStats";
+  count: number;
+  draws: CaptureDrawStat[];
+  /** What the measurement could not reach: the draws past the slot limit, or counters a render pass region ruled out. */
+  note?: string;
+}
+
+/**
  * Metal and D3D12: the pixel a capture with `pixelHistory` followed through its frame
  * (src/metal/src/pixel_history.mm, src/d3d12/src/pixel_history.cpp), in the JSON
  * vkinsp_replay --pixel-data writes (renderer/pixel_history.ts parses it).
@@ -706,6 +804,11 @@ export type LayerMessage =
   | CaptureBufferDataMessage
   | CapturePassTimingsMessage
   | CaptureOverdrawMessage
+  | CaptureDrawStatsMessage
+  | CaptureDrawOverlayMessage
+  | CaptureDrawOverlayDataMessage
+  | CaptureMeshOutputMessage
+  | CaptureMeshOutputDataMessage
   | CaptureOverdrawDataMessage
   | CapturePixelHistoryMessage
   | ShaderReplacedMessage
@@ -777,6 +880,28 @@ export interface CaptureRequest {
    * Vulkan capture file.
    */
   overdraw?: boolean;
+  /**
+   * D3D12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw
+   * and dispatch, not only around every pass (CaptureDrawStats, **Measure draws**). The queries go
+   * into the application's own command lists as they record, so a list recorded before the capture
+   * began carries none. The Vulkan layer ignores it; `vkinsp_replay --draws` measures a Vulkan
+   * capture file after the fact, and Metal does not measure draws at all.
+   */
+  drawTimings?: boolean;
+  /**
+   * D3D12: measure where one draw landed, for the render target tab's draw overlays
+   * (CaptureDrawOverlay). The draw is named by its pass and its ordinal within that pass, not by a
+   * command index: the measurement happens while this capture records, and its commands are
+   * numbered from the start. The Vulkan layer ignores it; `vkinsp_replay --overlay` measures a
+   * Vulkan capture file after the fact.
+   */
+  drawOverlay?: { passIndex: number; drawIndex: number };
+  /**
+   * D3D12: stream one draw's vertex shader outputs out, for the mesh view's VS Out
+   * (CaptureMeshOutput). Named the same way a `drawOverlay` request is. The Vulkan layer ignores
+   * it; `vkinsp_replay --mesh` measures a Vulkan capture file after the fact.
+   */
+  meshOutput?: { passIndex: number; drawIndex: number; maxVertices?: number };
   /**
    * Metal and D3D12: follow one pixel of a texture through the captured frame (CapturePixelHistory):
    * every pass that renders to it drawn again one draw at a time at that pixel. `texture` is an

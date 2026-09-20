@@ -999,9 +999,97 @@ library does not read back yet.
       counts, spills and occupancy are unavailable and the occupancy verdict stays Vulkan-only.
       `D3DReflect`'s `InstructionCount` is DXBC (SM 5) only and reports 0 for DXIL; the real numbers
       need a vendor API (NVAPI, AMD GPUOpen) or the driver's own cached blob, neither portable.
-- [ ] The rest of the replay-based analyses — draw overlays, mesh output, per-draw timings and
-      counters (**Measure draws**), shader cost by ablation (**Measure shader**), hardware counters
-      — which `vkinsp_replay` does for Vulkan captures only. The same in-application route fits them.
+- [ ] The analyses a D3D12 capture still has no answer for: draw overlays, mesh output, per-draw
+      timings and counters (**Measure draws**), shader cost by ablation (**Measure shader**) and
+      hardware counters (**Measure hardware counters**). Overdraw and pixel history are done, by
+      measuring inside the application while it captures (above); these five are what is left, and
+      each can go either way — in the application through `pass_record.h`'s recorded pass ops, the
+      way overdraw does, or in `dxinsp_replay`, the way `vkinsp_replay` does for Vulkan. The
+      in-application route needs the application running and costs time in the captured frame; the
+      replay route works on a saved capture, needs a `--serve` mode the D3D12 replay does not have,
+      and measures only what the capture holds, which for an engine that records its lists ahead
+      (Unity, below) is not the whole frame. In rough order of effort:
+  - [x] **Per-draw timings and counters.** `vkinsp_replay` puts a timestamp pair and a pipeline
+        statistics query around every action (`src/replay/src/draw_stats.cpp`, 237 lines).
+        D3D12 has both: `D3D12_QUERY_TYPE_TIMESTAMP` and `D3D12_QUERY_TYPE_PIPELINE_STATISTICS`,
+        whose `D3D12_QUERY_DATA_PIPELINE_STATISTICS` carries the same seven counters in the same
+        order the Vulkan query reports them, and `dxinsp_replay` already creates query heaps and
+        resolves query data (`dx_replayer.cpp`, `ID3D12QueryHeap` and `ResolveQueryData`). What
+        consumes it is API-neutral: the Shader Flame Graph splits a pass's measured time between
+        its draws by these, and weights fragment stages by the measured invocation counts.
+        Done in the application rather than in the replay: the queries go into the application's own
+        list as it records (`CaptureManager::BeginDrawQueries`, `src/d3d12/src/capture.cpp`), so they
+        time the application's own draws rather than a second execution of the pass. The capture
+        bar's **Measure draws** asks for it; the first 16,384 draws of a frame are measured, and a
+        list recorded before the capture began carries no queries. `d3d12-draw-timings` covers it.
+  - [x] **Hardware counters.** `src/replay/src/nvperf.cpp` drives NvPerf's
+        `RangeProfilerVulkan` around each render pass. NvPerf ships `NvPerfRangeProfilerD3D12.h`
+        with the same shape of API, so this is a port rather than a design. NVIDIA only: there is
+        no D3D12 equivalent of `VK_KHR_performance_query`, so the vendor-neutral half of the
+        Vulkan path has no counterpart. The report, its rules and its verdict column
+        (`renderer/counter_rules.ts`, `bottleneck_report.ts`) are already API-neutral.
+
+        This is the one of the five that does not fit the in-application route the other four took.
+        A range profiler collects a large metric set over *several passes* of the same GPU work,
+        synchronizing the queue between them. In the application that means re-issuing each render
+        pass N times inside the frame, with a flush between each, and what the counters would then
+        describe is the re-issued pass drawing into copies of the targets rather than the
+        application's own draws — at the cost of stalling the frame N times over. In a replay it is
+        what `vkinsp_replay --counters` already does: the frame is re-executed as many times as the
+        counters need, with nothing else running, which is what the measurement wants.
+
+        So this one went into `dxinsp_replay`, next to the export it already does, rather than into
+        the capture library: `--counters` / `--list-counters`, a range per render pass, writing the
+        same `gpu-inspector-hw-counters` file the Vulkan replay writes
+        (`src/d3d12/replay/src/dx_counters.cpp`). The SDK's utility layer ships a Vulkan range
+        profiler but no D3D12 one, so its state machine's `IProfilerApi` is implemented over the
+        `NVPW_D3D12_*` entry points in `dx_nvperf.cpp`.
+
+        Three things the port had to get right, each found by it failing:
+        - `NVPW_D3D12_LoadDriver` has to run *before the device is created*, the way the Vulkan path
+          adds the SDK's extensions before creating its instance and device.
+        - The session belongs on the queue the frame is submitted on — the captured queue the replay
+          re-created, not the replay's own upload queue — or the pass waits for work it never sees.
+        - A profiled submission cannot be waited for inside the pass: the profiler holds it until
+          `EndPass`, so the round's submissions go in back to back and are waited for once, after it.
+
+        What could not be checked here: the values. This machine leaves NVIDIA's counters
+        administrator-only (`RmProfilingAdminOnly` unset) and the session then *accepts* the
+        configuration and simply never finishes the first profiled submission — so the replay now
+        checks the permission before it starts, and bounds the wait at 30 seconds rather than
+        hanging. Verified as far as that goes: the SDK loads, the chip is identified, and
+        `--list-counters` enumerates 1,411 metrics on this GPU.
+  - [x] **Draw overlays** (Highlight Draw, Depth Test, Wireframe). The closest thing to what the
+        library already does: `src/d3d12/src/overdraw.cpp` re-issues a pass with every pipeline
+        replaced by a counting copy, and an overlay is the same machinery issuing *one* draw with a
+        flat-colour pixel shader. Depth Test is the two runs overdraw already makes (with the
+        pass's depth-stencil state, and without); Wireframe is `D3D12_FILL_MODE_WIREFRAME` on the
+        PSO copy. Done in `src/d3d12/src/draw_overlay.cpp`: three runs into count targets of the
+        pass's size, folded into the one byte per pixel the UI draws. Asking for an overlay captures
+        the application's next frame and opens that capture, the way a Metal pixel history does, and
+        the draw is named by its pass and its ordinal within it. `d3d12-draw-overlay` covers it.
+  - [x] **Mesh output (VS Out).** This needs no shader edit and no HLSL: D3D12 streams a vertex
+        shader's declared outputs out of the unmodified bytecode. The PSO is rebuilt with a
+        `D3D12_STREAM_OUTPUT_DESC` whose `D3D12_SO_DECLARATION_ENTRY` list comes from the VS output
+        signature (which `dx_reflect.h` already reads), `RasterizedStream` set to
+        `D3D12_SO_NO_RASTERIZED_STREAM`, and a root signature carrying
+        `D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT`; RenderDoc does exactly this in
+        `driver/d3d12/d3d12_postvs.cpp`. The Vulkan side instead patches the SPIR-V for transform
+        feedback (`src/replay/src/xfb_patch.cpp`), which has no DXIL counterpart and is not needed
+        here. Exception: a mesh or amplification shader has no VS stage to stream out of, and would
+        need its own route. Done in `src/d3d12/src/mesh_output.cpp`, with the root signature
+        deserialized from the blob `RootSignatureInfo` now keeps, the stream-output flag added and
+        the signature created again; the copy is layout-compatible, so the application's root
+        arguments still apply. `d3d12-mesh-output` covers it.
+  - [ ] **Shader cost by ablation.** The one that genuinely needs source. Ablation means removing a
+        function's calls, a line's values or a texture's reads from the shader and timing what that
+        saves (`src/replay/src/ablation.cpp`), and there is no DXIL editor here to do it with — so
+        on D3D12 it falls under the rule the shader debugger already states: it needs the HLSL, from
+        a `-Zi` build or a `-Zs` build's PDB under the symbol directories, compiled the way the
+        build compiled it. Two experiments need no source at all and are worth having for the
+        shaders that have none, as long as the report says what each one does and does not measure:
+        replacing a whole stage with a trivial shader (what that stage costs, not which line of it),
+        and binding a 1x1 texture in place of one SRV (that texture's bandwidth, not its ALU).
 - [x] Stencil read-back: plane 1 of a depth-stencil target, beside its depth (`--stencil` in
       `test/d3d12_triangle`, the `d3d12-stencil` UI case). A multisampled stencil is not resolved.
 - [ ] The contents of sampler feedback, video, work graph and raytracing objects; enhanced

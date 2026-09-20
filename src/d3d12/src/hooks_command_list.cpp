@@ -469,6 +469,7 @@ void STDMETHODCALLTYPE Hook_DrawInstanced(List* This, UINT VertexCountPerInstanc
     CommandRecorder* rec = Rec(This);
     if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     if (!rec) return;
     Args args;
@@ -476,6 +477,7 @@ void STDMETHODCALLTYPE Hook_DrawInstanced(List* This, UINT VertexCountPerInstanc
         .u("StartVertexLocation", StartVertexLocation).u("StartInstanceLocation", StartInstanceLocation);
     rec->Record("DrawInstanced", args.str());
     Cap().OnDraw(rec);
+    Cap().EndDrawQueries(rec, queries, false);
     LogOp(rec, OpKey::DrawCall(),
           [VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation](ID3D12GraphicsCommandList* list,
                                                                                              PassReplay& replay) {
@@ -491,6 +493,7 @@ void STDMETHODCALLTYPE Hook_DrawIndexedInstanced(List* This, UINT IndexCountPerI
     CommandRecorder* rec = Rec(This);
     if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
     if (!rec) return;
     Args args;
@@ -499,6 +502,7 @@ void STDMETHODCALLTYPE Hook_DrawIndexedInstanced(List* This, UINT IndexCountPerI
         .u("StartInstanceLocation", StartInstanceLocation);
     rec->Record("DrawIndexedInstanced", args.str());
     Cap().OnDraw(rec);
+    Cap().EndDrawQueries(rec, queries, false);
     LogOp(rec, OpKey::DrawCall(),
           [IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
            StartInstanceLocation](ID3D12GraphicsCommandList* list, PassReplay& replay) {
@@ -516,11 +520,13 @@ void STDMETHODCALLTYPE Hook_Dispatch(List* This, UINT ThreadGroupCountX, UINT Th
     if (rec) Cap().OnBeforeDispatch(rec);
     if (rec) rec->FlushSnapshots(false, true);
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     if (!rec) return;
     Args args;
     args.u("ThreadGroupCountX", ThreadGroupCountX).u("ThreadGroupCountY", ThreadGroupCountY).u("ThreadGroupCountZ", ThreadGroupCountZ);
     rec->Record("Dispatch", args.str());
+    Cap().EndDrawQueries(rec, queries, true);
 }
 
 void STDMETHODCALLTYPE Hook_DispatchMesh(List* This, UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) {
@@ -529,12 +535,14 @@ void STDMETHODCALLTYPE Hook_DispatchMesh(List* This, UINT ThreadGroupCountX, UIN
     CommandRecorder* rec = Rec(This);
     if (rec) rec->FlushSnapshots(true, false);
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
     if (!rec) return;
     Args args;
     args.u("ThreadGroupCountX", ThreadGroupCountX).u("ThreadGroupCountY", ThreadGroupCountY).u("ThreadGroupCountZ", ThreadGroupCountZ);
     rec->Record("DispatchMesh", args.str());
     Cap().OnDraw(rec);
+    Cap().EndDrawQueries(rec, queries, false);
     LogOp(rec, OpKey::DrawCall(),
           [ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ](ID3D12GraphicsCommandList* list, PassReplay& replay) {
               replay.IssueDraw(list, [&](ID3D12GraphicsCommandList* on) {
@@ -550,11 +558,13 @@ void STDMETHODCALLTYPE Hook_DispatchRays(List* This, const D3D12_DISPATCH_RAYS_D
     if (rec) Cap().OnBeforeDispatch(rec);
     if (rec) rec->FlushSnapshots(false, true);
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, pDesc);
     if (!rec) return;
     Args args;
     if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
     rec->Record("DispatchRays", args.str());
+    Cap().EndDrawQueries(rec, queries, true);
 }
 
 void STDMETHODCALLTYPE Hook_DispatchGraph(List* This, const D3D12_DISPATCH_GRAPH_DESC* pDesc) {
@@ -580,6 +590,7 @@ void STDMETHODCALLTYPE Hook_ExecuteIndirect(List* This, ID3D12CommandSignature* 
     if (rec && !inPass) Cap().OnBeforeDispatch(rec);
     if (rec) rec->FlushSnapshots(true, true);   // the signature may draw or dispatch
     CommandScope scope(rec);
+    const uint32_t queries = Cap().BeginDrawQueries(rec);
     orig(This, pCommandSignature, MaxCommandCount, pArgumentBuffer, ArgumentBufferOffset, pCountBuffer, CountBufferOffset);
     if (!rec) return;
     Args args;
@@ -587,6 +598,7 @@ void STDMETHODCALLTYPE Hook_ExecuteIndirect(List* This, ID3D12CommandSignature* 
         .ref("pArgumentBuffer", pArgumentBuffer, "ID3D12Resource").u("ArgumentBufferOffset", ArgumentBufferOffset)
         .ref("pCountBuffer", pCountBuffer, "ID3D12Resource").u("CountBufferOffset", CountBufferOffset);
     rec->Record("ExecuteIndirect", args.str());
+    Cap().EndDrawQueries(rec, queries, !inPass);
     std::vector<uint32_t> ids;
     UINT64 size = (UINT64)MaxCommandCount * SignatureStride(pCommandSignature);
     ids.push_back(pArgumentBuffer ? Cap().QueueBufferCapture(rec, pArgumentBuffer, ArgumentBufferOffset, size) : 0);
@@ -1122,7 +1134,9 @@ void STDMETHODCALLTYPE Hook_SetGraphicsRootSignature(List* This, ID3D12RootSigna
     rec->Record("SetGraphicsRootSignature", args.str());
     // Setting a root signature drops every root argument, so the calls that set them are undone too.
     LogOp(rec, OpKey::Replace(ops::kGraphicsRootSignature, ops::kGraphicsRoot),
-          [held = Held(pRootSignature)](ID3D12GraphicsCommandList* list, PassReplay&) { list->SetGraphicsRootSignature(held.get()); });
+          [held = Held(pRootSignature)](ID3D12GraphicsCommandList* list, PassReplay& replay) {
+              replay.SetGraphicsRootSignature(list, held.get());
+          });
     rec->state().graphicsRootSignature = pRootSignature;
     rec->state().graphicsLayout = RootSignatures::Get().Find(pRootSignature);
 }
