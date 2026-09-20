@@ -12301,14 +12301,23 @@ function d3d12Environment(o) {
     ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
   };
 }
-function wrapLaunch(tools, exe, args, cwd, follow = []) {
+function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false) {
   return {
     exe: tools.launcher,
-    args: ["--dll", tools.library, ...cwd ? ["--cwd", cwd] : [], ...follow.flatMap((f) => ["--follow", f]), "--", exe, ...args]
+    args: [
+      "--dll",
+      tools.library,
+      ...cwd ? ["--cwd", cwd] : [],
+      ...followChildren ? ["--follow-children"] : [],
+      ...follow.flatMap((f) => ["--follow", f]),
+      "--",
+      exe,
+      ...args
+    ]
   };
 }
 function watchLaunch(tools, o) {
-  const { image, timeoutSeconds, once, follow, ...environment } = o;
+  const { image, timeoutSeconds, once, follow, followChildren, ...environment } = o;
   const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
@@ -12319,6 +12328,7 @@ function watchLaunch(tools, o) {
       tools.library,
       ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
       ...once ? ["--once"] : [],
+      ...followChildren ? ["--follow-children"] : [],
       ...(follow ?? []).flatMap((f) => ["--follow", f]),
       ...env
     ]
@@ -12338,8 +12348,9 @@ function windowsLaunch(o) {
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? []));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
+    if (o.followChildren) notes.push("capturing every process the target starts");
     if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");

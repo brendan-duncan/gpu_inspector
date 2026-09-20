@@ -115,7 +115,8 @@ These apply to every target, and are saved with the configuration.
 |---|---|---|
 | **Symbol directories** | Directories holding the application's debug files, separated by `;`: unstripped libraries, so stack traces show functions, files and lines, and the PDBs of Direct3D 12 shaders, so a shader built with `dxc -Zs -Fd` still gets its Source view. Searched five levels deep | none |
 | **Source roots** | Directories holding the shader sources, separated by `;`, for a shader compiled with line information but no embedded text | none |
-| **Follow child processes** | For an application that renders in a process it starts itself: the library also goes into children whose command line contains this text. Several patterns separated by spaces; `!text` excludes one. Windows and Direct3D 12 only | none |
+| **Capture child processes** | Puts the capture library into every process the target starts, for an application that renders in a process it starts itself and that nobody can name in advance — a game behind its own launcher. A child that never creates a device takes no port, so whichever one renders is the one that turns up to attach to. Windows and Direct3D 12 only; a Vulkan child inherits the layer from its parent anyway | loading the library into each child |
+| **Follow child processes** | The same thing for named children only: the library goes into those whose command line contains this text. Several patterns separated by spaces; `!text` excludes one, which also narrows **Capture child processes** down. Windows and Direct3D 12 only | none |
 | **Record all command buffers** | Records every command buffer as it is built, so buffers recorded once and reused every frame still appear in captures | CPU time in the application |
 | **Layer log** | Writes the library's own output to the session's **Log** tab (logcat on Android). On by default | small |
 | **Validation layer** | The Khronos validation layer for Vulkan, the debug layer for Direct3D 12, Metal's API and shader validation on macOS. Messages are listed in the Inspect tab | slows the application |
@@ -176,6 +177,7 @@ takes them after `npm start --`; an installed build takes them directly
 | `--port=N` | Port |
 | `--record-always` `--validation` `--sync-validation` `--gpu-validation` | The matching options |
 | `--symbol-dirs=<dirs>` `--source-roots=<dirs>` `--follow=<text>` | The matching fields |
+| `--follow-children` | **Capture child processes** |
 | `--capture-frame=N` `--capture-after=SECONDS` | Queued capture |
 
 ## If the launch does not work

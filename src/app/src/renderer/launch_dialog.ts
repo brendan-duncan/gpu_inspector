@@ -112,6 +112,8 @@ export class LaunchDialog extends Dialog {
   private _log: Checkbox;
   private _follow: TextInput;
   private _followRow: HTMLElement | null = null;
+  private _followChildren!: Checkbox;
+  private _followChildrenRow: HTMLElement | null = null;
   private _browserRows: Div;
   private _browserSelect: Select;
   private _browserPath: TextInput;
@@ -278,6 +280,21 @@ export class LaunchDialog extends Dialog {
       + "than beside its module is still found. Searched five levels deep.";
     this._sourceRoots = this._inputRow(body, "Source roots", "(directories with the shader sources, separated by ;)");
     this._sourceRoots.tooltip = "Where the shader sources live on this machine: a shader compiled with line information but without embedded text (dxc -Zi, a stripped build) then gets its Source view, line costs and findings from the file its debug information names.";
+    {
+      const row = new Div(body, { class: "launch-dialog-row launch-dialog-options" });
+      new Span(row, { text: "Child processes", class: "launch-dialog-label" });
+      this._followChildren = new Checkbox(row, { label: "Capture child processes", checked: false,
+        tooltip: "Put the capture library into every process the target starts, not just the target itself: "
+          + "for an application that renders in a process it starts, such as a game behind its own launcher. "
+          + "A child that never makes a device takes no port, so the only cost is loading the library into it; "
+          + "whichever child renders shows up to attach to. Leave the pattern below empty to take them all, or "
+          + "fill it in with !text to leave some alone. Windows and Direct3D 12 only \u2014 a Vulkan child already "
+          + "inherits the layer's environment from its parent. It follows by descent, so it cannot reach a "
+          + "packaged (Microsoft Store, Xbox app) application, which Windows starts for you under its own "
+          + "activation host: wait for one of those by name with the \"Direct3D 12 application to wait for\" target." });
+      this._followChildrenRow = row.element;
+      if (hostPlatform !== "win32") row.element.style.display = "none";
+    }
     this._follow = this._inputRow(body, "Follow child processes", "(part of a child process's command line, such as --type=gpu-process)");
     this._follow.tooltip = "For an application that renders in a process it starts itself: the capture library also goes into the children whose command line contains this text, caught as they start. "
       + "Several patterns can be given, separated by spaces, and one written !text excludes a child instead. "
@@ -393,7 +410,10 @@ export class LaunchDialog extends Dialog {
     this._waitD3D12Rows.style.display = waitD3D12 ? "" : "none";
     this._browserRows.style.display = browser ? "" : "none";
     // A browser launch follows its own GPU process, so the field is not the user's to fill in.
-    if (hostPlatform === "win32") this._followRow?.style.setProperty("display", browser ? "none" : "");
+    if (hostPlatform === "win32") {
+      this._followRow?.style.setProperty("display", browser ? "none" : "");
+      this._followChildrenRow?.style.setProperty("display", browser ? "none" : "");
+    }
     this._launchButton.text = implicit || waitD3D12 ? "Wait" : "Launch";
     if (android && !this._devices.length) void this._loadDevices();
     if (browser && !this._browsers.length) void this._loadBrowsers(false);
@@ -552,6 +572,7 @@ export class LaunchDialog extends Dialog {
       symbolDirs: this._symbolDirs.value.trim(),
       sourceRoots: this._sourceRoots.value.trim(),
       follow: android ? "" : this._follow.value.trim(),
+      followChildren: !android && this._followChildren.checked,
       stacktraces: this._stacktraces.checked,
       capture: { mode, value: Math.max(0, Number(this._captureValue.value) || 0) },
     };
@@ -590,6 +611,7 @@ export class LaunchDialog extends Dialog {
     this._gpuValidation.checked = c.gpuValidation ?? false;
     this._symbolDirs.value = c.symbolDirs ?? "";
     this._follow.value = c.follow ?? "";
+    this._followChildren.checked = c.followChildren ?? false;
     this._sourceRoots.value = c.sourceRoots ?? "";
     this._stacktraces.checked = c.stacktraces ?? true;
     const mode = c.capture?.mode ?? "none";

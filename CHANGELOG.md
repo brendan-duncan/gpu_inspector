@@ -1,6 +1,7 @@
 ## Unreleased
 
 ### Added
+- **Capture child processes** in the launch window puts the Direct3D 12 capture library into every process the target starts, for a game behind its own launcher (`--follow-children`).
 - Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
 - DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
 - `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.

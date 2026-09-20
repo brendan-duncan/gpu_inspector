@@ -126,10 +126,13 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
  * the children whose command line holds one of those strings as they appear, which is how a
  * browser's GPU process is captured (`--type=gpu-process`; see FOLLOW_GPU_PROCESS).
  */
-export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string, follow: string[] = []): { exe: string; args: string[] } {
+export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string, follow: string[] = [],
+                           followChildren = false): { exe: string; args: string[] } {
   return {
     exe: tools.launcher,
-    args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []), ...follow.flatMap((f) => ["--follow", f]), "--", exe, ...args],
+    args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []),
+           ...(followChildren ? ["--follow-children"] : []), ...follow.flatMap((f) => ["--follow", f]),
+           "--", exe, ...args],
   };
 }
 
@@ -138,6 +141,8 @@ export interface D3D12WatchOptions extends D3D12EnvironmentOptions {
   image: string;
   /** Command line fragments naming the watched process's own children to inject into as well. */
   follow?: string[];
+  /** Inject into every child of the watched process, which `follow` then narrows. */
+  followChildren?: boolean;
   /** Give up after this many seconds with nothing injected (the watcher then exits with WATCH_TIMED_OUT). */
   timeoutSeconds: number;
   /**
@@ -160,12 +165,13 @@ export const WATCH_TIMED_OUT = 3;
  * the library.
  */
 export function watchLaunch(tools: D3D12Tools, o: D3D12WatchOptions): { exe: string; args: string[] } {
-  const { image, timeoutSeconds, once, follow, ...environment } = o;
+  const { image, timeoutSeconds, once, follow, followChildren, ...environment } = o;
   const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
     args: ["--watch", image, "--dll", tools.library, ...(timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : []),
-      ...(once ? ["--once"] : []), ...(follow ?? []).flatMap((f) => ["--follow", f]), ...env],
+      ...(once ? ["--once"] : []), ...(followChildren ? ["--follow-children"] : []),
+      ...(follow ?? []).flatMap((f) => ["--follow", f]), ...env],
   };
 }
 
@@ -174,6 +180,8 @@ export interface WindowsLaunchOptions {
   args: string[];
   /** Command line fragments naming the target's own child processes to inject into as well. */
   follow?: string[];
+  /** Inject into every process the target starts, which `follow` then narrows. */
+  followChildren?: boolean;
   /** The target's working directory; also passed to the launcher. */
   cwd: string;
   /** The environment to start from (the inspector's own, plus the user's additions). */
@@ -211,8 +219,9 @@ export function windowsLaunch(o: WindowsLaunchOptions): WindowsLaunch {
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? []));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? (options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)") : ""}`);
+    if (o.followChildren) notes.push("capturing every process the target starts");
     if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
   } else {
     notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");

@@ -144,6 +144,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     symbolDirs: c.symbolDirs ?? "",
     sourceRoots: c.sourceRoots ?? "",
     follow: c.follow ?? "",
+    followChildren: c.followChildren ?? false,
     stacktraces: c.stacktraces ?? true,
     capture: c.capture && (c.capture.mode === "frame" || c.capture.mode === "time")
       ? { mode: c.capture.mode, value: Math.max(0, Number(c.capture.value) || 0) }
@@ -527,6 +528,9 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   if (process.platform === "win32") {
     const launch = windowsLaunch({
       exe: config.exe, args, cwd, env: base, vulkan, follow,
+      // "Capture child processes": every process the target starts, which `follow` then narrows.
+      // A browser follows its own GPU process instead, and asks for nothing else.
+      followChildren: !browser && !!config.followChildren,
       d3d12: d3d12 ? {
         tools: d3d12, port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
         symbolDirs: launchSymbolDirs(config),
@@ -800,6 +804,7 @@ function waitForD3D12Application(s: Session, d3d12: D3D12Tools): LaunchResult {
   const debugLog = cliOption("debug-log");
   const watch = watchLaunch(d3d12, {
     image: config.exe, timeoutSeconds: WAIT_CONNECT_TIMEOUT_MS / 1000, once: true,
+    followChildren: !!config.followChildren,
     port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
     validation: config.validation, gpuValidation: !!config.gpuValidation, ...(debugLog ? { logFile: `${debugLog}.d3d12.log` } : {}),
   });
@@ -1582,6 +1587,8 @@ void app.whenReady().then(() => {
         sourceRoots: cliOption("source-roots") ?? "",
         // --follow=<text>: the dialog's "Follow child processes" (a browser's --type=gpu-process).
         follow: cliOption("follow") ?? "",
+        // --follow-children: the dialog's "Capture child processes", every process the target starts.
+        followChildren: cliFlag("follow-children"),
         // --capture-frame=N / --capture-after=SECONDS queue a capture like the launch dialog does.
         capture: cliOption("capture-frame") !== null ? { mode: "frame", value: Number(cliOption("capture-frame")) || 0 }
           : cliOption("capture-after") !== null ? { mode: "time", value: Number(cliOption("capture-after")) || 0 }

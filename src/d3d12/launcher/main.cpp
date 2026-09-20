@@ -2,10 +2,10 @@
 // application itself or by watching for one to start.
 //
 //   dxinsp_launch.exe --dll <path to dxinsp_capture.dll> [--cwd <dir>] [--follow <text>]...
-//                     -- <exe> [args...]
+//                     [--follow-children] -- <exe> [args...]
 //   dxinsp_launch.exe --watch <image name or full path> --dll <path to dxinsp_capture.dll>
 //                     [--env NAME=VALUE]... [--timeout <seconds>] [--poll <ms>] [--once]
-//                     [--follow <text>]...
+//                     [--follow <text>]... [--follow-children]
 //
 // **Launch.** The target is created suspended, the library is loaded into it with a remote
 // LoadLibraryW thread, its DxinspInitialize export runs in a second remote thread (which installs
@@ -22,7 +22,18 @@
 // appears the way a watch catches one (so `--follow --type=gpu-process` leaves a browser's
 // renderers and utility processes alone). It can be given more than once, and `--follow !<text>`
 // excludes instead: a child whose command line holds an excluded text is left alone whatever else
-// it matches. This is how PIX and RenderDoc get into Chrome; Chromium's
+// it matches. --follow-children takes every child instead of the ones a text names, which is what
+// the inspector's "Capture child processes" asks for: it is for an application whose renderer is
+// some process it starts that nobody can name in advance, such as a game behind its own launcher.
+// Exclusions still apply, so --follow-children --follow !--type=renderer is "everything but those".
+//
+// Following is by descent: a child counts when one of its ancestors is the target. That is the
+// shape of the problem for a launcher that starts the game itself, and it is also why it cannot
+// reach a packaged (MSIX/UWP) application, which the app model starts for the caller -- the
+// process that appears descends from the activation host, not from whoever asked for it. Those
+// are caught with --watch, which goes by image name and does not care whose child it is.
+//
+// This is how PIX and RenderDoc get into Chrome; Chromium's
 // own --gpu-launcher hook, which would start the GPU process through this launcher, is not a
 // working configuration on current Chrome -- the GPU process exits within a fraction of a second
 // however it is wrapped, and the browser respawns it in a loop.
@@ -400,6 +411,8 @@ struct WatchOptions {
     std::vector<std::wstring> env;
     /** --follow: the children of the watched process to inject into as well (Follower). */
     std::vector<std::wstring> follow;
+    /** --follow-children: every child, rather than the ones --follow names. */
+    bool followChildren = false;
     int timeoutSeconds = 0;
     int pollMs = 2;
     bool once = false;
@@ -560,9 +573,9 @@ bool ContainsNoCase(const std::wstring& line, const std::wstring& text) {
 class Follower {
 public:
     Follower(std::wstring dll, uintptr_t offset, std::vector<wchar_t> settings,
-             std::vector<std::wstring> patterns, DWORD root)
+             std::vector<std::wstring> patterns, bool all, DWORD root)
         : _dll(std::move(dll)), _offset(offset), _settings(std::move(settings)),
-          _patterns(std::move(patterns)), _root(root) {
+          _patterns(std::move(patterns)), _all(all), _root(root) {
         _known.insert(root);
         _tree.insert(root);
     }
@@ -620,13 +633,18 @@ private:
      * excluded ones (a pattern written "!text"). Chrome starts a second --type=gpu-process to
      * collect GPU information, which makes a device of its own and exits again; "!--use-gl=disabled"
      * leaves that one alone, so the port belongs to the process that renders whichever starts first.
+     *
+     * With --follow-children every child is wanted to begin with, and the patterns only take away.
+     * Injecting into a child that never renders costs it the load of a library that then sits
+     * still: the listener comes up on D3D12CreateDevice (hooks_device.cpp), so a child with no
+     * device of its own takes no port and never shows up as something to attach to.
      */
     void Consider(DWORD pid, const std::wstring& image) {
         HANDLE query = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!query) return;
         const std::wstring line = RemoteCommandLine(query);
         CloseHandle(query);
-        bool wanted = false;
+        bool wanted = _all;
         for (const std::wstring& pattern : _patterns) {
             const bool excluding = !pattern.empty() && pattern[0] == L'!';
             const std::wstring text = excluding ? pattern.substr(1) : pattern;
@@ -641,6 +659,8 @@ private:
     uintptr_t _offset;
     std::vector<wchar_t> _settings;
     std::vector<std::wstring> _patterns;
+    /** --follow-children: every child of the target, rather than the ones the patterns name. */
+    bool _all = false;
     DWORD _root;
     std::set<DWORD> _known;
     /** The target and every process descended from it that we have seen, and how many still run. */
@@ -663,16 +683,16 @@ constexpr DWORD kTreeGraceMs = 2000;
  * a single target (the session's log, its status and its Stop then apply to the whole browser).
  */
 DWORD WaitForTarget(HANDLE process, DWORD pid, const std::wstring& dll, uintptr_t offset,
-                    const std::vector<std::wstring>& patterns, const std::vector<wchar_t>& settings,
-                    DWORD pollMs) {
-    if (patterns.empty() || dll.empty() || offset == SIZE_MAX) {
+                    const std::vector<std::wstring>& patterns, bool followAll,
+                    const std::vector<wchar_t>& settings, DWORD pollMs) {
+    if ((patterns.empty() && !followAll) || dll.empty() || offset == SIZE_MAX) {
         WaitForSingleObject(process, INFINITE);
         DWORD code = 0;
         GetExitCodeProcess(process, &code);
         return code;
     }
     FineTimer timer;   // or the poll sleeps a scheduler tick, and children start in less
-    Follower follower(dll, offset, settings, patterns, pid);
+    Follower follower(dll, offset, settings, patterns, followAll, pid);
     while (WaitForSingleObject(process, pollMs) == WAIT_TIMEOUT) follower.Poll();
     DWORD code = 0;
     GetExitCodeProcess(process, &code);
@@ -761,7 +781,7 @@ int Watch(const WatchOptions& o) {
     // it does for one it started, so the session sees it exit when the application does.
     DWORD code = 0;
     if (injected) {
-        code = WaitForTarget(injected, injectedPid, o.dll, offset, o.follow, settings, (DWORD)o.pollMs);
+        code = WaitForTarget(injected, injectedPid, o.dll, offset, o.follow, o.followChildren, settings, (DWORD)o.pollMs);
         CloseHandle(injected);
         Note(L"pid %lu exited with code %lu", injectedPid, code);
     }
@@ -777,6 +797,7 @@ int Usage() {
     fwprintf(stderr, L"       --follow also injects into the processes the target starts whose command line holds\n");
     fwprintf(stderr, L"       <text>, such as --follow --type=gpu-process for a browser's GPU process;\n");
     fwprintf(stderr, L"       --follow !<text> leaves a child holding <text> alone instead.\n");
+    fwprintf(stderr, L"       --follow-children takes every child, which --follow !<text> can then narrow.\n");
     return kExitUsage;
 }
 
@@ -787,6 +808,7 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring cwd;
     WatchOptions watch;
     std::vector<std::wstring> follow;
+    bool followChildren = false;
     bool watching = false;
     int followPollMs = (int)kFollowPollMs;
     int i = 1;
@@ -797,6 +819,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--watch" && i + 1 < argc) { watching = true; watch.wanted = argv[++i]; }
         else if (a == L"--env" && i + 1 < argc) watch.env.push_back(argv[++i]);
         else if (a == L"--follow" && i + 1 < argc) follow.push_back(argv[++i]);
+        else if (a == L"--follow-children") followChildren = true;
         else if (a == L"--timeout" && i + 1 < argc) watch.timeoutSeconds = _wtoi(argv[++i]);
         else if (a == L"--poll" && i + 1 < argc) { watch.pollMs = _wtoi(argv[++i]); followPollMs = watch.pollMs; }
         else if (a == L"--once") watch.once = true;
@@ -819,6 +842,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         watch.dll = dll;
         watch.follow = follow;
+        watch.followChildren = followChildren;
         size_t slash = watch.wanted.find_last_of(L"\\/");
         watch.fullPath = slash != std::wstring::npos;
         watch.image = watch.fullPath ? watch.wanted.substr(slash + 1) : watch.wanted;
@@ -866,7 +890,9 @@ int wmain(int argc, wchar_t** argv) {
     } else {
         Note(L"injected %s into pid %lu", dll.c_str(), pi.dwProcessId);
     }
-    if (!follow.empty()) {
+    if (followChildren) {
+        Note(L"following every child of pid %lu every %d ms", pi.dwProcessId, followPollMs);
+    } else if (!follow.empty()) {
         Note(L"following the children of pid %lu every %d ms, injecting into those whose command line matches",
              pi.dwProcessId, followPollMs);
     }
@@ -874,7 +900,7 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(pi.hThread);
     // A launched target inherited our environment, so its children have the library's settings
     // already and nothing has to be handed to their initializer.
-    const DWORD code = WaitForTarget(pi.hProcess, pi.dwProcessId, dll, offset, follow,
+    const DWORD code = WaitForTarget(pi.hProcess, pi.dwProcessId, dll, offset, follow, followChildren,
                                      std::vector<wchar_t>(), (DWORD)(followPollMs > 0 ? followPollMs : (int)kFollowPollMs));
     CloseHandle(pi.hProcess);
     return (int)code;

@@ -84,6 +84,33 @@ test("wrapLaunch: the launcher's argument list (quoting is the launcher's job)",
   assert.deepEqual(wrapLaunch(tools, "app.exe", []).args, ["--dll", "C:\\b\\dxinsp_capture.dll", "--", "app.exe"]);
 });
 
+test("wrapLaunch: capturing the target's child processes", () => {
+  const tools = { dir: "C:\\b", library: "C:\\b\\dxinsp_capture.dll", launcher: "C:\\b\\dxinsp_launch.exe", shaderTool: null };
+  // "Capture child processes": every process the target starts, for a game behind its own launcher.
+  assert.deepEqual(wrapLaunch(tools, "app.exe", [], undefined, [], true).args,
+    ["--dll", tools.library, "--follow-children", "--", "app.exe"]);
+  // The named patterns still apply, so one written !text narrows "every child" back down.
+  assert.deepEqual(wrapLaunch(tools, "app.exe", [], undefined, ["!--type=renderer"], true).args,
+    ["--dll", tools.library, "--follow-children", "--follow", "!--type=renderer", "--", "app.exe"]);
+  // Off by default: a browser names the one process it wants instead.
+  assert.deepEqual(wrapLaunch(tools, "app.exe", [], undefined, ["--type=gpu-process"]).args,
+    ["--dll", tools.library, "--follow", "--type=gpu-process", "--", "app.exe"]);
+});
+
+test("watchLaunch: capturing the watched process's child processes", () => {
+  const tools = { dir: "C:\\b", library: "C:\\b\\dxinsp_capture.dll", launcher: "C:\\b\\dxinsp_launch.exe", shaderTool: null };
+  const options = {
+    image: "app.exe", timeoutSeconds: 60, once: true,
+    port: 47531, log: true, recordAlways: false, stacktraces: true, validation: false,
+  };
+  assert.ok(watchLaunch(tools, { ...options, followChildren: true }).args.includes("--follow-children"));
+  assert.ok(!watchLaunch(tools, options).args.includes("--follow-children"));
+  // It is the launcher's own flag, never one of the variables handed to the target.
+  const env = watchLaunch(tools, { ...options, followChildren: true }).args
+    .filter((a, i, all) => all[i - 1] === "--env");
+  assert.ok(!env.some((e) => e.includes("follow")), "not passed as an environment variable");
+});
+
 test("watchLaunch: the watcher's arguments, with the library's variables passed into the target", () => {
   const tools = { dir: "C:\\b", library: "C:\\b\\dxinsp_capture.dll", launcher: "C:\\b\\dxinsp_launch.exe", shaderTool: null };
   const watch = watchLaunch(tools, {
