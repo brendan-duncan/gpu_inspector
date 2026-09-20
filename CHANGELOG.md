@@ -1,4 +1,4 @@
-## Unreleased
+## v0.18.0
 
 ### Added
 - An exported C++ project shows its frame in a window, run in a loop for a profiler to attach to, with its own small window source per platform; `--batch` is the headless comparison it did before.
