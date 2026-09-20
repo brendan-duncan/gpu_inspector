@@ -38,7 +38,7 @@ The user documentation is in [docs](docs/README.md):
 
 GPU Inspector is provided under the [MIT](LICENSE) license, meaning there are no restrictions on how you use it, commercial or otherwise.
 
-GPU includes **no analytics** on use or installation. I have no idea who is using it or for what purpose, and neither does any third party. Use on proprietary or NDA projects will stay private. 
+GPU Inspector includes **no analytics** on use or installation. I have no idea who is using it or for what purpose, and neither does any third party. Use on proprietary or NDA projects will stay private. 
 
 I would love to hear if you are using it and find it useful, so feel free to reach out to me either in the [Discussions](https://github.com/brendan-duncan/gpu_inspector/discussions) or via [email](<mailto:brendandduncan@gmail.com?subject=GPU%20Inspector%20feedback>).
 
