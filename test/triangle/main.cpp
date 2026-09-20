@@ -133,6 +133,10 @@ struct App {
     // second draw fails the depth test (LESS against its own depth): the inspector's depth test
     // overlay has a draw that is all rejected.
     bool occluded = false;
+    // --no-cull: the cube is drawn with back faces kept, so every pixel it covers has two fragments
+    // of the *same* draw -- the near face and the far one. That is what a pixel history's
+    // per-fragment breakdown is for, and what a draw's own entry can only report the winner of.
+    bool noCull = false;
     // --prerecord: record one command buffer per swapchain image up front and resubmit them
     // every frame (the tint and the wave then stand still), like engines with static command
     // buffers; a capture needs the inspector's "Record all command buffers". A second prerecorded
@@ -1804,7 +1808,7 @@ struct App {
         vp.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rs.polygonMode = VK_POLYGON_MODE_FILL;
-        rs.cullMode = VK_CULL_MODE_BACK_BIT;
+        rs.cullMode = noCull ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -2262,7 +2266,7 @@ struct App {
             so.viewport(cb, 1, &viewport);
             so.scissor(cb, 1, &scissor);
             so.rasterizerDiscard(cb, VK_FALSE);
-            so.cull(cb, VK_CULL_MODE_BACK_BIT);
+            so.cull(cb, noCull ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
             so.frontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
             so.depthTest(cb, VK_TRUE);
             so.depthWrite(cb, VK_TRUE);
@@ -2560,6 +2564,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
         else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
+        else if (!strcmp(argv[i], "--no-cull")) app.noCull = true;
         else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;

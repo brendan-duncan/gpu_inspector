@@ -219,6 +219,17 @@ function pixelHistoryAnswer(c: Capture, h: PixelHistory, all: boolean, extra: Re
         wroteNothing: e.primitive === -2 ? true : undefined,
         earlyFragmentTests: e.earlyTests ? true : undefined,
         valueAfter: value(h.pixelFormat, e.value, false), depthAfter: value(h.depthFormat, e.depth, true),
+        // A draw whose own geometry overlaps here put several fragments on the pixel: each one's
+        // primitive and what its shader wrote (with the tests off and no blending), in the order
+        // the draw rasterized them. `primitive` above is the one that won.
+        fragments: e.fragments.length > 1
+          ? e.fragments.map((f, i) => ({
+              fragment: i,
+              primitive: f.primitive >= 0 ? f.primitive : undefined,
+              wonThePixel: f.primitive >= 0 && f.primitive === e.primitive ? true : undefined,
+              shaderOutput: value(h.pixelFormat, f.value, false),
+            }))
+          : undefined,
       };
     }),
     drawsNotReachingThePixel: all ? undefined : h.events.length - events.length || undefined,

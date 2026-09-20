@@ -203,6 +203,9 @@ export class CaptureTextureView {
     const d = this._draw !== null ? this.host.data.drawOverlays.get(this._draw) ?? null : null;
     return {
       pass: this._target.key, attachment: this._target.texture.info.attachment, image: this._target.texture.info.id,
+      // What the tab is showing, so a test can tell a pass's render target from an image the
+      // frame merely sampled: both are in a capture's textures.
+      target: { kind: this._target.texture.info.kind, width: this._target.texture.info.width, height: this._target.texture.info.height },
       overlay: this._overlayKind, overdraw: this._overlayKind === "overdraw", depthTested: this._depthTested,
       measured: m ? isMeasured(m.info) : false, counts: !!m?.data,
       draw: this._draw, drawRunning: this._drawRunning, drawError: this._drawError || null,

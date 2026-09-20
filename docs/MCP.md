@@ -56,7 +56,7 @@ about a capture takes a moment while its replay starts; the replay is kept for t
 
 - `get_overdraw` — fragments per pixel, for every pass or as one pass's heatmap
 - `get_pixel_history` — every clear and draw that touched a pixel, and what became of each draw's
-  fragments
+  fragments, with the fragments of a draw that put several there listed one by one
 - `get_mesh_output` — what a draw's vertex shader wrote: vertices behind the eye, primitives
   outside the view volume, triangles with no area
 - `debug_shader` — one vertex, pixel or compute invocation run in the shader debugger: its outputs,

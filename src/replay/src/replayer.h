@@ -69,6 +69,12 @@ struct ReplayOptions {
         uint32_t y = 0;
         uint32_t mip = 0;
         uint32_t layer = 0;
+        /**
+         * Break a draw that put several fragments on the pixel into one entry per fragment
+         * (PixelFragment). It costs a second replay of the frame, so it is only run when the first
+         * one found such a draw, and `fragments = false` turns it off altogether.
+         */
+        bool fragments = true;
     } history;
     /** Time and count every draw of the frame with timestamps and pipeline statistics (DrawResult). */
     bool drawStats = false;
@@ -252,6 +258,23 @@ struct DrawResult {
  * is vkCmdClearAttachments; "draw" is a draw, with what its fragments at the pixel met, measured
  * with occlusion queries on a one-pixel scissor, in samples.
  */
+/**
+ * One fragment of a draw at the pixel: which primitive it came from, and what its fragment shader
+ * wrote for it. Several fragments of one draw land on a pixel whenever its geometry overlaps there,
+ * and the draw's own entry can only report the one that won (PixelEvent::primitive).
+ *
+ * The value is the shader's output for that fragment, not the pixel after it: the fragments are
+ * measured with the depth and stencil tests off and no blending, so a fragment the tests would have
+ * killed still says what it computed -- which is what "why is this pixel not what that draw writes"
+ * needs. Whether it passed is the draw's own counts, which measure exactly that.
+ */
+struct PixelFragment {
+    /** The primitive it came from: the draw's nth triangle (or line, or point). */
+    int64_t primitive = -1;
+    /** The fragment shader's output, in the target's format; empty when it could not be read. */
+    std::vector<uint8_t> value;
+};
+
 struct PixelEvent {
     std::string kind;
     uint32_t command = 0;          // the command's index in the capture (the pass's begin for "load")
@@ -283,6 +306,8 @@ struct PixelEvent {
     int64_t primitive = -1;
     std::vector<uint8_t> value;    // the pixel's texel after the event
     std::vector<uint8_t> depth;    // the pass's depth texel after the event, when it has depth
+    /** A draw's fragments at the pixel, one entry each, in the order it rasterized them. */
+    std::vector<PixelFragment> fragments;
 };
 
 struct PixelHistoryResult {
@@ -604,12 +629,42 @@ private:
         uint32_t nextId = 0;
         /** The pass-sized target the primitive id is drawn into, and the framebuffer over it. */
         TransientImage idTarget;
+        /**
+         * The depth and stencil the primitive-id pass tests against: a copy of the pass's own,
+         * refreshed before each draw. It is the draw's to write, the way the draw writes the pass's,
+         * so that the primitive left in the pixel is the one that really won it -- against the depth
+         * the draw's earlier fragments put there, not only against the depth it started from.
+         */
+        TransientImage idDepthCopy;
         VkFramebuffer idFramebuffer = VK_NULL_HANDLE;
         /** The attachment whose copy holds the depth and stencil the id pass tests against, or none. */
         int idDepth = -1;
         VkQueryPool queries = VK_NULL_HANDLE;
         uint32_t queryCount = 0;
         uint32_t nextQuery = 0;
+        /**
+         * The fragment round (history.cpp): a colour target of the followed attachment's format and
+         * a depth-stencil of the replay's own, whose stencil counts the draw's fragments so that one
+         * of them at a time is let through.
+         */
+        TransientImage fragColor;
+        TransientImage fragDepth;
+        /** The followed attachment's format, which the fragment round's colour target takes. */
+        VkFormat fragFormat = VK_FORMAT_UNDEFINED;
+        VkFramebuffer fragColorFramebuffer = VK_NULL_HANDLE;
+        VkFramebuffer fragIdFramebuffer = VK_NULL_HANDLE;
+        /** Where a fragment's value and primitive are read: one texel and one 32-bit slot each. */
+        Staging fragValues;
+        Staging fragIds;
+        uint32_t fragSlots = 0;
+        uint32_t nextFrag = 0;
+        /** Per measured fragment: the event it belongs to, and the slot its value and id went into. */
+        struct FragmentEntry {
+            size_t event = 0;
+            uint32_t index = 0;
+            uint32_t slot = 0;
+        };
+        std::vector<FragmentEntry> fragmentEntries;
         uint32_t targetTexel = 0;
         uint32_t depthTexel = 0;
         uint32_t nextSlot = 0;
@@ -671,6 +726,33 @@ private:
     bool PipelineDynamic(uint64_t pipelineId, std::string_view state) const;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
+    // --- The fragment round (history.cpp) -------------------------------------------------------
+    /**
+     * A render pass of the replay's own for measuring one fragment: a colour attachment of `format`
+     * cleared to nothing, and a depth-stencil whose stencil counts the draw's fragments.
+     */
+    VkRenderPass HistoryFragmentRenderPass(VkFormat format);
+    /**
+     * A copy of the draw that lets exactly the fragment whose index is the stencil reference write:
+     * every fragment increments the stencil, and only the one that finds its own index passes.
+     * `idPass` replaces the fragment shader with the one writing gl_PrimitiveID.
+     */
+    VkPipeline HistoryFragmentPipeline(uint64_t pipelineId, VkFormat format, bool idPass);
+    /** The images and staging the fragment round reads through; false when they could not be made. */
+    bool PrepareHistoryFragments(PendingHistory& pending, const PassState& pass, uint32_t slots);
+    /** A depth-stencil format with a stencil aspect this device supports, for the fragment counter. */
+    VkFormat HistoryFragmentDepthFormat();
+    VkFormat _historyFragmentDepthFormat = VK_FORMAT_UNDEFINED;
+    /** Whether any draw the first replay measured put more than one fragment on the pixel. */
+    bool HistoryHasMultipleFragments() const;
+    /** Whether the frame is being replayed again to break its draws into fragments. */
+    bool _historyFragmentRound = false;
+    /** The event each draw of the fragment round belongs to, keyed as the events were recorded. */
+    std::map<std::tuple<uint32_t, uint64_t, uint32_t, uint32_t>, size_t> _historyEventIndex;
+    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyFragmentPipelines;
+    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyFragmentIdPipelines;
+    std::map<VkFormat, VkRenderPass> _historyFragmentRenderPasses;
+
     /** The fragment shader of the primitive-id pass (util.h, kPrimitiveIdFragmentSpirv). */
     VkShaderModule PrimitiveIdModule();
 

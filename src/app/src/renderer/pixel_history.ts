@@ -65,6 +65,24 @@ export interface PixelEvent {
   value: Uint8Array;
   /** The pass's depth at the pixel after the event, in depthFormat (empty without depth). */
   depth: Uint8Array;
+  /**
+   * The draw's fragments at the pixel, in the order it rasterized them, when it put more than one
+   * there. The draw's own entry reports the fragment that won; these are all of them.
+   */
+  fragments: PixelFragment[];
+}
+
+/**
+ * One fragment of a draw at the pixel: the primitive it came from and what its fragment shader
+ * wrote for it. The value is that output, not the pixel after it — the fragments are measured with
+ * the depth and stencil tests off and no blending, so a fragment the tests killed still says what
+ * it computed. Whether it passed is what the draw's own counts measure.
+ */
+export interface PixelFragment {
+  /** The draw's nth triangle (or line, or point); -2 when this run wrote no fragment. */
+  primitive: number;
+  /** The fragment shader's output, in the history's pixelFormat. */
+  value: Uint8Array;
 }
 
 export interface PixelHistory {
@@ -121,6 +139,10 @@ export function parsePixelHistory(input: Uint8Array | string | object): PixelHis
       covered: num(e.covered), facing: num(e.facing), shaded: num(e.shaded),
       depthPassed: num(e.depthPassed), stencilPassed: num(e.stencilPassed), passed: num(e.passed),
       value: hexBytes(e.value), depth: hexBytes(e.depth),
+      fragments: (Array.isArray(e.fragments) ? e.fragments : []).map((f): PixelFragment => {
+        const frag = f as Record<string, unknown>;
+        return { primitive: typeof frag.primitive === "number" ? frag.primitive : -1, value: hexBytes(frag.value) };
+      }),
     };
   });
   const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
@@ -203,6 +225,15 @@ export function eventSummary(e: PixelEvent): string {
 }
 
 /** The sample counts behind a draw's outcome, for a tooltip. */
+/** The line above a draw's fragments: how many there were, and what their values mean. */
+export function fragmentsText(e: PixelEvent): string {
+  const rasterized = (e.testsMeasured & 2) !== 0 ? e.facing : e.covered;
+  const more = rasterized > e.fragments.length ? ` of ${rasterized}` : "";
+  return `The draw's ${e.fragments.length}${more} fragments at this pixel, in the order it rasterized them. `
+    + "Each value is what that fragment's shader computed, measured with the tests off and no blending: "
+    + "a fragment the depth or stencil test killed still says what it would have written.";
+}
+
 export function sampleCountsText(e: PixelEvent): string {
   if (e.kind !== "draw" || !e.testsMeasured) return "";
   const parts: string[] = [];

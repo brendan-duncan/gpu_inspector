@@ -81,9 +81,10 @@ export class MeshView {
     this._stage = options.stage ?? (host.data.api === "vulkan" || host.data.api === "d3d12" ? "out" : "in");
     this.root = new Div(null, { class: "mesh-view" });
     // A D3D12 capture's records arrive with the capture's own stream, which may be after the tab
-    // opened: what they are for is drawn when they land.
+    // opened -- and in two parts, the layout first and the vertices after it, so the table is drawn
+    // again when each lands rather than only when the first does.
     host.data.onMeshOutputs.addListener(() => {
-      if (this._stage === "out" && !this._output) this._rebuild();
+      if (this._stage === "out") this._rebuild();
     });
     this._rebuild();
   }

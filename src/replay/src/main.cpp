@@ -200,7 +200,8 @@ std::string DrawOutcome(const PixelEvent& e) {
     if (measured(5) && !e.passed) return "failed the depth and stencil tests together";
     // Samples of every fragment the draw put there, tested against the depth and stencil from before the draw.
     if (measured(5)) return "wrote the pixel (" + std::to_string(e.passed) + (e.passed == 1 ? " sample passed)" : " samples passed)")
-        + (e.primitive >= 0 ? ", primitive " + std::to_string(e.primitive) : "");
+        + (e.primitive >= 0 ? ", primitive " + std::to_string(e.primitive) : "")
+        + (e.fragments.empty() ? "" : ", " + std::to_string(e.fragments.size()) + " fragments");
     return "covers the pixel";
 }
 
@@ -241,7 +242,13 @@ bool WritePixelHistoryData(const ReplayReport& report, const std::string& path) 
                 ",\"covered\":" + std::to_string(e.covered) + ",\"facing\":" + std::to_string(e.facing) +
                 ",\"shaded\":" + std::to_string(e.shaded) + ",\"depthPassed\":" + std::to_string(e.depthPassed) +
                 ",\"stencilPassed\":" + std::to_string(e.stencilPassed) + ",\"passed\":" + std::to_string(e.passed) +
-                ",\"value\":" + hex(e.value) + ",\"depth\":" + hex(e.depth) + "}";
+                ",\"value\":" + hex(e.value) + ",\"depth\":" + hex(e.depth) + ",\"fragments\":[";
+        for (size_t f = 0; f < e.fragments.size(); ++f) {
+            const PixelFragment& fragment = e.fragments[f];
+            json += std::string(f ? "," : "") + "{\"primitive\":" + std::to_string(fragment.primitive) +
+                    ",\"value\":" + hex(fragment.value) + "}";
+        }
+        json += "]}";
     }
     json += "],\"notes\":" + strings(h.notes, 100) + ",\"problems\":" + strings(report.problems, 100) + "}";
     std::ofstream out(path, std::ios::binary);

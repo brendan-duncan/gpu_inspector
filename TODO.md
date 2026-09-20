@@ -251,9 +251,36 @@ application with injected state. Route (a) is the general one and is the prerequ
       the geometryShader feature, which the replay now enables). Checked on the cube: the centre
       pixel is primitive 5, and other pixels 2, 3 and 4.
       The `pixel-history` case in `tools/ui_tests.py` covers it through the app.
-- [ ] Pixel history, the rest of the rest: every fragment of a draw with its own value and primitive
-      (the winning fragment's primitive is what a draw reports now), which needs the draw re-run
-      per fragment the way RenderDoc does it; layered passes past their first layer.
+- [x] Pixel history, every fragment of a draw with its own value and primitive: the frame is
+      replayed a second time (`_historyFragmentRound`, `measureFragments` in
+      `src/replay/src/history.cpp`) and each draw that rasterized more than one fragment at the
+      pixel is run once per fragment, with the stencil as a counter -- every fragment increments it
+      and the comparison lets through the one that finds its own index there, which is RenderDoc's
+      per-fragment pass (`vk_pixelhistory.cpp`). Each fragment is run twice, into images of the
+      replay's own: with the draw's own fragment shader for what it computed, and with the
+      primitive-id shader for where it came from. The first replay has to count the fragments before
+      the second can ask them anything, so the round only runs when a draw had more than one, and
+      the first 16 of a draw are measured. The UI lists them under the draw and marks the one that
+      won (`renderer/pixel_history_view.ts`); `--no-cull` in `test/triangle` keeps the cube's back
+      faces so one draw puts two fragments on a pixel, which the `pixel-fragments` UI case checks.
+
+      **The primitive that won, corrected.** The primitive-id pass ran with depth writes off against
+      the pass's shared depth copy, so with several fragments in one draw it reported the last one
+      that passed against the depth the *draw* started from, not the one that actually won. It now
+      tests against a copy of its own (`PendingHistory::idDepthCopy`, refreshed before each draw)
+      with the draw's own depth writes, so the primitive it leaves is the winner. Seen on
+      `--no-cull`: the draw reported primitive 7 while the pixel held primitive 5's colour; both say
+      5 now.
+- [ ] Pixel history in a layered pass past its first layer. What it needs, none of which is written:
+      the shadow copies of the attachments as arrays rather than single-layer images (so
+      `CreateTransientImage` takes a layer count and the views become 2D_ARRAY), the framebuffer
+      given those layers, the initial copy and `CopyHistoryPixel` addressing the followed layer
+      rather than layer 0, and the primitive-id and fragment targets layered too -- a draw writing
+      through `gl_Layer` or a multiview mask misses a single-layer target of ours. A multiview pass
+      also needs its view mask kept, since `gl_ViewIndex` is what its shaders index by. Not done
+      because nothing here renders to a layered pass: neither `test/triangle` nor any capture on
+      this machine has one, and this is not code to write without a frame to check it against.
+      The pass is still found and the note says the layer was not followed.
 - [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
       tab, beside the image, and `get_pixel_history`. Both replay the capture with
       `vkinsp_replay --pixel-data`.

@@ -166,10 +166,11 @@ the flame graph, which say *what in the frame* to change rather than what the si
 | Validation layer / debug layer messages in the UI | ● [linked to the objects they name](INSPECT.md#validation-messages) | ◐ in the log | ● | ● |
 | Synchronization validation | ● Vulkan sync validation | ○ | ◐ barrier warnings | ◐ |
 | GPU-assisted validation, attached to the draw that failed | ● [Vulkan and D3D12](INSPECT.md#validation-messages) | ○ | ● GPU validation | ● |
-| GPU crash analysis after a device removal | ○ | ○ | ● DRED integration | ● Aftermath |
+| GPU crash analysis after a device removal | ● [Vulkan breadcrumbs](TROUBLESHOOTING.md#vulkan), [D3D12 DRED](TROUBLESHOOTING.md#direct3d-12) | ○ | ● DRED integration | ● Aftermath |
 
-Crash dumps are a real gap: when the device is gone, GPU Inspector has nothing to say, and
-Aftermath or DRED is the tool to reach for.
+A lost device is named rather than dumped: the command the GPU was running, and on D3D12 a page
+fault's address with the resources around it. What is not here is a crash dump to open later, or
+Aftermath's shader-level detail on NVIDIA.
 
 ---
 
@@ -202,8 +203,8 @@ API.
 - **You need the last 10% on NVIDIA hardware** — warp stalls, unit throughput, the shader
   profiler, ray tracing in depth. Use Nsight Graphics.
 - **You want timing or memory captures of a D3D12 title.** Use PIX. Frame debugging is close to
-  parity; minutes-long timing captures, memory captures and DRED analysis have no equivalent here.
-- **Your renderer crashed the GPU.** Use Aftermath or DRED.
+  parity; minutes-long timing captures and memory captures have no equivalent here.
+- **Your renderer crashed the GPU and the command it stopped on is not enough.** Use Aftermath.
 - **Your pipeline scripts a frame debugger.** Use RenderDoc's Python API.
 - **You need a tool with a decade of edge cases in it.** RenderDoc captures applications that
   GPU Inspector, at 0.x, will not.

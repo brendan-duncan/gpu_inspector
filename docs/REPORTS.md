@@ -293,6 +293,23 @@ had the image bound to be written.
 
 This is the report for "why is this pixel the wrong colour".
 
+### The fragments of one draw
+
+A draw whose own geometry overlaps at the pixel puts several fragments there, and its row can only
+report the one that won. Under it, each fragment is listed in the order the draw rasterized them,
+with the primitive it came from and what its fragment shader wrote; the one that won the pixel is
+marked. It is what answers "the draw wrote this pixel, but which part of it did".
+
+![Two fragments of one draw at the pixel: primitive 5, which won it, and primitive 7 behind it, each with the colour its shader wrote](images/pixel-history-fragments.png)
+
+The values are those shader outputs rather than the pixel after each fragment: the fragments are
+measured with the depth and stencil tests off and no blending, so a fragment the tests killed still
+says what it would have written. Whether it passed is what the draw's own counts above say.
+
+Vulkan only, and it costs a second replay of the frame — the first has to measure how many fragments
+there were before the second can ask each of them what it wrote — so it only runs when a draw put
+more than one fragment on the pixel. The first 16 fragments of a draw are measured.
+
 - **Vulkan** — the capture is replayed on this machine's GPU, so the application need not be
   running.
 - **Metal** — another frame is captured while following the pixel, so the application must still

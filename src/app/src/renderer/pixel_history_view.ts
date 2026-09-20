@@ -12,7 +12,7 @@ import { Div } from "./widget/div.js";
 import { NumberInput } from "./widget/number_input.js";
 import { Span } from "./widget/span.js";
 import {
-  drawOutcome, eventSummary, sampleCountsText, texelCss, texelLines, touchesPixel,
+  drawOutcome, eventSummary, fragmentsText, sampleCountsText, texelCss, texelLines, touchesPixel,
   type PixelEvent, type PixelHistory, type PixelRequest,
 } from "./pixel_history.js";
 
@@ -106,6 +106,11 @@ export class PixelHistoryView {
       request: this._request, running: this._running, error: this._error || null, prompt: this._prompt?.text ?? null,
       events: h?.events.length ?? 0,
       touched: h ? h.events.filter(touchesPixel).map(eventSummary) : [],
+      // A draw broken into its fragments: how many each has, and the primitive of each
+      // (src/replay/src/history.cpp's fragment round).
+      fragments: h ? h.events.filter((e) => e.fragments.length > 1)
+        .map((e) => ({ command: e.command, primitive: e.primitive, primitives: e.fragments.map((f) => f.primitive),
+                       values: e.fragments.filter((f) => f.value.length).length })) : [],
       notes: h?.notes ?? [],
     };
   }
@@ -230,5 +235,32 @@ export class PixelHistoryView {
     }
     const values = [...texelLines(h.pixelFormat, e.value), ...texelLines(h.depthFormat, e.depth, true)];
     if (values.length) new Div(main, { text: values.join("   "), class: "pixel-event-values font-sm" });
+    // A draw that put several fragments here: each one under it, with what its shader wrote.
+    if (e.fragments.length > 1) this._renderFragments(main, h, e);
+  }
+
+  /**
+   * The fragments of one draw, in the order it rasterized them. The draw's own row says which of
+   * them won the pixel; these say what each of them was, which is the question a draw whose own
+   * geometry overlaps at the pixel leaves open.
+   */
+  private _renderFragments(main: Div, h: PixelHistory, e: PixelEvent): void {
+    const list = new Div(main, { class: "pixel-fragments" });
+    new Div(list, { text: fragmentsText(e), class: "text-muted font-sm" });
+    for (let i = 0; i < e.fragments.length; i++) {
+      const fragment = e.fragments[i];
+      const row = new Div(list, { class: "pixel-fragment" });
+      const swatch = new Span(row, { class: "pixel-swatch", tooltip: "What this fragment's shader wrote" });
+      const color = texelCss(h.pixelFormat, fragment.value);
+      if (color) new Span(swatch, { class: "pixel-swatch-fill" }).style.background = color;
+      const won = fragment.primitive >= 0 && fragment.primitive === e.primitive;
+      const primitive = fragment.primitive >= 0 ? `primitive ${fragment.primitive}` : "no primitive";
+      new Span(row, {
+        text: `#${i}  ${primitive}${won ? "  (won the pixel)" : ""}`,
+        class: won ? "pixel-fragment-label pixel-fragment-won font-sm" : "pixel-fragment-label font-sm",
+      });
+      const values = texelLines(h.pixelFormat, fragment.value);
+      if (values.length) new Span(row, { text: values.join("   "), class: "pixel-event-values font-sm" });
+    }
   }
 }

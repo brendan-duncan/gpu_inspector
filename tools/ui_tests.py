@@ -334,6 +334,25 @@ def triangle_pixel_history(state, log):
                f"no draw names the primitive that won the pixel (the primitive-id pass): {touched}")
 
 
+def triangle_pixel_fragments(state, log):
+    # The fragments of one draw (src/replay/src/history.cpp, the fragment round). With --no-cull the
+    # cube keeps its back faces, so the one draw puts two fragments on the centre pixel: the near
+    # face and the far one, each from a different primitive, and the pixel keeps the one that won
+    # the depth test -- which is the primitive the draw's own entry names.
+    h = (capture(state).get("textureTab") or {}).get("history") or {}
+    fragments = h.get("fragments") or []
+    first = fragments[0] if fragments else {}
+    primitives = first.get("primitives") or []
+    return check_connected(state, log) + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(len(fragments) == 1, f"one draw should have been broken into fragments: {fragments}") + \
+        expect(len(primitives) == 2, f"the draw put two fragments on the pixel: {first}") + \
+        expect(len(set(primitives)) == 2, f"the two fragments should come from different primitives: {primitives}") + \
+        expect(first.get("values") == 2, f"each fragment should carry what its shader wrote: {first}") + \
+        expect(first.get("primitive") in primitives,
+               f"the primitive that won the pixel should be one of the fragments: {first}")
+
+
 def triangle_overlay(state, log):
     c = capture(state)
     t = c.get("textureTab") or {}
@@ -888,6 +907,8 @@ def triangle_cases(triangle):
                           triangle_overdraw, delay_ms=20000))
         cases.append(Case("pixel-history", launch + ["--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
                           triangle_pixel_history, delay_ms=20000))
+        cases.append(Case("pixel-fragments", launch + ["--args=--no-cull", "--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
+                          triangle_pixel_fragments, delay_ms=22000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh, delay_ms=20000))
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",
@@ -909,7 +930,12 @@ def d3d12_plain(state, log):
     s = session(state)
     # The depth buffer is stored and nothing reads it (D3D12 has no store op to say so): the
     # graph's unread-store is the honest finding. The launcher's line says the library got in.
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect(set(f) <= {"unread-store", "oversynchronized-barrier"}, f"unexpected findings {f}") +         expect(s.get("frameBoundary") == "present", f"frame boundary {s.get('frameBoundary')!r}") +         expect(s.get("refreshSource") == "monitor", f"refresh source {s.get('refreshSource')!r}") +         expect("injected" in log, "the launcher did not report injecting the D3D12 library") +         expect("capture sent" in log, "the library never finished the capture")
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(set(f) <= {"unread-store", "oversynchronized-barrier"}, f"unexpected findings {f}") + \
+        expect(s.get("frameBoundary") == "present", f"frame boundary {s.get('frameBoundary')!r}") + \
+        expect(s.get("refreshSource") == "monitor", f"refresh source {s.get('refreshSource')!r}") + \
+        expect("injected" in log, "the launcher did not report injecting the D3D12 library") + \
+        expect("capture sent" in log, "the library never finished the capture")
 
 
 def d3d12_render_pass(state, log):
@@ -918,7 +944,15 @@ def d3d12_render_pass(state, log):
     # Statistics and occlusion queries are not begun inside a render pass region, so the pass
     # has a timing but no counters (check_capture_basic would ask for them).
     c = capture(state)
-    return check_connected(state, log) +         expect(bool(c), "no capture tab") +         expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") +         expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws") +         expect((c.get("textures") or 0) >= 2, f"{c.get('textures')} render targets read back") +         expect((c.get("textureErrors") or 0) == 1, f"{c.get('textureErrors')} render targets failed to read back (the multisampled depth target is expected to)") +         expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0) - 1, "not every readable render target's data arrived") +         expect((c.get("passTimings") or 0) >= 1, "no pass timings") +         expect("multisampled depth" in log, "the multisampled depth target's read-back was not reported")
+    return check_connected(state, log) + \
+        expect(bool(c), "no capture tab") + \
+        expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands captured") + \
+        expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws") + \
+        expect((c.get("textures") or 0) >= 2, f"{c.get('textures')} render targets read back") + \
+        expect((c.get("textureErrors") or 0) == 1, f"{c.get('textureErrors')} render targets failed to read back (the multisampled depth target is expected to)") + \
+        expect((c.get("texturesLoaded") or 0) == (c.get("textures") or 0) - 1, "not every readable render target's data arrived") + \
+        expect((c.get("passTimings") or 0) >= 1, "no pass timings") + \
+        expect("multisampled depth" in log, "the multisampled depth target's read-back was not reported")
 
 
 def d3d12_stencil(state, log):
@@ -938,9 +972,14 @@ def d3d12_draw_timings(state, log):
     # OMSetRenderTargets, so nothing is inside a BeginRenderPass region.
     c = capture(state)
     draws = c.get("draws") or 0
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect((c.get("drawStats") or 0) >= draws, f"{c.get('drawStats')} draws measured of {draws} in the frame") +         expect((c.get("drawStatsTimed") or 0) >= draws, f"{c.get('drawStatsTimed')} of {c.get('drawStats')} measured draws were timed") +         expect((c.get("drawStatsCounted") or 0) >= draws, f"{c.get('drawStatsCounted')} of {c.get('drawStats')} measured draws carried counters") +         expect((c.get("drawStatsOnDraws") or 0) >= draws,
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect((c.get("drawStats") or 0) >= draws, f"{c.get('drawStats')} draws measured of {draws} in the frame") + \
+        expect((c.get("drawStatsTimed") or 0) >= draws, f"{c.get('drawStatsTimed')} of {c.get('drawStats')} measured draws were timed") + \
+        expect((c.get("drawStatsCounted") or 0) >= draws, f"{c.get('drawStatsCounted')} of {c.get('drawStats')} measured draws carried counters") + \
+        expect((c.get("drawStatsOnDraws") or 0) >= draws,
                f"{c.get('drawStatsOnDraws')} of {c.get('drawStats')} measurements landed on a draw or dispatch command: "
-               "the library names a command by its slot within its list, which is not its index in the capture") +         expect("draw profiling" in log, "the library never reported what it measured per draw")
+               "the library names a command by its slot within its list, which is not its index in the capture") + \
+        expect("draw profiling" in log, "the library never reported what it measured per draw")
 
 
 def d3d12_mesh_output(state, log):
@@ -952,8 +991,18 @@ def d3d12_mesh_output(state, log):
     m = last.get("meshTab") or {}
     o = m.get("output") or {}
     stats = o.get("stats") or {}
-    return check_connected(state, log) +         expect(len(caps) == 2, f"{len(caps)} captures: streaming a draw out should take one more capture, and only one") +         expect(m.get("stage") == "out", f"the mesh tab did not open on VS Out: {m.get('stage')}") +         expect(o.get("measured") is True, f"the draw was not streamed out: {o.get('note') or m.get('error')}") +         expect((o.get("vertices") or 0) > 0, f"no vertices were streamed out: {o}") +         expect((o.get("stride") or 0) > 0, f"the vertex record has no size: {o}") +         expect("POSITION" in " ".join(o.get("outputs") or []), f"the outputs hold no position: {o.get('outputs')}") +         expect(bool(stats) and (stats.get("primitives") or 0) > 0,
-               "the clip-space positions were not read: the position output was not recognized") +         expect("mesh output" in log, "the library never reported streaming a draw out")
+    return check_connected(state, log) + \
+        expect(len(caps) == 2, f"{len(caps)} captures: streaming a draw out should take one more capture, and only one") + \
+        expect(m.get("stage") == "out", f"the mesh tab did not open on VS Out: {m.get('stage')}") + \
+        expect(o.get("measured") is True, f"the draw was not streamed out: {o.get('note') or m.get('error')}") + \
+        expect((o.get("vertices") or 0) > 0, f"no vertices were streamed out: {o}") + \
+        expect((o.get("stride") or 0) > 0, f"the vertex record has no size: {o}") + \
+        expect("POSITION" in " ".join(o.get("outputs") or []), f"the outputs hold no position: {o.get('outputs')}") + \
+        expect(bool(stats) and (stats.get("primitives") or 0) > 0,
+               "the clip-space positions were not read: the position output was not recognized") +         expect(((m.get("preview") or {}).get("edges") or 0) > 0,
+               f"the mesh was measured but nothing was drawn: the records arrive after the layout, "
+               f"and the view has to draw again when they land ({m.get('preview')})") + \
+        expect("mesh output" in log, "the library never reported streaming a draw out")
 
 
 def d3d12_draw_overlay(state, log):
@@ -965,7 +1014,15 @@ def d3d12_draw_overlay(state, log):
     last = caps[-1] if caps else {}
     t = last.get("textureTab") or {}
     d = t.get("drawOverlay") or {}
-    return check_connected(state, log) +         expect(len(caps) == 2, f"{len(caps)} captures: the overlay should take one more capture, and only one") +         expect(t.get("overlay") == "depth", f"the measured capture's tab did not open with the depth test overlay: {t.get('overlay')}") +         expect(not t.get("drawError"), f"the overlay was not measured: {t.get('drawError')}") +         expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") +         expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") +         expect("draw overlay" in log, "the library never reported measuring a draw overlay")
+    return check_connected(state, log) + \
+        expect(len(caps) == 2, f"{len(caps)} captures: the overlay should take one more capture, and only one") + \
+        expect(t.get("overlay") == "depth", f"the measured capture's tab did not open with the depth test overlay: {t.get('overlay')}") + \
+        expect((t.get("target") or {}).get("kind") != "sampled",
+               f"the tab opened on an image the frame sampled rather than the draw's render target: {t.get('target')}") + \
+        expect(not t.get("drawError"), f"the overlay was not measured: {t.get('drawError')}") + \
+        expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") + \
+        expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") + \
+        expect("draw overlay" in log, "the library never reported measuring a draw overlay")
 
 
 def d3d12_bundle(state, log):
@@ -977,7 +1034,11 @@ def d3d12_offscreen(state, log):
     # No swap chain and no present (the Dawn-in-Chrome case): the frame boundary falls back to the
     # per-frame ExecuteCommandLists, and the capture is a full frame all the same.
     s = session(state)
-    return check_connected(state, log) + check_capture_basic(state, log) +         expect(s.get("frameBoundary") == "submit", f"frame boundary {s.get('frameBoundary')!r} (expected the submit fallback)") +         expect(s.get("refreshSource") in ("", None), f"refresh source {s.get('refreshSource')!r} (a device that never presents has no display period)") +         expect("no present after" in log, "the layer did not fall back to the submit frame boundary") +         expect("submit boundary" in log, "the capture did not start on a submit boundary")
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(s.get("frameBoundary") == "submit", f"frame boundary {s.get('frameBoundary')!r} (expected the submit fallback)") + \
+        expect(s.get("refreshSource") in ("", None), f"refresh source {s.get('refreshSource')!r} (a device that never presents has no display period)") + \
+        expect("no present after" in log, "the layer did not fall back to the submit frame boundary") + \
+        expect("submit boundary" in log, "the capture did not start on a submit boundary")
 
 
 def d3d12_debug_pixel(state, log):

@@ -7,8 +7,14 @@
 - **Measure hardware counters** on Direct3D 12: `dxinsp_replay --counters` reads the GPU's own counters around each render pass, as `vkinsp_replay` does for Vulkan.
 - `dxinsp_replay --list-counters` names every metric the GPU offers, and the counter run says so up front when the machine keeps performance counters to administrators.
 
+- Pixel history lists the fragments of a draw that put several on the pixel, each with the primitive it came from and what its shader wrote, and marks the one that won.
+- `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
+
 ### Fixed
 - A measurement taken inside the application is attached to the right command: a capture library names a command by its slot within its command list, which is not its index in the capture.
+- The primitive a draw's pixel history reports is the one that won the pixel: the primitive-id pass tested against the depth the draw started from, so a draw whose own fragments hid one another named the wrong one.
+- A Direct3D 12 draw overlay opens on the draw's own render target, not on whichever image of the capture came first, which could be one the frame only sampled.
+- A Direct3D 12 mesh view draws its vertices: the records arrive after the layout they belong to, and the view only drew on the first of the two.
 
 ## v0.18.0
 

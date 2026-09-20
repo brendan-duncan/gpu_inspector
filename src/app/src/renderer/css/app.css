@@ -727,6 +727,12 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .pixel-event-summary { font-weight: 600; margin-left: 6px; }
 .pixel-event-where > span + span { margin-left: 6px; }
 .pixel-event-values { font-family: var(--font-mono, monospace); margin-top: 2px; }
+/* The fragments of one draw, listed under it (pixel_history_view.ts). */
+.pixel-fragments { margin: 4px 0 2px 0; padding-left: 10px; border-left: 2px solid var(--border-subtle); }
+.pixel-fragment { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.pixel-fragment .pixel-swatch { width: 16px; height: 16px; margin-top: 0; }
+.pixel-fragment-label { color: var(--fg-muted); }
+.pixel-fragment-won { color: var(--accent-success); font-weight: 600; }
 .pixel-event.outcome-wrote .pixel-event-summary { color: var(--accent-success); }
 .pixel-event.outcome-depth .pixel-event-summary, .pixel-event.outcome-stencil .pixel-event-summary,
 .pixel-event.outcome-depth-stencil .pixel-event-summary, .pixel-event.outcome-tests .pixel-event-summary { color: var(--accent-warning); }

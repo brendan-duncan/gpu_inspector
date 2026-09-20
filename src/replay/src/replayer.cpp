@@ -2916,6 +2916,20 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
     ReplayCommands();
     DestroyDrawStats();
     DestroyAblation();
+    // A draw that put several fragments on the pixel is broken into them by replaying the frame
+    // once more (history.cpp): the first replay had to measure how many there were before the
+    // second could ask each of them what it wrote, so this is a second pass over the frame and is
+    // only run when the first one found such a draw.
+    if (options.history.enabled && options.history.fragments) {
+        if (HistoryHasMultipleFragments()) {
+            ResetFrameState();
+            UploadImageContents();
+            TransitionToInitialLayouts();
+            _historyFragmentRound = true;
+            ReplayCommands();
+            _historyFragmentRound = false;
+        }
+    }
     // A target the frame did not reach (or a device that cannot time it) still gets an answer.
     for (const auto& target : options.ablation.targets) {
         if (std::any_of(report.ablations.begin(), report.ablations.end(), [&](const AblationResult& a) { return a.command == target.command; })) continue;

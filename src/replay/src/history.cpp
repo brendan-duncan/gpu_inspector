@@ -50,6 +50,13 @@ enum HistoryVariant { kCovered = 0, kFacing, kShaded, kDepthOnly, kStencilOnly, 
 /** What the primitive-id pass writes into: one unsigned integer per pixel, read back as one. */
 constexpr VkFormat kPrimitiveIdFormat = VK_FORMAT_R32_UINT;
 
+/**
+ * Fragments measured one by one per draw. A draw that puts more than this on one pixel is measured
+ * up to here and the event says how many there were; in a frame worth following a pixel through,
+ * a handful is the usual number and hundreds means the geometry is the problem, not the fragment.
+ */
+constexpr uint32_t kMaxHistoryFragments = 16;
+
 bool IsDepthFormat(VkFormat f) {
     return (vkinsp::FormatAspects(f) & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
 }
@@ -239,8 +246,11 @@ VkPipeline Replayer::HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat
         p.multisample = VkPipelineMultisampleStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         p.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         p.hasMultisample = true;
-        // Nothing of the history's own copies may change: the events after this one read them.
-        if (p.hasDepthStencil) {
+        // The draw's own depth and stencil writes stay: this pass tests against a copy of the
+        // pass's depth (PendingHistory::idDepthCopy), so a draw whose own fragments hide one
+        // another leaves the primitive that really won, and the copy the later events read is
+        // untouched. A pass whose depth could not be copied is drawn without them instead.
+        if (p.hasDepthStencil && depthFormat == VK_FORMAT_UNDEFINED) {
             p.depthStencil.depthWriteEnable = VK_FALSE;
             p.depthStencil.front = KeepOps(p.depthStencil.front);
             p.depthStencil.back = KeepOps(p.depthStencil.back);
@@ -257,6 +267,143 @@ VkPipeline Replayer::HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat
     });
     _historyIdPipelines[key] = pipeline;
     return pipeline;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The fragments of one draw
+//
+// A draw's own entry says how many of its fragments reached the pixel and which primitive won it;
+// what it cannot say is what each of the others was. The frame is replayed a second time for that,
+// and each such draw is run once per fragment with the stencil used as a counter: every fragment
+// increments it, and the comparison lets through only the one that finds its own index there
+// (RenderDoc's per-fragment pass works the same way, vk_pixelhistory.cpp). Each run writes into
+// images of the replay's own, so nothing the followed pass holds changes -- once with the draw's
+// own fragment shader, for what that fragment computed, and once with the primitive-id shader, for
+// the primitive it came from.
+
+VkFormat Replayer::HistoryFragmentDepthFormat() {
+    if (_historyFragmentDepthFormat != VK_FORMAT_UNDEFINED) return _historyFragmentDepthFormat;
+    // One of these two is always supported as a depth-stencil attachment.
+    for (VkFormat f : {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_S8_UINT}) {
+        VkFormatProperties props{};
+        _fns.GetPhysicalDeviceFormatProperties(_physical, f, &props);
+        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            _historyFragmentDepthFormat = f;
+            return f;
+        }
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkRenderPass Replayer::HistoryFragmentRenderPass(VkFormat format) {
+    auto it = _historyFragmentRenderPasses.find(format);
+    if (it != _historyFragmentRenderPasses.end()) return it->second;
+    _historyFragmentRenderPasses[format] = VK_NULL_HANDLE;
+    const VkFormat dsFormat = HistoryFragmentDepthFormat();
+    if (dsFormat == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
+    VkAttachmentDescription attachments[2]{};
+    attachments[0].format = format;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   // only the render area, which is the pixel
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // The counter, cleared at every run so each one counts the draw's fragments from zero again.
+    attachments[1].format = dsFormat;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    subpass.pDepthStencilAttachment = &depth;
+    VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    info.attachmentCount = 2;
+    info.pAttachments = attachments;
+    info.subpassCount = 1;
+    info.pSubpasses = &subpass;
+    VkRenderPass rp = VK_NULL_HANDLE;
+    if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) != VK_SUCCESS || !rp) return VK_NULL_HANDLE;
+    Track("VkRenderPass", (uint64_t)rp);
+    _historyFragmentRenderPasses[format] = rp;
+    return rp;
+}
+
+VkPipeline Replayer::HistoryFragmentPipeline(uint64_t pipelineId, VkFormat format, bool idPass) {
+    auto& cache = idPass ? _historyFragmentIdPipelines : _historyFragmentPipelines;
+    const auto key = std::make_pair(pipelineId, format);
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    cache[key] = VK_NULL_HANDLE;   // a copy that cannot be made is not tried again
+    VkRenderPass rp = HistoryFragmentRenderPass(format);
+    VkShaderModule module = idPass ? PrimitiveIdModule() : VK_NULL_HANDLE;
+    if (!rp || (idPass && !module)) return VK_NULL_HANDLE;
+    const char* what = idPass ? "pixel history fragment primitive" : "pixel history fragment";
+    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, what, [&](PipelineCopy& p) {
+        if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) return false;
+        if (idPass) p.ReplaceFragment(module);
+        // One attachment, written whole and unblended: what the fragment's shader computed, rather
+        // than what it would have left in the pixel.
+        VkPipelineColorBlendAttachmentState write{};
+        write.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        p.blendAttachments = {write};
+        p.blend = VkPipelineColorBlendStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        p.hasBlend = true;
+        p.multisample = VkPipelineMultisampleStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        p.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        p.hasMultisample = true;
+        // The stencil counts this draw's fragments: each increments it, whether its comparison
+        // passed or failed, so the one that finds its own index there is the one that writes. The
+        // draw's own depth and stencil tests are off -- a fragment they killed still says what it
+        // computed, and whether it passed is what the draw's own counts measure.
+        VkStencilOpState isolate{};
+        isolate.failOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        isolate.passOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        isolate.depthFailOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        isolate.compareOp = VK_COMPARE_OP_EQUAL;
+        isolate.compareMask = 0xFF;
+        isolate.writeMask = 0xFF;
+        isolate.reference = 0;   // dynamic: the fragment's index
+        p.depthStencil = VkPipelineDepthStencilStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        p.depthStencil.stencilTestEnable = VK_TRUE;
+        p.depthStencil.front = isolate;
+        p.depthStencil.back = isolate;
+        p.hasDepthStencil = true;
+        p.RemoveDynamic(kColorOutputDynamicStates);
+        p.RemoveDynamic(kMultisampleDynamicStates);
+        p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+                         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
+                         VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK});
+        p.AddDynamic(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+        if (!p.HasDynamic(VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT)) p.AddDynamic(VK_DYNAMIC_STATE_SCISSOR);
+        p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
+        p.info.renderPass = rp;
+        p.info.subpass = 0;
+        return true;
+    });
+    cache[key] = pipeline;
+    return pipeline;
+}
+
+bool Replayer::PrepareHistoryFragments(PendingHistory& pending, const PassState& pass, uint32_t slots) {
+    if (!slots || pending.fragFormat == VK_FORMAT_UNDEFINED) return false;
+    const VkFormat dsFormat = HistoryFragmentDepthFormat();
+    if (dsFormat == VK_FORMAT_UNDEFINED) return false;
+    pending.fragColor = CreateTransientImage(pending.fragFormat, pass.extent,
+                                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                             VK_SAMPLE_COUNT_1_BIT);
+    if (!pending.fragColor.image) return false;
+    pending.fragDepth = CreateTransientImage(dsFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_SAMPLE_COUNT_1_BIT);
+    if (!pending.fragDepth.image) return false;
+    if (!CreateStaging((VkDeviceSize)pending.targetTexel * slots, pending.fragValues)) return false;
+    if (!CreateStaging((VkDeviceSize)4 * slots, pending.fragIds)) return false;
+    pending.fragSlots = slots;
+    return true;
 }
 
 VkRenderPass Replayer::HistoryRenderPass(uint64_t renderPassId) {
@@ -450,6 +597,7 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
         if (!pending.resolve.image) return note("no memory to resolve the multisampled target's pixel into");
         note("the target is multisampled: each value is what the pixel's samples resolve to, the counts are of samples rather than fragments, and no primitive is named (the primitive-id pass draws into a single-sampled target of its own)");
     }
+    pending.fragFormat = targetFormat;
     if (out.format.empty()) out.format = EnumName(kEnum_VkFormat, kEnumCount_VkFormat, targetFormat);
     if (out.depthFormat.empty() && pending.depthTexel) out.depthFormat = EnumName(kEnum_VkFormat, kEnumCount_VkFormat, pass.formats[depthAttachment]);
 
@@ -466,12 +614,36 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
     }
     if (!CreateStaging((VkDeviceSize)(draws + clears + 1) * (pending.targetTexel + pending.depthTexel), pending.staging))
         return note("no staging memory for the pixel's values");
+    // The second replay: the draws of this pass broken into fragments (kMaxHistoryFragments each).
+    // Nothing else of the round is needed -- the values, the counts and the winning primitive are
+    // the first replay's -- so its queries and its primitive-id target are left out below.
+    if (_historyFragmentRound) {
+        if (!draws || targetSamples != VK_SAMPLE_COUNT_1_BIT ||
+            !PrepareHistoryFragments(pending, pass, draws * kMaxHistoryFragments)) {
+            note("the pass's draws could not be measured fragment by fragment");
+        } else {
+            // The primitive of each fragment is written as a uint, which needs a target of that
+            // format beside the one holding what its shader computed.
+            if (_primitiveIdAvailable) {
+                pending.idTarget = CreateTransientImage(kPrimitiveIdFormat, pass.extent,
+                                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                                        VK_SAMPLE_COUNT_1_BIT);
+                if (pending.idTarget.image)
+                    Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+            Barrier(cb, pending.fragColor.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            Barrier(cb, pending.fragDepth.image, {vkinsp::FormatAspects(HistoryFragmentDepthFormat()), 0, 1, 0, 1},
+                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        }
+    }
     // The primitive-id pass: a target of the pass's size, and a slot per draw to read it from.
     // Single-sampled passes only — the target it draws into is single-sampled, and a render pass
     // mixes no sample counts — and only where gl_PrimitiveID can be read at all.
     // A pass whose depth cannot be attached to it is left out: without the depth the pass tests
     // against, the primitive left in the pixel would not be the one that won it.
-    if (draws && _primitiveIdAvailable && targetSamples == VK_SAMPLE_COUNT_1_BIT && (!anyDepth || depthAttachment >= 0)) {
+    if (!_historyFragmentRound && draws && _primitiveIdAvailable && targetSamples == VK_SAMPLE_COUNT_1_BIT && (!anyDepth || depthAttachment >= 0)) {
         pending.idTarget = CreateTransientImage(kPrimitiveIdFormat, pass.extent,
                                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                                 VK_SAMPLE_COUNT_1_BIT);
@@ -480,11 +652,24 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
             pending.idDepth = depthAttachment;
             Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            // The depth the id pass tests against and writes: a copy of the pass's, so the draw's
+            // own depth writes decide which of its fragments the pixel keeps.
+            if (depthAttachment >= 0) {
+                const VkFormat depthFormat = pass.formats[depthAttachment];
+                pending.idDepthCopy = CreateTransientImage(depthFormat, pass.extent,
+                                                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                                           VK_SAMPLE_COUNT_1_BIT);
+                if (pending.idDepthCopy.image)
+                    Barrier(cb, pending.idDepthCopy.image, {vkinsp::FormatAspects(depthFormat), 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+                else
+                    pending.idDepth = -1;   // without the copy the pass would write the events' own depth
+            }
         } else {
             pending.idTarget = TransientImage{};
         }
     }
-    if (draws) {
+    if (draws && !_historyFragmentRound) {
         VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         qi.queryType = VK_QUERY_TYPE_OCCLUSION;
         qi.queryCount = draws * kVariantCount;
@@ -494,19 +679,21 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
         }
     }
 
-    PixelEvent start;
-    start.kind = "load";
-    start.command = pass.beginIndex;
-    start.method = Str(commands->items[pass.beginIndex].Get("method"));
-    start.detail = EnumName(kEnum_VkAttachmentLoadOp, kEnumCount_VkAttachmentLoadOp, target < (int)pass.loadOps.size() ? pass.loadOps[target] : VK_ATTACHMENT_LOAD_OP_LOAD);
-    start.commandBuffer = pass.commandBuffer;
-    start.frame = pass.frame;
-    start.passIndex = pass.index;
-    PendingHistory::Entry entry;
-    entry.event = out.events.size();
-    entry.slot = CopyHistoryPixel(cb, pass, pending, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    pending.entries.push_back(entry);
-    out.events.push_back(std::move(start));
+    if (!_historyFragmentRound) {
+        PixelEvent start;
+        start.kind = "load";
+        start.command = pass.beginIndex;
+        start.method = Str(commands->items[pass.beginIndex].Get("method"));
+        start.detail = EnumName(kEnum_VkAttachmentLoadOp, kEnumCount_VkAttachmentLoadOp, target < (int)pass.loadOps.size() ? pass.loadOps[target] : VK_ATTACHMENT_LOAD_OP_LOAD);
+        start.commandBuffer = pass.commandBuffer;
+        start.frame = pass.frame;
+        start.passIndex = pass.index;
+        PendingHistory::Entry entry;
+        entry.event = out.events.size();
+        entry.slot = CopyHistoryPixel(cb, pass, pending, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        pending.entries.push_back(entry);
+        out.events.push_back(std::move(start));
+    }
     for (size_t a = 0; a < pass.shadows.size(); ++a) {
         Barrier(cb, pass.shadows[a].image, {vkinsp::FormatAspects(pass.formats[a]), 0, 1, 0, 1}, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 AttachmentLayout(pass.formats[a]));
@@ -653,7 +840,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (!rp || !idPipeline) return;
         if (!pending.idFramebuffer) {
             std::vector<VkImageView> views{pending.idTarget.view};
-            if (pending.idDepth >= 0) views.push_back(pass.shadows[pending.idDepth].view);
+            if (pending.idDepth >= 0) views.push_back(pending.idDepthCopy.view);
             VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             info.renderPass = rp;
             info.attachmentCount = (uint32_t)views.size();
@@ -669,6 +856,25 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         }
         const uint32_t slot = pending.nextId++;
         const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
+        // The depth this draw meets, copied out of the pass's own so the id pass may write it.
+        if (pending.idDepth >= 0 && pending.idDepthCopy.image) {
+            const VkImageAspectFlags aspects = vkinsp::FormatAspects(pass.formats[pending.idDepth]);
+            const VkImageSubresourceRange range{aspects, 0, 1, 0, 1};
+            Barrier(cb, pass.shadows[pending.idDepth].image, range, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            Barrier(cb, pending.idDepthCopy.image, range, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkImageCopy region{};
+            region.srcSubresource = {aspects, 0, 0, 1};
+            region.dstSubresource = region.srcSubresource;
+            region.extent = {pass.extent.width, pass.extent.height, 1};
+            _fns.CmdCopyImage(cb, pass.shadows[pending.idDepth].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              pending.idDepthCopy.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            Barrier(cb, pass.shadows[pending.idDepth].image, range, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            Barrier(cb, pending.idDepthCopy.image, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        }
         // 0 for "no fragment of this draw wrote it": the shader writes the index plus one.
         VkClearValue clear{};
         VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -693,13 +899,94 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         c.imageExtent = {1, 1, 1};
         _fns.CmdCopyImageToBuffer(cb, pending.idTarget.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.ids.buffer, 1, &c);
         Barrier(cb, pending.idTarget.image, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        // The event's own pass writes the depth this one read: ordered, or the two overlap.
+        // The event's own pass writes the depth this one copied: ordered, or the two overlap.
         if (pending.idDepth >= 0) {
             const VkImageSubresourceRange depth{vkinsp::FormatAspects(pass.formats[pending.idDepth]), 0, 1, 0, 1};
             Barrier(cb, pass.shadows[pending.idDepth].image, depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         }
         entry.idSlot = (int32_t)slot;
+    };
+
+    // The draw once per fragment, into the images of the fragment round: the stencil counts its
+    // fragments and lets through the one whose index is the reference, so each run says what one
+    // fragment computed and which primitive it came from.
+    auto measureFragments = [&](uint32_t index, const ScissorPlace& place, size_t eventIndex) {
+        if (!pipeline || !pending.fragColor.image || !pending.fragDepth.image) return;
+        PixelEvent& e = out.events[eventIndex];
+        // The fragments the draw rasterized: `facing` is `covered` with its own culling applied,
+        // and culled geometry never became a fragment. A draw with one is what its own entry
+        // already reports.
+        const uint64_t rasterized = (e.testsMeasured & (1u << kFacing)) ? e.facing : e.covered;
+        const uint64_t count = std::min<uint64_t>(rasterized, kMaxHistoryFragments);
+        if (count < 2) return;
+        VkRenderPass valuePass = HistoryFragmentRenderPass(pending.fragFormat);
+        VkPipeline valuePipeline = HistoryFragmentPipeline(pipeline, pending.fragFormat, false);
+        if (!valuePass || !valuePipeline) return;
+        VkRenderPass idPass = pending.idTarget.image ? HistoryFragmentRenderPass(kPrimitiveIdFormat) : VK_NULL_HANDLE;
+        VkPipeline idPipeline = idPass ? HistoryFragmentPipeline(pipeline, kPrimitiveIdFormat, true) : VK_NULL_HANDLE;
+        // One framebuffer per target, both over the same counter.
+        auto framebufferOf = [&](VkRenderPass rp, const TransientImage& color, VkFramebuffer& out) {
+            if (out) return true;
+            std::vector<VkImageView> views{color.view, pending.fragDepth.view};
+            VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            info.renderPass = rp;
+            info.attachmentCount = (uint32_t)views.size();
+            info.pAttachments = views.data();
+            info.width = pass.extent.width;
+            info.height = pass.extent.height;
+            info.layers = 1;
+            if (_fns.CreateFramebuffer(_device, &info, nullptr, &out) != VK_SUCCESS) {
+                out = VK_NULL_HANDLE;
+                return false;
+            }
+            _transientFramebuffers.push_back(out);
+            return true;
+        };
+        if (!framebufferOf(valuePass, pending.fragColor, pending.fragColorFramebuffer)) return;
+        if (idPipeline && !framebufferOf(idPass, pending.idTarget, pending.fragIdFramebuffer)) idPipeline = VK_NULL_HANDLE;
+        const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
+        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        for (uint64_t f = 0; f < count && pending.nextFrag < pending.fragSlots; ++f) {
+            const uint32_t slot = pending.nextFrag++;
+            // Two runs: the draw's own shader for the value, then the primitive-id shader. Each
+            // starts from a cleared counter, so the fragment that matches `f` is the f-th one.
+            for (int run = 0; run < 2; ++run) {
+                VkPipeline copy = run == 0 ? valuePipeline : idPipeline;
+                if (!copy) continue;
+                const TransientImage& target = run == 0 ? pending.fragColor : pending.idTarget;
+                VkClearValue clears[2]{};
+                clears[1].depthStencil = {1.0f, 0};
+                VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                begin.renderPass = run == 0 ? valuePass : idPass;
+                begin.framebuffer = run == 0 ? pending.fragColorFramebuffer : pending.fragIdFramebuffer;
+                begin.renderArea = pixel;   // the clears and the rasterization are the one pixel
+                begin.clearValueCount = 2;
+                begin.pClearValues = clears;
+                _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+                _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copy);
+                for (uint32_t d : dynamicCommands) issue(d);
+                if (place.withCount) _fns.CmdSetScissorWithCount(cb, 1, &pixel);
+                else _fns.CmdSetScissor(cb, 0, 1, &pixel);
+                _fns.CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (uint32_t)f);
+                issue(index);
+                _fns.CmdEndRenderPass(cb);
+                Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                VkBufferImageCopy c{};
+                c.bufferOffset = run == 0 ? (VkDeviceSize)slot * pending.targetTexel : (VkDeviceSize)slot * 4;
+                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                c.imageOffset = {pixel.offset.x, pixel.offset.y, 0};
+                c.imageExtent = {1, 1, 1};
+                _fns.CmdCopyImageToBuffer(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                          run == 0 ? pending.fragValues.buffer : pending.fragIds.buffer, 1, &c);
+                Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+            PendingHistory::FragmentEntry fe;
+            fe.event = eventIndex;
+            fe.index = (uint32_t)f;
+            fe.slot = slot;
+            pending.fragmentEntries.push_back(fe);
+        }
     };
 
     auto event = [&](uint32_t index) {
@@ -714,6 +1001,20 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             state(index);
             return;
         }
+        const ScissorPlace place = draw ? placeOf(pipeline) : ScissorPlace{};
+        // The second replay adds no events: it finds the one this draw already has and breaks it
+        // into fragments. The pass is still replayed around it, so each draw meets the depth,
+        // stencil and colour its own turn left.
+        if (_historyFragmentRound) {
+            if (draw && place.inside) {
+                auto it = _historyEventIndex.find(std::make_tuple(pass.frame, pass.commandBuffer, pass.index, index));
+                if (it != _historyEventIndex.end()) measureFragments(index, place, it->second);
+            }
+            beginPass();
+            issue(index);
+            endPass();
+            return;
+        }
         PixelEvent e;
         e.kind = draw ? "draw" : "clear";
         e.command = index;
@@ -723,7 +1024,6 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         e.passIndex = pass.index;
         PendingHistory::Entry entry;
         entry.event = out.events.size();
-        const ScissorPlace place = draw ? placeOf(pipeline) : ScissorPlace{};
         if (draw) {
             e.pipeline = pipeline;
             e.earlyTests = pipeline && HistoryEarlyFragmentTests(pipeline);
@@ -781,6 +1081,16 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     }
 }
 
+bool Replayer::HistoryHasMultipleFragments() const {
+    // `facing` is what a draw rasterized; `covered` counts the geometry its culling threw away, so
+    // a draw with one fragment after culling has nothing to break down.
+    for (const PixelEvent& e : _report->history.events) {
+        const uint64_t rasterized = (e.testsMeasured & (1u << kFacing)) ? e.facing : e.covered;
+        if (rasterized > 1) return true;
+    }
+    return false;
+}
+
 void Replayer::CompleteHistory(std::vector<PendingHistory>& histories) {
     PixelHistoryResult& out = _report->history;
     for (PendingHistory& h : histories) {
@@ -802,6 +1112,9 @@ void Replayer::CompleteHistory(std::vector<PendingHistory>& histories) {
                     e.primitive = written ? (int64_t)(written - 1) : -2;
                 }
             }
+            if (_historyFragmentRound) continue;
+            // What the second replay finds this event by, since it records none of its own.
+            _historyEventIndex[std::make_tuple(e.frame, e.commandBuffer, e.passIndex, e.command)] = entry.event;
             if (entry.queryBase < 0 || !entry.issued) continue;
             uint64_t results[kVariantCount] = {};
             for (int v = 0; v < kVariantCount; ++v) {
@@ -817,8 +1130,30 @@ void Replayer::CompleteHistory(std::vector<PendingHistory>& histories) {
             e.stencilPassed = results[kStencilOnly];
             e.passed = results[kAllTests];
         }
+        // The fragment round's measurements: one value and one primitive per fragment.
+        const auto* values = static_cast<const uint8_t*>(h.fragValues.mapped);
+        const auto* fragIds = static_cast<const uint8_t*>(h.fragIds.mapped);
+        for (const PendingHistory::FragmentEntry& fe : h.fragmentEntries) {
+            if (fe.event >= out.events.size()) continue;
+            PixelEvent& e = out.events[fe.event];
+            PixelFragment fragment;
+            if (values && (VkDeviceSize)(fe.slot + 1) * h.targetTexel <= h.fragValues.size) {
+                const uint8_t* at = values + (size_t)fe.slot * h.targetTexel;
+                fragment.value.assign(at, at + h.targetTexel);
+            }
+            if (fragIds && (VkDeviceSize)(fe.slot + 1) * 4 <= h.fragIds.size) {
+                uint32_t written = 0;
+                std::memcpy(&written, fragIds + (size_t)fe.slot * 4, 4);
+                // The shader writes the index plus one, so 0 is "this run wrote no fragment".
+                fragment.primitive = written ? (int64_t)(written - 1) : -2;
+            }
+            if (e.fragments.size() <= fe.index) e.fragments.resize(fe.index + 1);
+            e.fragments[fe.index] = std::move(fragment);
+        }
         DestroyStaging(h.staging);
         if (h.ids.buffer) DestroyStaging(h.ids);
+        if (h.fragValues.buffer) DestroyStaging(h.fragValues);
+        if (h.fragIds.buffer) DestroyStaging(h.fragIds);
         if (h.queries) _fns.DestroyQueryPool(_device, h.queries, nullptr);
     }
     histories.clear();

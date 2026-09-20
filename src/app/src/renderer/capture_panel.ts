@@ -774,12 +774,13 @@ export class CapturePanel {
       if (!measured) return;
       done = true;
       // The overlay belongs to the new capture's own draw, so its render target tab is the one to
-      // open: the image beside it is the frame the measurement was taken in.
-      const target = live.data.textures.find((t) => t.info.passIndex === pass.passIndex && t.info.aspect === "color")
-        ?? (attachment >= 0 ? live.data.textures[attachment] : undefined);
-      if (target) live.onOpenTexture.emit({ key: { frame: target.info.frame, commandBuffer: target.info.commandBuffer, passIndex: target.info.passIndex }, texture: target },
-                                          { overlay: kind, draw: measured.command });
-      else this._statusLabel.text = "the new capture has no colour render target for that pass";
+      // open: the image beside it is the frame the measurement was taken in. It has to be that
+      // draw's own pass's colour attachment -- a capture's textures hold the images its shaders
+      // sampled as well, and one of those would draw the overlay over the wrong picture entirely.
+      const drawn = live.data.commands[measured.command];
+      const target = drawn ? live.targetOfDraw(drawn) : null;
+      if (target) live.onOpenTexture.emit(target, { overlay: kind, draw: measured.command });
+      else this._statusLabel.text = "the new capture has no colour render target for that draw";
     };
     live.data.onDrawOverlays.addListener(finish);
     live.onCaptureComplete.addListener(finish);
@@ -2115,7 +2116,7 @@ export class CaptureView implements CaptureHost {
       // pass with a render target unless a command (or the last such draw) is named.
       const [, kind = "highlight", at] = name.split(":");
       const overlay = kind === "depth" || kind === "wireframe" ? kind : "highlight";
-      const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this._targetOfDraw(c));
+      const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this.targetOfDraw(c));
       const draw = at === "last" ? drawn[drawn.length - 1] : at !== undefined ? this.data.commands[Number(at)] : drawn[0];
       if (draw) this.openDrawOverlay(draw, overlay);
       else this._setStatus("no draw of this capture is in a pass with a render target");
@@ -2163,7 +2164,7 @@ export class CaptureView implements CaptureHost {
   }
 
   /** The render target a draw's overlay is drawn over: its pass's first colour target. */
-  private _targetOfDraw(cmd: CaptureCommand): CaptureTarget | null {
+  targetOfDraw(cmd: CaptureCommand): CaptureTarget | null {
     const pass = findPass(this.data, cmd);
     if (!pass) return null;
     return this._targetOfPass({ frame: cmd.frame ?? 0, commandBuffer: pass.passBegin.object?.__id ?? 0, passIndex: pass.passIndex });
@@ -2171,7 +2172,7 @@ export class CaptureView implements CaptureHost {
 
   /** Opens the render target tab with a draw overlay on a draw (Highlight Draw in a draw's render targets). */
   openDrawOverlay(cmd: CaptureCommand, overlay: "highlight" | "depth" | "wireframe", target?: CaptureTarget): void {
-    const t = target ?? this._targetOfDraw(cmd);
+    const t = target ?? this.targetOfDraw(cmd);
     if (!t) {
       this._setStatus("the draw's pass has no render target read back, so there is nothing to draw the overlay over");
       return;
