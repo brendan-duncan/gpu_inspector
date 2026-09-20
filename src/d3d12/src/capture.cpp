@@ -189,6 +189,15 @@ struct TextureEntry {
     uint64_t resourceId = 0;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;   // whose execution gives the frame
+    /**
+     * The other lists that asked for the same contents and were given this entry. Any of them
+     * running in the capture gives it its frame: the list that queued it may have run the frame
+     * before (the frame of recording ahead of the capture), and its copy is as good for the list
+     * that runs now -- what two lists share is a mesh or a texture, not a frame's constants.
+     */
+    std::vector<ID3D12GraphicsCommandList*> sharedBy;
+    /** Queued in the frame of recording before the capture: not part of the capture unless a list of the captured frame runs it, and not sent otherwise. */
+    bool warmup = false;
     uint64_t listId = 0;
     uint32_t passIndex = 0;
     uint32_t attachment = 0;
@@ -212,6 +221,15 @@ struct BufferEntry {
     uint64_t bufferId = 0;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;
+    /**
+     * The other lists that asked for the same contents and were given this entry. Any of them
+     * running in the capture gives it its frame: the list that queued it may have run the frame
+     * before (the frame of recording ahead of the capture), and its copy is as good for the list
+     * that runs now -- what two lists share is a mesh or a texture, not a frame's constants.
+     */
+    std::vector<ID3D12GraphicsCommandList*> sharedBy;
+    /** Queued in the frame of recording before the capture: not part of the capture unless a list of the captured frame runs it, and not sent otherwise. */
+    bool warmup = false;
     uint64_t listId = 0;
     uint64_t offset = 0;
     uint64_t size = 0;
@@ -222,6 +240,26 @@ struct BufferEntry {
     uint32_t chunk = 0;
     uint64_t stagingOffset = 0;
 };
+
+/**
+ * A list is recorded again: what its last recording queued and never ran is no longer its own. The
+ * frame before the capture leaves such entries behind, and a list taken from a pool would
+ * otherwise give them the frame of a recording they do not belong to.
+ */
+template <typename Entry>
+void OrphanEntries(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list) {
+    for (Entry& e : entries) {
+        if (e.frame != UINT32_MAX) continue;
+        if (e.list == list) e.list = nullptr;
+        e.sharedBy.erase(std::remove(e.sharedBy.begin(), e.sharedBy.end(), list), e.sharedBy.end());
+    }
+}
+
+/** An entry answered to another list than the one that queued it (Entry::sharedBy). */
+template <typename Entry>
+void ShareEntry(Entry& e, ID3D12GraphicsCommandList* list) {
+    if (e.list != list && e.frame == UINT32_MAX && (e.sharedBy.empty() || e.sharedBy.back() != list)) e.sharedBy.push_back(list);
+}
 
 struct TimingEntry {
     ID3D12Device* device = nullptr;
@@ -287,6 +325,9 @@ struct DeviceCapture {
     HANDLE event = nullptr;
     uint64_t fenceValue = 0;
     std::vector<ID3D12CommandQueue*> queues;   // executed lists during the capture (not AddRef'd)
+    /** The capture's own lists (RecorderSlot::afterSubmit), alive until the capture's GPU work is waited for. */
+    std::vector<ComPtr<ID3D12CommandAllocator>> ownAllocators;
+    std::vector<ComPtr<ID3D12GraphicsCommandList>> ownLists;
     uint64_t frequency = 0;                    // ticks per second of the first direct queue seen
 
     ~DeviceCapture() {
@@ -302,6 +343,15 @@ struct RecorderSlot {
     std::unique_ptr<CommandRecorder> rec;
     /** Copies queued inside a BeginRenderPass region, recorded when it ends (a copy may not interrupt a render pass). */
     std::vector<DeferredCopy> deferred;
+    /**
+     * Copies queued inside a suspended pass (ActivePass::split), which this list has no place for
+     * at all: they go into a list of the capture's own, executed after the submission this list is
+     * in (OnExecuteCommandLists). What they read is what a pass reads and does not write -- vertex,
+     * index and constant buffers, sampled textures -- so it still holds what the draws saw. An
+     * engine that records a pass across the lists of its jobs draws its whole scene this way
+     * (Unity's URP does), and without these the capture had none of its meshes or textures.
+     */
+    std::vector<DeferredCopy> afterSubmit;
 };
 
 }  // namespace
@@ -343,6 +393,16 @@ struct CaptureManager::Impl {
      * frame being captured were half recorded before anything was watching.
      */
     uint32_t warmupBoundaries = 0;
+    /**
+     * Whether a list recording now has the contents it reads taken (buffers and sampled textures;
+     * under `mutex`). During the capture, and during the frame of recording before it: the lists an
+     * engine records a frame ahead are the captured frame's, and with their commands alone the
+     * capture had every draw of a Unity scene and none of its meshes. What such a list queued is
+     * kept when the capture starts; what the lists of the frame before queued never gets a frame,
+     * and is sent as not executed.
+     */
+    bool warmingUp = false;
+    bool TakesContents() const { return state == State::Capturing || (state == State::Armed && warmingUp); }
     uint32_t framesDone = 0;
     IDXGISwapChain* homeSwapChain = nullptr;   // whose presents count the captured frames (null: a submit-delimited home)
     ID3D12Device* homeDevice = nullptr;        // the device the capture started on, whose frames it counts
@@ -395,6 +455,10 @@ struct CaptureManager::Impl {
     bool AllocateStaging(DeviceCapture& dc, uint64_t size, uint32_t& chunk, uint64_t& offset, ID3D12Resource** buffer);
     ID3D12Resource* ResolveTextureFor(DeviceCapture& dc, const ResolveKey& key);
     std::vector<DeferredCopy>* DeferredOf(CommandRecorder* rec);
+    /** Where a copy queued now goes when the list cannot take it here: the pass's end, or after the submission (null: into the list). */
+    std::vector<DeferredCopy>* HeldCopiesOf(CommandRecorder* rec);
+    /** Records and executes the copies the submitted lists held for after it (RecorderSlot::afterSubmit). */
+    void RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     uint32_t CurrentFrame();   // frame ordinal of what is being recorded now (under mutex)
     void ReleaseCaptureObjects(DeviceCapture& dc);
     /** The mapped staging chunk an entry's data is in, or null. */
@@ -552,6 +616,8 @@ void CaptureManager::Impl::ReleaseCaptureObjects(DeviceCapture& dc) {
     dc.staging.clear();
     dc.resolves.clear();
     dc.queues.clear();
+    dc.ownLists.clear();
+    dc.ownAllocators.clear();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -588,9 +654,16 @@ void CaptureManager::RequestCapture(const CaptureOptions& options) {
     // A capture queued at a later frame does not wait, which would miss the frame it was asked for:
     // it starts recording a frame ahead of its target instead (OnFrameBoundary).
     i.warmupBoundaries = 0;
+    i.warmingUp = false;
+    i.textures.clear();
+    i.buffers.clear();
+    i.bufferIds.clear();
+    i.textureIds.clear();
+    i.bufferBytes = i.imageBytes = 0;
     if (options.atFrame == UINT64_MAX) {
         _recordActive.store(true, std::memory_order_relaxed);
         i.warmupBoundaries = 1;
+        i.warmingUp = true;
     }
     Log("capture armed: %u frame(s)%s", i.frameCount, options.atFrame == UINT64_MAX ? "" : " at a given frame");
 }
@@ -623,6 +696,29 @@ CommandRecorder* CaptureManager::LookupRecorder(ID3D12GraphicsCommandList* list)
     return it == i.recorders.end() ? nullptr : it->second.rec.get();
 }
 
+CommandRecorder* CaptureManager::Adopt(ID3D12GraphicsCommandList* list) {
+    if (!list) return nullptr;
+    Impl& i = impl();
+    bool stacks;
+    {
+        std::lock_guard lock(i.mutex);
+        stacks = i.options.stacktraces && i.state != Impl::State::Idle;
+    }
+    ID3D12Device* device = DeviceOf(list);
+    if (!device) return nullptr;
+    const D3D12_COMMAND_LIST_TYPE type = list->GetType();
+    std::unique_lock lock(i.recorderMutex);
+    RecorderSlot& slot = i.recorders[list];
+    if (!slot.rec) {
+        slot.rec = std::make_unique<CommandRecorder>(device, list, type, type == D3D12_COMMAND_LIST_TYPE_BUNDLE);
+        slot.rec->MarkAdopted();
+        slot.rec->SetCaptureStacks(stacks);
+        slot.rec->Record("Reset", "{\"pAllocator\":null,\"pInitialState\":null,\"adopted\":true}");
+        _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
+    }
+    return slot.rec.get();
+}
+
 void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList* list, D3D12_COMMAND_LIST_TYPE type, bool bundle,
                                  ID3D12PipelineState* initialState) {
     // DXINSP_RECORD_ALWAYS is read here rather than at the first capture: a bundle an engine
@@ -632,6 +728,13 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
     OnMeasuredListReset(list);   // nothing kept of the list is still in effect
     if (!ShouldRecord()) return;
     Impl& i = impl();
+    {
+        std::lock_guard lock(i.mutex);
+        if (i.TakesContents()) {
+            OrphanEntries(i.textures, list);
+            OrphanEntries(i.buffers, list);
+        }
+    }
     bool stacks;
     {
         std::lock_guard lock(i.mutex);
@@ -645,6 +748,7 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
         if (!slot.rec) slot.rec = std::make_unique<CommandRecorder>(device, list, type, bundle);
         else slot.rec->Reset();
         slot.deferred.clear();
+        slot.afterSubmit.clear();
         rec = slot.rec.get();
         _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
@@ -766,7 +870,8 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     pass = ActivePass{};
     pass.active = true;
     pass.renderPassApi = renderPassApi;
-    pass.split = split;
+    // An adopted list takes nothing either (CommandRecorder::adopted).
+    pass.split = split || rec->adopted();
     pass.targets = std::move(targets);
     pass.passIndex = rec->NextPassIndex();
     pass.beginCommand = rec->commandCount() ? (uint32_t)rec->commandCount() - 1 : 0;
@@ -1079,7 +1184,7 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec) {
         std::lock_guard lock(i.mutex);
         profile = i.state == Impl::State::Capturing && i.options.profilePasses;
     }
-    if (!profile || rec->bundle() || !TimestampsAllowed(rec->type())) return;
+    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type())) return;
     DeviceCapture* dc = i.CaptureFor(rec->device());
     if (!dc || !dc->timestampHeap || !dc->queryMapped) return;
     const uint32_t slot = dc->slotsUsed.fetch_add(1, std::memory_order_relaxed);
@@ -1150,11 +1255,8 @@ uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT forma
 
 }  // namespace
 
-uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size) {
+uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole) {
     if (!rec || !buffer) return 0;
-    // A copy inside a suspended pass may not be recorded at all -- not here, and not held for the
-    // pass's end, which is on another list (ActivePass::split).
-    if (rec->pass().active && rec->pass().split) return 0;
     Impl& i = impl();
     ResourceInfo info;
     if (!ResourceTracker::Get().Get(buffer, info) || info.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return 0;
@@ -1164,9 +1266,12 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     DeviceCapture* dc = nullptr;
     {
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing || !i.options.captureBuffers) return 0;
+        if (!i.TakesContents() || !i.options.captureBuffers) return 0;
         auto it = i.bufferIds.find({buffer, offset, size});
-        if (it != i.bufferIds.end()) return it->second;
+        if (it != i.bufferIds.end()) {
+            if (it->second && it->second <= i.buffers.size()) ShareEntry(i.buffers[it->second - 1], rec->list());
+            return it->second;
+        }
     }
     dc = i.CaptureFor(rec->device());
     if (!dc) return 0;
@@ -1182,14 +1287,15 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     ID3D12Resource* staging = nullptr;
     {
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing) return 0;
+        if (!i.TakesContents()) return 0;
+        e.warmup = i.state != Impl::State::Capturing;
         e.id = (uint32_t)i.buffers.size() + 1;
         i.bufferIds[{buffer, offset, size}] = e.id;
         if (info.heapType == D3D12_HEAP_TYPE_READBACK) {
             e.failed = true;
             e.note = "a buffer in a readback heap cannot be a copy source";
         } else {
-            if (e.size > i.options.maxBufferSize) {
+            if (e.size > i.options.maxBufferSize && !whole) {
                 e.originalSize = e.size;
                 e.size = i.options.maxBufferSize;
             }
@@ -1226,35 +1332,31 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     };
     // A bundle cannot copy: its copies go into the list that executes it. Inside a BeginRenderPass
     // region they wait for its end.
-    const ActivePass& pass = rec->pass();
-    if (rec->bundle() || (pass.active && pass.renderPassApi)) {
-        if (std::vector<DeferredCopy>* deferred = i.DeferredOf(rec)) deferred->push_back(std::move(copy));
-        else if (!rec->bundle()) copy(list);
-    } else {
-        copy(list);
-    }
+    // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
+    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec)) held->push_back(std::move(copy));
+    else if (!rec->bundle()) copy(list);
     return e.id;
 }
 
-uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size) {
+uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole) {
     if (!rec || !address) return 0;
     ID3D12Resource* buffer = nullptr;
     UINT64 offset = 0, remaining = 0;
     if (!AddressMap::Get().Resolve(address, buffer, offset, remaining)) return 0;
-    return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining);
+    return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining, whole && size);
 }
 
 uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture) {
     if (!rec || !texture) return 0;
-    // A copy inside a suspended pass may not be recorded at all -- not here, and not held for the
-    // pass's end, which is on another list (ActivePass::split).
-    if (rec->pass().active && rec->pass().split) return 0;
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing || !i.options.captureImages) return 0;
+        if (!i.TakesContents() || !i.options.captureImages) return 0;
         auto it = i.textureIds.find(texture);
-        if (it != i.textureIds.end()) return it->second;
+        if (it != i.textureIds.end()) {
+            if (it->second && it->second <= i.textures.size()) ShareEntry(i.textures[it->second - 1], rec->list());
+            return it->second;
+        }
     }
     D3D12_RESOURCE_DESC desc{};
     ResourceInfo info;
@@ -1294,7 +1396,8 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     auto finish = [&](const char* why) {
         if (why) { e.failed = true; e.note = why; }
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing) return 0u;
+        if (!i.TakesContents()) return 0u;
+        e.warmup = i.state != Impl::State::Capturing;
         e.captureId = (uint32_t)i.textures.size() + 1;
         i.textureIds[texture] = e.captureId;
         if (!e.failed) i.imageBytes += e.size;
@@ -1361,13 +1464,9 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
             CopySubresource(list, texture, c.subresource, state, staging, c.footprint);
         }
     };
-    const ActivePass& pass = rec->pass();
-    if (rec->bundle() || (pass.active && pass.renderPassApi)) {
-        if (std::vector<DeferredCopy>* deferred = i.DeferredOf(rec)) deferred->push_back(std::move(copy));
-        else if (!rec->bundle()) copy(list);
-    } else {
-        copy(list);
-    }
+    // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
+    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec)) held->push_back(std::move(copy));
+    else if (!rec->bundle()) copy(list);
     return id;
 }
 
@@ -1520,11 +1619,19 @@ void CaptureManager::SnapshotRootView(CommandRecorder* rec, bool compute, uint32
 
 namespace {
 
+/** Whether an entry was also given to `list` (Entry::sharedBy); false for the entries that are never shared (a pass's timings). */
+template <typename Entry>
+auto SharedWith(const Entry& e, ID3D12GraphicsCommandList* list, int) -> decltype(e.sharedBy, bool()) {
+    return std::find(e.sharedBy.begin(), e.sharedBy.end(), list) != e.sharedBy.end();
+}
+template <typename Entry>
+bool SharedWith(const Entry&, ID3D12GraphicsCommandList*, long) { return false; }
+
 /** Every capture entry recorded into `list` that has no frame yet ran in `frame`. */
 template <typename Entry>
 void AssignFrame(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, uint32_t frame) {
     for (Entry& e : entries)
-        if (e.list == list && e.frame == UINT32_MAX) e.frame = frame;
+        if (e.frame == UINT32_MAX && (e.list == list || SharedWith(e, list, 0))) e.frame = frame;
 }
 
 template <typename Entry>
@@ -1554,6 +1661,68 @@ void NoteQueue(DeviceCapture& dc, ID3D12CommandQueue* queue) {
 }
 
 }  // namespace
+
+std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* rec) {
+    const ActivePass& pass = rec->pass();
+    // Closed to any work of the capture's: inside a suspended or resumed pass, and after one that
+    // ended suspended (the pass is kept as it was once it ends). A pass that resumes and ends for
+    // good does have room after it, but its list is one a job recorded, which does not know the
+    // state the lists before it in the submission leave a resource in: a copy there was tried, and
+    // its barriers were wrong. After the submission the state is the tracker's own. The cost is a
+    // texture the frame reads and then overwrites (temporal anti-aliasing's history), which is
+    // read back as it was written.
+    const bool closed = rec->adopted() || (pass.split && (pass.active || pass.suspending));
+    if (!rec->bundle() && !closed && !(pass.active && pass.renderPassApi)) return nullptr;
+    std::shared_lock lock(recorderMutex);
+    auto it = recorders.find(rec->list());
+    if (it == recorders.end() || it->second.rec.get() != rec) return nullptr;
+    // A bundle's copies go to the list that executes it, which decides then (OnExecuteBundle).
+    return !rec->bundle() && closed ? &it->second.afterSubmit : &it->second.deferred;
+}
+
+void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists) {
+    std::vector<DeferredCopy> copies;
+    {
+        std::shared_lock lock(recorderMutex);
+        for (UINT k = 0; k < count; ++k) {
+            auto it = lists && lists[k] ? recorders.find(static_cast<ID3D12GraphicsCommandList*>(lists[k])) : recorders.end();
+            if (it == recorders.end() || it->second.afterSubmit.empty()) continue;
+            copies.insert(copies.end(), std::make_move_iterator(it->second.afterSubmit.begin()), std::make_move_iterator(it->second.afterSubmit.end()));
+            it->second.afterSubmit.clear();
+        }
+    }
+    if (copies.empty() || !device) return;
+    DeviceCapture* dc = CaptureFor(device);
+    // The copies move a resource to COPY_SOURCE and back, which only a direct queue may do from
+    // the states a draw leaves it in.
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ScopedInternal internal;
+    if (!dc || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
+        FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put())))) {
+        std::lock_guard lock(mutex);
+        for (UINT k = 0; k < count; ++k) {
+            auto* l = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
+            if (!l) continue;
+            FailList(textures, l, "inside a suspended render pass");
+            FailList(buffers, l, "inside a suspended render pass");
+        }
+        return;
+    }
+    // The list is not one of the application's, so a resource's state in it is the state the
+    // submission left it in (ResourceTracker::StateIn falls back to the global state).
+    for (DeferredCopy& copy : copies) copy(list.get());
+    if (SUCCEEDED(list->Close())) {
+        ID3D12CommandList* const submit[] = {list.get()};
+        queue->ExecuteCommandLists(1, submit);
+    } else {
+        Log("capture: the list of copies taken after a submission did not close");
+    }
+    std::lock_guard lock(dc->mutex);
+    dc->ownAllocators.push_back(std::move(allocator));
+    dc->ownLists.push_back(std::move(list));
+}
 
 bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs) {
     (void)cpuMs;
@@ -1612,6 +1781,14 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
             i.submissions.push_back(std::move(s));
         }
     }
+    // The copies the submitted lists held for now, in the frame before the capture as well: a list
+    // of the captured frame may be given what one of these queued (Entry::sharedBy).
+    bool takes;
+    {
+        std::lock_guard lock(i.mutex);
+        takes = i.TakesContents();
+    }
+    if (takes) i.RunAfterSubmitCopies(device, queue, count, lists);
 
     // The frame boundary for a device that never presents: settled per device below, and this
     // submission ends its frame once it has. Runs whether or not a capture is active, so the
@@ -1655,14 +1832,9 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
                 RekeyList(i.textures, bundle, rec->list());
                 RekeyList(i.buffers, bundle, rec->list());
             }
-            const ActivePass& pass = rec->pass();
-            // A suspended pass takes no copies, and there is no later point on this list to hold
-            // them for, so the bundle's entries say they hold nothing (ActivePass::split).
-            if (pass.active && pass.split) {
-                std::lock_guard lock(i.mutex);
-                FailList(i.textures, rec->list(), "inside a suspended render pass");
-                FailList(i.buffers, rec->list(), "inside a suspended render pass");
-            } else if (std::vector<DeferredCopy>* mine = pass.active && pass.renderPassApi ? i.DeferredOf(rec) : nullptr) {
+            // Inside a pass they are held as this list's own are: for the pass's end, or for after
+            // the submission when the pass is suspended (HeldCopiesOf).
+            if (std::vector<DeferredCopy>* mine = i.HeldCopiesOf(rec)) {
                 mine->insert(mine->end(), std::make_move_iterator(pending.begin()), std::make_move_iterator(pending.end()));
             } else {
                 for (auto& fn : pending) fn(rec->list());
@@ -1745,8 +1917,10 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             // A capture queued at a later frame starts recording one frame before it, so that the
             // lists the target frame executes are recorded wherever the engine records them (see
             // RequestCapture). Nothing is kept: the recorders are reset as the lists are.
-            if (i.options.atFrame != UINT64_MAX && deviceFrameIndex + 1 >= i.options.atFrame)
+            if (i.options.atFrame != UINT64_MAX && deviceFrameIndex + 1 >= i.options.atFrame) {
                 _recordActive.store(true, std::memory_order_relaxed);
+                i.warmingUp = true;
+            }
             // One frame of recording before the captured one, so that its lists were recorded whole.
             if (i.warmupBoundaries) {
                 --i.warmupBoundaries;
@@ -1759,8 +1933,11 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 i.homeDevice = device;
                 i.homeSwapChain = present ? swapChain : nullptr;   // null: the home is delimited by submits
                 i.submissions.clear();
-                i.textures.clear();
-                i.buffers.clear();
+                // The contents the frame before queued stay (TakesContents), but nothing queued from
+                // here on is answered with one of them: a range read again is read again, since
+                // what it held a frame ago is not what this frame's draws see. The budgets start
+                // over with it, so the frame before does not spend the captured frame's.
+                i.warmingUp = false;
                 i.timings.clear();
                 i.bufferIds.clear();
                 i.textureIds.clear();
@@ -1945,6 +2122,8 @@ const uint8_t* CaptureManager::Impl::MappedChunk(ID3D12Device* device, uint32_t 
 
 void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
     Transport& t = Transport::Get();
+    // What the frame before the capture queued and no list of the capture ran is not the capture's.
+    textures.erase(std::remove_if(textures.begin(), textures.end(), [](const TextureEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), textures.end());
     for (TextureEntry& e : textures) {
         if (e.frame == UINT32_MAX) {
             e.frame = 0;
@@ -2023,6 +2202,8 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
 
 void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers) {
     Transport& t = Transport::Get();
+    // What the frame before the capture queued and no list of the capture ran is not the capture's.
+    buffers.erase(std::remove_if(buffers.begin(), buffers.end(), [](const BufferEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), buffers.end());
     for (BufferEntry& e : buffers) {
         if (e.frame == UINT32_MAX) {
             e.frame = 0;

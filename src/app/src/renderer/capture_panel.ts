@@ -18,7 +18,7 @@ import { objectLink } from "./args_view.js";
 import { renderTimingReport, timingButtonLabel } from "./timing_view.js";
 import type { FrameRange } from "./frame_timing.js";
 import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
-import { fetchBlob, serializeCapture } from "./capture_file.js";
+import { capturedIds, fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
 import { CAPTURE_FILE_FILTERS, captureFileName, parseCaptureFile, type LoadedCapture } from "./capture_format.js";
 import { renderFrameReport, type FrameShaderReport } from "./shader_analysis_view.js";
@@ -105,8 +105,9 @@ const ICON_SAVE = '<svg viewBox="0 0 16 16" aria-label="Save"><path d="M2.5 2.5h
 
 // The Reports menu and its entries. Four reports as four buttons filled the filter row and
 // wrapped it; one menu holds them, and the next report to be added as well.
-// Export to C++: braces, for source, with the arrow of an export.
-const ICON_EXPORT_CPP = '<svg viewBox="0 0 16 16" aria-label="Export to C++"><path d="M5.2 2.5c-1.6 0-1.9.8-1.9 2v1.6c0 .9-.4 1.5-1.3 1.9.9.4 1.3 1 1.3 1.9v1.6c0 1.2.3 2 1.9 2M10.8 2.5c1.6 0 1.9.8 1.9 2v1.6c0 .9.4 1.5 1.3 1.9-.9.4-1.3 1-1.3 1.9v1.6c0 1.2-.3 2-1.9 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 4.8v5.4M6.2 8.6 8 10.5l1.8-1.9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// Export to C++: what it writes, spelled out. Wider than the other icons (btn-icon-wide), since
+// braces with an arrow said "code" and not which, and five characters do not fit a square.
+const ICON_EXPORT_CPP = '<svg viewBox="0 0 34 14" aria-label="Export to C++"><path d="M4.2 1.2c-1.5 0-1.8.7-1.8 1.8v2.2c0 .9-.4 1.4-1.2 1.8.8.4 1.2.9 1.2 1.8v2.2c0 1.1.3 1.8 1.8 1.8M29.8 1.2c1.5 0 1.8.7 1.8 1.8v2.2c0 .9.4 1.4 1.2 1.8-.8.4-1.2.9-1.2 1.8v2.2c0 1.1-.3 1.8-1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.9 4.5A3.7 3.7 0 1 0 12.9 9.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16.2 7h4.6M18.5 4.7v4.6M22.7 7h4.6M25 4.7v4.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 const ICON_REPORTS = '<svg viewBox="0 0 16 16" aria-label="Reports"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 /** Bar chart: counts of things in the frame. */
 const ICON_STATS = '<svg viewBox="0 0 16 16"><path d="M3 13.2V8.5M8 13.2V3.2M13 13.2V6.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
@@ -347,7 +348,7 @@ export class CapturePanel {
     this._bufferSizeInput = new TextInput(row, { value: "128", class: "launch-input launch-input-narrow" });
     c.push(this._bufferSizeInput);
     this._saveButton = new Button(row, { html: ICON_SAVE, class: "btn btn-icon", tooltip: "Save the capture in the active tab to a file (.gpucap)", disabled: true, callback: () => void this.saveActive() });
-    this._exportCppButton = new Button(row, { html: ICON_EXPORT_CPP, class: "btn btn-icon", disabled: true,
+    this._exportCppButton = new Button(row, { html: ICON_EXPORT_CPP, class: "btn btn-icon btn-icon-wide", disabled: true,
       tooltip: "Export to C++: write the capture in the active tab as a standalone C++ project that re-creates its objects and runs its frame again, for reproducing a problem outside the application (a driver bug report). Vulkan, Direct3D 12 and Metal captures; the frame is replayed on this machine's GPU to write it.",
       callback: () => void this.exportCppActive() });
     // A timing capture is a different question from a frame capture — minutes of frame times
@@ -863,12 +864,17 @@ export class CapturePanel {
       this._statusLabel.text = `Export to C++ replays the capture to write it, and there is no replay for a ${view.data.api ?? "capture"} capture`;
       return null;
     }
-    const chosen = parent ?? await window.inspector.chooseFile({ title: "Export to C++: choose where the project's folder goes", directory: true });
+    // The dialog opens where the last export went: bug reports tend to collect in one place.
+    const chosen = parent ?? await window.inspector.chooseFile({ title: "Export to C++: choose where the project's folder goes", directory: true, remember: "exportCpp" });
     if (!chosen) return null;
     // A capture opened from a file is named after the file, which says its frame already.
     const source = this.window.name;
     const name = exportFolderName(/\.gpucap$/i.test(source) ? source : captureFileName(source, view.data.frame, view.data.frames));
-    return view.exportCpp(`${chosen.replace(/[\\/]+$/, "")}/${name}`);
+    const written = await view.exportCpp(`${chosen.replace(/[\\/]+$/, "")}/${name}`);
+    // The project is what the user came for, so it is shown; not when a directory was given
+    // (--debug-export-cpp, a test), which has nobody to show it to.
+    if (written && !parent) void window.inspector.showFolder(written);
+    return written;
   }
 }
 
@@ -1162,7 +1168,11 @@ export class CaptureView implements CaptureHost {
     if (this.loaded) return;
     this.data.handleMessage(msg);
     if (msg.action === "CaptureFrameResults") this.onLabelChanged.emit();
-    if (msg.action === "CaptureComplete") this.onCaptureComplete.emit();
+    if (msg.action === "CaptureComplete") {
+      // What the frame made and released is gone from the application by now: the capture keeps it.
+      this.window.database.pinCaptured(capturedIds(this.window.database, this.data));
+      this.onCaptureComplete.emit();
+    }
   }
 
   /** Shows a capture from a file or a copied tab (see capture_file.ts). */
@@ -2349,7 +2359,9 @@ export class CaptureView implements CaptureHost {
       return summary.ok ? summary.directory : null;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      this._setStatus(`export to C++ failed: ${message.split("\n")[0]}`);
+      // The first line says what went wrong here; the last is the replay tool's own word on why.
+      const lines = message.split("\n").map((l) => l.trim()).filter(Boolean);
+      this._setStatus(`export to C++ failed: ${lines[0] ?? message}${lines.length > 1 ? ` (${lines[lines.length - 1]})` : ""}`);
       return null;
     } finally {
       this._exportRunning = false;

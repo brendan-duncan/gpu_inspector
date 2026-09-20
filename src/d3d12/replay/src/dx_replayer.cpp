@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <set>
 
 #include "decode.h"
 
@@ -14,6 +15,12 @@
 #include "dx_source.h"
 
 namespace dxreplay {
+
+namespace {
+const std::string* g_currentStep = nullptr;
+}
+
+const char* CurrentStep() { return g_currentStep ? g_currentStep->c_str() : ""; }
 
 using vkreplay::JValue;
 
@@ -222,10 +229,19 @@ bool DxReplayer::CreateDevice() {
 
 void DxReplayer::WaitForQueue(ID3D12CommandQueue* queue) {
     const uint64_t value = ++_fenceValue;
-    if (FAILED(queue->Signal(_fence, value))) return;
-    if (_fence->GetCompletedValue() < value) {
+    if (SUCCEEDED(queue->Signal(_fence, value)) && _fence->GetCompletedValue() < value) {
         _fence->SetEventOnCompletion(value, _fenceEvent);
         WaitForSingleObject(_fenceEvent, 60 * 1000);
+    }
+    // A frame the driver cannot run takes the device with it, and every call after that fails or
+    // worse. It is said once, with the reason, and the replay stops issuing work (DeviceLost).
+    const HRESULT reason = _device->GetDeviceRemovedReason();
+    if (FAILED(reason) && !_deviceLost) {
+        _deviceLost = true;
+        char code[16];
+        std::snprintf(code, sizeof(code), "0x%08X", (unsigned)reason);
+        Problem(std::string("the device was removed (") + code + ") after " + (_env.where.empty() ? "the last submission" : _env.where) +
+                ": the frame cannot be run to its end on this GPU, so what follows was not replayed and no target after it is compared");
     }
 }
 
@@ -792,8 +808,12 @@ void DxReplayer::NoteBarrier(const D3D12_RESOURCE_BARRIER& barrier) {
 void DxReplayer::UploadTextures() {
     const JValue* textures = _capture->Textures();
     if (!textures || !textures->IsArray()) return;
-    for (uint32_t i = 0; i < textures->count; ++i) {
-        const JValue& t = textures->items[i];
+    // A subresource is uploaded once. The capture can hold a texture twice (read in the frame of
+    // recording before the capture, and again in the captured frame), and the later reading is the
+    // one the frame saw, so the entries are taken last first.
+    std::set<std::pair<uint64_t, UINT>> uploaded;
+    for (uint32_t n = textures->count; n-- > 0;) {
+        const JValue& t = textures->items[n];
         const JValue* info = t.Get("info");
         if (!info || Str(info->Get("kind")) != "sampled" || info->Get("error")) continue;
         const uint8_t* data = nullptr;
@@ -834,6 +854,10 @@ void DxReplayer::UploadTextures() {
             }
         }
         if (regions.empty()) continue;
+        // All of it or none: the payload is one run of bytes, and an entry that overlaps another in
+        // part is the same texture read through another view, which the first covers.
+        if (std::any_of(regions.begin(), regions.end(), [&](const Region& region) { return uploaded.count({id, region.subresource}) != 0; })) continue;
+        for (const Region& region : regions) uploaded.insert({id, region.subresource});
 
         // A staging buffer laid out as the copies want it, rows at the footprint's pitch.
         std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(regions.size());
@@ -1219,6 +1243,9 @@ bool DxReplayer::IssueCommand(uint32_t index, const std::string& m, const JValue
     Decoder d(&args, _env);
     const size_t unresolved = _env.unresolved;
     const std::string listName = ListName(list);
+    // DXINSP_REPLAY_CRASH_AT=<command index>: an access violation there, to test what a driver crash leaves behind (main.cpp, OnCrash).
+    static const long crashAt = std::getenv("DXINSP_REPLAY_CRASH_AT") ? std::atol(std::getenv("DXINSP_REPLAY_CRASH_AT")) : -1;
+    if (crashAt >= 0 && (long)index == crashAt) *static_cast<volatile int*>(nullptr) = 0;
     auto leftOut = [&](const std::string& why) {
         Problem("command " + std::to_string(index) + " " + m + ": left out: " + why);
         if (_x) _x->LeftOut(index, m, why);
@@ -1751,7 +1778,13 @@ void DxReplayer::RecordGroup(Group& group, ID3D12GraphicsCommandList* list, std:
     _env.where = "command " + std::to_string(group.first) + " Reset";
     auto allocator = static_cast<ID3D12CommandAllocator*>(Object(resetArgs ? IdOf(resetArgs->Get("pAllocator")) : 0));
     auto initial = static_cast<ID3D12PipelineState*>(Object(resetArgs ? IdOf(resetArgs->Get("pInitialState")) : 0));
-    if (!allocator && resetArgs && IdOf(resetArgs->Get("pAllocator"))) allocator = MissingAllocator(IdOf(resetArgs->Get("pAllocator")), list->GetType());
+    if (!allocator) {
+        // An allocator the capture has no object for, or none named at all: a list the capture began
+        // to record at its first call seen rather than at its Reset (the capture library's Adopt).
+        // The id of one the replay makes for such a list is out of the capture's range.
+        const uint64_t named = resetArgs ? IdOf(resetArgs->Get("pAllocator")) : 0;
+        allocator = MissingAllocator(named ? named : (1ull << 40) + group.list, list->GetType());
+    }
     if (!allocator) {
         Problem("command list " + std::to_string(group.list) + ": its allocator was not replayed");
         return;
@@ -2042,6 +2075,7 @@ void DxReplayer::ReplayCommands() {
     if (!commands || !commands->IsArray()) return;
     BuildGroups();
     for (uint32_t i = 0; i < commands->count; ++i) {
+        if (_deviceLost) break;
         const JValue& c = commands->items[i];
         if (Str(c.Get("method")) != "ExecuteCommandLists") continue;
         const JValue* args = c.Get("args");
@@ -2114,6 +2148,7 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
             _x.reset();
         }
     }
+    g_currentStep = &_env.where;
     if (!CreateDevice()) return false;
     if (const JValue* buffers = capture.Buffers(); buffers && buffers->IsArray())
         for (uint32_t i = 0; i < buffers->count; ++i)

@@ -18,7 +18,7 @@ import { DEFAULT_PORT, findFreePort, findLayerDir, findValidationLayerDir, split
 import { captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "../main/metal.js";
 import { findD3D12Tools, watchLaunch, windowsLaunch } from "../main/d3d12.js";
 import { CaptureData } from "../renderer/capture_data.js";
-import { serializeCapture } from "../renderer/capture_file.js";
+import { capturedIds, serializeCapture } from "../renderer/capture_file.js";
 import { captureFileName } from "../renderer/capture_format.js";
 import { resolveSymbols } from "../renderer/stack_requests.js";
 import { ObjectDatabase } from "../renderer/vulkan/object_database.js";
@@ -31,6 +31,12 @@ const MAX_LOG_LINES = 2000;
 const MAX_FRAME_STATS = 600;
 /** How long a capture's stream stays silent before it counts as complete, for a capture library that does not send CaptureComplete. */
 const DEFAULT_QUIET_MS = 2000;
+/**
+ * How long the silence may last while contents the library announced are still missing. A library
+ * stops sending for seconds at a time while it converts a large texture, and a capture cut off
+ * there has its commands and none of its pixels: a Unity frame of 126 textures was saved with 25.
+ */
+const MAX_QUIET_MS = 30000;
 const SNAPSHOT_TIMEOUT_MS = 10000;
 const KILL_TIMEOUT_MS = 3000;
 
@@ -443,8 +449,14 @@ export class LiveSession {
       for (;;) {
         await sleep(50);
         const now = Date.now();
-        if (marker) return { data, completion: "marker", elapsedMs: now - started };
-        if (commandsComplete && lastTraffic && now - lastTraffic >= quietMs && !data.buffersLoading) return { data, completion: "quiet", elapsedMs: now - started };
+        const silence = lastTraffic ? now - lastTraffic : 0;
+        const loading = data.buffersLoading || data.texturesLoading;
+        const complete = marker ? "marker" : commandsComplete && silence >= (loading ? Math.max(quietMs, MAX_QUIET_MS) : quietMs) ? "quiet" : null;
+        if (complete) {
+          // What the frame made and released is gone from the application by now: the capture keeps it.
+          this.database.pinCaptured(capturedIds(this.database, data));
+          return { data, completion: complete, elapsedMs: now - started };
+        }
         if (!this.connected) {
           throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
         }

@@ -1,9 +1,14 @@
 ## Unreleased
 
 ### Added
+- **Export to C++** opens the written folder, starts its dialog where the last export went, has a `{C++}` icon, and says why when the replay fails.
 - **Metal replay and Export to C++** (`mtlinsp_replay`, `src/metal/replay/`, docs/REPLAY.md "Metal"): a Metal capture is re-executed on this machine's GPU, every render target it read back is compared byte for byte, and the frame is written out as a standalone CMake project of Objective-C++ that runs it again — the third backend to have both, after Vulkan and Direct3D 12. The capture bar's **Export to C++** and the MCP server's `export_cpp` now take Metal captures.
 
 ### Fixed
+- A D3D12 capture of a Unity URP frame holds the whole frame: lists after a suspended render pass were lost to a vtable the hooks had missed, pooled lists had no recorder, and the draws of suspended passes had no mesh, constant or texture data.
+- A D3D12 capture keeps the objects a frame creates and releases within itself, which were gone by the time it was shown or saved.
+- A D3D12 capture reads what `CopyBufferRegion` and buffer-to-texture copies read, and vertex and index buffers whole, so a replay has them.
+- `capture_frames` no longer saves a capture cut short when the capture library pauses for seconds while it converts large textures.
 - A Metal capture's colour attachment holds its own contents, not the depth attachment's: a depth attachment is announced under attachment index 0, the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect to tell the two apart, so the depth read-back landed on the colour entry. Found by the new replay, which read back a colour target full of floats.
 - A Metal library built ahead of time (`newLibraryWithURL:`, `newLibraryWithFile:`, `newDefaultLibrary`, `newDefaultLibraryWithBundle:` — what a shipped player uses) carries its metallib bytes in the capture, so it can be re-created without the file it was loaded from.
 - Capturing a Direct3D 12 frame no longer crashes a Unity player: a list left open at the frame boundary kept the capture's queries open and failed to close, which Unity read as a lost device.

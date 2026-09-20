@@ -289,6 +289,33 @@ the boundaries the UI's pass model needs, and says so in the stream:
   and an application that checks it -- Unity does -- treats that as a lost device and exits. So a
   split pass is recorded like any other and has no timings, no counters and no render target
   read-back; the app's `suspended-pass` finding says how many there were.
+  What its draws *read* is still taken: the copies of the buffers and textures they bind are held
+  per list (`RecorderSlot::afterSubmit`) and recorded into a list of the library's own, executed on
+  the same queue right after the submission. That is after the draws, which is right for what a
+  pass reads and does not write (meshes, constants, sampled textures) and wrong for a texture the
+  frame goes on to overwrite, such as temporal anti-aliasing's history. Unity's URP draws its whole
+  scene in such passes, so without this a capture had every draw and none of their data.
+* The runtime changes a list's vtable with its state, and **after a pass that ends suspended** the
+  list is on one that `BeginRenderPass`'s re-hook had not seen: its `Close` and everything after
+  went unrecorded, and so did its next `Reset`, which left the list with no recorder for the frame
+  after. `EndRenderPass` re-applies the hooks as `BeginRenderPass` does.
+* A list with **no recorder when a call arrives is adopted** (`CaptureManager::Adopt`): an engine
+  that pools its lists resets one as soon as it has run, frames before it records into it again,
+  so that `Reset` is long past when a capture is armed. The recorder is made at the first call seen,
+  with a `Reset` that names no allocator and carries `adopted: true`. What state such a list is in
+  is unknown (it may be inside a pass), so it is treated like a suspended pass throughout: recorded,
+  with its copies after the submission, and no timings or target read-back.
+* **Contents are taken in the frame of recording before the capture as well** (`TakesContents`). An
+  engine records a frame's lists during the frame before, and a list recorded then and run in the
+  captured frame would otherwise bind buffers the capture never read. Entries that frame queued
+  and no captured list ran are dropped, an entry several lists asked for gets its frame from any
+  of them (`sharedBy`), and a list recorded again lets go of what its last recording queued.
+* **What a copy reads is captured whole**: the source range of `CopyBufferRegion`, of a
+  `CopyTextureRegion` from a buffer, and of a buffer `CopyResource`. An engine fills its per-frame
+  constant buffers that way, and a replay copying from a source it has nothing for overwrites
+  good constants with zeros. **Vertex and index buffer views are whole too**, since a view says
+  exactly what a draw reads and a mesh cut at `maxBufferSize` draws as part of itself; the
+  capture's total buffer budget still bounds both.
 
 **A pass the capture began outlives the capture.** A capture ends at a frame boundary, and an
 engine that builds its command lists on worker threads (Unity again) has a dozen of them open at

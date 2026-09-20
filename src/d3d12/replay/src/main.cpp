@@ -10,6 +10,8 @@
 //   dxinsp_replay <capture.gpucap> --export <directory> [--export-data <file>]
 //       Export to C++: also writes the frame, as it is replayed, as a standalone C++ project that
 //       re-creates its objects and re-issues its commands (dx_exporter.h).
+#include <windows.h>
+
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -23,6 +25,37 @@
 using namespace dxreplay;
 
 namespace {
+
+// A capture is somebody else's frame run on this driver, and the frames worth exporting are the ones
+// that break something. When one takes the process down, GPU Inspector is told why: without this it
+// had a tool that wrote no summary, and could only say "the replay wrote no data".
+std::string g_exportDataPath;
+std::string g_exportDir;
+
+LONG WINAPI OnCrash(EXCEPTION_POINTERS* info) {
+    const unsigned code = info && info->ExceptionRecord ? (unsigned)info->ExceptionRecord->ExceptionCode : 0;
+    char text[512];
+    const char* step = CurrentStep();
+    std::snprintf(text, sizeof(text), "the replay crashed (exception 0x%08X)%s%s: the frame could not be run on this GPU and driver, so no project was written",
+                  code, *step ? " at " : "", step);
+    std::fprintf(stderr, "dxinsp_replay: %s\n", text);
+    if (!g_exportDataPath.empty()) {
+        if (FILE* f = std::fopen(g_exportDataPath.c_str(), "wb")) {
+            std::string error;
+            for (const char* p = text; *p; ++p) {
+                if (*p == '"' || *p == '\\') error += '\\';
+                error += *p;
+            }
+            std::string dir;
+            for (char ch : g_exportDir) dir += ch == '\\' ? '/' : ch;
+            std::fprintf(f, "{\"format\":\"gpu-inspector-export-cpp\",\"version\":1,\"device\":\"\",\"directory\":\"%s\",\"ok\":false,\"error\":\"%s\","
+                            "\"objects\":0,\"commands\":0,\"submissions\":0,\"targets\":0,\"leftOut\":0,\"dataBytes\":0,\"files\":[],\"notes\":[],\"problems\":[]}",
+                         dir.c_str(), error.c_str());
+            std::fclose(f);
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 std::string JsonString(const std::string& s) {
     std::string out = "\"";
@@ -93,6 +126,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: dxinsp_replay <capture.gpucap> [--debug-layer] [--trace] [--export <directory> [--export-data <file>]]\n");
         return 2;
     }
+    g_exportDataPath = exportData;
+    g_exportDir = options.exportDir;
+    SetUnhandledExceptionFilter(OnCrash);
     vkreplay::CaptureFile capture;
     std::string error;
     if (!capture.Load(path, error)) {

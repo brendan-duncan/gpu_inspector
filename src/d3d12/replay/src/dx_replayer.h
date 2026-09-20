@@ -40,6 +40,9 @@
 
 namespace dxreplay {
 
+/** What the replay was doing last ("command 412 DrawIndexedInstanced"), for a crash handler to name: empty before it starts. */
+const char* CurrentStep();
+
 class DxExporter;
 class Source;
 using vkreplay::CaptureFile;
@@ -259,6 +262,7 @@ private:
     std::unordered_map<uint64_t, const vkreplay::JValue*> _rootSignatures;   // id -> its pDesc JSON
     std::unordered_map<uint64_t, std::vector<InitialState>> _initial;
     std::unordered_map<uint64_t, const vkreplay::JValue*> _bufferData;
+    bool _deviceLost = false;
     struct BundleInfo {
         uint64_t allocator = 0;
         uint64_t initialState = 0;

@@ -89,8 +89,19 @@ public:
     /** The recorder of a list being recorded, else nullptr. Cheap when nothing records: one atomic load. */
     CommandRecorder* RecorderFor(ID3D12GraphicsCommandList* list) {
         if (!ShouldRecord()) return nullptr;
-        return LookupRecorder(list);
+        if (CommandRecorder* rec = LookupRecorder(list)) return rec;
+        return Adopt(list);
     }
+    /**
+     * A list that is being recorded and has no recorder: it was reset before recording began. An
+     * engine that keeps its lists in a pool resets one as soon as it has run (Unity does), frames
+     * before it records into it again, so its Reset is long past when a capture is asked for, and
+     * a frame of such lists was captured as nothing but "<unrecorded command list>". The recorder
+     * is made here, at the first call seen, with a Reset that names no allocator.
+     */
+    CommandRecorder* Adopt(ID3D12GraphicsCommandList* list);
+    /** The recorder a list already has, without making one: for Close, which is no reason to start recording a list. */
+    CommandRecorder* RecorderIfAny(ID3D12GraphicsCommandList* list) { return ShouldRecord() ? LookupRecorder(list) : nullptr; }
     /** Reset (or CreateCommandList without an initial close): attaches or resets the recorder when recording. */
     void OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList* list, D3D12_COMMAND_LIST_TYPE type, bool bundle,
                      ID3D12PipelineState* initialState);
@@ -144,10 +155,14 @@ public:
      * the id the command carries in `bufferData` / a descriptor's `data`; 0 when it cannot be read.
      * The copy is recorded into the list at once, with the barriers the buffer's state needs, or
      * at the end of a BeginRenderPass region.
+     *
+     * `whole`: not truncated. A vertex or index buffer view says exactly what a draw reads, and a
+     * mesh cut at maxBufferSize draws as part of itself in a replay; the capture's total budget still
+     * bounds it.
      */
-    uint32_t QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size);
+    uint32_t QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole = false);
     /** The same for a GPU virtual address range (resolved through the AddressMap); `size` 0 means to the buffer's end. */
-    uint32_t QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size);
+    uint32_t QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole = false);
     /**
      * Queues a texture bound through an SRV or UAV for read-back: every mip with all its slices,
      * once per resource per capture, under maxImageTotal. Returns the CaptureTextureInfo `capture`

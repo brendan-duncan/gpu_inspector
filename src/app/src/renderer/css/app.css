@@ -263,6 +263,8 @@ html, body {
 .btn-sm { padding: 2px 8px; font-size: 9pt; }
 button.btn-icon { padding: 3px 6px; line-height: 0; }
 .btn-icon svg { width: 14px; height: 14px; display: block; }
+/* An icon that spells something (Export to C++'s "{C++}"): the same height, as wide as its text. */
+.btn-icon-wide svg { width: 34px; }
 .btn.active { outline: 1px solid var(--accent-primary); }
 .shader-text {
   font-family: var(--font-mono);

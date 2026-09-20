@@ -2166,6 +2166,10 @@ var CaptureData = class {
   get buffersLoading() {
     return this._pendingBuffers > 0;
   }
+  /** Textures the capture library announced whose pixels have not arrived yet. */
+  get texturesLoading() {
+    return this.textures.some((t) => !t.data && !t.info.error && t.info.size > 0);
+  }
   /** Takes over a capture file's contents, emitting the signals a streamed capture would. */
   load(c2) {
     this.reset();
@@ -9297,11 +9301,22 @@ var HELD_REFERENCES = {
   VkDescriptorSet: /* @__PURE__ */ new Set(["VkImageView", "VkSampler", "VkBuffer", "VkBufferView"]),
   VkSwapchainKHR: /* @__PURE__ */ new Set(["VkSurfaceKHR"])
 };
-var ObjectDatabase = class {
+var ObjectDatabase = class _ObjectDatabase {
   allObjects = /* @__PURE__ */ new Map();
   // live objects
   destroyedObjects = /* @__PURE__ */ new Map();
   // destroyed but still referenced by live objects
+  /**
+   * Destroyed objects nothing live references, kept for a while, oldest first. An engine makes and
+   * releases objects within a frame (Unity's per-frame constant buffers and command lists), and a
+   * capture of that frame arrives after they are gone: without them its commands name nothing, in
+   * the UI and in the saved file, and a replay has no buffer to bind. A capture that is complete
+   * pins what it references (pinCaptured), so this only has to span the capture's arrival.
+   */
+  _recentlyDestroyed = /* @__PURE__ */ new Map();
+  /** Destroyed objects a capture references: kept for as long as the session is. */
+  _pinned = /* @__PURE__ */ new Map();
+  static RECENTLY_DESTROYED_LIMIT = 5e4;
   objectsByType = /* @__PURE__ */ new Map();
   objectsByHandle = /* @__PURE__ */ new Map();
   // "VkImage:0x..." -> most recent object
@@ -9468,6 +9483,8 @@ var ObjectDatabase = class {
   reset() {
     this.allObjects = /* @__PURE__ */ new Map();
     this.destroyedObjects = /* @__PURE__ */ new Map();
+    this._recentlyDestroyed = /* @__PURE__ */ new Map();
+    this._pinned = /* @__PURE__ */ new Map();
     this.objectsByType = /* @__PURE__ */ new Map();
     this.objectsByHandle = /* @__PURE__ */ new Map();
     this.frameIndex = 0;
@@ -9574,7 +9591,14 @@ var ObjectDatabase = class {
   }
   getObject(id) {
     if (id === void 0 || id === null) return null;
-    return this.allObjects.get(id) ?? this.destroyedObjects.get(id) ?? null;
+    return this.allObjects.get(id) ?? this.destroyedObjects.get(id) ?? this._pinned.get(id) ?? this._recentlyDestroyed.get(id) ?? null;
+  }
+  /** Keeps the destroyed objects among `ids` for the rest of the session: what a finished capture references. */
+  pinCaptured(ids) {
+    for (const id of ids) {
+      const o = this._recentlyDestroyed.get(id);
+      if (o) this._pinned.set(id, o);
+    }
   }
   getObjectByHandle(type, handle) {
     return this.objectsByHandle.get(`${type}:${handle}`) ?? null;
@@ -9758,6 +9782,13 @@ var ObjectDatabase = class {
     }
     if (referenced) this.destroyedObjects.set(id, o);
     else o.dependents.clear();
+    this._recentlyDestroyed.set(id, o);
+    if (this._recentlyDestroyed.size > _ObjectDatabase.RECENTLY_DESTROYED_LIMIT) {
+      for (const oldest of this._recentlyDestroyed.keys()) {
+        this._recentlyDestroyed.delete(oldest);
+        break;
+      }
+    }
     if (this.inspectedObject === o) this.inspectedObject = null;
     this.onDeleteObject.emit(o.id, o);
   }
@@ -27086,6 +27117,18 @@ function fetchBlob(session, object, index) {
     });
   });
 }
+function capturedIds(db, data) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) {
+    if (c2.object) ids.add(c2.object.__id);
+    if (c2.secondary) ids.add(c2.secondary);
+    db.collectReferences(c2.args, ids);
+    db.collectReferences(c2.descriptors, ids);
+  }
+  for (const t of data.textures) ids.add(t.info.id);
+  for (const b of data.buffers.values()) ids.add(b.info.buffer);
+  return ids;
+}
 function referencedObjects(session, data) {
   const db = session.database;
   const ids = /* @__PURE__ */ new Set();
@@ -27119,6 +27162,7 @@ function referencedObjects(session, data) {
     for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
     const more = /* @__PURE__ */ new Set();
     db.collectReferences(o.updates, more);
+    if (o.isDeleted) db.collectReferences(o.args, more);
     for (const m of more) if (!out.has(m)) queue.push(m);
   }
   return [...out.values()].sort((a, b) => a.id - b.id);
@@ -27225,6 +27269,7 @@ async function serializeCapture(session, data, options = {}) {
 var MAX_LOG_LINES = 2e3;
 var MAX_FRAME_STATS = 600;
 var DEFAULT_QUIET_MS = 2e3;
+var MAX_QUIET_MS = 3e4;
 var SNAPSHOT_TIMEOUT_MS = 1e4;
 var KILL_TIMEOUT_MS = 3e3;
 var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
@@ -27550,8 +27595,13 @@ var LiveSession = class {
       for (; ; ) {
         await sleep(50);
         const now = Date.now();
-        if (marker) return { data, completion: "marker", elapsedMs: now - started };
-        if (commandsComplete && lastTraffic && now - lastTraffic >= quietMs && !data.buffersLoading) return { data, completion: "quiet", elapsedMs: now - started };
+        const silence = lastTraffic ? now - lastTraffic : 0;
+        const loading = data.buffersLoading || data.texturesLoading;
+        const complete = marker ? "marker" : commandsComplete && silence >= (loading ? Math.max(quietMs, MAX_QUIET_MS) : quietMs) ? "quiet" : null;
+        if (complete) {
+          this.database.pinCaptured(capturedIds(this.database, data));
+          return { data, completion: complete, elapsedMs: now - started };
+        }
         if (!this.connected) {
           throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
         }

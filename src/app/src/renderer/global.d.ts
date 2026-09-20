@@ -89,6 +89,8 @@ export interface InspectorApi {
   onLog(cb: (line: SessionLogMessage) => void): void;
 
   chooseFile(opts?: OpenFileOptions): Promise<string | null>;
+  /** Opens a folder in the OS file browser; false when it is not there. */
+  showFolder(dir: string): Promise<boolean>;
   /** Writes `data` to the file the user picks (or to opts.path); returns the path, null when cancelled or failed. */
   saveFile(opts: SaveFileOptions, data: Uint8Array): Promise<string | null>;
   /** Reads a whole file; null when it cannot be read. */

@@ -220,6 +220,11 @@ export class CaptureData {
     return this._pendingBuffers > 0;
   }
 
+  /** Textures the capture library announced whose pixels have not arrived yet. */
+  get texturesLoading(): boolean {
+    return this.textures.some((t) => !t.data && !t.info.error && t.info.size > 0);
+  }
+
   /** Takes over a capture file's contents, emitting the signals a streamed capture would. */
   load(c: LoadedCapture): void {
     this.reset();

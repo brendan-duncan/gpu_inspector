@@ -30,6 +30,17 @@ type ObjectSignal = Signal<(id: number, object: VulkanObject) => void>;
 export class ObjectDatabase implements ObjectLookup {
   allObjects = new Map<number, VulkanObject>();        // live objects
   destroyedObjects = new Map<number, VulkanObject>();  // destroyed but still referenced by live objects
+  /**
+   * Destroyed objects nothing live references, kept for a while, oldest first. An engine makes and
+   * releases objects within a frame (Unity's per-frame constant buffers and command lists), and a
+   * capture of that frame arrives after they are gone: without them its commands name nothing, in
+   * the UI and in the saved file, and a replay has no buffer to bind. A capture that is complete
+   * pins what it references (pinCaptured), so this only has to span the capture's arrival.
+   */
+  private _recentlyDestroyed = new Map<number, VulkanObject>();
+  /** Destroyed objects a capture references: kept for as long as the session is. */
+  private _pinned = new Map<number, VulkanObject>();
+  static readonly RECENTLY_DESTROYED_LIMIT = 50000;
   objectsByType = new Map<string, Map<number, VulkanObject>>();
   objectsByHandle = new Map<string, VulkanObject>();   // "VkImage:0x..." -> most recent object
   frameIndex = 0;
@@ -205,6 +216,8 @@ export class ObjectDatabase implements ObjectLookup {
   reset(): void {
     this.allObjects = new Map();
     this.destroyedObjects = new Map();
+    this._recentlyDestroyed = new Map();
+    this._pinned = new Map();
     this.objectsByType = new Map();
     this.objectsByHandle = new Map();
     this.frameIndex = 0;
@@ -298,7 +311,15 @@ export class ObjectDatabase implements ObjectLookup {
 
   getObject(id: number | undefined | null): VulkanObject | null {
     if (id === undefined || id === null) return null;
-    return this.allObjects.get(id) ?? this.destroyedObjects.get(id) ?? null;
+    return this.allObjects.get(id) ?? this.destroyedObjects.get(id) ?? this._pinned.get(id) ?? this._recentlyDestroyed.get(id) ?? null;
+  }
+
+  /** Keeps the destroyed objects among `ids` for the rest of the session: what a finished capture references. */
+  pinCaptured(ids: Iterable<number>): void {
+    for (const id of ids) {
+      const o = this._recentlyDestroyed.get(id);
+      if (o) this._pinned.set(id, o);
+    }
   }
 
   getObjectByHandle(type: string, handle: string): VulkanObject | null {
@@ -503,6 +524,14 @@ export class ObjectDatabase implements ObjectLookup {
     }
     if (referenced) this.destroyedObjects.set(id, o);
     else o.dependents.clear();
+    this._recentlyDestroyed.set(id, o);
+    if (this._recentlyDestroyed.size > ObjectDatabase.RECENTLY_DESTROYED_LIMIT) {
+      // A Map keeps insertion order, so its first key is the oldest.
+      for (const oldest of this._recentlyDestroyed.keys()) {
+        this._recentlyDestroyed.delete(oldest);
+        break;
+      }
+    }
 
     if (this.inspectedObject === o) this.inspectedObject = null;
     this.onDeleteObject.emit(o.id, o);

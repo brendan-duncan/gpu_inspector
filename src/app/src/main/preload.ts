@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("inspector", {
   onLog: (cb: (line: unknown) => void) => ipcRenderer.on("inspector:log", (_e, line) => cb(line)),
   // Recents, files, tools
   chooseFile: (opts: unknown) => ipcRenderer.invoke("inspector:chooseFile", opts),
+  showFolder: (dir: string) => ipcRenderer.invoke("inspector:showFolder", dir),
   saveFile: (opts: unknown, data: Uint8Array) => ipcRenderer.invoke("inspector:saveFile", opts, data),
   readFile: (path: string) => ipcRenderer.invoke("inspector:readFile", path),
   addRecentCapture: (path: string) => ipcRenderer.invoke("inspector:addRecentCapture", path),

@@ -423,7 +423,7 @@ HRESULT STDMETHODCALLTYPE Hook_Reset(List* This, ID3D12CommandAllocator* pAlloca
 HRESULT STDMETHODCALLTYPE Hook_Close(List* This) {
     auto orig = ORIG(Close);
     if (Internal()) return orig(This);
-    CommandRecorder* rec = Rec(This);
+    CommandRecorder* rec = CaptureManager::Get().RecorderIfAny(This);
     // A table nothing drew with still shows what it named.
     if (rec) rec->FlushSnapshots(true, true);
     // Ends the open passes and appends their read-backs, so the stream reads [..., EndRenderTargets, Close].
@@ -612,6 +612,10 @@ void STDMETHODCALLTYPE Hook_CopyBufferRegion(List* This, ID3D12Resource* pDstBuf
     args.ref("pDstBuffer", pDstBuffer, "ID3D12Resource").u("DstOffset", DstOffset)
         .ref("pSrcBuffer", pSrcBuffer, "ID3D12Resource").u("SrcOffset", SrcOffset).u("NumBytes", NumBytes);
     rec->Record("CopyBufferRegion", args.str());
+    // What the copy reads, whole: an engine fills its per-frame constant buffers this way (Unity
+    // does, from one upload buffer), and a replay that copies from a source it has nothing for
+    // writes zeros over constants it had right.
+    rec->SetExtraOnLast(BufferDataExtra({Cap().QueueBufferCapture(rec, pSrcBuffer, SrcOffset, NumBytes, true)}));
 }
 
 void STDMETHODCALLTYPE Hook_CopyTextureRegion(List* This, const D3D12_TEXTURE_COPY_LOCATION* pDst, UINT DstX, UINT DstY, UINT DstZ, const D3D12_TEXTURE_COPY_LOCATION* pSrc, const D3D12_BOX* pSrcBox) {
@@ -627,6 +631,14 @@ void STDMETHODCALLTYPE Hook_CopyTextureRegion(List* This, const D3D12_TEXTURE_CO
     if (pSrc) Write(args.key("pSrc"), *pSrc); else args.null("pSrc");
     Write(args.key("pSrcBox"), pSrcBox);
     rec->Record("CopyTextureRegion", args.str());
+    // A texture filled from a buffer (an upload): the rows the copy reads, whole, as above. The
+    // footprint's height in rows is an upper bound for a block-compressed format, which the
+    // buffer's end clips.
+    if (pSrc && pSrc->pResource && pSrc->Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT) {
+        const D3D12_SUBRESOURCE_FOOTPRINT& f = pSrc->PlacedFootprint.Footprint;
+        const UINT64 bytes = (UINT64)f.RowPitch * std::max<UINT>(f.Height, 1) * std::max<UINT>(f.Depth, 1);
+        rec->SetExtraOnLast(BufferDataExtra({Cap().QueueBufferCapture(rec, pSrc->pResource, pSrc->PlacedFootprint.Offset, bytes, true)}));
+    }
 }
 
 void STDMETHODCALLTYPE Hook_CopyResource(List* This, ID3D12Resource* pDstResource, ID3D12Resource* pSrcResource) {
@@ -639,6 +651,8 @@ void STDMETHODCALLTYPE Hook_CopyResource(List* This, ID3D12Resource* pDstResourc
     Args args;
     args.ref("pDstResource", pDstResource, "ID3D12Resource").ref("pSrcResource", pSrcResource, "ID3D12Resource");
     rec->Record("CopyResource", args.str());
+    // A buffer copied whole is read whole (QueueBufferCapture takes nothing of a texture).
+    if (const uint32_t id = Cap().QueueBufferCapture(rec, pSrcResource, 0, UINT64_MAX, true)) rec->SetExtraOnLast(BufferDataExtra({id}));
 }
 
 void STDMETHODCALLTYPE Hook_CopyTiles(List* This, ID3D12Resource* pTiledResource, const D3D12_TILED_RESOURCE_COORDINATE* pTileRegionStartCoordinate, const D3D12_TILE_REGION_SIZE* pTileRegionSize, ID3D12Resource* pBuffer, UINT64 BufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS Flags) {
@@ -1307,7 +1321,7 @@ void STDMETHODCALLTYPE Hook_IASetIndexBuffer(List* This, const D3D12_INDEX_BUFFE
         list->IASetIndexBuffer(haveView ? &view : nullptr);
     });
     if (pView && pView->BufferLocation) {
-        rec->SetSnapshotOnLast([view](CommandRecorder* on) { return BufferDataExtra({Cap().QueueAddressCapture(on, view.BufferLocation, view.SizeInBytes)}); });
+        rec->SetSnapshotOnLast([view](CommandRecorder* on) { return BufferDataExtra({Cap().QueueAddressCapture(on, view.BufferLocation, view.SizeInBytes, true)}); });
     }
 }
 
@@ -1347,14 +1361,14 @@ void STDMETHODCALLTYPE Hook_IASetVertexBuffers(List* This, UINT StartSlot, UINT 
     if (!rec->bundle()) {
         std::vector<uint32_t> ids;
         for (UINT i = 0; i < NumViews; ++i) {
-            ids.push_back(pViews[i].BufferLocation ? Cap().QueueAddressCapture(rec, pViews[i].BufferLocation, pViews[i].SizeInBytes) : 0);
+            ids.push_back(pViews[i].BufferLocation ? Cap().QueueAddressCapture(rec, pViews[i].BufferLocation, pViews[i].SizeInBytes, true) : 0);
         }
         rec->SetExtraOnLast(BufferDataExtra(ids));
         return;
     }
     rec->SetSnapshotOnLast([bound = std::vector<D3D12_VERTEX_BUFFER_VIEW>(pViews, pViews + NumViews)](CommandRecorder* on) {
         std::vector<uint32_t> ids;
-        for (const D3D12_VERTEX_BUFFER_VIEW& v : bound) ids.push_back(v.BufferLocation ? Cap().QueueAddressCapture(on, v.BufferLocation, v.SizeInBytes) : 0);
+        for (const D3D12_VERTEX_BUFFER_VIEW& v : bound) ids.push_back(v.BufferLocation ? Cap().QueueAddressCapture(on, v.BufferLocation, v.SizeInBytes, true) : 0);
         return BufferDataExtra(ids);
     });
 }
@@ -1424,10 +1438,11 @@ void STDMETHODCALLTYPE Hook_OMSetRenderTargets(List* This, UINT NumRenderTargetD
     }
     // The copies a measurement starts from, taken before the application's first draw of the pass
     // and while the list is outside a render-pass region (overdraw.h).
-    PrepareMeasuredPass(rec, targets);
+    // Not in an adopted list, which takes no work of the capture's (CommandRecorder::adopted).
+    if (!rec->adopted()) PrepareMeasuredPass(rec, targets);
     rec->Record("OMSetRenderTargets", args.str());
     Cap().BeginPass(rec, std::move(targets), false);
-    BeginMeasuredPass(rec);
+    if (!rec->adopted()) BeginMeasuredPass(rec);
 }
 
 std::string BeginRenderPassArgs(CommandRecorder* rec, UINT NumRenderTargets,
@@ -1445,7 +1460,7 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     // capture's: not the copies a measurement starts from, not its queries, not its read-back.
     // Between a suspension and its resume the runtime rejects every GPU-work-generating call and
     // closes the list with E_FAIL, which the application takes for a lost device (ActivePass::split).
-    const bool split = (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)) != 0;
+    const bool split = (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)) != 0 || (rec && rec->adopted());
     // The arguments and the pass's targets are resolved before the forward, because the copies a
     // measurement starts from have to be taken while the list is still outside the render-pass
     // region: a copy may not interrupt one. The command itself is recorded after the forward, so
@@ -1465,6 +1480,7 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     if (!rec) return;
     rec->Record("BeginRenderPass", argsJson);
     Cap().BeginPass(rec, std::move(targets), true, split);
+    rec->pass().suspending = (Flags & D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS) != 0;
     if (!split) BeginMeasuredPass(rec);
 }
 
@@ -1528,6 +1544,10 @@ void STDMETHODCALLTYPE Hook_EndRenderPass(List* This) {
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This);
+    // The vtable changes with the list's state here as well: after a pass that ends suspended
+    // (Unity's, continued on the lists its jobs record) the list was on one without the hooks,
+    // and its Close, with anything else it recorded, was never seen.
+    HookCommandList(This);
     if (!rec) return;
     rec->Record("EndRenderPass", "");
     Cap().EndPass(rec, false);

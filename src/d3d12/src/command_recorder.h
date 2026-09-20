@@ -70,6 +70,8 @@ struct ActivePass {
      * timings and no read-back (README.md, "Passes").
      */
     bool split = false;
+    /** The pass ends suspended: the list takes no GPU work after it either, until it is closed. */
+    bool suspending = false;
     std::vector<BoundTarget> targets;
     uint32_t passIndex = 0;
     uint32_t width = 0;
@@ -164,6 +166,7 @@ public:
         _computeCount = 0;
         _state = ListState{};
         _closed = false;
+        _adopted = false;
         _deferred.clear();
     }
 
@@ -178,6 +181,13 @@ public:
     ListState& state() { return _state; }
     bool closed() const { return _closed; }
     void MarkClosed() { _closed = true; }
+    /**
+     * The recorder was made at the list's first call seen, not at its Reset (CaptureManager::Adopt):
+     * what state the list is in is not known -- it may be inside a render pass begun before -- so the
+     * capture records its calls and adds no work of its own to it, as for a suspended pass.
+     */
+    bool adopted() const { return _adopted; }
+    void MarkAdopted() { _adopted = true; }
     /** The recorded commands' frame, set when the list is executed during the capture (UINT32_MAX until then). */
     uint32_t frame = UINT32_MAX;
 
@@ -198,6 +208,7 @@ private:
         ExtraRefresh take;
     };
     std::vector<DeferredSnapshot> _deferred;
+    bool _adopted = false;
     bool _captureStacks = false;
     bool _closed = false;
 };

@@ -121,15 +121,17 @@ held, records and submits its command buffers, and compares every render target 
 copy. It is what to send a GPU vendor with a driver bug, who wants something to build and run
 rather than a capture in a format of ours.
 
-- It asks where the project's folder should go, and names the folder after the capture.
+- It asks where the project's folder should go, starting where the last export went, and names the
+  folder after the capture. When the project is written, its folder opens in the file browser.
 - The capture is replayed on this machine's GPU to write it, so it takes a moment, and the source
   is what the replay did: the project's `README.md` says how that differs from the application,
   and lists anything left out.
-- The project needs CMake and a C++20 compiler and nothing else. It carries the Vulkan headers it
-  was written against.
+- The project needs CMake and a C++20 compiler and nothing else. A Vulkan project carries the
+  Vulkan headers it was written against; a Direct3D 12 one needs the Windows SDK.
+- A frame the replay cannot run to its end says why in the status line: the device removed, or the
+  call the replay died in.
 
-[Capture replay](REPLAY.md#export-to-c) has the details. Metal and D3D12 captures do not replay,
-so they are not exported.
+[Capture replay](REPLAY.md#export-to-c) has the details, for each API's replay tool.
 
 ---
 

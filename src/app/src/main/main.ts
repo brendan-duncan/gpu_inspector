@@ -89,6 +89,8 @@ interface Settings {
   /** The last source roots a launch used (";"-separated), for the shaders of capture files. */
   sourceRoots?: string;
   theme?: ThemeName;
+  /** Where a dialog was last confirmed, by the name its use gave (OpenFileOptions.remember): "exportCpp". */
+  lastFolders?: Record<string, string>;
 }
 
 const MAX_RECENTS = 12;
@@ -1422,12 +1424,27 @@ ipcMain.handle("inspector:chooseFile", async (e, opts?: OpenFileOptions) => {
   // the launch path wants (metal.ts resolves the executable inside).
   // createDirectory: macOS shows no New Folder button without it, and a directory is often chosen to write into.
   const properties: Array<"openFile" | "openDirectory" | "createDirectory"> = opts?.directory ? ["openDirectory", "createDirectory"] : ["openFile"];
+  // A remembered use opens where it was last confirmed, when that is still there.
+  const remembered = opts?.remember ? loadSettings().lastFolders?.[opts.remember] : undefined;
   const r = await dialog.showOpenDialog(win, {
     title: opts?.title ?? "Choose executable",
     properties,
     filters: opts?.directory ? [] : opts?.filters ?? defaultFilters,
+    ...(remembered && fs.existsSync(remembered) ? { defaultPath: remembered } : {}),
   });
-  return r.canceled ? null : r.filePaths[0];
+  if (r.canceled) return null;
+  if (opts?.remember) {
+    const settings = loadSettings();
+    settings.lastFolders = { ...settings.lastFolders, [opts.remember]: opts.directory ? r.filePaths[0] : path.dirname(r.filePaths[0]) };
+    saveSettings(settings);
+  }
+  return r.filePaths[0];
+});
+// A folder the application wrote (an exported C++ project), shown in the OS file browser.
+ipcMain.handle("inspector:showFolder", async (_e, dir: string): Promise<boolean> => {
+  if (typeof dir !== "string" || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return false;
+  // The replay reports its directory with forward slashes, which Explorer does not take.
+  return (await shell.openPath(path.resolve(dir))) === "";
 });
 
 // Capture files (renderer/capture_file.ts): the renderer serializes, the main process owns the

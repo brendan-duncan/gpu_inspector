@@ -708,9 +708,20 @@ Checked on an RTX 4080 with the debug layer, replayed and then exported, built a
 | `--bundle` with **Record always** | identical: the draw is in a bundle recorded at start-up |
 | `--indirect`, `--compute`, `--offscreen` (no swap chain) | identical |
 | `--render-pass` (`BeginRenderPass`), `--stencil` (D24S8, depth and stencil planes) | identical |
+| Unity URP sample scene (83 command lists a frame recorded by jobs, 60 render passes suspended and resumed across them, 725 draws, pooled and per-frame lists) | the final image identical in 8 captures of 10, with no debug layer errors, and the exported program the same. One of the other two was a frame of adopted lists, which has no targets read back to compare; one differed in its post-processing, which reads textures the frame overwrites |
 | Unity URP player frame (9 passes, pipeline library, root constant buffer views, D32S8, BC1 and BC3, SSAO, bloom) | all 17 targets identical; the 2 a pass discards are not compared. Cut into parts of 40 lines and files of 300 it builds and runs the same |
 
+A frame the driver cannot run ends the replay without taking the export's reason with it: a removed
+device is reported once, with its reason and the submission it followed, and nothing after it is
+issued; a crash writes the export summary with the exception and the command it happened at, which
+is what GPU Inspector shows. `DXINSP_REPLAY_CRASH_AT=<command index>` makes one, to test that.
+
 Limits:
+- A capture taken on demand of an engine that records its lists frames ahead is not always whole.
+  The capture library records a frame before the capture, adopts lists it meets without a recorder
+  and takes what suspended passes read after their submission (`src/d3d12/README.md`, "Passes"),
+  which makes most captures of a Unity frame replay exactly; a list recorded entirely before the
+  capture was asked for is still missing, and **Record always** from launch is what avoids it.
 - Ray tracing is left out (state objects, builds, `DispatchRays`), as are video, work graphs and
   meta commands: each such command is reported, and in the export is a comment where it would be.
 - What the frame reads with no command naming it is not in the capture: a buffer reached through

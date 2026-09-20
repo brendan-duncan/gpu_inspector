@@ -1021,6 +1021,8 @@ export interface SaveFileOptions {
 export interface OpenFileOptions {
   title?: string;
   directory?: boolean;
+  /** A name for this use of the dialog: it opens where it was last confirmed under that name, across sessions. */
+  remember?: string;
   filters?: { name: string; extensions: string[] }[];
 }
 

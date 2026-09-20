@@ -42,6 +42,20 @@ export function fetchBlob(session: LayerSession, object: VulkanObject, index: nu
  * The objects a capture needs: everything its commands, descriptor snapshots, render targets
  * and buffer ranges reference, closed over dependencies and owners so every link resolves.
  */
+/** The ids a capture's commands, contents and messages name directly. */
+export function capturedIds(db: LayerSession["database"], data: CaptureData): Set<number> {
+  const ids = new Set<number>();
+  for (const c of data.commands) {
+    if (c.object) ids.add(c.object.__id);
+    if (c.secondary) ids.add(c.secondary);
+    db.collectReferences(c.args, ids);
+    db.collectReferences(c.descriptors, ids);
+  }
+  for (const t of data.textures) ids.add(t.info.id);
+  for (const b of data.buffers.values()) ids.add(b.info.buffer);
+  return ids;
+}
+
 function referencedObjects(session: LayerSession, data: CaptureData): VulkanObject[] {
   const db = session.database;
   const ids = new Set<number>();
@@ -80,6 +94,8 @@ function referencedObjects(session: LayerSession, data: CaptureData): VulkanObje
     for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
     const more = new Set<number>();
     db.collectReferences(o.updates, more);
+    // A destroyed object has let go of its dependencies, but its arguments still name them.
+    if (o.isDeleted) db.collectReferences(o.args, more);
     for (const m of more) if (!out.has(m)) queue.push(m);
   }
   return [...out.values()].sort((a, b) => a.id - b.id);
