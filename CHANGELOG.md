@@ -30,7 +30,7 @@
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed
-- An injection that worked is no longer reported as a library that would not load: the launcher says whether the target's module list could be read, and looks for the module through psapi as well as Toolhelp.
+- An injection that worked is no longer reported as a library that would not load: the Direct3D 12 launcher loads the library and runs its initializer with one stub in the target, instead of reading a module list that a process held at start-up will not give up.
 - Cancel sits at the right of every dialog's buttons; the launch and attach windows had it at the left.
 - A Direct3D 12 command list that draws with the pipeline state its `Reset` named had no shaders in the Shader Flame Graph or Analyze Shaders.
 - The comparison page said a lost device goes undiagnosed; both backends name the command it stopped on.

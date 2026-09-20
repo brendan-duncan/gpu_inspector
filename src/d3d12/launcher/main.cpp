@@ -138,90 +138,6 @@ bool IsX64Image(const std::wstring& exe, std::wstring& why) {
 }
 
 /**
- * A module of another process by name, null when it has none. The snapshot is retried: taking one
- * of a process whose module list is being written fails with ERROR_BAD_LENGTH, which is exactly
- * what a process that has just started (or has just been given a library) is doing — and a watched
- * process is caught milliseconds after its first instruction.
- */
-/**
- * The module called `name` in an already-open process, through psapi rather than Toolhelp.
- *
- * The two read the same loader data by different routes, and they do not fail together: a process
- * held still in the middle of its own start-up regularly refuses a Toolhelp snapshot with
- * ERROR_PARTIAL_COPY while EnumProcessModulesEx answers, and the whole injection turned on which
- * of the two was asked. So both are asked.
- */
-HMODULE ModuleByNameViaPsapi(HANDLE process, const std::wstring& name, DWORD* error) {
-    HMODULE modules[1024];
-    DWORD needed = 0;
-    if (!EnumProcessModulesEx(process, modules, sizeof(modules), &needed, LIST_MODULES_ALL)) {
-        if (error) *error = GetLastError();
-        return nullptr;
-    }
-    if (error) *error = 0;
-    const size_t count = (needed / sizeof(HMODULE)) < 1024 ? needed / sizeof(HMODULE) : 1024;
-    for (size_t i = 0; i < count; ++i) {
-        wchar_t path[MAX_PATH];
-        if (!GetModuleBaseNameW(process, modules[i], path, MAX_PATH)) continue;
-        if (_wcsicmp(path, name.c_str()) == 0) return modules[i];
-    }
-    return nullptr;
-}
-
-/**
- * The module in `pid` called `name`, looked for until it appears.
- *
- * `betweenTries` is called before each new look, to let a held target run for a moment. A frozen
- * process that was caught in the middle of its own loader work keeps an inconsistent module list
- * for as long as it is held, and the snapshot of it then fails with ERROR_PARTIAL_COPY however
- * many times it is retried -- which is how a library that had loaded perfectly well was reported
- * as one that would not load. Minecraft, caught two milliseconds after it started, does this
- * every time; the test applications, caught at the same age but with a handful of libraries
- * rather than a hundred, almost never do.
- */
-HMODULE RemoteModuleByName(DWORD pid, const std::wstring& name, int tries, DWORD* snapshotError,
-                           const std::function<void()>& betweenTries, HANDLE process) {
-    if (snapshotError) *snapshotError = 0;
-    for (int attempt = 0; attempt < tries; ++attempt) {
-        if (process) {
-            DWORD psapiError = 0;
-            if (HMODULE found = ModuleByNameViaPsapi(process, name, &psapiError)) {
-                if (snapshotError) *snapshotError = 0;
-                return found;
-            }
-            if (snapshotError && psapiError) *snapshotError = psapiError;
-        }
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        if (snap == INVALID_HANDLE_VALUE) {
-            if (snapshotError) *snapshotError = GetLastError();
-        } else {
-            if (snapshotError) *snapshotError = 0;
-            MODULEENTRY32W me{};
-            me.dwSize = sizeof(me);
-            HMODULE found = nullptr;
-            if (Module32FirstW(snap, &me)) {
-                do {
-                    if (_wcsicmp(me.szModule, name.c_str()) == 0) { found = me.hModule; break; }
-                } while (Module32NextW(snap, &me));
-            }
-            CloseHandle(snap);
-            if (found) return found;
-        }
-        if (attempt + 1 < tries) {
-            if (betweenTries) betweenTries();
-            Sleep(5);
-        }
-    }
-    return nullptr;
-}
-
-HMODULE RemoteModule(DWORD pid, const std::wstring& dllPath, DWORD* snapshotError = nullptr,
-                     const std::function<void()>& betweenTries = nullptr, HANDLE process = nullptr) {
-    return RemoteModuleByName(pid, dllPath.substr(dllPath.find_last_of(L"\\/") + 1), 40, snapshotError,
-                              betweenTries, process);
-}
-
-/**
  * Holds a watched application still while the library goes into it. A launch injects into a process
  * created suspended, which cannot race us; a watched process is already running, and
  * dxinsp_triangle has its device some fifteen milliseconds after its first instruction, long before
@@ -406,11 +322,10 @@ std::vector<wchar_t> SettingsBlock(const std::vector<std::wstring>& entries) {
 }
 
 /**
- * The offset of DxinspInitialize inside the library, from our own copy of it; the target's base
- * comes from its module list (a remote thread's exit code holds only 32 bits of the HMODULE).
- * SIZE_MAX with `why` set when the library cannot be read. Read once, since a watch injects into
- * one process after another and loading a copy of the library takes milliseconds the race for a
- * device does not have.
+ * The offset of DxinspInitialize inside the library, from our own copy of it; the stub below adds
+ * it to whatever base the target's loader chose. SIZE_MAX with `why` set when the library cannot
+ * be read. Read once, since a watch injects into one process after another and loading a copy of
+ * the library takes milliseconds the race for a device does not have.
  */
 uintptr_t InitOffset(const std::wstring& dllPath, std::wstring& why) {
     HMODULE local = LoadLibraryExW(dllPath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
@@ -422,6 +337,91 @@ uintptr_t InitOffset(const std::wstring& dllPath, std::wstring& why) {
     return offset;
 }
 
+void Emit(std::vector<uint8_t>& code, std::initializer_list<uint8_t> bytes) {
+    code.insert(code.end(), bytes);
+}
+
+void EmitU32(std::vector<uint8_t>& code, uint32_t v) {
+    for (int i = 0; i < 4; ++i) code.push_back((uint8_t)(v >> (8 * i)));
+}
+
+void EmitU64(std::vector<uint8_t>& code, uint64_t v) {
+    for (int i = 0; i < 8; ++i) code.push_back((uint8_t)(v >> (8 * i)));
+}
+
+/** What the stub writes back: the library's base in the target, and what its initializer returned. */
+struct StubResult {
+    uint64_t module;
+    uint32_t initResult;
+};
+
+/** initResult before the stub has run the initializer, which is not a value it can return. */
+constexpr uint32_t kInitNotRun = 0xFFFFFFFFu;
+
+/**
+ * The code run in the target: load the library, and if that worked call its initializer at
+ * `base + offset`, writing both answers into `result`.
+ *
+ * Doing it in one go is what makes this reliable. The two steps used to be two remote threads with
+ * a look at the target's module list in between, to turn the base into the initializer's address --
+ * a remote thread's exit code holds only the low half of the HMODULE, so the base had to come from
+ * somewhere. But that list cannot be read while a process is held still in the middle of its own
+ * start-up: Toolhelp and psapi both answer ERROR_PARTIAL_COPY, and an application caught two
+ * milliseconds after it started with a hundred libraries left to load is in exactly that state
+ * about half the time. Minecraft is; the test applications, with a handful of libraries, are not.
+ * A stub returns the whole pointer through memory we allocated ourselves, which reads back
+ * whatever the loader is doing.
+ *
+ * x64 only, which is all that is injected into (IsX64Image). At entry the stack is aligned as a
+ * call leaves it, so the 0x38 taken here puts it back on a 16-byte boundary and leaves the 32
+ * bytes of shadow space the calls need.
+ */
+std::vector<uint8_t> InjectStub(uint64_t pathAddr, uint64_t loadLibrary, uint64_t resultAddr,
+                                uint64_t settingsAddr, uint32_t initOffset) {
+    std::vector<uint8_t> c;
+    Emit(c, {0x48, 0x83, 0xEC, 0x38});                    // sub  rsp, 38h
+    Emit(c, {0x48, 0xB9}); EmitU64(c, pathAddr);          // mov  rcx, <path>
+    Emit(c, {0x48, 0xB8}); EmitU64(c, loadLibrary);       // mov  rax, <LoadLibraryW>
+    Emit(c, {0xFF, 0xD0});                                // call rax
+    Emit(c, {0x48, 0xBA}); EmitU64(c, resultAddr);        // mov  rdx, <result>
+    Emit(c, {0x48, 0x89, 0x02});                          // mov  [rdx], rax        (the module)
+    Emit(c, {0x48, 0x85, 0xC0});                          // test rax, rax
+    Emit(c, {0x74, 0x1F});                                // je   done              (31 bytes on)
+    Emit(c, {0x48, 0xB9}); EmitU64(c, settingsAddr);      // mov  rcx, <settings>
+    Emit(c, {0x48, 0x05}); EmitU32(c, initOffset);        // add  rax, <offset>
+    Emit(c, {0xFF, 0xD0});                                // call rax               (DxinspInitialize)
+    Emit(c, {0x48, 0xBA}); EmitU64(c, resultAddr);        // mov  rdx, <result>
+    Emit(c, {0x89, 0x42, 0x08});                          // mov  [rdx+8], eax      (what it returned)
+    Emit(c, {0x31, 0xC0});                                // done: xor eax, eax
+    Emit(c, {0x48, 0x83, 0xC4, 0x38});                    // add  rsp, 38h
+    Emit(c, {0xC3});                                      // ret
+    return c;
+}
+
+/** Remote memory freed with the process handle it belongs to. */
+struct RemoteBlock {
+    HANDLE process = nullptr;
+    LPVOID address = nullptr;
+    RemoteBlock() = default;
+    RemoteBlock(HANDLE p, LPVOID a) : process(p), address(a) {}
+    RemoteBlock(const RemoteBlock&) = delete;
+    RemoteBlock& operator=(const RemoteBlock&) = delete;
+    RemoteBlock(RemoteBlock&& other) noexcept : process(other.process), address(other.address) {
+        other.address = nullptr;
+    }
+    RemoteBlock& operator=(RemoteBlock&& other) noexcept {
+        if (this != &other) {
+            if (address) VirtualFreeEx(process, address, 0, MEM_RELEASE);
+            process = other.process;
+            address = other.address;
+            other.address = nullptr;
+        }
+        return *this;
+    }
+    ~RemoteBlock() { if (address) VirtualFreeEx(process, address, 0, MEM_RELEASE); }
+    uint64_t addr() const { return (uint64_t)address; }
+};
+
 /**
  * Loads the library into the process and runs its initializer there. `settings` is the environment
  * block above, given to DxinspInitialize; empty for a launch, whose target inherited our
@@ -429,47 +429,67 @@ uintptr_t InitOffset(const std::wstring& dllPath, std::wstring& why) {
  */
 bool Inject(HANDLE process, DWORD pid, const std::wstring& dllPath, uintptr_t offset,
             const std::vector<wchar_t>& settings, Freezer* freezer, std::wstring& why) {
-    size_t bytes = (dllPath.size() + 1) * sizeof(wchar_t);
-    LPVOID remotePath = WriteRemote(process, dllPath.c_str(), bytes, why);
-    if (!remotePath) return false;
+    (void)pid;
+    RemoteBlock path(process, WriteRemote(process, dllPath.c_str(), (dllPath.size() + 1) * sizeof(wchar_t), why));
+    if (!path.address) return false;
+
+    RemoteBlock remoteSettings;
+    if (!settings.empty()) {
+        remoteSettings = RemoteBlock(process, WriteRemote(process, settings.data(), settings.size() * sizeof(wchar_t), why));
+        if (!remoteSettings.address) return false;
+    }
+
+    // The stub writes into this, and the initializer's answer is told apart from a zero it could
+    // return by the value put there first.
+    const StubResult blank{0, kInitNotRun};
+    RemoteBlock result(process, WriteRemote(process, &blank, sizeof(blank), why));
+    if (!result.address) return false;
+
     HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-    auto loadLibrary = (LPTHREAD_START_ROUTINE)GetProcAddress(kernel, "LoadLibraryW");
-    DWORD code = 0;
-    if (!RunRemote(process, loadLibrary, remotePath, &code, why, freezer)) return false;
-    VirtualFreeEx(process, remotePath, 0, MEM_RELEASE);
-    DWORD snapshotError = 0;
-    HMODULE remote = RemoteModule(pid, dllPath, &snapshotError,
-                                  // Growing bursts, not the smallest one: an application held in the
-                                  // middle of its own loader work keeps a module list neither
-                                  // Toolhelp nor psapi will read, and only running lets it finish.
-                                  freezer ? [freezer, burst = kFirstBurstUs]() mutable {
-                                      freezer->Burst(burst);
-                                      burst = burst < kMaxBurstUs ? burst * 2 : kMaxBurstUs;
-                                  } : std::function<void()>(),
-                                  process);
-    if (!remote) {
-        if (snapshotError) {
-            why = L"the target's module list could not be read, so whether the library loaded is unknown "
-                  L"(CreateToolhelp32Snapshot: " + std::to_wstring(snapshotError) + L")";
-        } else if (code) {
-            why = L"the library loaded (LoadLibraryW returned 0x" + std::to_wstring(code)
-                  + L") but it is not in the target's module list";
-        } else {
-            why = L"LoadLibraryW in the target returned null: it could not load " + dllPath
-                  + L" (is that path readable by the target, and are the library's dependencies present?)";
-        }
+    auto loadLibrary = (uint64_t)GetProcAddress(kernel, "LoadLibraryW");
+    if (!loadLibrary) { why = L"kernel32!LoadLibraryW could not be found"; return false; }
+    const std::vector<uint8_t> stub =
+        InjectStub(path.addr(), loadLibrary, result.addr(), remoteSettings.addr(), (uint32_t)offset);
+
+    RemoteBlock code(process, WriteRemote(process, stub.data(), stub.size(), why));
+    if (!code.address) return false;
+    DWORD previous = 0;
+    if (!VirtualProtectEx(process, code.address, stub.size(), PAGE_EXECUTE_READ, &previous)) {
+        why = L"VirtualProtectEx failed (" + std::to_wstring(GetLastError()) + L")";
         return false;
     }
-    LPVOID remoteSettings = nullptr;
-    if (!settings.empty()) {
-        remoteSettings = WriteRemote(process, settings.data(), settings.size() * sizeof(wchar_t), why);
-        if (!remoteSettings) return false;
+    FlushInstructionCache(process, code.address, stub.size());
+
+    DWORD ignored = 0;
+    if (!RunRemote(process, (LPTHREAD_START_ROUTINE)code.address, nullptr, &ignored, why, freezer)) return false;
+
+    StubResult got{};
+    DWORD readError = 0;
+    bool haveAnswer = false;
+    for (int attempt = 0; attempt < 20 && !haveAnswer; ++attempt) {
+        SIZE_T read = 0;
+        if (ReadProcessMemory(process, result.address, &got, sizeof(got), &read) && read == sizeof(got)) {
+            haveAnswer = true;
+            break;
+        }
+        readError = GetLastError();
+        if (freezer) freezer->Burst(kFirstBurstUs);
+        Sleep(5);
     }
-    bool ok = RunRemote(process, (LPTHREAD_START_ROUTINE)((uintptr_t)remote + offset), remoteSettings, &code, why, freezer);
-    // The initializer copies what it needs out of the block before it returns.
-    if (remoteSettings) VirtualFreeEx(process, remoteSettings, 0, MEM_RELEASE);
-    if (!ok) return false;
-    if (code != 0) { why = L"DxinspInitialize returned " + std::to_wstring(code); return false; }
+    if (!haveAnswer) {
+        DWORD exitCode = 0;
+        const bool alive = GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
+        why = L"the stub's answer could not be read back (" + std::to_wstring(readError) + L"); the target is "
+              + (alive ? L"still running" : L"gone (exit code " + std::to_wstring(exitCode) + L")");
+        return false;
+    }
+    if (!got.module) {
+        why = L"LoadLibraryW in the target returned null: it could not load " + dllPath
+              + L" (is that path readable by the target, and are the library's dependencies present?)";
+        return false;
+    }
+    if (got.initResult == kInitNotRun) { why = L"DxinspInitialize was not reached"; return false; }
+    if (got.initResult != 0) { why = L"DxinspInitialize returned " + std::to_wstring(got.initResult); return false; }
     return true;
 }
 
