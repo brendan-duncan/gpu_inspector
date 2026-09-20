@@ -263,6 +263,15 @@ private:
     std::unordered_map<uint64_t, std::vector<InitialState>> _initial;
     std::unordered_map<uint64_t, const vkreplay::JValue*> _bufferData;
     bool _deviceLost = false;
+    // What the exported program shows in its window: the swap chain buffer the frame wrote last, else its last colour target.
+    std::unordered_set<uint64_t> _swapBuffers;
+    uint64_t _lastSwapWrite = 0;
+    uint64_t _lastColorTarget = 0;
+    std::vector<ID3D12CommandAllocator*> _allocators;
+    /** Where Transition's source goes: the contents before the frame (false), the restore after it. */
+    bool _restoring = false;
+    void NoteWrite(uint64_t resource, bool colorTarget);
+    void EmitFrameEnd();
     struct BundleInfo {
         uint64_t allocator = 0;
         uint64_t initialState = 0;

@@ -42,11 +42,20 @@ set(EXPORT_TEMPLATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/export_template")
 set(EXPORT_TEMPLATES
     "${EXPORT_TEMPLATE_DIR}/main.cpp"
     "${EXPORT_TEMPLATE_DIR}/vk_support.h"
-    "${EXPORT_TEMPLATE_DIR}/vk_support.cpp")
+    "${EXPORT_TEMPLATE_DIR}/vk_support.cpp"
+    # The window the exported frame is shown in: one source per platform, chosen by the project's CMakeLists.txt.
+    "${EXPORT_TEMPLATE_DIR}/frame_window.h"
+    "${EXPORT_TEMPLATE_DIR}/frame_window_win32.cpp"
+    "${EXPORT_TEMPLATE_DIR}/frame_window_x11.cpp"
+    "${EXPORT_TEMPLATE_DIR}/frame_window_cocoa.mm")
 set(EXPORT_HEADERS
     "${VULKAN_HEADERS}/include/vulkan/vulkan.h"
     "${VULKAN_HEADERS}/include/vulkan/vulkan_core.h"
-    "${VULKAN_HEADERS}/include/vulkan/vk_platform.h")
+    "${VULKAN_HEADERS}/include/vulkan/vk_platform.h"
+    # The surface of each platform's window.
+    "${VULKAN_HEADERS}/include/vulkan/vulkan_win32.h"
+    "${VULKAN_HEADERS}/include/vulkan/vulkan_xlib.h"
+    "${VULKAN_HEADERS}/include/vulkan/vulkan_metal.h")
 file(GLOB EXPORT_VIDEO_HEADERS "${VULKAN_HEADERS}/include/vk_video/*.h")
 list(APPEND EXPORT_HEADERS ${EXPORT_VIDEO_HEADERS})
 set(EXPORT_EMBEDDED ${EXPORT_TEMPLATES})

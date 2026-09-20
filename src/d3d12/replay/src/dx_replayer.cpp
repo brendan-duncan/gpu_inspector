@@ -462,6 +462,7 @@ void DxReplayer::CreateObject(const JValue& o) {
         d.Enum("type", listType, DX_TABLE(D3D12_COMMAND_LIST_TYPE));
         ID3D12CommandAllocator* allocator = nullptr;
         if (SUCCEEDED(_device->CreateCommandAllocator(listType, IID_PPV_ARGS(&allocator)))) made = allocator;
+        if (allocator) _allocators.push_back(allocator);
         if (made && _x) {
             const std::string name = _x->Declare("ID3D12CommandAllocator", "commandAllocator", id, made);
             _x->Block(DxExporter::Create, "", [&](Source& s) {
@@ -521,6 +522,7 @@ void DxReplayer::CreateObject(const JValue& o) {
         const bool hasClear = DecodeStruct(_env, a, "pOptimizedClearValue", clear);
         std::string comment = cmd;
         if (cmd == "GetBuffer") {
+            _swapBuffers.insert(id);
             comment = "a swap chain's buffer, as an ordinary render target of its format and size";
         } else if (cmd == "CreatePlacedResource") {
             // The heap it was placed in says what kind of memory it had.
@@ -787,7 +789,7 @@ void DxReplayer::Transition(ID3D12GraphicsCommandList* list, Resource& r, uint32
     list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     if (_x && listName) {
         for (const D3D12_RESOURCE_BARRIER& b : barriers)
-            _x->Block(DxExporter::Contents, "", [&](Source& s) {
+            _x->Block(_restoring ? DxExporter::Restore : DxExporter::Contents, "", [&](Source& s) {
                 s.Line(std::string("Transition(") + listName + ", " + s.Object(b.Transition.pResource) + ", " + Source::Uint(b.Transition.Subresource) + ", " +
                        StateText(b.Transition.StateBefore) + ", " + StateText(b.Transition.StateAfter) + ");");
             });
@@ -916,10 +918,42 @@ void DxReplayer::UploadTextures() {
     }
 }
 
+void DxReplayer::NoteWrite(uint64_t resource, bool colorTarget) {
+    if (!resource) return;
+    if (_swapBuffers.count(resource)) _lastSwapWrite = resource;
+    if (colorTarget) _lastColorTarget = resource;
+}
+
+void DxReplayer::EmitFrameEnd() {
+    if (!_x) return;
+    // What the window shows: the swap chain buffer the frame wrote last, which is what it presented;
+    // a frame without one (a renderer that never presents) shows its last colour target.
+    const uint64_t output = _lastSwapWrite ? _lastSwapWrite : _lastColorTarget;
+    Resource* r = ResourceOf(output);
+    if (r) {
+        _x->FrameOutput(_x->NameOf(r->resource), StateText(StateOf(*r, 0)),
+                        std::string(_lastSwapWrite ? "the swap chain buffer the frame wrote last" : "the frame's last colour target (it writes no swap chain buffer)") +
+                            ", resource " + std::to_string(output) + ", in the state the frame leaves it in.");
+    }
+    // The restore. An allocator is reset before the lists recorded from it are recorded again (every
+    // submission was waited for, so none is in use), and each subresource goes back from where the
+    // frame's barriers left it to where they expect to find it.
+    _x->Comment(DxExporter::Restore, "The allocators the frame's lists record from.");
+    for (ID3D12CommandAllocator* allocator : _allocators) {
+        const std::string name = _x->NameOf(allocator);
+        if (!name.empty()) _x->Block(DxExporter::Restore, "", [&](Source& s) { s.Line("DX_CHECK(" + name + "->Reset());"); });
+    }
+    _restoring = true;
+    MoveToInitialStates();
+    _restoring = false;
+}
+
 void DxReplayer::MoveToInitialStates() {
+    const DxExporter::Section section = _restoring ? DxExporter::Restore : DxExporter::Contents;
     if (_x) {
-        _x->Comment(DxExporter::Contents, "Every subresource into the state the frame expects it in: its first barrier's StateBefore, else what its uses need.");
-        _x->Block(DxExporter::Contents, "", [&](Source& s) { s.Line("ID3D12GraphicsCommandList* list = BeginOneTime();"); });
+        _x->Comment(section, _restoring ? "Every subresource from the state the frame leaves it in back to the one it expects."
+                                        : "Every subresource into the state the frame expects it in: its first barrier's StateBefore, else what its uses need.");
+        _x->Block(section, "", [&](Source& s) { s.Line("ID3D12GraphicsCommandList* list = BeginOneTime();"); });
     }
     RunOneTime([&](ID3D12GraphicsCommandList* list) {
         for (auto& [id, r] : _resources) {
@@ -933,7 +967,7 @@ void DxReplayer::MoveToInitialStates() {
             }
         }
     });
-    if (_x) _x->Block(DxExporter::Contents, "", [&](Source& s) { s.Line("EndOneTime(list);"); });
+    if (_x) _x->Block(section, "", [&](Source& s) { s.Line("EndOneTime(list);"); });
 }
 
 void DxReplayer::ApplyBufferData(const Group& group) {
@@ -1087,6 +1121,7 @@ bool DxReplayer::WriteTargetDescriptor(const JValue* entry, bool depth, PassTarg
     auto hit = _heaps.find(heapId);
     Resource* r = ResourceOf(resourceId);
     if (hit == _heaps.end() || !r) return false;
+    if (!depth) NoteWrite(resourceId, true);
     Heap& heap = hit->second;
     const D3D12_CPU_DESCRIPTOR_HANDLE handle{heap.cpu.ptr + (SIZE_T)index * heap.increment};
     const JValue* view = entry->Get("view");
@@ -1264,6 +1299,10 @@ bool DxReplayer::IssueCommand(uint32_t index, const std::string& m, const JValue
     auto U = [&](const char* n) { UINT v = 0; d.Int(n, v); return v; };
     auto U64 = [&](const char* n) { UINT64 v = 0; d.Int(n, v); return v; };
     auto F = [&](const char* n) { float v = 0; d.Float(n, v); return v; };
+
+    // A copy or a resolve into a swap chain buffer is how a frame that renders elsewhere reaches the screen (EmitFrameEnd).
+    if (m == "CopyResource" || m == "ResolveSubresource" || m == "ResolveSubresourceRegion") NoteWrite(IdOf(args.Get("pDstResource")), false);
+    else if (m == "CopyTextureRegion") NoteWrite(IdOf(args.Get("pDst") ? args.Get("pDst")->Get("pResource") : nullptr), false);
 
     if (m == "DrawInstanced") {
         const UINT a = U("VertexCountPerInstance"), b = U("InstanceCount"), c = U("StartVertexLocation"), e = U("StartInstanceLocation");
@@ -1696,6 +1735,7 @@ bool DxReplayer::IssueCommand(uint32_t index, const std::string& m, const JValue
 ID3D12CommandAllocator* DxReplayer::MissingAllocator(uint64_t id, D3D12_COMMAND_LIST_TYPE type) {
     ID3D12CommandAllocator* allocator = nullptr;
     if (FAILED(_device->CreateCommandAllocator(type, IID_PPV_ARGS(&allocator)))) return nullptr;
+    _allocators.push_back(allocator);
     _objects[id] = allocator;
     _report->objectsCreated++;
     if (_x) {
@@ -2159,6 +2199,7 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
     MoveToInitialStates();
     CollectMessages();
     ReplayCommands();
+    if (!_deviceLost) EmitFrameEnd();
     for (auto& p : _env.problems) report.problems.push_back(p);
     _env.problems.clear();
     CollectMessages();

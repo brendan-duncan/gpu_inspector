@@ -230,6 +230,12 @@ bool MtlExporter::WritePart(Part& p, std::vector<std::string>& files, std::strin
     return true;
 }
 
+void MtlExporter::FrameOutput(const std::string& name, uint64_t captureId) {
+    if (name.empty()) return;
+    _outputSource = "// What the window shows: the drawable's texture (texture " + std::to_string(captureId) + "), which the frame renders and would present.\n"
+                    "id<MTLTexture> FrameOutput(void) {\n    return " + name + ";\n}\n";
+}
+
 std::string MtlExporter::CMakeLists() const {
     return "cmake_minimum_required(VERSION 3.20)\n"
            "project(frame OBJCXX)\n\n"
@@ -240,7 +246,8 @@ std::string MtlExporter::CMakeLists() const {
            "file(GLOB FRAME_SOURCES \"${CMAKE_CURRENT_SOURCE_DIR}/*.mm\")\n"
            "add_executable(frame ${FRAME_SOURCES})\n"
            "target_compile_options(frame PRIVATE -fobjc-arc -Wall -Wno-unused-variable)\n"
-           "target_link_libraries(frame PRIVATE \"-framework Foundation\" \"-framework Metal\")\n\n"
+           "# Cocoa and QuartzCore are the window's (frame_window_cocoa.mm).\n"
+           "target_link_libraries(frame PRIVATE \"-framework Foundation\" \"-framework Metal\" \"-framework Cocoa\" \"-framework QuartzCore\")\n\n"
            "# The data file and the shaders beside the executable, where the program looks for them.\n"
            "add_custom_command(TARGET frame POST_BUILD\n"
            "    COMMAND ${CMAKE_COMMAND} -E copy_if_different \"${CMAKE_CURRENT_SOURCE_DIR}/frame_data.bin\" \"$<TARGET_FILE_DIR:frame>/frame_data.bin\"\n"
@@ -274,11 +281,20 @@ std::string MtlExporter::Readme(const MtlReplayReport& report, const MtlExportRe
     s += "| Render targets compared | " + std::to_string(summary.targets) + " |\n\n";
     s += "## Build and run\n\n```\ncmake -B build\ncmake --build build\nbuild/frame\n```\n\n"
          "It needs CMake and Xcode's command line tools, and nothing else.\n\n"
-         "- `--out <directory>` is where the render targets are written (default `out`), `--no-images` writes none.\n"
+         "The program opens a window and runs the frame in it again and again, until the window is closed\n"
+         "(or Escape is pressed): each time the command buffers are encoded and committed, and the drawable's\n"
+         "texture is copied to a drawable of the window's layer and presented. That is something to point\n"
+         "Instruments or Xcode's frame capture at. The title shows the frame rate.\n\n"
+         "- `--batch` runs the frame once, without a window, and compares each render target the capture read\n"
+         "  back, byte for byte, with the copy the capture holds, writing both as PNG where the format allows.\n"
+         "  It exits with 0 when every target is identical, 1 when some differ or could not be compared. This\n"
+         "  is how to tell whether this machine draws what the captured one drew, and it is what runs where\n"
+         "  no window can be opened.\n"
+         "- `--frames <n>` closes the window after that many frames.\n"
+         "- `--no-vsync` presents without waiting for the display, so the frame runs as fast as it can.\n"
+         "- `--out <directory>` is where `--batch` writes the render targets (default `out`), `--no-images` writes none.\n"
          "- `--data <file>` names `frame_data.bin` when it is not beside the executable.\n\n"
-         "The program prints each render target the capture read back, compared byte for byte with the copy the\n"
-         "capture holds, and writes both as PNG where the format allows. It exits with 0 when every target is\n"
-         "identical, 1 when some differ or could not be compared, and 2 when a call failed (the call is printed).\n\n";
+         "Either way the exit code is 2 when a call failed (the call is printed).\n\n";
     s += "## What is in it\n\n"
          "| File | |\n|---|---|\n"
          "| `frame_create*.mm` | `CreateObjects`: every object the frame uses, in the order it was created. |\n"
@@ -287,15 +303,19 @@ std::string MtlExporter::Readme(const MtlReplayReport& report, const MtlExportRe
          "| `frame_objects.h` | One variable per object, named by kind and capture id: `texture_12` is texture 12 in GPU Inspector. |\n"
          "| `shaders/*.metal` | The Metal Shading Language of every library the capture has source for. |\n"
          "| `frame_data.bin` | Shader bytes, texture and buffer contents, and the captured render targets. |\n"
-         "| `mtl_support.*`, `main.mm` | Not specific to the frame: the device, uploads, read-backs, PNG. |\n\n"
+         "| `mtl_support.*`, `main.mm` | Not specific to the frame: the device, uploads, read-backs, PNG, the window's layer. |\n"
+         "| `frame_window*` | The window, and nothing of Metal. |\n\n"
          "A number in brackets after a command (`// [17]`) is its index in the capture's command list. A\n"
          "descriptor is allocated fresh and only the properties the application set are assigned — every other\n"
          "one is at Metal's own default, as it was in the application.\n\n";
     s += "## How it differs from the application\n\n"
          "The source is what GPU Inspector's replay did with the capture, which is the application's frame with\n"
          "these differences:\n\n"
-         "- There is no window: the drawable's texture is an ordinary render target, and `presentDrawable:` is\n"
-         "  left out. That is what lets the program run headless.\n"
+         "- The drawable's texture is an ordinary render target, and `presentDrawable:` is left out. The window's\n"
+         "  layer is the program's own: the texture is copied to one of its drawables, so the frame itself never\n"
+         "  presents, and `--batch` runs headless.\n"
+         "- The frame runs in a loop from the same contents: a texture it reads and then overwrites holds the last\n"
+         "  run's result from the second frame on, as it would in the application.\n"
          "- A private buffer is made shared, so its contents can be written without a staging blit. Metal does\n"
          "  not let a buffer's storage mode change what a shader sees.\n"
          "- A pass that discarded a target stores it instead, so there is something to read back and compare.\n"
@@ -343,7 +363,7 @@ bool MtlExporter::Finish(const MtlReplayReport& report, MtlExportReport& out) {
         std::fclose(_data);
         _data = nullptr;
     }
-    std::vector<std::string> sources = {"main.mm", "mtl_support.mm", "frame_objects.mm"};
+    std::vector<std::string> sources = {"main.mm", "mtl_support.mm", "frame_window_cocoa.mm", "frame_objects.mm"};
     for (Part* p : {&_create, &_contents, &_frame})
         if (!WritePart(*p, sources, out.error)) return false;
 
@@ -355,7 +375,11 @@ bool MtlExporter::Finish(const MtlReplayReport& report, MtlExportReport& out) {
         header += "extern " + type + " " + name + ";\n";
         source += type + " " + name + " = nil;\n";
     }
-    header += "\nvoid CreateObjects(void);\nvoid UploadContents(void);\nvoid Frame(void);\n";
+    header += "\nvoid CreateObjects(void);\nvoid UploadContents(void);\nvoid Frame(void);\n"
+              "/** The texture the frame leaves on screen; nil when it has none to show. */\nid<MTLTexture> FrameOutput(void);\n";
+    if (_outputSource.empty())
+        _outputSource = "// The frame renders to no drawable, so there is nothing for a window to show.\nid<MTLTexture> FrameOutput(void) {\n    return nil;\n}\n";
+    source += "\n" + _outputSource;
 
     out.objects = _objects;
     out.commands = _commands;
@@ -373,7 +397,7 @@ bool MtlExporter::Finish(const MtlReplayReport& report, MtlExportReport& out) {
         !WriteText("README.md", Readme(report, out), out.error)) {
         return false;
     }
-    for (const char* name : {"main.mm", "mtl_support.h", "mtl_support.mm"}) {
+    for (const char* name : {"main.mm", "mtl_support.h", "mtl_support.mm", "frame_window.h", "frame_window_cocoa.mm"}) {
         const std::string text = Template(name);
         if (text.empty()) {
             out.error = std::string("the exporter was built without its template ") + name;
@@ -382,7 +406,7 @@ bool MtlExporter::Finish(const MtlReplayReport& report, MtlExportReport& out) {
         if (!WriteText(name, text, out.error)) return false;
     }
     out.files = sources;
-    for (const char* name : {"mtl_support.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"}) {
+    for (const char* name : {"mtl_support.h", "frame_window.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"}) {
         out.files.push_back(name);
     }
     for (const std::string& shader : _shaderFiles) out.files.push_back(shader);

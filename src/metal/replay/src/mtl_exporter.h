@@ -81,6 +81,8 @@ public:
     void Device(const std::string& capturedDevice, const std::string& replayDevice);
     void LeftOut(uint32_t index, const std::string& method, const std::string& why);
     void Note(const std::string& note);
+    /** What the frame leaves on screen, for the window: the name of the drawable's texture, or none (`name` empty). */
+    void FrameOutput(const std::string& name, uint64_t captureId);
     void CountObject() { ++_objects; }
     void CountCommand() { ++_commands; }
     void CountSubmission() { ++_submissions; }
@@ -115,6 +117,7 @@ private:
     std::vector<std::pair<std::string, std::string>> _globals;   // (type, name), in creation order
     std::vector<std::string> _shaderFiles;
     std::vector<std::string> _notes;
+    std::string _outputSource;
     std::string _capturedDevice;
     std::string _replayDevice;
     size_t _objects = 0, _commands = 0, _submissions = 0, _targets = 0, _leftOut = 0;

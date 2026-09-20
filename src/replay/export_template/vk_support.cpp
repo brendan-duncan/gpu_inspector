@@ -1,6 +1,9 @@
 #include "vk_support.h"
 
+#include "frame_window.h"
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -8,12 +11,36 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#endif
+
+// The surface of each platform's window. Its create function is not among the functions
+// vk_functions.* loads (they are the frame's and the support's, the same everywhere), so it is
+// looked up by name where it is used.
+#if defined(FRAME_NO_WINDOW)
+#elif defined(_WIN32)
+#include <vulkan/vulkan_win32.h>
+#elif defined(__APPLE__)
+#include <vulkan/vulkan_metal.h>
+#else
+#include <X11/Xlib.h>
+#include <vulkan/vulkan_xlib.h>
+#endif
+
+#if defined(FRAME_NO_WINDOW)
+// Built without a window source (CMakeLists.txt found nothing to make one with): there is none to open.
+FrameWindow* OpenFrameWindow(const char*, uint32_t, uint32_t) { return nullptr; }
+bool PumpFrameWindow(FrameWindow*) { return false; }
+void SetFrameWindowTitle(FrameWindow*, const char*) {}
+void CloseFrameWindow(FrameWindow*) {}
+void* FrameWindowHandle(FrameWindow*) { return nullptr; }
+void* FrameWindowDisplay(FrameWindow*) { return nullptr; }
 #endif
 
 VkInstance instance = VK_NULL_HANDLE;
@@ -84,10 +111,37 @@ std::vector<Transient> transients;
 /** Render passes that resolve sample zero of a multisampled depth target, by format and sample count. */
 std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkRenderPass> depthResolvePasses;
 size_t validationErrors = 0;
+std::set<std::string> validationSeen;   // a frame that runs in a loop says each thing once
+
+// Buffer uploads are gathered into one command buffer and one wait: a frame binds thousands of
+// ranges, and a command buffer, a staging buffer and a wait for each made a frame that runs in a
+// loop run at a few frames a second. The staging memory is kept from frame to frame.
+struct UploadChunk {
+    Staging staging;
+    VkDeviceSize used = 0;
+};
+std::vector<UploadChunk> uploadChunks;
+VkCommandBuffer uploadCb = VK_NULL_HANDLE;
+
+// The window
+bool windowWanted = false;
+FrameWindow* window = nullptr;
+VkSurfaceKHR surface = VK_NULL_HANDLE;
+VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+std::vector<VkImage> swapchainImages;
+VkFence acquireFence = VK_NULL_HANDLE;
+bool vsync = true;
+bool swapchainEnabled = false;
+std::string windowTitle;
+VkExtent2D swapchainExtent{};
+uint64_t framesShown = 0;
+uint64_t framesAtTitle = 0;
+std::chrono::steady_clock::time_point titleTime;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
     const bool error = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    if (!validationSeen.insert(data && data->pMessage ? data->pMessage : "").second) return VK_FALSE;
     if (error) ++validationErrors;
     std::fprintf(stderr, "validation %s: %s\n", error ? "error" : "warning", data && data->pMessage ? data->pMessage : "");
     return VK_FALSE;
@@ -610,7 +664,23 @@ void RegisterImage(VkImage image, VkFormat format, VkExtent3D extent, uint32_t m
     images[image] = info;
 }
 
+/** Submits the buffer uploads gathered so far, before anything that reads what they write. */
+static void FlushUploads() {
+    if (!uploadCb) return;
+    VkCommandBuffer cb = uploadCb;
+    uploadCb = VK_NULL_HANDLE;
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cb;
+    VK_CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(queue));
+    vkFreeCommandBuffers(device, utilityPool, 1, &cb);
+    for (UploadChunk& c : uploadChunks) c.used = 0;
+}
+
 VkCommandBuffer BeginOneTime() {
+    FlushUploads();
     VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     alloc.commandPool = utilityPool;
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -684,20 +754,44 @@ void UploadImage(VkImage image, const VkBufferImageCopy* regions, uint32_t regio
     DestroyStaging(staging);
 }
 
+void SetImageLayouts(VkImage image, const VkImageLayout* layouts, size_t count) {
+    auto it = images.find(image);
+    if (it == images.end()) return;
+    for (size_t i = 0; i < count && i < it->second.layouts.size(); ++i) it->second.layouts[i] = layouts[i];
+}
+
 void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size) {
-    Staging staging;
-    if (!CreateStaging(size, staging)) Fail("no staging memory for a buffer upload");
-    std::memcpy(staging.mapped, data, size);
-    VkCommandBuffer cb = BeginOneTime();
-    const VkBufferCopy copy{0, offset, size};
-    vkCmdCopyBuffer(cb, staging.buffer, buffer, 1, &copy);
-    EndOneTime(cb);
-    DestroyStaging(staging);
+    // Into the command buffer of gathered uploads (FlushUploads), which runs before the submission they are for.
+    const VkDeviceSize aligned = ((VkDeviceSize)size + 255) & ~(VkDeviceSize)255;
+    UploadChunk* chunk = nullptr;
+    for (UploadChunk& c : uploadChunks)
+        if (c.used + aligned <= c.staging.size) { chunk = &c; break; }
+    if (!chunk) {
+        UploadChunk c;
+        if (!CreateStaging(std::max<VkDeviceSize>(aligned, (VkDeviceSize)16 << 20), c.staging)) Fail("no staging memory for a buffer upload");
+        uploadChunks.push_back(c);
+        chunk = &uploadChunks.back();
+    }
+    std::memcpy(static_cast<uint8_t*>(chunk->staging.mapped) + chunk->used, data, size);
+    if (!uploadCb) {
+        VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        alloc.commandPool = utilityPool;
+        alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc.commandBufferCount = 1;
+        VK_CHECK(vkAllocateCommandBuffers(device, &alloc, &uploadCb));
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(uploadCb, &begin));
+    }
+    const VkBufferCopy copy{chunk->used, offset, size};
+    vkCmdCopyBuffer(uploadCb, chunk->staging.buffer, buffer, 1, &copy);
+    chunk->used += aligned;
 }
 
 void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
                    uint32_t layers, VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format,
                    const void* captured, size_t capturedSize) {
+    if (window) return;   // shown, not compared: the comparison is --batch's
     Readback r;
     r.name = name;
     r.format = format;
@@ -746,6 +840,7 @@ void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageA
 }
 
 void SubmitAndWait(VkQueue q, const VkCommandBuffer* commandBuffers, uint32_t count) {
+    FlushUploads();
     VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     info.commandBufferCount = count;
     info.pCommandBuffers = commandBuffers;
@@ -832,9 +927,245 @@ int ReportResults(const std::string& directory, bool writeImages) {
     return differing == 0 && skipped == 0 ? 0 : 1;
 }
 
+// ---- The window
+
+void WantWindow(bool wanted) { windowWanted = wanted; }
+
+namespace {
+
+#if defined(FRAME_NO_WINDOW)
+const char* const kSurfaceExtension = nullptr;
+#elif defined(_WIN32)
+const char* const kSurfaceExtension = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+#elif defined(__APPLE__)
+const char* const kSurfaceExtension = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
+#else
+const char* const kSurfaceExtension = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+#endif
+
+bool Has(const std::vector<const char*>& list, const char* name) {
+    return std::any_of(list.begin(), list.end(), [&](const char* e) { return !std::strcmp(e, name); });
+}
+
+VkSurfaceKHR CreateSurface(FrameWindow* w) {
+    VkSurfaceKHR created = VK_NULL_HANDLE;
+#if defined(FRAME_NO_WINDOW)
+    (void)w;
+#elif defined(_WIN32)
+    auto create = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(instance, "vkCreateWin32SurfaceKHR");
+    VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+    info.hinstance = static_cast<HINSTANCE>(FrameWindowDisplay(w));
+    info.hwnd = static_cast<HWND>(FrameWindowHandle(w));
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+#elif defined(__APPLE__)
+    auto create = (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(instance, "vkCreateMetalSurfaceEXT");
+    VkMetalSurfaceCreateInfoEXT info{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
+    info.pLayer = static_cast<const CAMetalLayer*>(FrameWindowHandle(w));
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+#else
+    auto create = (PFN_vkCreateXlibSurfaceKHR)vkGetInstanceProcAddr(instance, "vkCreateXlibSurfaceKHR");
+    VkXlibSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+    info.dpy = static_cast<Display*>(FrameWindowDisplay(w));
+    info.window = static_cast<Window>(reinterpret_cast<uintptr_t>(FrameWindowHandle(w)));
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+#endif
+    return created;
+}
+
+bool IsSrgb(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_B8G8R8_SRGB: return true;
+        default: return false;
+    }
+}
+
+void CloseWindowObjects() {
+    if (acquireFence) vkDestroyFence(device, acquireFence, nullptr);
+    if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
+    if (surface) vkDestroySurfaceKHR(instance, surface, nullptr);
+    if (window) CloseFrameWindow(window);
+    acquireFence = VK_NULL_HANDLE;
+    swapchain = VK_NULL_HANDLE;
+    surface = VK_NULL_HANDLE;
+    window = nullptr;
+    swapchainImages.clear();
+}
+
+}  // namespace
+
+void AddWindowInstanceExtensions(std::vector<const char*>& extensions) {
+    if (!windowWanted || !kSurfaceExtension) return;
+    const char* const wanted[] = {VK_KHR_SURFACE_EXTENSION_NAME, kSurfaceExtension};
+    for (const char* e : AvailableInstanceExtensions(wanted, 2))
+        if (!Has(extensions, e)) extensions.push_back(e);
+}
+
+void AddWindowDeviceExtensions(VkPhysicalDevice gpu, std::vector<const char*>& extensions) {
+    const char* const wanted[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    if (windowWanted && !Has(extensions, wanted[0]))
+        for (const char* e : AvailableDeviceExtensions(gpu, wanted, 1)) extensions.push_back(e);
+    swapchainEnabled = Has(extensions, wanted[0]);
+}
+
+void SetOutputVsync(bool on) { vsync = on; }
+
+bool OpenOutputWindow(const FrameOutputInfo& output, const char* title) {
+    auto no = [](const char* why) {
+        std::fprintf(stderr, "%s\n", why);
+        CloseWindowObjects();
+        return false;
+    };
+    if (!kSurfaceExtension) return no("this program was built without a window");
+    if (!swapchainEnabled || !vkCreateSwapchainKHR || !vkGetPhysicalDeviceSurfaceSupportKHR) return no("this Vulkan has no swapchain to show the frame in");
+    auto known = images.find(output.image);
+    if (known == images.end() || known->second.samples != VK_SAMPLE_COUNT_1_BIT || !(FormatAspects(output.format) & VK_IMAGE_ASPECT_COLOR_BIT))
+        return no("the frame's output is not a single-sampled colour image, which is all a window can show");
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, output.format, &properties);
+    if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) return no("the frame's output has a format this device cannot blit to a swapchain");
+
+    window = OpenFrameWindow(title, output.extent.width, output.extent.height);
+    if (!window) return no("no window could be opened");
+    surface = CreateSurface(window);
+    if (!surface) return no("no Vulkan surface could be made for the window");
+    VkBool32 presents = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamily, surface, &presents);
+    if (!presents) return no("the frame's queue family cannot present to the window");
+
+    VkSurfaceCapabilitiesKHR caps{};
+    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &caps));
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return no("the window's swapchain cannot be blitted to");
+    uint32_t formatCount = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+    std::vector<VkSurfaceFormatKHR> formats(formatCount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
+    if (formats.empty()) return no("the window's surface offers no format");
+    // A blit converts between formats, through linear for an sRGB one. The swapchain is sRGB when
+    // the output is and not otherwise, so the bytes on screen are the bytes the frame wrote.
+    VkSurfaceFormatKHR chosen = formats[0];
+    const bool srgb = IsSrgb(output.format);
+    for (const VkSurfaceFormatKHR& f : formats) {
+        const bool eight = f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM || f.format == VK_FORMAT_B8G8R8A8_SRGB || f.format == VK_FORMAT_R8G8B8A8_SRGB;
+        if (eight && IsSrgb(f.format) == srgb && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { chosen = f; break; }
+    }
+
+    VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    info.surface = surface;
+    info.minImageCount = std::max(caps.minImageCount, 2u);
+    if (caps.maxImageCount && info.minImageCount > caps.maxImageCount) info.minImageCount = caps.maxImageCount;
+    info.imageFormat = chosen.format;
+    info.imageColorSpace = chosen.colorSpace;
+    // The window is the output's size; a surface that insists on another one is blitted to at its own.
+    info.imageExtent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : output.extent;
+    info.imageArrayLayers = 1;
+    info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.preTransform = caps.currentTransform;
+    info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    info.presentMode = VK_PRESENT_MODE_FIFO_KHR;   // the one every surface has
+    if (!vsync) {
+        // IMMEDIATE, else MAILBOX, where the surface has one; FIFO is what is left.
+        uint32_t modeCount = 0;
+        auto getModes = (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+        std::vector<VkPresentModeKHR> modes;
+        if (getModes && getModes(physicalDevice, surface, &modeCount, nullptr) == VK_SUCCESS) {
+            modes.resize(modeCount);
+            getModes(physicalDevice, surface, &modeCount, modes.data());
+        }
+        for (VkPresentModeKHR wanted : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR})
+            if (std::find(modes.begin(), modes.end(), wanted) != modes.end()) info.presentMode = wanted;
+    }
+    info.clipped = VK_TRUE;
+    if (vkCreateSwapchainKHR(device, &info, nullptr, &swapchain) != VK_SUCCESS) return no("no swapchain could be made for the window");
+    uint32_t imageCount = 0;
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr);
+    swapchainImages.resize(imageCount);
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages.data());
+    swapchainExtent = info.imageExtent;
+    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VK_CHECK(vkCreateFence(device, &fence, nullptr, &acquireFence));
+    windowTitle = title ? title : "";
+    titleTime = std::chrono::steady_clock::now();
+    return true;
+}
+
+bool PresentOutput(const FrameOutputInfo& output) {
+    if (!window || !swapchain) return false;
+    if (!PumpFrameWindow(window)) return false;
+    // The image is waited for on the host: the frame's submissions use no semaphores, and neither does this.
+    uint32_t index = 0;
+    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &index);
+    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_ERROR_SURFACE_LOST_KHR) return false;   // the window is going
+    if (acquired < 0) Fail("vkAcquireNextImageKHR", acquired);
+    VK_CHECK(vkWaitForFences(device, 1, &acquireFence, VK_TRUE, UINT64_MAX));
+    VK_CHECK(vkResetFences(device, 1, &acquireFence));
+
+    VkCommandBuffer cb = BeginOneTime();
+    auto barrier = [&](VkImage image, VkImageLayout from, VkImageLayout to) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+    // The first mip of the first layer, from the layout the frame leaves it in and back.
+    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) barrier(output.image, output.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    barrier(swapchainImages[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {(int32_t)output.extent.width, (int32_t)output.extent.height, 1};
+    blit.dstOffsets[1] = {(int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1};
+    vkCmdBlitImage(cb, output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    barrier(swapchainImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) barrier(output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.layout);
+    EndOneTime(cb);
+
+    VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.swapchainCount = 1;
+    present.pSwapchains = &swapchain;
+    present.pImageIndices = &index;
+    const VkResult presented = vkQueuePresentKHR(queue, &present);
+    if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_ERROR_SURFACE_LOST_KHR) return false;
+    if (presented < 0) Fail("vkQueuePresentKHR", presented);
+
+    // The frame rate in the title, twice a second.
+    ++framesShown;
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - titleTime).count();
+    if (seconds >= 0.5) {
+        char text[320];
+        std::snprintf(text, sizeof(text), "%s - %.1f fps", windowTitle.c_str(), (double)(framesShown - framesAtTitle) / seconds);
+        SetFrameWindowTitle(window, text);
+        framesAtTitle = framesShown;
+        titleTime = now;
+    }
+    return true;
+}
+
+int CloseOutputWindow() {
+    if (device) vkDeviceWaitIdle(device);
+    std::printf("frames shown: %llu\n", (unsigned long long)framesShown);
+    if (messenger) std::printf("validation errors: %zu\n", validationErrors);
+    CloseWindowObjects();
+    return validationErrors ? 1 : 0;
+}
+
 void DestroySupport() {
     if (device) {
+        FlushUploads();
         vkDeviceWaitIdle(device);
+        CloseWindowObjects();
+        for (UploadChunk& c : uploadChunks) DestroyStaging(c.staging);
+        uploadChunks.clear();
         for (Readback& r : pending) DestroyStaging(r.staging);
         pending.clear();
         ReleaseTransients();

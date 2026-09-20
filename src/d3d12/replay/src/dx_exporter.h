@@ -40,7 +40,8 @@ struct DxExportReport;
 
 class DxExporter {
 public:
-    enum Section { Create, Contents, Frame };
+    /** Restore: what puts the frame's resources back so that it can run again (the exported program shows it in a loop). */
+    enum Section { Create, Contents, Frame, Restore };
 
     DxExporter(std::string directory, const vkreplay::CaptureFile& capture);
     ~DxExporter();
@@ -48,6 +49,8 @@ public:
     DxExporter& operator=(const DxExporter&) = delete;
 
     bool Open(std::string& error);
+    /** What the frame leaves on screen, for the window: a texture's name and the state it ends in, or none (`name` empty). */
+    void FrameOutput(const std::string& name, const std::string& state, const std::string& comment);
 
     // ---- names
     /** Declares a global for a captured object and returns its name (texture_36); `type` is its interface. */
@@ -116,6 +119,8 @@ private:
     Part _create{"frame_create", "CreateObjects", {}, {}};
     Part _contents{"frame_contents", "UploadContents", {}, {}};
     Part _frame{"frame_commands", "Frame", {}, {}};
+    Part _restore{"frame_restore", "RestoreFrame", {}, {}};
+    std::string _outputSource;
 };
 
 } // namespace dxreplay

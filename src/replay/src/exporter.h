@@ -114,9 +114,18 @@ public:
 
     // ---- contents (frame_contents*.cpp)
     void UploadImage(uint64_t id, VkImage image, bool initial, const std::vector<VkBufferImageCopy>& regions, const void* data, size_t size);
-    void BeginInitialLayouts();
-    void InitialLayouts(uint64_t id, VkImage image, const std::vector<VkImageLayout>& targets);
-    void EndInitialLayouts();
+    /**
+     * `restore`: into RestoreFrame, which puts the frame's images back so that it can run again (the
+     * exported program shows it in a loop). There `current` is where the frame left each subresource,
+     * which the program's layout tracking is told first, since the frame's own barriers pass it by.
+     */
+    void BeginInitialLayouts(bool restore = false);
+    void InitialLayouts(uint64_t id, VkImage image, const std::vector<VkImageLayout>& targets, const std::vector<VkImageLayout>* current = nullptr);
+    void EndInitialLayouts(bool restore = false);
+    /** A command pool the frame's command buffers come from, reset before they are recorded again. */
+    void RestorePool(VkCommandPool pool);
+    /** What the frame leaves on screen, for the window: an image, the layout the frame leaves it in, its format and size. */
+    void FrameOutput(uint64_t id, VkImage image, VkImageLayout layout, VkFormat format, VkExtent2D extent, const std::string& comment);
 
     // ---- the frame (frame_commands*.cpp)
     void BeginSubmission(uint32_t commandIndex, const std::string& method);
@@ -211,6 +220,8 @@ private:
     Section _contentsSection{"frame_contents", "UploadContents", {}, {}};
     Section _frameSection{"frame_commands", "Frame", {}, {}};
     Section _destroySection{"frame_destroy", "DestroyObjects", {}, {}};
+    Section _restoreSection{"frame_restore", "RestoreFrame", {}, {}};
+    std::string _outputSource;
     std::set<std::string> _used;
 };
 

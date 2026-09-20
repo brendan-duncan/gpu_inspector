@@ -576,12 +576,50 @@ export to C++: frame_cpp
   31 objects, 18 commands in 1 submission, 2 render targets compared, 2.4 MB of data, 30 files
 
 cmake -S frame_cpp -B frame_cpp/build && cmake --build frame_cpp/build --config Release
-frame_cpp/build/Release/frame --validate
+frame_cpp/build/Release/frame                      # a window, the frame run in a loop until it is closed
+frame_cpp/build/Release/frame --batch --validate   # once, headless, compared with the capture
 device: NVIDIA GeForce RTX 4080
 render targets: 2
   image18_cb7_pass0_att0 (640x480): identical to the capture (307200 texels)
   image22_cb7_pass0_att1_depth (640x480): identical to the capture (307200 texels)
 ```
+
+### The window, and `--batch`
+
+Run with no arguments, the exported program opens a window and runs the frame in it again and
+again until the window is closed (or Escape is pressed): a stand-in for the application that a
+profiler or a frame debugger can be attached to, which needs a present to tell one frame from the
+next. The same holds for the three APIs:
+
+- **What is shown** is the swapchain image (swap chain buffer, drawable) the frame wrote last, which
+  is what the application presented, or the frame's last colour target for a renderer that never
+  presents. The replay names it (`FrameOutput`), with the layout or state the frame leaves it in. It
+  is copied to a swapchain of the program's own, so the frame itself still never presents: a blit in
+  Vulkan, which converts formats, and a copy in Direct3D 12 and Metal, where the program's swapchain
+  takes the output's own format. An output no swapchain can hold (multisampled, a format no display
+  takes) is said so, and the program runs as `--batch`.
+- **Between two runs** `RestoreFrame` puts back what the frame changed: command pools or allocators
+  reset, and every image or resource moved from the layout or state the frame leaves it in to the
+  one its first barrier expects (the replay knows both ends). Contents are not restored, since that
+  would upload every texture again each frame; a texture the frame reads and then overwrites holds
+  the last run's result from the second frame on, as it would in the application.
+- **Buffer uploads are gathered** into one command buffer and one wait per submission. A frame binds
+  thousands of ranges, and a staging buffer and a wait for each made a Unity frame loop at under 5
+  frames a second; gathered, it runs at the display's rate.
+- **The window itself** is `frame_window.h` with one source per platform beside it, and nothing of a
+  graphics API in any of them: `frame_window_win32.cpp`, `frame_window_x11.cpp` (Xlib, which needs the
+  X11 development files; without them CMake builds the program without its window) and
+  `frame_window_cocoa.mm` (an `NSWindow` whose view is a `CAMetalLayer`, for Metal and for Vulkan
+  through MoltenVK). The project's `CMakeLists.txt` picks the one for the platform it builds on. They
+  live in `src/replay/export_template` and all three exporters embed what they need.
+- `--frames <n>` closes the window after that many frames, `--no-vsync` presents without waiting for
+  the display, and the title shows the frame rate. Validation and debug layer messages are printed
+  once each, so a looping frame does not repeat them.
+
+`--batch` is what the program did before it had a window: the frame once, without one, each render
+target the capture read back compared byte for byte with the capture's copy and written to `out/`,
+and an exit code of 0 only when all are identical. It is the mode to script, and what runs by
+itself where no window can be opened. With a window the read-backs are not taken at all.
 
 The project needs CMake and a C++20 compiler and nothing else: it carries the Vulkan headers it was
 written against (`vulkan_headers/`, embedded into the tool from `third_party/Vulkan-Headers`), opens
@@ -590,10 +628,12 @@ the source uses (a promoted extension's struct), which is why it does not rely o
 layout tracking, read-backs, PNG output) lives in `src/replay/export_template` as real sources and
 is embedded into the tool. The generated part is split into functions of about two thousand lines
 and files of about twenty-four thousand, so a large frame compiles in ordinary memory. The project's
-README says how the frame differs from the application's (memory per resource, no swapchain,
-pipelines one at a time from the capture's SPIR-V, no semaphores) and lists what was left out.
+README says how the frame differs from the application's (memory per resource, a swapchain of the
+program's own, pipelines one at a time from the capture's SPIR-V, no semaphores) and lists what was left out.
 
-Checked by building and running the exported program, with the validation layer, on an RTX 4080:
+Checked by building and running the exported program, with the validation layer, on an RTX 4080,
+both as `--batch` and in its window for 90 frames. The window adds no validation message to any of
+these, and only the Win32 window has been run: the Xlib and Cocoa ones are written and not yet built.
 
 | Capture | The exported program |
 |---|---|
@@ -695,11 +735,13 @@ capture's copy and writes them to `out/`. Structs are declared zeroed and assign
 member, which is what D3D12's anonymous unions allow, leaving out members that are zero. Objects are
 named by type and capture id (`texture_186`), a GPU address is its buffer's address plus an offset,
 a descriptor handle is a slot of its heap. It needs CMake, a C++20 compiler and the Windows SDK, and
-links `d3d12`, `dxgi` and `dxguid`. `--debug-layer` runs it under the debug layer. The hand-written
+links `d3d12`, `dxgi` and `dxguid`. `--debug-layer` runs it under the debug layer, and `--batch` runs it
+once without its window ([The window, and `--batch`](#the-window-and---batch)). The hand-written
 part is `src/d3d12/replay/export_template`. The sources split as Vulkan's do, with the same
 `VKINSP_EXPORT_PART_LINES` and `VKINSP_EXPORT_FILE_LINES`.
 
-Checked on an RTX 4080 with the debug layer, replayed and then exported, built and run:
+Checked on an RTX 4080 with the debug layer, replayed and then exported, built and run, as `--batch`
+and in its window for 90 frames (no debug layer errors in either):
 
 | Capture | The replay, and the exported program |
 |---|---|
@@ -768,8 +810,11 @@ How the frame is rebuilt:
   Metal Shading Language the capture kept with it, or loaded from its metallib bytes; a function is
   specialized again from the constants the capture watched the application set
   (`src/metal/src/function_constants.h`), since Metal will not report them.
-- **The drawable** has no window here, so its texture becomes an ordinary render target and the
-  `presentDrawable:` that would have shown it is left out and reported.
+- **The drawable** has no window in the replay, so its texture becomes an ordinary render target and
+  the `presentDrawable:` that would have shown it is left out and reported. The exported program
+  copies that texture to a drawable of its own window's layer
+  ([The window, and `--batch`](#the-window-and---batch)); that part is written and has not been
+  built on a Mac yet.
 - **Buffers** keep the storage mode they had, except that a memoryless one becomes private: the
   contents the capture read are written straight into a shared or managed buffer, and through a
   staging blit into a private one.

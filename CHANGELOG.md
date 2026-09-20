@@ -1,6 +1,7 @@
 ## Unreleased
 
 ### Added
+- An exported C++ project shows its frame in a window, run in a loop for a profiler to attach to, with its own small window source per platform; `--batch` is the headless comparison it did before.
 - **Export to C++** opens the written folder, starts its dialog where the last export went, has a `{C++}` icon, and says why when the replay fails.
 - **Metal replay and Export to C++** (`mtlinsp_replay`, `src/metal/replay/`, docs/REPLAY.md "Metal"): a Metal capture is re-executed on this machine's GPU, every render target it read back is compared byte for byte, and the frame is written out as a standalone CMake project of Objective-C++ that runs it again — the third backend to have both, after Vulkan and Direct3D 12. The capture bar's **Export to C++** and the MCP server's `export_cpp` now take Metal captures.
 

@@ -192,6 +192,8 @@ private:
     std::unordered_map<uint64_t, const JValue*> _records;
     /** Textures the capture says are a drawable's: re-created as ordinary render targets. */
     std::unordered_set<uint64_t> _drawables;
+    /** The drawable's texture the capture made last: what the exported program shows in its window. */
+    uint64_t _lastDrawable = 0;
     /** CaptureBuffers id -> its manifest entry, for the contents a bind names. */
     std::unordered_map<uint64_t, const JValue*> _bufferData;
     /** CaptureTextureFrames `capture` id -> its manifest entry, for a sampled texture's contents. */

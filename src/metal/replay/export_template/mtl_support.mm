@@ -1,6 +1,11 @@
 #include "mtl_support.h"
 
+#include "frame_window.h"
+
+#import <QuartzCore/CAMetalLayer.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -8,6 +13,16 @@
 
 id<MTLDevice> device = nil;
 id<MTLCommandQueue> queue = nil;
+
+// The window
+static FrameWindow* outputWindow = nullptr;
+static CAMetalLayer* outputLayer = nil;
+static bool outputVsync = true;
+static std::string outputTitle;
+static uint64_t framesShown = 0;
+static uint64_t framesAtTitle = 0;
+static std::chrono::steady_clock::time_point titleTime;
+static bool OutputWindowOpen(void) { return outputWindow != nullptr; }
 
 namespace {
 
@@ -237,7 +252,7 @@ void UploadBuffer(id<MTLBuffer> buffer, uint64_t offset, const void* data, uint6
 void ReadbackTexture(id<MTLCommandBuffer> commands, id<MTLTexture> texture, const char* name,
                      uint64_t slice, uint64_t level, uint64_t width, uint64_t height, uint64_t rowBytes,
                      uint64_t imageBytes, MTLBlitOption options, const void* captured, uint64_t capturedSize) {
-    if (!texture) return;
+    if (!texture || OutputWindowOpen()) return;   // shown, not compared: the comparison is --batch's
     id<MTLBuffer> staging = [device newBufferWithLength:(NSUInteger)imageBytes
                                                 options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
@@ -306,4 +321,89 @@ int ReportResults(const std::string& directory, bool writeImages) {
     if (writeImages && !g_comparisons.empty()) std::printf("wrote the targets to %s/\n", directory.c_str());
     std::printf("%zu identical, %zu differing, %zu not compared\n", identical, differing, skipped);
     return differing == 0 && skipped == 0 ? 0 : 1;
+}
+
+// ---- The window
+
+void SetOutputVsync(bool on) { outputVsync = on; }
+
+bool OpenOutputWindow(id<MTLTexture> output, const char* title) {
+    if (!output) {
+        std::fprintf(stderr, "the frame has no output to show\n");
+        return false;
+    }
+    // A layer's drawables come in a handful of formats, and the output is copied, not converted.
+    bool showable = output.textureType == MTLTextureType2D && output.sampleCount <= 1;
+    switch (output.pixelFormat) {
+        case MTLPixelFormatBGRA8Unorm:
+        case MTLPixelFormatBGRA8Unorm_sRGB:
+        case MTLPixelFormatRGBA16Float:
+        case MTLPixelFormatRGB10A2Unorm:
+        case MTLPixelFormatBGR10A2Unorm:
+            break;
+        default:
+            showable = false;
+    }
+    if (!showable) {
+        std::fprintf(stderr, "the frame's output (pixel format %lu) is not something a window's layer can show\n", (unsigned long)output.pixelFormat);
+        return false;
+    }
+    outputWindow = OpenFrameWindow(title, (uint32_t)output.width, (uint32_t)output.height);
+    if (!outputWindow) {
+        std::fprintf(stderr, "no window could be opened\n");
+        return false;
+    }
+    outputLayer = (__bridge CAMetalLayer*)FrameWindowHandle(outputWindow);
+    outputLayer.device = device;
+    outputLayer.pixelFormat = output.pixelFormat;
+    outputLayer.framebufferOnly = NO;   // the output is blitted into the drawable
+    outputLayer.drawableSize = CGSizeMake(output.width, output.height);
+    outputLayer.displaySyncEnabled = outputVsync;
+    outputTitle = title ? title : "";
+    titleTime = std::chrono::steady_clock::now();
+    return true;
+}
+
+bool PresentOutput(id<MTLTexture> output) {
+    if (!outputWindow) return false;
+    @autoreleasepool {
+        if (!PumpFrameWindow(outputWindow)) return false;
+        id<CAMetalDrawable> drawable = [outputLayer nextDrawable];
+        if (drawable) {
+            id<MTLCommandBuffer> commands = [queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+            [blit copyFromTexture:output
+                      sourceSlice:0
+                      sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(output.width, output.height, 1)
+                        toTexture:drawable.texture
+                 destinationSlice:0
+                 destinationLevel:0
+                destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+            [commands presentDrawable:drawable];
+            [commands commit];
+        }
+    }
+    // The frame rate in the title, twice a second.
+    ++framesShown;
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - titleTime).count();
+    if (seconds >= 0.5) {
+        char text[320];
+        std::snprintf(text, sizeof(text), "%s - %.1f fps", outputTitle.c_str(), (double)(framesShown - framesAtTitle) / seconds);
+        SetFrameWindowTitle(outputWindow, text);
+        framesAtTitle = framesShown;
+        titleTime = now;
+    }
+    return true;
+}
+
+int CloseOutputWindow(void) {
+    std::printf("frames shown: %llu\n", (unsigned long long)framesShown);
+    outputLayer = nil;
+    if (outputWindow) CloseFrameWindow(outputWindow);
+    outputWindow = nullptr;
+    return 0;
 }

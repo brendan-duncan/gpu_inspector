@@ -47,6 +47,11 @@ const char* const kSupportFunctions[] = {
     // resolving a multisampled depth target to read it back
     "vkCreateRenderPass2", "vkDestroyRenderPass", "vkCreateImageView", "vkDestroyImageView", "vkCreateFramebuffer",
     "vkDestroyFramebuffer", "vkCmdBeginRenderPass", "vkCmdEndRenderPass",
+    // the window: a swapchain of the program's own, the frame's output blitted into it, and the frame run again
+    "vkDestroySurfaceKHR", "vkGetPhysicalDeviceSurfaceSupportKHR", "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+    "vkGetPhysicalDeviceSurfaceFormatsKHR", "vkGetPhysicalDeviceFormatProperties", "vkCreateSwapchainKHR", "vkDestroySwapchainKHR",
+    "vkGetSwapchainImagesKHR", "vkAcquireNextImageKHR", "vkQueuePresentKHR", "vkCmdBlitImage", "vkCreateFence", "vkDestroyFence",
+    "vkWaitForFences", "vkResetFences", "vkResetCommandPool",
 };
 
 /** How an object of each type is destroyed; types missing here go with their pool or are not the frame's to destroy. */
@@ -102,7 +107,7 @@ std::string ApiVersion(uint32_t v) {
 } // namespace
 
 Exporter::Exporter(std::string directory, const CaptureFile& capture) : _dir(std::move(directory)), _capture(capture) {
-    for (Section* s : {&_objectsSection, &_contentsSection, &_frameSection, &_destroySection}) Configure(s->writer);
+    for (Section* s : {&_objectsSection, &_contentsSection, &_frameSection, &_destroySection, &_restoreSection}) Configure(s->writer);
 }
 
 Exporter::~Exporter() {
@@ -228,6 +233,7 @@ void Exporter::Instance(uint32_t apiVersion, const std::vector<const char*>& ext
         s += "    const char* const wanted[] = {" + wanted + "};\n";
         s += "    std::vector<const char*> extensions = AvailableInstanceExtensions(wanted, " + std::to_string(extensions.size()) + ");\n";
     }
+    s += "    AddWindowInstanceExtensions(extensions);   // the surface extensions, when the frame is shown in a window\n";
     s += "    const char* const layers[] = {\"VK_LAYER_KHRONOS_validation\"};\n";
     s += "    const bool layer = validate && ValidationLayerAvailable();\n";
     s += "    const VkApplicationInfo applicationInfo = {\n";
@@ -273,6 +279,7 @@ void Exporter::Device(const std::string& capturedName, const std::string& replay
     } else {
         w.Line("std::vector<const char*> extensions;");
     }
+    w.Line("AddWindowDeviceExtensions(physicalDevice, extensions);   // the swapchain extension, when the frame is shown in a window");
     const std::string next = EmitPNext(w, info.pNext);
     const std::string features = info.pEnabledFeatures ? "&" + EmitLocal(w, "VkPhysicalDeviceFeatures", "features", Emit(w, *info.pEnabledFeatures, w.indent))
                                                        : std::string("nullptr");
@@ -492,18 +499,45 @@ void Exporter::UploadImage(uint64_t id, VkImage image, bool initial, const std::
     MaybeSplit(_contentsSection);
 }
 
-void Exporter::BeginInitialLayouts() {
-    SourceWriter& w = _contentsSection.writer;
-    w.Comment("Every subresource in the first layout the frame expects it in (per mip, per layer; UNDEFINED leaves one alone).");
+void Exporter::RestorePool(VkCommandPool pool) {
+    SourceWriter& w = _restoreSection.writer;
+    w.Use("vkResetCommandPool");
+    w.Line("VK_CHECK(vkResetCommandPool(device, " + w.Handle("VkCommandPool", (uint64_t)pool) + ", 0));");
+}
+
+void Exporter::FrameOutput(uint64_t id, VkImage image, VkImageLayout layout, VkFormat format, VkExtent2D extent, const std::string& comment) {
+    SourceWriter w;
+    Configure(w);
+    _outputSource = "// What the window shows: " + comment + "\n"
+                    "bool FrameOutput(FrameOutputInfo* output) {\n"
+                    "    output->image = " + w.Handle("VkImage", (uint64_t)image) + ";   // image " + std::to_string(id) + "\n"
+                    "    output->layout = " + w.Enum(kEnum_VkImageLayout, kEnumCount_VkImageLayout, layout, "VkImageLayout") + ";\n"
+                    "    output->format = " + w.Enum(kEnum_VkFormat, kEnumCount_VkFormat, format, "VkFormat") + ";\n"
+                    "    output->extent = {" + std::to_string(extent.width) + ", " + std::to_string(extent.height) + "};\n"
+                    "    return true;\n}\n";
+}
+
+void Exporter::BeginInitialLayouts(bool restore) {
+    SourceWriter& w = (restore ? _restoreSection : _contentsSection).writer;
+    w.Comment(restore ? "Every subresource from the layout the frame leaves it in back to the first one it expects."
+                      : "Every subresource in the first layout the frame expects it in (per mip, per layer; UNDEFINED leaves one alone).");
     w.Line("{");
     ++w.indent;
     w.Line("VkCommandBuffer cb = BeginOneTime();");
 }
 
-void Exporter::InitialLayouts(uint64_t id, VkImage image, const std::vector<VkImageLayout>& targets) {
-    SourceWriter& w = _contentsSection.writer;
+void Exporter::InitialLayouts(uint64_t id, VkImage image, const std::vector<VkImageLayout>& targets, const std::vector<VkImageLayout>* current) {
+    SourceWriter& w = (current ? _restoreSection : _contentsSection).writer;
     if (std::all_of(targets.begin(), targets.end(), [](VkImageLayout l) { return l == VK_IMAGE_LAYOUT_UNDEFINED; })) return;
     const std::string name = w.Handle("VkImage", (uint64_t)image);
+    if (current) {
+        if (*current == targets) return;   // the frame leaves it where it found it
+        std::string items;
+        for (size_t i = 0; i < current->size(); ++i)
+            items += (i ? ", " : "") + w.Enum(kEnum_VkImageLayout, kEnumCount_VkImageLayout, (*current)[i], "VkImageLayout");
+        const std::string list = EmitArrayLocal(w, "VkImageLayout", "left", items);
+        w.Line("SetImageLayouts(" + name + ", " + list + ", " + std::to_string(current->size()) + ");   // where the frame leaves image " + std::to_string(id));
+    }
     const bool uniform = std::all_of(targets.begin(), targets.end(), [&](VkImageLayout l) { return l == targets[0]; });
     if (uniform) {
         w.Line("TransitionAll(cb, " + name + ", " + w.Enum(kEnum_VkImageLayout, kEnumCount_VkImageLayout, targets[0], "VkImageLayout") + ");");
@@ -516,12 +550,12 @@ void Exporter::InitialLayouts(uint64_t id, VkImage image, const std::vector<VkIm
     w.Line("TransitionSubresources(cb, " + name + ", " + list + ", " + std::to_string(targets.size()) + ");   // image " + std::to_string(id));
 }
 
-void Exporter::EndInitialLayouts() {
-    SourceWriter& w = _contentsSection.writer;
+void Exporter::EndInitialLayouts(bool restore) {
+    SourceWriter& w = (restore ? _restoreSection : _contentsSection).writer;
     w.Line("EndOneTime(cb);");
     --w.indent;
     w.Line("}");
-    MaybeSplit(_contentsSection);
+    if (!restore) MaybeSplit(_contentsSection);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -743,7 +777,11 @@ std::string Exporter::HandlesHeader() const {
                     "// GPU Inspector shows), and the functions the frame is made of.\n"
                     "#pragma once\n\n#include \"vk_support.h\"\n\n";
     for (const auto& [type, name] : _handles) s += "extern " + type + " " + name + ";\n";
-    s += "\nvoid CreateInstance(bool validate);\nvoid CreateDevice();\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\nvoid DestroyObjects();\n";
+    s += "\nvoid CreateInstance(bool validate);\nvoid CreateDevice();\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\n"
+         "/** What the frame leaves on screen; false when it has nothing to show. */\n"
+         "bool FrameOutput(FrameOutputInfo* output);\n"
+         "/** Puts back what a frame changes, so that it can run again: command pools reset, every image in the layout the frame expects. */\n"
+         "void RestoreFrame();\nvoid DestroyObjects();\n";
     return s;
 }
 
@@ -775,6 +813,26 @@ std::string Exporter::CMake(const std::vector<std::string>& sources) const {
            "    target_compile_options(frame PRIVATE -Wall -Wno-unused-variable -Wno-missing-field-initializers)\n"
            "    target_link_libraries(frame PRIVATE ${CMAKE_DL_LIBS})\n"
            "endif()\n\n"
+           "# The window the frame is shown in: one source per platform behind frame_window.h. Where there is\n"
+           "# nothing to build one with, the program is --batch only (FRAME_NO_WINDOW).\n"
+           "if(WIN32)\n"
+           "    target_sources(frame PRIVATE frame_window_win32.cpp)\n"
+           "elseif(APPLE)\n"
+           "    enable_language(OBJCXX)\n"
+           "    target_sources(frame PRIVATE frame_window_cocoa.mm)\n"
+           "    set_source_files_properties(frame_window_cocoa.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)\n"
+           "    target_link_libraries(frame PRIVATE \"-framework Cocoa\" \"-framework QuartzCore\")\n"
+           "else()\n"
+           "    find_package(X11)\n"
+           "    if(X11_FOUND)\n"
+           "        target_sources(frame PRIVATE frame_window_x11.cpp)\n"
+           "        target_include_directories(frame PRIVATE ${X11_INCLUDE_DIR})\n"
+           "        target_link_libraries(frame PRIVATE ${X11_LIBRARIES})\n"
+           "    else()\n"
+           "        message(STATUS \"No X11 development files (libx11-dev): the frame is built without its window, --batch only\")\n"
+           "        target_compile_definitions(frame PRIVATE FRAME_NO_WINDOW)\n"
+           "    endif()\n"
+           "endif()\n\n"
            "# The data file beside the executable, where it looks for it.\n"
            "add_custom_command(TARGET frame POST_BUILD\n"
            "    COMMAND ${CMAKE_COMMAND} -E copy_if_different \"${CMAKE_CURRENT_SOURCE_DIR}/frame_data.bin\" \"$<TARGET_FILE_DIR:frame>/frame_data.bin\")\n";
@@ -803,24 +861,37 @@ std::string Exporter::Readme(const ReplayReport& report, const ExportReport& sum
     s += "## Build and run\n\n```\ncmake -B build\ncmake --build build --config Release\nbuild/Release/frame        # or build/frame\n```\n\n"
          "It needs CMake and a C++20 compiler, and nothing else: the Vulkan headers the source was written\n"
          "against are in `vulkan_headers` (Khronos' Vulkan-Headers, under their own license), and the Vulkan\n"
-         "loader is opened at run time. `-DVULKAN_HEADERS=<include directory>` builds against other headers.\n\n"
-         "- `--validate` enables the Khronos validation layer and prints its messages.\n"
-         "- `--out <directory>` is where the render targets are written (default `out`), `--no-images` writes none.\n"
+         "loader is opened at run time. `-DVULKAN_HEADERS=<include directory>` builds against other headers.\n"
+         "The window is a source file per platform (`frame_window_*`): Win32, Cocoa on macOS (with MoltenVK),\n"
+         "and Xlib elsewhere, which needs the X11 development files (`libx11-dev`); without them the program\n"
+         "is built without its window and runs as `--batch`.\n\n"
+         "The program opens a window and runs the frame in it again and again, until the window is closed\n"
+         "(or Escape is pressed): each time the command buffers are recorded and submitted, what the frame\n"
+         "leaves on screen is presented, and `RestoreFrame` puts every image back in the layout the frame\n"
+         "expects. That is something to point a profiler or a frame debugger at. The title shows the frame rate.\n\n"
+         "- `--batch` runs the frame once, without a window, and compares each render target the capture read\n"
+         "  back, byte for byte, with the copy the capture holds, writing both as PNG where the format allows.\n"
+         "  It exits with 0 when every target is identical, 1 when some differ or could not be compared. This\n"
+         "  is how to tell whether this machine draws what the captured one drew, and it is what runs where\n"
+         "  no window can be opened.\n"
+         "- `--frames <n>` closes the window after that many frames.\n"
+         "- `--no-vsync` presents without waiting for the display, so the frame runs as fast as it can.\n"
+         "- `--validate` enables the Khronos validation layer and prints its messages, each once.\n"
+         "- `--out <directory>` is where `--batch` writes the render targets (default `out`), `--no-images` writes none.\n"
          "- `--data <file>` names `frame_data.bin` when it is not beside the executable.\n\n"
-         "The program prints each render target the capture read back, compared byte for byte with the copy\n"
-         "the capture holds, and writes both as PNG where the format allows. It exits with 0 when every target\n"
-         "is identical, 1 when some differ or could not be compared, and 2 when a Vulkan call failed (the\n"
-         "call is printed).\n\n";
+         "Either way the exit code is 2 when a Vulkan call failed (the call is printed).\n\n";
     s += "## What is in it\n\n"
          "| File | |\n|---|---|\n"
          "| `frame_device.cpp` | The instance and the device, with the extensions and features the frame's device had. |\n"
          "| `frame_objects*.cpp` | `CreateObjects`: every object the frame uses, in the order it was created. |\n"
          "| `frame_contents*.cpp` | `UploadContents`: what the frame's images held, and the layouts it expects them in. |\n"
          "| `frame_commands*.cpp` | `Frame`: each submission's buffer contents, descriptor writes, command buffers and submit. |\n"
+         "| `frame_restore.cpp` | `RestoreFrame`: the command pools reset and each image moved from the layout the frame leaves it in to the one it starts from. |\n"
          "| `frame_destroy*.cpp` | `DestroyObjects`. |\n"
          "| `frame_handles.h` | One variable per object, named by type and capture id: `image_18` is image 18 in GPU Inspector. |\n"
          "| `frame_data.bin` | SPIR-V, image and buffer contents, and the captured render targets. |\n"
-         "| `vk_support.*`, `vk_functions.*`, `main.cpp` | Not specific to the frame: memory, uploads, read-backs, loading Vulkan. |\n"
+         "| `vk_support.*`, `vk_functions.*`, `main.cpp` | Not specific to the frame: memory, uploads, read-backs, the swapchain, loading Vulkan. |\n"
+         "| `frame_window*` | The window, one source per platform, and nothing of Vulkan. |\n"
          "| `vulkan_headers/` | The Vulkan headers the source is spelled with. |\n\n"
          "A number in brackets after a command (`// [17]`) is its index in the capture's command list.\n\n";
     s += "## How it differs from the application\n\n"
@@ -828,7 +899,11 @@ std::string Exporter::Readme(const ReplayReport& report, const ExportReport& sum
          "these differences:\n\n"
          "- Every image and buffer has a memory allocation of its own, and transfer usage added, so their\n"
          "  contents can be uploaded and read back. External memory is dropped.\n"
-         "- Swapchain images are ordinary images of the swapchain's format and size; there is no surface or window.\n"
+         "- Swapchain images are ordinary images of the swapchain's format and size. The window's swapchain is the\n"
+         "  program's own: the frame's output is blitted into it, so the frame itself never presents.\n"
+         "- The frame runs in a loop from the same contents: an image it reads and then overwrites (the history of\n"
+         "  temporal anti-aliasing) holds the last run's result from the second frame on, as it would in the\n"
+         "  application. Queries the application reset before the frame are not reset between runs.\n"
          "- Pipelines take their shaders from the SPIR-V the capture kept, as shader modules of their own, and are\n"
          "  created one at a time without a pipeline cache or a base pipeline.\n"
          "- Render passes store every attachment, so each pass's result can be read.\n"
@@ -881,8 +956,11 @@ bool Exporter::Finish(const ReplayReport& report, ExportReport& out) {
     }
 
     std::vector<std::string> sources = {"main.cpp", "vk_support.cpp", "vk_functions.cpp", "frame_handles.cpp", "frame_device.cpp"};
-    for (Section* s : {&_objectsSection, &_contentsSection, &_frameSection, &_destroySection})
+    for (Section* s : {&_objectsSection, &_contentsSection, &_frameSection, &_destroySection, &_restoreSection})
         if (!WriteSection(*s, sources, out.error)) return false;
+    if (_outputSource.empty())
+        _outputSource = "// The frame has no output the export could name, so there is nothing for a window to show.\n"
+                        "bool FrameOutput(FrameOutputInfo* output) {\n    (void)output;\n    return false;\n}\n";
 
     std::set<std::string> functions(_used);
     for (const char* f : kSupportFunctions) functions.insert(f);
@@ -898,7 +976,7 @@ bool Exporter::Finish(const ReplayReport& report, ExportReport& out) {
     }
 
     const std::string deviceSource = "// The instance and the device the frame runs on, as the replay created them.\n"
-                                     "#include \"frame_handles.h\"\n#include \"vk_support.h\"\n\n" + _instanceSource + "\n" + _deviceSource;
+                                     "#include \"frame_handles.h\"\n#include \"vk_support.h\"\n\n" + _instanceSource + "\n" + _deviceSource + "\n" + _outputSource;
     out.objects = _objects;
     out.commands = _commands;
     out.submissions = _submissions;

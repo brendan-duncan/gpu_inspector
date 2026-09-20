@@ -73,4 +73,20 @@ void ExecuteAndWait(ID3D12CommandQueue* queue, ID3D12CommandList* const* lists, 
 void CompleteReadbacks();
 /** Prints every comparison and writes the images to `directory`; the process exit code: 0 all identical, 1 otherwise. */
 int ReportResults(const std::string& directory, bool writeImages);
+
+// The window (the default; --batch compares the targets instead). The frame runs again and again,
+// and what it leaves on screen is copied to a swap chain of the support's own and presented.
+/**
+ * Opens a window of the output's size with a swap chain to show it in, and from then on the frame's
+ * read-backs are not taken (ReadbackTexture returns at once): they are --batch's. False, with the
+ * reason printed, when there is nothing to show it on or the output is not something a swap chain
+ * can hold (a format no display takes, a multisampled texture).
+ */
+bool OpenOutputWindow(ID3D12Resource* output, const char* title);
+/** Whether a present waits for the display (the default); without, the frame runs as fast as it can, which is what to time. */
+void SetOutputVsync(bool on);
+/** Copies the output, which is in `state`, to the back buffer and presents; false once the window was closed. */
+bool PresentOutput(ID3D12Resource* output, D3D12_RESOURCE_STATES state);
+/** Closes the window and prints how many frames it showed; the process exit code. */
+int CloseOutputWindow();
 void DestroySupport();

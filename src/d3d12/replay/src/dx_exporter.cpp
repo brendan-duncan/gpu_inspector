@@ -59,7 +59,14 @@ std::string Trimmed(const std::string& s) {
 } // namespace
 
 DxExporter::DxExporter(std::string directory, const vkreplay::CaptureFile& capture) : _dir(std::move(directory)), _capture(capture) {
-    for (Part* p : {&_create, &_contents, &_frame}) Configure(p->writer);
+    for (Part* p : {&_create, &_contents, &_frame, &_restore}) Configure(p->writer);
+}
+
+void DxExporter::FrameOutput(const std::string& name, const std::string& state, const std::string& comment) {
+    _outputSource = "// What the window shows: " + comment + "\n"
+                    "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state) {\n";
+    if (name.empty()) _outputSource += "    (void)state;\n    return nullptr;\n}\n";
+    else _outputSource += "    *state = " + state + ";\n    return " + name + ";\n}\n";
 }
 
 DxExporter::~DxExporter() {
@@ -152,7 +159,9 @@ std::string DxExporter::Data(const void* data, size_t size) {
 // ---------------------------------------------------------------------------------------------
 // Statements
 
-DxExporter::Part& DxExporter::PartOf(Section section) { return section == Create ? _create : section == Contents ? _contents : _frame; }
+DxExporter::Part& DxExporter::PartOf(Section section) {
+    return section == Create ? _create : section == Contents ? _contents : section == Restore ? _restore : _frame;
+}
 
 void DxExporter::MaybeSplit(Part& p) {
     if (p.writer.Lines() >= kPartLines) SplitNow(p);
@@ -184,6 +193,8 @@ void DxExporter::Block(Section section, const std::string& label, const std::fun
     }
     // The contents section ends with a one-time list held open across its statements, so it is only
     // cut after an upload, which is a block of its own and comes before that list.
+    // The restore section is one such list from end to end.
+    if (section == Restore) return;
     if (section != Contents || (!label.empty() && scratch.Statements() > 1)) MaybeSplit(part);
 }
 
@@ -279,27 +290,41 @@ std::string DxExporter::Readme(const DxReplayReport& report, const DxExportRepor
     s += "| Render targets compared | " + std::to_string(summary.targets) + " |\n\n";
     s += "## Build and run\n\n```\ncmake -B build\ncmake --build build --config Release\nbuild\\Release\\frame.exe\n```\n\n"
          "It needs CMake and Visual Studio (or clang-cl) with the Windows SDK, and nothing else.\n\n"
-         "- `--debug-layer` enables the D3D12 debug layer and prints its messages.\n"
-         "- `--out <directory>` is where the render targets are written (default `out`), `--no-images` writes none.\n"
+         "The program opens a window and runs the frame in it again and again, until the window is closed\n"
+         "(or Escape is pressed): each time the command lists are recorded and executed, what the frame leaves\n"
+         "on screen is presented, and `RestoreFrame` puts every resource back in the state the frame expects.\n"
+         "That is something to point a profiler or a frame debugger at. The title shows the frame rate.\n\n"
+         "- `--batch` runs the frame once, without a window, and compares each render target the capture read\n"
+         "  back, byte for byte, with the copy the capture holds, writing both as PNG where the format allows.\n"
+         "  It exits with 0 when every target is identical, 1 when some differ or could not be compared. This\n"
+         "  is how to tell whether this machine draws what the captured one drew, and it is what runs where\n"
+         "  no window can be opened.\n"
+         "- `--frames <n>` closes the window after that many frames.\n"
+         "- `--no-vsync` presents without waiting for the display, so the frame runs as fast as it can.\n"
+         "- `--debug-layer` enables the D3D12 debug layer and prints its messages, each once.\n"
+         "- `--out <directory>` is where `--batch` writes the render targets (default `out`), `--no-images` writes none.\n"
          "- `--data <file>` names `frame_data.bin` when it is not beside the executable.\n\n"
-         "The program prints each render target the capture read back, compared byte for byte with the copy\n"
-         "the capture holds, and writes both as PNG where the format allows. It exits with 0 when every target\n"
-         "is identical, 1 when some differ or could not be compared, and 2 when a call failed (the call is printed).\n\n";
+         "Either way the exit code is 2 when a call failed (the call is printed).\n\n";
     s += "## What is in it\n\n"
          "| File | |\n|---|---|\n"
          "| `frame_create*.cpp` | `CreateObjects`: every object the frame uses, in the order it was created. |\n"
          "| `frame_contents*.cpp` | `UploadContents`: what the frame's textures held, and the state it expects each resource in. |\n"
          "| `frame_commands*.cpp` | `Frame`: each submission's buffer contents, descriptors, command lists and execution. |\n"
+         "| `frame_restore.cpp` | `RestoreFrame`: the allocators reset and each resource moved from the state the frame leaves it in to the one it starts from. |\n"
          "| `frame_objects.h` | One variable per object, named by kind and capture id: `texture_36` is resource 36 in GPU Inspector. |\n"
          "| `frame_data.bin` | Shader bytecode, texture and buffer contents, and the captured render targets. |\n"
-         "| `dx_support.*`, `main.cpp` | Not specific to the frame: the device, uploads, descriptor handles, read-backs. |\n\n"
+         "| `dx_support.*`, `main.cpp` | Not specific to the frame: the device, uploads, descriptor handles, read-backs, the swap chain. |\n"
+         "| `frame_window*` | The window, and nothing of Direct3D. |\n\n"
          "A number in brackets after a command (`// [17]`) is its index in the capture's command list. A struct is\n"
          "declared zeroed and only the members that are set are assigned.\n\n";
     s += "## How it differs from the application\n\n"
          "The source is what GPU Inspector's replay did with the capture, which is the application's frame with\n"
          "these differences:\n\n"
          "- Every resource is committed, with memory of its own, whatever heap the application placed it in.\n"
-         "- Swap chain buffers are ordinary render target textures; there is no swap chain or window.\n"
+         "- Swap chain buffers are ordinary render target textures. The window's swap chain is the program's own:\n"
+         "  the frame's output is copied into it, so the frame itself never presents.\n"
+         "- The frame runs in a loop from the same contents: a texture it reads and then overwrites (the history\n"
+         "  of temporal anti-aliasing) holds the last run's result from the second frame on, as it would in the application.\n"
          "- A capture records no resource states and no descriptor writes, which happen before the frame. Each\n"
          "  resource starts in the state the frame's first barrier says it was in, or that its uses need, and each\n"
          "  descriptor is written from what the capture says it held when it was bound.\n"
@@ -343,9 +368,10 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
         std::fclose(_data);
         _data = nullptr;
     }
-    std::vector<std::string> sources = {"main.cpp", "dx_support.cpp", "frame_objects.cpp"};
-    for (Part* p : {&_create, &_contents, &_frame})
+    std::vector<std::string> sources = {"main.cpp", "dx_support.cpp", "frame_window_win32.cpp", "frame_objects.cpp"};
+    for (Part* p : {&_create, &_contents, &_frame, &_restore})
         if (!WritePart(*p, sources, out.error)) return false;
+    if (_outputSource.empty()) FrameOutput("", "", "the frame has no output the export could name.");
 
     std::string header = "// One variable per object of the capture, named by its kind and its id in the capture (the id GPU\n"
                          "// Inspector shows), and the functions the frame is made of.\n#pragma once\n\n#include \"dx_support.h\"\n\n";
@@ -357,8 +383,12 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
     }
     for (auto it = _globals.rbegin(); it != _globals.rend(); ++it) release += "    if (" + it->second + ") " + it->second + "->Release();\n";
     release += "}\n";
-    header += "\nvoid CreateDevice(bool debugLayer);\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\nvoid ReleaseObjects();\n";
-    source += "\n" + _deviceSource + "\n" + release;
+    header += "\nvoid CreateDevice(bool debugLayer);\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\n"
+              "/** The texture the frame leaves on screen and the state it ends in; null when it has none to show. */\n"
+              "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state);\n"
+              "/** Puts back what a frame changes, so that it can run again: allocators reset, every resource in the state the frame expects. */\n"
+              "void RestoreFrame();\nvoid ReleaseObjects();\n";
+    source += "\n" + _deviceSource + "\n" + _outputSource + "\n" + release;
 
     out.objects = _objects;
     out.commands = _commands;
@@ -389,7 +419,7 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
     if (!WriteText("frame_objects.h", header, out.error) || !WriteText("frame_objects.cpp", source, out.error) ||
         !WriteText("CMakeLists.txt", cmake, out.error) || !WriteText("README.md", Readme(report, out), out.error))
         return false;
-    for (const char* name : {"main.cpp", "dx_support.h", "dx_support.cpp"}) {
+    for (const char* name : {"main.cpp", "dx_support.h", "dx_support.cpp", "frame_window.h", "frame_window_win32.cpp"}) {
         const std::string text = Template(name);
         if (text.empty()) {
             out.error = std::string("the exporter was built without its template ") + name;
@@ -398,7 +428,7 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
         if (!WriteText(name, text, out.error)) return false;
     }
     out.files = sources;
-    for (const char* name : {"dx_support.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"}) out.files.push_back(name);
+    for (const char* name : {"dx_support.h", "frame_window.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"}) out.files.push_back(name);
     return true;
 }
 

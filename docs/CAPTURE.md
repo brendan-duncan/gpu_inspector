@@ -130,6 +130,8 @@ rather than a capture in a format of ours.
   Vulkan headers it was written against; a Direct3D 12 one needs the Windows SDK.
 - A frame the replay cannot run to its end says why in the status line: the device removed, or the
   call the replay died in.
+- The built program shows the frame in a window, running it in a loop, which is what to attach a
+  profiler to; `--batch` runs it once without one and compares its render targets with the capture's.
 
 [Capture replay](REPLAY.md#export-to-c) has the details, for each API's replay tool.
 

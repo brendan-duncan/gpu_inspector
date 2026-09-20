@@ -30767,7 +30767,7 @@ function captureTools(store) {
           dataMB: Number((e.dataBytes / (1024 * 1024)).toFixed(1)),
           files: e.files,
           build: `cmake -S "${e.directory}" -B "${e.directory}/build" && cmake --build "${e.directory}/build" --config Release`,
-          run: `The program prints each render target compared with the capture's copy and exits 0 when all are identical; ${c2.data.api === "d3d12" ? "--debug-layer enables the D3D12 debug layer" : "--validate enables the validation layer"}.`,
+          run: "By default the program opens a window and runs the frame in a loop until it is closed (--frames <n> stops it after n frames, --no-vsync lets it run unthrottled): something to attach a profiler or a frame debugger to. With --batch it runs the frame once, headless, prints each render target compared with the capture's copy and " + `exits 0 when all are identical, which is the mode to script. ${c2.data.api === "d3d12" ? "--debug-layer enables the D3D12 debug layer." : c2.data.api === "vulkan" ? "--validate enables the validation layer." : ""}`.trim(),
           ...e.notes.length ? { notes: e.notes.slice(0, 20) } : {},
           ...e.problems.length ? { replayProblems: e.problems.slice(0, 20), problemCount: e.problems.length } : {}
         });

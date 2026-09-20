@@ -47,3 +47,18 @@ void ReadbackTexture(id<MTLCommandBuffer> commands, id<MTLTexture> texture, cons
 
 /** Prints every comparison and writes the images to `directory`; the process exit code. */
 int ReportResults(const std::string& directory, bool writeImages);
+
+// The window (the default; --batch compares the targets instead). The frame runs again and again,
+// and what it leaves on screen is copied to a drawable of the window's layer and presented.
+/**
+ * Opens a window of the output's size, and from then on the frame's read-backs are not taken
+ * (ReadbackTexture returns at once): they are --batch's. False, with the reason printed, when there
+ * is nothing to show it on or the output is not something a layer's drawable can hold.
+ */
+bool OpenOutputWindow(id<MTLTexture> output, const char* title);
+/** Whether a present waits for the display (the default); without, the frame runs as fast as it can. */
+void SetOutputVsync(bool on);
+/** Copies the output to the layer's next drawable and presents; false once the window was closed. */
+bool PresentOutput(id<MTLTexture> output);
+/** Closes the window and prints how many frames it showed; the process exit code. */
+int CloseOutputWindow(void);

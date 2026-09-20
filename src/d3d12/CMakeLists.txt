@@ -149,7 +149,10 @@ if(Python3_Interpreter_FOUND)
     set(DXREPLAY_TEMPLATES
         "${DXREPLAY_DIR}/export_template/main.cpp"
         "${DXREPLAY_DIR}/export_template/dx_support.h"
-        "${DXREPLAY_DIR}/export_template/dx_support.cpp")
+        "${DXREPLAY_DIR}/export_template/dx_support.cpp"
+        # The window, shared with the Vulkan export (src/replay/export_template): Direct3D 12 needs the Win32 one only.
+        "${DXINSP_ROOT}/src/replay/export_template/frame_window.h"
+        "${DXINSP_ROOT}/src/replay/export_template/frame_window_win32.cpp")
     set(DXREPLAY_TEMPLATES_CPP "${CMAKE_CURRENT_BINARY_DIR}/dx_export_templates.gen.cpp")
     add_custom_command(
         OUTPUT "${DXREPLAY_TEMPLATES_CPP}"

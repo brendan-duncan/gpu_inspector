@@ -1,6 +1,10 @@
 #include "dx_support.h"
 
+#include "frame_window.h"
+
 #include <algorithm>
+#include <chrono>
+#include <set>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +52,30 @@ std::vector<ID3D12Resource*> transients;   // staging and resolve resources of t
 std::vector<Readback> pending;
 std::vector<Readback> results;
 size_t debugErrors = 0;
+std::set<std::string> debugSeen;           // a frame that runs in a loop says each thing once
+
+// Buffer uploads are gathered into one list and one wait: a frame binds thousands of ranges, and a
+// list, a staging buffer and a wait for each made a frame that runs in a loop run at a few frames a
+// second. The staging memory is kept from frame to frame and stays mapped.
+struct UploadChunk {
+    ID3D12Resource* buffer = nullptr;
+    uint8_t* mapped = nullptr;
+    UINT64 size = 0;
+    UINT64 used = 0;
+};
+std::vector<UploadChunk> uploadChunks;
+ID3D12CommandAllocator* uploadAllocator = nullptr;
+ID3D12GraphicsCommandList* uploadList = nullptr;
+bool uploadsOpen = false;
+
+// The window
+FrameWindow* window = nullptr;
+IDXGISwapChain3* swapChain = nullptr;
+std::string windowTitle;
+bool vsync = true;
+uint64_t framesShown = 0;
+uint64_t framesAtTitle = 0;
+std::chrono::steady_clock::time_point titleTime;
 
 void Wait(ID3D12CommandQueue* queue) {
     const UINT64 value = ++fenceValue;
@@ -82,6 +110,7 @@ void PrintDebugMessages() {
         auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
         if (FAILED(infoQueue->GetMessage(i, message, &size)) || message->Severity > D3D12_MESSAGE_SEVERITY_WARNING) continue;
         const bool error = message->Severity < D3D12_MESSAGE_SEVERITY_WARNING;
+        if (!debugSeen.insert(message->pDescription).second) continue;
         if (error) ++debugErrors;
         std::fprintf(stderr, "debug layer %s: %s\n", error ? "error" : "warning", message->pDescription);
     }
@@ -306,7 +335,43 @@ D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle(ID3D12DescriptorHeap* heap, UINT index) {
     return handle;
 }
 
+/** Executes the buffer uploads gathered so far, before anything that reads what they write. */
+void FlushUploads() {
+    if (!uploadsOpen) return;
+    uploadsOpen = false;
+    DX_CHECK(uploadList->Close());
+    ID3D12CommandList* lists[] = {uploadList};
+    supportQueue->ExecuteCommandLists(1, lists);
+    Wait(supportQueue);
+    for (UploadChunk& c : uploadChunks) c.used = 0;
+}
+
+/** `size` bytes of mapped upload memory, with the buffer and the offset to copy them from. */
+uint8_t* UploadSpace(UINT64 size, ID3D12Resource** buffer, UINT64* offset) {
+    const UINT64 aligned = (size + 255) & ~255ull;
+    for (UploadChunk& c : uploadChunks) {
+        if (c.used + aligned > c.size) continue;
+        *buffer = c.buffer;
+        *offset = c.used;
+        c.used += aligned;
+        return c.mapped + *offset;
+    }
+    UploadChunk c;
+    c.size = std::max<UINT64>(aligned, 16ull << 20);
+    c.buffer = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, c.size, D3D12_RESOURCE_STATE_GENERIC_READ);
+    void* mapped = nullptr;
+    const D3D12_RANGE none{0, 0};
+    DX_CHECK(c.buffer->Map(0, &none, &mapped));
+    c.mapped = static_cast<uint8_t*>(mapped);
+    c.used = aligned;
+    uploadChunks.push_back(c);
+    *buffer = c.buffer;
+    *offset = 0;
+    return c.mapped;
+}
+
 ID3D12GraphicsCommandList* BeginOneTime() {
+    FlushUploads();
     DX_CHECK(supportAllocator->Reset());
     DX_CHECK(supportList->Reset(supportAllocator, nullptr));
     return supportList;
@@ -375,22 +440,28 @@ void UploadBuffer(ID3D12Resource* buffer, UINT64 offset, const void* data, UINT6
         buffer->Unmap(0, nullptr);
         return;
     }
-    ID3D12Resource* staging = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, size, D3D12_RESOURCE_STATE_GENERIC_READ);
-    void* mapped = nullptr;
-    DX_CHECK(staging->Map(0, nullptr, &mapped));
-    std::memcpy(mapped, data, (size_t)size);
-    staging->Unmap(0, nullptr);
-    ID3D12GraphicsCommandList* list = BeginOneTime();
-    Transition(list, buffer, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, state, D3D12_RESOURCE_STATE_COPY_DEST);
-    list->CopyBufferRegion(buffer, offset, staging, 0, size);
-    Transition(list, buffer, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, state);
-    EndOneTime(list);
-    staging->Release();
+    // Into the list of gathered uploads (FlushUploads), which runs before the submission they are for.
+    if (!uploadList) {
+        DX_CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAllocator)));
+        DX_CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAllocator, nullptr, IID_PPV_ARGS(&uploadList)));
+        uploadsOpen = true;
+    } else if (!uploadsOpen) {
+        DX_CHECK(uploadAllocator->Reset());
+        DX_CHECK(uploadList->Reset(uploadAllocator, nullptr));
+        uploadsOpen = true;
+    }
+    ID3D12Resource* staging = nullptr;
+    UINT64 stagingOffset = 0;
+    std::memcpy(UploadSpace(size, &staging, &stagingOffset), data, (size_t)size);
+    Transition(uploadList, buffer, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, state, D3D12_RESOURCE_STATE_COPY_DEST);
+    uploadList->CopyBufferRegion(buffer, offset, staging, stagingOffset, size);
+    Transition(uploadList, buffer, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, state);
 }
 
 void ReadbackTexture(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, const char* name, UINT firstSubresource, UINT count,
                      D3D12_RESOURCE_STATES state, DXGI_FORMAT resolveFormat, DXGI_FORMAT format, int aspect, UINT width, UINT height,
                      UINT64 rowBytes, UINT rows, const void* captured, UINT64 capturedSize) {
+    if (window) return;   // shown, not compared: the comparison is --batch's
     Readback r;
     r.name = name;
     r.format = format;
@@ -449,6 +520,7 @@ void ReadbackTexture(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, c
 }
 
 void ExecuteAndWait(ID3D12CommandQueue* queue, ID3D12CommandList* const* lists, UINT count) {
+    FlushUploads();
     queue->ExecuteCommandLists(count, lists);
     Wait(queue);
     PrintDebugMessages();
@@ -535,8 +607,125 @@ int ReportResults(const std::string& directory, bool writeImages) {
     return differing == 0 && skipped == 0 ? 0 : 1;
 }
 
-void DestroySupport() {
+// ---- The window
+
+namespace {
+
+/** The format a swap chain shows a texture of this format in: one of the same family, so a copy is all it takes. */
+DXGI_FORMAT SwapChainFormat(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        case DXGI_FORMAT_R10G10B10A2_UNORM: return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        default: return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+}  // namespace
+
+bool OpenOutputWindow(ID3D12Resource* output, const char* title) {
+    if (!output) {
+        std::fprintf(stderr, "the frame has no output to show\n");
+        return false;
+    }
+    const D3D12_RESOURCE_DESC desc = output->GetDesc();
+    const DXGI_FORMAT format = SwapChainFormat(desc.Format);
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count > 1 || format == DXGI_FORMAT_UNKNOWN) {
+        std::fprintf(stderr, "the frame's output (DXGI format %u, %u samples) is not something a swap chain can show\n", (unsigned)desc.Format, desc.SampleDesc.Count);
+        return false;
+    }
+    window = OpenFrameWindow(title, (uint32_t)desc.Width, desc.Height);
+    if (!window) {
+        std::fprintf(stderr, "no window could be opened\n");
+        return false;
+    }
+    DXGI_SWAP_CHAIN_DESC1 sc{};
+    sc.Width = (UINT)desc.Width;
+    sc.Height = desc.Height;
+    sc.Format = format;
+    sc.SampleDesc.Count = 1;
+    sc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sc.BufferCount = 2;
+    sc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    IDXGISwapChain1* created = nullptr;
+    const HWND hwnd = static_cast<HWND>(FrameWindowHandle(window));
+    if (FAILED(factory->CreateSwapChainForHwnd(supportQueue, hwnd, &sc, nullptr, nullptr, &created)) ||
+        FAILED(created->QueryInterface(IID_PPV_ARGS(&swapChain)))) {
+        if (created) created->Release();
+        CloseFrameWindow(window);
+        window = nullptr;
+        std::fprintf(stderr, "no swap chain could be made for the window\n");
+        return false;
+    }
+    created->Release();
+    factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);   // the swap chain is one size
+    windowTitle = title ? title : "";
+    titleTime = std::chrono::steady_clock::now();
+    return true;
+}
+
+void SetOutputVsync(bool on) { vsync = on; }
+
+bool PresentOutput(ID3D12Resource* output, D3D12_RESOURCE_STATES state) {
+    if (!window || !swapChain) return false;
+    if (!PumpFrameWindow(window)) return false;
+    ID3D12Resource* backBuffer = nullptr;
+    DX_CHECK(swapChain->GetBuffer(swapChain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer)));
+    // The first mip of the first slice, from the state the frame leaves it in and back.
+    ID3D12GraphicsCommandList* list = BeginOneTime();
+    Transition(list, output, 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(list, backBuffer, 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+    D3D12_TEXTURE_COPY_LOCATION dst{backBuffer, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_TEXTURE_COPY_LOCATION src{output, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    Transition(list, backBuffer, 0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+    Transition(list, output, 0, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+    EndOneTime(list);
+    backBuffer->Release();
+    const HRESULT presented = swapChain->Present(vsync ? 1 : 0, 0);
+    if (FAILED(presented)) Fail("IDXGISwapChain::Present", presented);
+    PrintDebugMessages();
+
+    // The frame rate in the title, twice a second.
+    ++framesShown;
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - titleTime).count();
+    if (seconds >= 0.5) {
+        char text[320];
+        std::snprintf(text, sizeof(text), "%s - %.1f fps", windowTitle.c_str(), (double)(framesShown - framesAtTitle) / seconds);
+        SetFrameWindowTitle(window, text);
+        framesAtTitle = framesShown;
+        titleTime = now;
+    }
+    return true;
+}
+
+int CloseOutputWindow() {
     if (supportQueue) Wait(supportQueue);
+    PrintDebugMessages();
+    std::printf("frames shown: %llu\n", (unsigned long long)framesShown);
+    if (infoQueue) std::printf("debug layer errors: %zu\n", debugErrors);
+    if (swapChain) swapChain->Release();
+    swapChain = nullptr;
+    if (window) CloseFrameWindow(window);
+    window = nullptr;
+    return debugErrors ? 1 : 0;
+}
+
+void DestroySupport() {
+    FlushUploads();
+    if (supportQueue) Wait(supportQueue);
+    for (UploadChunk& c : uploadChunks) c.buffer->Release();
+    uploadChunks.clear();
+    if (uploadList) uploadList->Release();
+    if (uploadAllocator) uploadAllocator->Release();
     PrintDebugMessages();
     for (ID3D12Object* o : owned) o->Release();
     owned.clear();

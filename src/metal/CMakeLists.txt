@@ -108,7 +108,10 @@ if(VKINSP_BUILD_REPLAY AND Python3_Interpreter_FOUND)
     set(MTLREPLAY_TEMPLATES
         "${MTLREPLAY_DIR}/export_template/main.mm"
         "${MTLREPLAY_DIR}/export_template/mtl_support.h"
-        "${MTLREPLAY_DIR}/export_template/mtl_support.mm")
+        "${MTLREPLAY_DIR}/export_template/mtl_support.mm"
+        # The window, shared with the Vulkan export (src/replay/export_template): Metal needs the Cocoa one only.
+        "${MTLINSP_ROOT}/src/replay/export_template/frame_window.h"
+        "${MTLINSP_ROOT}/src/replay/export_template/frame_window_cocoa.mm")
     set(MTLREPLAY_TEMPLATES_CPP "${CMAKE_CURRENT_BINARY_DIR}/mtl_export_templates.gen.cpp")
     add_custom_command(
         OUTPUT "${MTLREPLAY_TEMPLATES_CPP}"

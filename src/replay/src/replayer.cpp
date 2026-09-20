@@ -874,6 +874,7 @@ void Replayer::CreateObject(const JValue& o) {
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = a.pCreateInfo->imageUsage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        _swapchainImages.insert(id);
         _exportComment = "an image of swapchain " + std::to_string(o.Get("parent") ? o.Get("parent")->Uint() : 0) +
                          ", as an ordinary image of its format and size";
         handle = CreateImage(id, info);
@@ -1200,7 +1201,9 @@ void Replayer::ComputeInitialLayouts() {
     if (!commands || !commands->IsArray()) return;
     auto layoutOf = [&](const JValue* v) { return (VkImageLayout)DecodeEnum_VkImageLayout(_ctx, v); };
     auto u32 = [](const JValue* v, uint32_t fallback) { return v ? (uint32_t)v->Uint() : fallback; };
-    auto note = [&](uint64_t id, uint32_t baseMip, uint32_t mips, uint32_t baseLayer, uint32_t layers, VkImageLayout layout) {
+    // `leaves`: a layout the command puts the subresource in (a barrier's new layout, a pass's final
+    // one), which is where the frame leaves it and not something it expects to find.
+    auto note = [&](uint64_t id, uint32_t baseMip, uint32_t mips, uint32_t baseLayer, uint32_t layers, VkImageLayout layout, bool leaves = false) {
         auto it = _images.find(id);
         if (it == _images.end() || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
         const ImageRecord& image = it->second;
@@ -1208,24 +1211,29 @@ void Replayer::ComputeInitialLayouts() {
         mips = std::min(mips, image.mips - baseMip);        // VK_REMAINING_* included
         layers = std::min(layers, image.layers - baseLayer);
         auto& layouts = _initialLayouts[id];
+        auto& finals = _finalLayouts[id];
         layouts.resize((size_t)image.mips * image.layers, VK_IMAGE_LAYOUT_UNDEFINED);
+        finals.resize((size_t)image.mips * image.layers, VK_IMAGE_LAYOUT_UNDEFINED);
         for (uint32_t m = baseMip; m < baseMip + mips; ++m)
-            for (uint32_t l = baseLayer; l < baseLayer + layers; ++l)
-                if (layouts[(size_t)m * image.layers + l] == VK_IMAGE_LAYOUT_UNDEFINED) layouts[(size_t)m * image.layers + l] = layout;
+            for (uint32_t l = baseLayer; l < baseLayer + layers; ++l) {
+                const size_t k = (size_t)m * image.layers + l;
+                if (!leaves && layouts[k] == VK_IMAGE_LAYOUT_UNDEFINED) layouts[k] = layout;
+                finals[k] = layout;   // the last layout the frame names is the one it leaves
+            }
     };
-    auto noteRange = [&](uint64_t id, const JValue* range, VkImageLayout layout) {
+    auto noteRange = [&](uint64_t id, const JValue* range, VkImageLayout layout, bool leaves = false) {
         if (range)
             note(id, u32(range->Get("baseMipLevel"), 0), u32(range->Get("levelCount"), 1), u32(range->Get("baseArrayLayer"), 0),
-                 u32(range->Get("layerCount"), 1), layout);
+                 u32(range->Get("layerCount"), 1), layout, leaves);
     };
     auto noteLayers = [&](uint64_t id, const JValue* layers, VkImageLayout layout) {
         if (layers) note(id, u32(layers->Get("mipLevel"), 0), 1, u32(layers->Get("baseArrayLayer"), 0), u32(layers->Get("layerCount"), 1), layout);
     };
-    auto noteView = [&](uint64_t viewId, VkImageLayout layout) {
+    auto noteView = [&](uint64_t viewId, VkImageLayout layout, bool leaves = false) {
         auto it = _views.find(viewId);
         if (it == _views.end()) return;
         const VkImageSubresourceRange& r = it->second.range;
-        note(it->second.image, r.baseMipLevel, r.levelCount, r.baseArrayLayer, r.layerCount, layout);
+        note(it->second.image, r.baseMipLevel, r.levelCount, r.baseArrayLayer, r.layerCount, layout, leaves);
     };
     // Copies, blits and resolves between images, and transfers between an image and a buffer: the
     // arguments themselves, or the info struct of the commands' 2 forms.
@@ -1250,9 +1258,12 @@ void Replayer::ComputeInitialLayouts() {
             if (const JValue* list = args->Get(m == "vkCmdPipelineBarrier" ? "pImageMemoryBarriers" : "pBarrierInfo"); list) {
                 const JValue* barriers = m == "vkCmdPipelineBarrier" ? list : list->Get("pImageMemoryBarriers");
                 if (barriers && barriers->IsArray())
-                    for (uint32_t b = 0; b < barriers->count; ++b)
+                    for (uint32_t b = 0; b < barriers->count; ++b) {
                         noteRange(IdOf(barriers->items[b].Get("image")), barriers->items[b].Get("subresourceRange"),
                                   layoutOf(barriers->items[b].Get("oldLayout")));
+                        noteRange(IdOf(barriers->items[b].Get("image")), barriers->items[b].Get("subresourceRange"),
+                                  layoutOf(barriers->items[b].Get("newLayout")), true);
+                    }
             }
         }
         if (const JValue* d = c.Get("descriptors")) {
@@ -1277,8 +1288,10 @@ void Replayer::ComputeInitialLayouts() {
             auto fit = _framebufferViews.find(fb);
             if (rit != _renderPasses.end() && fit != _framebufferViews.end()) {
                 // A pass requires its attachments in their initial layout whatever it loads or clears.
-                for (size_t a = 0; a < fit->second.size() && a < rit->second.initialLayouts.size(); ++a)
+                for (size_t a = 0; a < fit->second.size() && a < rit->second.initialLayouts.size(); ++a) {
                     noteView(fit->second[a], rit->second.initialLayouts[a]);
+                    if (a < rit->second.finalLayouts.size()) noteView(fit->second[a], rit->second.finalLayouts[a], true);
+                }
             }
         } else if (IsBeginRendering(m)) {
             const JValue* info = args->Get("pRenderingInfo");
@@ -2666,6 +2679,14 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         const DirectWrite direct = _options.history.enabled && !pass.active && _ctx.unresolved == unresolvedBefore
             ? HistoryDirectWrite(m, *args) : DirectWrite{};
         IssueCommand(fn, c, *args, cb, i);
+        // A copy, a blit or a resolve into a swapchain image is how a frame that renders elsewhere reaches the screen.
+        if (m == "vkCmdCopyImage" || m == "vkCmdBlitImage" || m == "vkCmdResolveImage") {
+            NoteImageWrite(IdOf(args->Get("dstImage")), false);
+        } else if (m == "vkCmdCopyImage2" || m == "vkCmdCopyImage2KHR" || m == "vkCmdBlitImage2" || m == "vkCmdBlitImage2KHR" ||
+                   m == "vkCmdResolveImage2" || m == "vkCmdResolveImage2KHR") {
+            for (const char* name : {"pCopyImageInfo", "pBlitImageInfo", "pResolveImageInfo"})
+                if (const JValue* info = args->Get(name)) NoteImageWrite(IdOf(info->Get("dstImage")), false);
+        }
         if (direct.writes) HistoryDirectPixel(cb, group, direct, histories, i, m, frame);
         if (countDraw) EndCounterDraw(cb, counterRange);
         if (drawSlot >= 0) EndDrawQuery(cb, drawSlot);
@@ -2683,6 +2704,13 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         _report->commandsRecorded++;
 
         if (IsEndPass(m) && pass.active) {
+            for (uint64_t view : pass.views) {
+                auto v = _views.find(view);
+                auto image = v == _views.end() ? _images.end() : _images.find(v->second.image);
+                if (image != _images.end() && (vkinsp::FormatAspects(image->second.format) & VK_IMAGE_ASPECT_COLOR_BIT) &&
+                    image->second.samples == VK_SAMPLE_COUNT_1_BIT)
+                    NoteImageWrite(v->second.image, true);
+            }
             // Hardware counters: the pass's range closes after its end command, outside the render pass.
             if (_options.counters.enabled && _hw) EndCounterPass(cb);
             if (_options.compareTargets) InjectReadbacks(cb, pass, readbacks);
@@ -2932,9 +2960,54 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
     // Export to C++: the frame is the last thing the project holds. The objects were exported as
     // Setup created them, so one project is written per Setup and a later frame exports nothing.
     if (_exporter) {
+        ExportFrameEnd();
         if (!_exporter->Finish(report, report.exported)) Problem("export to C++: " + report.exported.error);
         _exporter.reset();
     }
+}
+
+void Replayer::NoteImageWrite(uint64_t image, bool colorTarget) {
+    if (!image) return;
+    if (_swapchainImages.count(image)) _lastSwapchainWrite = image;
+    if (colorTarget) _lastColorTarget = image;
+}
+
+void Replayer::ExportFrameEnd() {
+    const uint64_t output = _lastSwapchainWrite ? _lastSwapchainWrite : _lastColorTarget;
+    auto leftIn = [&](uint64_t id, const ImageRecord& image) {
+        // Where the frame names no layout for a subresource, it is where the contents put it.
+        std::vector<VkImageLayout> left = image.layouts;
+        auto it = _finalLayouts.find(id);
+        for (size_t k = 0; it != _finalLayouts.end() && k < left.size() && k < it->second.size(); ++k)
+            if (it->second[k] != VK_IMAGE_LAYOUT_UNDEFINED) left[k] = it->second[k];
+        return left;
+    };
+    if (auto it = _images.find(output); it != _images.end() && !it->second.layouts.empty()) {
+        const ImageRecord& image = it->second;
+        _exporter->FrameOutput(output, image.image, leftIn(output, image)[0], image.format, {image.extent.width, image.extent.height},
+                               std::string(_lastSwapchainWrite ? "the swapchain image the frame wrote last" : "the frame's last colour target (it writes no swapchain image)") +
+                                   ", in the layout the frame leaves it in.");
+    }
+    // The command pools let go of the last recording, and each image goes back from where the
+    // frame's barriers and passes left it to where they expect to find it. Its contents stay: what
+    // a frame reads and then overwrites holds the last run's result, as it would in the application.
+    for (const Created& c : _created)
+        if (c.type == "VkCommandPool") _exporter->RestorePool((VkCommandPool)c.handle);
+    _exporter->BeginInitialLayouts(true);
+    for (auto& [id, image] : _images) {
+        auto initial = _initialLayouts.find(id);
+        if (initial == _initialLayouts.end()) continue;
+        std::vector<VkImageLayout> targets = initial->second;
+        if (!_hasSwapchainExtension)
+            for (VkImageLayout& t : targets)
+                if (t == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) t = VK_IMAGE_LAYOUT_UNDEFINED;
+        // A subresource the frame has no first layout for stays where it is.
+        std::vector<VkImageLayout> left = leftIn(id, image);
+        for (size_t k = 0; k < targets.size() && k < left.size(); ++k)
+            if (targets[k] == VK_IMAGE_LAYOUT_UNDEFINED) targets[k] = left[k];
+        _exporter->InitialLayouts(id, image.image, targets, &left);
+    }
+    _exporter->EndInitialLayouts(true);
 }
 
 void Replayer::ResetFrameState() {

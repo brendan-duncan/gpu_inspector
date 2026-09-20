@@ -938,8 +938,23 @@ private:
     std::unordered_map<uint64_t, BufferRecord> _buffers;
     std::unordered_map<uint64_t, RenderPassRecord> _renderPasses;
     std::unordered_map<uint64_t, std::vector<uint64_t>> _framebufferViews;
+    // What the exported program shows in its window: the swapchain image the frame wrote last, which
+    // is what it presented, else its last colour target (a renderer that never presents).
+    std::unordered_set<uint64_t> _swapchainImages;
+    uint64_t _lastSwapchainWrite = 0;
+    uint64_t _lastColorTarget = 0;
+    void NoteImageWrite(uint64_t image, bool colorTarget);
+    /** Export to C++: what the window shows, and RestoreFrame (command pools reset, images back in their first layouts). */
+    void ExportFrameEnd();
+
     /** Per image, per subresource as in ImageRecord::layouts: the first layout the frame expects it in (UNDEFINED: none). */
     std::unordered_map<uint64_t, std::vector<VkImageLayout>> _initialLayouts;
+    /**
+     * The same walk's other end: the layout the frame leaves each subresource in (UNDEFINED: it names
+     * none). Export to C++ runs the frame in a loop, and RestoreFrame moves each image from here back
+     * to its initial layout.
+     */
+    std::unordered_map<uint64_t, std::vector<VkImageLayout>> _finalLayouts;
     /** Render passes resolving a multisampled depth target (sample zero), by format and sample count. */
     std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkRenderPass> _depthResolvePasses;
     std::unordered_map<uint64_t, std::string> _descriptorContents;  // set id -> contents last written

@@ -186,6 +186,7 @@ bool MtlReplayer::Run(MtlReplayReport& report) {
                                       " references named an object the replay does not have");
         }
         if (_x) {
+            if (id output = _lastDrawable ? Object(_lastDrawable) : nil) _x->FrameOutput(_x->NameOf(output), _lastDrawable);
             _x->Finish(report, report.exported);
             delete _x;
             _x = nullptr;
@@ -266,7 +267,10 @@ void MtlReplayer::CreateObject(const JValue& object) {
 id<MTLTexture> MtlReplayer::CreateTexture(const JValue& object, const Decoder& d, uint64_t captureId) {
     const std::string cmd = Text(object.Get("cmd"));
     const bool drawable = d.Bool("drawable");
-    if (drawable) _drawables.insert(captureId);
+    if (drawable) {
+        _drawables.insert(captureId);
+        _lastDrawable = captureId;
+    }
 
     // A texture view names its parent and the format it reinterprets it as.
     if (d.Bool("view")) {
