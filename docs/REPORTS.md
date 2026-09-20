@@ -236,7 +236,7 @@ render targets. The draw list beside it (with **‹** and **›**) steps through
 **Go to Draw** selects the draw in the command list. Hovering a pixel says what the draw did there,
 and the line under the list counts the pixels it covered, passed and had rejected.
 
-![Highlight Draw on a Unity frame: the menu buttons' draw in magenta, the rest of the frame darkened](images/draw-overlay.png)
+![Highlight Draw on a Unity frame: the draw that puts the menu's text on the buttons, in magenta over the rest of the frame](images/draw-overlay.png)
 
 - **Highlight Draw** — the draw's pixels in a flat color, the rest of the image darkened.
 - **Depth Test** — green where the draw's fragments passed the depth and stencil tests, red where
@@ -271,7 +271,7 @@ has a wireframe preview over a table of the draw's vertices:
 - click a row of the table to mark that vertex in the preview
 - the draw list steps through the pass's draws and keeps the view, so their meshes line up
 
-![The mesh view's VS In: a Unity sky sphere's 5,040 vertices as a wireframe, over the table of its positions](images/mesh-view.png)
+![The mesh view's VS In: the vertices of a Unity menu's draw as a wireframe, over the table of the attributes its vertex shader reads](images/mesh-view.png)
 
 - **VS In** — the vertices the draw read, decoded from the captured vertex and index buffers, with
   the attributes named from the vertex shader. The preview draws the attribute that looks like a

@@ -331,7 +331,6 @@ export class LaunchDialog extends Dialog {
     }
 
     const footer = new Div(this, { class: "dialog-footer launch-dialog-footer" });
-    new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
     this._launchButton = new Button(footer, { label: "Launch", class: "btn btn-success", callback: () => {
       const config = this.config;
       if (config.target === "android") {
@@ -355,6 +354,7 @@ export class LaunchDialog extends Dialog {
       this.close();
       onLaunch(config);
     }});
+    new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
 
     this.setConfig(initial ?? recents[0] ?? emptyLaunchConfig());
     setTimeout(() => {

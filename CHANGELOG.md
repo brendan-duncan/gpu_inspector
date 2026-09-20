@@ -29,6 +29,7 @@
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed
+- Cancel sits at the right of every dialog's buttons; the launch and attach windows had it at the left.
 - A Direct3D 12 command list that draws with the pipeline state its `Reset` named had no shaders in the Shader Flame Graph or Analyze Shaders.
 - The comparison page said a lost device goes undiagnosed; both backends name the command it stopped on.
 - A measurement taken inside the application is attached to the right command: a capture library names a command by its slot within its command list, which is not its index in the capture.

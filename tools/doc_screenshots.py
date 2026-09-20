@@ -9,7 +9,8 @@ The UI is the one in src/app/dist, so build it first (`npm run build` in src/app
     python tools/doc_screenshots.py --only render-graph   # one
 
 Shots taken from capture files need those files: name a directory holding them with --captures
-(or GPU_INSPECTOR_DOC_CAPTURES). Shots whose capture is missing are skipped. The captures used
+(or GPU_INSPECTOR_DOC_CAPTURES). Shots whose capture is missing are skipped, so check what the run
+reports: a skipped shot leaves the committed image as it was, which is how one goes stale. The captures used
 are listed in SHOTS below. Most work from any .gpucap of the same shape, since they depend on
 nothing beyond looking like a real frame; the ones that name a draw by its command index
 (draw-overlay, mesh-view) need the capture they were taken from, or a draw index changed to suit.
@@ -24,16 +25,21 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "src", "app")
 IS_WIN = sys.platform == "win32"
+# The launch bar's height in the window, for the shot of the bar and for the dialog crop that has
+# to start below it (the bar is bright all the way across, so it would bound every dialog).
+BAR_HEIGHT = 46
 
 
 class Shot:
-    def __init__(self, name, args, delay_ms=9000, capture=None, launch=False, crop=None):
+    def __init__(self, name, args, delay_ms=9000, capture=None, launch=False, crop=None, d3d12=False):
         self.name = name
         self.args = args
         self.delay_ms = delay_ms
         self.capture = capture    # a file name in --captures, substituted into args as {capture}
-        self.launch = launch      # needs the built test application
-        self.crop = crop          # "dialog": trim the shot to the modal dialog over the dimmed page
+        self.launch = launch      # needs the built Vulkan test application
+        self.d3d12 = d3d12        # needs the built Direct3D 12 one (Windows)
+        self.crop = crop          # "dialog": trim the shot to the modal dialog over the dimmed page;
+                                  # "bar": trim it to the launch bar across the top
 
 
 def crop_dialog(path, pad=10):
@@ -51,7 +57,7 @@ def crop_dialog(path, pad=10):
     grey = im.convert("L")
     w, h = grey.size
     px = grey.load()
-    top = 45                      # below the launch bar, which is bright everywhere
+    top = BAR_HEIGHT - 1          # below the launch bar, which is bright everywhere
     cols = [sum(1 for y in range(top, h) if px[x, y] > 55) for x in range(w)]
     rows = [sum(1 for x in range(w) if px[x, y] > 55) for y in range(h)]
     xs = [x for x, c in enumerate(cols) if c > (h - top) * 0.10]
@@ -63,7 +69,20 @@ def crop_dialog(path, pad=10):
     return None
 
 
+def crop_bar(path):
+    """Trims a shot of the whole window to the launch bar across the top of it."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return "Pillow is not installed: left uncropped"
+    im = Image.open(path)
+    im.crop((0, 0, im.width, BAR_HEIGHT)).save(path)
+    return None
+
+
 SHOTS = [
+    # The launch bar itself, with nothing open: the controls the getting-started guide names.
+    Shot("launch-bar", [], delay_ms=4000, crop="bar"),
     # The main window: a real frame, with the state of the draw it opens on.
     Shot("capture-draw", ["--debug-open={capture}"], capture="unity.gpucap"),
     # The live object list, with an image read back from the running application.
@@ -93,19 +112,40 @@ SHOTS = [
          delay_ms=25000, launch=True),
     Shot("pixel-history", ["--launch={triangle}", "--debug-capture", "--debug-view=pixel-history"],
          delay_ms=30000, launch=True),
+    # A draw that put more than one fragment on the pixel, which the history then breaks into them:
+    # the cube with its culling off (test/triangle --no-cull), so the far face rasterizes at the
+    # centre pixel behind the near one.
+    Shot("pixel-history-fragments", ["--launch={triangle}", "--args=--no-cull", "--debug-capture",
+                                     "--debug-view=pixel-history"], delay_ms=30000, launch=True),
     # The Shader Flame Graph of a real frame, whose passes each run different shaders.
     Shot("flame-graph", ["--debug-open={capture}", "--debug-view=flame"], delay_ms=15000,
          capture="unity-ui.gpucap"),
-    # A draw overlay over a real frame: a Unity frame whose last passes draw a menu (unity-ui.gpucap,
-    # command 143 is the buttons' draw). Replayed, so slower.
-    Shot("draw-overlay", ["--debug-open={capture}", "--debug-view=overlay:highlight:143"],
+    # A draw overlay over a real frame: a Unity frame whose last pass draws a menu, which is its
+    # last draw -- named that way rather than by index, so it survives being taken from another
+    # frame of the same player. Replayed, so slower.
+    Shot("draw-overlay", ["--debug-open={capture}", "--debug-view=overlay:highlight:last"],
          delay_ms=25000, capture="unity-ui.gpucap"),
-    # The mesh tab: VS In of a real mesh (unity.gpucap, command 71 is the sky sphere), and VS Out of
-    # the test application's cube inside the view volume (replayed).
-    Shot("mesh-view", ["--debug-open={capture}", "--debug-view=mesh:in:71"], delay_ms=12000,
-         capture="unity.gpucap"),
+    # The mesh tab: VS In of a real mesh, and VS Out of the test application's cube inside the view
+    # volume (replayed).
+    #
+    # The last draw rather than an index: a named command needs the very capture it was chosen in,
+    # and pointed at another frame it opens on whatever that index happens to be there -- a bind or
+    # a fullscreen triangle, which makes a shot saying "0 vertices" rather than failing. The menu
+    # pass's own draw is the last one, and it carries a real vertex layout to show.
+    Shot("mesh-view", ["--debug-open={capture}", "--debug-view=mesh:in:last"], delay_ms=12000,
+         capture="unity-ui.gpucap"),
     Shot("mesh-output", ["--launch={triangle}", "--debug-capture", "--debug-view=mesh:out"],
          delay_ms=22000, launch=True),
+    # The Backface Cull overlay, over a cube wound inside out so its own culling takes most of it
+    # (test/triangle --inside-out); the Highlight one above has nothing to show on a solid cube.
+    Shot("backface-overlay", ["--launch={triangle}", "--args=--inside-out", "--debug-capture",
+                              "--debug-view=overlay:backface"], delay_ms=25000, launch=True),
+    # The Direct3D 12 forms of the two, from that backend's own test application: what the D3D12
+    # page shows to say the overlays and the mesh view work there as well.
+    Shot("d3d12-draw-overlay", ["--launch={d3d12}", "--debug-capture", "--debug-view=overlay:depth"],
+         delay_ms=25000, d3d12=True),
+    Shot("d3d12-mesh-output", ["--launch={d3d12}", "--debug-capture", "--debug-view=mesh:out"],
+         delay_ms=22000, d3d12=True),
     # The shader debugger, paused one line into the cube's fragment shader at a pixel the cube covers
     # (its inputs rasterized from the replayed vertex outputs).
     Shot("shader-debugger", ["--launch={triangle}", "--debug-capture", "--debug-view=debugger:pixel::1"],
@@ -124,7 +164,9 @@ SHOTS = [
     Shot("binding-table", ["--debug-open={capture}", "--debug-command=14", "--debug-expand=Shader Binding Table"],
          delay_ms=12000, capture="rt.gpucap"),
     # The launch dialog, in its desktop and Android forms.
-    Shot("launch-dialog", ["--debug-launch-dialog"], delay_ms=5000, crop="dialog"),
+    # Named rather than left to whatever was launched last, so the shot is the same everywhere:
+    # the caption calls it a Vulkan executable, and the recents of whoever runs this may not be.
+    Shot("launch-dialog", ["--debug-launch-dialog=native:{triangle}"], delay_ms=5000, launch=True, crop="dialog"),
     Shot("launch-android", ["--debug-launch-dialog=android"], delay_ms=7000, crop="dialog"),
 ]
 
@@ -132,6 +174,15 @@ SHOTS = [
 def electron():
     exe = os.path.join(APP, "node_modules", ".bin", "electron.cmd" if IS_WIN else "electron")
     return exe if os.path.isfile(exe) else None
+
+
+def d3d12_triangle():
+    """The built Direct3D 12 test application, for the shots of what only that backend does."""
+    for sub_dir in ("Release", "RelWithDebInfo", "Debug", ""):
+        p = os.path.join(ROOT, "build", "bin", sub_dir, "dxinsp_triangle.exe")
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def triangle():
@@ -155,6 +206,8 @@ def run_shot(shot, out_dir, captures):
             a = a.replace("{capture}", os.path.join(captures or "", shot.capture))
         if "{triangle}" in a:
             a = a.replace("{triangle}", triangle() or "")
+        if "{d3d12}" in a:
+            a = a.replace("{d3d12}", d3d12_triangle() or "")
         args.append(a)
     cmd = [electron(), ".", *args, f"--screenshot={path}", f"--screenshot-delay={shot.delay_ms}",
            "--quit-after-screenshot"]
@@ -171,8 +224,8 @@ def run_shot(shot, out_dir, captures):
         return f"did not quit within {shot.delay_ms / 1000 + 60:.0f} s", 0
     if not os.path.isfile(path) or os.path.getsize(path) < 1000:
         return "no screenshot was written", time.time() - started
-    if shot.crop == "dialog":
-        note = crop_dialog(path)
+    if shot.crop in ("dialog", "bar"):
+        note = crop_dialog(path) if shot.crop == "dialog" else crop_bar(path)
         if note:
             print(f"{shot.name:<16} note: {note}")
     return None, time.time() - started
@@ -189,7 +242,9 @@ def main():
 
     if args.list:
         for s in SHOTS:
-            print(f"{s.name:<16} {s.capture or ('the test application' if s.launch else '-')}")
+            needs = s.capture or ("the test application" if s.launch
+                                  else "the D3D12 test application" if s.d3d12 else "-")
+            print(f"{s.name:<16} {needs}")
         return 0
     if not electron():
         print("electron is not installed: run npm install in src/app/", file=sys.stderr)
@@ -205,6 +260,9 @@ def main():
             continue
         if shot.launch and not triangle():
             print(f"{shot.name:<16} skipped: the test application is not built")
+            continue
+        if shot.d3d12 and not d3d12_triangle():
+            print(f"{shot.name:<16} skipped: the Direct3D 12 test application is not built")
             continue
         error, secs = run_shot(shot, args.out, args.captures)
         if error:

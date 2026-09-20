@@ -59,8 +59,8 @@ export class AttachDialog extends Dialog {
       callback: () => this._attachToPort(Number(this._port.value) || DEFAULT_PORT),
     });
 
+    // Cancel sits at the right of every dialog's footer, after the buttons that do something.
     const footer = new Div(this, { class: "dialog-footer attach-dialog-footer" });
-    new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
     this._refreshButton = new Button(footer, {
       label: "Refresh", class: "btn", tooltip: "Look for running applications again",
       callback: () => void this.refresh(),
@@ -72,6 +72,7 @@ export class AttachDialog extends Dialog {
         if (target) this._attachToPort(target.port);
       },
     });
+    new Button(footer, { label: "Cancel", class: "btn", callback: () => this.close() });
 
     this._updateButtons();
     void this.refresh();

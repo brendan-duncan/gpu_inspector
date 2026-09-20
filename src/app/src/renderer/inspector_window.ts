@@ -152,12 +152,17 @@ export class InspectorWindow extends Window {
           return false;
         };
         if (cfg.debug?.launchDialog) {
-          // "android" or "android:<package text>" (the text prefilled, to check the filter).
-          const [target, text] = cfg.debug.launchDialog.split(":", 2);
-          this.showLaunchDialog(target === "android" ? { ...emptyLaunchConfig(), target: "android", exe: text ?? "" }
+          // "<target>" or "<target>:<text>" (the text prefilled: a package for android, an
+          // executable path for native). Split at the first colon only, since a Windows path
+          // has one of its own.
+          const colon = cfg.debug.launchDialog.indexOf(":");
+          const target = colon < 0 ? cfg.debug.launchDialog : cfg.debug.launchDialog.slice(0, colon);
+          const text = colon < 0 ? "" : cfg.debug.launchDialog.slice(colon + 1);
+          this.showLaunchDialog(target === "android" ? { ...emptyLaunchConfig(), target: "android", exe: text }
             : target === "implicit" ? { ...emptyLaunchConfig(), target: "implicit" }
-              : target === "waitD3D12" ? { ...emptyLaunchConfig(), target: "waitD3D12", exe: text ?? "" }
-                : target === "browser" ? { ...emptyLaunchConfig(), target: "browser", args: text ?? "" } : null);
+              : target === "waitD3D12" ? { ...emptyLaunchConfig(), target: "waitD3D12", exe: text }
+                : target === "browser" ? { ...emptyLaunchConfig(), target: "browser", args: text }
+                  : text ? { ...emptyLaunchConfig(), target: "native", exe: text } : null);
         }
         if (cfg.debug?.attachDialog) this.showAttachDialog();
         if (cfg.debug?.openCapture) void this.openCaptureFile(cfg.debug.openCapture);
