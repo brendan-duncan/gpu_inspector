@@ -2,7 +2,7 @@
 // The in-app HUD's vertex shader (see src/vulkan/src/hud_text.h).
 //
 // One instance per rectangle, four vertices drawn as a triangle strip. Nothing is sampled and
-// nothing is bound but the vertex buffer: the colour travels with the instance, so the HUD needs
+// nothing is bound but the vertex buffer: the color travels with the instance, so the HUD needs
 // no descriptor set, no sampler and no font texture.
 //
 // Pixel coordinates run from the top-left of the swapchain image, which is also the direction

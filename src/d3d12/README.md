@@ -641,7 +641,7 @@ target, what each draw's fragments at the pixel met, and the value and depth aft
   which captures the next frame. A swap chain's back buffer -- or a resource no longer alive -- follows
   whichever back buffer the captured frame renders into, the way a Metal capture follows the next
   drawable.
-* **Where it starts.** Every pass whose colour attachment is that resource at that mip and slice gets
+* **Where it starts.** Every pass whose color attachment is that resource at that mip and slice gets
   copies of all its attachments, textures of the library's own of the same formats and size, with the
   followed pixel copied into them before the pass begins (or cleared, where a real render pass clears
   the attachment at its start).
@@ -650,7 +650,7 @@ target, what each draw's fragments at the pixel met, and the value and depth aft
   calls are issued in order, and at every draw a one-pixel scissor and the draw six times under
   occlusion queries with copies of its pipeline that add one step each -- its primitives with no
   culling and no tests, with its cull mode, with its own pixel shader (so a discard shows), with the
-  depth test, with the stencil test, and with both. None of those writes anything: colour writes are
+  depth test, with the stencil test, and with both. None of those writes anything: color writes are
   off and the depth and stencil write masks are cleared. Then the draw itself, with the application's
   pipeline, and the pixel is read again. Cull mode and the depth-stencil state are pipeline state in
   D3D12 rather than encoder state as in Metal, so the six steps are six pipeline copies rather than
@@ -669,9 +669,11 @@ Limits:
 ## Not done
 
 A multisampled stencil is not read back (nor a multisampled depth, outside the measurements'
-compute resolve). Sampler feedback, video, the work graph and mesh shader nodes, and the
-raytracing state objects are recorded as commands and objects but their contents are not read
-back. Enhanced barriers (`Barrier`) are tracked for state only as far as their layouts map to
+compute resolve). Sampler feedback, video and the work graph and mesh shader nodes are recorded as
+commands and objects but their contents are not read back. Ray tracing is read back
+(`src/raytracing.h`); what it leaves out is the build of a structure written before the capture
+began, which is where an engine builds its bottom levels, so those show no geometry and a replay of
+them traces an empty scene. Enhanced barriers (`Barrier`) are tracked for state only as far as their layouts map to
 legacy states. A table a bundle set before any root signature of its own has contents only in a
 capture that executes the bundle, where the executing list's root signature reads it. Only x64 targets are
 injected. A process that is **already running** cannot be attached to: the hooks go on the entry

@@ -7,7 +7,7 @@
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
 //                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
-//                        [--capture-at N] [--churn] [--heavy]
+//                        [--capture-at N] [--churn] [--heavy] [--ray-tracing [--rebuild-blas]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -136,9 +136,21 @@ constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 
 // The shader-visible heap: {CBV, SRV} per frame slot, so root parameter 0's table is two
-// consecutive slots (b0 then t0), followed by the wave buffer's UAV.
+// consecutive slots (b0 then t0), followed by the wave buffer's UAV, then --ray-tracing's own
+// table (the scene's SRV then the traced image's UAV, which must be consecutive).
 constexpr uint32_t kHeapUav = 2 * kFrameCount;
-constexpr uint32_t kHeapSize = kHeapUav + 1;
+constexpr uint32_t kHeapRtScene = kHeapUav + 1;
+constexpr uint32_t kHeapRtTarget = kHeapRtScene + 1;
+constexpr uint32_t kHeapSize = kHeapRtTarget + 1;
+
+// --ray-tracing: the traced image, and the two instances of the one triangle.
+constexpr uint32_t kTraceSize = 256;
+constexpr uint32_t kRtInstances = 2;
+// The instances are written by the CPU every frame and read by the GPU a build later, so each
+// frame in flight gets its own slot. With one shared slot the CPU overwrites the transforms a
+// build is still reading -- and the read-back a capture takes of them then holds a later frame's,
+// which is exactly the sort of thing a replay turns into a picture that is nearly right.
+constexpr uint32_t kRtInstanceSlot = kRtInstances;
 
 struct App {
     uint32_t width = 640, height = 480;
@@ -178,6 +190,23 @@ struct App {
     // --stencil: the depth buffer is D24S8, cleared with the depth and written with 1 wherever the
     // cube draws, so a capture reads a stencil target back beside the depth.
     bool stencil = false;
+    // --ray-tracing: each frame rebuilds a top-level acceleration structure over two instances of
+    // one triangle's bottom-level structure (built once) and traces a 256x256 UAV with a raygen,
+    // a miss and two hit groups, so a capture has a state object with its shader identifiers, both
+    // levels of acceleration structure with what they were built from, a shader binding table
+    // whose records resolve to exports, and a DispatchRays. The DXR counterpart of
+    // test/triangle --ray-tracing.
+    //
+    // The cubes then take their texture from the traced image rather than the checker, so what the
+    // rays wrote is in the render target the capture reads back: a replay that rebuilt the binding
+    // table or the instances wrongly shows up as a difference there, and nothing else in the frame
+    // would have noticed.
+    bool rayTracing = false;
+    // --rebuild-blas: the bottom level is rebuilt every frame as well, the way an application with
+    // skinned or deformable geometry does. It decides whether a capture holds a build of the bottom
+    // level at all, which is what a replay needs to fill it: with the default (built once, before
+    // any capture) the replay has the buffer but nothing ever wrote it, and every ray misses.
+    bool rebuildBlas = false;
     DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -221,6 +250,23 @@ struct App {
     ComPtr<ID3D12CommandSignature> commandSignature;
     ComPtr<ID3D12CommandAllocator> bundleAllocator;
     ComPtr<ID3D12GraphicsCommandList> bundles[kFrameCount];   // --bundle: one per frame slot
+
+    // --ray-tracing. A D3D12 acceleration structure is not an object: it is a range inside a UAV
+    // buffer, and everything names it by the GPU address a build wrote it to, which is why these
+    // are buffers rather than handles.
+    struct RayTracing {
+        ComPtr<ID3D12Device5> device5;
+        ComPtr<ID3D12StateObject> stateObject;
+        ComPtr<ID3D12RootSignature> rootSignature;
+        ComPtr<ID3D12Resource> vertices;        // the triangle the bottom level is built from
+        ComPtr<ID3D12Resource> instances;       // D3D12_RAYTRACING_INSTANCE_DESC per instance, mapped
+        D3D12_RAYTRACING_INSTANCE_DESC* instancesMapped = nullptr;
+        ComPtr<ID3D12Resource> blas, tlas, scratch;
+        ComPtr<ID3D12Resource> bindingTable;    // the shader records, mapped and written once
+        D3D12_GPU_VIRTUAL_ADDRESS tableAddress = 0;
+        ComPtr<ID3D12Resource> target;          // the 256x256 image the rays write
+        bool built = false;                     // the bottom level is built once, before the first frame
+    } rt;
 
     // --------------------------------------------------------------------------------- window
     static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -463,7 +509,7 @@ struct App {
         CreateSizedResources();
     }
 
-    // The back buffers' RTVs, the depth buffer and (--msaa) the multisampled colour target, for
+    // The back buffers' RTVs, the depth buffer and (--msaa) the multisampled color target, for
     // the current window size.
     void CreateSizedResources() {
         for (uint32_t i = 0; i < kFrameCount; ++i) {
@@ -667,7 +713,7 @@ struct App {
     }
 
     void CreateResources() {
-        // Cube geometry: six quads, each with its own colour, wound counter-clockwise seen from
+        // Cube geometry: six quads, each with its own color, wound counter-clockwise seen from
         // outside.
         const float p = 0.5f;
         Vertex verts[24];
@@ -726,6 +772,8 @@ struct App {
             cbv.BufferLocation = constantBuffer->GetGPUVirtualAddress() + i * kConstantSlot;
             cbv.SizeInBytes = kConstantSlot;
             device->CreateConstantBufferView(&cbv, SrvCpuHandle(2 * i));
+            // --ray-tracing rewrites this slot with the traced image once that exists
+            // (CreateRayTracingResources), so the cubes show what the rays wrote.
             device->CreateShaderResourceView(texture.Get(), &srv, SrvCpuHandle(2 * i + 1));
         }
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
@@ -830,6 +878,346 @@ struct App {
         }
     }
 
+    // ----------------------------------------------------------------------------- ray tracing
+    //
+    // The DXR half, laid out the way test/triangle --ray-tracing lays out the Vulkan one: one
+    // triangle in a bottom level built once, a top level over two instances of it rebuilt every
+    // frame, and a trace into a 256x256 image.
+    //
+    // Where D3D12 differs and the capture library has to keep up: an acceleration structure has no
+    // handle, only the address a build wrote it to; a state object's shaders are named by 32-byte
+    // identifiers the runtime hands out per export; and the binding table is a plain buffer whose
+    // records the application lays out itself.
+
+    static constexpr uint32_t kRecordSize = D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;   // 32: one identifier
+    // The hit records are strided wider than they need to be, as a real application's are once
+    // they carry local root arguments, so the capture has a stride to walk by that is not the
+    // identifier size.
+    static constexpr uint32_t kHitRecordSize = 64;
+    static constexpr uint32_t kTableAlign = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;     // 64
+    static constexpr uint32_t kRaygenOffset = 0;
+    static constexpr uint32_t kMissOffset = kTableAlign;
+    static constexpr uint32_t kHitOffset = kMissOffset + kTableAlign;
+    static constexpr uint32_t kTableSize = kHitOffset + 2 * kHitRecordSize;
+
+    /**
+     * Both shader-readable states. A descriptor table range is DATA_STATIC_WHILE_SET_AT_EXECUTE by
+     * default, and the runtime then asks for both bits when the table is bound, whichever stage
+     * actually reads it.
+     */
+    static constexpr D3D12_RESOURCE_STATES kShaderRead =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    /** A UAV buffer an acceleration structure or a build's scratch lives in. */
+    ComPtr<ID3D12Resource> CreateUavBuffer(uint64_t size, D3D12_RESOURCE_STATES state, const wchar_t* name) {
+        return CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, size, state, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, name);
+    }
+
+    static D3D12_RESOURCE_BARRIER UavBarrier(ID3D12Resource* resource) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        b.UAV.pResource = resource;
+        return b;
+    }
+
+    /** The inputs of the top level build, which both the size query and the build itself need. */
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS TlasInputs() {
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{};
+        in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        in.NumDescs = kRtInstances;
+        in.InstanceDescs = rt.instances
+            ? rt.instances->GetGPUVirtualAddress() + (UINT64)frameIndex * kRtInstanceSlot * sizeof(D3D12_RAYTRACING_INSTANCE_DESC)
+            : 0;
+        return in;
+    }
+
+    D3D12_RAYTRACING_GEOMETRY_DESC TriangleGeometry() {
+        D3D12_RAYTRACING_GEOMETRY_DESC g{};
+        g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+        g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+        g.Triangles.VertexCount = 3;
+        g.Triangles.VertexBuffer.StartAddress = rt.vertices ? rt.vertices->GetGPUVirtualAddress() : 0;
+        g.Triangles.VertexBuffer.StrideInBytes = 3 * sizeof(float);
+        return g;
+    }
+
+    void CreateRayTracing() {
+        if (!rayTracing) return;
+        if (FAILED(device.As(&rt.device5))) {
+            fprintf(stderr, "--ray-tracing: ID3D12Device5 is not available\n");
+            exit(1);
+        }
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
+        if (FAILED(rt.device5->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) ||
+            options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0) {
+            fprintf(stderr, "--ray-tracing: this device has no DXR\n");
+            exit(1);
+        }
+
+        // The global root signature every shader of the state object sees: one table holding the
+        // scene's SRV and the traced image's UAV, in the two heap slots after the wave buffer's.
+        D3D12_DESCRIPTOR_RANGE1 ranges[2]{};
+        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        ranges[0].NumDescriptors = 1;
+        ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        ranges[1].NumDescriptors = 1;
+        ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_ROOT_PARAMETER1 param{};
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        param.DescriptorTable.NumDescriptorRanges = 2;
+        param.DescriptorTable.pDescriptorRanges = ranges;
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{};
+        rsd.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+        rsd.Desc_1_1.NumParameters = 1;
+        rsd.Desc_1_1.pParameters = &param;
+        rt.rootSignature = MakeRootSignature(rsd, L"Ray tracing root signature");
+
+        CreateStateObject();
+        CreateRayTracingResources();
+        WriteBindingTable();
+    }
+
+    /**
+     * The state object: one DXIL library with its four exports, two hit groups over its two
+     * closest hits, the payload and attribute sizes, the recursion limit and the global root
+     * signature. The library's exports are left for the runtime to take wholesale (NumExports 0),
+     * which is the case a capture cannot enumerate from the description alone.
+     */
+    void CreateStateObject() {
+        static std::vector<char> library = ReadFile(ExeDir() + "raytrace.cso");
+
+        D3D12_DXIL_LIBRARY_DESC lib{};
+        lib.DXILLibrary = {library.data(), library.size()};
+
+        D3D12_HIT_GROUP_DESC hitGroups[2]{};
+        hitGroups[0].HitGroupExport = L"HitGroup";
+        hitGroups[0].Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+        hitGroups[0].ClosestHitShaderImport = L"ClosestHit";
+        hitGroups[1].HitGroupExport = L"HitGroupTinted";
+        hitGroups[1].Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+        hitGroups[1].ClosestHitShaderImport = L"ClosestHitTinted";
+
+        D3D12_RAYTRACING_SHADER_CONFIG shaderConfig{};
+        shaderConfig.MaxPayloadSizeInBytes = 3 * sizeof(float);      // Payload::color
+        shaderConfig.MaxAttributeSizeInBytes = 2 * sizeof(float);    // the barycentrics
+
+        D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig{};
+        pipelineConfig.MaxTraceRecursionDepth = 1;
+
+        D3D12_GLOBAL_ROOT_SIGNATURE globalRoot{rt.rootSignature.Get()};
+
+        D3D12_STATE_SUBOBJECT subobjects[] = {
+            {D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &lib},
+            {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroups[0]},
+            {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroups[1]},
+            {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig},
+            {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig},
+            {D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRoot},
+        };
+        D3D12_STATE_OBJECT_DESC desc{};
+        desc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+        desc.NumSubobjects = _countof(subobjects);
+        desc.pSubobjects = subobjects;
+        CHECK(rt.device5->CreateStateObject(&desc, IID_PPV_ARGS(&rt.stateObject)));
+        rt.stateObject->SetName(L"Ray tracing state object");
+    }
+
+    void CreateRayTracingResources() {
+        // The one triangle, in a buffer the build reads by address.
+        const float triangle[9] = {-0.4f, -0.4f, 0.0f, 0.4f, -0.4f, 0.0f, 0.0f, 0.4f, 0.0f};
+        BeginUpload();
+        rt.vertices = CreateBufferWithData(triangle, sizeof(triangle),
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"RT triangle");
+        EndUpload();
+
+        // How big each level and the scratch have to be, which only the runtime can say.
+        D3D12_RAYTRACING_GEOMETRY_DESC geometry = TriangleGeometry();
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs{};
+        blasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        blasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        blasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        blasInputs.NumDescs = 1;
+        blasInputs.pGeometryDescs = &geometry;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasInfo{};
+        rt.device5->GetRaytracingAccelerationStructurePrebuildInfo(&blasInputs, &blasInfo);
+
+        // The instances, mapped and rewritten every frame so the two triangles turn.
+        const size_t instanceBytes = (size_t)kFrameCount * kRtInstanceSlot * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+        rt.instances = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, instanceBytes,
+                                    D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, L"RT instances");
+        CHECK(rt.instances->Map(0, nullptr, (void**)&rt.instancesMapped));
+        memset(rt.instancesMapped, 0, instanceBytes);
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs = TlasInputs();
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO tlasInfo{};
+        rt.device5->GetRaytracingAccelerationStructurePrebuildInfo(&tlasInputs, &tlasInfo);
+
+        rt.blas = CreateUavBuffer(blasInfo.ResultDataMaxSizeInBytes,
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT triangle BLAS");
+        rt.tlas = CreateUavBuffer(tlasInfo.ResultDataMaxSizeInBytes,
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT scene TLAS");
+        const uint64_t scratchSize = blasInfo.ScratchDataSizeInBytes > tlasInfo.ScratchDataSizeInBytes
+                                   ? blasInfo.ScratchDataSizeInBytes : tlasInfo.ScratchDataSizeInBytes;
+        rt.scratch = CreateUavBuffer(scratchSize, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"RT build scratch");
+
+        // The image the rays write. Nothing reads it: a capture is what looks at it.
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = kTraceSize;
+        td.Height = kTraceSize;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = kColorFormat;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                              nullptr, IID_PPV_ARGS(&rt.target)));
+        rt.target->SetName(L"RT traced image");
+
+        // The scene's SRV: a view with no resource, naming the top level by address, and the
+        // image's UAV beside it so the two are one table.
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.RaytracingAccelerationStructure.Location = rt.tlas->GetGPUVirtualAddress();
+        device->CreateShaderResourceView(nullptr, &srv, SrvCpuHandle(kHeapRtScene));
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+        uav.Format = kColorFormat;
+        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        device->CreateUnorderedAccessView(rt.target.Get(), nullptr, &uav, SrvCpuHandle(kHeapRtTarget));
+
+        // The cubes sample the traced image instead of the checker, so the frame's one render
+        // target depends on what the rays wrote.
+        D3D12_SHADER_RESOURCE_VIEW_DESC cubeSrv{};
+        cubeSrv.Format = kColorFormat;
+        cubeSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        cubeSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        cubeSrv.Texture2D.MipLevels = 1;
+        for (uint32_t i = 0; i < kFrameCount; ++i) {
+            device->CreateShaderResourceView(rt.target.Get(), &cubeSrv, SrvCpuHandle(2 * i + 1));
+        }
+    }
+
+    /**
+     * The shader binding table: one raygen record, one miss record and two hit group records, each
+     * beginning with the 32 bytes the runtime gave for its export. Which shader a ray runs is
+     * decided entirely by these bytes and by the offsets a trace passes, which is why a capture
+     * that cannot read this buffer can say nothing about what ran.
+     */
+    void WriteBindingTable() {
+        ComPtr<ID3D12StateObjectProperties> properties;
+        CHECK(rt.stateObject.As(&properties));
+
+        rt.bindingTable = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, kTableSize, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                       D3D12_RESOURCE_FLAG_NONE, L"RT shader binding table");
+        rt.tableAddress = rt.bindingTable->GetGPUVirtualAddress();
+        uint8_t* mapped = nullptr;
+        CHECK(rt.bindingTable->Map(0, nullptr, (void**)&mapped));
+        memset(mapped, 0, kTableSize);
+        auto put = [&](uint32_t offset, const wchar_t* exportName) {
+            void* identifier = properties->GetShaderIdentifier(exportName);
+            if (!identifier) {
+                fprintf(stderr, "--ray-tracing: the state object has no export to put in the table\n");
+                exit(1);
+            }
+            memcpy(mapped + offset, identifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+        };
+        put(kRaygenOffset, L"RayGen");
+        put(kMissOffset, L"Miss");
+        put(kHitOffset, L"HitGroup");
+        put(kHitOffset + kHitRecordSize, L"HitGroupTinted");
+        rt.bindingTable->Unmap(0, nullptr);
+    }
+
+    /**
+     * The frame's ray tracing work: the bottom level once, the top level every frame, then the
+     * trace. The UAV barriers between them are not optional -- a build and what reads it are both
+     * unordered access, and without them the trace can run against a structure that is not there
+     * yet (test/triangle's Vulkan version had exactly that defect, and every ray missed).
+     */
+    void RecordRayTracing(float t) {
+        if (!rayTracing) return;
+        ComPtr<ID3D12GraphicsCommandList4> rtList;
+        if (FAILED(list.As(&rtList))) return;
+
+        D3D12_RAYTRACING_GEOMETRY_DESC geometry = TriangleGeometry();
+        if (!rt.built) {
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+            build.DestAccelerationStructureData = rt.blas->GetGPUVirtualAddress();
+            build.ScratchAccelerationStructureData = rt.scratch->GetGPUVirtualAddress();
+            build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            build.Inputs.NumDescs = 1;
+            build.Inputs.pGeometryDescs = &geometry;
+            rtList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+            D3D12_RESOURCE_BARRIER done = UavBarrier(rt.blas.Get());
+            rtList->ResourceBarrier(1, &done);
+            rt.built = !rebuildBlas;
+        }
+
+        // The two instances, moved apart and turning. The second one contributes 1 to the hit
+        // group index, so its rays run the second record of the table and come out a flat colour.
+        const D3D12_GPU_VIRTUAL_ADDRESS blasAddress = rt.blas->GetGPUVirtualAddress();
+        for (uint32_t i = 0; i < kRtInstances; ++i) {
+            D3D12_RAYTRACING_INSTANCE_DESC& instance = rt.instancesMapped[frameIndex * kRtInstanceSlot + i];
+            const float angle = t * (i ? -0.8f : 0.6f);
+            const float c = cosf(angle), sn = sinf(angle);
+            // Row-major 3x4, the same layout as Vulkan's VkAccelerationStructureInstanceKHR.
+            instance.Transform[0][0] = c;  instance.Transform[0][1] = -sn; instance.Transform[0][2] = 0; instance.Transform[0][3] = i ? 0.45f : -0.45f;
+            instance.Transform[1][0] = sn; instance.Transform[1][1] = c;   instance.Transform[1][2] = 0; instance.Transform[1][3] = 0;
+            instance.Transform[2][0] = 0;  instance.Transform[2][1] = 0;   instance.Transform[2][2] = 1; instance.Transform[2][3] = 0;
+            instance.InstanceID = i;
+            instance.InstanceMask = 0xFF;
+            instance.InstanceContributionToHitGroupIndex = i;
+            instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+            instance.AccelerationStructure = blasAddress;
+        }
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+        build.DestAccelerationStructureData = rt.tlas->GetGPUVirtualAddress();
+        build.ScratchAccelerationStructureData = rt.scratch->GetGPUVirtualAddress();
+        build.Inputs = TlasInputs();
+        rtList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+        D3D12_RESOURCE_BARRIER built = UavBarrier(rt.tlas.Get());
+        rtList->ResourceBarrier(1, &built);
+
+        D3D12_DISPATCH_RAYS_DESC trace{};
+        trace.RayGenerationShaderRecord = {rt.tableAddress + kRaygenOffset, kRecordSize};
+        trace.MissShaderTable = {rt.tableAddress + kMissOffset, kRecordSize, kRecordSize};
+        trace.HitGroupTable = {rt.tableAddress + kHitOffset, 2 * kHitRecordSize, kHitRecordSize};
+        trace.Width = kTraceSize;
+        trace.Height = kTraceSize;
+        trace.Depth = 1;
+        rtList->SetComputeRootSignature(rt.rootSignature.Get());
+        rtList->SetComputeRootDescriptorTable(0, SrvGpuHandle(kHeapRtScene));
+        rtList->SetPipelineState1(rt.stateObject.Get());
+        rtList->DispatchRays(&trace);
+
+        // The cubes sample what the rays wrote, so the image has to leave unordered access.
+        D3D12_RESOURCE_BARRIER toRead = Transition(rt.target.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                   kShaderRead);
+        list->ResourceBarrier(1, &toRead);
+
+        // The graphics pipeline the rest of the frame draws with: SetPipelineState1 replaced it.
+        list->SetPipelineState(pipeline.Get());
+    }
+
+    /** Puts the traced image back where the next frame's rays expect it, after the draw has read it. */
+    void EndRayTracing() {
+        if (!rayTracing || !rt.target) return;
+        D3D12_RESOURCE_BARRIER toWrite = Transition(rt.target.Get(), kShaderRead,
+                                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        list->ResourceBarrier(1, &toWrite);
+    }
+
     // --------------------------------------------------------------------------------- frame
     static constexpr float kClearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
 
@@ -846,6 +1234,9 @@ struct App {
         CHECK(list->Reset(allocators[frameIndex].Get(), pipeline.Get()));
         ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
         list->SetDescriptorHeaps(1, heaps);
+
+        // The frame's ray tracing, before the render targets are touched (--ray-tracing).
+        RecordRayTracing(t);
 
         // The wave dispatch, before the render targets are touched: a compute pass of its own.
         if (compute) {
@@ -933,6 +1324,7 @@ struct App {
             D3D12_RESOURCE_BARRIER toPresent = Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, idleState);
             list->ResourceBarrier(1, &toPresent);
         }
+        EndRayTracing();
 
         CHECK(list->Close());
         ID3D12CommandList* lists[] = {list.Get()};
@@ -960,6 +1352,7 @@ struct App {
         CreateSwapChain();
         CreatePipelines();
         CreateResources();
+        CreateRayTracing();
         if (bundle) RecordBundles();
         auto start = std::chrono::steady_clock::now();
         auto nextFrame = start;
@@ -1017,6 +1410,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--churn")) app.churn = true;
         else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
+        else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
+        else if (!strcmp(argv[i], "--rebuild-blas")) { app.rayTracing = true; app.rebuildBlas = true; }
         else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
         else if (!strcmp(argv[i], "--stencil")) { app.stencil = true; app.depthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT; }
         else {

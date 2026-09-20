@@ -94,6 +94,8 @@ struct ActiveComputePass {
 /** What the list has bound, for snapshots and the pass read-back. */
 struct ListState {
     ID3D12PipelineState* pipeline = nullptr;
+    /** SetPipelineState1: the state object a trace runs, which is whose shader identifiers its binding table holds. */
+    ID3D12StateObject* stateObject = nullptr;
     ID3D12RootSignature* graphicsRootSignature = nullptr;
     ID3D12RootSignature* computeRootSignature = nullptr;
     std::shared_ptr<const RootSignatureInfo> graphicsLayout;

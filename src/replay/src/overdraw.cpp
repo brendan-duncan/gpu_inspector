@@ -401,7 +401,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
 }
 
 void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView colour) {
+                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color) {
     const JValue* commands = _capture->Commands();
     // The state the pass inherited from the command buffer, then the pass's own commands.
     _overdrawDrawable = false;
@@ -417,7 +417,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
     const bool dynamicRendering = !renderPass;
     if (dynamicRendering) {
         VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        attachment.imageView = colour;
+        attachment.imageView = color;
         attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

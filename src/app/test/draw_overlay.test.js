@@ -1,5 +1,5 @@
 // Draw-call overlays (src/renderer/draw_overlay.ts): what `vkinsp_replay --overlay-data` writes, and
-// the colours and tooltip lines the render target tab draws from it.
+// the colors and tooltip lines the render target tab draws from it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -67,11 +67,11 @@ test("each overlay paints the pixels its bits say", () => {
 
   const depth = drawOverlayRgba(o, "depth");
   assert.equal(depth.length, 3 * 2 * 4);
-  assert.deepEqual(px(depth, 0), px(depth, 2), "both passing pixels share a colour");
+  assert.deepEqual(px(depth, 0), px(depth, 2), "both passing pixels share a color");
   assert.notDeepEqual(px(depth, 0), px(depth, 1), "a rejected pixel is painted apart from a passing one");
   assert.ok(px(depth, 1)[0] > px(depth, 1)[1], "rejected is red");
   assert.ok(px(depth, 0)[1] > px(depth, 0)[0], "passed is green");
-  assert.deepEqual(px(depth, 4), [0, 0, 0, px(depth, 4)[3]], "outside the draw is darkened, not coloured");
+  assert.deepEqual(px(depth, 4), [0, 0, 0, px(depth, 4)[3]], "outside the draw is darkened, not colored");
 
   const highlight = drawOverlayRgba(o, "highlight");
   assert.deepEqual(px(highlight, 0), px(highlight, 1), "the highlight does not care about the tests");

@@ -46,7 +46,7 @@ namespace {
 //
 // A drawable's texture is the one a frame actually renders to, and it arrives from
 // `CAMetalLayer.nextDrawable` rather than from any of the device's `new*` calls, so nothing else
-// here would ever see it. Without it a render pass's colour attachment resolves to null.
+// here would ever see it. Without it a render pass's color attachment resolves to null.
 // CAMetalLayer is a public QuartzCore class, so unlike everything else in this file it can be
 // hooked by name, at load, before the application has a layer.
 

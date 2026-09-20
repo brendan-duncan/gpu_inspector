@@ -765,8 +765,8 @@ export class ShaderDebuggerView {
     if (inv.status !== "returned") return;
     const outs = inv.outputs();
     if (session.target.stage === "fragment") {
-      const colour = outs.find((o) => o.location === 0);
-      if (colour) new Div(body, { text: `Output location 0: ${program.valueText(colour.type, colour.value)}` });
+      const color = outs.find((o) => o.location === 0);
+      if (color) new Div(body, { text: `Output location 0: ${program.valueText(color.type, color.value)}` });
       const t = session.targetPixel;
       if (t) {
         new Div(body, { text: `The render target after the pass: (${t.value.map((v) => +v.toFixed(4)).join(", ")}) ${t.format.replace(/^VK_FORMAT_/, "")}` });

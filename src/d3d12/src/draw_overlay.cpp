@@ -9,7 +9,7 @@
 //   * rasterized -- the draw alone, its own culling, no depth or stencil tests, with the counting
 //     pixel shader: every fragment it rasterized, its own overdraw included;
 //   * passed -- from a copy of the depth-stencil the pass started with, the pass's earlier draws
-//     with their colour writes off so they still move depth and stencil, then the draw with its
+//     with their color writes off so they still move depth and stencil, then the draw with its
 //     own tests: the fragments that passed them;
 //   * wireframe -- the draw alone, filled as lines.
 // The three become one byte per pixel (OVERLAY_COVERED, OVERLAY_PASSED, OVERLAY_WIREFRAME in
@@ -51,7 +51,7 @@ enum class OverlayVariant : uint64_t {
     Target = 16,      // the measured draw: the counting pixel shader, no tests, its own culling
     Tested = 17,      // ... with the pass's depth-stencil attached and its own tests
     Wireframe = 18,   // ... no tests, filled as lines
-    Silent = 19,      // an earlier draw: its own pixel shader, one count target, no colour writes
+    Silent = 19,      // an earlier draw: its own pixel shader, one count target, no color writes
     Stencil = 20,     // ... the stencil test alone, against the pass's depth-stencil copy
     BackFace = 21,    // ... nothing culled, and a shader that writes only for back faces
 };
@@ -98,7 +98,7 @@ OverlayState& State() {
 
 /**
  * Issues one run of the pass: the measured draw with the copy its mode asks for, and -- in the
- * Passed run alone -- the draws before it with their colour writes off, so the depth and stencil
+ * Passed run alone -- the draws before it with their color writes off, so the depth and stencil
  * they wrote are there for the measured draw to test against.
  */
 class OverlayReplay final : public PassReplay {
@@ -158,7 +158,7 @@ private:
         v.depthFormat = _dsvBound ? _depthFormat : DXGI_FORMAT_UNKNOWN;
         v.singleSample = true;
         if (!measured) {
-            // An earlier draw of the Passed run: its own shaders, writing no colour, so what it
+            // An earlier draw of the Passed run: its own shaders, writing no color, so what it
             // leaves in the depth-stencil is what the measured draw meets.
             v.disableColorWrites = true;
             return VariantOf(_pipeline, OverlayKey(OverlayVariant::Silent, v.depthFormat), v, error);

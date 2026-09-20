@@ -30,7 +30,7 @@
 
 namespace {
 
-// Position (x, y) and colour (r, g, b) per vertex, in the order the vertex descriptor expects.
+// Position (x, y) and color (r, g, b) per vertex, in the order the vertex descriptor expects.
 const float kVertices[] = {
      0.0f,  0.6f,   1.0f, 0.2f, 0.2f,
     -0.6f, -0.4f,   0.2f, 1.0f, 0.2f,
@@ -45,8 +45,8 @@ NSString *const kShaderSource = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
-struct VertexIn  { float2 position [[attribute(0)]]; float3 colour [[attribute(1)]]; };
-struct VertexOut { float4 position [[position]];     float3 colour; };
+struct VertexIn  { float2 position [[attribute(0)]]; float3 color [[attribute(1)]]; };
+struct VertexOut { float4 position [[position]];     float3 color; };
 // `depth` is 0 except under --occluded, which draws the triangle twice at two depths.
 struct Uniforms  { float angle; float scale; float depth; };
 struct BlitOut   { float4 position [[position]];     float2 uv; };
@@ -75,7 +75,7 @@ vertex VertexOut vertex_main(VertexIn in [[stage_in]],
                       in.position.x * s + in.position.y * c) * u.scale;
     VertexOut out;
     out.position = float4(p, u.depth, 1.0);
-    out.colour = in.colour;
+    out.color = in.color;
     return out;
 }
 
@@ -85,11 +85,11 @@ constant int kTintMode [[function_constant(0)]];
 constant float kTintAmount [[function_constant(1)]];
 
 fragment float4 fragment_main(VertexOut in [[stage_in]]) {
-    float3 colour = in.colour;
+    float3 color = in.color;
     if (is_function_constant_defined(kTintMode) && kTintMode == 1) {
-        colour = mix(colour, float3(1.0, 1.0, 1.0), kTintAmount);
+        color = mix(color, float3(1.0, 1.0, 1.0), kTintAmount);
     }
-    return float4(colour, 1.0);
+    return float4(color, 1.0);
 }
 
 kernel void wave_main(device float *values [[buffer(0)]],

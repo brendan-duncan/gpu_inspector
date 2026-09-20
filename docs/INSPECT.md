@@ -54,7 +54,12 @@ rather than as bytes.
 ## Acceleration structures
 
 A ray tracing acceleration structure is opaque: the driver owns its layout and nothing reads one
-back. So the view of one is what it was *built from*, which the layer records as the build goes by.
+back. So the view of one is what it was *built from*, which the capture library records as the build
+goes by. Vulkan and Direct3D 12 are both covered and read the same in the panel, with one difference
+worth knowing: a `VkAccelerationStructureKHR` is a handle the application created, while a DXR
+structure is a range inside a UAV buffer with no object of its own, so the capture library mints one
+per address a build writes to. Those appear under **Raytracing Acceleration Structures** and carry
+the address instead of a handle.
 
 **Acceleration Structure** is that build — its type and mode, and each geometry with its primitive
 count, and for triangles the vertex format, stride and index type. A build names the memory it reads
@@ -67,7 +72,9 @@ usual state of a bottom level: most applications build theirs once, at load.
 names, where its transform puts it, its visibility mask, and its custom index, hit group offset and
 flags where they are not the default. An instance refers to its bottom level by device address, not
 by handle, which is why the layer records the address of every structure the application asks for
-one of — that map is what turns the reference back into an object you can click.
+one of — that map is what turns the reference back into an object you can click. A
+`D3D12_RAYTRACING_INSTANCE_DESC` is byte for byte a `VkAccelerationStructureInstanceKHR`, down to
+the flag bits, so the two read identically here.
 
 ![A top level acceleration structure in Inspect: what it was built from, and its instances drawn as a scene](images/acceleration-structures.png)
 
@@ -76,6 +83,27 @@ instance whose bottom level's geometry is in the capture is drawn with that geom
 transform; one whose is not is drawn as a box where it sits. A scene of boxes is the common case and
 is not a fault — it means those bottom levels were built before anything was capturing. Capturing a
 frame of an application that rebuilds its geometry each frame, or that streams it in, fills them in.
+
+## Shader binding tables
+
+A trace does not name the shaders it runs. It names regions of memory, and each record in them
+begins with an opaque handle the driver gave for one of the pipeline's shader groups — so a table
+read on its own is bytes. The capture library keeps both halves: the handles the driver handed out
+(`vkGetRayTracingShaderGroupHandlesKHR`, or DXR's
+`ID3D12StateObjectProperties::GetShaderIdentifier`) and the regions' contents, read back from the
+addresses the trace pointed at. Selecting the trace shows each region's record count and stride, and
+then what every record actually runs.
+
+A record whose handle matches nothing is the case worth having this for: those rays run the wrong
+shader or none, and nothing else in a capture would show it. It happens when a table was filled from
+another pipeline, or from handles fetched before the pipeline was rebuilt.
+
+On Direct3D 12 a record resolves to an **export name** rather than to a group index, because the
+runtime hands identifiers out per name. Selecting the state object lists its hit groups with the
+shaders each names, then every other export the runtime gave an identifier for, with the recursion
+depth, payload and attribute sizes above them. A DXIL library the description exported wholesale
+(`NumExports` 0) can hold exports the capture never saw an identifier for, and the panel says so
+rather than letting a short list read as a complete one.
 
 ## Shaders
 

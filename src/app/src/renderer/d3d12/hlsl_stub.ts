@@ -151,7 +151,7 @@ function signatureStruct(name: string, vars: ShaderVariable[]): string {
   return `struct ${name} {\n${lines.join("\n")}\n};\n`;
 }
 
-/** A value of the type that is visible in a frame capture: magenta for a colour, 1 otherwise. */
+/** A value of the type that is visible in a frame capture: magenta for a color, 1 otherwise. */
 function constantOf(type: string): string {
   if (type === "float4") return "float4(1.0, 0.0, 1.0, 1.0)";
   if (type === "float3") return "float3(1.0, 0.0, 1.0)";
@@ -211,7 +211,7 @@ function entryDeclaration(stage: ShaderStage, entry: EntryPoint, name: string): 
   }
 
   if (stage === "fragment") {
-    // One colour target is the common case and reads best as a return value with its semantic.
+    // One color target is the common case and reads best as a return value with its semantic.
     if (outputs.length === 1 && semanticBase(outputs[0].name) === "SV_TARGET") {
       const type = variableType(outputs[0]);
       parts.push(`${type} ${name}(${parameter}) : ${fieldName(outputs[0], 0)} {\n    return ${constantOf(type)};\n}\n`);

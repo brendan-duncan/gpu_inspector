@@ -1,6 +1,11 @@
-// Ray tracing in the Inspect panel and the command details: a ray tracing pipeline's shader groups,
-// an acceleration structure with what its last build put in it, and a trace command's shader
-// binding table regions.
+// Ray tracing in the Inspect panel and the command details: a pipeline's or state object's shader
+// groups, an acceleration structure with what its last build put in it, and a trace command's
+// shader binding table regions.
+//
+// Vulkan and D3D12 describe the same three things and spell almost nothing the same way, so what
+// is drawn here takes normalized shapes and the per-API sourcing lives beside each API: Vulkan's
+// just below (its descriptors are what the views were first written against), D3D12's in
+// d3d12/raytracing.ts. Nothing in the drawing knows which API it came from.
 import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
@@ -12,9 +17,10 @@ import {
   type AccelerationInstance,
 } from "./acceleration_structure.js";
 import { bindingTableRegions, shaderGroups, stageFromFlag, stageLabel } from "./shader_cache.js";
+import { d3d12BindingTableRegions, d3d12ShaderGroups, stateObjectInfo } from "./d3d12/raytracing.js";
 import { unresolvedRecords, type BindingTableRecord } from "./binding_table.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
-import type { ArgObject } from "../shared/protocol.js";
+import type { ArgObject, ArgValue } from "../shared/protocol.js";
 
 function row(parent: Widget, label: string, value: string): Div {
   const r = new Div(parent, { class: "draw-state-row" });
@@ -23,7 +29,20 @@ function row(parent: Widget, label: string, value: string): Div {
   return r;
 }
 
-/** "Closest Hit #2 (main)": a stage of the pipeline by its index in pStages. */
+// ---------------------------------------------------------------------------------------------
+// Shader groups
+
+/** A pipeline's or state object's groups as they are drawn: facts above, then one row per group. */
+export interface ShaderGroupView {
+  /** Label/value rows for what governs every group: recursion depth, payload sizes, stack. */
+  facts: [string, string][];
+  /** One per group: its heading ("Group 0 (triangles hit)") and what it runs. */
+  rows: { label: string; detail: string }[];
+  /** A note under the rows, for what the capture cannot say. */
+  note?: string;
+}
+
+/** "Closest Hit #2 (main)": a stage of a Vulkan ray tracing pipeline by its index in pStages. */
 function stageName(pipeline: VulkanObject, index: number | undefined): string {
   if (index === undefined) return "";
   const stages = Array.isArray(pipeline.descriptor?.pStages) ? pipeline.descriptor!.pStages : [];
@@ -32,24 +51,100 @@ function stageName(pipeline: VulkanObject, index: number | undefined): string {
   return `${stageLabel(stageFromFlag(str(s.stage)))} #${index} (${str(s.pName) || "main"})`;
 }
 
-/** A ray tracing pipeline's shader groups; nothing for any other pipeline. */
-export function renderShaderGroups(parent: Widget, pipeline: VulkanObject): void {
+/** A Vulkan ray tracing pipeline's groups; null for any other pipeline. */
+export function vulkanShaderGroupView(pipeline: VulkanObject): ShaderGroupView | null {
   const groups = shaderGroups(pipeline);
-  if (!groups.length) return;
-  const grp = new collapsible(parent, { label: `Shader Groups (${groups.length})`, collapsed: false });
+  if (!groups.length) return null;
+  const facts: [string, string][] = [];
   const d = pipeline.descriptor;
-  if (d?.maxPipelineRayRecursionDepth !== undefined) row(grp.body, "Max recursion depth", String(num(d.maxPipelineRayRecursionDepth)));
-  for (const g of groups) {
+  if (d?.maxPipelineRayRecursionDepth !== undefined) facts.push(["Max recursion depth", String(num(d.maxPipelineRayRecursionDepth))]);
+  const rows = groups.map((g) => {
     const parts = [
       g.general !== undefined ? stageName(pipeline, g.general) : "",
       g.closestHit !== undefined ? `closest hit ${stageName(pipeline, g.closestHit)}` : "",
       g.anyHit !== undefined ? `any hit ${stageName(pipeline, g.anyHit)}` : "",
       g.intersection !== undefined ? `intersection ${stageName(pipeline, g.intersection)}` : "",
     ].filter(Boolean);
-    row(grp.body, `Group ${g.index} (${g.type})`, parts.join(", ") || "no shaders");
-  }
+    return { label: `Group ${g.index} (${g.type})`, detail: parts.join(", ") || "no shaders" };
+  });
+  return { facts, rows };
 }
 
+/**
+ * A D3D12 state object's groups: its hit groups with the exports they name, then every other export
+ * the runtime gave an identifier for. Null for a state object with no ray tracing in it.
+ */
+export function d3d12ShaderGroupView(object: VulkanObject): ShaderGroupView | null {
+  const groups = d3d12ShaderGroups(object);
+  const info = stateObjectInfo(object);
+  if (!groups.length && !info) return null;
+  const facts: [string, string][] = [];
+  if (info?.maxRecursionDepth !== null && info?.maxRecursionDepth !== undefined) facts.push(["Max recursion depth", String(info.maxRecursionDepth)]);
+  if (info?.maxPayloadBytes) facts.push(["Max payload", `${info.maxPayloadBytes} bytes`]);
+  if (info?.maxAttributeBytes) facts.push(["Max attributes", `${info.maxAttributeBytes} bytes`]);
+  if (info?.pipelineStackSize) facts.push(["Pipeline stack", `${info.pipelineStackSize} bytes`]);
+
+  const stackOf = (name: string | undefined): string => {
+    const e = info?.exports.find((x) => x.name === name);
+    return e && e.stackSize !== null && e.stackSize > 0 ? `, ${e.stackSize} byte stack` : "";
+  };
+  const rows = groups.map((g) => {
+    const parts = [
+      g.closestHitName ? `closest hit ${g.closestHitName}` : "",
+      g.anyHitName ? `any hit ${g.anyHitName}` : "",
+      g.intersectionName ? `intersection ${g.intersectionName}` : "",
+    ].filter(Boolean);
+    // A general export is the shader itself; a hit group is a name over the shaders it collects.
+    const detail = parts.length ? parts.join(", ") : `${g.name ?? ""}${stackOf(g.name)}` || "no shaders";
+    return { label: `${g.name ?? `Group ${g.index}`} (${g.type})`, detail };
+  });
+  // An export the runtime never gave an identifier for cannot be put in a binding table, so the
+  // list is what the table could hold — but only where the description named its exports.
+  const note = info?.unlistedExports
+    ? "A DXIL library of this state object exports everything in it (NumExports 0), so only the exports the "
+      + "application asked the runtime for an identifier for are listed. There may be more."
+    : undefined;
+  return { facts, rows, ...(note ? { note } : {}) };
+}
+
+/** Draws a groups view; nothing for a null one, so a caller can pass either API's straight through. */
+export function renderShaderGroups(parent: Widget, view: ShaderGroupView | null): void {
+  if (!view || !view.rows.length) return;
+  const grp = new collapsible(parent, { label: `Shader Groups (${view.rows.length})`, collapsed: false });
+  for (const [label, value] of view.facts) row(grp.body, label, value);
+  for (const r of view.rows) row(grp.body, r.label, r.detail);
+  if (view.note) new Div(grp.body, { text: view.note, class: "text-muted font-sm" });
+}
+
+/** The groups of whichever kind of object was selected, or null when it has none. */
+export function shaderGroupViewOf(object: VulkanObject): ShaderGroupView | null {
+  if (object.type === "VkPipeline") return vulkanShaderGroupView(object);
+  if (object.type === "ID3D12StateObject") return d3d12ShaderGroupView(object);
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Acceleration structures
+
+/**
+ * The acceleration structure a descriptor names. Vulkan writes a handle reference; D3D12 has no
+ * handle to write, so its capture library writes the address the shader will read and the object it
+ * minted for that address beside it (src/d3d12/src/descriptors.cpp). An address no build has written
+ * to resolves to nothing, which is worth saying plainly rather than calling the structure destroyed.
+ */
+export function boundStructure(value: ArgValue | undefined, db: ObjectLookup): { object: VulkanObject | null; label: string } {
+  const missing = "(destroyed acceleration structure)";
+  if (!isObject(value)) {
+    const direct = db.getObject(refId(value as ArgValue));
+    return direct ? { object: direct, label: direct.name } : { object: null, label: missing };
+  }
+  const direct = db.getObject(refId(value));
+  if (direct) return { object: direct, label: direct.name };
+  const structure = db.getObject(refId(value.structure));
+  if (structure) return { object: structure, label: structure.name };
+  const address = str(value.address);
+  return { object: null, label: address ? `structure at ${address} (nothing built there)` : missing };
+}
 
 /** What this needs of a database to resolve an instance's reference: every structure it knows. */
 export interface StructureLookup {
@@ -57,8 +152,8 @@ export interface StructureLookup {
 }
 
 /**
- * The address the layer recorded on each acceleration structure, so an instance's reference can be
- * turned back into the object it names (src/vulkan/src/hooks.cpp,
+ * The address the capture library recorded on each acceleration structure, so an instance's
+ * reference can be turned back into the object it names (src/vulkan/src/hooks.cpp,
  * Hook_vkGetAccelerationStructureDeviceAddressKHR).
  */
 export function structureAddresses(db: StructureLookup): Map<string, number> {
@@ -75,6 +170,27 @@ export interface AccelerationScene {
   instances: AccelerationInstance[];
   /** The triangles a bottom level was built from, or null when that build is not in the capture. */
   meshOf: (blas: number) => Float32Array | null;
+}
+
+/** An acceleration structure as the Inspect panel draws it, whichever API it came from. */
+export interface StructureView {
+  /** Label/value rows above the build: what kind it is and how big. */
+  facts: [string, string][];
+  /** The buffer the structure lives in, and where in it. */
+  storage: { object: VulkanObject; note: string } | null;
+  build: BuildView | null;
+  /** What to say instead of a build, when none was seen. */
+  notBuiltNote: string;
+}
+
+export interface BuildView {
+  /** "vkCmdBuildAccelerationStructuresKHR (BUILD)". */
+  title: string;
+  flags: string;
+  /** "3 primitives in 1 geometry". */
+  primitives: string;
+  /** One per geometry: its heading and what it was built from. */
+  geometries: { label: string; detail: string }[];
 }
 
 /** A short description of an instance's placement: where it sits, or that it is not moved. */
@@ -117,56 +233,162 @@ function renderInstances(parent: Widget, s: AccelerationScene, db: ObjectLookup,
   }
 }
 
-/** "closest hit Closest Hit #2 (main)": a pipeline shader group by its index, as the groups list names it. */
-function groupName(pipeline: VulkanObject, group: number): string {
-  const groups = shaderGroups(pipeline);
-  const g = groups[group];
-  if (!g) return `group ${group}`;
-  const stage = stageName(pipeline, g.general ?? g.closestHit ?? g.anyHit ?? g.intersection);
-  return `group ${group}: ${g.type}${stage ? ` (${stage})` : ""}`;
-}
-
-/** An acceleration structure: its type, size and storage, and the geometries its last build held. */
-export function renderAccelerationStructure(parent: Widget, object: VulkanObject, db: ObjectLookup, onLink: LinkHandler,
-                                            scene?: AccelerationScene | null): void {
-  const grp = new collapsible(parent, { label: "Acceleration Structure", collapsed: false });
+/** A VkAccelerationStructureKHR, from its create info and the build the layer recorded on it. */
+export function vulkanStructureView(object: VulkanObject, db: ObjectLookup): StructureView {
+  const facts: [string, string][] = [];
+  let storage: StructureView["storage"] = null;
   const d = object.descriptor;
   if (d) {
-    row(grp.body, "Type", fmt(d.type));
-    row(grp.body, "Size", formatBytes(num(d.size)));
+    facts.push(["Type", fmt(d.type)]);
+    facts.push(["Size", formatBytes(num(d.size))]);
     const buffer = db.getObject(refId(d.buffer));
-    if (buffer) {
-      const r = row(grp.body, "Buffer", "");
-      objectLink(r, buffer, onLink);
-      new Span(r, { text: `  at offset ${num(d.offset)}`, class: "text-muted" });
-    }
+    if (buffer) storage = { object: buffer, note: `at offset ${num(d.offset)}` };
   }
   const build = isObject(object.updates.build) ? object.updates.build as ArgObject : null;
+  return {
+    facts, storage,
+    notBuiltNote: "Not built while the inspector was watching.",
+    build: build ? {
+      title: `${str(build.method)} (${fmt(build.mode)})`,
+      flags: str(build.flags) ? fmtFlags(build.flags) : "",
+      primitives: countPhrase(num(build.primitiveCount), Array.isArray(build.geometries) ? build.geometries.filter(isObject).length : 0),
+      geometries: (Array.isArray(build.geometries) ? build.geometries.filter(isObject) : []).map((g, i) => {
+        const kind = fmt(g.geometryType);
+        const detail = str(g.geometryType).includes("TRIANGLES")
+          ? `${num(g.primitiveCount).toLocaleString()} triangles, ${fmt(g.vertexFormat)} vertices (stride ${num(g.vertexStride)}, up to vertex ${num(g.maxVertex)}), ${fmt(g.indexType)} indices`
+          : str(g.geometryType).includes("AABBS") ? `${num(g.primitiveCount).toLocaleString()} boxes, stride ${num(g.stride)}`
+          : `${num(g.primitiveCount).toLocaleString()} instances${g.arrayOfPointers ? " (array of pointers)" : ""}`;
+        return { label: `Geometry ${i} (${kind}${str(g.flags) ? `, ${fmtFlags(g.flags)}` : ""})`, detail };
+      }),
+    } : null,
+  };
+}
+
+/**
+ * An ID3D12RaytracingAccelerationStructure: the object the capture library mints per destination
+ * address, since D3D12 has none of its own (src/d3d12/src/raytracing.h). There is no create info to
+ * read a type or a size from — the structure is whatever the last build wrote there — so both come
+ * from the build, and the address stands in for a handle.
+ */
+export function d3d12StructureView(object: VulkanObject, db: ObjectLookup): StructureView {
+  const facts: [string, string][] = [];
+  let storage: StructureView["storage"] = null;
+  const address = isObject(object.descriptor?.Address) ? object.descriptor!.Address as ArgObject : null;
+  const build = isObject(object.updates.build) ? object.updates.build as ArgObject : null;
+  if (build) facts.push(["Type", fmt(build.Type)]);
+  if (address) {
+    facts.push(["Address", str(address.address)]);
+    const buffer = db.getObject(refId(address.buffer));
+    if (buffer) storage = { object: buffer, note: `at offset ${num(address.offset)}` };
+  }
+  const copied = isObject(object.updates.copiedFrom) ? object.updates.copiedFrom as ArgObject : null;
+  if (copied) facts.push(["Copied from", `${str(copied.sourceAddress)} (${fmt(copied.Mode)})`]);
+
+  return {
+    facts, storage,
+    notBuiltNote: "No build of this structure is in the capture.",
+    build: build ? {
+      title: `${str(build.method)} (${build.update === true ? "UPDATE" : "BUILD"})`,
+      flags: str(build.Flags) ? fmtFlags(build.Flags) : "",
+      primitives: build.Type !== undefined && str(build.Type).includes("TOP_LEVEL")
+        ? `${num(build.NumDescs).toLocaleString()} instance${num(build.NumDescs) === 1 ? "" : "s"}`
+        : countPhrase(num(build.primitiveCount), num(build.NumDescs)),
+      geometries: (Array.isArray(build.geometries) ? build.geometries.filter(isObject) : []).map((g, i) => {
+        const type = str(g.Type);
+        const kind = fmt(g.Type);
+        let detail: string;
+        if (type.includes("PROCEDURAL_PRIMITIVE_AABBS")) {
+          const aabbs = isObject(g.AABBs) ? g.AABBs : {};
+          detail = `${num(aabbs.AABBCount).toLocaleString()} boxes`;
+        } else {
+          const tri = isObject(g.Triangles) ? g.Triangles : {};
+          const buffer = isObject(tri.VertexBuffer) ? tri.VertexBuffer : {};
+          const indexed = str(tri.IndexFormat) !== "DXGI_FORMAT_UNKNOWN" && num(tri.IndexCount) > 0;
+          detail = `${num(tri.VertexCount).toLocaleString()} ${fmt(tri.VertexFormat)} vertices (stride ${num(buffer.StrideInBytes)})`
+                 + (indexed ? `, ${num(tri.IndexCount).toLocaleString()} ${fmt(tri.IndexFormat)} indices` : ", no indices")
+                 + (tri.Transform3x4 ? ", with a transform" : "");
+        }
+        return { label: `Geometry ${i} (${kind}${str(g.Flags) ? `, ${fmtFlags(g.Flags)}` : ""})`, detail };
+      }),
+    } : null,
+  };
+}
+
+function countPhrase(primitives: number, geometries: number): string {
+  return `${primitives.toLocaleString()} in ${geometries} geometr${geometries === 1 ? "y" : "ies"}`;
+}
+
+/** The view of whichever kind of structure was selected, or null when the object is not one. */
+export function structureViewOf(object: VulkanObject, db: ObjectLookup): StructureView | null {
+  if (object.type === "VkAccelerationStructureKHR") return vulkanStructureView(object, db);
+  if (object.type === "ID3D12RaytracingAccelerationStructure") return d3d12StructureView(object, db);
+  return null;
+}
+
+/** An acceleration structure: what it is, where it lives, and the geometries its last build held. */
+export function renderAccelerationStructure(parent: Widget, view: StructureView, db: ObjectLookup, onLink: LinkHandler,
+                                            scene?: AccelerationScene | null): void {
+  const grp = new collapsible(parent, { label: "Acceleration Structure", collapsed: false });
+  for (const [label, value] of view.facts) row(grp.body, label, value);
+  if (view.storage) {
+    const r = row(grp.body, "Buffer", "");
+    objectLink(r, view.storage.object, onLink);
+    new Span(r, { text: `  ${view.storage.note}`, class: "text-muted" });
+  }
+  const build = view.build;
   if (!build) {
-    new Div(grp.body, { text: "Not built while the inspector was watching.", class: "text-muted" });
+    new Div(grp.body, { text: view.notBuiltNote, class: "text-muted" });
     return;
   }
-  row(grp.body, "Last build", `${str(build.method)} (${fmt(build.mode)})`);
-  if (str(build.flags)) row(grp.body, "Build flags", fmtFlags(build.flags));
-  const geometries = Array.isArray(build.geometries) ? build.geometries.filter(isObject) : [];
-  row(grp.body, "Primitives", `${num(build.primitiveCount).toLocaleString()} in ${geometries.length} geometr${geometries.length === 1 ? "y" : "ies"}`);
-  geometries.forEach((g, i) => {
-    const kind = fmt(g.geometryType);
-    const detail = str(g.geometryType).includes("TRIANGLES")
-      ? `${num(g.primitiveCount).toLocaleString()} triangles, ${fmt(g.vertexFormat)} vertices (stride ${num(g.vertexStride)}, up to vertex ${num(g.maxVertex)}), ${fmt(g.indexType)} indices`
-      : str(g.geometryType).includes("AABBS") ? `${num(g.primitiveCount).toLocaleString()} boxes, stride ${num(g.stride)}`
-      : `${num(g.primitiveCount).toLocaleString()} instances${g.arrayOfPointers ? " (array of pointers)" : ""}`;
-    row(grp.body, `Geometry ${i} (${kind}${str(g.flags) ? `, ${fmtFlags(g.flags)}` : ""})`, detail);
-  });
+  row(grp.body, "Last build", build.title);
+  if (build.flags) row(grp.body, "Build flags", build.flags);
+  row(grp.body, "Primitives", build.primitives);
+  for (const g of build.geometries) row(grp.body, g.label, g.detail);
   // The instances are what a top level actually holds, and the only view of an otherwise opaque
   // object; a bottom level has geometry instead, drawn from the buffers its build read.
   if (scene && scene.instances.length) renderInstances(parent, scene, db, onLink);
 }
 
-/** A vkCmdTraceRays* command's shader binding table regions, as records of the table. */
-export function renderBindingTable(parent: Widget, args: ArgObject | null, pipeline?: VulkanObject | null,
-                                   records?: BindingTableRecord[]): void {
-  const regions = bindingTableRegions(args);
+// ---------------------------------------------------------------------------------------------
+// The shader binding table
+
+/** One region of a trace's table, as the view draws it. */
+export interface TableRegion {
+  region: string;
+  records: number;
+  stride: number;
+  size: number;
+}
+
+/** The regions of a trace command, whichever API recorded it. */
+export function tableRegionsOf(method: string, args: ArgObject | null): TableRegion[] {
+  return method === "DispatchRays" ? d3d12BindingTableRegions(args) : bindingTableRegions(args);
+}
+
+/**
+ * What a record runs, as the record itself resolved it: an export name where the API gives one
+ * (D3D12), else the group it matched named through `groupName`.
+ */
+function recordDetail(r: BindingTableRecord, groupName: (group: number) => string): string {
+  if (r.name) return `${r.name}${r.dataBytes ? `, ${r.dataBytes} bytes of record data` : ""}`;
+  if (r.group === null) return `no shader of this pipeline has this handle (${r.handle.slice(0, 16)}...)`;
+  return `${groupName(r.group)}${r.dataBytes ? `, ${r.dataBytes} bytes of record data` : ""}`;
+}
+
+/** "closest hit Closest Hit #2 (main)": a Vulkan pipeline's shader group by its index. */
+export function vulkanGroupName(pipeline: VulkanObject | null | undefined): (group: number) => string {
+  return (group: number): string => {
+    if (!pipeline) return `group ${group}`;
+    const g = shaderGroups(pipeline)[group];
+    if (!g) return `group ${group}`;
+    const stage = stageName(pipeline, g.general ?? g.closestHit ?? g.anyHit ?? g.intersection);
+    return `group ${group}: ${g.type}${stage ? ` (${stage})` : ""}`;
+  };
+}
+
+/** A trace command's shader binding table regions, as records of the table. */
+export function renderBindingTable(parent: Widget, regions: TableRegion[], records: BindingTableRecord[] | undefined,
+                                   groupName: (group: number) => string, unresolvedNote: string): void {
   if (!regions.length) return;
   const grp = new collapsible(parent, { label: "Shader Binding Table", collapsed: false });
   for (const r of regions) {
@@ -174,27 +396,30 @@ export function renderBindingTable(parent: Widget, args: ArgObject | null, pipel
   }
   if (!records || !records.length) {
     new Div(grp.body, {
-      text: "The table's contents are not in this capture, so which shader group each record holds is not known. "
+      text: "The table's contents are not in this capture, so which shader each record holds is not known. "
         + "Capture again to read it back.",
       class: "text-muted font-sm",
     });
     return;
   }
-  // What each record actually runs. A handle matching no group is the interesting case: those rays
+  // What each record actually runs. A handle matching nothing is the interesting case: those rays
   // run the wrong shader or none, and nothing else in a capture would show it.
-  for (const r of records) {
-    const detail = r.group === null
-      ? `no group of this pipeline has this handle (${r.handle.slice(0, 16)}...)`
-      : `${pipeline ? groupName(pipeline, r.group) : `group ${r.group}`}${r.dataBytes ? `, ${r.dataBytes} bytes of record data` : ""}`;
-    row(grp.body, `${r.region} record ${r.index}`, detail);
-  }
+  for (const r of records) row(grp.body, `${r.region} record ${r.index}`, recordDetail(r, groupName));
   const unresolved = unresolvedRecords(records);
   if (unresolved.length) {
     new Div(grp.body, {
-      text: `${unresolved.length} record${unresolved.length === 1 ? " holds a handle" : "s hold handles"} this pipeline `
-        + "never gave out — a table filled from another pipeline, or from handles fetched before this one was "
-        + "rebuilt. Rays reaching those records run the wrong shader or none.",
+      text: `${unresolved.length} record${unresolved.length === 1 ? " holds a handle" : "s hold handles"} `
+        + unresolvedNote,
       class: "text-muted font-sm",
     });
   }
 }
+
+/** The note under a table whose records did not all resolve, per API. */
+export const VULKAN_UNRESOLVED_NOTE =
+  "this pipeline never gave out — a table filled from another pipeline, or from handles fetched before this one was "
+  + "rebuilt. Rays reaching those records run the wrong shader or none.";
+export const D3D12_UNRESOLVED_NOTE =
+  "this state object never gave out — a table filled from another state object, or from identifiers fetched before "
+  + "this one was rebuilt. Rays reaching those records run the wrong shader or none. A state object whose library "
+  + "exports everything can also have exports the capture never saw an identifier for.";

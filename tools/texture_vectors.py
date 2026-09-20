@@ -108,7 +108,7 @@ for name, size, fn, tol in [
     data = random_blocks(w * h // 16, size)
     add(name, w, h, data, fn(data, w, h), tol)
 
-# PVRTC: random blocks over the whole image. A texel's colour comes from four blocks, so this
+# PVRTC: random blocks over the whole image. A texel's color comes from four blocks, so this
 # exercises the wrap-around at the edges too.
 for name, two_bpp in [("VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG", True), ("VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG", False)]:
     blocks = (w // (8 if two_bpp else 4)) * (h // 4)

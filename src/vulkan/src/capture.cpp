@@ -985,7 +985,7 @@ void CaptureManager::SnapshotImageRead(DeviceData* dev, CommandRecorder* rec, Vk
 }
 
 uint8_t& CaptureManager::SubresourceState(VkImage image, const ImageInfo& img, VkImageAspectFlagBits aspect, uint32_t mip, uint32_t layer) {
-    // Per image: every subresource's state for its colour or depth aspect, then the same again for
+    // Per image: every subresource's state for its color or depth aspect, then the same again for
     // its stencil aspect, which a depth-stencil image loads, clears and copies apart from its depth.
     auto& states = _imageStates[(uint64_t)(uintptr_t)image];
     const size_t perAspect = (size_t)img.mipLevels * img.arrayLayers;

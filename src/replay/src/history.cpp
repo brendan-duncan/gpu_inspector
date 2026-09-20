@@ -140,7 +140,7 @@ VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant) {
     // A shader that asks for the depth and stencil tests before it never runs on a fragment they
     // killed, so the variant that measures the shader keeps them on: with them off, a shader that
     // discards what the depth test would have killed is reported as discarding it, which is the
-    // wrong answer to "why is this pixel not the colour this draw writes".
+    // wrong answer to "why is this pixel not the color this draw writes".
     const bool early = HistoryEarlyFragmentTests(pipelineId);
     VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, "pixel history", [&](PipelineCopy& p) {
         if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) return false;
@@ -1004,7 +1004,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         const ScissorPlace place = draw ? placeOf(pipeline) : ScissorPlace{};
         // The second replay adds no events: it finds the one this draw already has and breaks it
         // into fragments. The pass is still replayed around it, so each draw meets the depth,
-        // stencil and colour its own turn left.
+        // stencil and color its own turn left.
         if (_historyFragmentRound) {
             if (draw && place.inside) {
                 auto it = _historyEventIndex.find(std::make_tuple(pass.frame, pass.commandBuffer, pass.index, index));

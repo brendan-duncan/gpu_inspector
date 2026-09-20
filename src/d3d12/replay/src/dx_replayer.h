@@ -26,6 +26,7 @@
 
 #include "dx_counters.h"
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -271,6 +272,52 @@ private:
      */
     bool _inCounterRound = false;
 
+    // --- Ray tracing (dx_raytracing.cpp) -------------------------------------------------------
+    /** Where a captured acceleration structure lives: the buffer a build wrote it into, and where in it. */
+    struct StructurePlace {
+        uint64_t buffer = 0;
+        uint64_t offset = 0;
+    };
+    using Identifier = std::array<uint8_t, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES>;
+
+    /** Reads the capture's acceleration structures, so an instance's address can be remapped. */
+    void PrepareRaytracing();
+    /** This machine's address for a structure the captured process had at `captured`; 0 for one it has none of. */
+    D3D12_GPU_VIRTUAL_ADDRESS RemapStructureAddress(uint64_t captured) const;
+    ID3D12StateObject* CreateStateObject(uint64_t id, const vkreplay::JValue& object, const vkreplay::JValue& args);
+    /** This runtime's identifier per captured one, which is what makes a captured binding table replayable. */
+    void NoteStateObjectIdentifiers(uint64_t id, const vkreplay::JValue& object, ID3D12StateObject* stateObject);
+    /** A top level build's instances with their bottom level addresses remapped, in a buffer of the replay's own. */
+    D3D12_GPU_VIRTUAL_ADDRESS RemapInstances(const vkreplay::JValue& command, UINT count);
+    /** One binding table region rebuilt with this runtime's identifiers, in a buffer of the replay's own. */
+    D3D12_GPU_VIRTUAL_ADDRESS RemapBindingTable(const vkreplay::JValue& command, const char* region, UINT64 stride,
+                                                UINT64 size, uint64_t stateObjectId);
+    /** An upload buffer holding these bytes, released when the submission that read it has finished. */
+    D3D12_GPU_VIRTUAL_ADDRESS UploadTransient(const void* data, size_t size, const char* what);
+    /** Whether this GPU does ray tracing at all, fetching ID3D12Device5 the first time it is asked. */
+    bool RaytracingDevice();
+    ID3D12GraphicsCommandList4* RaytracingList(ID3D12GraphicsCommandList* list);
+    /** One of the five ray tracing commands; false with a reason when it was left out. */
+    bool IssueRaytracingCommand(const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
+                                ID3D12GraphicsCommandList* list, std::string& leftOut);
+    ID3D12Device5* _device5 = nullptr;
+    bool _noRaytracing = false;
+    std::unordered_map<uint64_t, StructurePlace> _structureAddresses;   // captured address -> where it lives
+    /**
+     * The buffers a captured acceleration structure lives in. A resource cannot be transitioned
+     * into D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE — it is created in that state
+     * and stays there — so these are made in it and left out of the state inference entirely.
+     */
+    std::unordered_set<uint64_t> _structureBuffers;
+    /** The structures the captured frame builds; one it does not is a structure the replay cannot fill. */
+    std::unordered_set<uint64_t> _structuresBuiltInFrame;
+    /** Structures already reported as unbuilt, so a frame of many instances says it once. */
+    std::unordered_set<uint64_t> _reportedUnbuilt;
+    /** Per state object id: this runtime's identifier for each identifier the capture recorded. */
+    std::unordered_map<uint64_t, std::unordered_map<std::string, Identifier>> _shaderIdentifiers;
+    /** The last SetPipelineState1, for a capture taken before a trace named its own state object. */
+    uint64_t _boundStateObject = 0;
+
     // --- Per-draw measurements and ablation (dx_measure.cpp) -----------------------------------
     struct MeasureState;
     bool PrepareMeasurements();
@@ -440,7 +487,7 @@ private:
     std::unordered_map<uint64_t, std::vector<InitialState>> _initial;
     std::unordered_map<uint64_t, const vkreplay::JValue*> _bufferData;
     bool _deviceLost = false;
-    // What the exported program shows in its window: the swap chain buffer the frame wrote last, else its last colour target.
+    // What the exported program shows in its window: the swap chain buffer the frame wrote last, else its last color target.
     std::unordered_set<uint64_t> _swapBuffers;
     uint64_t _lastSwapWrite = 0;
     uint64_t _lastColorTarget = 0;

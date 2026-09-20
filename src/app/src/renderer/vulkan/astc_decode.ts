@@ -3,9 +3,9 @@
 // partitions with their own endpoint modes, a weight grid smaller than the block that is
 // bilinearly stretched over it, and integer sequences quantized in trits and quints as well
 // as bits. Blocks decode to RGBA floats, row-major into `px`; HDR endpoint modes and invalid
-// blocks give the error colour the specification prescribes (magenta).
+// blocks give the error color the specification prescribes (magenta).
 
-/** 0..64 weight and 0..255 colour unquantization: the trit/quint forms need bit patterns. */
+/** 0..64 weight and 0..255 color unquantization: the trit/quint forms need bit patterns. */
 interface Quant { levels: number; bits: number; trits: boolean; quints: boolean }
 
 const q = (levels: number, bits: number, trits = false, quints = false): Quant => ({ levels, bits, trits, quints });
@@ -16,7 +16,7 @@ const WEIGHT_QUANT: (Quant | null)[] = [
   null, null, q(10, 1, false, true), q(12, 2, true), q(16, 4), q(20, 2, false, true), q(24, 3, true), q(32, 5),
 ];
 
-/** Colour quantization levels, ascending: the largest that fits the bits left is used. */
+/** Color quantization levels, ascending: the largest that fits the bits left is used. */
 const COLOR_QUANT: Quant[] = [
   q(6, 1, true), q(8, 3), q(10, 1, false, true), q(12, 2, true), q(16, 4), q(20, 2, false, true), q(24, 3, true), q(32, 5),
   q(40, 3, false, true), q(48, 4, true), q(64, 6), q(80, 4, false, true), q(96, 5, true), q(128, 7), q(160, 5, false, true),
@@ -247,7 +247,7 @@ function selectPartition(seed: number, x: number, y: number, count: number, smal
 }
 
 // ---------------------------------------------------------------------------------------------
-// Endpoints: the colour integers of a partition to two RGBA endpoints, by endpoint mode.
+// Endpoints: the color integers of a partition to two RGBA endpoints, by endpoint mode.
 
 function clamp255(v: number): number { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
@@ -353,7 +353,7 @@ export function decodeAstcBlock(s: DataView, block: number, bw: number, bh: numb
   const r = new Reader(bytes);
   const mode = r.at(0, 11);
 
-  // Void extent: one colour for the whole block, four 16-bit values from bit 64.
+  // Void extent: one color for the whole block, four 16-bit values from bit 64.
   if ((mode & 0x1ff) === 0x1fc) {
     const hdr = (mode >> 9) & 1;
     const c: number[] = [];
@@ -431,7 +431,7 @@ export function decodeAstcBlock(s: DataView, block: number, bw: number, bh: numb
   }
   const ccs = dual ? r.at(128 - weightBits - extraBits - 2, 2) : 0;
 
-  // The colour integers, at the largest quantization the remaining bits allow.
+  // The color integers, at the largest quantization the remaining bits allow.
   let intCount = 0;
   for (const cem of cems) intCount += ((cem >> 2) + 1) * 2;
   const colorBits = 128 - weightBits - extraBits - (dual ? 2 : 0) - colorStart;

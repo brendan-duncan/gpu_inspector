@@ -144,7 +144,7 @@ private:
     MTLRenderPassDescriptor* BuildRenderPass(const Decoder& d);
     /** `id<MTLxEncoder> encoderN = nil;`, outside the block that builds the pass and assigns it. */
     void DeclareEncoder(const std::string& type, const std::string& name);
-    /** Whether a pass descriptor's JSON names any colour attachment. */
+    /** Whether a pass descriptor's JSON names any color attachment. */
     bool HasColorAttachments(const Decoder& d) const;
     /** The exporter's name for an object, or "nil" when there is no export. */
     std::string ExportName(id object) const;

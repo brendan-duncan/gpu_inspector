@@ -28,7 +28,10 @@ set(SHADERS
     "cube.hlsl|vs_6_0|VSMain|cube_vs.cso"
     "cube.hlsl|ps_6_0|PSMain|cube_ps.cso"
     "heavy.hlsl|ps_6_0|PSMain|heavy_ps.cso"
-    "wave.hlsl|cs_6_0|CSMain|wave_cs.cso")
+    "wave.hlsl|cs_6_0|CSMain|wave_cs.cso"
+    # --ray-tracing: one DXIL library with every [shader(...)] export in it, which is what a DXR
+    # state object is built from. A library has no entry point of its own, so -E is empty.
+    "raytrace.hlsl|lib_6_3||raytrace.cso")
 set(CSO_OUTPUTS)
 foreach(spec ${SHADERS})
     string(REPLACE "|" ";" parts "${spec}")
@@ -36,12 +39,16 @@ foreach(spec ${SHADERS})
     list(GET parts 1 profile)
     list(GET parts 2 entry)
     list(GET parts 3 out)
+    set(entry_arg "")
+    if(entry)
+        set(entry_arg -E ${entry})
+    endif()
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${out}"
         # -Zi keeps the HLSL source and line information inside the DXIL container (the
         # inspector's Source view and line links); -Qembed_debug adds nothing to that, it only
         # silences dxc's warning about having no -Fd to write a PDB to instead.
-        COMMAND ${DXC} -T ${profile} -E ${entry} -Zi -Qembed_debug
+        COMMAND ${DXC} -T ${profile} ${entry_arg} -Zi -Qembed_debug
                 -Fo "${CMAKE_CURRENT_BINARY_DIR}/${out}" "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
         COMMENT "Compiling ${src} (${entry})"
@@ -49,9 +56,9 @@ foreach(spec ${SHADERS})
     list(APPEND CSO_OUTPUTS "${CMAKE_CURRENT_BINARY_DIR}/${out}")
 endforeach()
 
-add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl heavy.hlsl wave.hlsl ${CSO_OUTPUTS})
+add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl ${CSO_OUTPUTS})
 # Visual Studio would otherwise try to compile the .hlsl files with fxc itself.
-set_source_files_properties(cube.hlsl heavy.hlsl wave.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
+set_source_files_properties(cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
 # include/gpu_inspector.h, for --capture-at.
 target_include_directories(dxinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 target_link_libraries(dxinsp_triangle PRIVATE d3d12 dxgi dxguid)

@@ -47,7 +47,7 @@ export function overdrawCount(o: CapturedOverdraw, x: number, y: number): number
 }
 
 /**
- * The heat colour of a count: black for none, then blue, cyan, green, yellow, orange, red, magenta,
+ * The heat color of a count: black for none, then blue, cyan, green, yellow, orange, red, magenta,
  * and white from 33. The same ramp as vkinsp_replay's heatmaps (src/replay/src/main.cpp).
  */
 const RAMP: [number, number, number, number][] = [
@@ -55,7 +55,7 @@ const RAMP: [number, number, number, number][] = [
   [6, 240, 210, 0], [10, 250, 120, 0], [16, 220, 20, 20], [32, 240, 0, 200], [65535, 255, 255, 255],
 ];
 
-/** The ramp's steps as a legend: the counts each colour stands for. */
+/** The ramp's steps as a legend: the counts each color stands for. */
 export const OVERDRAW_LEGEND: { label: string; color: [number, number, number] }[] = RAMP.map(([upTo, r, g, b], i) => {
   const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
   const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;

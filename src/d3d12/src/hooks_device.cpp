@@ -20,6 +20,7 @@
 #include "formats.h"
 #include "image_readback.h"
 #include "json.h"
+#include "raytracing.h"
 #include "resources.h"
 #include "serialize.h"
 #include "shader_edit.h"
@@ -1038,6 +1039,8 @@ HRESULT STDMETHODCALLTYPE Hook_CreateStateObject(ID3D12Device14* This, const D3D
     Args a;
     WriteDescArg(a, "pDesc", pDesc);
     Tracker::Get().Track(stateObject, "ID3D12StateObject", "CreateStateObject", This, a.str());
+    // What it exports, the identifier of each and the libraries' code (raytracing.h).
+    NoteStateObject(stateObject, pDesc, nullptr);
     Log("CreateStateObject -> ID3D12StateObject %p", (void*)stateObject);
     return hr;
 }
@@ -1052,6 +1055,7 @@ HRESULT STDMETHODCALLTYPE Hook_AddToStateObject(ID3D12Device14* This, const D3D1
     WriteDescArg(a, "pAddition", pAddition);
     a.ref("pStateObjectToGrowFrom", pStateObjectToGrowFrom, "ID3D12StateObject");
     Tracker::Get().Track(stateObject, "ID3D12StateObject", "AddToStateObject", This, a.str());
+    NoteStateObject(stateObject, pAddition, pStateObjectToGrowFrom);
     Log("AddToStateObject -> ID3D12StateObject %p", (void*)stateObject);
     return hr;
 }

@@ -42,7 +42,11 @@ import { fetchBlob } from "./capture_file.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type PushConstantUpdate } from "./draw_state.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
-import { renderBindingTable, renderShaderGroups } from "./ray_tracing_view.js";
+import {
+  D3D12_UNRESOLVED_NOTE, VULKAN_UNRESOLVED_NOTE, renderBindingTable, renderShaderGroups,
+  boundStructure, shaderGroupViewOf, tableRegionsOf, vulkanGroupName,
+} from "./ray_tracing_view.js";
+import { d3d12TableRecords, traceStateObjectId } from "./d3d12/raytracing.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
@@ -195,7 +199,7 @@ export class CommandInfoView {
       const graphics = state.bindPoint === cmdSets.graphicsBindPoint;
       this._renderPipelineState(container, state);
       if (method.startsWith("vkCmdTraceRays")) {
-        if (state.pipeline) renderShaderGroups(container, state.pipeline);
+        if (state.pipeline) renderShaderGroups(container, shaderGroupViewOf(state.pipeline));
         // The table read back at the trace, matched to the pipeline's group handles, so a record
         // names the shader it runs rather than the bytes it holds (renderer/binding_table.ts).
         const data = this.panel.data;
@@ -210,7 +214,18 @@ export class CommandInfoView {
             return index < 0 ? null : db.blobData.get(`${o.id}:${index}`) ?? null;
           },
         });
-        renderBindingTable(container, cmd.args, state.pipeline, records);
+        renderBindingTable(container, tableRegionsOf(method, cmd.args), records, vulkanGroupName(state.pipeline),
+                           VULKAN_UNRESOLVED_NOTE);
+      } else if (method === "DispatchRays") {
+        // D3D12 names the state object on the trace rather than leaving it to be followed back to
+        // the last SetPipelineState1 (src/d3d12/src/raytracing.cpp), and a record resolves to an
+        // export name rather than to a group index.
+        const stateObject = db.getObject(traceStateObjectId(cmd));
+        if (stateObject) renderShaderGroups(container, shaderGroupViewOf(stateObject));
+        const data = this.panel.data;
+        const records = d3d12TableRecords({ command: cmd, stateObject, bytesOf: (id) => data.buffer(id)?.data ?? null });
+        renderBindingTable(container, tableRegionsOf(method, cmd.args), records, (g) => `group ${g}`,
+                           D3D12_UNRESOLVED_NOTE);
       }
       this._renderShaders(container, state, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
@@ -451,6 +466,16 @@ export class CommandInfoView {
    */
   private _renderD3D12PipelineState(line: (label: string) => Div, pipeline: VulkanObject, d: ArgObject): void {
     const db = this.db;
+    // A state object is bound where a pipeline state is and shows here, but it has no stages and no
+    // raster state: what it carries is DXIL libraries, and the groups view says what is in them.
+    if (pipeline.type === "ID3D12StateObject") {
+      new Span(line("Kind"), { text: `${fmt(d.Type).replace(/^D3D12_STATE_OBJECT_TYPE_/, "").toLowerCase().replace("_", " ")} state object` });
+      for (const b of pipeline.blobs) {
+        const row = line(`  ${b.name.replace(":", " ")}`);
+        new Span(row, { text: formatBytes(b.size), class: "text-muted font-sm" });
+      }
+      return;
+    }
     const kind = d3d12PipelineKind(pipeline);
     new Span(line("Kind"), { text: kind === "compute" ? "compute pipeline state" : "graphics pipeline state" });
     for (const b of pipeline.blobs) {
@@ -667,8 +692,7 @@ export class CommandInfoView {
           const bv = db.getObject(refId(d.bufferView));
           resourceText = bv ? bv.name : "(destroyed buffer view)";
         } else if (d.accelerationStructure !== undefined) {
-          const as = db.getObject(refId(d.accelerationStructure));
-          resourceText = as ? as.name : "(destroyed acceleration structure)";
+          resourceText = boundStructure(d.accelerationStructure, db).label;
         }
       }
       const isBuffer = !!d && d.buffer !== undefined;

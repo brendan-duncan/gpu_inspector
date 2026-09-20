@@ -67,7 +67,7 @@ public:
     static std::string FixedString(const char* s, size_t size);
     /** An array of strings as a local, or nullptr. */
     std::string Strings(const char* hint, const char* const* strings, size_t count);
-    /** A trailing comment reading `count` floats, for the bits of a clear colour. */
+    /** A trailing comment reading `count` floats, for the bits of a clear color. */
     static std::string FloatComment(const float* values, size_t count);
     /** A pNext expression, cast for a non-const pNext member. */
     static std::string PNextCast(const std::string& expr, bool constMember);

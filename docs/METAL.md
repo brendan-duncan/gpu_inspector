@@ -48,6 +48,11 @@ picked up with **Connect** (or `npm start -- --connect=<port>`):
 | `MTLINSP_PORT` | the port to connect on |
 | `MTLINSP_LOG` | optional: `1` logs the intercepted calls to the session's **Log** tab |
 
+`MTLINSP_PORT` has to be set and has to be free: unlike the Vulkan and Direct3D 12 libraries,
+this one neither steps to a free port nor answers `--list-targets`, so its port is typed rather
+than read off a list, and probing it would take the connection from an attached inspector. The
+two pieces that are missing are marked in `src/metal/src/transport.mm`.
+
 ## What works
 
 - **Object inspection** — the device, command queues, buffers, textures, libraries, and render and
@@ -57,7 +62,7 @@ picked up with **Connect** (or `npm start -- --connect=<port>`):
   as a precompiled `metallib`.
 - **Frame capture** — the frame's commands grouped by command buffer and pass, each draw with the
   pipeline that was bound for it, its decoded vertex and index buffers, and the pass's read-back
-  colour attachments. Captures save to the same `.gpucap` files and reopen on any platform.
+  color attachments. Captures save to the same `.gpucap` files and reopen on any platform.
 - **Validation** — ticking **Validation layer** in the launch dialog enables Metal's API and
   shader validation in the mode that logs a failure instead of aborting, and the messages are
   listed in the Inspect tab.

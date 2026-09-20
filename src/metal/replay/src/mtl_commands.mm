@@ -236,7 +236,7 @@ void MtlReplayer::DeclareEncoder(const std::string& type, const std::string& nam
     if (_x) _x->Global(type, name);
 }
 
-/** Whether the pass descriptor's JSON names any colour attachment. */
+/** Whether the pass descriptor's JSON names any color attachment. */
 bool MtlReplayer::HasColorAttachments(const Decoder& d) const {
     const JValue* colors = d.Get("colorAttachments");
     return colors && colors->IsArray() && colors->count;

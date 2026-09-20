@@ -29,13 +29,13 @@ export interface CapturedImageSource {
 }
 
 /**
- * A colour layer drawn over the image: the overdraw heatmap of the pass, in the capture's texture
- * view (capture_texture_view.ts). Pixels the overlay leaves transparent keep the image's own colour.
+ * A color layer drawn over the image: the overdraw heatmap of the pass, in the capture's texture
+ * view (capture_texture_view.ts). Pixels the overlay leaves transparent keep the image's own color.
  */
 export interface ImageOverlay {
   /** The overlay for the subresource shown, the image's size; null for none. */
   rgba(width: number, height: number, mip: number, layer: number): Uint8ClampedArray | null;
-  /** How much of the overlay's colour covers the image, 0 to 1. */
+  /** How much of the overlay's color covers the image, 0 to 1. */
   opacity(): number;
   /** What the overlay adds to the tooltip under the pointer. */
   lines?(x: number, y: number): string[];
@@ -173,7 +173,7 @@ export class ImageView {
         this._is3D = str(d.textureType) === MTL_TEXTURE_TYPE_3D;
         this._mipCount = Math.max(1, num(d.mipmapLevelCount) || 1);
         this._layerCount = this._is3D ? Math.max(1, num(d.depth) || 1) : Math.max(1, num(d.arrayLength) || 1);
-        // The capture library only reads colour back so far; a depth texture answers with an
+        // The capture library only reads color back so far; a depth texture answers with an
         // error rather than being mislabelled here.
         isDepth = false;
       } else if (d) {
@@ -316,7 +316,7 @@ export class ImageView {
       }
     } });
 
-    // What a picture of the image cannot show. A NaN clamps to some ordinary colour on screen, so
+    // What a picture of the image cannot show. A NaN clamps to some ordinary color on screen, so
     // "Auto" marks those wherever they are without being asked: an image that has them is already
     // wrong, and nothing else in a capture points at it. Clipping is opt-in, since a value outside
     // [0,1] is ordinary in an HDR target rather than a fault.
@@ -483,7 +483,7 @@ export class ImageView {
     if (!tex || !msg) return;
     const rgba = displayTexels(tex, this._display);
     const slice = this._slices ? Math.min(this._layer, this._sliceCount(msg) - 1) : 0;
-    // The overlay's colour over the image, where the overlay is not transparent.
+    // The overlay's color over the image, where the overlay is not transparent.
     const overlay = this._overlay?.rgba(tex.width, tex.height, this._mip, slice) ?? null;
     if (overlay && overlay.length >= rgba.length) {
       const strength = Math.min(1, Math.max(0, this._overlay!.opacity()));
@@ -496,7 +496,7 @@ export class ImageView {
       }
     }
     // The marks go on last and opaque: they are there to be seen, not to be blended into the very
-    // colour that was hiding them.
+    // color that was hiding them.
     if (this._highlight !== "off") {
       const marks = markTexels(tex, this._highlight === "clip");
       if (marks) {

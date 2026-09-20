@@ -11,28 +11,28 @@ constant bool  kEnable [[function_constant(2)]];
 constant float3 kBias  [[function_constant(3)]];
 
 struct Uniforms {
-    float4 colour;
+    float4 color;
 };
 
 kernel void specialized(device float *out [[buffer(0)]],
                         constant Uniforms &u [[buffer(1)]],
                         uint i [[thread_position_in_grid]]) {
-    float3 colour = u.colour.rgb;
+    float3 color = u.color.rgb;
     if (kEnable) {
-        colour = mix(colour, float3(1.0f), kAmount);
+        color = mix(color, float3(1.0f), kAmount);
     }
     switch (kMode) {
-        case 1: colour = colour.bgr; break;
-        case 2: colour = 1.0f - colour; break;
+        case 1: color = color.bgr; break;
+        case 2: color = 1.0f - color; break;
         default: break;
     }
     // A constant the application may not have set at all: the shader asks before reading it.
     if (is_function_constant_defined(kBias)) {
-        colour += kBias;
+        color += kBias;
     }
-    out[0] = colour.r;
-    out[1] = colour.g;
-    out[2] = colour.b;
+    out[0] = color.r;
+    out[1] = color.g;
+    out[2] = color.b;
     out[3] = is_function_constant_defined(kMode) ? 1.0f : 0.0f;
     out[4] = float(i);
 }

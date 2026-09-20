@@ -293,7 +293,11 @@ ID3D12Resource* DxReplayer::CreateResource(uint64_t id, const D3D12_HEAP_PROPERT
     // A buffer in an upload heap is born readable and one in a read-back heap a copy's destination;
     // everything else starts in COMMON and is moved to where the frame expects it (MoveToInitialStates).
     const D3D12_RESOURCE_STATES state = heap.Type == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ
-                                      : heap.Type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COMMON;
+                                      : heap.Type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
+                                      // A buffer a build wrote an acceleration structure into: that state
+                                      // cannot be reached by a barrier, only by creation (dx_raytracing.cpp).
+                                      : _structureBuffers.count(id) ? D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE
+                                      : D3D12_RESOURCE_STATE_COMMON;
     // A clear value is only legal on a render target or a depth stencil.
     const bool clearable = (desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0 &&
                            desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -460,6 +464,11 @@ void DxReplayer::CreateObject(const JValue& o) {
         return skip("the frame does not need it to run again");
     } else if (type == "ID3D12Heap") {
         return skip("a resource placed in it gets memory of its own");
+    } else if (type == "ID3D12RaytracingAccelerationStructure") {
+        // Not a D3D12 object at all: the capture library mints one per address a build wrote to, so
+        // the UI has something to hang a build on (src/d3d12/src/raytracing.h). What the replay
+        // needs of it is the address, which PrepareRaytracing has already read.
+        return skip("an acceleration structure is a range in a buffer, which the replay makes with that buffer");
     } else if (type == "ID3D12CommandQueue") {
         D3D12_COMMAND_QUEUE_DESC desc{};
         d.Struct("pDesc", desc);
@@ -582,6 +591,16 @@ void DxReplayer::CreateObject(const JValue& o) {
             _report->objectsSkipped++;
         }
         return;
+    } else if (type == "ID3D12StateObject") {
+        made = CreateStateObject(id, o, a);
+        if (made) {
+            _objects[id] = made;
+            _created.push_back(made);
+            _report->objectsCreated++;
+        } else {
+            _report->objectsSkipped++;
+        }
+        return;
     } else if (type == "ID3D12CommandSignature") {
         D3D12_COMMAND_SIGNATURE_DESC desc{};
         d.Struct("pDesc", desc);
@@ -639,6 +658,8 @@ void DxReplayer::CreateObject(const JValue& o) {
 void DxReplayer::NoteUse(uint64_t resourceId, uint32_t subresource, D3D12_RESOURCE_STATES state, bool writes) {
     Resource* r = ResourceOf(resourceId);
     if (!r || r->heapType != D3D12_HEAP_TYPE_DEFAULT) return;
+    // An acceleration structure's buffer is born in its one state and may never leave it.
+    if (_structureBuffers.count(resourceId)) return;
     auto& initial = _initial[resourceId];
     initial.resize(r->states.size());
     for (uint32_t i = 0; i < initial.size(); ++i) {
@@ -774,6 +795,32 @@ void DxReplayer::ComputeInitialStates() {
             }
         } else if (m == "SetPredication") {
             NoteUse(IdOf(args->Get("pBuffer")), UINT_MAX, D3D12_RESOURCE_STATE_PREDICATION, false);
+        } else if (m == "BuildRaytracingAccelerationStructure") {
+            // A structure's buffer lives in RAYTRACING_ACCELERATION_STRUCTURE and never leaves it,
+            // and nothing in a frame transitions it: the state is set once, when it is created.
+            // Without this the build's destination is still in COMMON and the runtime rejects it.
+            const JValue* desc = args->Get("pDesc");
+            if (desc && !desc->IsNull()) {
+                address(desc->Get("DestAccelerationStructureData"), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, true);
+                address(desc->Get("SourceAccelerationStructureData"), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, false);
+                address(desc->Get("ScratchAccelerationStructureData"), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, true);
+                const JValue* inputs = desc->Get("Inputs");
+                const JValue* geometries = inputs ? inputs->Get("pGeometryDescs") : nullptr;
+                for (uint32_t k = 0; geometries && geometries->IsArray() && k < geometries->count; ++k) {
+                    const JValue* tri = geometries->items[k].Get("Triangles");
+                    if (!tri || tri->IsNull()) continue;
+                    const JValue* vertices = tri->Get("VertexBuffer");
+                    address(vertices ? vertices->Get("StartAddress") : nullptr, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, false);
+                    address(tri->Get("IndexBuffer"), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, false);
+                    address(tri->Get("Transform3x4"), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, false);
+                }
+            }
+        } else if (m == "CopyRaytracingAccelerationStructure") {
+            address(args->Get("DestAccelerationStructureData"), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, true);
+            address(args->Get("SourceAccelerationStructureData"), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, false);
+        } else if (m == "EmitRaytracingAccelerationStructurePostbuildInfo") {
+            const JValue* desc = args->Get("pDesc");
+            if (desc && !desc->IsNull()) address(desc->Get("DestBuffer"), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, true);
         }
     }
 }
@@ -783,6 +830,9 @@ D3D12_RESOURCE_STATES DxReplayer::StateOf(const Resource& r, uint32_t subresourc
 }
 
 void DxReplayer::Transition(ID3D12GraphicsCommandList* list, Resource& r, uint32_t subresource, D3D12_RESOURCE_STATES to, const char* listName) {
+    // An acceleration structure's buffer stays in the state it was created in; a barrier out of it
+    // is rejected outright, and nothing in a frame asks for one.
+    if (_structureBuffers.count(IdOfResource(r.resource))) return;
     // One barrier for the whole resource when every subresource is in one state, else one each.
     const bool whole = subresource == UINT_MAX && std::all_of(r.states.begin(), r.states.end(), [&](D3D12_RESOURCE_STATES s) { return s == r.states[0]; });
     std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -942,12 +992,12 @@ void DxReplayer::NoteWrite(uint64_t resource, bool colorTarget) {
 void DxReplayer::EmitFrameEnd() {
     if (!_x) return;
     // What the window shows: the swap chain buffer the frame wrote last, which is what it presented;
-    // a frame without one (a renderer that never presents) shows its last colour target.
+    // a frame without one (a renderer that never presents) shows its last color target.
     const uint64_t output = _lastSwapWrite ? _lastSwapWrite : _lastColorTarget;
     Resource* r = ResourceOf(output);
     if (r) {
         _x->FrameOutput(_x->NameOf(r->resource), StateText(StateOf(*r, 0)),
-                        std::string(_lastSwapWrite ? "the swap chain buffer the frame wrote last" : "the frame's last colour target (it writes no swap chain buffer)") +
+                        std::string(_lastSwapWrite ? "the swap chain buffer the frame wrote last" : "the frame's last color target (it writes no swap chain buffer)") +
                             ", resource " + std::to_string(output) + ", in the state the frame leaves it in.");
     }
     // The restore. An allocator is reset before the lists recorded from it are recorded again (every
@@ -1052,6 +1102,13 @@ void DxReplayer::ApplyBufferData(const Group& group) {
         const JValue& c = commands->items[i];
         if (const JValue* list = c.Get("bufferData"); list && list->IsArray())
             for (uint32_t k = 0; k < list->count; ++k) apply(list->items[k].Uint());
+        // What an acceleration structure build read: the ids are under their field names rather
+        // than in a flat list, because the UI tells a vertex buffer from an index buffer by them
+        // (src/d3d12/src/raytracing.cpp). A build reading uninitialized vertices makes a structure
+        // nothing ever hits, which is indistinguishable from a correct replay of an empty scene.
+        if (const JValue* list = c.Get("buildData"); list && list->IsArray())
+            for (uint32_t k = 0; k < list->count; ++k)
+                if (const JValue* id = list->items[k].Get("capture")) apply(id->Uint());
         const JValue* snapshot = c.Get("descriptors");
         const JValue* sets = snapshot ? snapshot->Get("sets") : nullptr;
         for (uint32_t s = 0; sets && sets->IsArray() && s < sets->count; ++s) {
@@ -1095,9 +1152,24 @@ bool DxReplayer::WriteDescriptor(uint64_t heapId, uint32_t index, D3D12_DESCRIPT
         _device->CreateConstantBufferView(&desc, handle);
         if (_x) _x->Block(DxExporter::Frame, "", [&](Source& s) { s.Line("device->CreateConstantBufferView(&" + EmitStruct(s, "cbv", desc) + ", " + handleText + ");"); });
     } else {
-        if (record.Get("accelerationStructure")) {
-            Problem(_env.where + ": a ray tracing acceleration structure's view is not replayed yet");
-            return false;
+        if (const JValue* scene = record.Get("accelerationStructure")) {
+            // The one view with no resource behind it: it names a top level by the address a build
+            // wrote it to, which this machine has at another address (dx_raytracing.cpp).
+            const JValue* number = scene->Get("address");
+            const uint64_t captured = number && number->IsString() ? strtoull(std::string(number->Str()).c_str(), nullptr, 0) : 0;
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+            desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+            desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            desc.RaytracingAccelerationStructure.Location = RemapStructureAddress(captured);
+            if (!desc.RaytracingAccelerationStructure.Location) {
+                Problem(_env.where + ": it binds an acceleration structure the capture holds no build of");
+                return false;
+            }
+            _device->CreateShaderResourceView(nullptr, &desc, handle);
+            if (_x) _x->Block(DxExporter::Frame, "", [&](Source& s) {
+                s.Line("device->CreateShaderResourceView(nullptr, &" + EmitStruct(s, "srv", desc) + ", " + handleText + ");");
+            });
+            return true;
         }
         const uint64_t resourceId = IdOf(record.Get("buffer")) ? IdOf(record.Get("buffer")) : IdOf(record.Get("resource"));
         Resource* r = ResourceOf(resourceId);
@@ -1739,7 +1811,10 @@ bool DxReplayer::IssueCommand(uint32_t index, const std::string& m, const JValue
         emit(method("ExecuteBundle"), [&](Source& s) { return s.Object(bundle); });
     } else if (m == "DispatchRays" || m == "BuildRaytracingAccelerationStructure" || m == "CopyRaytracingAccelerationStructure" ||
                m == "EmitRaytracingAccelerationStructurePostbuildInfo" || m == "SetPipelineState1") {
-        return leftOut("ray tracing does not replay yet: a build and a trace name what they read by GPU address and by shader identifier");
+        // dx_raytracing.cpp: the addresses decode like any other, but the bytes inside an instance
+        // buffer and inside a binding table are the captured process's and have to be rewritten.
+        std::string why;
+        if (!IssueRaytracingCommand(m, command, &args, list, why)) return leftOut(why);
     } else {
         return leftOut("the replay does not issue it yet");
     }
@@ -2249,6 +2324,7 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
     if (const JValue* buffers = capture.Buffers(); buffers && buffers->IsArray())
         for (uint32_t i = 0; i < buffers->count; ++i)
             if (const JValue* info = buffers->items[i].Get("info")) _bufferData[info->Get("id")->Uint()] = &buffers->items[i];
+    PrepareRaytracing();
     CreateObjects();
     ComputeInitialStates();
     UploadTextures();

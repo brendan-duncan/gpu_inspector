@@ -128,7 +128,9 @@ elseif(UNIX AND NOT APPLE)
     target_link_libraries(${LAYER_LIB} PRIVATE Threads::Threads)
 endif()
 if(WIN32)
-    target_link_libraries(${LAYER_LIB} PRIVATE ws2_32 dbghelp)
+    # iphlpapi: the listening-port table, which says whether another inspected application already
+    # serves the port before the layer binds it (target_probe.h, PortIsServed).
+    target_link_libraries(${LAYER_LIB} PRIVATE ws2_32 iphlpapi dbghelp)
 else()
     target_link_libraries(${LAYER_LIB} PRIVATE ${CMAKE_DL_LIBS})
 endif()

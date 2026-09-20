@@ -3,7 +3,7 @@
 //   displayTexels(): floats -> RGBA8 for the canvas, applying the display settings (channel
 //                    selection, exposure, auto range, sRGB encoding of linear data).
 // Covers the color and depth formats, the BC1-BC7 block formats, ETC2 / EAC, ASTC (LDR
-// endpoints; HDR blocks show the error colour), PVRTC1 and Metal's packed 422 and extended
+// endpoints; HDR blocks show the error color), PVRTC1 and Metal's packed 422 and extended
 // range formats.
 import type { ImageDataInfo } from "../../shared/protocol.js";
 import { decodeAstcBlock } from "./astc_decode.js";
@@ -132,10 +132,10 @@ export function channelHistogram(tex: TexelData, channel: number, buckets = 64,
 export type TexelMark = "nan" | "posInf" | "negInf" | "below" | "above";
 
 /**
- * Marks every texel that is not an ordinary value in range, as a colour over the image.
+ * Marks every texel that is not an ordinary value in range, as a color over the image.
  *
  * NaN and infinity are always marked when `clip` is false as well: they are the ones that cannot be
- * seen by looking, since both land on some ordinary colour once clamped to eight bits. Clipping is
+ * seen by looking, since both land on some ordinary color once clamped to eight bits. Clipping is
  * offered beside them because "below zero" and "above one" are the other two states a picture
  * cannot show, and they are what a blown-out or negative-valued target looks like.
  */
@@ -493,7 +493,7 @@ const BLOCK_FORMATS: Record<string, BlockFormat> = {
   VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
   VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
   // Packed 4:2:2: two texels share their chroma. Shown as the stored Y, Cb and Cr values in
-  // the G, B and R channels, the way Metal's sampler returns them, without a colour conversion.
+  // the G, B and R channels, the way Metal's sampler returns them, without a color conversion.
   VK_FORMAT_G8B8G8R8_422_UNORM: { bytes: 4, width: 2, height: 1, channels: 3, names: ["R (Cr)", "G (Y)", "B (Cb)"], decode: (s, b, px) => {
     const g0 = s.getUint8(b) / 255, cb = s.getUint8(b + 1) / 255, g1 = s.getUint8(b + 2) / 255, cr = s.getUint8(b + 3) / 255;
     px[0] = cr; px[1] = g0; px[2] = cb; px[3] = 1; px[4] = cr; px[5] = g1; px[6] = cb; px[7] = 1;
@@ -505,7 +505,7 @@ const BLOCK_FORMATS: Record<string, BlockFormat> = {
 };
 
 // ASTC: every footprint, in UNORM, sRGB and (HDR profile) float flavours. The float flavour
-// decodes the LDR blocks of an HDR image; its HDR blocks show the error colour.
+// decodes the LDR blocks of an HDR image; its HDR blocks show the error color.
 for (const [w, h] of [[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]]) {
   const ldr = (srgb: boolean): BlockFormat => ({ bytes: 16, width: w, height: h, channels: 4, decode: (s, b, px) => decodeAstcBlock(s, b, w, h, px, srgb) });
   BLOCK_FORMATS[`VK_FORMAT_ASTC_${w}x${h}_UNORM_BLOCK`] = ldr(false);

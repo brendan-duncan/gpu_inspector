@@ -279,7 +279,7 @@ export function texelValues(format: string, bytes: Uint8Array, depth = false): n
   return tex ? Array.from(tex.values.slice(0, tex.channels)) : null;
 }
 
-/** A colour texel as a CSS colour, for a swatch; null for depth or an unknown format. */
+/** A color texel as a CSS color, for a swatch; null for depth or an unknown format. */
 export function texelCss(format: string, bytes: Uint8Array): string | null {
   if (!bytes.byteLength || !format) return null;
   const rgba = decodeImage(texelInfo(format, false), bytes);

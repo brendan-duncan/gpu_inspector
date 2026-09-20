@@ -131,7 +131,7 @@ wraps the driver's. Each forwards to the next, every level is hooked, and one `p
 from the application arrived three times — the frame counter advanced three times a frame and the
 command counts landed on whichever observation drained them. `Reentry` in `swizzle.h` records
 only the outermost call, which is the application's; the rest are Metal talking to itself. Every
-level still forwards, so behaviour is unchanged. The library's own Metal calls — read-back blits,
+level still forwards, so behavior is unchanged. The library's own Metal calls — read-back blits,
 staging buffers — are issued from inside a hook and so are nested by construction; `Internal`
 marks the ones issued from elsewhere (the image read-back on the transport thread) so that
 neither the tracker nor the capture takes them for the application's.
@@ -330,7 +330,7 @@ is reported as `originalSize` so the UI can say a range was truncated.
 
 ## Render target read-back
 
-A pass's colour and depth attachments are blitted into staging buffers when the application ends
+A pass's color and depth attachments are blitted into staging buffers when the application ends
 its encoder, and sent as `CaptureTextureFrames` plus a `CaptureTextureData` binary frame each.
 The Capture panel shows the frame the application actually drew.
 
@@ -682,7 +682,7 @@ different reasons:
   a format the read-back cannot handle still says what it is.
 * **The protocol's name** — `VK_FORMAT_B8G8R8A8_UNORM` — travels with pixel data, because the
   UI's decoder is built around those names and an identical memory layout can reuse all of it.
-  135 formats are mapped: the colour and depth formats, BC1 through BC7, ETC2 and EAC, every
+  135 formats are mapped: the color and depth formats, BC1 through BC7, ETC2 and EAC, every
   ASTC footprint in its LDR, sRGB and HDR flavour, PVRTC, and the packed 4:2:2 pair. The two
   extended-range families have no Vulkan spelling, so they travel under Metal's own names and
   the UI decodes them under those. Vertex formats get the same pair, for the same reason.
@@ -704,8 +704,8 @@ The decoders themselves live on the UI side, next to the ones the Vulkan layer f
 (`src/app/src/renderer/vulkan/`), and are checked against an independent decoder over random blocks
 (`tools/texture_vectors.py` writes the vectors, `src/app/test/texture_decode.test.js` compares).
 Signed BC6H has no trustworthy reference to compare against, so it is pinned by blocks whose
-result the specification fixes exactly. An ASTC block with HDR endpoints shows the error colour
-the specification prescribes, magenta, rather than a wrong colour.
+result the specification fixes exactly. An ASTC block with HDR endpoints shows the error color
+the specification prescribes, magenta, rather than a wrong color.
 
 ## Library contents
 
@@ -807,7 +807,7 @@ captured, with the recorded calls overdraw uses (above).
   captures the next frame. `capture_frames` with `pixelHistory` does the same from the MCP server. The next
   frame renders into a new drawable, so a drawable's texture id, or one no longer alive, follows
   whichever drawable the captured frame renders into.
-* **Where it starts.** Every pass whose colour attachment is that texture at that level and slice
+* **Where it starts.** Every pass whose color attachment is that texture at that level and slice
   gets copies of all its attachments, the library's own textures of the same formats and size.
   In the render-encoder hook, before the application's encoder exists, the pixel of each attachment
   that loads is copied into them.
@@ -823,7 +823,7 @@ captured, with the recorded calls overdraw uses (above).
 
   Nothing is written by those six. Cull mode and depth-stencil state are encoder state in Metal, so
   only two pipeline copies are needed: one with a fragment function that does nothing, and the
-  application's own with colour writes off. The depth-stencil copies come from the descriptors
+  application's own with color writes off. The depth-stencil copies come from the descriptors
   kept since each state's creation, with writes off and stencil operations `Keep`. Then the draw
   itself, with the application's pipeline and state, and the pixel is read again.
 * **Results.** Everything made is kept until the command buffer completes. At the end of the
@@ -864,7 +864,7 @@ to name, and a decoder needs the other direction.
 
 ## Not done
 
-Stencil attachments are not read back (colour, depth and sampled textures are), and only the pixel
+Stencil attachments are not read back (color, depth and sampled textures are), and only the pixel
 formats in `PixelFormatDetails` are supported. Tessellation, object, mesh and tile stages are not
 debugged, and a function constant that selects whether an entry point's *argument* exists
 (`[[function_constant(isEnabled)]]` on a parameter) is not honoured — the argument is bound

@@ -84,9 +84,9 @@ id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char *name, NSString
 enum class PipelineVariant : int {
     /** Overdraw: the counting fragment function into one R16Float target blended ONE + ONE, one sample. */
     OverdrawCount = 0,
-    /** Pixel history: `fragment` (writes nothing) in place of the fragment function, no colour writes, no alpha to coverage. */
+    /** Pixel history: `fragment` (writes nothing) in place of the fragment function, no color writes, no alpha to coverage. */
     HistoryCover = 1,
-    /** Pixel history: the application's fragment function, no colour writes. */
+    /** Pixel history: the application's fragment function, no color writes. */
     HistoryNoWrite = 2,
 };
 
@@ -120,7 +120,7 @@ enum class DepthStencilVariant : int {
  */
 id DepthStencilCopy(id<MTLDevice> device, id state, DepthStencilVariant variant);
 
-/** The colour attachment of a pass that renders to the pixel the capture follows, or -1. */
+/** The color attachment of a pass that renders to the pixel the capture follows, or -1. */
 int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor);
 
 /** Before the pass begins: copies of its attachments at the pixel, for the history to start from. */

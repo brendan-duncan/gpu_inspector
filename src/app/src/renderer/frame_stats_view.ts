@@ -114,7 +114,7 @@ export interface GpuTrackInput {
   originTicks: number | null;
 }
 
-/** The colour of a span, which is the colour "Where the CPU went" already uses for that kind. */
+/** The color of a span, which is the color "Where the CPU went" already uses for that kind. */
 const SPAN_COLOR: Record<string, string> = {
   gpuWait: "#4a8db8", displayWait: "#a0a0a0", work: "#5fd08a", gpu: "#8a6fd0", compile: "#d07a3a",
 };
@@ -327,7 +327,7 @@ function renderTimelineTracks(root: Widget, input: TimelineInput): void {
     e.preventDefault();
   });
 
-  // The scrub bar moves the view without touching the lanes: a click or a drag centres it there.
+  // The scrub bar moves the view without touching the lanes: a click or a drag centers it there.
   const scrubTo = (clientX: number): void => {
     const rect = scrub.element.getBoundingClientRect();
     const at = t.spanMs * Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));

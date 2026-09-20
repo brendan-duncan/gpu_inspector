@@ -303,7 +303,7 @@ export class MeshPreview {
     gl.enable(gl.DEPTH_TEST);
     gl.useProgram(program);
 
-    // The eye orbits the mesh's centre, from +z at rest.
+    // The eye orbits the mesh's center, from +z at rest.
     const c = this._center;
     const d = this._distance;
     const eye = [

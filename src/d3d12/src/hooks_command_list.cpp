@@ -15,6 +15,7 @@
 #include "descriptors.h"
 #include "json.h"
 #include "overdraw.h"
+#include "raytracing.h"
 #include "resources.h"
 #include "serialize.h"
 #include "shader_edit.h"
@@ -564,6 +565,11 @@ void STDMETHODCALLTYPE Hook_DispatchRays(List* This, const D3D12_DISPATCH_RAYS_D
     Args args;
     if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
     rec->Record("DispatchRays", args.str());
+    // The table's contents, which is the only thing that says which shader each record runs.
+    if (pDesc) {
+        const D3D12_DISPATCH_RAYS_DESC desc = *pDesc;
+        rec->SetSnapshotOnLast([desc](CommandRecorder* on) { return NoteDispatchRays(on, desc); });
+    }
     Cap().EndDrawQueries(rec, queries, true);
 }
 
@@ -1108,6 +1114,8 @@ void STDMETHODCALLTYPE Hook_SetPipelineState1(List* This, ID3D12StateObject* pSt
     Args args;
     args.ref("pStateObject", pStateObject, "ID3D12StateObject");
     rec->Record("SetPipelineState1", args.str());
+    // A trace's binding table holds this state object's shader identifiers and no other's.
+    NoteBoundStateObject(rec, pStateObject);
 }
 
 void STDMETHODCALLTYPE Hook_SetProgram(List* This, const D3D12_SET_PROGRAM_DESC* pDesc) {
@@ -1755,6 +1763,12 @@ void STDMETHODCALLTYPE Hook_BuildRaytracingAccelerationStructure(List* This, con
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, pDesc, NumPostbuildInfoDescs, pPostbuildInfoDescs);
+    // The structure this wrote and what it was built from (raytracing.h), whether or not a capture
+    // is recording: a bottom level is built once, usually before any capture, and the object has to
+    // exist for a later top level's instances to resolve to it. The read-back of the inputs is what
+    // needs a recorder, and only happens when there is one.
+    std::string built;
+    if (pDesc) built = NoteAccelerationStructureBuild(rec, *pDesc, DeviceOf(This));
     if (!rec) return;
     Args args;
     if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
@@ -1764,6 +1778,7 @@ void STDMETHODCALLTYPE Hook_BuildRaytracingAccelerationStructure(List* This, con
     for (UINT i = 0; pPostbuildInfoDescs && i < NumPostbuildInfoDescs; ++i) WritePostbuildInfo(w, pPostbuildInfoDescs[i]);
     w.EndArray();
     rec->Record("BuildRaytracingAccelerationStructure", args.str());
+    if (!built.empty()) rec->SetExtraOnLast(std::move(built));
 }
 
 void STDMETHODCALLTYPE Hook_EmitRaytracingAccelerationStructurePostbuildInfo(List* This, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* pDesc, UINT NumSourceAccelerationStructures, const D3D12_GPU_VIRTUAL_ADDRESS* pSourceAccelerationStructureData) {
@@ -1789,6 +1804,8 @@ void STDMETHODCALLTYPE Hook_CopyRaytracingAccelerationStructure(List* This, D3D1
     CommandRecorder* rec = Rec(This);
     CommandScope scope(rec);
     orig(This, DestAccelerationStructureData, SourceAccelerationStructureData, Mode);
+    // As for a build: the destination is a structure whether or not anything is recording.
+    NoteAccelerationStructureCopy(DestAccelerationStructureData, SourceAccelerationStructureData, Mode, DeviceOf(This));
     if (!rec) return;
     Args args;
     args.address("DestAccelerationStructureData", DestAccelerationStructureData)

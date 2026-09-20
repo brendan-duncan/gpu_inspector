@@ -3,13 +3,13 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <iphlpapi.h>
 
 #include "transport.h"
 
 #include "cpu_sampler.h"
 
 #include "common.h"
+#include "target_probe.h"
 
 #include <atomic>
 #include <chrono>
@@ -19,11 +19,12 @@
 #include <deque>
 #include <mutex>
 #include <thread>
-#include <vector>
 
 namespace dxinsp {
 
-static const uint16_t kDefaultPort = 47531;
+static const uint16_t kDefaultPort = gpuinsp::kFirstPort;
+/** How long a new connection has to say whether it is a probe or a client (target_probe.h). */
+static const int kHandshakeTimeoutMs = 2000;
 
 struct Transport::Impl {
     std::thread listener;
@@ -154,36 +155,38 @@ struct Transport::Impl {
         return false;
     }
 
-    /**
-     * Whether something is already listening on this port, which SO_REUSEADDR hides: on Windows
-     * that option lets a second listener bind the same address, so bind() succeeds and the two
-     * servers share the port, with a client reaching whichever the stack happens to route to.
-     * Found for real twice: a Unity player beside a leftover test application, where the inspector
-     * connected to the wrong one and reported its frame; and a Vulkan application whose driver
-     * makes a D3D12 device, where both capture libraries live in the one process.
-     *
-     * The table is read rather than probed with a connect. A connect would be answered by the
-     * server we are looking for, and these servers take one client at a time, so probing would
-     * throw the inspector off its own connection. It also tells a live listener from a closed
-     * connection still in TIME_WAIT, which a bind conflict cannot (that is what BindWithRetry is
-     * for) and which SO_REUSEADDR is there to allow.
-     */
-    static bool PortIsServed(uint16_t p) {
-        ULONG size = 0;
-        if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER) {
-            return false;   // Unreadable: bind anyway, which is what this did before.
+    static void SetRecvTimeout(SOCKET s, int ms) {
+        DWORD t = (DWORD)ms;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&t, sizeof(t));
+    }
+
+    /** One frame, or false when the peer said nothing in time, closed, or framed it badly. */
+    static bool RecvFrame(SOCKET s, std::string& payload, uint8_t& kind, int timeoutMs) {
+        SetRecvTimeout(s, timeoutMs);
+        uint8_t hdr[5];
+        bool ok = RecvAll(s, (char*)hdr, 5);
+        if (ok) {
+            const uint32_t len = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+            kind = hdr[4];
+            payload.assign(len, '\0');
+            ok = len == 0 || RecvAll(s, payload.data(), len);
         }
-        std::vector<char> buffer(size);
-        if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) return false;
-        const MIB_TCPTABLE_OWNER_PID* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            const MIB_TCPROW_OWNER_PID& row = table->table[i];
-            // The table holds the port in network order in the low half of the field.
-            if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(p)) continue;
-            // Ours binds the loopback address; a wildcard listener covers it too.
-            if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0) return true;
-        }
-        return false;
+        SetRecvTimeout(s, 0);   // back to blocking, for the receiver thread
+        return ok;
+    }
+
+    /** A JSON frame written straight to a socket, bypassing the queue: the probe is not a client. */
+    static bool SendJsonTo(SOCKET s, const std::string& json) {
+        std::string frame;
+        frame.reserve(json.size() + 5);
+        const uint32_t len = (uint32_t)json.size();
+        frame.push_back((char)(len & 0xff));
+        frame.push_back((char)((len >> 8) & 0xff));
+        frame.push_back((char)((len >> 16) & 0xff));
+        frame.push_back((char)((len >> 24) & 0xff));
+        frame.push_back((char)0);
+        frame += json;
+        return SendAll(s, frame.data(), frame.size());
     }
 
     void ListenerLoop() {
@@ -191,18 +194,18 @@ struct Transport::Impl {
         // A port the user named is used as given: moving off it would leave whoever chose it
         // waiting on the wrong one. Only the default may step aside, so two applications started
         // by hand are both inspectable.
-        if (PortIsServed(port)) {
+        if (gpuinsp::PortIsServed(port)) {
             if (portFromConfig) {
                 LogAlways("127.0.0.1:%u is already served by another inspected application; "
                           "set DXINSP_PORT to a free port for this one", port);
                 return;
             }
             uint16_t free = 0;
-            for (uint16_t candidate = port + 1; candidate < port + 9 && candidate > port; ++candidate) {
-                if (!PortIsServed(candidate)) { free = candidate; break; }
+            for (uint16_t candidate = (uint16_t)(port + 1); candidate <= gpuinsp::kLastPort; ++candidate) {
+                if (!gpuinsp::PortIsServed(candidate)) { free = candidate; break; }
             }
             if (!free) {
-                LogAlways("127.0.0.1:%u and the eight ports above it are all served by other "
+                LogAlways("127.0.0.1:%u and the ports above it are all served by other "
                           "inspected applications; set DXINSP_PORT to a free port", port);
                 return;
             }
@@ -228,13 +231,32 @@ struct Transport::Impl {
         while (!stop) {
             SOCKET s = accept(listenSock, nullptr, nullptr);
             if (s == INVALID_SOCKET) continue;
+            int nodelay = 1;
+            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+
+            // A connection is not a client until its first frame says so (target_probe.h): a
+            // probe is answered and dropped, leaving whoever is attached where they are, and a
+            // connection that says nothing at all is dropped rather than taking the session from
+            // them. Both clients send Ping the moment they connect, so the wait is not felt.
+            std::string first;
+            uint8_t kind = 0;
+            if (!RecvFrame(s, first, kind, kHandshakeTimeoutMs)) {
+                Log("a connection said nothing within %d ms; dropped", kHandshakeTimeoutMs);
+                closesocket(s);
+                continue;
+            }
+            if (kind == 0 && gpuinsp::IsProbeRequest(first)) {
+                // Direct3D 12 has no name of the application's own choosing; the executable is it.
+                SendJsonTo(s, gpuinsp::ProbeReply("D3D12", std::string(), port, connected));
+                closesocket(s);
+                continue;
+            }
+
             if (connected) {
                 // One client at a time; replace the old connection.
                 Disconnect();
                 if (receiver.joinable()) receiver.join();
             }
-            int nodelay = 1;
-            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
             client = s;
             connected = true;
             Log("client connected");
@@ -242,6 +264,13 @@ struct Transport::Impl {
             { std::lock_guard<std::mutex> lock(handlerMutex); h = onConnect; }
             // The snapshot goes into the queue before any new event is streamed.
             if (h) h();
+            // The frame that identified it as a client still has to be acted on; it goes after the
+            // snapshot, exactly where the receiver thread would have put it.
+            if (kind == 0) {
+                std::function<void(const std::string&)> mh;
+                { std::lock_guard<std::mutex> lock(handlerMutex); mh = handler; }
+                if (mh) mh(first);
+            }
             if (receiver.joinable()) receiver.join();
             receiver = std::thread([this, s] { ReceiverLoop(s); });
         }

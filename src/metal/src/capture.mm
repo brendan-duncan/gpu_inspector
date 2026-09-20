@@ -27,7 +27,7 @@
 namespace mtlinsp {
 namespace {
 
-// A colour or depth attachment blitted into a staging buffer at the end of its pass. The bytes
+// A color or depth attachment blitted into a staging buffer at the end of its pass. The bytes
 // are read out in the command buffer's completion handler, once the GPU has produced them.
 // One 2D image inside a read-back: an attachment has a single region, a sampled texture one per
 // mip level and slice, laid out level by level with each level's slices back to back — which is
@@ -612,9 +612,9 @@ void SendTextures(std::vector<PendingTexture> &textures) {
             h.Key("commandBuffer"); h.Uint(t.commandBufferId);
             h.Key("passIndex"); h.Uint(t.passIndex);
             h.Key("attachment"); h.Uint(t.attachment);
-            // A depth attachment is announced under attachment index 0, the same as colour
+            // A depth attachment is announced under attachment index 0, the same as color
             // attachment 0, so the aspect is what tells the two entries of one pass apart. Without
-            // it the depth read-back matches the colour entry and lands on top of it — which is
+            // it the depth read-back matches the color entry and lands on top of it — which is
             // what the Vulkan layer sends it for too (src/vulkan/src/capture.cpp).
             h.Key("aspect"); h.String(t.aspect);
             // A sampled texture is matched by its own id: several may share one pass, where an
@@ -1367,7 +1367,7 @@ void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_
             + (enumName[0] != '\0' ? enumName : std::to_string((int)source.pixelFormat));
     }
     if (pending.error.empty() && !depth && PixelFormatHasDepth(source.pixelFormat)) {
-        // A depth texture in a colour slot: read it as depth.
+        // A depth texture in a color slot: read it as depth.
         info = DepthReadbackDetails(source.pixelFormat, &options);
         pending.aspect = "depth";
     }

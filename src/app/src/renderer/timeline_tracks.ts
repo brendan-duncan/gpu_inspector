@@ -16,7 +16,7 @@
 import { CPU_CATEGORY_LABEL, cpuKindOf, gpuTicksToCpuMs, type CpuKind } from "./cpu_timeline.js";
 import type { CpuTimelineMessage, PassTiming } from "../shared/protocol.js";
 
-/** What a span is, which decides how it reads and how it is coloured. */
+/** What a span is, which decides how it reads and how it is colored. */
 export type SpanKind = CpuKind | "gpu";
 
 export interface TrackSpan {
@@ -225,7 +225,7 @@ export interface SpanBox {
   durationMs: number;
   /** Time actually inside the spans, so a dense box can say how much of itself is work. */
   busyMs: number;
-  /** The kind that holds most of the box's time, which is the colour it is drawn in. */
+  /** The kind that holds most of the box's time, which is the color it is drawn in. */
   kind: SpanKind;
   /** How many spans the box stands for. */
   count: number;

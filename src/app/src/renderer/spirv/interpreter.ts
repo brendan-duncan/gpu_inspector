@@ -1467,9 +1467,9 @@ export class Invocation implements DebugInvocation {
         return n === 0 ? -1 : 31 - Math.clz32(n);
       }));
       case 76: case 77: case 78: {
-        // interpolateAt*: the input as the fragment has it (the interpolation point is the pixel's centre).
+        // interpolateAt*: the input as the fragment has it (the interpolation point is the pixel's center).
         const ptr = a(0);
-        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel centre");
+        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel center");
         return ptr instanceof Pointer ? this._load(ptr) : ptr;
       }
       case 79: return binary((x, y) => (Number.isNaN(x) ? y : Number.isNaN(y) ? x : Math.min(x, y)));

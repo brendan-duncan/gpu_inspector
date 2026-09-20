@@ -3011,7 +3011,7 @@ void Replayer::ExportFrameEnd() {
     if (auto it = _images.find(output); it != _images.end() && !it->second.layouts.empty()) {
         const ImageRecord& image = it->second;
         _exporter->FrameOutput(output, image.image, leftIn(output, image)[0], image.format, {image.extent.width, image.extent.height},
-                               std::string(_lastSwapchainWrite ? "the swapchain image the frame wrote last" : "the frame's last colour target (it writes no swapchain image)") +
+                               std::string(_lastSwapchainWrite ? "the swapchain image the frame wrote last" : "the frame's last color target (it writes no swapchain image)") +
                                    ", in the layout the frame leaves it in.");
     }
     // The command pools let go of the last recording, and each image goes back from where the

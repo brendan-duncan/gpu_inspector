@@ -85,6 +85,15 @@ From the command line: `npm start -- --wait-for-app --port=<port>`, and
 To pick up an application already running with the layer enabled, enter its port in the launch
 bar and press **Connect**.
 
+An application started without `VKINSP_PORT` listens on the first free port from 47531 upwards
+(eight in all), so several started by hand are all reachable at once rather than fighting over
+one port. `npm start -- --list-targets` names what is listening on each of them -- the
+application, the API, and whether an inspector is attached to it already -- so the port can be
+read off rather than guessed. Asking is safe for a session in progress: the inspector's question
+is answered and the connection dropped, without the capture library taking it for a client.
+A port named in `VKINSP_PORT` is used exactly as given, and the layer says so and gives up if
+something else is already serving it.
+
 ## Shader sources
 
 Shaders compiled with source-level debug information carry their own text, and the Source view,

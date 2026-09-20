@@ -889,6 +889,12 @@ export interface GpuTraceMessage {
 // UI -> Layer
 
 export interface PingRequest { action: "Ping" }
+/**
+ * Asks a capture library what application it is serving, for the attach list. It is answered
+ * with a Target message and the connection is then closed, without the probe ever becoming the
+ * library's client (src/vulkan/src/target_probe.h).
+ */
+export interface ProbeRequest { action: "Probe" }
 /** Asks the layer to resend the live object snapshot (a window picking up a running session). */
 export interface RequestSnapshotRequest { action: "RequestSnapshot" }
 export interface RequestBlobRequest { action: "RequestBlob"; id: number; index: number }
@@ -986,7 +992,7 @@ export interface RestoreShaderRequest { action: "RestoreShader"; pipeline: numbe
 /** Metal: asks the library to write the next frame as an Xcode .gputrace document (answered by GpuTrace). */
 export interface SaveGpuTraceRequest { action: "SaveGpuTrace"; path?: string }
 
-export type UiRequest = PingRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
+export type UiRequest = PingRequest | ProbeRequest | RequestSnapshotRequest | RequestBlobRequest | RequestImageRequest | RequestDescriptorSetRequest
   | SettingsRequest | CaptureRequest | ReplaceShaderRequest | RestoreShaderRequest
   | RequestStacktracesRequest | RequestSymbolsRequest | SaveGpuTraceRequest | TimingCaptureRequest | MemoryCaptureRequest
   | HudRequest | PauseRequest;

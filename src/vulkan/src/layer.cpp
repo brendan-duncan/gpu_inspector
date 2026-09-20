@@ -452,6 +452,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
         data->enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
     InitInstanceDispatch(*pInstance, nextGipa, data->dispatch);
 
+    // The name the attach list shows for this application (transport.h).
+    if (!data->appName.empty()) Transport::Get().SetTargetName(data->appName);
+
     Log("vkCreateInstance app='%s' engine='%s' api=%u.%u.%u", data->appName.c_str(),
         data->engineName.c_str(), VK_API_VERSION_MAJOR(data->apiVersion),
         VK_API_VERSION_MINOR(data->apiVersion), VK_API_VERSION_PATCH(data->apiVersion));

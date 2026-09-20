@@ -6,6 +6,7 @@
 #include "json.h"
 #include "resources.h"
 #include "serialize.h"
+#include "raytracing.h"
 #include "tracker.h"
 
 #include <algorithm>
@@ -374,6 +375,11 @@ void WriteDescriptorRecord(JsonWriter& w, const DescriptorRecord& r, uint32_t da
                 w.BeginObject();
                 w.Key("address");
                 w.String(Hex(r.address));
+                // The structure the library minted for that address, so the shader's scene is a
+                // link to what built it rather than a number (raytracing.h). Null when nothing has
+                // built there yet: the view can be written before the first build.
+                w.Key("structure");
+                WriteStructureRef(w, r.address);
                 w.EndObject();
                 w.EndObject();
                 return;

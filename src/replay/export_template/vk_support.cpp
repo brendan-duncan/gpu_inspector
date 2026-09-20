@@ -359,7 +359,7 @@ VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, u
     return t.image;
 }
 
-/** A single-sampled copy of one subresource of a multisampled colour image, in TRANSFER_SRC_OPTIMAL; null with `why` when it cannot be made. */
+/** A single-sampled copy of one subresource of a multisampled color image, in TRANSFER_SRC_OPTIMAL; null with `why` when it cannot be made. */
 VkImage ResolveTarget(VkCommandBuffer cb, VkImage image, const ImageInfo& info, uint32_t mip, uint32_t baseLayer, VkImageLayout layout, std::string& why) {
     const VkExtent2D extent{std::max(1u, info.extent.width >> mip), std::max(1u, info.extent.height >> mip)};
     VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1023,7 +1023,7 @@ bool OpenOutputWindow(const FrameOutputInfo& output, const char* title) {
     if (!swapchainEnabled || !vkCreateSwapchainKHR || !vkGetPhysicalDeviceSurfaceSupportKHR) return no("this Vulkan has no swapchain to show the frame in");
     auto known = images.find(output.image);
     if (known == images.end() || known->second.samples != VK_SAMPLE_COUNT_1_BIT || !(FormatAspects(output.format) & VK_IMAGE_ASPECT_COLOR_BIT))
-        return no("the frame's output is not a single-sampled colour image, which is all a window can show");
+        return no("the frame's output is not a single-sampled color image, which is all a window can show");
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(physicalDevice, output.format, &properties);
     if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) return no("the frame's output has a format this device cannot blit to a swapchain");

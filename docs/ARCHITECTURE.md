@@ -89,8 +89,19 @@ gives the app DXBC/DXIL disassembly, embedded HLSL and reflection the way `spirv
   serialized arguments (the descriptor), label. Emits `AddObject` / `DeleteObject` /
   `ObjectSetLabel`. On connect, the whole live set is sent as a snapshot, so the UI can
   connect at any time.
-* `src/transport.*` — TCP server on `VKINSP_PORT`. Frames are `u32 length, u8 kind, payload`;
-  kind 0 is UTF-8 JSON, kind 1 is `u32 headerLength, JSON header, raw bytes`.
+* `src/transport.*` — TCP server on `VKINSP_PORT`, or, when that is unset, on the first free port
+  of the small range in `src/target_probe.h`, so several applications started by hand are each
+  reachable. Frames are `u32 length, u8 kind, payload`; kind 0 is UTF-8 JSON, kind 1 is
+  `u32 headerLength, JSON header, raw bytes`.
+* `src/target_probe.h` — how the inspector asks a port what application is behind it, for the
+  attach list, and shared by the Direct3D 12 library the way `json_writer.h` is. A server takes
+  one client at a time and replaces the old connection when a new one arrives, so a bare connect
+  would throw a running session off its own socket; a connection is therefore not taken for a
+  client until its first frame says it is one. A `Probe` is answered with a `Target` naming the
+  application, the API, the pid and whether somebody is attached, and then dropped. The same rule
+  decides the port: whether one is already served is read from the OS rather than probed with a
+  connect (`PortIsServed` — on Windows out of the listening table, because `SO_REUSEADDR` lets a
+  second listener bind a served address and silently share it).
 * `src/descriptors.*` — descriptor set contents: follows `vkCreateDescriptorSetLayout`,
   `vkAllocateDescriptorSets`, `vkUpdateDescriptorSets`, update templates and push descriptors, so
   a bind command during a capture can carry a snapshot of what each bound set contained. The
@@ -411,7 +422,7 @@ any graphics API in the part worth sharing. Both live in headers under `src/vulk
 
 `hud_text.h` is the HUD itself: a 5x7 bitmap font written out as binary literals (so the glyph is
 legible in the source), and `BuildHud`, which turns the frame-time figures into a list of
-`{rectangle, colour}` — one for the panel and one for every lit pixel of every glyph, with runs
+`{rectangle, color}` — one for the panel and one for every lit pixel of every glyph, with runs
 merged. Expanding text to rectangles on the CPU is what keeps the per-backend code small: a backend
 only has to draw flat axis-aligned rectangles, which needs no font atlas, no sampler and no
 descriptors, only a vertex buffer and two shaders that transform and interpolate. A four-line panel

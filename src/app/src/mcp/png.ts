@@ -41,7 +41,7 @@ export function encodePng(rgba: Uint8Array | Uint8ClampedArray, width: number, h
   hv.setUint32(0, width);
   hv.setUint32(4, height);
   header[8] = 8;   // bit depth
-  header[9] = 6;   // colour type: RGBA
+  header[9] = 6;   // color type: RGBA
   const parts = [
     new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk("IHDR", header),

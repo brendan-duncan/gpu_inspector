@@ -25,12 +25,12 @@ struct Packed {
 
 struct VertexIn {
     float2 position [[attribute(0)]];
-    float3 colour   [[attribute(1)]];
+    float3 color   [[attribute(1)]];
 };
 
 struct VertexOut {
     float4 position [[position]];
-    float3 colour;
+    float3 color;
     float  fog;
 };
 
@@ -119,7 +119,7 @@ vertex VertexOut transform(VertexIn in [[stage_in]],
     float2 rotated = u.rotation * in.position;
     VertexOut out;
     out.position = float4(rotated, 0.0f, 1.0f);
-    out.colour = in.colour * u.tint.rgb;
+    out.color = in.color * u.tint.rgb;
     out.fog = float(vid) * u.weight;
     return out;
 }
@@ -130,7 +130,7 @@ fragment float4 shade(VertexOut in [[stage_in]],
                       sampler smp [[sampler(0)]],
                       constant Uniforms &u [[buffer(1)]]) {
     float4 texel = albedo.sample(smp, in.position.xy, level(0.0f));
-    float3 lit = in.colour * texel.rgb;
+    float3 lit = in.color * texel.rgb;
     if (in.fog > 0.5f) {
         lit = mix(lit, float3(1.0f), 0.5f);
     }

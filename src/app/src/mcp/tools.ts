@@ -696,12 +696,12 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         "depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (under a second; later questions about the same capture are quicker); a Metal application " +
         "follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. " +
         "Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for \"why is this pixel " +
-        "this colour\": the last draw that wrote it, and the draws that should have but were culled or failed a test.",
+        "this color\": the last draw that wrote it, and the draws that should have but were culled or failed a test.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         image: { type: "integer", description: "The image's object id." },
         pass: { type: "integer", minimum: 0, description: "Instead of image: a render pass (get_bottlenecks' numbers) whose attachment to follow." },
-        attachment: { type: "integer", minimum: 0, description: "With pass: the colour attachment index (default 0)." },
+        attachment: { type: "integer", minimum: 0, description: "With pass: the color attachment index (default 0)." },
         x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
         y: { type: "integer", minimum: 0, description: "The pixel's row, at the mip level." },
         mip: { type: "integer", minimum: 0, description: "The mip level the pass renders to (default: the read-back target's, else 0)." },
@@ -752,7 +752,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           if (!p || p.compute) throw new Error(`Pass ${passArg} is not a render pass (get_bottlenecks lists the passes).`);
           const attachment = intArg(args, "attachment", 0, 0);
           const tex = c.data.texturesForPass(p.frame, p.commandBuffer, p.passIndex).find((t) => t.info.attachment === attachment && t.info.aspect === "color" && !t.info.resolve);
-          if (!tex) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no colour attachment ${attachment} read back (list_textures lists the render targets).`);
+          if (!tex) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no color attachment ${attachment} read back (list_textures lists the render targets).`);
           image = tex.info.id;
           mip ??= tex.info.mip;
         }

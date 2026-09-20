@@ -234,7 +234,7 @@ test("derivatives.frag: dFdx, dFdy, fwidth and implicit-LOD sampling across the 
   assert.equal(inv.status, "returned", inv.error);
   const out = inv.outputs()[0].value;
   close(out.slice(0, 3), [10, 20, 40], "dFdx(uv).x, dFdy(uv).y and fwidth(4 uv.x), times 1000");
-  // uv (0.11, 0.42): texel centres at 0.25 and 0.75 put it between the two columns, in the top row.
+  // uv (0.11, 0.42): texel centers at 0.25 and 0.75 put it between the two columns, in the top row.
   assert.ok(out[3] > 0 && out[3] <= 1, `the red channel of a magnified sample: ${out[3]}`);
   assert.deepEqual([...inv.warnings], []);
 });

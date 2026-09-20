@@ -11,6 +11,7 @@
 #include "descriptors.h"
 #include "device_info.h"
 #include "image_readback.h"
+#include "raytracing.h"
 #include "resources.h"
 #include "shader_edit.h"
 #include "tracker.h"
@@ -93,6 +94,8 @@ void OnObjectDestroyed(void* object, const std::string& type) {
     NoteMemoryReleased(object);
     if (type == "ID3D12Resource") {
         ResourceTracker::Get().OnReleased((ID3D12Resource*)object);
+        // Before the AddressMap forgets it: that map is what says which structures were in it.
+        ForgetStructuresIn((ID3D12Resource*)object);
         AddressMap::Get().Remove((ID3D12Resource*)object);
     } else if (type == "ID3D12DescriptorHeap") {
         DescriptorTracker::Get().OnHeapReleased((ID3D12DescriptorHeap*)object);
@@ -100,6 +103,8 @@ void OnObjectDestroyed(void* object, const std::string& type) {
         RootSignatures::Get().Forget((ID3D12RootSignature*)object);
     } else if (type == "ID3D12PipelineState") {
         ShaderEditor::Get().OnPipelineReleased((ID3D12PipelineState*)object);
+    } else if (type == "ID3D12StateObject") {
+        ForgetStateObject((ID3D12StateObject*)object);
     } else if (type == "ID3D12GraphicsCommandList") {
         CaptureManager::Get().OnListReleased((ID3D12GraphicsCommandList*)object);
         ResourceTracker::Get().OnListReleased((ID3D12CommandList*)object);
@@ -114,6 +119,7 @@ void OnObjectDestroyed(void* object, const std::string& type) {
         ValidationLog::Get().OnDeviceReleased((ID3D12Device*)object);
         CaptureManager::Get().OnDeviceReleased((ID3D12Device*)object);
         dxinsp::OnDeviceReleased((ID3D12Device*)object);
+        ResetRaytracing();
         Tracker::Get().UntrackWithChildren(object);
         return;
     }

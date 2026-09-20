@@ -1,6 +1,8 @@
 // TCP transport between the layer and the inspector UI.
 //
-// The layer listens on 127.0.0.1:VKINSP_PORT and accepts one client at a time. Frames are:
+// The layer listens on 127.0.0.1:VKINSP_PORT, or, when that was not set, on the first free port
+// of the small range in target_probe.h, so several applications started by hand are all reachable.
+// It accepts one client at a time. Frames are:
 //   u32 payloadLength (little endian), u8 kind, payload
 //   kind 0: UTF-8 JSON text
 //   kind 1: u32 headerLength, JSON header, raw bytes
@@ -24,6 +26,10 @@ public:
 
     void SendJson(std::string json);
     void SendBinary(std::string headerJson, const void* data, size_t size);
+
+    // What the application calls itself (VkApplicationInfo::pApplicationName), for the attach
+    // list the inspector builds by probing the ports (target_probe.h).
+    void SetTargetName(std::string name);
 
     // Handler for incoming JSON messages from the UI (called on the receiver thread).
     void SetMessageHandler(std::function<void(const std::string&)> handler);

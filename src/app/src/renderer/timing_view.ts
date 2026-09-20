@@ -76,7 +76,7 @@ function renderThreads(container: Widget, summary: SampleSummary, what: string, 
 }
 
 /**
- * Draws the per-frame times as bars, hitches in their own colour, with the median and the hitch
+ * Draws the per-frame times as bars, hitches in their own color, with the median and the hitch
  * threshold as lines across it. More frames than pixels are reduced by taking the *worst* frame in
  * each column rather than the average: averaging is what hid the hitch in the frame report to begin
  * with, and doing it again here would hide it in the picture too.
@@ -147,7 +147,7 @@ export function renderTimingReport(container: Widget, capture: TimingCapture,
   container.html = "";
   // The whole run, which the graph is drawn against: it keeps the run's own median and threshold,
   // so the picture does not change as a range is dragged across it and no frame outside the range
-  // is coloured by a threshold taken from inside it. The graph is the map.
+  // is colored by a threshold taken from inside it. The graph is the map.
   const all = summarizeTiming(capture);
   if (!all) {
     new Div(container, { text: "No frames recorded yet.", class: "text-muted" });

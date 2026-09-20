@@ -17,7 +17,7 @@
 //     Then the draw itself, with the application's pipeline and depth-stencil state, and the pixel is
 //     read again.
 // Cull mode and the depth-stencil state are encoder state in Metal, so only the two pipeline copies
-// (a fragment function that writes nothing, and the application's with colour writes off) are made.
+// (a fragment function that writes nothing, and the application's with color writes off) are made.
 //
 // Not followed: multisampled and layered passes, and indirect command buffers' draws (their
 // commands carry their own pipelines).
@@ -49,7 +49,7 @@ struct HistoryPass {
     uint32_t y = 0;
     uint32_t width = 0;
     uint32_t height = 0;
-    /** The colour attachment the pixel is read from. */
+    /** The color attachment the pixel is read from. */
     int target = -1;
     /** Why the pass is not followed. */
     std::string note;
@@ -470,7 +470,7 @@ void FollowPixel(OverdrawPass &pass) {
     };
     // Nothing can be copied out of a multisampled texture, so a multisampled shadow is resolved
     // into the single-sample copy beside it first: a render pass that draws nothing, keeping the
-    // samples (the next event draws into them again) and resolving them as it stores. The colour
+    // samples (the next event draws into them again) and resolving them as it stores. The color
     // is resolved the way the hardware would have; the depth is sample 0, since averaging depths
     // would invent a value no fragment wrote.
     auto resolveShadows = [&]() {

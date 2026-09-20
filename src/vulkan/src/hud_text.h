@@ -1,9 +1,9 @@
 // The in-app HUD's font and layout, with no graphics API in it.
 //
-// The HUD is drawn as axis-aligned coloured rectangles and nothing else: the panel behind the
+// The HUD is drawn as axis-aligned colored rectangles and nothing else: the panel behind the
 // text is one rectangle, and every lit pixel of every glyph is another. Expanding the text to
 // rectangles here rather than sampling a font texture in a shader is what keeps the three
-// backends' drawing code small — each one only has to put a list of {rect, colour} on the screen,
+// backends' drawing code small — each one only has to put a list of {rect, color} on the screen,
 // which needs no font atlas, no sampler and no descriptors, only a vertex buffer and two shaders
 // that do nothing but transform and interpolate.
 //
@@ -22,7 +22,7 @@
 namespace gpuhud {
 
 // One rectangle in pixels from the top-left of the target, with a straight (non-premultiplied)
-// colour. The backends' vertex buffers are arrays of this.
+// color. The backends' vertex buffers are arrays of this.
 struct Rect {
     float x = 0, y = 0, w = 0, h = 0;
     float r = 1, g = 1, b = 1, a = 1;

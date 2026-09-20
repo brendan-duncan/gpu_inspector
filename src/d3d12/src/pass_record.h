@@ -155,7 +155,7 @@ std::string RecordedMethod(CommandRecorder* rec, uint32_t command);
 
 /** A capture starts: the pixel it follows. */
 void StartPixelHistory(const PixelHistoryRequest& request);
-/** Whether the pass renders to the followed pixel: the colour attachment index, or -1. */
+/** Whether the pass renders to the followed pixel: the color attachment index, or -1. */
 int MatchPixelHistoryAttachment(const MeasuredPass& pass);
 /** Before the pass begins: copies of its attachments with the followed pixel in them. */
 void PreparePixelHistory(MeasuredPass& pass, int attachment);

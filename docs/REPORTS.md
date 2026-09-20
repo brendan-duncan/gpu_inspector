@@ -183,12 +183,12 @@ first measured pass with the overdraw on.
 
 ### What the picture cannot show
 
-A NaN in a render target is invisible: it clamps to some ordinary colour on screen, and nothing else
+A NaN in a render target is invisible: it clamps to some ordinary color on screen, and nothing else
 in a capture points at it. So **Highlight** marks the texels a picture cannot show, and is on
 (*Auto*) to begin with — an image that has them is already wrong, and you would have to suspect it
 to go looking.
 
-| Colour | What it marks |
+| Color | What it marks |
 |---|---|
 | Magenta | NaN |
 | Cyan | `+Inf` |
@@ -213,7 +213,7 @@ How many fragments landed on each pixel, drawn over the pass's render target. Tw
 pass: fragments that passed the depth and stencil tests, and every rasterized fragment. Hovering
 shows the counts under the pointer.
 
-![The overdraw heatmap over a pass's render target, with the counts per pixel and the colour scale](images/overdraw.png)
+![The overdraw heatmap over a pass's render target, with the counts per pixel and the color scale](images/overdraw.png)
 
 How it is measured depends on the API:
 
@@ -238,7 +238,7 @@ and the line under the list counts the pixels it covered, passed and had rejecte
 
 ![Highlight Draw on a Unity frame: the menu buttons' draw in magenta, the rest of the frame darkened](images/draw-overlay.png)
 
-- **Highlight Draw** — the draw's pixels in a flat colour, the rest of the image darkened.
+- **Highlight Draw** — the draw's pixels in a flat color, the rest of the image darkened.
 - **Depth Test** — green where the draw's fragments passed the depth and stencil tests, red where
   they were rejected.
 - **Stencil Test** — the same for the stencil test *on its own*, where the pass has a stencil to
@@ -304,7 +304,7 @@ had the image bound to be written.
 
 ![Pixel history: the clear and the draw that touched the clicked pixel, with the value after each](images/pixel-history.png)
 
-This is the report for "why is this pixel the wrong colour".
+This is the report for "why is this pixel the wrong color".
 
 ### The fragments of one draw
 
@@ -313,7 +313,7 @@ report the one that won. Under it, each fragment is listed in the order the draw
 with the primitive it came from and what its fragment shader wrote; the one that won the pixel is
 marked. It is what answers "the draw wrote this pixel, but which part of it did".
 
-![Two fragments of one draw at the pixel: primitive 5, which won it, and primitive 7 behind it, each with the colour its shader wrote](images/pixel-history-fragments.png)
+![Two fragments of one draw at the pixel: primitive 5, which won it, and primitive 7 behind it, each with the color its shader wrote](images/pixel-history-fragments.png)
 
 The values are those shader outputs rather than the pixel after each fragment: the fragments are
 measured with the depth and stencil tests off and no blending, so a fragment the tests killed still
@@ -330,7 +330,7 @@ more than one fragment on the pixel. The first 16 fragments of a draw are measur
 
 Current limits: a draw is one event, so it names the primitive that won the pixel but not every
 fragment of the draw with its own value; only the first layer of a layered pass is followed; and a
-multisampled depth target cannot be read (a multisampled colour target is, through the resolve of
+multisampled depth target cannot be read (a multisampled color target is, through the resolve of
 the pixel's samples). The full list is in [Capture replay](REPLAY.md#pixel-history).
 
 A draw's row has **Debug**, which opens the [shader debugger](#shader-debugger) on that draw's
@@ -392,7 +392,7 @@ the other.
 What it runs on:
 
 - **A vertex**: the attributes decoded from the captured vertex buffers.
-- **A pixel**: the vertex shader's outputs, interpolated at the pixel's centre from the front-most
+- **A pixel**: the vertex shader's outputs, interpolated at the pixel's center from the front-most
   triangle covering it. The four pixels of its 2x2 quad run together, so derivatives and mip
   selection match a GPU. Where those outputs come from differs by API: a Vulkan draw is replayed
   (`vkinsp_replay`), and a Metal draw's vertex shader is run in the interpreter itself, which needs
@@ -415,7 +415,7 @@ Current limits:
 - A Metal fragment runs the draw's vertex shader once per vertex to find its triangle, so a draw
   with very many vertices is capped, and the notes say so.
 - Tessellation and geometry stages (Metal: object, mesh and tile stages) are not supported.
-- Multisampled pixels are shaded at the centre.
+- Multisampled pixels are shaded at the center.
 - An indirect dispatch's group counts read (1, 1, 1).
 - A GPU driver may reorder floating-point operations the debugger performs in source order, so a
   value can differ in the last digits, or more where a shader cancels large numbers.

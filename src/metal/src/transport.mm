@@ -142,6 +142,22 @@ struct Transport::Impl {
         queueReady.notify_all();
     }
 
+    // TODO (on a Mac, where this builds): the attach list, as the Vulkan and Direct3D 12
+    // libraries now do it -- see src/vulkan/src/target_probe.h for the handshake and
+    // src/vulkan/src/transport.cpp for the shape of both changes. Two pieces are missing here:
+    //
+    //  * Stepping to the next free port when METALINSP_PORT was not set, so two applications
+    //    started by hand are both reachable: gpuinsp::PortIsServed(port), then the first free
+    //    port up to gpuinsp::kLastPort. The POSIX branch of PortIsServed bind-tests the port, so
+    //    nothing macOS-specific is needed.
+    //  * Answering a probe before taking a connection for a client: read the first frame with a
+    //    timeout, and if gpuinsp::IsProbeRequest says it is a probe, write
+    //    gpuinsp::ProbeReply("Metal", name, port, connected) to the socket and close it without
+    //    disturbing whoever is attached. `name` can be the label of the MTLDevice's application
+    //    if one is to hand, else "" -- the reply carries the executable name regardless.
+    //
+    // Until then a Metal application is reachable only by typing its port, as all three were
+    // before, and a probe of its port would take the connection from an attached inspector.
     void Listen() {
         const uint16_t port = PortFromEnvironment();
         const int listener = socket(AF_INET, SOCK_STREAM, 0);

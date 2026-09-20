@@ -69,7 +69,7 @@ void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t
 // The frame
 /**
  * Copies a render target at this point of the command buffer, to compare with `captured` once the
- * submission has run. A multisampled target is resolved first, as the capture read it: colour with
+ * submission has run. A multisampled target is resolved first, as the capture read it: color with
  * vkCmdResolveImage, depth by sample zero. Its layout is put back after.
  */
 void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,

@@ -674,13 +674,13 @@ private:
         uint32_t queryCount = 0;
         uint32_t nextQuery = 0;
         /**
-         * The fragment round (history.cpp): a colour target of the followed attachment's format and
+         * The fragment round (history.cpp): a color target of the followed attachment's format and
          * a depth-stencil of the replay's own, whose stencil counts the draw's fragments so that one
          * of them at a time is let through.
          */
         TransientImage fragColor;
         TransientImage fragDepth;
-        /** The followed attachment's format, which the fragment round's colour target takes. */
+        /** The followed attachment's format, which the fragment round's color target takes. */
         VkFormat fragFormat = VK_FORMAT_UNDEFINED;
         VkFramebuffer fragColorFramebuffer = VK_NULL_HANDLE;
         VkFramebuffer fragIdFramebuffer = VK_NULL_HANDLE;
@@ -761,7 +761,7 @@ private:
     VkShaderModule BackFaceModule();
     // --- The fragment round (history.cpp) -------------------------------------------------------
     /**
-     * A render pass of the replay's own for measuring one fragment: a colour attachment of `format`
+     * A render pass of the replay's own for measuring one fragment: a color attachment of `format`
      * cleared to nothing, and a depth-stencil whose stencil counts the draw's fragments.
      */
     VkRenderPass HistoryFragmentRenderPass(VkFormat format);
@@ -841,10 +841,10 @@ private:
     void ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass);
     /**
      * Issues a pass's state and commands again, secondaries inline, into a render pass and framebuffer of the
-     * replay's own; or, with no render pass, into dynamic rendering to `colour` (which shader objects need).
+     * replay's own; or, with no render pass, into dynamic rendering to `color` (which shader objects need).
      */
     void ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView colour = VK_NULL_HANDLE);
+                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color = VK_NULL_HANDLE);
     /** Whether a draw's vertex stage is a shader object (vkCmdBindShadersEXT) rather than a pipeline's. */
     bool DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const;
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
@@ -1054,7 +1054,7 @@ private:
     std::unordered_map<uint64_t, RenderPassRecord> _renderPasses;
     std::unordered_map<uint64_t, std::vector<uint64_t>> _framebufferViews;
     // What the exported program shows in its window: the swapchain image the frame wrote last, which
-    // is what it presented, else its last colour target (a renderer that never presents).
+    // is what it presented, else its last color target (a renderer that never presents).
     std::unordered_set<uint64_t> _swapchainImages;
     uint64_t _lastSwapchainWrite = 0;
     uint64_t _lastColorTarget = 0;

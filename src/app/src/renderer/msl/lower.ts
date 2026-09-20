@@ -1325,7 +1325,7 @@ class Lowering {
       case "sample":
       case "read":
       case "gather":
-        // A depth texture samples to one value; a colour texture to four.
+        // A depth texture samples to one value; a color texture to four.
         return t.depth && method !== "gather" ? t.sampled : this.types.vector(t.sampled, 4);
       case "sample_compare":
       case "gather_compare":

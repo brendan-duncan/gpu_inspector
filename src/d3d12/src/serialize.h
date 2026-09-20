@@ -106,6 +106,8 @@ void Write(JsonWriter& w, const D3D12_RENDER_PASS_ENDING_ACCESS& v);
 void Write(JsonWriter& w, const D3D12_DISPATCH_RAYS_DESC& v);
 void Write(JsonWriter& w, const D3D12_GPU_VIRTUAL_ADDRESS_RANGE& v);
 void Write(JsonWriter& w, const D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE& v);
+/** One geometry of a bottom level build; the build's own record of what it read (raytracing.cpp) uses it too. */
+void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_DESC& v);
 void Write(JsonWriter& w, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& v);
 void Write(JsonWriter& w, const D3D12_DISCARD_REGION* v);
 void Write(JsonWriter& w, const D3D12_SAMPLE_POSITION& v);

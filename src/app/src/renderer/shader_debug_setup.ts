@@ -4,7 +4,7 @@
 //   * A vertex: its attributes decoded from the captured vertex buffers (mesh_input.ts) and its
 //     built-ins.
 //   * A fragment: the draw's vertex shader outputs rasterized at the pixel: the front-most triangle
-//     covering the pixel's centre, clipped against the near plane, its outputs interpolated
+//     covering the pixel's center, clipped against the near plane, its outputs interpolated
 //     (perspective-correct, flat or noperspective as the fragment shader's inputs say), for the
 //     pixel and the three others of its 2x2 quad.
 //   * A compute invocation: its ids from the dispatch and the shader's local size.
@@ -493,7 +493,7 @@ function edge(ax: number, ay: number, bx: number, by: number, px: number, py: nu
   return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-/** Finds the triangle whose fragment wins at the pixel: covering its centre, not culled, front-most by the depth test. */
+/** Finds the triangle whose fragment wins at the pixel: covering its center, not culled, front-most by the depth test. */
 export function coveringTriangle(raster: RasterState, mesh: MeshOutput, px: number, py: number, keyOf: VaryingKey = locationKey): { hit: Covering | null; triangles: number; reason: string } {
   const viewport = raster.viewport;
   const pos = positionOutput(mesh);
@@ -565,7 +565,7 @@ export function coveringTriangle(raster: RasterState, mesh: MeshOutput, px: numb
 export type Interpolation = "smooth" | "flat" | "noperspective";
 
 /**
- * The varyings at a pixel centre from a covering triangle, interpolated as the fragment shader
+ * The varyings at a pixel center from a covering triangle, interpolated as the fragment shader
  * asks, with the position the fragment is at. Extended past the triangle's edges rather than
  * clipped, because the quad's other three pixels may fall outside it and a GPU shades them anyway.
  */
@@ -715,16 +715,16 @@ export function passOfCommand(data: CaptureData, cmd: CaptureCommand): { command
 export function passPixel(ctx: DebugContext, cmd: CaptureCommand, x: number, y: number): DebugSession["targetPixel"] {
   const passInfo = passOfCommand(ctx.data, cmd);
   if (!passInfo) return undefined;
-  const colour = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex)
+  const color = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex)
     .find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
-  if (!colour?.data || x >= colour.info.width || y >= colour.info.height) return undefined;
-  const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  if (!color?.data || x >= color.info.width || y >= color.info.height) return undefined;
+  const texels = decodeTexels({ format: color.info.format, aspect: "color", width: color.info.width, height: color.info.height }, color.data);
   if (!texels) return undefined;
   const o = (y * texels.width + x) * 4;
   return {
-    image: colour.info.id, attachment: colour.info.attachment,
+    image: color.info.id, attachment: color.info.attachment,
     value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))),
-    format: colour.info.format,
+    format: color.info.format,
   };
 }
 
@@ -877,14 +877,14 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
   // The render target's value at the pixel after the pass, for comparison.
   let targetPixel: DebugSession["targetPixel"];
   const passInfo = findPass(data, cmd);
-  const colour = passInfo
+  const color = passInfo
     ? data.texturesForPass(cmd.frame, passInfo.passBegin.object?.__id ?? 0, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data)
     : undefined;
-  if (colour?.data && x < colour.info.width && y < colour.info.height) {
-    const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  if (color?.data && x < color.info.width && y < color.info.height) {
+    const texels = decodeTexels({ format: color.info.format, aspect: "color", width: color.info.width, height: color.info.height }, color.data);
     if (texels) {
       const o = (y * texels.width + x) * 4;
-      targetPixel = { image: colour.info.id, attachment: colour.info.attachment, value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))), format: colour.info.format };
+      targetPixel = { image: color.info.id, attachment: color.info.attachment, value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))), format: color.info.format };
     }
   }
   return {
@@ -897,7 +897,7 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
   };
 }
 
-/** A pixel the draw covers, to open a fragment debugger on: the centre of its first front-facing visible triangle. */
+/** A pixel the draw covers, to open a fragment debugger on: the center of its first front-facing visible triangle. */
 export function coveredPixel(state: DrawState, mesh: MeshOutput, raster: RasterState = rasterStateOf(state)): { x: number; y: number } | null {
   const viewport = raster.viewport;
   const pos = positionOutput(mesh);

@@ -312,6 +312,17 @@ enum ID3D12StateObject : uint32_t {
     ID3D12StateObject_GetDevice = 7,
     ID3D12StateObject_Count = 8
 };
+enum ID3D12StateObjectProperties1 : uint32_t {
+    ID3D12StateObjectProperties1_QueryInterface = 0,
+    ID3D12StateObjectProperties1_AddRef = 1,
+    ID3D12StateObjectProperties1_Release = 2,
+    ID3D12StateObjectProperties1_GetShaderIdentifier = 3,
+    ID3D12StateObjectProperties1_GetShaderStackSize = 4,
+    ID3D12StateObjectProperties1_GetPipelineStackSize = 5,
+    ID3D12StateObjectProperties1_SetPipelineStackSize = 6,
+    ID3D12StateObjectProperties1_GetProgramIdentifier = 7,
+    ID3D12StateObjectProperties1_Count = 8
+};
 enum ID3D12Fence1 : uint32_t {
     ID3D12Fence1_QueryInterface = 0,
     ID3D12Fence1_AddRef = 1,
@@ -789,6 +800,15 @@ typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12StateObject_SetPrivateData)(ID3D12
 typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12StateObject_SetPrivateDataInterface)(ID3D12StateObject * This, REFGUID guid, const IUnknown *pData);
 typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12StateObject_SetName)(ID3D12StateObject * This, LPCWSTR Name);
 typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12StateObject_GetDevice)(ID3D12StateObject * This, REFIID riid, void **ppvDevice);
+
+typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_QueryInterface)(ID3D12StateObjectProperties1 * This, REFIID riid, void **ppvObject);
+typedef ULONG (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_AddRef)(ID3D12StateObjectProperties1 * This);
+typedef ULONG (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_Release)(ID3D12StateObjectProperties1 * This);
+typedef void * (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_GetShaderIdentifier)(ID3D12StateObjectProperties1 * This, LPCWSTR pExportName);
+typedef UINT64 (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_GetShaderStackSize)(ID3D12StateObjectProperties1 * This, LPCWSTR pExportName);
+typedef UINT64 (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_GetPipelineStackSize)(ID3D12StateObjectProperties1 * This);
+typedef void (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_SetPipelineStackSize)(ID3D12StateObjectProperties1 * This, UINT64 PipelineStackSizeInBytes);
+typedef D3D12_PROGRAM_IDENTIFIER (STDMETHODCALLTYPE* PFN_ID3D12StateObjectProperties1_GetProgramIdentifier)(ID3D12StateObjectProperties1 * This, LPCWSTR pProgramName);
 
 typedef HRESULT (STDMETHODCALLTYPE* PFN_ID3D12Fence1_QueryInterface)(ID3D12Fence1 * This, REFIID riid, void **ppvObject);
 typedef ULONG (STDMETHODCALLTYPE* PFN_ID3D12Fence1_AddRef)(ID3D12Fence1 * This);

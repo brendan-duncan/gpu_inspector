@@ -40,7 +40,7 @@ import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
-import { renderAccelerationStructure, renderShaderGroups } from "./ray_tracing_view.js";
+import { boundStructure, renderAccelerationStructure, renderShaderGroups, shaderGroupViewOf, structureViewOf } from "./ray_tracing_view.js";
 import type { CaptureDescriptorBinding, CompileShaderResult, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 /**
@@ -1113,13 +1113,16 @@ export class InspectPanel {
       }
     }
 
-    if (object.type === "VkPipeline") renderShaderGroups(this.inspectPanel, object);
+    renderShaderGroups(this.inspectPanel, shaderGroupViewOf(object));
     if (object.updates.executables) this._buildCompilerStatistics(object);
-    if (object.type === "VkAccelerationStructureKHR") {
-      renderAccelerationStructure(this.inspectPanel, object, db, onLink, this.window.accelerationScene(object.id));
+    const structure = structureViewOf(object, db);
+    if (structure) {
+      renderAccelerationStructure(this.inspectPanel, structure, db, onLink, this.window.accelerationScene(object.id));
     }
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
-    if (object.type === "ID3D12PipelineState") this._buildD3D12ShaderSection(object);
+    // A state object's code is its DXIL libraries, which the capture library keeps as blobs on it
+    // the way a pipeline state's stages are kept on that (src/d3d12/src/raytracing.cpp).
+    if (object.type === "ID3D12PipelineState" || object.type === "ID3D12StateObject") this._buildD3D12ShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
@@ -1211,7 +1214,11 @@ export class InspectPanel {
           if (d.immutable) new Span(li, { text: " (immutable)", class: "text-muted" });
         }
         if (d.bufferView !== undefined) link(d.bufferView, "(destroyed buffer view)");
-        if (d.accelerationStructure !== undefined) link(d.accelerationStructure, "(destroyed acceleration structure)");
+        if (d.accelerationStructure !== undefined) {
+          const bound = boundStructure(d.accelerationStructure, db);
+          if (bound.object) objectLink(li, bound.object, onLink);
+          else new Span(li, { text: bound.label, class: "text-muted" });
+        }
         if (b.stages) new Span(li, { text: `  ${fmtFlags(b.stages)}`, class: "text-muted font-sm" });
       });
     }

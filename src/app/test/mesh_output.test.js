@@ -18,7 +18,7 @@ const load = async (entry, name) => {
 const { parseMeshFile, clipPositions, clipStats, meshSummary, outputValues, positionOutput } = await load("mesh_output.ts", "mesh_output");
 const { listPositions } = await load("mesh_input.ts", "mesh_input");
 
-/** A file laid out the way WriteMeshData in src/replay/src/main.cpp lays it out: records of gl_Position and a float colour. */
+/** A file laid out the way WriteMeshData in src/replay/src/main.cpp lays it out: records of gl_Position and a float color. */
 function meshFile(vertices) {
   const stride = 20;
   const data = new Uint8Array(vertices.length * stride);

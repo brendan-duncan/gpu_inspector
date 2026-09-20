@@ -753,8 +753,8 @@ export class CapturePanel {
    * Testing aid (--debug-view=pixel-history on Metal or D3D12): ask for the second capture the
    * history needs. On those backends the library follows the pixel while it captures, so the first
    * capture only names one — the history comes from capturing the next frame, which is what the
-   * "Capture Next Frame" button in the render target tab does. The pixel is the centre of the
-   * first colour target, the same one `showView("pixel-history")` opened the tab on.
+   * "Capture Next Frame" button in the render target tab does. The pixel is the center of the
+   * first color target, the same one `showView("pixel-history")` opened the tab on.
    */
   debugCaptureHistory(): void {
     const view = this.activeView;
@@ -837,12 +837,12 @@ export class CapturePanel {
       done = true;
       // The overlay belongs to the new capture's own draw, so its render target tab is the one to
       // open: the image beside it is the frame the measurement was taken in. It has to be that
-      // draw's own pass's colour attachment -- a capture's textures hold the images its shaders
+      // draw's own pass's color attachment -- a capture's textures hold the images its shaders
       // sampled as well, and one of those would draw the overlay over the wrong picture entirely.
       const drawn = live.data.commands[measured.command];
       const target = drawn ? live.targetOfDraw(drawn) : null;
       if (target) live.onOpenTexture.emit(target, { overlay: kind, draw: measured.command });
-      else this._statusLabel.text = "the new capture has no colour render target for that draw";
+      else this._statusLabel.text = "the new capture has no color render target for that draw";
     };
     live.data.onDrawOverlays.addListener(finish);
     live.onCaptureComplete.addListener(finish);
@@ -1683,7 +1683,7 @@ export class CaptureView implements CaptureHost {
       const colors = Array.isArray(a.pRenderingInfo.pColorAttachments) ? a.pRenderingInfo.pColorAttachments.length : 0;
       return `Rendering ${passIndex}: ${colors} color attachment${colors === 1 ? "" : "s"}`;
     }
-    // Metal: a render pass descriptor names its attachments directly, and the first colour
+    // Metal: a render pass descriptor names its attachments directly, and the first color
     // attachment's texture is the best short name for the pass.
     if (a && Array.isArray(a.colorAttachments)) {
       const first = a.colorAttachments.find((c) => isObject(c) && c.texture !== null);
@@ -2286,14 +2286,14 @@ export class CaptureView implements CaptureHost {
     }
     else if (name === "pixel-history") {
       // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
-      // centre of the first colour render target.
+      // center of the first color render target.
       if (this.data.pixelHistory) {
         try {
           const h = parsePixelHistory(this.data.pixelHistory);
           this.openTextureForPixel({ image: h.image, x: h.x, y: h.y, mip: h.mip, layer: h.layer });
           return;
         } catch {
-          // shown as the centre of a render target instead
+          // shown as the center of a render target instead
         }
       }
       const t = this.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
@@ -2309,14 +2309,14 @@ export class CaptureView implements CaptureHost {
     return { key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex };
   }
 
-  /** The pass's first colour target (what its overdraw heat is drawn over). */
+  /** The pass's first color target (what its overdraw heat is drawn over). */
   private _targetOfPass(key: OverdrawPassKey): CaptureTarget | null {
     const textures = this.data.texturesForPass(key.frame, key.commandBuffer, key.passIndex);
     const tex = textures.find((t) => t.info.aspect === "color" && !t.info.resolve && !t.info.error) ?? textures[0];
     return tex ? { key, texture: tex } : null;
   }
 
-  /** The render target a draw's overlay is drawn over: its pass's first colour target. */
+  /** The render target a draw's overlay is drawn over: its pass's first color target. */
   targetOfDraw(cmd: CaptureCommand): CaptureTarget | null {
     const pass = findPass(this.data, cmd);
     if (!pass) return null;
@@ -2655,12 +2655,12 @@ export class CaptureView implements CaptureHost {
       this._setStatus(`shader edit: no source to edit: ${text.text.split("\n")[0]}`);
       return;
     }
-    // The last thing the entry point writes: HLSL returns its colour, GLSL assigns its output.
+    // The last thing the entry point writes: HLSL returns its color, GLSL assigns its output.
     const edited = d3d12
       ? text.text.replace(/return\s+float4\s*\([^;]*\)\s*;(?![\s\S]*return\s+float4)/, "return float4(1.0, 0.0, 1.0, 1.0);")
       : text.text.replace(/(\b\w+)\s*=\s*vec4\s*\([^;]*\)\s*;(?![\s\S]*=\s*vec4\s*\()/, "$1 = vec4(1.0, 0.0, 1.0, 1.0);");
     if (edited === text.text) {
-      this._setStatus("shader edit: the source has no colour written the way this testing aid edits one");
+      this._setStatus("shader edit: the source has no color written the way this testing aid edits one");
       return;
     }
     const compiled = d3d12

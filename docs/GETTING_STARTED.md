@@ -8,9 +8,11 @@ in the pages it links to.
 ## 1. Start GPU Inspector
 
 An installed build starts from the Start menu on Windows, the application list on Linux, or
-Applications on macOS. A source build starts with `npm start` in `src/app/`.
+Applications on macOS.
 
 The bar along the top is where sessions begin:
+
+![Launch Bar](images/launch-bar.png)
 
 | Control | What it does |
 |---|---|
@@ -18,6 +20,7 @@ The bar along the top is where sessions begin:
 | **Recent** | Relaunches a previous configuration |
 | **Port** + **Connect** | Connects to an application that is already running with the capture library enabled |
 | **Open Capture...** | Opens a saved `.gpucap` file. Dropping a file on the window does the same |
+
 
 ## 2. Launch an application
 

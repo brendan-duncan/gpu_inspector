@@ -1092,7 +1092,10 @@ var D3D12_SETS = {
   bindPointOf,
   BIND_PIPELINE: /* @__PURE__ */ new Set(["SetPipelineState", "SetPipelineState1"]),
   // The library records the bind point beside the pipeline (a compute pipeline state binds compute).
-  pipelineBindPointOf(_method, args) {
+  // SetPipelineState1 carries none: a state object is only ever read by a trace or a work graph
+  // dispatch, both of which are on the compute bind point.
+  pipelineBindPointOf(method, args) {
+    if (method === "SetPipelineState1") return "compute";
     return args?.bindPoint === "compute" ? "compute" : "graphics";
   },
   graphicsBindPoint: "graphics",
@@ -21210,7 +21213,7 @@ var Invocation = class {
       case 77:
       case 78: {
         const ptr = a(0);
-        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel centre");
+        this.warnings.add("interpolateAtCentroid / AtSample / AtOffset read the input at the pixel center");
         return ptr instanceof Pointer ? this._load(ptr) : ptr;
       }
       case 79:
@@ -25787,7 +25790,7 @@ var BLOCK_FORMATS = {
   VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
   VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG: { bytes: 8, width: 4, height: 4, channels: 4, decodeImage: (s, w, h, v) => decodePvrtc(s, w, h, false, v) },
   // Packed 4:2:2: two texels share their chroma. Shown as the stored Y, Cb and Cr values in
-  // the G, B and R channels, the way Metal's sampler returns them, without a colour conversion.
+  // the G, B and R channels, the way Metal's sampler returns them, without a color conversion.
   VK_FORMAT_G8B8G8R8_422_UNORM: { bytes: 4, width: 2, height: 1, channels: 3, names: ["R (Cr)", "G (Y)", "B (Cb)"], decode: (s, b, px) => {
     const g0 = s.getUint8(b) / 255, cb = s.getUint8(b + 1) / 255, g1 = s.getUint8(b + 2) / 255, cr = s.getUint8(b + 3) / 255;
     px[0] = cr;
@@ -26478,16 +26481,16 @@ function passOfCommand(data, cmd) {
 function passPixel(ctx, cmd, x, y) {
   const passInfo = passOfCommand(ctx.data, cmd);
   if (!passInfo) return void 0;
-  const colour = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
-  if (!colour?.data || x >= colour.info.width || y >= colour.info.height) return void 0;
-  const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  const color = ctx.data.texturesForPass(cmd.frame, passInfo.commandBuffer, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data);
+  if (!color?.data || x >= color.info.width || y >= color.info.height) return void 0;
+  const texels = decodeTexels({ format: color.info.format, aspect: "color", width: color.info.width, height: color.info.height }, color.data);
   if (!texels) return void 0;
   const o = (y * texels.width + x) * 4;
   return {
-    image: colour.info.id,
-    attachment: colour.info.attachment,
+    image: color.info.id,
+    attachment: color.info.attachment,
     value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))),
-    format: colour.info.format
+    format: color.info.format
   };
 }
 function vertexOutputsOf(ctx, cmd, state) {
@@ -26628,12 +26631,12 @@ async function prepareDebugSession(ctx, target) {
   const { x0, y0, target: lane } = PixelQuad.place(x, y);
   let targetPixel;
   const passInfo = findPass(data, cmd);
-  const colour = passInfo ? data.texturesForPass(cmd.frame, passInfo.passBegin.object?.__id ?? 0, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data) : void 0;
-  if (colour?.data && x < colour.info.width && y < colour.info.height) {
-    const texels = decodeTexels({ format: colour.info.format, aspect: "color", width: colour.info.width, height: colour.info.height }, colour.data);
+  const color = passInfo ? data.texturesForPass(cmd.frame, passInfo.passBegin.object?.__id ?? 0, passInfo.passIndex).find((t) => t.info.aspect === "color" && !t.info.resolve && t.data) : void 0;
+  if (color?.data && x < color.info.width && y < color.info.height) {
+    const texels = decodeTexels({ format: color.info.format, aspect: "color", width: color.info.width, height: color.info.height }, color.data);
     if (texels) {
       const o = (y * texels.width + x) * 4;
-      targetPixel = { image: colour.info.id, attachment: colour.info.attachment, value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))), format: colour.info.format };
+      targetPixel = { image: color.info.id, attachment: color.info.attachment, value: Array.from(texels.values.subarray(o, o + Math.min(4, Math.max(texels.channels, 1)))), format: color.info.format };
     }
   }
   return {
@@ -27343,6 +27346,7 @@ function referencedObjects(session, data) {
   for (const v of db.validation) db.collectReferences(v.objects, ids);
   for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
   for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
+  for (const o of db.objectsByType.get("ID3D12RaytracingAccelerationStructure")?.values() ?? []) ids.add(o.id);
   const out = /* @__PURE__ */ new Map();
   const queue = [...ids];
   while (queue.length) {
@@ -31942,12 +31946,12 @@ function captureTools(store) {
     },
     {
       name: "get_pixel_history",
-      description: `A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (under a second; later questions about the same capture are quicker); a Metal application follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for "why is this pixel this colour": the last draw that wrote it, and the draws that should have but were culled or failed a test.`,
+      description: `A pixel's history, the way RenderDoc gives it: every pass start, clear and draw of the frame that touched one pixel of a render target, what each draw's fragments at the pixel met (outside the scissor, culled, discarded by the fragment shader, failed the depth or stencil test, or wrote the pixel, with sample counts), and the pixel's value and depth after each. A Vulkan capture is replayed on this machine's GPU with vkinsp_replay (under a second; later questions about the same capture are quicker); a Metal application follows the pixel while it captures, so a Metal capture answers for the pixel capture_frames' pixelHistory named. Name the image by id (list_textures lists the render targets), or by pass and attachment. Use it for "why is this pixel this color": the last draw that wrote it, and the draws that should have but were culled or failed a test.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         image: { type: "integer", description: "The image's object id." },
         pass: { type: "integer", minimum: 0, description: "Instead of image: a render pass (get_bottlenecks' numbers) whose attachment to follow." },
-        attachment: { type: "integer", minimum: 0, description: "With pass: the colour attachment index (default 0)." },
+        attachment: { type: "integer", minimum: 0, description: "With pass: the color attachment index (default 0)." },
         x: { type: "integer", minimum: 0, description: "The pixel's column, at the mip level." },
         y: { type: "integer", minimum: 0, description: "The pixel's row, at the mip level." },
         mip: { type: "integer", minimum: 0, description: "The mip level the pass renders to (default: the read-back target's, else 0)." },
@@ -31986,7 +31990,7 @@ function captureTools(store) {
           if (!p || p.compute) throw new Error(`Pass ${passArg} is not a render pass (get_bottlenecks lists the passes).`);
           const attachment = intArg(args, "attachment", 0, 0);
           const tex = c2.data.texturesForPass(p.frame, p.commandBuffer, p.passIndex).find((t) => t.info.attachment === attachment && t.info.aspect === "color" && !t.info.resolve);
-          if (!tex) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no colour attachment ${attachment} read back (list_textures lists the render targets).`);
+          if (!tex) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no color attachment ${attachment} read back (list_textures lists the render targets).`);
           image = tex.info.id;
           mip ??= tex.info.mip;
         }

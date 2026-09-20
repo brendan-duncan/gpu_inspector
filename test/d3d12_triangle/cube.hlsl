@@ -32,7 +32,7 @@ struct PSInput {
 PSInput VSMain(VSInput input) {
     PSInput output;
     float4 world = mul(model, float4(input.position, 1.0));
-    // The two instances sit side by side, each spinning about its own centre.
+    // The two instances sit side by side, each spinning about its own center.
     world.x += ((float)input.instance * 2.0 - 1.0) * 0.9;
     output.position = mul(viewProj, world);
     output.color = input.color;

@@ -594,6 +594,99 @@ template <typename V> void Reflect(V& v, D3D12_DISCARD_REGION& s) {
     R_INT(NumSubresources);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Ray tracing
+//
+// A build and a trace name everything they read by GPU virtual address, which is exactly what
+// Address() exists for: the capture wrote each one as the buffer and offset it resolved to
+// (src/d3d12/src/raytracing.h), so the same descriptions fill with this machine's addresses.
+//
+// Two things these do not carry, and the replay has to put right itself (dx_raytracing.cpp): the
+// bytes inside an instance buffer, which hold the captured process's bottom level addresses, and
+// the bytes inside a binding table, which hold the captured state object's shader identifiers.
+
+template <typename V> void Reflect(V& v, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE& s) {
+    v.Address("StartAddress", s.StartAddress);
+    R_INT(StrideInBytes);
+}
+
+template <typename V> void Reflect(V& v, D3D12_GPU_VIRTUAL_ADDRESS_RANGE& s) {
+    v.Address("StartAddress", s.StartAddress);
+    R_INT(SizeInBytes);
+}
+
+template <typename V> void Reflect(V& v, D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE& s) {
+    v.Address("StartAddress", s.StartAddress);
+    R_INT(SizeInBytes);
+    R_INT(StrideInBytes);
+}
+
+template <typename V> void Reflect(V& v, D3D12_DISPATCH_RAYS_DESC& s) {
+    R_STRUCT(RayGenerationShaderRecord);
+    R_STRUCT(MissShaderTable);
+    R_STRUCT(HitGroupTable);
+    R_STRUCT(CallableShaderTable);
+    R_INT(Width);
+    R_INT(Height);
+    R_INT(Depth);
+}
+
+template <typename V> void Reflect(V& v, D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& s) {
+    v.Address("Transform3x4", s.Transform3x4);
+    R_ENUM(IndexFormat, DXGI_FORMAT);
+    R_ENUM(VertexFormat, DXGI_FORMAT);
+    R_INT(IndexCount);
+    R_INT(VertexCount);
+    v.Address("IndexBuffer", s.IndexBuffer);
+    R_STRUCT(VertexBuffer);
+}
+
+template <typename V> void Reflect(V& v, D3D12_RAYTRACING_GEOMETRY_AABBS_DESC& s) {
+    R_INT(AABBCount);
+    R_STRUCT(AABBs);
+}
+
+template <typename V> void Reflect(V& v, D3D12_RAYTRACING_GEOMETRY_DESC& s) {
+    R_ENUM(Type, D3D12_RAYTRACING_GEOMETRY_TYPE);
+    R_FLAGS(Flags, D3D12_RAYTRACING_GEOMETRY_FLAGS);
+    // The union's arm follows the type, which is always visited first.
+    if (s.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS) R_STRUCT(AABBs);
+    else R_STRUCT(Triangles);
+}
+
+/**
+ * A build's inputs. `ppGeometryDescs` (D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS) is read as an
+ * ordinary array and the layout becomes ARRAY: the geometries are the same either way, and the
+ * pointer array only existed so the application could gather them from wherever it kept them.
+ */
+template <typename V> void Reflect(V& v, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& s) {
+    R_ENUM(Type, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE);
+    R_FLAGS(Flags, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS);
+    R_INT(NumDescs);
+    R_ENUM(DescsLayout, D3D12_ELEMENTS_LAYOUT);
+    if (s.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+        v.Address("InstanceDescs", s.InstanceDescs);
+    } else if (s.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL) {
+        v.Array("pGeometryDescs", s.pGeometryDescs, "NumDescs", s.NumDescs);
+        if (!s.pGeometryDescs) {
+            v.Array("ppGeometryDescs", s.pGeometryDescs, "NumDescs", s.NumDescs);
+            if (s.pGeometryDescs) s.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        }
+    }
+}
+
+template <typename V> void Reflect(V& v, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& s) {
+    v.Address("DestAccelerationStructureData", s.DestAccelerationStructureData);
+    R_STRUCT(Inputs);
+    v.Address("SourceAccelerationStructureData", s.SourceAccelerationStructureData);
+    v.Address("ScratchAccelerationStructureData", s.ScratchAccelerationStructureData);
+}
+
+template <typename V> void Reflect(V& v, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC& s) {
+    v.Address("DestBuffer", s.DestBuffer);
+    R_ENUM(InfoType, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE);
+}
+
 #undef R_INT
 #undef R_FLOAT
 #undef R_BOOL

@@ -51,7 +51,7 @@ struct HistoryPass {
     uint64_t texture = 0;
     uint32_t x = 0;
     uint32_t y = 0;
-    /** The colour attachment the pixel is read from, as an index into MeasuredPass::colors. */
+    /** The color attachment the pixel is read from, as an index into MeasuredPass::colors. */
     int target = -1;
     /** Why the pass is not followed. */
     std::string note;
@@ -77,7 +77,7 @@ namespace {
 constexpr int kVariants = 6;
 /** Draws followed per pass: seven draws each, in the application's own command list. */
 constexpr uint32_t kMaxDraws = 1024;
-/** One event's pixel in the readback buffer: the colour at the start, the depth halfway, both 512-aligned. */
+/** One event's pixel in the readback buffer: the color at the start, the depth halfway, both 512-aligned. */
 constexpr uint32_t kSlotBytes = 1024;
 constexpr uint32_t kDepthSlotOffset = 512;
 

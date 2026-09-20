@@ -72,7 +72,7 @@ static void Write(JsonWriter& w, const D3D12_BUFFER_BARRIER& v);
 static void Write(JsonWriter& w, const D3D12_BARRIER_SUBRESOURCE_RANGE& v);
 static void Write(JsonWriter& w, const D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS& v);
 static void Write(JsonWriter& w, const D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE& v);
-static void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_DESC& v);
+void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_DESC& v);
 static void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& v);
 static void Write(JsonWriter& w, const D3D12_RAYTRACING_OPACITY_MICROMAP_ARRAY_DESC& v);
 static void Write(JsonWriter& w, const D3D12_NODE_CPU_INPUT& v);
@@ -1909,7 +1909,7 @@ static void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC&
     w.EndObject();
 }
 
-static void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_DESC& v) {
+void Write(JsonWriter& w, const D3D12_RAYTRACING_GEOMETRY_DESC& v) {
     w.BeginObject();
     M_ENUM(Type, D3D12_RAYTRACING_GEOMETRY_TYPE);
     M_FLAGS(Flags, D3D12_RAYTRACING_GEOMETRY_FLAGS);

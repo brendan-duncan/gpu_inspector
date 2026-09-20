@@ -77,7 +77,7 @@ private:
         std::vector<VkImage> images;
         std::vector<VkImageView> views;
         std::vector<VkFramebuffer> framebuffers;
-        bool usable = false;      // the swapchain can be drawn into (colour attachment usage)
+        bool usable = false;      // the swapchain can be drawn into (color attachment usage)
         bool complained = false;  // "cannot draw into this swapchain" has been logged once
     };
 

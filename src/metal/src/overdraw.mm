@@ -85,7 +85,7 @@ void SendBool(id object, const char *selector, BOOL value) {
     if ([object respondsToSelector:sel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(object, sel, value);
 }
 
-/** The counting fragment function: 1.0 into the first colour target. */
+/** The counting fragment function: 1.0 into the first color target. */
 id<MTLFunction> CountFunction(id<MTLDevice> device) {
     return LibraryFunction(device, "gpu_inspector_overdraw_count",
                            @"#include <metal_stdlib>\nfragment float gpu_inspector_overdraw_count() { return 1.0; }\n");

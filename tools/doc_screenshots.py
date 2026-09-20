@@ -86,7 +86,7 @@ SHOTS = [
     Shot("frame-bound-capture-cost", ["--debug-open={capture}", "--debug-view=stats:Frame Bound"],
          delay_ms=12000, capture="unity-live.gpucap"),
     # Overdraw and pixel history replay the capture on this machine's GPU: slower. Both open on
-    # the first colour target, and pixel history follows its centre pixel, so they want a frame
+    # the first color target, and pixel history follows its center pixel, so they want a frame
     # whose first target is small enough to see whole and has something at the middle of it —
     # which the test application's frame is, and a real one usually is not.
     Shot("overdraw", ["--launch={triangle}", "--debug-capture", "--debug-view=overdraw"],

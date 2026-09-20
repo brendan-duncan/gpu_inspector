@@ -1,6 +1,11 @@
 ## Unreleased
 
 ### Added
+- Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
+- DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
+- `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
+- A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
+- `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.
 - **Timing Capture** on Direct3D 12: every frame's time and CPU split over minutes, as on Vulkan.
 - **Sample stacks** (Windows): a timing capture samples every thread's call stack, running or blocked, and the report says what each thread was doing in the worst hitch or the stretch dragged out.
 - **Memory Capture** on Vulkan and Direct3D 12: every allocation and free, and a report of what is still held, what was transient, and which frames allocated.
@@ -44,7 +49,7 @@
 - A D3D12 capture keeps the objects a frame creates and releases within itself, which were gone by the time it was shown or saved.
 - A D3D12 capture reads what `CopyBufferRegion` and buffer-to-texture copies read, and vertex and index buffers whole, so a replay has them.
 - `capture_frames` no longer saves a capture cut short when the capture library pauses for seconds while it converts large textures.
-- A Metal capture's colour attachment holds its own contents, not the depth attachment's: a depth attachment is announced under attachment index 0, the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect to tell the two apart, so the depth read-back landed on the colour entry. Found by the new replay, which read back a colour target full of floats.
+- A Metal capture's color attachment holds its own contents, not the depth attachment's: a depth attachment is announced under attachment index 0, the same as color attachment 0, and `CaptureTextureData` did not carry the aspect to tell the two apart, so the depth read-back landed on the color entry. Found by the new replay, which read back a color target full of floats.
 - A Metal library built ahead of time (`newLibraryWithURL:`, `newLibraryWithFile:`, `newDefaultLibrary`, `newDefaultLibraryWithBundle:` — what a shipped player uses) carries its metallib bytes in the capture, so it can be re-created without the file it was loaded from.
 - Capturing a Direct3D 12 frame no longer crashes a Unity player: a list left open at the frame boundary kept the capture's queries open and failed to close, which Unity read as a lost device.
 

@@ -108,7 +108,7 @@ const OVERLAYS: { kind: TextureOverlayKind; label: string; vulkanOnly: boolean }
 const OVERLAY_TOOLTIPS: Record<TextureOverlayKind, string> = {
   none: "",
   overdraw: "The pass's overdraw: how many fragments landed on each pixel, with the counts in the tooltip",
-  highlight: "The draw's pixels in a flat colour, the rest darkened",
+  highlight: "The draw's pixels in a flat color, the rest darkened",
   depth: "The draw's pixels by whether its fragments passed the depth and stencil tests (green) or were rejected (red)",
   stencil: "The draw's pixels by whether its fragments passed the stencil test alone (green) or were rejected by it (red)",
   backface: "Where the draw's own culling left nothing: only back faces of it reach those pixels",
@@ -121,7 +121,7 @@ export class CaptureTextureView {
   private _target: CaptureTarget;
   private _overlayKind: TextureOverlayKind = "none";
   private _depthTested = true;
-  /** Percent of the overlay colour over the render target. */
+  /** Percent of the overlay color over the render target. */
   private _opacity = 70;
   private _measuring = false;
   private _measureError = "";
@@ -268,7 +268,7 @@ export class CaptureTextureView {
     this._overlayRow = null;
 
     new Div(this.root, { class: "capture-texture-head", text: `${this.host.passLabelOf(this._target.key)} — `
-      + `${info.aspect === "depth" ? "depth attachment" : info.aspect === "stencil" ? "stencil attachment" : `colour attachment ${info.attachment}`}${info.resolve ? " (resolve)" : ""}: `
+      + `${info.aspect === "depth" ? "depth attachment" : info.aspect === "stencil" ? "stencil attachment" : `color attachment ${info.attachment}`}${info.resolve ? " (resolve)" : ""}: `
       + `${this.host.objectName(info.id)} ${fmt(info.format).replace(/^VK_FORMAT_/, "")} ${info.width}x${info.height}` });
 
     const split = new Div(this.root, { class: "capture-texture-split" });
@@ -377,7 +377,7 @@ export class CaptureTextureView {
     if (this._drawOverlayKind()) void this._ensureDrawOverlay();
   }
 
-  /** The overlay's colour over the image, and what it says about the pixel under the pointer. */
+  /** The overlay's color over the image, and what it says about the pixel under the pointer. */
   private _overlay(): ImageOverlay {
     return {
       rgba: (width, height) => {
@@ -435,7 +435,7 @@ export class CaptureTextureView {
   }
 
   private _opacityInput(row: Div): void {
-    new Span(row, { text: "Overlay %", class: "launch-label", tooltip: "How much of the overlay's colour covers the render target" });
+    new Span(row, { text: "Overlay %", class: "launch-label", tooltip: "How much of the overlay's color covers the render target" });
     new NumberInput(row, { value: this._opacity, step: 10, min: 0, max: 100, precision: 0, onChange: (v: string) => {
       const n = parseFloat(v);
       if (Number.isFinite(n)) {

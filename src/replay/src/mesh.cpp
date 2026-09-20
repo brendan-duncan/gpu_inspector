@@ -77,25 +77,25 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
             p.estimate = count * instances;
         }
 
-        TransientImage colour = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        TransientImage color = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
         // A draw with shader objects must be issued in dynamic rendering; a pipeline copy is made for a render pass.
         const bool shaderObjects = DrawUsesShaderObjects(group, target) && _fns.CmdBeginRendering;
         VkRenderPass rp = shaderObjects ? VK_NULL_HANDLE : OverdrawRenderPass(VK_FORMAT_UNDEFINED);
         VkFramebuffer fb = VK_NULL_HANDLE;
-        if (colour.image && shaderObjects) {
-            Barrier(cb, colour.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        } else if (colour.image && rp) {
+        if (color.image && shaderObjects) {
+            Barrier(cb, color.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        } else if (color.image && rp) {
             VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             fbInfo.renderPass = rp;
             fbInfo.attachmentCount = 1;
-            fbInfo.pAttachments = &colour.view;
+            fbInfo.pAttachments = &color.view;
             fbInfo.width = pass.extent.width;
             fbInfo.height = pass.extent.height;
             fbInfo.layers = 1;
             if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) == VK_SUCCESS) _transientFramebuffers.push_back(fb);
             else fb = VK_NULL_HANDLE;
         }
-        if (shaderObjects ? !colour.image : !fb) {
+        if (shaderObjects ? !color.image : !fb) {
             result.note = "no memory for the pass the draw is issued in";
             _report->meshes.push_back(std::move(result));
             continue;
@@ -108,7 +108,7 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         _overlayDrawn = false;
         _overlayDrawnPipeline = 0;
         _meshTarget = &p;
-        ReissuePass(cb, group, pass, endIndex, false, VK_FORMAT_UNDEFINED, rp, fb, shaderObjects ? colour.view : VK_NULL_HANDLE);
+        ReissuePass(cb, group, pass, endIndex, false, VK_FORMAT_UNDEFINED, rp, fb, shaderObjects ? color.view : VK_NULL_HANDLE);
         const bool drawn = _overlayIssued && _overlayDrawn && p.buffer.buffer;
         // The pipeline the draw was issued with (a later secondary of the pass resets the one bound last).
         const uint64_t pipeline = _overlayIssued ? _overlayDrawnPipeline : _overlayPipeline;

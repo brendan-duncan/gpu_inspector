@@ -528,7 +528,7 @@ test("vkinsp_replay's pixel history is read back and says what each draw met", a
     kind: "draw", command: 17, method: "vkCmdDrawIndexed", detail: "", commandBuffer: 7, frame: 0, passIndex: 0, pipeline: 48, scissored: false,
     testsMeasured: 63, covered: 2, facing: 1, shaded: 1, depthPassed: 1, stencilPassed: 1, passed: 1, value: "c73cc7ff", depth: "7236743f", ...fields,
   });
-  // What the replay wrote for the triangle's centre pixel, plus draws that met each obstacle.
+  // What the replay wrote for the triangle's center pixel, plus draws that met each obstacle.
   const h = parsePixelHistory(JSON.stringify({
     format: "gpu-inspector-pixel-history", version: 1, device: "Test GPU", image: 17, x: 320, y: 240, mip: 0, layer: 0,
     pixelFormat: "VK_FORMAT_B8G8R8A8_UNORM", depthFormat: "VK_FORMAT_D32_SFLOAT",

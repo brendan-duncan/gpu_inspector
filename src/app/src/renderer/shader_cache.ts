@@ -22,7 +22,13 @@ export interface StageSource {
   stageIndex?: number;
 }
 
-/** A ray tracing pipeline's shader group, with the stages it names as their indices in pStages. */
+/**
+ * A ray tracing group and the shaders it runs.
+ *
+ * Vulkan names them by index into the pipeline's pStages; D3D12 has no stage array and names its
+ * exports, so a D3D12 group (d3d12/raytracing.ts) fills the `*Name` fields instead and its `index`
+ * is only its position in the list the UI built.
+ */
 export interface ShaderGroup {
   index: number;
   type: "general" | "triangles hit" | "procedural hit" | string;
@@ -30,6 +36,11 @@ export interface ShaderGroup {
   closestHit?: number;
   anyHit?: number;
   intersection?: number;
+  /** D3D12: the group's own export, which is what a binding table record holds. */
+  name?: string;
+  closestHitName?: string;
+  anyHitName?: string;
+  intersectionName?: string;
 }
 
 /** The shader groups of a ray tracing pipeline (VkRayTracingPipelineCreateInfoKHR::pGroups); empty for any other pipeline. */

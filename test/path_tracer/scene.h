@@ -51,7 +51,7 @@ struct Aabb {
 struct Camera {
     float center[3];
     float defocusAngle;   // degrees; 0 disables the defocus blur
-    float pixel00[3];     // the centre of the top left pixel
+    float pixel00[3];     // the center of the top left pixel
     float pad0;
     float pixelDeltaU[3];
     float pad1;

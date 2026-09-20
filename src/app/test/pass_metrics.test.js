@@ -40,7 +40,7 @@ function capture(commands, timings, api = "metal") {
   };
 }
 
-/** One 100x100 colour texture, so overdraw has a denominator of 10000. */
+/** One 100x100 color texture, so overdraw has a denominator of 10000. */
 const db = {
   getObject: (id) => (id === COLOR_TEXTURE
     ? { descriptor: { width: 100, height: 100, sampleCount: 1, mipmapLevelCount: 1 } }

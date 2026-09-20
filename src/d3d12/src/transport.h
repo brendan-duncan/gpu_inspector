@@ -5,7 +5,9 @@
 //   u32 payloadLength (little endian, not counting the kind byte), u8 kind, payload
 //   kind 0: UTF-8 JSON text
 //   kind 1: u32 headerLength, JSON header, raw bytes
-// One client at a time, on 127.0.0.1:DXINSP_PORT. Outgoing messages are queued and written by a
+// One client at a time, on 127.0.0.1:DXINSP_PORT -- or, when that was not set, on the first free
+// port of the small range in target_probe.h, which is also where the handshake that tells a probe
+// from a client is described. Outgoing messages are queued and written by a
 // sender thread, so an intercepted D3D12 call never blocks on the socket. The Metal library's
 // copy of the same code decoupled the three calls the Vulkan one makes into its tracker and
 // validation log as the callbacks below; this is that shape again.

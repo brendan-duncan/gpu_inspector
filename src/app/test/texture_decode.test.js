@@ -38,7 +38,7 @@ for (const v of vectors) {
     // SNORM references store -1..1 as 0..255; float references clamp to 0..1 like UNORM.
     const signed = /SNORM/.test(v.format);
     // Punchthrough alpha: the specification makes a transparent texel black; the reference
-    // keeps its colour. Only the alpha is compared there.
+    // keeps its color. Only the alpha is compared there.
     const punchthrough = /R8G8B8A1/.test(v.format);
     for (let i = 0; i < n; i++) {
       for (let c = 0; c < 4; c++) {
@@ -59,7 +59,7 @@ for (const v of vectors) {
 
 // --- what an image holds past the picture of it -------------------------------------------------
 //
-// A NaN in a render target is invisible: it clamps to some ordinary colour on screen and no other
+// A NaN in a render target is invisible: it clamps to some ordinary color on screen and no other
 // figure in a capture points at it. These cover the counting, the ranges that have to ignore it,
 // and the marking that puts it where it can be seen.
 
@@ -107,7 +107,7 @@ test("an image of ordinary values is marked as nothing at all", () => {
   assert.equal(markTexels(floats([0, 0.5, 1]), true), null);
 });
 
-test("NaN and the infinities are marked in their own colours", () => {
+test("NaN and the infinities are marked in their own colors", () => {
   const marks = markTexels(floats([0.5, NaN, Infinity, -Infinity]), false);
   assert.ok(marks, "an image with a NaN in it is marked");
   const at = (i) => [marks[i * 4], marks[i * 4 + 1], marks[i * 4 + 2]];

@@ -248,7 +248,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       **Per-fragment values** — the primitive of the fragment that won the pixel, from a pass of the
       replay's own: the draw again with its fragment shader replaced by one writing `gl_PrimitiveID`
       into an R32_UINT target, over the copy of the pass's depth, with the one-pixel scissor (needs
-      the geometryShader feature, which the replay now enables). Checked on the cube: the centre
+      the geometryShader feature, which the replay now enables). Checked on the cube: the center
       pixel is primitive 5, and other pixels 2, 3 and 4.
       The `pixel-history` case in `tools/ui_tests.py` covers it through the app.
 - [x] Pixel history, every fragment of a draw with its own value and primitive: the frame is
@@ -269,7 +269,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       that passed against the depth the *draw* started from, not the one that actually won. It now
       tests against a copy of its own (`PendingHistory::idDepthCopy`, refreshed before each draw)
       with the draw's own depth writes, so the primitive it leaves is the winner. Seen on
-      `--no-cull`: the draw reported primitive 7 while the pixel held primitive 5's colour; both say
+      `--no-cull`: the draw reported primitive 7 while the pixel held primitive 5's color; both say
       5 now.
 - [ ] Pixel history in a layered pass past its first layer. What it needs, none of which is written:
       the shadow copies of the attachments as arrays rather than single-layer images (so
@@ -298,7 +298,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       way a Metal capture's is shown; `get_overdraw` replays a Vulkan capture on first use.
 - [x] A capture's render target in a tab of its own (`renderer/capture_texture_view.ts`), after
       WebGPU Inspector's capture texture viewer: the image with the pass's overdraw over it when
-      **Overdraw** is ticked (legend, counts under the pointer, how much colour covers it), and the
+      **Overdraw** is ticked (legend, counts under the pointer, how much color covers it), and the
       history of the pixel clicked beside the image.
 - [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
       view of a multiview pass.
@@ -661,18 +661,18 @@ vendor's driver is listed at the end so nobody spends time on it.
       application actually set, out of the dozens Metal defaults. Verified on an M1 Max by
       building and running what it wrote: the triangle, `--occluded` (depth) and
       `--present-direct` all replay and re-run with every target identical. Worth keeping: the
-      first frame with a depth attachment differed in **every texel of its colour target**, and
+      first frame with a depth attachment differed in **every texel of its color target**, and
       the fault was the capture's — a depth attachment is announced under attachment index 0 like
-      colour attachment 0, and `CaptureTextureData` carried no aspect, so the depth read-back
-      landed on the colour entry. The Vulkan layer had always sent the aspect for exactly this
-      reason. Nothing in the UI had shown it, because a depth image and a colour image of the same
+      color attachment 0, and `CaptureTextureData` carried no aspect, so the depth read-back
+      landed on the color entry. The Vulkan layer had always sent the aspect for exactly this
+      reason. Nothing in the UI had shown it, because a depth image and a color image of the same
       pass both render as an image.
 - [ ] Metal replay, the rest: acceleration structures and ray tracing, indirect command buffers,
       argument encoders, mesh shader draws, and the analyses `vkinsp_replay` serves (overdraw is
       measured while capturing on Metal already, but overlays, mesh output, per-draw timing and
       ablation are not). Tile shading is recorded but is not on `MTLRenderCommandEncoder` in the
       macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
-- [ ] D3D12 replay, the rest: ray tracing, mesh shader pipelines from a stream, the analyses
+- [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing), descriptors indexed out of
       the heap (shader model 6.6), which no table snapshot covers, and a slot rewritten within one
       submission, which needs descriptors staged per draw rather than written at record time.
@@ -946,7 +946,7 @@ backend does. Ordered by value per effort.
       with the attachment's sample count, since the draws re-issued into them are the
       application's and a pipeline's sample count has to match its attachment; nothing can be
       blitted out of a multisampled texture, so the two attachments the pixel is read from resolve
-      into a single-sample copy first (colour the way the hardware would, depth sample 0). The
+      into a single-sample copy first (color the way the hardware would, depth sample 0). The
       sample now reports "wrote the pixel (12 samples passed)" — three instances over four
       samples. `metal-pixel-history` in `tools/ui_tests.py`.
 - [ ] Metal pixel history on a Unity player: it runs, follows the drawable and declines no pass,
@@ -1112,7 +1112,7 @@ library does not read back yet.
   - [x] **Draw overlays** (Highlight Draw, Depth Test, Wireframe). The closest thing to what the
         library already does: `src/d3d12/src/overdraw.cpp` re-issues a pass with every pipeline
         replaced by a counting copy, and an overlay is the same machinery issuing *one* draw with a
-        flat-colour pixel shader. Depth Test is the two runs overdraw already makes (with the
+        flat-color pixel shader. Depth Test is the two runs overdraw already makes (with the
         pass's depth-stencil state, and without); Wireframe is `D3D12_FILL_MODE_WIREFRAME` on the
         PSO copy. Done in `src/d3d12/src/draw_overlay.cpp`: three runs into count targets of the
         pass's size, folded into the one byte per pixel the UI draws. Asking for an overlay captures
@@ -1142,7 +1142,50 @@ library does not read back yet.
         and binding a 1x1 texture in place of one SRV (that texture's bandwidth, not its ALU).
 - [x] Stencil read-back: plane 1 of a depth-stencil target, beside its depth (`--stencil` in
       `test/d3d12_triangle`, the `d3d12-stencil` UI case). A multisampled stencil is not resolved.
-- [ ] The contents of sampler feedback, video, work graph and raytracing objects; enhanced
+- [x] Ray tracing (`src/d3d12/src/raytracing.h`), the DXR half of what the Vulkan layer does. Three
+      numbers hide everything, and each needed its own answer:
+      * **Shader identifiers.** A trace names four regions of memory, and each record begins with
+        the 32 opaque bytes the runtime gave for an export. `ID3D12StateObjectProperties::GetShaderIdentifier`
+        is hooked (a new `ID3D12StateObjectProperties1` in `gen_d3d12.py`, patched through a plain
+        `HookVtable` because the interface shares the state object's reference count), and the
+        library also asks for the identifier of every export the description names. Both are needed:
+        a DXIL library with `NumExports` 0 exports everything in it under its own names, which
+        nothing but the container lists, and the hook is what catches those.
+      * **Build inputs.** Resolved through `AddressMap` and read back, the way the Vulkan layer
+        reads a build's vertices and instances.
+      * **The structures.** This is where D3D12 differs in kind rather than in spelling: a
+        `VkAccelerationStructureKHR` is a handle, and a DXR structure is a range in a UAV buffer
+        named only by the address a build wrote it to. So the library mints one tracked
+        `ID3D12RaytracingAccelerationStructure` per destination address, keyed by a sentinel of its
+        own so it can never collide with an interface pointer, and every later build, copy,
+        descriptor and instance reference resolves to it.
+      Verified on an RTX 4080 with `dxinsp_triangle --ray-tracing`: both levels in the capture with
+      their builds, the instances resolving to the bottom level they name, and all four binding
+      table records resolving to their exports. Two defects found doing it: the structures were
+      minted only while a recorder existed, so a bottom level built at start-up had no object at
+      all; and `capture_file.ts` dropped them when saving, because nothing in a command references
+      one (the Vulkan structures were already kept for the same reason).
+- [x] DXR replay (`src/d3d12/replay/src/dx_raytracing.cpp`). The addresses decode like any other,
+      so what the replay had to do itself is the two kinds of number written *inside* buffers: an
+      instance's bottom level reference, remapped through the address each structure object carries,
+      and a binding table record's identifier, remapped through the export name it resolves to. A
+      structure's buffer is **created** in `D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE`
+      rather than moved into it, which a barrier cannot do. Verified byte for byte on an RTX 4080
+      with `--rebuild-blas`, under the debug layer. The defect it found was the replay's own: a
+      build's inputs are read back under their field names rather than in the flat `bufferData`
+      list, and nothing uploaded them, so the replay built a bottom level out of uninitialized
+      memory — which is indistinguishable from a correct replay of an empty scene.
+- [ ] Ray tracing, the rest:
+  - A bottom level built before the capture cannot be filled by the replay, which is how every real
+    engine builds them. The capture records that build on the structure but not the *contents* of
+    the buffers it read, so there is nothing to build from; reading those back when a capture starts
+    would close it. The replay reports it against the instance that named the structure rather than
+    tracing an empty scene in silence. The Vulkan side has the same gap for the same reason.
+  - A binding table record's local root arguments are copied as they were, so a descriptor handle or
+    a GPU address among them points at the captured process's memory. Nothing in the capture says
+    which of a record's bytes are which.
+  - An opacity micromap array build, `ExecuteIndirect` over a trace, and exporting any of it to C++.
+- [ ] The contents of sampler feedback, video and work graph objects; enhanced
       barriers (`Barrier`) beyond the layouts that map to legacy states.
 - [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded
       without contents (bundles inherit the caller's root signature).

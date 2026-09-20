@@ -82,6 +82,10 @@ function referencedObjects(session: LayerSession, data: CaptureData): VulkanObje
   // handful of these even in a large frame (renderer/acceleration_structure.ts).
   for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
   for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
+  // D3D12's are the objects the capture library mints for them (src/d3d12/src/raytracing.h): a
+  // structure there is a range in a buffer, so nothing in a command names one at all and keeping
+  // only what the commands reference would drop every level, not just the bottom ones.
+  for (const o of db.objectsByType.get("ID3D12RaytracingAccelerationStructure")?.values() ?? []) ids.add(o.id);
   const out = new Map<number, VulkanObject>();
   const queue = [...ids];
   while (queue.length) {

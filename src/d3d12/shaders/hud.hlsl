@@ -1,7 +1,7 @@
 // The in-app HUD's shaders (see src/vulkan/src/hud_text.h, which builds the rectangles).
 //
 // One instance per rectangle, four vertices as a triangle strip. Nothing is sampled and nothing is
-// bound but the vertex buffer and two root constants: the colour travels with the instance, so the
+// bound but the vertex buffer and two root constants: the color travels with the instance, so the
 // HUD needs no descriptor heap for its own drawing.
 //
 // The one difference from the Vulkan version of these shaders is the y flip below: HUD rectangles

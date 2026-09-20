@@ -335,7 +335,7 @@ private:
     void ReleaseDevice(DeviceCapture& dc);
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
                          VkBuffer* bufferOut = nullptr);
-    // A render target's read-back: one texture per aspect (ReadBackAspects: colour, or depth and
+    // A render target's read-back: one texture per aspect (ReadBackAspects: color, or depth and
     // then stencil, each its own copy and texture entry).
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
                            VkImageLayout layout, bool resolveTarget = false);

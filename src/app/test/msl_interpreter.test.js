@@ -170,14 +170,14 @@ test("a vertex entry point: stage_in attributes, a matrix and a built-in", () =>
   const position = outputs.find((o) => o.builtin === 0);
   // Column-major: rotation is columns (0, 1) and (-1, 0), so it turns (1, 2) into (-2, 1).
   assert.deepEqual(position.value.map((v) => +v.toFixed(4)), [-2, 1, 0, 1]);
-  assert.deepEqual(outputs.find((o) => o.name === "colour").value.map((v) => +v.toFixed(4)), [1, 0.5, 0.25]);
+  assert.deepEqual(outputs.find((o) => o.name === "color").value.map((v) => +v.toFixed(4)), [1, 0.5, 0.25]);
   near(outputs.find((o) => o.name === "fog").value, 12, "vertex_id times the weight");
 });
 
 test("a fragment entry point: varyings by name, an explicit level and a bound texture", () => {
   const invocation = run(basic, "shade", {
     bindings: bindings({ buffers: { 1: uniforms({ tint: [1, 1, 1, 0.25] }) } }),
-    inputs: inputs({ varyings: { position: [0.25, 0.25, 0, 1], colour: [1, 1, 1], fog: [0] } }),
+    inputs: inputs({ varyings: { position: [0.25, 0.25, 0, 1], color: [1, 1, 1], fog: [0] } }),
   });
   const value = invocation.outputs()[0].value;
   // The texture's top-left texel is red, and fog is 0 so the branch is not taken.
@@ -187,7 +187,7 @@ test("a fragment entry point: varyings by name, an explicit level and a bound te
 test("a fragment's branch is taken when its varying says so", () => {
   const invocation = run(basic, "shade", {
     bindings: bindings({ buffers: { 1: uniforms({ tint: [1, 1, 1, 1] }) } }),
-    inputs: inputs({ varyings: { position: [0.25, 0.25, 0, 1], colour: [1, 1, 1], fog: [1] } }),
+    inputs: inputs({ varyings: { position: [0.25, 0.25, 0, 1], color: [1, 1, 1], fog: [1] } }),
   });
   assert.deepEqual(invocation.outputs()[0].value.map((v) => +v.toFixed(4)), [1, 0.5, 0.5, 1]);
 });
@@ -297,7 +297,7 @@ function runSpecialized(constantValues) {
   assert.equal(invocation.run(), "returned", invocation.error);
   const view = wrote(invocation, 0);
   return {
-    colour: [0, 1, 2].map((i) => +view.getFloat32(i * 4, true).toFixed(4)),
+    color: [0, 1, 2].map((i) => +view.getFloat32(i * 4, true).toFixed(4)),
     modeDefined: view.getFloat32(12, true),
     warnings: [...invocation.warnings],
   };
@@ -307,26 +307,26 @@ test("the shader is specialized with the constants the function was built with",
   // kEnable mixes towards white by kAmount, then kMode 1 swizzles to bgr.
   const r = runSpecialized(specialization({ byIndex: { 0: 1, 1: 0.5, 2: true } }));
   const mixed = [0.25, 0.5, 0.75].map((c) => +(c + (1 - c) * 0.5).toFixed(4));
-  assert.deepEqual(r.colour, [mixed[2], mixed[1], mixed[0]]);
+  assert.deepEqual(r.color, [mixed[2], mixed[1], mixed[0]]);
   assert.equal(r.modeDefined, 1, "is_function_constant_defined is true for a constant that was set");
 });
 
 test("a different specialization of the same shader takes different branches", () => {
   // kMode 2 inverts, and kEnable false skips the mix entirely.
   const r = runSpecialized(specialization({ byIndex: { 0: 2, 1: 0.5, 2: false } }));
-  assert.deepEqual(r.colour, [0.75, 0.5, 0.25]);
+  assert.deepEqual(r.color, [0.75, 0.5, 0.25]);
 });
 
 test("a constant set by name reaches the same global", () => {
   const r = runSpecialized(specialization({ byIndex: { 0: 0, 1: 0, 2: false }, byName: { kBias: [0.1, 0.2, 0.3] } }));
-  assert.deepEqual(r.colour, [0.35, 0.7, 1.05],
+  assert.deepEqual(r.color, [0.35, 0.7, 1.05],
     "is_function_constant_defined(kBias) was true, so the bias was added");
 });
 
 test("a constant the capture has no value for reads as zero, and says so", () => {
   const r = runSpecialized(specialization());
   // Nothing set: kEnable is false, kMode is 0, and the guarded bias is not added.
-  assert.deepEqual(r.colour, [0.25, 0.5, 0.75]);
+  assert.deepEqual(r.color, [0.25, 0.5, 0.75]);
   assert.equal(r.modeDefined, 0, "is_function_constant_defined is false for a constant that was not set");
   assert.equal(r.warnings.length, 1, `one warning naming what is missing: ${r.warnings}`);
   assert.match(r.warnings[0], /kMode \[\[function_constant\(0\)\]\]/);

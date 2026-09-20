@@ -63,7 +63,7 @@ void UploadBuffer(ID3D12Resource* buffer, UINT64 offset, const void* data, UINT6
 /**
  * Copies `count` subresources of a render target at this point of the list, from the state it is in,
  * to compare with `captured` once the list has run. A multisampled target (`resolveFormat` set) is
- * resolved first. `aspect`: 0 colour, 1 depth, 2 stencil.
+ * resolved first. `aspect`: 0 color, 1 depth, 2 stencil.
  */
 void ReadbackTexture(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, const char* name, UINT firstSubresource, UINT count,
                      D3D12_RESOURCE_STATES state, DXGI_FORMAT resolveFormat, DXGI_FORMAT format, int aspect, UINT width, UINT height,

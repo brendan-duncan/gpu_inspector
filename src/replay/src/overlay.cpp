@@ -20,7 +20,7 @@ namespace vkreplay {
 //   * rasterized: the draw alone with the counting fragment shader and no depth or stencil tests,
 //     every fragment it rasterized (and its own overdraw);
 //   * passed: from a copy of the depth the pass started with, the pass's earlier draws moving the
-//     depth and stencil without writing colour, then the draw with its own tests: the fragments
+//     depth and stencil without writing color, then the draw with its own tests: the fragments
 //     that passed them;
 //   * wireframe: the draw alone with line polygons (the fillModeNonSolid feature).
 // The three are folded into one byte per pixel (OverlayResult::mask).

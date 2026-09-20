@@ -217,7 +217,10 @@ export const D3D12_SETS: CommandSets = {
   bindPointOf,
   BIND_PIPELINE: new Set(["SetPipelineState", "SetPipelineState1"]),
   // The library records the bind point beside the pipeline (a compute pipeline state binds compute).
-  pipelineBindPointOf(_method: string, args: ArgObject | null): string {
+  // SetPipelineState1 carries none: a state object is only ever read by a trace or a work graph
+  // dispatch, both of which are on the compute bind point.
+  pipelineBindPointOf(method: string, args: ArgObject | null): string {
+    if (method === "SetPipelineState1") return "compute";
     return args?.bindPoint === "compute" ? "compute" : "graphics";
   },
   graphicsBindPoint: "graphics",

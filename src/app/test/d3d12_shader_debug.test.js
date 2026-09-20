@@ -275,13 +275,13 @@ function capture(dxil) {
   // Identity view-projection and model matrices, so a vertex lands where its position says (plus the instance offset).
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   data.buffers.set(1, { info: { id: 1, buffer: 12, frame: 0, commandBuffer: 5, offset: 0, size: 128 }, data: floats([...identity, ...identity]) });
-  // A triangle covering the whole viewport whichever way the instance offset moves it, one colour and one uv at every corner.
+  // A triangle covering the whole viewport whichever way the instance offset moves it, one color and one uv at every corner.
   const vertices = [[-3, -3, 0], [5, -3, 0], [-3, 5, 0]].flatMap((p) => [...p, 1, 0.5, 0.25, 0.5, 0.5]);
   data.buffers.set(2, { info: { id: 2, buffer: 13, frame: 0, commandBuffer: 5, offset: 0, size: 96 }, data: floats(vertices) });
   data.buffers.set(3, { info: { id: 3, buffer: 14, frame: 0, commandBuffer: 5, offset: 0, size: 16 }, data: floats([0, 0, 0, 0]) });
   // The checker texture: one white texel.
   data.textures.push({ info: { id: 10, frame: 0, commandBuffer: 5, passIndex: 0, attachment: 0, format: "VK_FORMAT_R8G8B8A8_UNORM", aspect: "color", width: 1, height: 1, depth: 1, layers: 1, mip: 0, mips: 1, size: 4, kind: "sampled", capture: 7 }, data: new Uint8Array([255, 255, 255, 255]), canvas: null });
-  // The render target after the pass: what the pixel shader computes, everywhere (texel * colour * 0.75, red and blue swapped).
+  // The render target after the pass: what the pixel shader computes, everywhere (texel * color * 0.75, red and blue swapped).
   const expected = [0.25 * 0.75, 0.5 * 0.75, 1 * 0.75, 1];
   const target = new Uint8Array(64 * 64 * 4);
   for (let i = 0; i < 64 * 64; i++) expected.forEach((c, k) => { target[i * 4 + k] = Math.round(c * 255); });
@@ -344,8 +344,8 @@ test("a vertex: its attributes by semantic, SV_InstanceID without the start inst
   const position = scalars(outputs.find((o) => o.builtin === 0).value);
   // Vertex 1 is (5, -3, 0); instance 1 moves it by +0.9 in x.
   assert.ok(near(position, [5.9, -3, 0, 1]), `SV_Position ${position}`);
-  const colour = scalars(outputs.find((o) => o.location !== undefined && o.name.includes("COLOR")).value);
-  assert.ok(near(colour, [1, 0.5, 0.25]), `COLOR ${colour}`);
+  const color = scalars(outputs.find((o) => o.location !== undefined && o.name.includes("COLOR")).value);
+  assert.ok(near(color, [1, 0.5, 0.25]), `COLOR ${color}`);
   const where = session.bindings;
   assert.equal(session.program.variableWhere({ set: 0, binding: 65536 }), "t0", "resources are named by register");
   assert.ok(where.buffer(0, 1, 0), "the root constants at b1 read as the Frame cbuffer");
@@ -366,8 +366,8 @@ test("a pixel: the vertex shader interpreted over the draw, the pixel's inputs f
   const stepper = session.start();
   assert.equal(stepper.run(), "returned", stepper.invocation.error);
   assert.deepEqual([...stepper.invocation.warnings], [], "the texture through t0 and the static sampler at s0 were both found");
-  const colour = scalars(stepper.invocation.outputs().find((o) => o.location === 0).value);
-  assert.ok(near(colour, expected, 1e-3), `SV_Target ${colour}, expected ${expected}`);
+  const color = scalars(stepper.invocation.outputs().find((o) => o.location === 0).value);
+  assert.ok(near(color, expected, 1e-3), `SV_Target ${color}, expected ${expected}`);
   assert.ok(near(session.targetPixel.value, expected, 1 / 255), `the target holds ${session.targetPixel.value}`);
   // The same pixel asked for the other way around lands on the same triangle.
   const again = await prepareDebugSession(ctx, { stage: "fragment", command: draw.index, x: 63 - pixel.x, y: 63 - pixel.y });

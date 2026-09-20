@@ -35,6 +35,9 @@ HOOKED_INTERFACES = [
     "ID3D12RootSignature",
     "ID3D12PipelineState",
     "ID3D12StateObject",
+    # Never created directly: QueryInterface'd from a state object, and the only place the runtime
+    # says which export a shader identifier names (src/d3d12/src/raytracing.h).
+    "ID3D12StateObjectProperties1",
     "ID3D12Fence1",
     "ID3D12QueryHeap",
     "ID3D12CommandSignature",

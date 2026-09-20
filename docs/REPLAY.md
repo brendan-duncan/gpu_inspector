@@ -237,7 +237,7 @@ the draw, five times:
 
 - **Rasterized:** the draw alone, with the counting fragment shader and no depth or stencil tests.
 - **Passed:** from a copy of the depth the pass started with, the pass's earlier draws move the
-  depth and stencil without writing colour, then the draw runs with its own tests.
+  depth and stencil without writing color, then the draw runs with its own tests.
 - **Wireframe:** the draw alone with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid`
   feature the replay adds to its device.
 - **Stencil:** the same as Passed with the depth test off, so what it reports is the stencil test's
@@ -386,7 +386,7 @@ Limits:
 - Per-fragment detail is partial: a draw is one event, which names the primitive of the fragment
   that won the pixel but not every fragment of the draw with its own value.
 - A multisampled *depth* target cannot be resolved to be read, so a pixel of one is not followed;
-  a multisampled colour target is, through the resolve of its samples.
+  a multisampled color target is, through the resolve of its samples.
 - A dispatch or a trace is reported by what it had bound, not by what it wrote (see above).
 
 ## Per-draw timing and counters
@@ -604,7 +604,7 @@ profiler or a frame debugger can be attached to, which needs a present to tell o
 next. The same holds for the three APIs:
 
 - **What is shown** is the swapchain image (swap chain buffer, drawable) the frame wrote last, which
-  is what the application presented, or the frame's last colour target for a renderer that never
+  is what the application presented, or the frame's last color target for a renderer that never
   presents. The replay names it (`FrameOutput`), with the layout or state the frame leaves it in. It
   is copied to a swapchain of the program's own, so the frame itself still never presents: a blit in
   Vulkan, which converts formats, and a copy in Direct3D 12 and Metal, where the program's swapchain
@@ -651,7 +651,7 @@ these, and only the Win32 window has been run: the Xlib and Cocoa ones are writt
 |---|---|
 | test/triangle (render pass, compute, texture, push constants) | identical, no validation messages |
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical, no validation messages |
-| test/triangle `--msaa`, and with `--stencil` | identical: the multisampled colour, depth and stencil through their resolves, and the resolve target |
+| test/triangle `--msaa`, and with `--stencil` | identical: the multisampled color, depth and stencil through their resolves, and the resolve target |
 | test/triangle `--shader-object`, `--suspend` (dynamic rendering, suspended and resumed) | identical, no validation messages |
 | test/triangle `--pipeline-library`, `--push-template`, `--stencil`, `--occluded` | identical, no validation messages |
 | test/triangle `--second-queue`, `--second-device` | all 3 targets identical, no validation messages |
@@ -670,10 +670,11 @@ than MSVC about narrowing and designator order.
 Limits:
 - The export needs the replay to run to the end, so a frame that crashes the driver is not
   written; `--trace` names the call it dies in.
-- Ray tracing is not exported: a build and a trace name what they read by device address and by
-  shader group handle, which the replay finds at run time, and the source has no spelling for that
-  yet. Those commands are left out with a comment, and an image only a shader writes is then not
-  compared: it would still hold the contents uploaded for it, and match the capture for no reason.
+- Ray tracing is not exported, on either API: a build and a trace name what they read by device
+  address and by shader group handle or identifier, which the replay finds at run time, and the
+  source has no spelling for that yet. Those commands are left out with a comment, and an image only
+  a shader writes is then not compared: it would still hold the contents uploaded for it, and match
+  the capture for no reason.
 
 ## A shader edited in the capture
 
@@ -791,7 +792,7 @@ How the frame is rebuilt:
   made from its type. A bundle is recorded from the commands the capture inlines after its
   `ExecuteBundle`, once.
 - **Read-backs** are taken where the capture took them: when a pass ends (the capture's
-  `EndRenderTargets` marker, or `EndRenderPass`), a multisampled colour target through a resolve,
+  `EndRenderTargets` marker, or `EndRenderPass`), a multisampled color target through a resolve,
   depth and stencil as their planes. The top byte of a 24-bit depth texel is undefined and ignored.
   A target its render pass ends by discarding is not compared, since what it holds afterwards is
   undefined (the debug layer overwrites it), and neither is one the capture failed to read back;
@@ -824,13 +825,70 @@ and in its window for 90 frames (no debug layer errors in either):
 
 | Capture | The replay, and the exported program |
 |---|---|
-| test/triangle/d3d12 (table of a constant buffer and a texture, root constants, static sampler) | identical, colour and depth, no debug layer errors |
-| `--msaa` | the resolved colour identical; the capture does not read multisampled depth back |
+| test/triangle/d3d12 (table of a constant buffer and a texture, root constants, static sampler) | identical, color and depth, no debug layer errors |
+| `--msaa` | the resolved color identical; the capture does not read multisampled depth back |
 | `--bundle` with **Record always** | identical: the draw is in a bundle recorded at start-up |
 | `--indirect`, `--compute`, `--offscreen` (no swap chain) | identical |
 | `--render-pass` (`BeginRenderPass`), `--stencil` (D24S8, depth and stencil planes) | identical |
 | Unity URP sample scene (83 command lists a frame recorded by jobs, 60 render passes suspended and resumed across them, 725 draws, pooled and per-frame lists) | the final image identical in 8 captures of 10, with no debug layer errors, and the exported program the same. One of the other two was a frame of adopted lists, which has no targets read back to compare; one differed in its post-processing, which reads textures the frame overwrites |
 | Unity URP player frame (9 passes, pipeline library, root constant buffer views, D32S8, BC1 and BC3, SSAO, bloom) | all 17 targets identical; the 2 a pass discards are not compared. Cut into parts of 40 lines and files of 300 it builds and runs the same |
+
+### Ray tracing
+
+DXR replays: state objects, acceleration structure builds, traces, copies and postbuild info
+(`src/d3d12/replay/src/dx_raytracing.cpp`). Most of a frame replays because everything it names has
+an id; ray tracing names almost nothing that way, and three kinds of number have to be translated.
+
+**Addresses.** A build reads its geometry, its instances and its scratch from GPU virtual
+addresses, and a trace reads its binding table from three more. The capture library resolved each
+one to the buffer and offset that owned it, so the ordinary address decode turns them into this
+machine's and that half is free.
+
+**Addresses inside buffers.** An instance description holds the address of the bottom level it
+places, eight bytes in the middle of a 64-byte record that nothing resolved, because the
+application wrote them into memory rather than passing them to a call. The replay rewrites them:
+each structure object the capture minted carries the address it was built at, which gives captured
+address to buffer and offset to this machine's address, and the instances go into a buffer of the
+replay's own rather than over the application's, which may be an upload heap it rewrites every
+frame.
+
+**Shader identifiers.** A binding table record begins with the 32 bytes the captured runtime gave
+for an export, and this runtime gives different ones for the same state object. So the table is
+rebuilt the same way: captured identifier, to the export it named (the capture kept that list), to
+this runtime's identifier for that name. What follows the identifier is the local root signature's
+arguments and is copied as it was — constants survive, and a descriptor handle or a GPU address
+among them does not, because nothing in the capture says which a record's bytes are. A record whose
+identifier no export gave out is reported and left alone.
+
+A buffer holding an acceleration structure is **created** in
+`D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE` rather than moved into it: a barrier into
+that state is rejected outright, and a structure never leaves it. So the structures are found before
+any resource is made, and the state inference leaves their buffers alone.
+
+Checked on an RTX 4080, under the debug layer:
+
+| Capture | The replay |
+|---|---|
+| `test/d3d12_triangle --rebuild-blas` (a state object with two hit groups, both levels built every frame, a 4-record binding table, a 256x256 trace whose image the cubes then sample) | identical, color and depth, no problems and no debug layer messages |
+| `--ray-tracing` (the same frame with the bottom level built once, before the capture) | the frame differs in exactly the texels that sample the traced image, and the replay says why |
+
+That last row is the limit worth knowing. An engine builds its bottom levels once at load, so a
+captured frame usually holds no build of them: the replay has the buffer the structure lived in and
+nothing to fill it with, every ray through those instances misses, and the traced image comes back
+empty. Nothing about that is an error — an empty scene replays without a single validation message —
+so the replay reports it against the instance that named the structure. `--rebuild-blas` makes the
+other case, as an application with deforming geometry does.
+
+The comparison is what found the one real defect along the way, and it was in the replay: a build's
+inputs are read back under their field names (`VertexBuffer`, `IndexBuffer`, `InstanceDescs`) rather
+than in the flat `bufferData` list, and nothing was uploading them. The replay then built a bottom
+level out of uninitialized memory, which looks exactly like a correct replay of a frame that had
+nothing in it.
+
+Not replayed: an opacity micromap array build, and `DispatchRays` whose binding table the capture
+did not read back. State objects and traces are not exported to C++ either — an exported program
+would have to look its own shader identifiers up at run time, which the source has no spelling for
+yet — so those commands carry a comment where they would be.
 
 A frame the driver cannot run ends the replay without taking the export's reason with it: a removed
 device is reported once, with its reason and the submission it followed, and nothing after it is
@@ -843,8 +901,9 @@ Limits:
   and takes what suspended passes read after their submission (`src/d3d12/README.md`, "Passes"),
   which makes most captures of a Unity frame replay exactly; a list recorded entirely before the
   capture was asked for is still missing, and **Record always** from launch is what avoids it.
-- Ray tracing is left out (state objects, builds, `DispatchRays`), as are video, work graphs and
-  meta commands: each such command is reported, and in the export is a comment where it would be.
+- Video, work graphs and meta commands are left out: each such command is reported, and in the
+  export is a comment where it would be. Ray tracing replays ([Ray tracing](#ray-tracing-1)) but is
+  not exported.
 - What the frame reads with no command naming it is not in the capture: a buffer reached through
   a GPU address inside another buffer, a descriptor indexed out of the heap directly (shader model
   6.6). Multisampled textures are not uploaded, and multisampled depth is not compared.
@@ -931,12 +990,12 @@ Limits:
 - What the frame reads with no command naming it is not in the capture — a buffer reached through a
   `gpuAddress` held in another buffer, or through an argument buffer.
 
-Worth keeping: the first frame with a depth attachment differed in every texel of its **colour**
+Worth keeping: the first frame with a depth attachment differed in every texel of its **color**
 target, and the fault was the capture's. A depth attachment is announced under attachment index 0,
-the same as colour attachment 0, and `CaptureTextureData` did not carry the aspect — so the depth
-read-back matched the colour entry and landed on top of it. The Vulkan layer had always sent the
+the same as color attachment 0, and `CaptureTextureData` did not carry the aspect — so the depth
+read-back matched the color entry and landed on top of it. The Vulkan layer had always sent the
 aspect for exactly this reason; the Metal one now does too (`SendTextures` in
-`src/metal/src/capture.mm`). Nothing in the UI had shown it, because a depth image and a colour
+`src/metal/src/capture.mm`). Nothing in the UI had shown it, because a depth image and a color
 image of the same pass both render as an image.
 
 ## Where it stands

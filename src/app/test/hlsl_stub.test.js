@@ -143,7 +143,7 @@ test("a fragment stub declares every resource with its dimension, register and s
   assert.match(hlsl, /SamplerState pointSampler : register\(s0, space0\);/);
 });
 
-test("a fragment stub returns a constant colour with the output signature's semantic", () => {
+test("a fragment stub returns a constant color with the output signature's semantic", () => {
   const hlsl = stubFor("fragment");
   // SV_IsFrontFace comes back as a uint from the reflection and only compiles as a bool.
   assert.match(hlsl, /bool SV_ISFRONTFACE0 : SV_ISFRONTFACE0;/);

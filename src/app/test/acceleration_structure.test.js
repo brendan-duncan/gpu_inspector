@@ -240,7 +240,7 @@ test("an instance whose bottom level was not captured is drawn as a box where it
   assert.equal(scene.kind, "lines");
   assert.equal(scene.placed, 0);
   assert.equal(scene.mesh.length, 12 * 2 * 3, "twelve edges of a cube, two ends, three floats");
-  // Centred on the instance's position rather than the origin.
+  // Centerd on the instance's position rather than the origin.
   const xs = [...scene.mesh].filter((_, i) => i % 3 === 0);
   assert.ok(Math.min(...xs) > 2 && Math.max(...xs) < 4);
 });

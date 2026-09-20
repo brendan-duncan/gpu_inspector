@@ -26,6 +26,7 @@ import {
   vulkanLayerEnvironment,
 } from "./launch_env.js";
 import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironmentStatus } from "./implicit_layer.js";
+import { listTargets, targetDisplayName } from "./target_probe.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
@@ -1614,6 +1615,20 @@ void app.whenReady().then(() => {
       const done = dir ? setImplicitLayer(dir, implicit === "on") : Promise.resolve({ registered: false, manifest: "", error: NO_VULKAN_LAYER_ERROR } as ImplicitLayerStatus);
       void done.then((status) => {
         console.log(status.error ? `implicit layer: ${status.error}` : `implicit layer ${status.registered ? "registered" : "not registered"}: ${status.manifest}`);
+        app.quit();
+      });
+      return;
+    }
+    // --list-targets: the applications a capture library is serving right now, the command-line
+    // form of the attach list. Printed and then the inspector quits, so a script can pick one.
+    if (cliFlag("list-targets")) {
+      void listTargets().then((targets) => {
+        if (!targets.length) console.log("no inspected application is listening");
+        for (const t of targets) {
+          console.log(t.api
+            ? `port ${t.port}: ${targetDisplayName(t)} (${t.api}, pid ${t.pid})${t.busy ? ", an inspector is attached" : ""}`
+            : `port ${t.port}: a capture library too old to say what it is`);
+        }
         app.quit();
       });
       return;

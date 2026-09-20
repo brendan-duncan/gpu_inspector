@@ -48,7 +48,7 @@ export interface PassMetrics {
   draws: number;
   /** Vertices the draws asked for, summed; 0 when none of them said. */
   vertices: number;
-  /** Pixels of the first colour target (or the depth target), 0 when it could not be resolved. */
+  /** Pixels of the first color target (or the depth target), 0 when it could not be resolved. */
   pixels: number;
   /** Samples per pixel of that target. */
   samples: number;
@@ -380,7 +380,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
 /**
  * Pixels the pass rendered over, which is what fragment work scales with. Vulkan states it
  * outright as the render area; a Metal pass descriptor names its attachments, so the first
- * colour target's size (or the depth target's) stands in.
+ * color target's size (or the depth target's) stands in.
  */
 function targetOf(cmd: CaptureCommand, db: ObjectLookup): { pixels: number; samples: number } | null {
   const a = cmd.args;

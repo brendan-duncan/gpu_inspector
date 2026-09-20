@@ -59,6 +59,8 @@ add_library(dxinsp_capture SHARED
     src/descriptors.cpp
     src/resources.h
     src/resources.cpp
+    src/raytracing.h
+    src/raytracing.cpp
     src/command_recorder.h
     src/capture.h
     src/capture.cpp
@@ -171,6 +173,7 @@ if(Python3_Interpreter_FOUND)
         replay/src/dx_source.cpp
         replay/src/dx_replayer.h
         replay/src/dx_replayer.cpp
+        replay/src/dx_raytracing.cpp
         replay/src/dx_exporter.h
         replay/src/dx_exporter.cpp
         replay/src/dx_counters.h

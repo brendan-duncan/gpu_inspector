@@ -371,7 +371,7 @@ test("zoomed in, the same spans separate again", () => {
   assert.ok(close.length < wide.reduce((n, b) => n + b.count, 0));
 });
 
-test("a merged box is coloured by the kind holding most of its time", () => {
+test("a merged box is colored by the kind holding most of its time", () => {
   const t = buildTimelineTracks({
     // Two brief submits beside a long wait, all within a pixel of each other.
     timeline: timeline([[0, "submit", 0, 0.01], [0, "waitFences", 0.02, 1], [0, "submit", 1.03, 0.01]]),

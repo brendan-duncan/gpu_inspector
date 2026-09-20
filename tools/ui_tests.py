@@ -231,7 +231,7 @@ def triangle_suspend(state, log):
 
 def triangle_offscreen(state, log):
     s = session(state)
-    # Nothing presents in this mode, so the render pass stores a colour attachment the capture
+    # Nothing presents in this mode, so the render pass stores a color attachment the capture
     # never sees read: the render graph's rules (render_graph_analysis.ts) must say so, which also
     # checks that they run at all and that their findings reach the capture's finding list.
     return expect("unread-store" in findings(state), f"no unread-store finding for the offscreen target: {findings(state)}") + \
@@ -322,7 +322,7 @@ def triangle_overdraw(state, log):
 def triangle_pixel_history(state, log):
     h = (capture(state).get("textureTab") or {}).get("history") or {}
     touched = h.get("touched") or []
-    # The pixel history of the centre of the first colour target (--debug-view=pixel-history, no
+    # The pixel history of the center of the first color target (--debug-view=pixel-history, no
     # click needed): the pass it starts from, the draw that wrote it, and which of that draw's
     # primitives the winning fragment came from (the replay's primitive-id pass).
     return check_connected(state, log) + check_capture_basic(state, log) + \
@@ -368,7 +368,7 @@ def triangle_stencil_overlay(state, log):
 
 def triangle_pixel_fragments(state, log):
     # The fragments of one draw (src/replay/src/history.cpp, the fragment round). With --no-cull the
-    # cube keeps its back faces, so the one draw puts two fragments on the centre pixel: the near
+    # cube keeps its back faces, so the one draw puts two fragments on the center pixel: the near
     # face and the far one, each from a different primitive, and the pixel keeps the one that won
     # the depth test -- which is the primitive the draw's own entry names.
     h = (capture(state).get("textureTab") or {}).get("history") or {}
@@ -442,11 +442,11 @@ def debugger_tab(state):
 def triangle_debug_pixel(state, log):
     d = debugger_tab(state)
     outputs = d.get("outputs") or []
-    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    color = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
     target = (d.get("targetPixel") or {}).get("value") or []
-    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    diff = max((abs(a - b) for a, b in zip(color, target)), default=None)
     # The cube's fragment shader at a pixel the draw covers: its inputs rasterized from the replay's
-    # vertex outputs, the checker texture sampled with derivatives from the pixel quad, and the colour
+    # vertex outputs, the checker texture sampled with derivatives from the pixel quad, and the color
     # it writes compared with the render target (the cube is the pass's only draw there).
     return check_connected(state, log) + check_capture_basic(state, log) + \
         expect(bool(d), "--debug-view=debugger opened no debugger tab") + \
@@ -454,8 +454,8 @@ def triangle_debug_pixel(state, log):
         expect(d.get("mode") == "source" and (d.get("codeLines") or 0) >= 10, f"cube.frag's source is not shown: {d.get('mode')}, {d.get('codeLines')} lines") + \
         expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
-        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
-        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+        expect(len(color) == 4 and len(target) >= 3, f"no color to compare: output {color}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {color} is not the render target's {target}")
 
 
 def triangle_debug_vertex(state, log):
@@ -526,22 +526,22 @@ def metal_debug_compute(state, log):
 def metal_debug_constants(state, log):
     d = debugger_tab(state)
     outputs = d.get("outputs") or []
-    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    color = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
     target = (d.get("targetPixel") or {}).get("value") or []
-    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    diff = max((abs(a - b) for a, b in zip(color, target)), default=None)
     # The triangle pass's fragment_main is specialized: its tint branch is behind
     # `[[function_constant(0)]]`, and the values are only knowable because the capture library
     # watched the setters of the MTLFunctionConstantValues (src/metal/src/function_constants.h). Without
-    # them the branch is not taken and the colour is the untinted one, which the comparison catches
+    # them the branch is not taken and the color is the untinted one, which the comparison catches
     # — and the interpreter says so in its warnings, which is the clearer diagnosis of the two.
     return check_connected(state, log) + check_metal_capture(state, log) + \
         expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
         expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
         expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
-        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
+        expect(len(color) == 4 and len(target) >= 3, f"no color to compare: output {color}, render target {target}") + \
         expect(diff is not None and diff < 0.02,
-               f"the output {colour} is not the render target's {target}: the function constants the "
+               f"the output {color} is not the render target's {target}: the function constants the "
                f"fragment was specialized with may not have reached the interpreter")
 
 
@@ -561,19 +561,19 @@ def metal_debug_vertex(state, log):
 def metal_debug_pixel(state, log):
     d = debugger_tab(state)
     outputs = d.get("outputs") or []
-    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    color = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
     target = (d.get("targetPixel") or {}).get("value") or []
-    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    diff = max((abs(a - b) for a, b in zip(color, target)), default=None)
     # The blit pass's fragment: its varyings rasterized from the vertex shader the interpreter ran,
-    # its texture sampled from the read-back the capture made of what the draw bound, and the colour
+    # its texture sampled from the read-back the capture made of what the draw bound, and the color
     # it writes compared with the render target (the blit is the pass's only draw).
     return check_connected(state, log) + check_metal_capture(state, log) + \
         expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
         expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
         expect(d.get("status") == "returned", f"the fragment did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
-        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
-        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+        expect(len(color) == 4 and len(target) >= 3, f"no color to compare: output {color}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {color} is not the render target's {target}")
 
 
 def cpu_categories(state):
@@ -665,7 +665,7 @@ def metal_memory(state, log):
 
 
 def metal_pixel_history(state, log):
-    # The pixel history of the centre of the first colour target, which in this sample is the
+    # The pixel history of the center of the first color target, which in this sample is the
     # multisampled one — the pass the library used to decline ("a multisampled pass is not
     # followed yet"). Two captures: the first names the pixel, the second follows it through the
     # application's next frame, which is what --debug-view=pixel-history asks for on a backend
@@ -894,18 +894,18 @@ def app_capture(state, log):
 def shader_edit(state, log):
     # A shader edited and run in the capture (Compile & Replay; renderer/shader_replay.ts): the
     # first draw's pixel shader made to write magenta, and the frame replayed with it. The cubes'
-    # pixels change and nothing else does: the colour target differs in the tens of thousands of
+    # pixels change and nothing else does: the color target differs in the tens of thousands of
     # texels they cover, its replayed pixels came back to be shown, and the depth target is
     # exactly as captured, since the edit moved no geometry.
     c = capture(state)
     r = c.get("shaderReplay") or {}
     changed = r.get("changed") or []
-    colour = [t for t in changed if t.get("aspect") == "color"]
+    color = [t for t in changed if t.get("aspect") == "color"]
     return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
         expect(bool(r), f"the capture was not replayed with the edit ({c.get('status')})") + \
         expect((r.get("compared") or 0) >= 2, f"{r.get('compared')} render targets compared") + \
-        expect(len(colour) == 1 and (colour[0].get("differingTexels") or 0) > 10000, f"the colour target's change: {colour}") + \
-        expect(bool(colour) and (colour[0].get("pixels") or 0) > 0, "the changed target's pixels did not come back") + \
+        expect(len(color) == 1 and (color[0].get("differingTexels") or 0) > 10000, f"the color target's change: {color}") + \
+        expect(bool(color) and (color[0].get("pixels") or 0) > 0, "the changed target's pixels did not come back") + \
         expect(not [t for t in changed if t.get("aspect") != "color"], f"targets the edit should not have touched changed: {changed}") + \
         expect(r.get("problems") == 0, f"{r.get('problems')} problems replaying with the edit") + \
         expect("shader-edit" in (c.get("reportTabs") or []), f"the result did not open in a tab: {c.get('reportTabs')}")
@@ -1047,7 +1047,7 @@ def d3d12_plain(state, log):
 
 
 def d3d12_render_pass(state, log):
-    # BeginRenderPass / EndRenderPass with a multisampled target: the colour target is read back
+    # BeginRenderPass / EndRenderPass with a multisampled target: the color target is read back
     # through a resolve; multisampled depth is reported as not read back, not silently missing.
     # Statistics and occlusion queries are not begun inside a render pass region, so the pass
     # has a timing but no counters (check_capture_basic would ask for them).
@@ -1068,7 +1068,7 @@ def d3d12_stencil(state, log):
     c = capture(state)
     s = session(state)
     return check_connected(state, log) + check_capture_basic(state, log, textures=4) + \
-        expect((c.get("textures") or 0) == 4, f"{c.get('textures')} textures (expected the colour, depth and stencil targets and the sampled texture)") + \
+        expect((c.get("textures") or 0) == 4, f"{c.get('textures')} textures (expected the color, depth and stencil targets and the sampled texture)") + \
         expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
 
 
@@ -1186,13 +1186,13 @@ def d3d12_offscreen(state, log):
 def d3d12_debug_pixel(state, log):
     d = debugger_tab(state)
     outputs = d.get("outputs") or []
-    colour = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
+    color = next((o.get("value") for o in outputs if o.get("location") == 0), None) or []
     target = (d.get("targetPixel") or {}).get("value") or []
-    diff = max((abs(a - b) for a, b in zip(colour, target)), default=None)
+    diff = max((abs(a - b) for a, b in zip(color, target)), default=None)
     # cube.hlsl's pixel shader at a pixel the draw covers: the HLSL dxc embedded (-Zi) compiled to
     # SPIR-V and stepped by line, its inputs rasterized from the vertex shader run in the
     # interpreter, the checker texture sampled through the root signature's static sampler, the root
-    # constants read, and the colour compared with the render target (the cube is the pass's only draw).
+    # constants read, and the color compared with the render target (the cube is the pass's only draw).
     return check_connected(state, log) + check_capture_basic(state, log) + \
         expect(bool(d), "--debug-view=debugger:pixel opened no debugger tab") + \
         expect(not d.get("error"), f"the debugger could not prepare the pixel: {d.get('error')}") + \
@@ -1200,8 +1200,8 @@ def d3d12_debug_pixel(state, log):
         expect(any("compiled to SPIR-V by dxc" in n for n in d.get("notes") or []), f"the notes do not say the HLSL was compiled to SPIR-V: {d.get('notes')}") + \
         expect(d.get("status") == "returned", f"the pixel shader did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
-        expect(len(colour) == 4 and len(target) >= 3, f"no colour to compare: output {colour}, render target {target}") + \
-        expect(diff is not None and diff < 0.02, f"the output {colour} is not the render target's {target}")
+        expect(len(color) == 4 and len(target) >= 3, f"no color to compare: output {color}, render target {target}") + \
+        expect(diff is not None and diff < 0.02, f"the output {color} is not the render target's {target}")
 
 
 def d3d12_debug_vertex(state, log):

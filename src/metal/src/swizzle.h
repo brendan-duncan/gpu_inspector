@@ -56,7 +56,7 @@ bool FirstSighting(Class cls);
  * Each forwards to the next, and since the hooks are installed per class every level is
  * intercepted, so one `presentDrawable:` from the application arrives two or three times. The
  * outermost call is the application's, so that is the one recorded; the rest are Metal talking to
- * itself. Every level still forwards, so behaviour is unchanged. Per thread, because Metal allows
+ * itself. Every level still forwards, so behavior is unchanged. Per thread, because Metal allows
  * encoding from several threads at once. The library's own Metal calls, issued from inside a hook,
  * are nested by construction and so never recorded either.
  *

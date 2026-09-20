@@ -11,6 +11,7 @@
 #include "cpu_sampler.h"
 
 #include "layer.h"
+#include "target_probe.h"
 #include "tracker.h"
 #include "validation.h"
 
@@ -40,7 +41,9 @@ static void CloseSocket(socket_t s) { close(s); }
 
 namespace vkinsp {
 
-static const uint16_t kDefaultPort = 47531;
+static const uint16_t kDefaultPort = gpuinsp::kFirstPort;
+/** How long a new connection has to say whether it is a probe or a client (target_probe.h). */
+static const int kHandshakeTimeoutMs = 2000;
 
 struct Transport::Impl {
     std::thread listener;
@@ -59,6 +62,17 @@ struct Transport::Impl {
     std::function<void(const std::string&)> handler;
 
     uint16_t port = kDefaultPort;
+    /** Whether VKINSP_PORT named the port, which means it may not be stepped off. */
+    bool portFromConfig = false;
+
+    /** What the application calls itself, for the attach list; known once it makes an instance. */
+    std::mutex nameMutex;
+    std::string targetName;
+
+    std::string TargetName() {
+        std::lock_guard lock(nameMutex);
+        return targetName;
+    }
 
     void Enqueue(std::string frame) {
         std::lock_guard lock(queueMutex);
@@ -87,6 +101,47 @@ struct Transport::Impl {
             size -= (size_t)n;
         }
         return true;
+    }
+
+    static void SetRecvTimeout(socket_t s, int ms) {
+#if defined(_WIN32)
+        DWORD t = (DWORD)ms;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&t, sizeof(t));
+#else
+        timeval t{};
+        t.tv_sec = ms / 1000;
+        t.tv_usec = (ms % 1000) * 1000;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof(t));
+#endif
+    }
+
+    /** One frame, or false when the peer said nothing in time, closed, or framed it badly. */
+    static bool RecvFrame(socket_t s, std::string& payload, uint8_t& kind, int timeoutMs) {
+        SetRecvTimeout(s, timeoutMs);
+        uint8_t hdr[5];
+        bool ok = RecvAll(s, (char*)hdr, 5);
+        if (ok) {
+            const uint32_t len = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+            kind = hdr[4];
+            payload.assign(len, '\0');
+            ok = len == 0 || RecvAll(s, payload.data(), len);
+        }
+        SetRecvTimeout(s, 0);   // back to blocking, for the receiver thread
+        return ok;
+    }
+
+    /** A JSON frame written straight to a socket, bypassing the queue: the probe is not a client. */
+    static bool SendJsonTo(socket_t s, const std::string& json) {
+        std::string frame;
+        frame.reserve(json.size() + 5);
+        const uint32_t len = (uint32_t)json.size();
+        frame.push_back((char)(len & 0xff));
+        frame.push_back((char)((len >> 8) & 0xff));
+        frame.push_back((char)((len >> 16) & 0xff));
+        frame.push_back((char)((len >> 24) & 0xff));
+        frame.push_back((char)0);
+        frame += json;
+        return SendAll(s, frame.data(), frame.size());
     }
 
     void SenderLoop() {
@@ -191,6 +246,28 @@ struct Transport::Impl {
         if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
         Log("listening on the abstract socket @%s", name);
 #else
+        // A port the user named is used as given: moving off it would leave whoever chose it
+        // waiting on the wrong one. Only the default may step aside, so two applications started
+        // by hand are both inspectable and both turn up in the attach list (target_probe.h).
+        if (gpuinsp::PortIsServed(port)) {
+            if (portFromConfig) {
+                Log("127.0.0.1:%u is already served by another inspected application; "
+                    "set VKINSP_PORT to a free port for this one", port);
+                return;
+            }
+            uint16_t free = 0;
+            for (uint16_t candidate = (uint16_t)(port + 1); candidate <= gpuinsp::kLastPort; ++candidate) {
+                if (!gpuinsp::PortIsServed(candidate)) { free = candidate; break; }
+            }
+            if (!free) {
+                Log("127.0.0.1:%u and the ports above it are all served by other inspected "
+                    "applications; set VKINSP_PORT to a free port", port);
+                return;
+            }
+            Log("127.0.0.1:%u is already served by another inspected application; listening on %u instead", port, free);
+            port = free;
+        }
+
         socket_t listenSock = socket(AF_INET, SOCK_STREAM, 0);
         if (listenSock == INVALID_SOCK) { Log("socket() failed"); return; }
         int one = 1;
@@ -209,13 +286,31 @@ struct Transport::Impl {
         while (!stop) {
             socket_t s = accept(listenSock, nullptr, nullptr);
             if (s == INVALID_SOCK) continue;
+            int nodelay = 1;
+            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+
+            // A connection is not a client until its first frame says so (target_probe.h): a
+            // probe is answered and dropped, leaving whoever is attached where they are, and a
+            // connection that says nothing at all is dropped rather than taking the session from
+            // them. Both clients send Ping the moment they connect, so the wait is not felt.
+            std::string first;
+            uint8_t kind = 0;
+            if (!RecvFrame(s, first, kind, kHandshakeTimeoutMs)) {
+                Log("a connection said nothing within %d ms; dropped", kHandshakeTimeoutMs);
+                CloseSocket(s);
+                continue;
+            }
+            if (kind == 0 && gpuinsp::IsProbeRequest(first)) {
+                SendJsonTo(s, gpuinsp::ProbeReply("Vulkan", TargetName(), port, connected));
+                CloseSocket(s);
+                continue;
+            }
+
             if (connected) {
                 // One client at a time; replace the old connection.
                 Disconnect();
                 if (receiver.joinable()) receiver.join();
             }
-            int nodelay = 1;
-            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
             client = s;
             connected = true;
             Log("client connected");
@@ -223,6 +318,13 @@ struct Transport::Impl {
             // the validation messages reported so far (they reference those objects).
             Tracker::Get().SendSnapshot();
             ValidationLog::Get().SendSnapshot();
+            // The frame that identified it as a client still has to be acted on; it goes after the
+            // snapshot, exactly where the receiver thread would have put it.
+            if (kind == 0) {
+                std::function<void(const std::string&)> h;
+                { std::lock_guard lock(handlerMutex); h = handler; }
+                if (h) h(first);
+            }
             if (receiver.joinable()) receiver.join();
             receiver = std::thread([this, s] { ReceiverLoop(s); });
         }
@@ -244,7 +346,10 @@ void Transport::Start() {
 #endif
     {
         int v = atoi(ConfigValue("VKINSP_PORT").c_str());
-        if (v > 0 && v < 65536) _impl->port = (uint16_t)v;
+        if (v > 0 && v < 65536) {
+            _impl->port = (uint16_t)v;
+            _impl->portFromConfig = true;
+        }
     }
     _impl->sender = std::thread([this] { _impl->SenderLoop(); });
     _impl->listener = std::thread([this] { _impl->ListenerLoop(); });
@@ -286,6 +391,12 @@ void Transport::SendBinary(std::string headerJson, const void* data, size_t size
     frame += headerJson;
     frame.append(static_cast<const char*>(data), size);
     _impl->Enqueue(std::move(frame));
+}
+
+void Transport::SetTargetName(std::string name) {
+    if (!_impl) Start();
+    std::lock_guard lock(_impl->nameMutex);
+    _impl->targetName = std::move(name);
 }
 
 void Transport::SetMessageHandler(std::function<void(const std::string&)> handler) {

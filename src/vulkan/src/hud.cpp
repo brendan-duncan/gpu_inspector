@@ -133,11 +133,11 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     s.format = info.format;
     s.extent = info.extent;
 
-    // An image the application never asked to be a colour attachment cannot be drawn into. Some
+    // An image the application never asked to be a color attachment cannot be drawn into. Some
     // applications create a transfer-only swapchain and blit into it; there the HUD stays off.
     if (!(info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
         if (!s.complained) {
-            Log("HUD: the swapchain has no colour attachment usage, so the HUD cannot be drawn into it");
+            Log("HUD: the swapchain has no color attachment usage, so the HUD cannot be drawn into it");
             s.complained = true;
         }
         return false;

@@ -90,7 +90,7 @@ type Rgba = [number, number, number, number];
 
 /** What each overlay paints: the draw's pixels by what happened to them, and what it leaves around them. */
 const PAINT: Record<DrawOverlayKind, { covered: Rgba; passed: Rgba; wire: Rgba | null; outside: Rgba }> = {
-  // RenderDoc's highlight: the draw in a flat colour, everything else darkened.
+  // RenderDoc's highlight: the draw in a flat color, everything else darkened.
   highlight: { covered: [255, 40, 200, 255], passed: [255, 40, 200, 255], wire: null, outside: [0, 0, 0, 170] },
   depth: { covered: [230, 40, 40, 255], passed: [40, 210, 70, 255], wire: null, outside: [0, 0, 0, 120] },
   // The stencil test on its own, so a draw the stencil rejected is not confused with one the
@@ -111,7 +111,7 @@ export const DRAW_OVERLAY_LEGEND: Record<DrawOverlayKind, { label: string; color
   wireframe: [{ label: "edges", color: [255, 230, 40] }],
 };
 
-/** The overlay's colours, the render target's size, or null when the replay drew nothing. */
+/** The overlay's colors, the render target's size, or null when the replay drew nothing. */
 export function drawOverlayRgba(o: DrawOverlay, kind: DrawOverlayKind): Uint8ClampedArray | null {
   if (!o.mask || o.mask.length < o.width * o.height) return null;
   const paint = PAINT[kind];

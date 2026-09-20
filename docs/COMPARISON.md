@@ -59,7 +59,7 @@ is the best there is. The price is that it is NVIDIA-only.
 | OpenGL / OpenGL ES | ○ | ● | ○ | ◐ OpenGL 4.2–4.6 |
 | Metal | ● [macOS](METAL.md) | ◐ in development, not in releases | ○ | ○ |
 | WebGPU in a browser | ◐ [as the D3D12 under it](BROWSER.md) | ○ | ○ | ○ |
-| Ray tracing (DXR, VK\_KHR\_ray\_tracing) | ◐ Vulkan: [structures, instances, shader binding tables](INSPECT.md#acceleration-structures) | ● | ● | ● best in class |
+| Ray tracing (DXR, VK\_KHR\_ray\_tracing) | ● [structures, instances, shader binding tables](INSPECT.md#acceleration-structures), Vulkan and D3D12, both replayed | ● | ● | ● best in class |
 | Host OS | ● Windows, macOS, Linux | ● Windows, Linux | ◐ Windows | ◐ Windows, Linux |
 | Android / Quest | ● [Vulkan, over adb](ANDROID.md) | ● Vulkan and GLES | ○ | ○ |
 | Consoles | ○ | ◐ Switch, with a devkit | ● Xbox (PIX for Xbox) | ○ |

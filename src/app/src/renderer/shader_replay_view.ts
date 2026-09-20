@@ -32,7 +32,7 @@ function canvasOf(pixels: Uint8ClampedArray<ArrayBuffer>, width: number, height:
   return canvas;
 }
 
-/** Where two decoded images differ: the changed texels in the edit's colours over a dimmed copy of the original. */
+/** Where two decoded images differ: the changed texels in the edit's colors over a dimmed copy of the original. */
 function difference(before: Uint8ClampedArray, after: Uint8ClampedArray): Uint8ClampedArray<ArrayBuffer> {
   const out = new Uint8ClampedArray(before.length);
   for (let i = 0; i + 3 < before.length; i += 4) {

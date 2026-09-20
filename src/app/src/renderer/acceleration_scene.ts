@@ -1,9 +1,15 @@
 // Tying a capture's read-back buffers to the acceleration structure they were built into.
 //
 // acceleration_structure.ts knows the formats; this knows where the bytes are. A build names its
-// geometry by device address, and the layer resolved those addresses and read the contents back,
-// leaving the capture ids on the recorded build command (src/vulkan/src/hooks.cpp). So finding what
-// a structure holds means finding the build command that targeted it and following those ids.
+// geometry by device address, and the capture library resolved those addresses and read the
+// contents back, leaving the capture ids on the recorded build command (src/vulkan/src/hooks.cpp,
+// src/d3d12/src/raytracing.cpp). So finding what a structure holds means finding the build command
+// that targeted it and following those ids.
+//
+// Both APIs land in the same AccelerationBuild, so only the two parsers and the two ways a build
+// names its destination differ; everything after that is shared. D3D12's instance buffers need no
+// translation at all, because a D3D12_RAYTRACING_INSTANCE_DESC is byte for byte a
+// VkAccelerationStructureInstanceKHR (d3d12/raytracing.ts).
 import {
   instanceScene, parseBuild, parseInstances, triangleMesh,
   type AccelerationBuild, type AccelerationInstance,
@@ -11,6 +17,7 @@ import {
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import type { CaptureData } from "./capture_data.js";
 import type { CaptureCommand } from "../shared/protocol.js";
+import { buildCapture, d3d12StructureAddresses, parseD3D12Build } from "./d3d12/raytracing.js";
 import { isObject, num, type VulkanObject } from "./vulkan/vulkan_object.js";
 
 /** What this needs of an object database: every acceleration structure, to resolve an instance's reference. */
@@ -29,6 +36,12 @@ interface CapturedBuild {
 function buildsIn(data: CaptureData): CapturedBuild[] {
   const out: CapturedBuild[] = [];
   for (const c of data.commands) {
+    // D3D12 builds one structure per command; Vulkan's takes an array of them.
+    if (c.method === "BuildRaytracingAccelerationStructure") {
+      const build = parseD3D12Build(c);
+      if (build) out.push({ command: c, info: 0, build });
+      continue;
+    }
     if (!c.method.includes("BuildAccelerationStructures")) continue;
     const args = c.args;
     if (!isObject(args)) continue;
@@ -49,6 +62,11 @@ function buildsIn(data: CaptureData): CapturedBuild[] {
  * captured build's ids with a later build's.
  */
 function captureIdOf(command: CaptureCommand, info: number, geometry: number, field: string): number {
+  // D3D12's inputs are named the way its structures are (VertexBuffer, InstanceDescs) and carry no
+  // info index, since one command builds one structure.
+  if (command.method === "BuildRaytracingAccelerationStructure") {
+    return buildCapture(command, D3D12_FIELDS[field] === "InstanceDescs" ? -1 : geometry, D3D12_FIELDS[field] ?? field);
+  }
   const list = Array.isArray(command.buildData) ? command.buildData : [];
   for (const e of list) {
     if (!isObject(e)) continue;
@@ -57,17 +75,29 @@ function captureIdOf(command: CaptureCommand, info: number, geometry: number, fi
   return 0;
 }
 
+/** The Vulkan field names this module asks for, as D3D12 records them. */
+const D3D12_FIELDS: Record<string, string> = {
+  data: "InstanceDescs",
+  vertexData: "VertexBuffer",
+  indexData: "IndexBuffer",
+  transformData: "Transform3x4",
+};
+
 /** The bytes of a capture's buffer read-back, or null when it holds none. */
 function bytesOf(data: CaptureData, captureId: number): Uint8Array | null {
   return data.buffer(captureId)?.data ?? null;
 }
 
-/** Addresses the layer recorded on the structures, so an instance's reference names an object. */
+/** Addresses the capture library recorded on the structures, so an instance's reference names an object. */
 function addressesOf(db: StructureDatabase): Map<string, number> {
   const out = new Map<string, number>();
   for (const o of db.getObjectsOfType("VkAccelerationStructureKHR")?.values() ?? []) {
     const a = o.updates.deviceAddress;
     if (a !== undefined && a !== null) out.set(String(a), o.id);
+  }
+  // D3D12's structures are named by the address a build wrote them to, which is their identity.
+  for (const [address, id] of d3d12StructureAddresses(db.getObjectsOfType("ID3D12RaytracingAccelerationStructure")?.values() ?? [])) {
+    out.set(address, id);
   }
   return out;
 }

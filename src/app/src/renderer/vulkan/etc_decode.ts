@@ -1,7 +1,7 @@
 // ETC2 and EAC block decoding (the Khronos Data Format Specification, "ETC2 Compressed Texture
 // Image Formats"). ETC2 RGB is a 64-bit block of 4x4 texels in one of five modes: individual
-// and differential (two base colours with a modifier table), T and H (four paint colours) and
-// planar (a colour gradient). The punchthrough alpha variant repurposes the differential bit as
+// and differential (two base colors with a modifier table), T and H (four paint colors) and
+// planar (a color gradient). The punchthrough alpha variant repurposes the differential bit as
 // an opaque flag; the RGBA8 variant prefixes an EAC alpha block. EAC R11 and RG11 are the same
 // 64-bit alpha coding at 11-bit precision, one block per channel.
 //
@@ -42,7 +42,7 @@ function put(px: Float32Array, x: number, y: number, r: number, g: number, b: nu
 }
 
 /**
- * Decodes the colour half of an ETC2 block (the high word `hi` holds bits 63..32, `lo` bits
+ * Decodes the color half of an ETC2 block (the high word `hi` holds bits 63..32, `lo` bits
  * 31..0). With `punchthrough`, the differential bit is the opaque flag and a clear one makes
  * modifier index 2 a transparent texel.
  */
@@ -71,7 +71,7 @@ function decodeEtc2Color(hi: number, lo: number, px: Float32Array, punchthrough:
   }
 
   if (mode === "planar") {
-    // Three colours: the origin, and the ones a block's width to the right and a block's
+    // Three colors: the origin, and the ones a block's width to the right and a block's
     // height below, each split around the bits that force the differential overflow.
     const ro = expand6(field(hi, 30, 25));
     const go = expand7((field(hi, 24, 24) << 6) | field(hi, 22, 17));
@@ -204,7 +204,7 @@ export function decodeEtc2Rgba1(s: DataView, block: number, px: Float32Array): v
   decodeEtc2Color(hi, lo, px, true);
 }
 
-/** ETC2 RGBA8: an EAC alpha block followed by an ETC2 colour block. */
+/** ETC2 RGBA8: an EAC alpha block followed by an ETC2 color block. */
 export function decodeEtc2Rgba8(s: DataView, block: number, px: Float32Array): void {
   const [chi, clo] = words(s, block + 8);
   decodeEtc2Color(chi, clo, px, false);

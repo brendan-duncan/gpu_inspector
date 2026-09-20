@@ -172,6 +172,7 @@ takes them after `npm start --`; an installed build takes them directly
 | `--wait-for-d3d12=<image>` | Direct3D 12, waiting for that process |
 | `--implicit-layer=on\|off` | Registers or unregisters the layer, then quits |
 | `--connect=<port>` | The main bar's **Connect** |
+| `--list-targets` | Names the applications a capture library is serving, then quits |
 | `--port=N` | Port |
 | `--record-always` `--validation` `--sync-validation` `--gpu-validation` | The matching options |
 | `--symbol-dirs=<dirs>` `--source-roots=<dirs>` `--follow=<text>` | The matching fields |
