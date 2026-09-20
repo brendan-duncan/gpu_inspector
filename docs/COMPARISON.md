@@ -201,12 +201,8 @@ API.
 - **You are on OpenGL or Direct3D 11.** Use RenderDoc.
 - **You need the last 10% on NVIDIA hardware** — warp stalls, unit throughput, the shader
   profiler, ray tracing in depth. Use Nsight Graphics.
-- **You are debugging a D3D12 title on Windows and want timing and memory captures.** Use PIX.
-  A D3D12 capture measures overdraw, pixel history, draw overlays, mesh output and per-draw
-  timings inside the application while it is captured, and it replays (`dxinsp_replay`) for
-  Export to C++ and for hardware counters. What it does not have yet is
-  [shader cost by ablation](D3D12.md#what-is-not-there-yet), which needs the shader edited and has
-  no DXIL editor to do it with.
+- **You want timing or memory captures of a D3D12 title.** Use PIX. Frame debugging is close to
+  parity; minutes-long timing captures, memory captures and DRED analysis have no equivalent here.
 - **Your renderer crashed the GPU.** Use Aftermath or DRED.
 - **Your pipeline scripts a frame debugger.** Use RenderDoc's Python API.
 - **You need a tool with a decade of edge cases in it.** RenderDoc captures applications that
