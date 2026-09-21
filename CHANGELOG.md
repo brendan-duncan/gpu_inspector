@@ -61,6 +61,7 @@
 - A Direct3D 12 mesh view draws its vertices: the records arrive after the layout they belong to, and the view only drew on the first of the two.
 - A top level's scene draws the stand-in boxes of instances with no captured geometry beside the ones with triangles, instead of leaving them out.
 - A scene draws every geometry of a bottom level, not only its first.
+- Both replays upload a command group's buffer contents in one submission: a Quake II RTX frame's 238,000 took three minutes one at a time, which every View Mesh waited through, and now take two seconds.
 - A Vulkan build of several geometries keeps each one's primitive count: the layer recorded only the first, and the replay and the scene used it for all.
 
 ## v0.18.0

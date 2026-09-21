@@ -565,6 +565,16 @@ private:
         void* mapped = nullptr;
         VkDeviceSize size = 0;
     };
+    /** An upload waiting for FlushUploads: its bytes are at `at` in `_uploadBytes`. */
+    struct PendingUpload {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+        size_t at = 0;
+        size_t size = 0;
+    };
+    bool _batchingUploads = false;
+    std::vector<PendingUpload> _pendingUploads;
+    std::vector<uint8_t> _uploadBytes;
     struct PendingReadback {
         Staging staging;
         size_t target = 0;
@@ -966,6 +976,14 @@ private:
                        bool deviceAddress = false);
     bool RunOneTime(const std::function<void(VkCommandBuffer)>& record);
     void UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_t* data, size_t size);
+    /**
+     * Uploads between BeginUploads and FlushUploads go into one staging buffer and one submission
+     * rather than a staging allocation, a submission and a wait each. A frame can carry hundreds of
+     * thousands of buffer read-backs (a Quake II RTX frame carries 238,000), and one at a time they
+     * took minutes before the first command was replayed.
+     */
+    void BeginUploads();
+    void FlushUploads();
     /** Moves each subresource of an image to its target (UNDEFINED: left where it is), from the layouts the record holds. */
     void TransitionSubresources(VkCommandBuffer cb, ImageRecord& image, const std::vector<VkImageLayout>& targets);
     void TransitionAll(VkCommandBuffer cb, ImageRecord& image, VkImageLayout to);

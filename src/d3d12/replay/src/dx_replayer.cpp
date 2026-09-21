@@ -1038,6 +1038,53 @@ void DxReplayer::MoveToInitialStates() {
 void DxReplayer::ApplyBufferData(const Group& group) {
     const JValue* commands = _capture->Commands();
     std::unordered_set<uint64_t> applied;
+    // The uploads into default-heap buffers, gathered into one staging buffer and one command list
+    // rather than a staging resource, a list and a wait each: a frame can carry hundreds of thousands
+    // of buffer read-backs, and one at a time they took minutes.
+    struct Pending {
+        Resource* resource;
+        uint64_t bufferId;
+        uint64_t offset;
+        size_t at;
+        size_t size;
+    };
+    std::vector<Pending> pending;
+    std::vector<uint8_t> bytes;
+    auto flush = [&]() {
+        if (pending.empty()) return;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = bytes.size();
+        desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ID3D12Resource* staging = nullptr;
+        void* mapped = nullptr;
+        bool ok = false;
+        if (SUCCEEDED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&staging))) &&
+            SUCCEEDED(staging->Map(0, nullptr, &mapped))) {
+            std::memcpy(mapped, bytes.data(), bytes.size());
+            staging->Unmap(0, nullptr);
+            ok = RunOneTime([&](ID3D12GraphicsCommandList* list) {
+                // Each copy between its own transitions, which also orders two copies into the same bytes.
+                for (const Pending& u : pending) {
+                    const D3D12_RESOURCE_STATES state = StateOf(*u.resource, 0);
+                    Transition(list, *u.resource, UINT_MAX, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
+                    list->CopyBufferRegion(u.resource->resource, u.offset, staging, u.at, u.size);
+                    Transition(list, *u.resource, UINT_MAX, state, nullptr);
+                }
+            });
+        }
+        SafeRelease(staging);
+        for (const Pending& u : pending) {
+            if (ok) _report->bufferUploads++;
+            else Problem("buffer " + std::to_string(u.bufferId) + ": its captured contents could not be uploaded");
+        }
+        pending.clear();
+        bytes.clear();
+    };
     auto apply = [&](uint64_t dataId) {
         if (!dataId || !applied.insert(dataId).second) return;
         auto it = _bufferData.find(dataId);
@@ -1064,33 +1111,19 @@ void DxReplayer::ApplyBufferData(const Group& group) {
                 ok = true;
             }
         } else {
-            D3D12_HEAP_PROPERTIES heap{};
-            heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-            D3D12_RESOURCE_DESC desc{};
-            desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            desc.Width = size;
-            desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
-            desc.SampleDesc.Count = 1;
-            desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            ID3D12Resource* staging = nullptr;
-            void* mapped = nullptr;
-            if (SUCCEEDED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&staging))) &&
-                SUCCEEDED(staging->Map(0, nullptr, &mapped))) {
-                std::memcpy(mapped, data, size);
-                staging->Unmap(0, nullptr);
-                ok = RunOneTime([&](ID3D12GraphicsCommandList* list) {
-                    Transition(list, *r, UINT_MAX, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-                    list->CopyBufferRegion(r->resource, offset, staging, 0, size);
-                    Transition(list, *r, UINT_MAX, state, nullptr);
-                });
+            // A batch is sent at this size, so its staging buffer stays a reasonable allocation.
+            constexpr size_t kBatchBytes = 64u << 20;
+            if (!pending.empty() && bytes.size() + size > kBatchBytes) flush();
+            pending.push_back({r, bufferId, offset, bytes.size(), size});
+            bytes.insert(bytes.end(), data, data + size);
+        }
+        if (r->heapType == D3D12_HEAP_TYPE_UPLOAD) {
+            if (!ok) {
+                Problem("buffer " + std::to_string(bufferId) + ": its captured contents could not be uploaded");
+                return;
             }
-            SafeRelease(staging);
+            _report->bufferUploads++;
         }
-        if (!ok) {
-            Problem("buffer " + std::to_string(bufferId) + ": its captured contents could not be uploaded");
-            return;
-        }
-        _report->bufferUploads++;
         if (_x) {
             _x->Block(DxExporter::Frame, "buffer " + std::to_string(bufferId) + ": what the frame reads from it, as captured", [&](Source& s) {
                 s.Line("UploadBuffer(" + s.Object(r->resource) + ", " + std::to_string(offset) + ", " + _x->Data(data, size) + ", " + std::to_string(size) + ", " +
@@ -1123,6 +1156,7 @@ void DxReplayer::ApplyBufferData(const Group& group) {
             }
         }
     }
+    flush();
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -533,6 +533,14 @@ bool Replayer::RunOneTime(const std::function<void(VkCommandBuffer)>& record) {
 }
 
 void Replayer::UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_t* data, size_t size) {
+    if (_batchingUploads) {
+        // A batch is flushed at this size, so its staging buffer stays a reasonable allocation.
+        constexpr size_t kBatchBytes = 64u << 20;
+        if (!_pendingUploads.empty() && _uploadBytes.size() + size > kBatchBytes) FlushUploads();
+        _pendingUploads.push_back({buffer, offset, _uploadBytes.size(), size});
+        _uploadBytes.insert(_uploadBytes.end(), data, data + size);
+        return;
+    }
     Staging staging;
     if (!CreateStaging(size, staging)) {
         Problem("could not allocate staging memory for an upload");
@@ -542,6 +550,66 @@ void Replayer::UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_
     RunOneTime([&](VkCommandBuffer cb) {
         VkBufferCopy copy{0, offset, size};
         _fns.CmdCopyBuffer(cb, staging.buffer, buffer, 1, &copy);
+    });
+    DestroyStaging(staging);
+}
+
+void Replayer::BeginUploads() {
+    _batchingUploads = true;
+}
+
+void Replayer::FlushUploads() {
+    std::vector<PendingUpload> uploads;
+    std::vector<uint8_t> bytes;
+    uploads.swap(_pendingUploads);
+    bytes.swap(_uploadBytes);
+    if (uploads.empty()) return;
+    Staging staging;
+    if (!CreateStaging(bytes.size(), staging)) {
+        // One at a time, then, each with its own smaller staging.
+        const bool batching = _batchingUploads;
+        _batchingUploads = false;
+        for (const PendingUpload& u : uploads) UploadToBuffer(u.buffer, u.offset, bytes.data() + u.at, u.size);
+        _batchingUploads = batching;
+        return;
+    }
+    std::memcpy(staging.mapped, bytes.data(), bytes.size());
+    // Copies in one command buffer are not ordered against each other, so two that write the same
+    // bytes are separated by a barrier: the later upload has to win, as it did one at a time.
+    std::vector<uint8_t> barrierBefore(uploads.size(), 0);
+    {
+        std::map<std::pair<uint64_t, VkDeviceSize>, VkDeviceSize> written;   // (buffer, start) -> end
+        for (size_t i = 0; i < uploads.size(); ++i) {
+            const PendingUpload& u = uploads[i];
+            const uint64_t key = (uint64_t)(uintptr_t)u.buffer;
+            const VkDeviceSize end = u.offset + u.size;
+            auto next = written.lower_bound({key, u.offset});
+            bool overlaps = next != written.end() && next->first.first == key && next->first.second < end;
+            if (!overlaps && next != written.begin()) {
+                auto before = next;
+                --before;
+                overlaps = before->first.first == key && before->second > u.offset;
+            }
+            if (overlaps) {
+                barrierBefore[i] = 1;
+                written.clear();
+            }
+            written[{key, u.offset}] = end;
+        }
+    }
+    RunOneTime([&](VkCommandBuffer cb) {
+        for (size_t i = 0; i < uploads.size(); ++i) {
+            const PendingUpload& u = uploads[i];
+            if (barrierBefore[i]) {
+                VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr,
+                                        0, nullptr);
+            }
+            VkBufferCopy copy{u.at, u.offset, u.size};
+            _fns.CmdCopyBuffer(cb, staging.buffer, u.buffer, 1, &copy);
+        }
     });
     DestroyStaging(staging);
 }
@@ -1460,6 +1528,7 @@ bool Replayer::UploadCapturedBuffer(uint64_t dataId) {
 
 void Replayer::ApplyBufferData(const CommandGroup& group) {
     const JValue* commands = _capture->Commands();
+    BeginUploads();
     std::unordered_set<uint64_t> applied;
     auto apply = [&](uint64_t dataId) {
         if (!dataId || applied.count(dataId)) return;
@@ -1494,6 +1563,8 @@ void Replayer::ApplyBufferData(const CommandGroup& group) {
             }
         }
     }
+    FlushUploads();
+    _batchingUploads = false;
 }
 
 void Replayer::ApplyDescriptorSnapshot(const JValue* descriptors) {
