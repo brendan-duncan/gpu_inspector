@@ -47,6 +47,7 @@ import {
   boundStructure, shaderGroupViewOf, tableRegionsOf, vulkanGroupName,
 } from "./ray_tracing_view.js";
 import { d3d12TableRecords, traceStateObjectId } from "./d3d12/raytracing.js";
+import { structuresOfCommand } from "./acceleration_view.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
@@ -68,6 +69,10 @@ export interface CaptureHost {
   renderPassTargets(container: Widget, frame: number, passBegin: CaptureCommand, passIndex: number, commandBufferId: number, command?: CaptureCommand): void;
   /** Opens the draw's mesh in a tab (VS In and VS Out). */
   openMesh(cmd: CaptureCommand): void;
+  /** Opens an acceleration structure in a tab. */
+  openStructure(structureId: number): void;
+  /** Every acceleration structure the capture holds. */
+  structures(): VulkanObject[];
   /** Opens the shader debugger on an invocation of a draw or dispatch. */
   debugShader(request: DebugRequest): void;
   /** A canvas showing a captured texture, drawn when its data is (or becomes) available. */
@@ -193,6 +198,11 @@ export class CommandInfoView {
         void renderCommandStack(stackGrp.body, this.panel.window, cmd.stack ?? []);
       });
     }
+
+    // A command that names acceleration structures offers each one's view, whichever way it names
+    // them; a trace names its scene through what it has bound rather than in its own arguments.
+    const traces = method === "DispatchRays" || method.startsWith("vkCmdTraceRays");
+    this._renderStructures(container, cmd, traces ? drawState(this.panel.data, db, cmd) : null);
 
     if (isAction(cmdSets, method)) {
       const state = drawState(this.panel.data, db, cmd);
@@ -456,6 +466,44 @@ export class CommandInfoView {
         const e = isObject(s.extent) ? s.extent : {};
         new Span(line("Scissor"), { text: `${num(o.x)},${num(o.y)} ${num(e.width)}x${num(e.height)}` });
       }
+    }
+  }
+
+  /**
+   * The acceleration structures a command names, each with a button to open it in its tab, and what
+   * the command does with it. A structure with nothing to show says why on its button rather than
+   * opening an empty view — usually a bottom level built before the capture began.
+   */
+  private _renderStructures(container: Widget, cmd: CaptureCommand, state: ReturnType<typeof drawState> | null): void {
+    const structures = this.panel.structures();
+    if (!structures.length) return;
+    const bound = state ? [...state.sets.values()].map((s) => s.set) : null;
+    const refs = structuresOfCommand(cmd as unknown as { method: string; args?: unknown }, structures, bound);
+    // A top level's build also names every bottom level its instances point at, which is written
+    // in the instance buffer rather than in the build's arguments.
+    for (const r of [...refs]) {
+      if (r.role !== "builds") continue;
+      const scene = this.panel.window.accelerationScene(r.id);
+      for (const i of scene?.instances ?? []) {
+        if (i.blas !== undefined && !refs.some((x) => x.id === i.blas)) refs.push({ id: i.blas, role: "instances place" });
+      }
+    }
+    if (!refs.length) return;
+    const grp = new collapsible(container, { label: `Acceleration Structures (${refs.length})`, collapsed: false });
+    const db = this.db;
+    for (const r of refs) {
+      const object = db.getObject(r.id);
+      const row = new Div(grp.body, { class: "accel-open-row" });
+      new Span(row, { text: `${r.role}:`, class: "text-muted" });
+      if (object) objectLink(row, object, this._link);
+      const drawing = this.panel.window.structureDrawing(r.id);
+      const empty = !drawing || !drawing.positions.length;
+      new Button(row, {
+        label: "View", class: "btn btn-sm", disabled: empty,
+        tooltip: empty ? (drawing?.note ?? "Nothing about this structure is in the capture") : "Open it in a tab, with the mesh view's camera and shading",
+        callback: () => this.panel.openStructure(r.id),
+      });
+      if (empty && drawing?.note) new Span(row, { text: drawing.note, class: "text-muted font-sm" });
     }
   }
 

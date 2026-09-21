@@ -41,6 +41,7 @@ import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.j
 import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
 import { boundStructure, renderAccelerationStructure, renderShaderGroups, shaderGroupViewOf, structureViewOf } from "./ray_tracing_view.js";
+import { STRUCTURE_TYPES } from "./acceleration_view.js";
 import type { CaptureDescriptorBinding, CompileShaderResult, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
 /**
@@ -58,7 +59,8 @@ const D3D12_BUFFERS = "ID3D12Resource:buffer";
 // Vulkan one. Each runs device-first, since that is what everything else hangs off.
 const TYPE_ORDER = [
   "VkInstance", "VkPhysicalDevice", "VkDevice", "VkQueue", "VkSurfaceKHR", "VkSwapchainKHR",
-  "VkPipeline", "VkShaderModule", "VkShaderEXT", "VkPipelineLayout", "VkRenderPass", "VkFramebuffer",
+  "VkPipeline", "VkShaderModule", "VkShaderEXT", "VkPipelineLayout", "VkAccelerationStructureKHR",
+  "VkRenderPass", "VkFramebuffer",
   "VkImage", "VkImageView", "VkSampler", "VkBuffer", "VkBufferView", "VkDeviceMemory",
   "VkDescriptorSet", "VkDescriptorSetLayout", "VkDescriptorPool",
   "VkCommandBuffer", "VkCommandPool", "VkFence", "VkSemaphore", "VkEvent", "VkQueryPool",
@@ -69,7 +71,8 @@ const TYPE_ORDER = [
   "MTLTexture", "MTLBuffer", "MTLSamplerState", "MTLHeap",
 
   "ID3D12Device", "IDXGIAdapter", "IDXGISwapChain", "ID3D12CommandQueue", "ID3D12GraphicsCommandList", "ID3D12CommandList",
-  "ID3D12CommandAllocator", "ID3D12PipelineState", "ID3D12StateObject", "ID3D12RootSignature", "ID3D12DescriptorHeap",
+  "ID3D12CommandAllocator", "ID3D12PipelineState", "ID3D12StateObject", "ID3D12RaytracingAccelerationStructure",
+  "ID3D12RootSignature", "ID3D12DescriptorHeap",
   "ID3D12Heap", D3D12_TEXTURES, D3D12_BUFFERS, "ID3D12Fence", "ID3D12QueryHeap", "ID3D12CommandSignature", "ID3D12PipelineLibrary",
 ];
 
@@ -893,6 +896,20 @@ export class InspectPanel {
     new Span(item, { text: object.name, class: "object-item-name" });
     new Span(item, { text: ` ${object.summary(this.database)}`, class: "object-item-type" });
     item.element.title = `${object.type} ${object.id} (${object.handle})`;
+    // An acceleration structure says whether the open capture can draw it, and why not when it
+    // cannot: which of them have a view is otherwise a matter of clicking each to find out.
+    if (STRUCTURE_TYPES.includes(object.type)) {
+      const drawing = this.window.structureDrawing(object.id);
+      if (drawing) {
+        const viewable = drawing.positions.length > 0;
+        new Span(item, {
+          text: viewable ? " \u25C9" : " \u25CB",
+          class: viewable ? "object-item-viewable" : "object-item-unviewable",
+          tooltip: viewable ? "The capture holds what it was built from: View in a Tab draws it" : drawing.note,
+        });
+        item.element.title += viewable ? "\nCan be viewed" : `\n${drawing.note}`;
+      }
+    }
     if (object.isInvalid) {
       item.element.classList.add("error");
       item.tooltip = object.invalidReason ?? "";
@@ -999,7 +1016,22 @@ export class InspectPanel {
   }
 
   private _objectUpdated(object: VulkanObject): void {
+    // A structure's row summarizes its build, which arrives as an update after the row was made.
+    if (STRUCTURE_TYPES.includes(object.type) && object.widget) this._fillItem(object, object.widget as Widget);
     if (this.inspectedObject === object) this._inspectObject(object);
+  }
+
+  /**
+   * Refills every acceleration structure's row: whether one can be viewed depends on the captures
+   * open, which change after the rows were made. Called when a capture opens or closes.
+   */
+  refreshStructures(): void {
+    for (const type of STRUCTURE_TYPES) {
+      for (const o of this.database.getObjectsOfType(type)?.values() ?? []) {
+        if (o.widget) this._fillItem(o, o.widget as Widget);
+        if (this.inspectedObject === o) this._inspectObject(o);
+      }
+    }
   }
 
   private _applyFilter(): void {
@@ -1117,7 +1149,10 @@ export class InspectPanel {
     if (object.updates.executables) this._buildCompilerStatistics(object);
     const structure = structureViewOf(object, db);
     if (structure) {
-      renderAccelerationStructure(this.inspectPanel, structure, db, onLink, this.window.accelerationScene(object.id));
+      // Only offered with a capture open: the geometry is in the capture, not in the live session.
+      const drawing = this.window.structureDrawing(object.id);
+      const opener = drawing ? { note: drawing.positions.length ? "" : drawing.note, open: () => this.window.openStructure(object.id) } : null;
+      renderAccelerationStructure(this.inspectPanel, structure, db, onLink, this.window.accelerationScene(object.id), opener);
     }
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     // A state object's code is its DXIL libraries, which the capture library keeps as blobs on it

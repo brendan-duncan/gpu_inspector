@@ -265,11 +265,34 @@ discards still shows as covered:
 ## Mesh view
 
 A draw's mesh, as RenderDoc's Mesh Viewer shows it: press **View Mesh** in a draw's details. The tab
-has a wireframe preview over a table of the draw's vertices:
+has a preview over a table of the draw's vertices:
 
-- drag to turn the mesh, use the wheel to zoom, and double-click (or **Reset View**) to frame it again
 - click a row of the table to mark that vertex in the preview
 - the draw list steps through the pass's draws and keeps the view, so their meshes line up
+- double-click the preview, or **Reset View**, to frame the mesh again
+
+**Camera**, after RenderDoc's:
+
+| Mode | Mouse and keys |
+|---|---|
+| **Arcball** | drag to turn around the mesh; middle, right or shift drag to slide it across the view; wheel to come closer. What you want for one object. |
+| **Fly** | drag to look; **W A S D** to walk, **Q** and **E** to fall and rise, **shift** to hurry; the wheel sets the pace. What you want inside a scene. Click the preview first so it has the keys. |
+
+Switching keeps the view where it is. Both are framed on where the geometry is rather than on its
+farthest vertex, so one huge primitive under a scene of small ones (a ground plane, a skybox)
+does not shrink the rest to a speck; the wheel still reaches the whole of it.
+
+**Shading**:
+
+| Mode | What it shows |
+|---|---|
+| **Wireframe** | every primitive's edges, with nothing hidden behind anything else |
+| **Solid** | the triangles filled in one colour, with their edges over them |
+| **Flat** | the triangles lit by each face's own normal and a light at the eye, without edges: a fold, a flipped face or a wrong winding shows as a face that is the wrong brightness |
+
+The flat normal comes from the triangle itself, not from the mesh's normals, so it is exactly the
+face the rasterizer sees. Only a triangle list can be filled: lines and points stay a wireframe, and
+the control says so.
 
 ![The mesh view's VS In: the vertices of a Unity menu's draw as a wireframe, over the table of the attributes its vertex shader reads](images/mesh-view.png)
 

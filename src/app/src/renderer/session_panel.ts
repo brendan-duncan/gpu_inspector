@@ -16,6 +16,7 @@ import { summarizeMemoryCapture } from "./memory_capture.js";
 import type { LoadedCapture } from "./capture_format.js";
 import type { CapturedTexture } from "./capture_data.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
+import type { StructureDrawing } from "./acceleration_scene.js";
 import type { LayerMessage, SessionInfo, StackFrame, StatusMessage, UiRequest } from "../shared/protocol.js";
 import type { ShaderReplacement } from "./shader_replay.js";
 
@@ -40,6 +41,12 @@ export interface SessionContext {
    * buffer contents, and for a structure whose build the capture does not hold.
    */
   accelerationScene(structureId: number): AccelerationScene | null;
+  /** What a structure can be drawn as in the open captures; null with none open. */
+  structureDrawing(structureId: number): StructureDrawing | null;
+  /** Opens the acceleration structure tab on it. */
+  openStructure(structureId: number): void;
+  /** The captures open changed what can be shown of the acceleration structures. */
+  structuresChanged(): void;
   /**
    * Whether the capture in front can be replayed with an edited shader: a Vulkan or D3D12 capture
    * that has arrived. The shader editor offers it beside applying the edit to the application,
@@ -342,6 +349,22 @@ export class SessionPanel extends Div implements SessionContext {
 
   accelerationScene(structureId: number): AccelerationScene | null {
     return this.capturePanel.accelerationScene(structureId);
+  }
+
+  structureDrawing(structureId: number): StructureDrawing | null {
+    return this.capturePanel.structureDrawing(structureId)?.drawing ?? null;
+  }
+
+  openStructure(structureId: number): void {
+    // Asked from the Inspect panel as often as from a command: the tab is beside the capture's, so
+    // that is where to look.
+    this.showCaptureTab();
+    this.capturePanel.openStructure(structureId);
+  }
+
+  structuresChanged(): void {
+    // The capture panel is made after the inspect panel, and a capture can open before both are.
+    this.inspectPanel?.refreshStructures();
   }
 
   handleMessages(batch: LayerMessage[]): void {

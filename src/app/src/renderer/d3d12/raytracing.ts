@@ -250,10 +250,11 @@ function parseGeometry(command: CaptureCommand, g: ArgObject, index: number): Ac
   const flags = str(g.Flags);
   if (type.includes("PROCEDURAL_PRIMITIVE_AABBS")) {
     const aabbs = isObject(g.AABBs) ? g.AABBs : {};
+    const buffer = isObject(aabbs.AABBs) ? aabbs.AABBs : {};
     return {
       index, kind: "aabbs", flags, primitiveCount: num(aabbs.AABBCount),
-      instanceData: undefined,
-      ...(buildCapture(command, index, "AABBs") ? { vertexData: buildCapture(command, index, "AABBs") } : {}),
+      aabbStride: num(buffer.StrideInBytes),
+      aabbData: buildCapture(command, index, "AABBs") || undefined,
     };
   }
   const tri = isObject(g.Triangles) ? g.Triangles : {};

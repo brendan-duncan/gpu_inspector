@@ -85,6 +85,9 @@ bool HookDxgiObject(void* object, const char* interfaceName, uint32_t count, std
 
 void OnObjectNamed(void* object, const std::string& name) {
     Tracker::Get().SetLabel(object, name);
+    // A buffer's name is also the name of any acceleration structure in it (raytracing.h). Only a
+    // resource can hold one, so the check is cheap for everything else.
+    if (Tracker::Get().TypeOf(object) == "ID3D12Resource") OnResourceNamed(static_cast<ID3D12Resource*>(object), name);
 }
 
 void OnObjectDestroyed(void* object, const std::string& type) {

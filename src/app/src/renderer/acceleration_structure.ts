@@ -109,6 +109,8 @@ export interface AccelerationGeometry {
   vertexStride?: number;
   maxVertex?: number;
   indexType?: string;
+  /** AABBs: the stride the build walks them by, which is not always the 24 bytes one takes. */
+  aabbStride?: number;
   /** Primitives the build range asked for, which is what the structure actually holds. */
   primitiveCount: number;
   /** CaptureBuffers ids of the contents the layer captured, when it resolved the addresses. */
@@ -116,6 +118,7 @@ export interface AccelerationGeometry {
   indexData?: number;
   transformData?: number;
   instanceData?: number;
+  aabbData?: number;
 }
 
 export interface AccelerationBuild {
@@ -163,6 +166,7 @@ export function parseBuild(info: ArgValue | undefined, range: ArgValue | undefin
         maxVertex: num(triangles.maxVertex),
         indexType: SHORT(str(triangles.indexType), /^VK_INDEX_TYPE_/),
       } : {}),
+      ...(kind === "aabbs" ? { aabbStride: num(g.stride) } : {}),
       ...capturedData(g),
     });
   });
@@ -193,11 +197,13 @@ function capturedData(g: ArgObject): Partial<AccelerationGeometry> {
   };
   const triangles = geometry.triangles;
   const instances = geometry.instances;
+  const aabbs = geometry.aabbs;
   return {
     vertexData: pick(triangles, "vertexData"),
     indexData: pick(triangles, "indexData"),
     transformData: pick(triangles, "transformData"),
     instanceData: pick(instances, "data"),
+    aabbData: pick(aabbs, "data"),
   };
 }
 
@@ -270,6 +276,42 @@ export function triangleMesh(g: AccelerationGeometry, vertices: Uint8Array | nul
   return positions.length ? new Float32Array(positions) : null;
 }
 
+/** Bytes of one AABB: six floats, the same in both APIs (VkAabbPositionsKHR, D3D12_RAYTRACING_AABB). */
+export const AABB_SIZE = 24;
+
+/**
+ * The boxes a procedural bottom-level geometry was built from, as the endpoints of their edges: two
+ * positions per edge, twelve edges per box. Null when the AABBs were not captured.
+ *
+ * A procedural geometry has no triangles at all — its shape is whatever its intersection shader
+ * decides — so its boxes are the only thing there is to draw, and they are exactly what the
+ * traversal tests against.
+ */
+export function aabbBoxes(g: AccelerationGeometry, bytes: Uint8Array | null): Float32Array | null {
+  if (g.kind !== "aabbs" || !bytes) return null;
+  const stride = g.aabbStride && g.aabbStride >= AABB_SIZE ? g.aabbStride : AABB_SIZE;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = Math.min(g.primitiveCount || Infinity, Math.floor(bytes.byteLength / stride));
+  const lines: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const at = i * stride;
+    const min = [view.getFloat32(at, true), view.getFloat32(at + 4, true), view.getFloat32(at + 8, true)];
+    const max = [view.getFloat32(at + 12, true), view.getFloat32(at + 16, true), view.getFloat32(at + 20, true)];
+    // A degenerate or unwritten box says nothing and crowds the view.
+    if (![0, 1, 2].every((k) => Number.isFinite(min[k]) && Number.isFinite(max[k]) && max[k] >= min[k])) continue;
+    const corner = (c: number): [number, number, number] =>
+      [(c & 1) ? max[0] : min[0], (c & 2) ? max[1] : min[1], (c & 4) ? max[2] : min[2]];
+    for (let a = 0; a < 8; a++) {
+      for (const bit of [1, 2, 4]) {
+        const b = a ^ bit;
+        if (b <= a) continue;
+        lines.push(...corner(a), ...corner(b));
+      }
+    }
+  }
+  return lines.length ? new Float32Array(lines) : null;
+}
+
 /**
  * The scene a top level describes: each instance's bottom level placed by its transform, and a box
  * where the geometry of one is not in the capture. A bottom level is usually built once, before any
@@ -279,28 +321,50 @@ export function triangleMesh(g: AccelerationGeometry, vertices: Uint8Array | nul
  * `meshOf` gives the triangles of a bottom level by object id, or null when they were not captured.
  */
 export function instanceScene(instances: AccelerationInstance[],
-                              meshOf: (blas: number) => Float32Array | null): { mesh: Float32Array; kind: "triangles" | "lines"; placed: number } {
+                              meshOf: (blas: number) => Float32Array | null,
+                              boxesOf?: (blas: number) => Float32Array | null): { mesh: Float32Array; kind: "triangles" | "lines"; placed: number; drawn: SceneGeometry } {
   const triangles: number[] = [];
   const lines: number[] = [];
   let placed = 0;
+  let drawn: SceneGeometry = "none";
   for (const i of instances) {
     const geometry = i.blas !== undefined ? meshOf(i.blas) : null;
     if (geometry) {
       placed++;
+      drawn = "triangles";
       for (let v = 0; v + 2 < geometry.length; v += 3) {
         const p = transformPoint(i.transform, geometry[v], geometry[v + 1], geometry[v + 2]);
         triangles.push(p[0], p[1], p[2]);
       }
-    } else {
-      for (const [x, y, z] of CUBE_EDGES) {
-        const p = transformPoint(i.transform, x, y, z);
+      continue;
+    }
+    // A procedural bottom level: its own boxes, which is all its shape ever is outside its
+    // intersection shader. Placed by the instance like any other geometry.
+    const boxes = i.blas !== undefined && boxesOf ? boxesOf(i.blas) : null;
+    if (boxes) {
+      placed++;
+      if (drawn === "none") drawn = "aabbs";
+      for (let v = 0; v + 2 < boxes.length; v += 3) {
+        const p = transformPoint(i.transform, boxes[v], boxes[v + 1], boxes[v + 2]);
         lines.push(p[0], p[1], p[2]);
       }
+      continue;
+    }
+    for (const [x, y, z] of CUBE_EDGES) {
+      const p = transformPoint(i.transform, x, y, z);
+      lines.push(p[0], p[1], p[2]);
     }
   }
   // Triangles win when any geometry was captured: a box drawn around known geometry says less than
   // the geometry does, and the preview draws one primitive kind at a time.
   return triangles.length
-    ? { mesh: new Float32Array(triangles), kind: "triangles", placed }
-    : { mesh: new Float32Array(lines), kind: "lines", placed };
+    ? { mesh: new Float32Array(triangles), kind: "triangles", placed, drawn }
+    : { mesh: new Float32Array(lines), kind: "lines", placed, drawn };
 }
+
+/**
+ * What the scene ended up drawing, which decides what the caption can honestly claim: the bottom
+ * levels' triangles, their own procedural boxes, or a stand-in cube per instance because neither
+ * was in the capture.
+ */
+export type SceneGeometry = "triangles" | "aabbs" | "none";

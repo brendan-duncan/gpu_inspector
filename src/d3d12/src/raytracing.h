@@ -132,6 +132,13 @@ ID3D12StateObject* BoundStateObject(CommandRecorder* rec);
  */
 void ForgetStructuresIn(ID3D12Resource* buffer);
 
+/**
+ * A resource was named: every structure living in it takes the name, which is the application's own
+ * name for what is there. D3D12 has no structure object to name, so the buffer is the only place an
+ * application ever says what a structure is.
+ */
+void OnResourceNamed(ID3D12Resource* resource, const std::string& name);
+
 /** Drops what a released state object exported; its properties interface's vtable stays patched. */
 void ForgetStateObject(ID3D12StateObject* stateObject);
 

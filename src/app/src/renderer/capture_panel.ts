@@ -36,7 +36,7 @@ import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, SUBMIT_CALL, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
 import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabelledPass } from "./timeline_tracks.js";
-import { accelerationScene } from "./acceleration_scene.js";
+import { accelerationScene, structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
@@ -54,6 +54,7 @@ import { parseDrawOverlayFile, type DrawOverlay, type DrawOverlayKind } from "./
 import { drawState, findPass } from "./draw_state.js";
 import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
+import { AccelerationView, STRUCTURE_TYPES } from "./acceleration_view.js";
 import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
 import { summarizeCpuTimeline } from "./cpu_timeline.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
@@ -72,7 +73,7 @@ interface CaptureSubTab {
   dispose(): void;
   debugState(): Record<string, unknown>;
 }
-type SubTabKind = "texture" | "mesh" | "debugger" | `report:${string}`;
+type SubTabKind = "texture" | "mesh" | "accel" | "debugger" | `report:${string}`;
 import type { RenderGraph } from "./render_graph.js";
 import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
@@ -80,7 +81,7 @@ import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
 import { ImageView } from "./image_view.js";
 import { isAction, labelNameOf } from "./command_sets.js";
-import { fmt, isObject, refId } from "./vulkan/vulkan_object.js";
+import { fmt, isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { d3d12AttributeNames, isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { SessionContext } from "./session_panel.js";
 import { getHostPlatform } from "./launch_dialog.js";
@@ -267,6 +268,7 @@ export class CapturePanel {
       ...v.debugState(),
       textureTab: this._subTab(v, "texture")?.tab.debugState() ?? null,
       meshTab: this._subTab(v, "mesh")?.tab.debugState() ?? null,
+      accelTab: this._subTab(v, "accel")?.tab.debugState() ?? null,
       debuggerTab: this._subTab(v, "debugger")?.tab.debugState() ?? null,
       // The reports open in tabs beside the capture's, in the order they were opened.
       reportTabs: [...(this._subTabs.get(v)?.keys() ?? [])].filter((k) => k.startsWith("report:")).map((k) => k.slice("report:".length)),
@@ -302,6 +304,30 @@ export class CapturePanel {
       if (scene) return scene;
     }
     return null;
+  }
+
+  /**
+   * What an acceleration structure can be shown as, from whichever open capture can show the most
+   * of it, and the capture that is: a structure built in one capture and only read in another is
+   * worth opening from the first. Null when no capture is open.
+   */
+  structureDrawing(structureId: number): { drawing: StructureDrawing; view: CaptureView } | null {
+    const views = this.activeView ? [this.activeView, ...this._views] : this._views;
+    let fallback: { drawing: StructureDrawing; view: CaptureView } | null = null;
+    for (const v of views) {
+      const drawing = structureDrawing(v.data, this.window.database, structureId);
+      if (drawing.positions.length) return { drawing, view: v };
+      fallback ??= { drawing, view: v };
+    }
+    return fallback;
+  }
+
+  /** Opens the acceleration structure tab on a structure, in the capture that can show it. */
+  openStructure(structureId: number): void {
+    const found = this.structureDrawing(structureId);
+    if (!found) return;
+    this._showCaptureTab(found.view);
+    found.view.openStructure(structureId);
   }
 
   /** Captured contents of an image from the active tab, else the most recent capture that has it. */
@@ -521,6 +547,11 @@ export class CapturePanel {
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
     view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
     view.onOpenMesh.addListener((draw, options) => this._openMesh(view, draw, options));
+    view.onOpenStructure.addListener((id) => this._openStructure(view, id));
+    // Which acceleration structures can be viewed depends on the captures open, and a live
+    // capture's builds arrive after its tab does.
+    view.data.onCommandsComplete.addListener(() => this.window.structuresChanged());
+    this.window.structuresChanged();
     view.onDebugShader.addListener((request, options) => this._openDebugger(view, request, options));
     view.onOpenReport.addListener((report) => this._openReport(view, report));
     view.onOpenReportWindow.addListener((id) => void this._openInNewWindow(view, id));
@@ -671,6 +702,37 @@ export class CapturePanel {
     }, draw, options);
     const entry = this._addSubTab(view, "mesh", tab, `${tab.label}: ${view.label}`);
     // The label follows the draw the tab is stepped to.
+    const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
+    relabel.observe(tab.root.element, { childList: true });
+  }
+
+  /**
+   * Shows an acceleration structure in a tab beside the capture's (acceleration_view.ts); one such
+   * tab per capture, pointed at the next structure opened.
+   */
+  private _openStructure(view: CaptureView, structureId: number): void {
+    const existing = this._subTab<AccelerationView>(view, "accel");
+    if (existing) {
+      existing.tab.show(structureId);
+      existing.handle.textElement.text = `${existing.tab.label}: ${view.label}`;
+      this._tabs.setHandleActive(existing.handle);
+      return;
+    }
+    const tab = new AccelerationView({
+      data: view.data,
+      db: view.window.database,
+      structures: () => view.structures(),
+      showObject: (id) => {
+        view.window.showObject(id);
+      },
+      selectCommand: (index) => {
+        this._showCaptureTab(view);
+        view.selectCommand(index);
+      },
+      buildOf: (id) => view.buildCommandOf(id),
+    }, structureId);
+    const entry = this._addSubTab(view, "accel", tab, `${tab.label}: ${view.label}`);
+    // The label follows the structure the tab is pointed at.
     const relabel = new MutationObserver(() => { entry.handle.textElement.text = `${tab.label}: ${view.label}`; });
     relabel.observe(tab.root.element, { childList: true });
   }
@@ -1034,6 +1096,7 @@ export class CapturePanel {
     const view = this._views.find((v) => v.root === panel);
     if (!view) return;
     this._views = this._views.filter((v) => v !== view);
+    this.window.structuresChanged();
     this._handles.delete(view);
     view.releaseReplay();
     if (this._live === view) this._live = null;
@@ -1145,6 +1208,8 @@ export class CaptureView implements CaptureHost {
    */
   readonly onOpenTexture = new Signal<(target: CaptureTarget, options: CaptureTextureOptions) => void>();
   readonly onOpenMesh = new Signal<(draw: CaptureCommand, options: MeshViewOptions) => void>();
+  /** Asks the panel for the acceleration structure tab, on this structure. */
+  readonly onOpenStructure = new Signal<(structureId: number) => void>();
   /** The shader debugger asked for, on an invocation of a draw or dispatch (shader_debugger_view.ts). */
   readonly onDebugShader = new Signal<(request: DebugRequest, options: ShaderDebuggerOptions) => void>();
   /** A whole-capture report asked to be shown in a tab beside the capture's (the panel places it). */
@@ -2242,6 +2307,18 @@ export class CaptureView implements CaptureHost {
       }, 500));
     }
     else if (name === "overdraw") void this.openOverdraw();
+    else if (name.startsWith("accel")) {
+      // Testing aid (--debug-view=accel[:<object id>|<name>]): the acceleration structure tab on the
+      // capture's first structure that can be drawn, or the one named.
+      const [, which] = name.split(":");
+      const all = this.structures();
+      const named = which === undefined ? null
+        : all.find((o) => String(o.id) === which) ?? all.find((o) => o.name.includes(which)) ?? null;
+      const drawable = all.find((o) => structureDrawing(this.data, this.window.database, o.id).positions.length > 0);
+      const target = named ?? drawable ?? all[0];
+      if (target) this.onOpenStructure.emit(target.id);
+      else this._setStatus("this capture has no acceleration structures");
+    }
     else if (name.startsWith("mesh")) {
       // Testing aid (--debug-view=mesh[:in|out[:<command>|last]]): the mesh tab on the first draw, or the one named.
       const [, stage = "out", at] = name.split(":");
@@ -2336,6 +2413,41 @@ export class CaptureView implements CaptureHost {
   /** Opens the mesh tab on a draw (View Mesh in a draw's details). */
   openMesh(cmd: CaptureCommand): void {
     this.onOpenMesh.emit(cmd, {});
+  }
+
+  /** Opens the acceleration structure tab (View Structure, in the Inspect panel or on a build). */
+  openStructure(structureId: number): void {
+    this.onOpenStructure.emit(structureId);
+  }
+
+  /** Every acceleration structure the capture holds, in id order, whichever API took it. */
+  structures(): VulkanObject[] {
+    const out: VulkanObject[] = [];
+    for (const type of STRUCTURE_TYPES) {
+      for (const o of this.window.database.getObjectsOfType(type)?.values() ?? []) out.push(o);
+    }
+    return out.sort((a, b) => a.id - b.id);
+  }
+
+  /**
+   * The command that last built a structure, or null. A build names its destination by address
+   * rather than by handle, so this is what the capture library resolved it to: `destStructure` on
+   * D3D12, and the build info's own reference on Vulkan.
+   */
+  buildCommandOf(structureId: number): number | null {
+    let found: number | null = null;
+    for (const c of this.data.commands) {
+      if (c.method === "BuildRaytracingAccelerationStructure") {
+        if (num((c as { destStructure?: ArgValue }).destStructure) === structureId) found = c.index;
+        continue;
+      }
+      if (!c.method.includes("BuildAccelerationStructures")) continue;
+      const infos = isObject(c.args) && Array.isArray(c.args.pInfos) ? c.args.pInfos : [];
+      for (const info of infos) {
+        if (isObject(info) && refId(info.dstAccelerationStructure) === structureId) found = c.index;
+      }
+    }
+    return found;
   }
 
   /** Opens the shader debugger on an invocation (Debug Vertex / Pixel / Invocation). */

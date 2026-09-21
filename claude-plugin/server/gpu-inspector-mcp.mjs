@@ -602,6 +602,9 @@ var VulkanObject = class {
     const d = this.descriptor;
     const a = this.args ?? {};
     switch (this.type) {
+      case "VkAccelerationStructureKHR":
+      case "ID3D12RaytracingAccelerationStructure":
+        return structureSummary(this);
       case "VkDevice": {
         const props = a.properties;
         return isObject(props) ? str(props.deviceName) : "";
@@ -882,6 +885,24 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+function structureSummary(o) {
+  const build = isObject(o.updates.build) ? o.updates.build : null;
+  const d = o.descriptor;
+  const type = str(build?.Type ?? build?.type ?? d?.type);
+  const level = type.includes("TOP_LEVEL") ? "top level" : type.includes("BOTTOM_LEVEL") ? "bottom level" : "";
+  if (!build) return level ? `${level}, not built while watching` : "not built while watching";
+  const geometries = Array.isArray(build.geometries) ? build.geometries.filter(isObject) : [];
+  let what = "";
+  if (level === "top level") {
+    const n = num(build.NumDescs ?? build.primitiveCount);
+    what = `${n.toLocaleString()} instance${n === 1 ? "" : "s"}`;
+  } else if (geometries.length) {
+    const kind = str(geometries[0].Type ?? geometries[0].geometryType);
+    const n = num(build.primitiveCount);
+    what = kind.includes("AABB") ? `${n.toLocaleString()} box${n === 1 ? "" : "es"}` : `${n.toLocaleString()} triangle${n === 1 ? "" : "s"}`;
+  }
+  return [level, what].filter(Boolean).join(", ");
 }
 
 // src/renderer/d3d12/command_sets.ts

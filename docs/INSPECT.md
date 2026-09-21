@@ -80,9 +80,41 @@ the flag bits, so the two read identically here.
 
 The instances are also drawn, in the same preview the [mesh view](REPORTS.md#mesh-view) uses. An
 instance whose bottom level's geometry is in the capture is drawn with that geometry, placed by its
-transform; one whose is not is drawn as a box where it sits. A scene of boxes is the common case and
+transform. A *procedural* bottom level has no triangles at all — its shape is whatever its
+intersection shader decides — so it is drawn with the bounding boxes it was built from, which is
+what the traversal tests against and the only shape there is outside the shader. An instance with
+neither is drawn as a box where it sits. A scene of boxes is the common case and
 is not a fault — it means those bottom levels were built before anything was capturing. Capturing a
 frame of an application that rebuilds its geometry each frame, or that streams it in, fills them in.
+
+### In a tab of its own
+
+**View in a Tab** in the Acceleration Structure section opens it beside the capture's tab, with the
+[mesh view](REPORTS.md#mesh-view)'s camera and shading. A top level is drawn as its instances placed
+in the world, over a table of them; clicking an instance opens the bottom level it names. A bottom
+level is drawn as its own geometry, in its own space. A top level of more than a few instances opens
+with the **Fly** camera, since a scene is something to walk through rather than turn.
+
+Every command that names a structure offers it too, under **Acceleration Structures** in its
+details, with what the command does with it: a build **builds** it (and a top level's build lists the
+bottom levels its instances place), a copy **copies from** and **copies to**, a postbuild query
+**queries**, and a trace **traces** the scene it has bound — found through a descriptor table or a
+root SRV, whichever the application used.
+
+### Which ones can be viewed
+
+The list says. Each structure is named after the buffer it lives in, which is the application's own
+name for it — D3D12 gives a structure nothing to name — and reads as what it is: *bottom level,
+398 boxes*, *top level, 3 instances*. A filled dot means the open capture holds what it was built
+from; a hollow one means it does not, and the tooltip, the Inspect panel and the disabled buttons
+all say why.
+
+Almost always the reason is that the capture holds no build of it. An engine builds its bottom
+levels once, at load, and a frame captured after that reads them without ever writing them — so
+the capture knows what the structure *is* (the build was recorded as it went by) but not what is
+*in* it (its inputs were not read back, because nothing was capturing). Capture a frame that
+rebuilds it to see it: `dxinsp_path_tracer --rebuild` and `dxinsp_triangle --rebuild-blas` do, as an
+application with deforming geometry does every frame.
 
 ## Shader binding tables
 

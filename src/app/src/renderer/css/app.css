@@ -444,6 +444,21 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .frame-bound-value { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 /* The scene a top level describes (renderer/acceleration_structure.ts) */
 .accel-preview { height: 240px; margin: 4px 0 6px 0; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
+.object-item-viewable { color: var(--accent, #4ea1ff); }
+.object-item-unviewable { color: var(--text-muted, #888); }
+.accel-open-row { display: flex; align-items: baseline; gap: 4px; margin: 2px 0 6px 0; flex-wrap: wrap; }
+.accel-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.accel-view-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; flex-wrap: wrap; }
+.accel-view-camera { display: inline-flex; align-items: center; }
+.accel-view-note { padding: 0 8px 4px 8px; }
+.accel-view-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.accel-view-bottom { flex: 0 1 35%; min-height: 60px; overflow: auto; border-top: 1px solid var(--border-subtle); }
+.accel-view-table { font-family: var(--font-mono, monospace); font-size: 12px; }
+.accel-view-row { display: grid; grid-template-columns: 50px minmax(180px, 2fr) 1.2fr 60px 100px 80px 1.5fr; gap: 6px; padding: 1px 8px; cursor: pointer; }
+.accel-view-row:hover { background: var(--bg-hover, rgba(255,255,255,0.05)); }
+.accel-view-row.selected { background: var(--bg-selected, rgba(80,140,255,0.25)); }
+.accel-view-header { font-weight: bold; cursor: default; position: sticky; top: 0; background: var(--bg-primary); }
+.accel-view-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Memory over the session (renderer/memory_timeline.ts) */
 .memory-chart { height: 56px; margin: 4px 0 2px 0; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
 .memory-chart-svg { display: block; width: 100%; height: 100%; }
@@ -677,6 +692,10 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .mesh-preview { position: relative; flex: 1 1 60%; min-height: 160px; background: var(--bg-secondary); border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); }
 .mesh-preview-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 .mesh-preview-note { position: absolute; left: 8px; top: 8px; }
+.mesh-controls { display: inline-flex; align-items: center; gap: 4px; }
+.mesh-controls .select select { height: 20px; }
+.mesh-controls-hint { opacity: 0.75; margin-left: 2px; white-space: nowrap; }
+.mesh-view-camera { display: inline-flex; align-items: center; }
 .mesh-view-bottom { display: flex; flex-direction: column; flex: 1 1 40%; min-height: 80px; }
 .mesh-view-pager { display: flex; align-items: center; gap: 8px; padding: 2px 8px; font-size: 9pt; }
 .mesh-view-pager:empty { display: none; }

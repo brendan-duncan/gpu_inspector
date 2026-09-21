@@ -10,6 +10,7 @@ import { Span } from "./widget/span.js";
 import type { CaptureData } from "./capture_data.js";
 import { listPositions, meshInput, type MeshInput } from "./mesh_input.js";
 import { clipPositions, clipStats, meshSummary, outputValues, primitiveKind, type MeshOutput } from "./mesh_output.js";
+import { MeshControls } from "./mesh_controls.js";
 import { MeshPreview } from "./mesh_preview.js";
 import type { OverdrawPassKey } from "./overdraw.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
@@ -66,6 +67,7 @@ export class MeshView {
   private _token = 0;
 
   private _preview: MeshPreview | null = null;
+  private _controls: MeshControls | null = null;
   private _status: Span | null = null;
   private _notes: Div | null = null;
   private _table: Div | null = null;
@@ -103,6 +105,7 @@ export class MeshView {
   }
 
   dispose(): void {
+    this._controls?.dispose();
     this._preview?.dispose();
   }
 
@@ -115,6 +118,7 @@ export class MeshView {
       output: o ? { measured: o.measured, vertices: o.vertices, stride: o.stride, topology: o.topology, outputs: o.outputs.map((x) => x.name), note: o.note ?? null, stats } : null,
       input: this._input ? { vertices: this._input.ids.length, attributes: this._input.attributes.map((a) => a.name), position: this._input.position, notes: this._input.notes } : null,
       preview: this._preview?.debugState() ?? null,
+      controls: this._controls?.debugState() ?? null,
       selected: this._selected,
     };
   }
@@ -129,6 +133,7 @@ export class MeshView {
 
   private _rebuild(): void {
     const token = ++this._token;
+    this._controls?.dispose();
     this._preview?.dispose();
     this.root.html = "";
     this._page = 0;
@@ -170,6 +175,7 @@ export class MeshView {
     if (draws.length > 1) new Button(bar, { label: "›", class: "btn btn-sm", tooltip: "The pass's next draw", disabled: at === draws.length - 1, callback: () => choose(at + 1) });
     new Button(bar, { label: "Go to Draw", class: "btn btn-sm", tooltip: "Select the draw in the capture's tab", callback: () => this.host.selectCommand(this._draw.index) });
     new Button(bar, { label: "Reset View", class: "btn btn-sm", tooltip: "Frame the mesh again (or double-click the preview)", callback: () => this._preview?.resetView() });
+    const cameraBar = new Div(bar, { class: "mesh-view-camera" });
     if (this.host.debugVertex) {
       new Button(bar, { label: "Debug Vertex", class: "btn btn-sm", tooltip: "Debug the vertex shader on the vertex selected in the table (the first when none is)",
         callback: () => this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage) });
@@ -179,6 +185,7 @@ export class MeshView {
 
     const body = new Div(this.root, { class: "mesh-view-body" });
     this._preview = new MeshPreview(body);
+    this._controls = new MeshControls(cameraBar, this._preview);
     const bottom = new Div(body, { class: "mesh-view-bottom" });
     this._pager = new Div(bottom, { class: "mesh-view-pager" });
     this._table = new Div(bottom, { class: "mesh-view-table" });

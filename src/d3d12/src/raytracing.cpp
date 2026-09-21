@@ -306,6 +306,18 @@ std::unordered_map<uint64_t, std::unique_ptr<StructureObject>> g_structures;   /
 /** The buffers those structures live in, which nothing may read back or transition. */
 std::unordered_set<uint64_t> g_structureBuffers;
 
+/**
+ * A structure's name from its buffer's: the buffer's own when the structure starts it, and with the
+ * offset when it does not — an engine that packs many structures into one buffer names the buffer
+ * once, and "Scene AS +0x4000" still tells them apart.
+ */
+std::string StructureLabel(const std::string& bufferName, D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Resource* buffer) {
+    ID3D12Resource* owner = nullptr;
+    UINT64 offset = 0, remaining = 0;
+    if (!AddressMap::Get().Resolve(address, owner, offset, remaining) || owner != buffer || offset == 0) return bufferName;
+    return bufferName + " +" + Hex(offset);
+}
+
 StructureObject* StructureObjectAt(D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Device* device, bool create) {
     if (!address) return nullptr;
     std::lock_guard<std::mutex> lock(g_structureMutex);
@@ -327,6 +339,13 @@ StructureObject* StructureObjectAt(D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Devi
     object->id = Tracker::Get().Track(object->sentinel.get(), "ID3D12RaytracingAccelerationStructure",
                                       "BuildRaytracingAccelerationStructure", device, a.str());
     if (!object->id) return nullptr;
+    // Named after its buffer, which is the application's only name for it (OnResourceNamed).
+    if (object->buffer) {
+        TrackedObject owner;
+        if (Tracker::Get().Find(object->buffer, owner) && !owner.label.empty()) {
+            Tracker::Get().SetLabel(object->sentinel.get(), StructureLabel(owner.label, object->address, object->buffer));
+        }
+    }
     StructureObject* out = object.get();
     g_structures[address] = std::move(object);
     return out;
@@ -656,6 +675,15 @@ void ForgetStructuresIn(ID3D12Resource* buffer) {
         }
     }
     g_structureBuffers.erase(Key(buffer));
+}
+
+void OnResourceNamed(ID3D12Resource* resource, const std::string& name) {
+    if (!resource || name.empty()) return;
+    std::lock_guard<std::mutex> lock(g_structureMutex);
+    if (!g_structureBuffers.count(Key(resource))) return;
+    for (auto& [address, object] : g_structures) {
+        if (object->buffer == resource) Tracker::Get().SetLabel(object->sentinel.get(), StructureLabel(name, address, resource));
+    }
 }
 
 bool HoldsAccelerationStructure(ID3D12Resource* buffer) {

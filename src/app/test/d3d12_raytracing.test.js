@@ -25,7 +25,7 @@ const {
   buildCapture, buildTarget, d3d12BindingTableRegions, d3d12ShaderGroups, d3d12StructureAddresses,
   d3d12TableRecords, exportWithIdentifier, parseD3D12Build, stateObjectInfo, traceStateObjectId,
 } = await import(pathToFileURL(join(dir, "raytracing.js")).href);
-const { parseInstances } = await import(pathToFileURL(join(dir, "acceleration_structure.js")).href);
+const { aabbBoxes, instanceScene, parseInstances } = await import(pathToFileURL(join(dir, "acceleration_structure.js")).href);
 
 /** 32 identifier bytes whose first byte is `first`, as the library writes them: lowercase hex. */
 const identifier = (first) => first.toString(16).padStart(2, "0") + "00".repeat(31);
@@ -275,4 +275,88 @@ test("a D3D12 instance buffer parses as a Vulkan one: the layouts are identical"
   assert.deepEqual(i.flagNames, ["TRIANGLE_FACING_CULL_DISABLE"]);
   assert.equal(i.blas, 50, "the reference resolved to the structure at that address");
   assert.equal(i.transform[3].toFixed(2), "0.45");
+});
+
+// ------------------------------------------------------------------------------------------
+// Procedural geometry
+//
+// A procedural bottom level has no triangles: its shape is whatever its intersection shader
+// decides, and its AABBs are the whole of what the traversal tests against. They are the only
+// thing a scene view can draw for it, and test/path_tracer/d3d12 is built entirely of them.
+
+test("a procedural build carries its AABBs' stride and its read-back", () => {
+  const command = structuredClone(bottomLevel);
+  command.args.pDesc.Inputs.pGeometryDescs = [{
+    Type: "D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS",
+    Flags: "D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE",
+    AABBs: { AABBCount: 2, AABBs: { StartAddress: { address: "0x9812000" }, StrideInBytes: 24 } },
+  }];
+  command.buildData = [{ geometry: 0, field: "AABBs", buffer: 12, offset: 0, capture: 9 }];
+  const g = parseD3D12Build(command).geometries[0];
+  assert.equal(g.kind, "aabbs");
+  assert.equal(g.primitiveCount, 2);
+  assert.equal(g.aabbStride, 24);
+  assert.equal(g.aabbData, 9);
+});
+
+/** `count` boxes of six floats each, at `stride`, the ith spanning [i, i+1] on every axis. */
+function aabbBytes(count, stride = 24) {
+  const bytes = new Uint8Array(stride * count);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < count; i++) {
+    for (let k = 0; k < 3; k++) view.setFloat32(i * stride + k * 4, i, true);
+    for (let k = 0; k < 3; k++) view.setFloat32(i * stride + 12 + k * 4, i + 1, true);
+  }
+  return bytes;
+}
+
+test("each AABB becomes the twelve edges of its box", () => {
+  const g = { kind: "aabbs", flags: "", index: 0, primitiveCount: 2, aabbStride: 24 };
+  const lines = aabbBoxes(g, aabbBytes(2));
+  // Twelve edges, two endpoints each, three floats per endpoint.
+  assert.equal(lines.length, 2 * 12 * 2 * 3);
+  // The first box spans 0..1: every coordinate of its edges is one or the other.
+  const first = [...lines.slice(0, 12 * 2 * 3)];
+  assert.ok(first.every((v) => v === 0 || v === 1), "the first box spans 0 to 1");
+  const second = [...lines.slice(12 * 2 * 3)];
+  assert.ok(second.every((v) => v === 1 || v === 2), "the second spans 1 to 2");
+});
+
+test("a stride wider than an AABB is walked by, not read through", () => {
+  const g = { kind: "aabbs", flags: "", index: 0, primitiveCount: 2, aabbStride: 64 };
+  assert.equal(aabbBoxes(g, aabbBytes(2, 64)).length, 2 * 12 * 2 * 3);
+  // A stride the capture did not record falls back to the size of one.
+  const noStride = { kind: "aabbs", flags: "", index: 0, primitiveCount: 2 };
+  assert.equal(aabbBoxes(noStride, aabbBytes(2)).length, 2 * 12 * 2 * 3);
+});
+
+test("AABBs that were not captured, or are not boxes, draw nothing", () => {
+  const g = { kind: "aabbs", flags: "", index: 0, primitiveCount: 1, aabbStride: 24 };
+  assert.equal(aabbBoxes(g, null), null);
+  assert.equal(aabbBoxes({ ...g, kind: "triangles" }, aabbBytes(1)), null, "triangles are not read this way");
+  // A box whose max is below its min was never written; it says nothing and crowds the view.
+  const backwards = new Uint8Array(24);
+  new DataView(backwards.buffer).setFloat32(0, 5, true);
+  assert.equal(aabbBoxes(g, backwards), null);
+});
+
+test("a scene of procedural instances is drawn with their boxes, not with stand-in cubes", () => {
+  const instances = [
+    { index: 0, transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], customIndex: 0, mask: 0xff, bindingTableOffset: 0, flags: 0, flagNames: [], reference: "1", blas: 7 },
+    { index: 1, transform: [1, 0, 0, 10, 0, 1, 0, 0, 0, 0, 1, 0], customIndex: 0, mask: 0xff, bindingTableOffset: 0, flags: 0, flagNames: [], reference: "1", blas: 7 },
+  ];
+  const g = { kind: "aabbs", flags: "", index: 0, primitiveCount: 1, aabbStride: 24 };
+  const boxes = aabbBoxes(g, aabbBytes(1));
+  const scene = instanceScene(instances, () => null, () => boxes);
+  assert.equal(scene.drawn, "aabbs");
+  assert.equal(scene.kind, "lines");
+  assert.equal(scene.placed, 2);
+  assert.equal(scene.mesh.length, 2 * boxes.length);
+  // The second instance's transform moved its boxes ten along x.
+  assert.equal(scene.mesh[boxes.length], boxes[0] + 10);
+
+  // With neither triangles nor boxes it falls back to a cube per instance, and says so.
+  const bare = instanceScene(instances, () => null, () => null);
+  assert.equal(bare.drawn, "none");
+  assert.equal(bare.placed, 0);
 });

@@ -7,6 +7,12 @@
 - DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
 - `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
 - A frame rule for a shader binding table DXR will not accept: a table not on a 64-byte boundary, a stride not a multiple of 32, or a trace with no ray generation record.
+- A top level's scene draws a procedural bottom level with the bounding boxes it was built from, rather than a stand-in cube per instance.
+- The mesh view has RenderDoc's Arcball and Fly cameras, and Wireframe, Solid and Flat shading.
+- An acceleration structure opens in a tab of its own, from the Inspect panel or from any command that names it, with the mesh view's camera and shading.
+- The object list says which acceleration structures the open capture can draw, and why not for the others.
+- A Direct3D 12 acceleration structure is named after the buffer it lives in.
+- The mesh preview frames on where the geometry is, so one huge primitive does not shrink the rest to a speck.
 - **Attach...** on the main bar lists the applications already running with a capture library in them -- name, API, process id, port -- and attaches to the one picked, in place of the bar's port box and **Connect**.
 - A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
 - `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.

@@ -10,6 +10,7 @@ import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import { Widget } from "./widget/widget.js";
+import { Button } from "./widget/button.js";
 import { objectLink, type LinkHandler } from "./args_view.js";
 import { MeshPreview } from "./mesh_preview.js";
 import {
@@ -170,6 +171,8 @@ export interface AccelerationScene {
   instances: AccelerationInstance[];
   /** The triangles a bottom level was built from, or null when that build is not in the capture. */
   meshOf: (blas: number) => Float32Array | null;
+  /** The boxes a procedural bottom level was built from, which has no triangles to give. */
+  boxesOf?: (blas: number) => Float32Array | null;
 }
 
 /** An acceleration structure as the Inspect panel draws it, whichever API it came from. */
@@ -208,18 +211,21 @@ function placement(i: AccelerationInstance): string {
 function renderInstances(parent: Widget, s: AccelerationScene, db: ObjectLookup, onLink: LinkHandler): void {
   const instances = s.instances;
   const grp = new collapsible(parent, { label: `Instances (${instances.length})`, collapsed: false });
-  const scene = instanceScene(instances, s.meshOf);
+  const scene = instanceScene(instances, s.meshOf, s.boxesOf);
   if (scene.mesh.length) {
     const box = new Div(grp.body, { class: "accel-preview" });
     const preview = new MeshPreview(box);
     preview.setMesh({ positions: scene.mesh, kind: scene.kind, clip: false });
-    new Div(grp.body, {
-      text: scene.kind === "triangles"
-        ? `${scene.placed} of ${instances.length} instances drawn with the geometry their bottom level was built from.`
-        : "The bottom levels' geometry is not in this capture — a bottom level is usually built once, "
-          + "before any capture — so each instance is drawn as a box where its transform puts it.",
-      class: "text-muted font-sm",
-    });
+    // What was drawn decides what can honestly be claimed: a stand-in cube per instance is not the
+    // same statement as the geometry, and a procedural level's boxes are its real shape.
+    const caption = scene.drawn === "triangles"
+      ? `${scene.placed} of ${instances.length} instances drawn with the geometry their bottom level was built from.`
+      : scene.drawn === "aabbs"
+      ? `${scene.placed} of ${instances.length} instances drawn with the bounding boxes their bottom level was built from: `
+        + "a procedural bottom level has no triangles, and its boxes are what the traversal tests against."
+      : "The bottom levels' geometry is not in this capture — a bottom level is usually built once, "
+        + "before any capture — so each instance is drawn as a box where its transform puts it.";
+    new Div(grp.body, { text: caption, class: "text-muted font-sm" });
   }
   for (const i of instances) {
     const blas = i.blas !== undefined ? db.getObject(i.blas) : null;
@@ -325,10 +331,31 @@ export function structureViewOf(object: VulkanObject, db: ObjectLookup): Structu
   return null;
 }
 
+/**
+ * Opening a structure in its tab, as the Inspect panel offers it. `note` is non-empty when there is
+ * nothing to show, and is then the reason — which is what the panel says instead of offering a view
+ * that would open empty.
+ */
+export interface StructureOpener {
+  note: string;
+  open(): void;
+}
+
 /** An acceleration structure: what it is, where it lives, and the geometries its last build held. */
 export function renderAccelerationStructure(parent: Widget, view: StructureView, db: ObjectLookup, onLink: LinkHandler,
-                                            scene?: AccelerationScene | null): void {
+                                            scene?: AccelerationScene | null, opener?: StructureOpener | null): void {
   const grp = new collapsible(parent, { label: "Acceleration Structure", collapsed: false });
+  if (opener) {
+    const bar = new Div(grp.body, { class: "accel-open-row" });
+    new Button(bar, {
+      label: "View in a Tab", class: "btn btn-sm", disabled: !!opener.note,
+      tooltip: opener.note || "What it was built from, in a tab of its own with the mesh view's camera and shading",
+      callback: () => opener.open(),
+    });
+    // Said beside the button rather than only in its tooltip: which structures can be looked at, and
+    // why the others cannot, is the question this answers.
+    if (opener.note) new Span(bar, { text: `  ${opener.note}`, class: "text-muted font-sm" });
+  }
   for (const [label, value] of view.facts) row(grp.body, label, value);
   if (view.storage) {
     const r = row(grp.body, "Buffer", "");
