@@ -902,7 +902,7 @@ Limits:
   which makes most captures of a Unity frame replay exactly; a list recorded entirely before the
   capture was asked for is still missing, and **Record always** from launch is what avoids it.
 - Video, work graphs and meta commands are left out: each such command is reported, and in the
-  export is a comment where it would be. Ray tracing replays ([Ray tracing](#ray-tracing-1)) but is
+  export is a comment where it would be. Ray tracing replays ([Ray tracing](#ray-tracing)) but is
   not exported.
 - What the frame reads with no command naming it is not in the capture: a buffer reached through
   a GPU address inside another buffer, a descriptor indexed out of the heap directly (shader model

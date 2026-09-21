@@ -621,10 +621,17 @@ struct App {
 
         // The shader tables, in one buffer: [raygen] [miss] [Lambertian, metal, dielectric hit
         // groups]. No record has local arguments, so each is just the shader identifier.
+        //
+        // A record is 32 bytes but each *table* has to start on a 64-byte boundary
+        // (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT), so the three start at multiples of that
+        // and not simply one after another. A buffer's own address is aligned far past it.
         ComPtr<ID3D12StateObjectProperties> properties;
         CHECK(stateObject.As(&properties));
         const UINT64 stride = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-        std::vector<uint8_t> table((2 + M) * stride);
+        const UINT64 tableAlign = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+        const UINT64 missOffset = AlignUp(stride, tableAlign);
+        const UINT64 hitOffset = AlignUp(missOffset + stride, tableAlign);
+        std::vector<uint8_t> table((size_t)(hitOffset + M * stride));
         auto identifier = [&](const wchar_t* name, UINT64 offset) {
             void* id = properties->GetShaderIdentifier(name);
             if (!id) {
@@ -634,14 +641,14 @@ struct App {
             memcpy(table.data() + offset, id, (size_t)stride);
         };
         identifier(kRaygen, 0);
-        identifier(kMiss, stride);
-        for (uint32_t m = 0; m < M; ++m) identifier(kHitGroups[m], (2 + m) * stride);
+        identifier(kMiss, missOffset);
+        for (uint32_t m = 0; m < M; ++m) identifier(kHitGroups[m], hitOffset + m * stride);
         shaderTable = CreateUploadBuffer(table.data(), table.size(), L"Shader tables");
 
         D3D12_GPU_VIRTUAL_ADDRESS base = shaderTable->GetGPUVirtualAddress();
         dispatch.RayGenerationShaderRecord = {base, stride};
-        dispatch.MissShaderTable = {base + stride, stride, stride};
-        dispatch.HitGroupTable = {base + 2 * stride, M * stride, stride};
+        dispatch.MissShaderTable = {base + missOffset, stride, stride};
+        dispatch.HitGroupTable = {base + hitOffset, M * stride, stride};
         dispatch.Depth = 1;
     }
 

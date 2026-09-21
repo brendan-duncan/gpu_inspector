@@ -1175,6 +1175,25 @@ library does not read back yet.
       build's inputs are read back under their field names rather than in the flat `bufferData`
       list, and nothing uploaded them, so the replay built a bottom level out of uninitialized
       memory — which is indistinguishable from a correct replay of an empty scene.
+- [x] A capture of `test/path_tracer/d3d12` shut the application down, which is what a real DXR
+      application found that the triangle could not. Two faults in the library, one in the sample:
+      * The library read back whatever buffer a **root view** names, and that application binds its
+        top level as a root SRV. A resource in `D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE`
+        may never be transitioned out of it, so the read-back's barrier closed the list with
+        E_INVALIDARG -- and an application has no reason to expect `Close` to fail. The read-back is
+        now refused for a buffer a build wrote a structure into (its contents are the driver's
+        anyway), with a state check behind it for a structure built before the library attached.
+        This was not new: nothing before had any way to tell such a buffer apart.
+      * `GetShaderStackSize` takes a shader, and a hit group is not one, so asking for a hit group's
+        stack raised validation errors *in the application's log*, where they read as its own. The
+        hit groups are known from the description and are no longer asked.
+      * The sample laid its shader tables out back to back at the record stride, so the miss and hit
+        tables were not 64-byte aligned and the runtime dropped every trace. Nothing noticed until
+        the capture was taken with the debug layer on, which is why the rule below now exists.
+- [x] `binding-table-alignment` and `empty-binding-table` frame rules
+      (`renderer/d3d12/frame_analysis.ts`): DXR's alignment requirements checked against a trace's
+      own arguments, which the capture already holds, so a table the runtime would drop is named
+      with nothing turned on. Verified against a real capture taken with the fault present.
 - [ ] Ray tracing, the rest:
   - A bottom level built before the capture cannot be filled by the replay, which is how every real
     engine builds them. The capture records that build on the structure but not the *contents* of

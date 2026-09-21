@@ -6669,7 +6669,11 @@ function analyzeMetalFrame(data, db) {
 // src/renderer/d3d12/frame_analysis.ts
 var TINY_DRAW_VERTICES2 = 12;
 var TINY_DRAW_COUNT2 = 32;
+var TABLE_ALIGNMENT = 64;
+var RECORD_ALIGNMENT = 32;
 var RULE_ORDER3 = [
+  "binding-table-alignment",
+  "empty-binding-table",
   "unrecorded-list",
   "suspended-pass",
   "undefined-load",
@@ -6681,6 +6685,42 @@ var RULE_ORDER3 = [
   "redundant-vertex-buffer-bind",
   "single-threadgroup-dispatch"
 ];
+function bindingTableProblems(args) {
+  const desc = args && isObject(args.pDesc) ? args.pDesc : null;
+  if (!desc) return [];
+  const out = [];
+  const addressOf = (region) => {
+    if (!isObject(region) || !isObject(region.StartAddress)) return null;
+    const text = str(region.StartAddress.address);
+    if (!text) return null;
+    try {
+      return BigInt(text);
+    } catch {
+      return null;
+    }
+  };
+  const check = (name, region, strided) => {
+    if (!isObject(region)) return;
+    const size2 = num(region.SizeInBytes);
+    const address = addressOf(region);
+    if (address === null || !size2) return;
+    if (address % BigInt(TABLE_ALIGNMENT) !== 0n) {
+      out.push(`${name} starts at ${str(region.StartAddress.address)}, which is not a multiple of ${TABLE_ALIGNMENT}`);
+    }
+    if (!strided) return;
+    const stride = num(region.StrideInBytes);
+    if (stride && stride % RECORD_ALIGNMENT !== 0) out.push(`${name} has a stride of ${stride}, which is not a multiple of ${RECORD_ALIGNMENT}`);
+    if (stride && size2 % stride !== 0) out.push(`${name} is ${size2} bytes, which its stride of ${stride} does not divide`);
+    if (!stride && size2) out.push(`${name} is ${size2} bytes with no stride, so it holds no records`);
+  };
+  check("the ray generation record", desc.RayGenerationShaderRecord, false);
+  check("the miss table", desc.MissShaderTable, true);
+  check("the hit group table", desc.HitGroupTable, true);
+  check("the callable table", desc.CallableShaderTable, true);
+  const raygen = isObject(desc.RayGenerationShaderRecord) ? num(desc.RayGenerationShaderRecord.SizeInBytes) : 0;
+  if (raygen && raygen < RECORD_ALIGNMENT) out.push(`the ray generation record is ${raygen} bytes, shorter than a shader identifier`);
+  return out;
+}
 var UNRECORDED_LIST = "<unrecorded command list>";
 var Folded3 = class {
   first = null;
@@ -6742,6 +6782,9 @@ var D3D12FrameAnalysis = class {
     const emptyPass = new Folded3();
     const unrecorded = new Folded3();
     const suspended = new Folded3();
+    const badTable = new Folded3();
+    const noRaygen = new Folded3();
+    const tableProblems = [];
     const stateOf = (stream) => {
       let s = lists.get(stream);
       if (!s) lists.set(stream, s = { pipeline: /* @__PURE__ */ new Map(), rootSignature: /* @__PURE__ */ new Map(), vertexBuffers: /* @__PURE__ */ new Map() });
@@ -6858,6 +6901,15 @@ var D3D12FrameAnalysis = class {
       if (m === "Dispatch") {
         if (num(a.ThreadGroupCountX) === 1 && num(a.ThreadGroupCountY) === 1 && num(a.ThreadGroupCountZ) === 1) singleGroup.add(cmd);
       }
+      if (m === "DispatchRays") {
+        const problems = bindingTableProblems(a);
+        if (problems.length) {
+          badTable.add(cmd);
+          for (const p of problems) if (!tableProblems.includes(p)) tableProblems.push(p);
+        }
+        const raygen = a && isObject(a.pDesc) && isObject(a.pDesc.RayGenerationShaderRecord) ? a.pDesc.RayGenerationShaderRecord : null;
+        if (!raygen || !num(raygen.SizeInBytes)) noRaygen.add(cmd);
+      }
     }
     for (const stream of [...openPass.keys()]) closePass(stream);
     if (unrecorded.count) {
@@ -6901,6 +6953,24 @@ var D3D12FrameAnalysis = class {
     }
     if (singleGroup.count) {
       this._addFolded("single-threadgroup-dispatch", "low", "medium", `${singleGroup.count} dispatch${singleGroup.count === 1 ? "" : "es"} of a single thread group: the rest of the GPU idles while it runs.`, singleGroup);
+    }
+    if (badTable.count) {
+      this._addFolded(
+        "binding-table-alignment",
+        "high",
+        "high",
+        `${badTable.count} DispatchRays call${badTable.count === 1 ? " has" : "s have"} a shader binding table the runtime will not accept: ${tableProblems.join("; ")}. Every table starts on a ${TABLE_ALIGNMENT}-byte boundary and every record stride is a multiple of ${RECORD_ALIGNMENT}, so the tables cannot be laid out back to back at the record stride. The trace is dropped, and nothing says so unless the D3D12 debug layer is on (Validation in the launch dialog).`,
+        badTable
+      );
+    }
+    if (noRaygen.count) {
+      this._addFolded(
+        "empty-binding-table",
+        "high",
+        "high",
+        `${noRaygen.count} DispatchRays call${noRaygen.count === 1 ? " has" : "s have"} no ray generation record, so ${noRaygen.count === 1 ? "it traces" : "they trace"} nothing.`,
+        noRaygen
+      );
     }
   }
   _add(rule, severity, confidence, message, cmd, count2 = 1) {

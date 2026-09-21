@@ -98,6 +98,13 @@ A record whose handle matches nothing is the case worth having this for: those r
 shader or none, and nothing else in a capture would show it. It happens when a table was filled from
 another pipeline, or from handles fetched before the pipeline was rebuilt.
 
+The frame's findings check the table's shape as well as its contents, which needs nothing turned
+on: DXR starts every table on a 64-byte boundary and strides every record by a multiple of 32, and
+a table that breaks either is dropped by the runtime without a word unless the D3D12 debug layer is
+on. Laying the tables out back to back at the record stride satisfies the stride rule and not the
+other, which is the easy way to get it wrong — `test/path_tracer/d3d12` did, and traced nothing
+while looking like a frame that simply had nothing in it.
+
 On Direct3D 12 a record resolves to an **export name** rather than to a group index, because the
 runtime hands identifiers out per name. Selecting the state object lists its hit groups with the
 shaders each names, then every other export the runtime gave an identifier for, with the recursion

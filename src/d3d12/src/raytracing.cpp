@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace dxinsp {
@@ -71,6 +72,12 @@ struct StateObjectInfo {
     uint64_t pipelineStackSize = 0;
     /** A library the description exported wholesale: its exports cannot be listed, only learned as the application asks. */
     bool hasUnlistedExports = false;
+    /**
+     * The hit group exports. GetShaderStackSize answers for a *shader*, and a hit group is a name
+     * over several of them, so asking one for its stack raises a validation error in the
+     * application's process -- which then reads as the application's own. These are never asked.
+     */
+    std::unordered_set<std::string> hitGroups;
 };
 
 std::mutex g_stateObjectMutex;
@@ -158,14 +165,21 @@ void* STDMETHODCALLTYPE Hook_GetShaderIdentifier(ID3D12StateObjectProperties1* T
     if (Internal() || !identifier || !pExportName) return identifier;
     ID3D12StateObject* stateObject = OwnerOf(This);
     if (!stateObject) return identifier;
-    uint64_t stackSize = 0;
+    const std::string name = Narrow(pExportName);
+    bool hitGroup = true;
     {
+        std::lock_guard<std::mutex> lock(g_stateObjectMutex);
+        auto it = g_stateObjects.find(Key(stateObject));
+        hitGroup = it == g_stateObjects.end() || it->second.hitGroups.count(name) != 0;
+    }
+    uint64_t stackSize = kUnknownStackSize;
+    if (!hitGroup) {
         ScopedInternal internal;
         auto stack = Orig<PFN_ID3D12StateObjectProperties1_GetShaderStackSize>(
             This, slot::ID3D12StateObjectProperties1_GetShaderStackSize);
         if (stack) stackSize = stack(This, pExportName);
     }
-    RecordExport(stateObject, Narrow(pExportName), identifier, stackSize);
+    RecordExport(stateObject, name, identifier, stackSize);
     return identifier;
 }
 
@@ -206,7 +220,8 @@ ID3D12StateObjectProperties1* PropertiesOf(ID3D12StateObject* stateObject) {
 // left to the hook above; `unlisted` records that there are some, so the UI can say why a table
 // record may match nothing.
 
-void CollectExports(const D3D12_STATE_OBJECT_DESC& desc, std::vector<std::wstring>& names, bool& unlisted) {
+void CollectExports(const D3D12_STATE_OBJECT_DESC& desc, std::vector<std::wstring>& names, bool& unlisted,
+                    std::unordered_set<std::string>& hitGroups) {
     auto add = [&](LPCWSTR name) {
         if (name && *name) names.emplace_back(name);
     };
@@ -231,6 +246,7 @@ void CollectExports(const D3D12_STATE_OBJECT_DESC& desc, std::vector<std::wstrin
                 // Only the hit group's own export can be put in a table; the shaders it names are
                 // reached through it, and the runtime gives them no identifier of their own.
                 add(group.HitGroupExport);
+                if (group.HitGroupExport && *group.HitGroupExport) hitGroups.insert(Narrow(group.HitGroupExport));
                 break;
             }
             default:
@@ -281,10 +297,14 @@ struct StructureObject {
     std::unique_ptr<uint8_t> sentinel = std::make_unique<uint8_t>(0);
     uint64_t id = 0;
     D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+    /** The buffer the build wrote it into, so a read-back of that buffer can be refused. */
+    ID3D12Resource* buffer = nullptr;
 };
 
 std::mutex g_structureMutex;
 std::unordered_map<uint64_t, std::unique_ptr<StructureObject>> g_structures;   // address -> object
+/** The buffers those structures live in, which nothing may read back or transition. */
+std::unordered_set<uint64_t> g_structureBuffers;
 
 StructureObject* StructureObjectAt(D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Device* device, bool create) {
     if (!address) return nullptr;
@@ -294,6 +314,12 @@ StructureObject* StructureObjectAt(D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Devi
     if (!create) return nullptr;
     auto object = std::make_unique<StructureObject>();
     object->address = address;
+    {
+        UINT64 offset = 0, remaining = 0;
+        if (AddressMap::Get().Resolve(address, object->buffer, offset, remaining) && object->buffer) {
+            g_structureBuffers.insert(Key(object->buffer));
+        }
+    }
     Args a;
     a.address("Address", address);
     // The structure exists because a build wrote it; the creating "call" is that build, which is
@@ -388,7 +414,12 @@ void NoteStateObject(ID3D12StateObject* stateObject, const D3D12_STATE_OBJECT_DE
     }
 
     std::vector<std::wstring> names;
-    if (desc) CollectExports(*desc, names, info.hasUnlistedExports);
+    if (desc) CollectExports(*desc, names, info.hasUnlistedExports, info.hitGroups);
+    // What the hook needs to know before the application asks about any of them.
+    {
+        std::lock_guard<std::mutex> lock(g_stateObjectMutex);
+        g_stateObjects[Key(stateObject)] = info;
+    }
 
     ID3D12StateObjectProperties1* properties = PropertiesOf(stateObject);
     if (properties) {
@@ -410,7 +441,9 @@ void NoteStateObject(ID3D12StateObject* stateObject, const D3D12_STATE_OBJECT_DE
             const std::string narrow = Narrow(name.c_str());
             auto existing = std::find_if(info.exports.begin(), info.exports.end(),
                                          [&](const Export& e) { return e.name == narrow; });
-            const uint64_t stackSize = stackOf ? stackOf(properties, name.c_str()) : 0;
+            // Never for a hit group: the runtime rejects that, loudly, in the application's log.
+            const uint64_t stackSize = stackOf && !info.hitGroups.count(narrow) ? stackOf(properties, name.c_str())
+                                                                               : kUnknownStackSize;
             if (existing != info.exports.end()) {
                 existing->identifier = bytes;
                 existing->stackSize = stackSize;
@@ -622,6 +655,13 @@ void ForgetStructuresIn(ID3D12Resource* buffer) {
             ++it;
         }
     }
+    g_structureBuffers.erase(Key(buffer));
+}
+
+bool HoldsAccelerationStructure(ID3D12Resource* buffer) {
+    if (!buffer) return false;
+    std::lock_guard<std::mutex> lock(g_structureMutex);
+    return g_structureBuffers.count(Key(buffer)) != 0;
 }
 
 void ForgetStateObject(ID3D12StateObject* stateObject) {
@@ -641,6 +681,7 @@ void ResetRaytracing() {
     }
     std::lock_guard<std::mutex> lock(g_structureMutex);
     g_structures.clear();
+    g_structureBuffers.clear();
 }
 
 }  // namespace dxinsp

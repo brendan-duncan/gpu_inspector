@@ -16,6 +16,7 @@
 #include "hooks.h"
 #include "json.h"
 #include "overdraw.h"
+#include "raytracing.h"
 #include "resources.h"
 #include "tracker.h"
 #include "transport.h"
@@ -1486,6 +1487,11 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
         if (info.heapType == D3D12_HEAP_TYPE_READBACK) {
             e.failed = true;
             e.note = "a buffer in a readback heap cannot be a copy source";
+        } else if (HoldsAccelerationStructure(buffer)) {
+            // Not a size or a budget: it cannot be copied at all (raytracing.h).
+            e.failed = true;
+            e.note = "a buffer holding a ray tracing acceleration structure cannot be read back: its layout is the "
+                     "driver's, and a resource in RAYTRACING_ACCELERATION_STRUCTURE may not be transitioned to be copied";
         } else {
             if (e.size > i.options.maxBufferSize && !whole) {
                 e.originalSize = e.size;
@@ -1517,6 +1523,9 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
             state = ResourceTracker::Get().StateIn(list, buffer, 0, &known);
             if (!known) state = D3D12_RESOURCE_STATE_COMMON;
         }
+        // The backstop for a structure the library never saw built -- an application attached to
+        // after it had built them. A barrier out of this state is rejected and closes the list.
+        if (state == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE) return;
         const bool barrier = NeedsCopyBarrier(state);
         if (barrier) Transition(list, buffer, 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         list->CopyBufferRegion(staging, stagingOffset, buffer, copyOffset, copySize);

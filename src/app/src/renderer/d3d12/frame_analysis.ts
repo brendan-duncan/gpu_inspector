@@ -14,6 +14,8 @@
 //   single-threadgroup-dispatch  a dispatch of one thread group
 //   unrecorded-list              a submitted command list the capture holds no commands of
 //   suspended-pass               a render pass suspended across command lists, which carries no measurement
+//   binding-table-alignment      a DispatchRays whose shader binding table breaks DXR's alignment rules
+//   empty-binding-table          a DispatchRays with no ray generation record, which traces nothing
 //
 // The rules over the GPU counters (../counter_rules.ts), over sampling state (../sampling_rules.ts)
 // and over the render graph (../render_graph_analysis.ts) are shared with Vulkan and Metal and run
@@ -31,8 +33,60 @@ import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
 
-const RULE_ORDER = ["unrecorded-list", "suspended-pass", "undefined-load", "clear-then-discard", "empty-pass", "tiny-draws",
-  "redundant-pipeline-bind", "redundant-root-signature-bind", "redundant-vertex-buffer-bind", "single-threadgroup-dispatch"];
+// D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT and D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT.
+// Every table starts on the first; every record stride is a multiple of the second. Laying the
+// tables out back to back at the record stride satisfies neither and is the easy mistake.
+const TABLE_ALIGNMENT = 64;
+const RECORD_ALIGNMENT = 32;
+
+const RULE_ORDER = ["binding-table-alignment", "empty-binding-table", "unrecorded-list", "suspended-pass", "undefined-load",
+  "clear-then-discard", "empty-pass", "tiny-draws", "redundant-pipeline-bind", "redundant-root-signature-bind",
+  "redundant-vertex-buffer-bind", "single-threadgroup-dispatch"];
+
+/**
+ * What DXR requires of a trace's shader binding table, as a list of what is wrong with this one.
+ *
+ * The runtime rejects a misaligned table outright, so the trace runs not at all — and without the
+ * debug layer it says nothing, which makes the frame look like one that simply had nothing to
+ * trace. The addresses are in the capture as hex strings, which is how they survive being 64-bit.
+ */
+export function bindingTableProblems(args: ArgObject | null | undefined): string[] {
+  const desc = args && isObject(args.pDesc) ? args.pDesc : null;
+  if (!desc) return [];
+  const out: string[] = [];
+  const addressOf = (region: ArgValue | undefined): bigint | null => {
+    if (!isObject(region) || !isObject(region.StartAddress)) return null;
+    const text = str(region.StartAddress.address);
+    if (!text) return null;
+    try {
+      return BigInt(text);
+    } catch {
+      return null;
+    }
+  };
+  const check = (name: string, region: ArgValue | undefined, strided: boolean): void => {
+    if (!isObject(region)) return;
+    const size = num(region.SizeInBytes);
+    const address = addressOf(region);
+    if (address === null || !size) return;
+    if (address % BigInt(TABLE_ALIGNMENT) !== 0n) {
+      out.push(`${name} starts at ${str((region.StartAddress as ArgObject).address)}, which is not a multiple of ${TABLE_ALIGNMENT}`);
+    }
+    if (!strided) return;
+    const stride = num(region.StrideInBytes);
+    if (stride && stride % RECORD_ALIGNMENT !== 0) out.push(`${name} has a stride of ${stride}, which is not a multiple of ${RECORD_ALIGNMENT}`);
+    if (stride && size % stride !== 0) out.push(`${name} is ${size} bytes, which its stride of ${stride} does not divide`);
+    if (!stride && size) out.push(`${name} is ${size} bytes with no stride, so it holds no records`);
+  };
+  check("the ray generation record", desc.RayGenerationShaderRecord, false);
+  check("the miss table", desc.MissShaderTable, true);
+  check("the hit group table", desc.HitGroupTable, true);
+  check("the callable table", desc.CallableShaderTable, true);
+  // A raygen record shorter than one identifier names no shader at all.
+  const raygen = isObject(desc.RayGenerationShaderRecord) ? num(desc.RayGenerationShaderRecord.SizeInBytes) : 0;
+  if (raygen && raygen < RECORD_ALIGNMENT) out.push(`the ray generation record is ${raygen} bytes, shorter than a shader identifier`);
+  return out;
+}
 
 /** What the library emits for a submitted list whose commands it never recorded (src/d3d12/src/capture.cpp). */
 const UNRECORDED_LIST = "<unrecorded command list>";
@@ -123,6 +177,9 @@ export class D3D12FrameAnalysis {
     const emptyPass = new Folded();
     const unrecorded = new Folded();
     const suspended = new Folded();
+    const badTable = new Folded();
+    const noRaygen = new Folded();
+    const tableProblems: string[] = [];
 
     const stateOf = (stream: string): ListState => {
       let s = lists.get(stream);
@@ -246,6 +303,15 @@ export class D3D12FrameAnalysis {
       if (m === "Dispatch") {
         if (num(a.ThreadGroupCountX) === 1 && num(a.ThreadGroupCountY) === 1 && num(a.ThreadGroupCountZ) === 1) singleGroup.add(cmd);
       }
+      if (m === "DispatchRays") {
+        const problems = bindingTableProblems(a);
+        if (problems.length) {
+          badTable.add(cmd);
+          for (const p of problems) if (!tableProblems.includes(p)) tableProblems.push(p);
+        }
+        const raygen = a && isObject(a.pDesc) && isObject(a.pDesc.RayGenerationShaderRecord) ? a.pDesc.RayGenerationShaderRecord : null;
+        if (!raygen || !num(raygen.SizeInBytes)) noRaygen.add(cmd);
+      }
     }
     for (const stream of [...openPass.keys()]) closePass(stream);
 
@@ -287,6 +353,18 @@ export class D3D12FrameAnalysis {
     }
     if (singleGroup.count) {
       this._addFolded("single-threadgroup-dispatch", "low", "medium", `${singleGroup.count} dispatch${singleGroup.count === 1 ? "" : "es"} of a single thread group: the rest of the GPU idles while it runs.`, singleGroup);
+    }
+    if (badTable.count) {
+      this._addFolded("binding-table-alignment", "high", "high",
+        `${badTable.count} DispatchRays call${badTable.count === 1 ? " has" : "s have"} a shader binding table the runtime will not accept: `
+        + `${tableProblems.join("; ")}. Every table starts on a ${TABLE_ALIGNMENT}-byte boundary and every record stride is a multiple of `
+        + `${RECORD_ALIGNMENT}, so the tables cannot be laid out back to back at the record stride. The trace is dropped, and nothing says `
+        + "so unless the D3D12 debug layer is on (Validation in the launch dialog).", badTable);
+    }
+    if (noRaygen.count) {
+      this._addFolded("empty-binding-table", "high", "high",
+        `${noRaygen.count} DispatchRays call${noRaygen.count === 1 ? " has" : "s have"} no ray generation record, so ${noRaygen.count === 1 ? "it traces" : "they trace"} nothing.`,
+        noRaygen);
     }
   }
 

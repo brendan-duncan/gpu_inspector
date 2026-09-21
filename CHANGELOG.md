@@ -6,6 +6,7 @@
 - Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
 - DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
 - `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
+- A frame rule for a shader binding table DXR will not accept: a table not on a 64-byte boundary, a stride not a multiple of 32, or a trace with no ray generation record.
 - **Attach...** on the main bar lists the applications already running with a capture library in them -- name, API, process id, port -- and attaches to the one picked, in place of the bar's port box and **Connect**.
 - A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
 - `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.
@@ -31,6 +32,9 @@
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed
+- Capturing an application that binds a ray tracing acceleration structure as a root SRV shut it down: the read-back needed a barrier on a resource that may never leave RAYTRACING_ACCELERATION_STRUCTURE, which closed its command list with E_INVALIDARG.
+- The D3D12 capture library asked a hit group for a shader stack size, which raised validation errors in the application's own log.
+- `test/path_tracer/d3d12` laid its shader tables out back to back at the record stride, so the miss and hit tables were not 64-byte aligned and the runtime dropped every trace.
 - An injection that worked is no longer reported as a library that would not load: the Direct3D 12 launcher loads the library and runs its initializer with one stub in the target, instead of reading a module list that a process held at start-up will not give up.
 - Cancel sits at the right of every dialog's buttons; the launch and attach windows had it at the left.
 - A Direct3D 12 command list that draws with the pipeline state its `Reset` named had no shaders in the Shader Flame Graph or Analyze Shaders.

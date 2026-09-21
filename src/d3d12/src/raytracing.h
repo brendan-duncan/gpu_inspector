@@ -79,6 +79,18 @@ uint64_t NoteStructureAt(D3D12_GPU_VIRTUAL_ADDRESS address, ID3D12Device* device
  */
 uint64_t StructureAt(D3D12_GPU_VIRTUAL_ADDRESS address);
 
+/**
+ * Whether a build has written an acceleration structure into this buffer.
+ *
+ * Nothing may read one back or put a barrier on it: a resource in
+ * D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE may never be transitioned out of that
+ * state, and the attempt closes the command list with E_INVALIDARG and takes the application with
+ * it. An application that binds its top level as a root SRV rather than through a descriptor table
+ * asks the library to read exactly such a buffer (test/path_tracer/d3d12 does), and the contents
+ * would say nothing if it could: the layout belongs to the driver.
+ */
+bool HoldsAccelerationStructure(ID3D12Resource* buffer);
+
 /** The structure at `address` as a tracked reference, or null; for an instance naming its bottom level. */
 void WriteStructureRef(JsonWriter& w, D3D12_GPU_VIRTUAL_ADDRESS address);
 
