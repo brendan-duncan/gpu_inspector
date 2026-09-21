@@ -28,6 +28,20 @@ Input ReadInput(const Decoder& d, const char* key) {
     return in;
 }
 
+/**
+ * Sets a transform's matrix layout by key: the property and MTLMatrixLayout are macOS 15 SDK
+ * additions, so naming them directly breaks a build against an older SDK. The capture reads it
+ * the same way.
+ */
+void SetMatrixLayout(id descriptor, const char* key, const Decoder& d) {
+    NSString* name = @(key);
+    NSString* setter = [NSString stringWithFormat:@"set%@%@:",
+                                                  [[name substringToIndex:1] uppercaseString],
+                                                  [name substringFromIndex:1]];
+    if (![descriptor respondsToSelector:NSSelectorFromString(setter)]) return;
+    [descriptor setValue:@(d.Enum(key, MTL_TABLE(MTLMatrixLayout))) forKey:name];
+}
+
 /** The exported expression for an input's buffer, and its offset. */
 std::string InputName(Source& w, const Decoder& d, const char* key, NSUInteger& offset) {
     const Decoder nested = d.Nested(key);
@@ -114,8 +128,7 @@ MTLAccelerationStructureGeometryDescriptor* TriangleGeometry(const Decoder& d, b
                 if (transform.buffer != nil) {
                     g.transformationMatrixBuffer = transform.buffer;
                     g.transformationMatrixBufferOffset = transform.offset;
-                    g.transformationMatrixLayout =
-                        (MTLMatrixLayout)d.Enum("transformationMatrixLayout", MTL_TABLE(MTLMatrixLayout));
+                    SetMatrixLayout(g, "transformationMatrixLayout", d);
                 }
             }
             FillCommonGeometry(g, d);
@@ -147,8 +160,7 @@ MTLAccelerationStructureGeometryDescriptor* TriangleGeometry(const Decoder& d, b
         if (transform.buffer != nil) {
             g.transformationMatrixBuffer = transform.buffer;
             g.transformationMatrixBufferOffset = transform.offset;
-            g.transformationMatrixLayout =
-                (MTLMatrixLayout)d.Enum("transformationMatrixLayout", MTL_TABLE(MTLMatrixLayout));
+            SetMatrixLayout(g, "transformationMatrixLayout", d);
         }
     }
     FillCommonGeometry(g, d);
@@ -397,10 +409,7 @@ MTLAccelerationStructureDescriptor* InstanceDescriptor(const Decoder& d, std::st
             top.motionTransformCount = (NSUInteger)d.Uint("motionTransformCount");
         }
     }
-    if (@available(macOS 15.0, *)) {
-        top.instanceTransformationMatrixLayout =
-            (MTLMatrixLayout)d.Enum("instanceTransformationMatrixLayout", MTL_TABLE(MTLMatrixLayout));
-    }
+    SetMatrixLayout(top, "instanceTransformationMatrixLayout", d);
     return top;
 }
 
