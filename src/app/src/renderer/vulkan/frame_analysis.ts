@@ -648,7 +648,7 @@ export class FrameAnalysis {
  * capture, d3d12/frame_analysis.ts for a D3D12 one) read each API's own command stream; and when
  * the caller has built the capture's render graph, the rules over that graph
  * (render_graph_analysis.ts) read the frame's dependencies. The graph answers exactly what a few
- * of the per-command rules can only approximate, so those are dropped in its favour rather than
+ * of the per-command rules can only approximate, so those are dropped in its favor rather than
  * reported twice in two wordings.
  */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
@@ -665,7 +665,7 @@ export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph
   const byCommand = new Map<number, FrameFinding[]>();
   for (const source of sources) {
     // The graph answers exactly what a few per-command rules can only approximate, so those are
-    // dropped in its favour rather than reported twice in two wordings.
+    // dropped in its favor rather than reported twice in two wordings.
     const drop = graph && source === base ? SUPERSEDED_RULES : null;
     for (const f of source.findings) {
       if (!drop || !drop.has(f.rule)) findings.push(f);

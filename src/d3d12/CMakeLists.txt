@@ -110,7 +110,7 @@ target_compile_options(dxinsp_capture PRIVATE /W3 /bigobj)
 # Debug information in every configuration, and a PDB beside the DLL. The library runs inside
 # somebody else's process: when that process falls over, the only stack anybody gets is the one its
 # own crash handler prints, and without this the frames in here are addresses. It costs nothing at
-# run time -- the code is optimised as before, and the PDB is not loaded unless something reads it.
+# run time -- the code is optimized as before, and the PDB is not loaded unless something reads it.
 target_compile_options(dxinsp_capture PRIVATE $<$<NOT:$<CONFIG:Debug>>:/Zi>)
 target_link_options(dxinsp_capture PRIVATE $<$<NOT:$<CONFIG:Debug>>:/DEBUG> $<$<NOT:$<CONFIG:Debug>>:/OPT:REF> $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>)
 target_link_libraries(dxinsp_capture PRIVATE minhook d3d12 dxgi dxguid ws2_32 iphlpapi dbghelp)

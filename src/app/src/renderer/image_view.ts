@@ -174,7 +174,7 @@ export class ImageView {
         this._mipCount = Math.max(1, num(d.mipmapLevelCount) || 1);
         this._layerCount = this._is3D ? Math.max(1, num(d.depth) || 1) : Math.max(1, num(d.arrayLength) || 1);
         // The capture library only reads color back so far; a depth texture answers with an
-        // error rather than being mislabelled here.
+        // error rather than being mislabeled here.
         isDepth = false;
       } else if (d) {
         this._is3D = d.imageType === "VK_IMAGE_TYPE_3D";

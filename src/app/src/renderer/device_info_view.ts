@@ -168,7 +168,7 @@ function renderMetalRows(s: Widget, m: MetalMemory): void {
   if (occupancy !== null && occupancy < HEAP_OCCUPANCY_LOW) {
     row(s, "Mostly empty", `The heaps report ${formatBytes(m.heapUsedBytes)} in use of ${formatBytes(m.heapReservedBytes)} reserved (${(100 * occupancy).toFixed(0)}%): the rest is memory this process has taken and is not using.`);
   }
-  new Div(s, { text: "Totalled from the resources the inspector has seen created, which is not the whole story: the device's own figure in the series below includes what the driver allocated behind them. Metal reports no heap table and no residency separate from that figure.", class: "text-muted capture-note" });
+  new Div(s, { text: "Totaled from the resources the inspector has seen created, which is not the whole story: the device's own figure in the series below includes what the driver allocated behind them. Metal reports no heap table and no residency separate from that figure.", class: "text-muted capture-note" });
 }
 
 /** The per-heap breakdown, for the backends that have one. */

@@ -1,4 +1,4 @@
-// The controls over a MeshPreview: how the eye moves, what the primitives are drawn as and coloured
+// The controls over a MeshPreview: how the eye moves, what the primitives are drawn as and colored
 // by, where their normals come from, and the camera's bookmarks.
 //
 // One widget so the mesh view and the acceleration structure view read the same. Both show the same
@@ -42,7 +42,7 @@ export class MeshControls {
   private readonly _bookmarks: Select;
   private readonly _hint: Span;
   private readonly _key: string;
-  /** What the colour and normal selects list, to rebuild them only when it changes. */
+  /** What the color and normal selects list, to rebuild them only when it changes. */
   private _listed = "";
 
   constructor(parent: Widget, preview: MeshPreview, options: MeshControlsOptions = {}) {
@@ -75,7 +75,7 @@ export class MeshControls {
       options: ["Default"],
       onChange: (_v: string, index?: number) => preview.setColorSource((index ?? 0) - 1),
     });
-    this._color.tooltip = "Colour the vertices by an attribute: a colour as it is, anything else stretched over its own range";
+    this._color.tooltip = "Color the vertices by an attribute: a color as it is, anything else stretched over its own range";
 
     new Span(this.root, { text: "Normals", class: "text-muted font-sm" });
     this._normals = new Select(this.root, {

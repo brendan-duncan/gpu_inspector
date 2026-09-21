@@ -54,9 +54,9 @@ def crop_dialog(path, pad=10):
     except ImportError:
         return "Pillow is not installed: left uncropped"
     im = Image.open(path)
-    grey = im.convert("L")
-    w, h = grey.size
-    px = grey.load()
+    gray = im.convert("L")
+    w, h = gray.size
+    px = gray.load()
     top = BAR_HEIGHT - 1          # below the launch bar, which is bright everywhere
     cols = [sum(1 for y in range(top, h) if px[x, y] > 55) for x in range(w)]
     rows = [sum(1 for x in range(w) if px[x, y] > 55) for y in range(h)]
@@ -114,7 +114,7 @@ SHOTS = [
          delay_ms=30000, launch=True),
     # A draw that put more than one fragment on the pixel, which the history then breaks into them:
     # the cube with its culling off (test/triangle --no-cull), so the far face rasterizes at the
-    # centre pixel behind the near one.
+    # center pixel behind the near one.
     Shot("pixel-history-fragments", ["--launch={triangle}", "--args=--no-cull", "--debug-capture",
                                      "--debug-view=pixel-history"], delay_ms=30000, launch=True),
     # The Shader Flame Graph of a real frame, whose passes each run different shaders.

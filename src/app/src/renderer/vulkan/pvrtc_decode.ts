@@ -1,6 +1,6 @@
 // PVRTC1 image decoding (Imagination's "PVRTC Texture Compression" specification), with the
 // arithmetic of Imagination's own PVRTDecompress so results match it exactly. Unlike the other
-// block formats a PVRTC texel depends on its neighbours: each 64-bit block holds two colors,
+// block formats a PVRTC texel depends on its neighbors: each 64-bit block holds two colors,
 // and the color of a texel is a bilinear blend of the colors of the four blocks whose centers
 // surround it, then modulated between the two by the texel's own 1- or 2-bit value. Blocks are
 // 4x4 texels at 4 bpp and 8x4 at 2 bpp, stored in Morton (Z) order, and the image wraps at its
@@ -51,7 +51,7 @@ function unpackBlock(s: DataView, at: number, twoBpp: boolean): Block {
     for (let i = 0; i < 16; i++) { values[i] = bits & 3; bits >>>= 2; }
   } else if (flag) {
     // A checkerboard of explicit 2-bit values; the rest are interpolated. Two bits of the
-    // modulation word select the direction and are replaced by copies of their neighbours.
+    // modulation word select the direction and are replaced by copies of their neighbors.
     mode = 1;
     if (bits & 1) {
       mode = (bits & (1 << 20)) ? 3 : 2;
@@ -114,7 +114,7 @@ export function decodePvrtc(s: DataView, width: number, height: number, twoBpp: 
     return blockAt(Math.floor(xx / bw), Math.floor(yy / bh)).values[(yy % bh) * bw + (xx % bw)];
   };
   // The blend weight (0..8 of color B) of a texel, with the 2 bpp interpolation of the
-  // texels off the checkerboard from their neighbours (which may sit in adjacent blocks).
+  // texels off the checkerboard from their neighbors (which may sit in adjacent blocks).
   const modulation = (x: number, y: number, block: Block): { weight: number; punch: boolean } => {
     const v = block.values[(y % bh) * bw + (x % bw)];
     if (!twoBpp) {
@@ -138,7 +138,7 @@ export function decodePvrtc(s: DataView, width: number, height: number, twoBpp: 
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      // The four blocks around the texel: the one whose center is up-left of it and its neighbours.
+      // The four blocks around the texel: the one whose center is up-left of it and its neighbors.
       const px = x - (bw >> 1);
       const py = y - (bh >> 1);
       const bx = Math.floor(px / bw);

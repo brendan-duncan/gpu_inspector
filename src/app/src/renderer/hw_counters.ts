@@ -259,7 +259,7 @@ export const LIMITER_ADVICE: Record<LimiterKind, string> = {
   cache: "The pass is limited by cache traffic rather than by arithmetic. Sampling that stays local (mips, smaller textures, better texture layout) and fewer scattered reads help more than cheaper shader maths.",
   occupancy: "No unit is near its limit and few warps are in flight, so the pass is waiting rather than working: long dependency chains, register pressure limiting occupancy, or too little work to fill the GPU.",
   // Filled in per pass by limiterAdvice when the compiler statistics name the stage responsible.
-  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbour usually beats optimising it.",
+  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbor usually beats optimizing it.",
 };
 
 /**
@@ -284,7 +284,7 @@ export function limiterAdvice(limiter: PassLimiter): string {
   return base;
 }
 
-/** One line summarising what was collected, for a status line. */
+/** One line summarizing what was collected, for a status line. */
 export function hwCountersSummary(file: HwCounters): string {
   if (!file.backend) return `no hardware counters (${file.notes[0] ?? "none available"})`;
   const where = file.backend === "nvperf" ? `NVIDIA ${file.chip}` : "VK_KHR_performance_query";

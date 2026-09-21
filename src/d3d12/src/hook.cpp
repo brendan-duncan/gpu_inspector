@@ -35,7 +35,7 @@ PatchedVtable g_vtables[kMaxVtables];
 std::atomic<size_t> g_vtableCount{0};
 std::mutex g_vtableMutex;
 
-// Every replacement we have installed, so an entry taken from an unknown vtable can be recognised
+// Every replacement we have installed, so an entry taken from an unknown vtable can be recognized
 // as our own. Small and append-only, read without a lock like the table above.
 constexpr size_t kMaxReplacements = 512;
 void* g_replacements[kMaxReplacements];

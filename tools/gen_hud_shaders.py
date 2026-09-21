@@ -131,7 +131,7 @@ def source_digest(paths):
     Written into the header so that --check-sources can tell, without a shader compiler, whether a
     shader has been edited since the header was generated. That is the mistake worth catching, and
     the one CI can catch: it deliberately has neither glslc nor fxc, so it cannot recompile and
-    compare, but it can read two files and hash them. Line endings are normalised so a checkout
+    compare, but it can read two files and hash them. Line endings are normalized so a checkout
     with CRLF does not look like an edit.
     """
     digest = hashlib.sha256()

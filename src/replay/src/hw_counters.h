@@ -20,7 +20,7 @@ struct HwCounterInfo;
 
 namespace nvperf {
 
-/** Finds and initialises the SDK's library; false, with why, when it is not built in or not found. */
+/** Finds and initializes the SDK's library; false, with why, when it is not built in or not found. */
 bool Load(std::string& note);
 
 /** Where Load found the library, for the notes. */

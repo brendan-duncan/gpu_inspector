@@ -7,7 +7,7 @@
 // Drawn from `presentDrawable:`, into the same command buffer the application is still encoding:
 // the present it asks for there does not happen until that command buffer completes, so one more
 // render pass appended to it, loading and storing the drawable's texture, lands on the frame
-// before anyone sees it. No extra submission, no synchronisation of our own -- the ordering is
+// before anyone sees it. No extra submission, no synchronization of our own -- the ordering is
 // the command buffer's.
 //
 // The other way to present, `[MTLDrawable present]` called from a scheduled handler (Unity's macOS

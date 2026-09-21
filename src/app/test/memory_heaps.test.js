@@ -54,7 +54,7 @@ test("a device with no reported memory properties has no heap view", () => {
   assert.equal(memoryHeaps({ allObjects: new Map() }), null);
 });
 
-test("allocations are totalled against the heap their memory type draws from", () => {
+test("allocations are totaled against the heap their memory type draws from", () => {
   const m = memoryHeaps(db([[100 * MB, 0], [50 * MB, 0], [8 * MB, 1]], { heaps: DEVICE_HEAPS, types: DEVICE_TYPES }));
   assert.equal(m.allocations, 3);
   assert.equal(m.totalBytes, 158 * MB);
@@ -174,7 +174,7 @@ const committed = (bytes, typeIndex) => ({ type: "ID3D12Resource", updates: { al
 
 test("a D3D12 adapter carries the memory properties a physical device does on Vulkan", () => {
   const m = memoryHeaps(d3d([heap(100 * MB, "DEFAULT")]));
-  assert.ok(m, "the adapter is recognised as the memory device");
+  assert.ok(m, "the adapter is recognized as the memory device");
   assert.equal(m.heaps.length, 2);
   assert.equal(m.heaps[0].deviceLocal, true);
   assert.equal(m.heaps[1].deviceLocal, false);

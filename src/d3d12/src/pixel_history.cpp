@@ -59,7 +59,7 @@ struct HistoryPass {
         ComPtr<ID3D12Resource> texture;
         D3D12_CPU_DESCRIPTOR_HANDLE view{};
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-        /** The application's descriptor handle, so a clear of it is recognised. */
+        /** The application's descriptor handle, so a clear of it is recognized. */
         D3D12_CPU_DESCRIPTOR_HANDLE appHandle{};
         /** A real render pass clears the attachment at its start, so the copy is cleared too. */
         bool clearsDepth = false;

@@ -47,7 +47,7 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 }
 
 // The second hit group, reached only through the second instance's
-// InstanceContributionToHitGroupIndex: a flat colour, so which record ran is unmistakable.
+// InstanceContributionToHitGroupIndex: a flat color, so which record ran is unmistakable.
 [shader("closesthit")]
 void ClosestHitTinted(inout Payload payload, in BuiltInTriangleIntersectionAttributes attributes) {
     float2 b = attributes.barycentrics;

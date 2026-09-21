@@ -189,7 +189,7 @@ class GraphAnalysis {
    * results as input attachments, so they never leave tile memory. Returns the images it named, so
    * the transient rule does not say the same about them. Not reported where the two passes render
    * to the same targets (mergeable-passes), and only a hint: a shader that filters its input (a blur
-   * reading neighbouring texels) needs it as a texture.
+   * reading neighboring texels) needs it as a texture.
    */
   private _subpassCandidates(merged: Set<string>): Set<string> {
     const folded = new Folded();

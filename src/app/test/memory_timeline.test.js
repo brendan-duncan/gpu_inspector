@@ -36,7 +36,7 @@ test("one sample has no direction, so there is no reading", () => {
   assert.equal(memoryTimeline(series([100])), null);
 });
 
-test("heaps are totalled into one point per sample", () => {
+test("heaps are totaled into one point per sample", () => {
   const s = [{
     action: "MemorySample", frame: 0,
     heaps: [{ allocated: 100 * MB, allocations: 4 }, { allocated: 20 * MB, allocations: 2 }],

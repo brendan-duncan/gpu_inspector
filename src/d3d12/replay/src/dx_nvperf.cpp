@@ -320,7 +320,7 @@ bool Load(std::string& note) {
     params.ppPaths = paths.data();
     NVPW_SetLibraryLoadPaths(&params);
     if (!nv::perf::InitializeNvPerf()) {
-        g_loadNote = "NVIDIA's Nsight Perf SDK library in " + dirs.front() + " could not be initialised: " + TakeLog("no details");
+        g_loadNote = "NVIDIA's Nsight Perf SDK library in " + dirs.front() + " could not be initialized: " + TakeLog("no details");
         note = g_loadNote;
         return false;
     }
@@ -477,7 +477,7 @@ bool Session::Init(ID3D12Device* device, ID3D12CommandQueue* queue, std::string&
 bool Session::Begin(uint32_t maxRanges, std::string& note) {
     Impl& s = *_impl;
     if (!s.evaluator.Get()) {
-        note = "the Nsight Perf SDK session was not initialised";
+        note = "the Nsight Perf SDK session was not initialized";
         return false;
     }
     g_log.clear();
@@ -554,7 +554,7 @@ bool Session::Configure(const std::vector<std::string>& names, uint16_t nestingL
     if (!builder.Initialize(s.evaluator, rawConfig, s.chip.c_str())) {
         // Ownership only transfers once Initialize succeeds, so an early failure frees it here.
         destroyRawConfig();
-        notes.push_back("the Nsight Perf SDK could not initialise its configuration builder: " + TakeLog("no details"));
+        notes.push_back("the Nsight Perf SDK could not initialize its configuration builder: " + TakeLog("no details"));
         return false;
     }
     for (const std::string& name : names) {

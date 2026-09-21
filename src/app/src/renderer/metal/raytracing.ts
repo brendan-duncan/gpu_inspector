@@ -58,7 +58,7 @@ export const METAL_COPY_METHODS = new Set([
 //
 // Five layouts. Each is laid out here as the field offsets the parser reads, because the strides
 // are not derivable from anything the capture carries and getting one wrong reads an instance out
-// of the middle of its neighbour.
+// of the middle of its neighbor.
 
 interface InstanceLayout {
   stride: number;

@@ -38,8 +38,8 @@ function difference(before: Uint8ClampedArray, after: Uint8ClampedArray): Uint8C
   for (let i = 0; i + 3 < before.length; i += 4) {
     const same = before[i] === after[i] && before[i + 1] === after[i + 1] && before[i + 2] === after[i + 2] && before[i + 3] === after[i + 3];
     if (same) {
-      const grey = (before[i] + before[i + 1] + before[i + 2]) / 12;
-      out[i] = out[i + 1] = out[i + 2] = grey;
+      const gray = (before[i] + before[i + 1] + before[i + 2]) / 12;
+      out[i] = out[i + 1] = out[i + 2] = gray;
     } else {
       out[i] = 255;
       out[i + 1] = 64;

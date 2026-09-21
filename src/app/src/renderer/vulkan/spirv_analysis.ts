@@ -518,7 +518,7 @@ export function analyzeSpirv(data: Uint8Array): ShaderAnalysis | null {
           } else if (isDerivative(op)) {
             charge(DERIVATIVE_COST, scale);
             totals.derivatives++;
-            if (selectionStack.length) finding("derivative-in-branch", "medium", "medium", "A derivative (dFdx / dFdy / fwidth, or an implicit-LOD sample) inside a branch: undefined where neighbouring invocations take a different path, and it forces quad-wide execution.", ordinal);
+            if (selectionStack.length) finding("derivative-in-branch", "medium", "medium", "A derivative (dFdx / dFdy / fwidth, or an implicit-LOD sample) inside a branch: undefined where neighboring invocations take a different path, and it forces quad-wide execution.", ordinal);
           } else if (isSample(op) && selectionStack.length) {
             // (implicit-LOD samples in branches are reported with the derivative rule above)
           } else if (isDiscard(op)) {

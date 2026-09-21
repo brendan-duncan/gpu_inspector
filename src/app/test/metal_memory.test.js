@@ -1,5 +1,5 @@
 // Metal's memory breakdown (src/renderer/metal/metal_memory.ts). Metal has no heap table, so the
-// breakdown is by object kind, totalled from each resource's allocatedSize. The trap the tests are
+// breakdown is by object kind, totaled from each resource's allocatedSize. The trap the tests are
 // really about is double counting: a resource made from a heap is suballocated out of memory the
 // heap already reserved, so adding both would count those bytes twice.
 import { test } from "node:test";

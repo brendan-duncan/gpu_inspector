@@ -641,7 +641,7 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
   if (stats.measuredDrawPasses > 0) {
-    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbors' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
   }
   if (stats.measuredStages > 0) {
     notes.push(`The functions and lines of ${stats.measuredStages} shader stage frame(s) are sized by ablation: the replay timed a draw with each function or line made constant, and each takes the share of the stage's time that saved. Parts overlap (taking one out takes what only feeds it too), so where they add up to more than their parent they are squeezed to fit.`);

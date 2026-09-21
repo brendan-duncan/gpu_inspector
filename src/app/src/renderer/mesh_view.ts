@@ -2,7 +2,7 @@
 // decoded from the captured buffers: mesh_input.ts) and VS Out (what its vertex shader wrote, from a
 // replay of a Vulkan capture: mesh_output.ts), each as a turnable mesh (mesh_preview.ts) over a
 // table of its vertices. Clicking a row marks that vertex in the preview, and clicking a primitive in
-// the preview selects its first vertex's row. Any attribute can colour the mesh or give it its
+// the preview selects its first vertex's row. Any attribute can color the mesh or give it its
 // normals, and VS In can take its positions from any attribute. The draw list steps through the
 // draws of the pass, keeping the view so their meshes line up.
 import { Button } from "./widget/button.js";

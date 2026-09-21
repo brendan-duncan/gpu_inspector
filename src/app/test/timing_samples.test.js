@@ -1,5 +1,5 @@
 // Call stacks sampled during a timing capture (src/renderer/timing_samples.ts): what each thread
-// was doing over a stretch of frames. The judgement being tested is which threads are worth a line
+// was doing over a stretch of frames. The judgment being tested is which threads are worth a line
 // and what is said of them — a thread blocked for a whole hitch is as much the answer as one that
 // ran through it, and a process has dozens that did neither.
 import { test } from "node:test";

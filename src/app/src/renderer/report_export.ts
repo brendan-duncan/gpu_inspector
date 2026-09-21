@@ -22,7 +22,7 @@ export interface ReportExport {
 
 /**
  * Writes a report to an HTML file the user picks. Returns the path written, or null if the dialog
- * was cancelled or the file could not be written.
+ * was canceled or the file could not be written.
  */
 export async function exportReportHtml(report: ReportExport): Promise<string | null> {
   const html = await reportHtml(report);

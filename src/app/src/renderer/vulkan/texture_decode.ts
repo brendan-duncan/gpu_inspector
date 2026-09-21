@@ -382,7 +382,7 @@ const DEPTH_FORMATS: Record<string, { bytes: number; read: (s: DataView, t: numb
 // ---------------------------------------------------------------------------------------------
 // Block compression. Blocks of `width` x `height` texels are stored row-major over the padded
 // image; a decoder writes the block's texels as RGBA floats (0..1) into px, row-major. A
-// format whose texels depend on neighbouring blocks (PVRTC) decodes the whole image instead.
+// format whose texels depend on neighboring blocks (PVRTC) decodes the whole image instead.
 
 interface BlockFormat {
   bytes: number;
@@ -504,7 +504,7 @@ const BLOCK_FORMATS: Record<string, BlockFormat> = {
   } },
 };
 
-// ASTC: every footprint, in UNORM, sRGB and (HDR profile) float flavours. The float flavour
+// ASTC: every footprint, in UNORM, sRGB and (HDR profile) float flavors. The float flavor
 // decodes the LDR blocks of an HDR image; its HDR blocks show the error color.
 for (const [w, h] of [[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]]) {
   const ldr = (srgb: boolean): BlockFormat => ({ bytes: 16, width: w, height: h, channels: 4, decode: (s, b, px) => decodeAstcBlock(s, b, w, h, px, srgb) });

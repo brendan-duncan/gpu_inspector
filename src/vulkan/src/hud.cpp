@@ -377,7 +377,7 @@ void Hud::UpdateTiming(DeviceData* dev, DeviceResources& r) {
     // is still inside it.
     if (acrossPause) return;
     const double ms = std::chrono::duration<double, std::milli>(now - previous).count();
-    // An absurd interval -- a breakpoint, a minimised window, the HUD being switched on mid-run --
+    // An absurd interval -- a breakpoint, a minimized window, the HUD being switched on mid-run --
     // is dropped rather than smoothed in.
     if (ms <= 0 || ms > 10000) return;
 

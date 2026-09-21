@@ -311,7 +311,7 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
   // What the GPU's own counters say each render pass saturates, where a replay has read them
   // (renderer/hw_counters.ts). This is measured rather than inferred, so it stands beside `bound`
   // rather than replacing it: `bound` names a stage, this names the unit. Render passes only, since
-  // a compute pass shares its neighbour's key and no counter range wraps one.
+  // a compute pass shares its neighbor's key and no counter range wraps one.
   if (data.hwCounters) {
     const byPass = hwCountersByPass(data.hwCounters);
     for (const p of passes) {
@@ -493,7 +493,7 @@ export const BOUND_ADVICE: Record<Bound, string> = {
   vertex: "Cut vertices or vertex-stage work: mesh level of detail at distance, fewer or cheaper vertex attributes, and per-fragment rather than per-vertex evaluation of anything the fragment stage could do itself.",
   fragment: "Cut fragments or fragment-stage work: fewer overlapping surfaces, a smaller render target, cheaper texture sampling, and simpler shader maths.",
   target: "The pass spends its time writing the attachment rather than shading it. A smaller target, fewer targets, or a store action of DontCare on anything nothing reads afterwards.",
-  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbour, or skip it when nothing reads its output.",
+  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbor, or skip it when nothing reads its output.",
 };
 
 export interface PassAdvice {

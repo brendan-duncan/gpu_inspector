@@ -122,13 +122,13 @@ each step.
    Confirm each finding against the command it names with `get_command`, and against the render
    graph with `get_render_graph` (`node`). Say whether it is real here or a pattern that may be
    intentional.
-6. **Shaders.** The ranking and modelling below read SPIR-V, so they are Vulkan only. A D3D12
+6. **Shaders.** The ranking and modeling below read SPIR-V, so they are Vulkan only. A D3D12
    capture still has every shader through `get_shader`: `reflection` (constant buffer members,
    resources by register and space, inputs and outputs, read from the DXBC or DXIL at pipeline
    creation), `disassembly`, and `source` when the HLSL can be found — `dxc -Zi` embeds it in the
    container, `dxc -Zs` writes it to a PDB whose directory `set_search_paths`' `symbolDirs` must
    name. A Metal capture has the MSL of a library built from source. For those two,
-   rank the passes by measured GPU time instead of by modelled shader cost.
+   rank the passes by measured GPU time instead of by modeled shader cost.
    - `analyze_shaders` ranks the stages in use by uses times modeled cost.
    - `get_shader_flame_graph` shows where the frame's shading work goes: each stage's modeled cost
      times its invocations, by pass, pipeline, stage, function and source line, with the hottest

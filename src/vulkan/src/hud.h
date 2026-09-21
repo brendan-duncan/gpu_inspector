@@ -9,10 +9,10 @@
 // pass loads the image in that layout and leaves it in that layout, so nothing about the
 // application's own rendering changes.
 //
-// Synchronisation is the part worth reading twice. The presentation engine is told to wait on the
-// semaphores the application passed in VkPresentInfoKHR, which its rendering signalled -- so
+// Synchronization is the part worth reading twice. The presentation engine is told to wait on the
+// semaphores the application passed in VkPresentInfoKHR, which its rendering signaled -- so
 // submitting the overlay on the same queue is *not* enough to order it before the present:
-// the semaphore is already signalled by then, and the presentation engine may start reading the
+// the semaphore is already signaled by then, and the presentation engine may start reading the
 // image while the overlay is still drawing into it. Instead the overlay's submission waits on the
 // application's present semaphores and signals one of its own, and the present is given that one
 // in their place (Draw returns the rewritten VkPresentInfoKHR). The frame is then ordered

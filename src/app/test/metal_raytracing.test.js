@@ -6,7 +6,7 @@
 // VkAccelerationStructureInstanceKHR; Metal's is not, in four separate ways (a transposed
 // transform, four unpacked uint32s instead of two 24/8 words, an index instead of an address, and
 // five layouts instead of one), so every one of them is pinned here. A wrong stride or offset
-// reads an instance out of the middle of its neighbour and still produces plausible numbers, which
+// reads an instance out of the middle of its neighbor and still produces plausible numbers, which
 // is exactly the kind of bug a test has to catch rather than a screenshot.
 //
 // The descriptor shapes are what the capture library writes (src/metal/src/raytracing.mm), taken
@@ -115,7 +115,7 @@ test("several instances are walked at the descriptor's stride", () => {
   assert.deepEqual(got.map((i) => [i.index, i.mask, i.blas]), [[0, 1, 10], [1, 2, 20], [2, 3, 30]]);
 });
 
-test("an application's own padding between instances is honoured over the struct size", () => {
+test("an application's own padding between instances is honored over the struct size", () => {
   // instanceDescriptorStride larger than the struct: the build walks by the stride, so reading at
   // the struct size would take the second instance out of the first one's padding.
   const padded = new Uint8Array(160);

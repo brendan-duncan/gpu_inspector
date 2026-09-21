@@ -236,7 +236,7 @@ std::string RenderPassArgs(MTLRenderPassDescriptor *descriptor);
 std::string DeviceArgs(id<MTLDevice> device, const char *origin);
 
 /**
- * Registers an object and hooks `setLabel:` on its class, so later labelling is streamed.
+ * Registers an object and hooks `setLabel:` on its class, so later labeling is streamed.
  * Returns the id, 0 for nil or for an object the library made for itself.
  */
 uint64_t Track(id object, const char *type, const char *cmd, id parent, const std::string &args);

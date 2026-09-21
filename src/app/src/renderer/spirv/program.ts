@@ -137,7 +137,7 @@ export class SpirvProgram implements DebugProgram {
     return resultType(this.module, r as SpirvStepResult);
   }
 
-  /** A result the shader named nothing: an SSA temporary, which the values table greys out. */
+  /** A result the shader named nothing: an SSA temporary, which the values table grays out. */
   resultTemporary(r: StepResult): boolean {
     return !this.module.names.has(r.id) && !this.module.debugVariableNames.has(r.id);
   }

@@ -21,8 +21,8 @@
 // and otherwise from the geometry itself: flat from the derivatives of the view-space position (the
 // face's own normal by construction), smooth from the faces around each position, averaged.
 //
-// Any attribute can colour the vertices instead of the one flat colour, and a caller can add its own
-// colourings (the acceleration structure view's overlap heat). Clicking a primitive selects it and
+// Any attribute can color the vertices instead of the one flat color, and a caller can add its own
+// colorings (the acceleration structure view's overlap heat). Clicking a primitive selects it and
 // says which it is; hovering names it without selecting. A caller that groups its vertices (an
 // acceleration structure's instances and geometries) can hide groups and select them whole.
 import { Div } from "./widget/div.js";
@@ -36,9 +36,9 @@ export interface PreviewAttribute {
   components: number;
   /** The attribute of one vertex of the list, or null when it has none. */
   read: (vertex: number) => ArrayLike<number> | null;
-  /** The values already are colours, 0 to 1 (a heat), rather than something to map into them. */
+  /** The values already are colors, 0 to 1 (a heat), rather than something to map into them. */
   isColor?: boolean;
-  /** The positions themselves: a colouring, never a normal. */
+  /** The positions themselves: a coloring, never a normal. */
   isPosition?: boolean;
 }
 
@@ -54,7 +54,7 @@ export interface PreviewOverlay {
   /** Line pairs, x y z each. */
   positions: Float32Array;
   color: [number, number, number];
-  /** A colour per vertex instead of `color`. */
+  /** A color per vertex instead of `color`. */
   colors?: Float32Array;
   /** Groups of the overlay's vertices, hidden and selected with the mesh's groups of the same id. */
   groups?: PreviewGroup[];
@@ -68,7 +68,7 @@ export interface PreviewMesh {
   kind: PrimitiveKind;
   /** Clip-space positions, drawn divided by w with the view volume outlined. */
   clip: boolean;
-  /** What the vertices can be coloured by, and what their normals can come from. */
+  /** What the vertices can be colored by, and what their normals can come from. */
   attributes?: PreviewAttribute[];
   groups?: PreviewGroup[];
   overlays?: PreviewOverlay[];
@@ -95,7 +95,7 @@ export type ShadeMode = "wireframe" | "solid" | "wire-solid" | "flat" | "smooth"
 
 export const SHADE_MODES: { value: ShadeMode; label: string; tooltip: string; fills: boolean }[] = [
   { value: "wireframe", label: "Wireframe", fills: false, tooltip: "Every primitive's edges, with nothing hidden behind anything else" },
-  { value: "solid", label: "Solid", fills: true, tooltip: "Filled triangles in one colour (or the chosen attribute's)" },
+  { value: "solid", label: "Solid", fills: true, tooltip: "Filled triangles in one color (or the chosen attribute's)" },
   { value: "wire-solid", label: "Wireframe + Solid", fills: true, tooltip: "Filled triangles with their edges over them" },
   { value: "flat", label: "Flat", fills: true, tooltip: "Lit by each face's normal — the geometry's own, or the chosen normal attribute's at the face's last vertex — which is what shows a wrong winding or a fold" },
   { value: "smooth", label: "Smooth", fills: true, tooltip: "Lit by normals interpolated across each face — the chosen attribute's, or the faces' around each position averaged" },
@@ -183,8 +183,8 @@ function robustBounds(drawn: Float32Array, valid: Uint8Array): { min: number[]; 
 }
 
 /**
- * An attribute as a colour per vertex. Values already between 0 and 1 are taken as they are (a
- * colour); anything else is stretched per component over its own range, so a position or a normal
+ * An attribute as a color per vertex. Values already between 0 and 1 are taken as they are (a
+ * color); anything else is stretched per component over its own range, so a position or a normal
  * shows as a gradient across the mesh.
  */
 export function attributeColors(attribute: PreviewAttribute, count: number): Float32Array {
@@ -208,7 +208,7 @@ export function attributeColors(attribute: PreviewAttribute, count: number): Flo
   for (let v = 0; v < count; v++) {
     const a = values[v];
     for (let k = 0; k < 3; k++) {
-      // A one- or two-component attribute repeats its last component, so it reads as grey or a ramp.
+      // A one- or two-component attribute repeats its last component, so it reads as gray or a ramp.
       const x = a ? a[Math.min(k, n - 1)] : 0;
       const kk = Math.min(k, n - 1);
       out[v * 3 + k] = !Number.isFinite(x) ? 0 : unit ? x : max[kk] > min[kk] ? (x - min[kk]) / (max[kk] - min[kk]) : 0.5;
@@ -460,7 +460,7 @@ export class MeshPreview {
   get shadeMode(): ShadeMode { return this._shade; }
   /** Whether filling means anything for what is loaded: only a triangle list has faces. */
   get canFill(): boolean { return this._kind === "triangles" && this._filled > 0; }
-  /** What the vertices can be coloured by: the mesh's attributes, by name. */
+  /** What the vertices can be colored by: the mesh's attributes, by name. */
   get colorSources(): string[] { return (this._mesh?.attributes ?? []).map((a) => a.name); }
   /** What the normals can come from: the attributes with three components or more. */
   get normalSources(): string[] { return (this._mesh?.attributes ?? []).filter((a) => a.components >= 3 && !a.isColor && !a.isPosition).map((a) => a.name); }
@@ -488,7 +488,7 @@ export class MeshPreview {
     this.onModeChange?.();
   }
 
-  /** Colours the vertices by the attribute at `index` of `colorSources`, or -1 for the one colour. */
+  /** Colors the vertices by the attribute at `index` of `colorSources`, or -1 for the one color. */
   setColorSource(index: number): void {
     this._colorSource = index >= 0 && index < this.colorSources.length ? index : -1;
     this._uploadColors();
@@ -620,7 +620,7 @@ export class MeshPreview {
     this._schedule();
   }
 
-  /** Replaces the attributes (a caller's colouring changed), keeping the chosen sources where they still exist. */
+  /** Replaces the attributes (a caller's coloring changed), keeping the chosen sources where they still exist. */
   setAttributes(attributes: PreviewAttribute[]): void {
     if (!this._mesh) return;
     const colorName = this._colorSource >= 0 ? this.colorSources[this._colorSource] : null;
@@ -1354,8 +1354,8 @@ export class MeshPreview {
 
     gl.uniform1f(u.pointSize, 3 * pixel);
     const pointsOnly = this._shade === "points" || this._kind === "points";
-    // Edges over a fill take the one colour, so they read against whatever colours the faces;
-    // on their own they take the vertices' colours when there are any.
+    // Edges over a fill take the one color, so they read against whatever colors the faces;
+    // on their own they take the vertices' colors when there are any.
     gl.uniform1i(u.useVertexColor, colored && !fill ? 1 : 0);
     gl.uniform4f(u.color, 0.3, 0.65, 1, 1);
     if (pointsOnly) {

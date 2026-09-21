@@ -1164,7 +1164,7 @@ struct App {
         }
 
         // The two instances, moved apart and turning. The second one contributes 1 to the hit
-        // group index, so its rays run the second record of the table and come out a flat colour.
+        // group index, so its rays run the second record of the table and come out a flat color.
         const D3D12_GPU_VIRTUAL_ADDRESS blasAddress = rt.blas->GetGPUVirtualAddress();
         for (uint32_t i = 0; i < kRtInstances; ++i) {
             D3D12_RAYTRACING_INSTANCE_DESC& instance = rt.instancesMapped[frameIndex * kRtInstanceSlot + i];

@@ -971,7 +971,7 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .perf-lines-head { margin-top: 6px; }
 .perf-line-row .perf-cost-name { flex: 1 1 auto; }
 
-/* Render Graph (capture): the resource lifetime chart and the neighbourhood diagram */
+/* Render Graph (capture): the resource lifetime chart and the neighborhood diagram */
 .render-graph { padding: 12px 16px; }
 .render-graph-summary { margin-bottom: 6px; }
 .render-graph-warning {
@@ -1037,7 +1037,7 @@ button.btn.version-label:hover { color: var(--link-color); filter: none; }
 .render-graph-detail-heading { font-weight: 600; margin: 8px 0 4px 0; }
 .render-graph-note { background: var(--info-warning-bg); border-radius: var(--radius-sm); padding: 4px 8px; margin: 6px 0; }
 .render-graph-use-row { cursor: default; }
-/* The neighbourhood diagram: the one part of the graph small enough to draw as a node-link view. */
+/* The neighborhood diagram: the one part of the graph small enough to draw as a node-link view. */
 .render-graph-dag { display: block; margin: 8px 0; width: 100%; height: auto; }
 .render-graph-dag-node { cursor: pointer; }
 .render-graph-dag-node rect { fill: var(--bg-elevated); stroke: var(--border-color); }

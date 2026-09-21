@@ -97,7 +97,7 @@ function renderHwCounters(root: Widget, data: CaptureData, m: FrameMetrics, onJu
   });
 
   const byPass = hwCountersByPass(file);
-  // Render passes only: a compute pass shares its neighbour's key, and no counter range wraps one.
+  // Render passes only: a compute pass shares its neighbor's key, and no counter range wraps one.
   const rows = m.passes.map((p, i) => ({ p, i, r: p.compute ? undefined : byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) }))
     .filter((x) => x.r).sort((a, b) => (b.p.durationMs ?? 0) - (a.p.durationMs ?? 0));
   if (!rows.length) {

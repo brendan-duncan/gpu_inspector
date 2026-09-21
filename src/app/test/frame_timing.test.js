@@ -1,5 +1,5 @@
 // Timing captures (src/renderer/frame_timing.ts): per-frame times over minutes, the hitches in
-// them, and what the CPU was doing when they happened. The thing being tested is mostly judgement
+// them, and what the CPU was doing when they happened. The thing being tested is mostly judgment
 // — what counts as a hitch, and what counts as its cause — so the cases are the ones where a
 // simpler rule gets it wrong.
 import { test } from "node:test";

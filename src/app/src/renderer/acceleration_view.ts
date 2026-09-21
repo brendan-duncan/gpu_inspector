@@ -12,7 +12,7 @@
 //              memory rolled up (acceleration_tree.ts). A checkbox hides a row's geometry, a search
 //              narrows the rows, and Boxes draws every instance's bounding box.
 //   Instances  what each instance says: its bottom level, place, mask, custom index, hit group, flags.
-//   Overlaps   the instances whose bounding boxes overlap, most first, and a heat colouring of the
+//   Overlaps   the instances whose bounding boxes overlap, most first, and a heat coloring of the
 //              scene by how many others each instance's box shares its space with.
 //
 // A top level is drawn as its instances placed in the world, a bottom level as its own geometry.
@@ -211,7 +211,7 @@ export class AccelerationView {
     const body = new Div(this.root, { class: "accel-view-body" });
     this._preview = new MeshPreview(body);
     this._controls = new MeshControls(cameraBar, this._preview, { bookmarkKey: `accel:${this._id}` });
-    // The overlays follow the colouring: a heat chosen in the controls colours the boxes too.
+    // The overlays follow the coloring: a heat chosen in the controls colors the boxes too.
     const follow = this._preview.onModeChange;
     this._preview.onModeChange = () => {
       follow?.();
@@ -271,7 +271,7 @@ export class AccelerationView {
     });
   }
 
-  /** Position, and for a top level the overlap heat, as the preview's colourings. */
+  /** Position, and for a top level the overlap heat, as the preview's colorings. */
   private _attributes(drawing: StructureDrawing): PreviewAttribute[] {
     const positions = this._mainLines ? drawing.lines : drawing.triangles;
     const out: PreviewAttribute[] = [{ name: "Position", components: 3, isPosition: true, read: (v) => positions.subarray(v * 3, v * 3 + 3) }];
@@ -582,14 +582,14 @@ export class AccelerationView {
     }
   }
 
-  /** The overlapping instance pairs, the most overlapped first, and the heat colouring's switch. */
+  /** The overlapping instance pairs, the most overlapped first, and the heat coloring's switch. */
   private _renderOverlaps(panel: Div, drawing: StructureDrawing): void {
     const report = this._overlap;
     if (!report) return;
     const tools = new Div(panel, { class: "accel-view-tools" });
     new Checkbox(tools, {
       label: "Heatmap", checked: this._heat,
-      tooltip: "Colour each instance by how many other instances' bounding boxes overlap its own: blue alone, red the most crowded",
+      tooltip: "Color each instance by how many other instances' bounding boxes overlap its own: blue alone, red the most crowded",
       onChange: (checked: boolean) => this._setHeat(checked),
     });
     const known = drawing.instances.length - report.unknown;

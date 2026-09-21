@@ -4,7 +4,7 @@
 //
 // Inputs come from the capture: the vertex's attributes or the fragment's interpolated varyings
 // (InvocationInputs), and the descriptor sets and push constants the draw had bound (ShaderBindings).
-// Derivatives (dFdx, implicit-LOD sampling) need the neighbouring invocations of the pixel quad;
+// Derivatives (dFdx, implicit-LOD sampling) need the neighboring invocations of the pixel quad;
 // a DerivativeSource (quad.ts) runs them in lockstep, and without one they are zero.
 import {
   BUILTIN_NAMES, BuiltIn, Decoration, ExecutionModel, Op, StorageClass, type EntryPointInfo, type FunctionInfo, type Instruction,

@@ -1,5 +1,5 @@
-// The mesh preview's colourings and normals (src/renderer/mesh_preview.ts): what an attribute looks
-// like as a colour, and the smooth normals of geometry that has none of its own.
+// The mesh preview's colorings and normals (src/renderer/mesh_preview.ts): what an attribute looks
+// like as a color, and the smooth normals of geometry that has none of its own.
 //
 //     cd src/app && npm test
 import { test } from "node:test";
@@ -19,7 +19,7 @@ const attribute = (values, components, isColor = false) => ({
   name: "a", components, isColor, read: (v) => values.slice(v * components, v * components + components),
 });
 
-test("a colour attribute is taken as it is", () => {
+test("a color attribute is taken as it is", () => {
   const colors = attributeColors(attribute([1, 0, 0, 0, 0.5, 1], 3), 2);
   assert.deepEqual([...colors], [1, 0, 0, 0, 0.5, 1]);
 });
@@ -29,7 +29,7 @@ test("anything outside 0 to 1 is stretched over its own range, per component, an
   assert.deepEqual([...colors].map((x) => Math.round(x * 100) / 100), [0, 0, 0.5, 1, 1, 0.5]);
 });
 
-test("a one-component attribute reads as grey", () => {
+test("a one-component attribute reads as gray", () => {
   const colors = attributeColors(attribute([0.25], 1), 1);
   assert.deepEqual([...colors], [0.25, 0.25, 0.25]);
 });

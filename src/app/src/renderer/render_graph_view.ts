@@ -9,7 +9,7 @@
 // scales to any frame, it needs no layout pass, and "what does this pass depend on" is still
 // answered by reading up its column.
 //
-// The node-link drawing is kept where it is actually readable: the neighbourhood of whatever is
+// The node-link drawing is kept where it is actually readable: the neighborhood of whatever is
 // selected. Pick a pass and the panel below draws its immediate producers on the left and its
 // immediate consumers on the right, with the resource on each edge, which is the "why is this
 // pass here" question a graph is really being asked.
@@ -341,7 +341,7 @@ class RenderGraphView {
         class: "render-graph-note font-sm",
       });
     }
-    this._renderNeighbourhood(card, node);
+    this._renderNeighborhood(card, node);
     this._renderUses(card, "Reads", node.reads, (u) => u.resource);
     this._renderUses(card, "Writes", node.writes, (u) => u.resource);
   }
@@ -350,7 +350,7 @@ class RenderGraphView {
    * The node-link view, over the one part of the graph small enough to draw as one: the selected
    * pass, everything that feeds it and everything it feeds, with the resource named on each edge.
    */
-  private _renderNeighbourhood(card: Widget, node: GraphNode): void {
+  private _renderNeighborhood(card: Widget, node: GraphNode): void {
     const producers = dedupeEdges(node.inputs.map((e) => ({ node: e.from, label: `${e.version.resource.label}`, usage: e.usage })));
     const consumers = dedupeEdges(node.outputs.map((e) => ({ node: e.to, label: `${e.version.resource.label}`, usage: e.usage })));
     if (!producers.length && !consumers.length) {
@@ -433,7 +433,7 @@ class RenderGraphView {
     box(colX[1], centerY, node, "render-graph-dag-self");
     card.element.appendChild(svg);
     const hidden = (producers.length - shownProducers.length) + (consumers.length - shownConsumers.length);
-    if (hidden) new Div(card, { text: `${hidden} more neighbour${hidden === 1 ? "" : "s"} not drawn.`, class: "text-muted font-sm" });
+    if (hidden) new Div(card, { text: `${hidden} more neighbor${hidden === 1 ? "" : "s"} not drawn.`, class: "text-muted font-sm" });
   }
 
   private _renderUses(card: Widget, title: string, uses: GraphUse[], resourceOf: (u: GraphUse) => GraphResource): void {
@@ -496,7 +496,7 @@ class RenderGraphView {
   }
 }
 
-/** One entry per neighbour pass: several resources between two passes are one row, not five. */
+/** One entry per neighbor pass: several resources between two passes are one row, not five. */
 function dedupeEdges(entries: { node: GraphNode; label: string; usage: string }[]): { node: GraphNode; label: string; usage: string }[] {
   const byNode = new Map<GraphNode, { node: GraphNode; label: string; usage: string; count: number }>();
   for (const e of entries) {

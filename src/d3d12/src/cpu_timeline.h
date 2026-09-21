@@ -8,7 +8,7 @@
 // the submit, Present is the present. The other two are not D3D12 calls at all — a D3D12 fence is
 // waited on with WaitForSingleObject on a Win32 event, and a swapchain's frame-latency object the
 // same way — so they cannot be found by hooking D3D12. They are found by hooking the wait itself
-// and recognising the handle: `ID3D12Fence::SetEventOnCompletion` says which event belongs to a
+// and recognizing the handle: `ID3D12Fence::SetEventOnCompletion` says which event belongs to a
 // fence, `IDXGISwapChain2::GetFrameLatencyWaitableObject` which belongs to the presenter, and a
 // wait on anything else is the application's own and is left alone.
 //

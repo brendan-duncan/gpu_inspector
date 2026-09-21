@@ -4,7 +4,7 @@ structs and command arguments, after its own fixups) written out as compilable b
 and calls. This is the generated half of Export to C++ (src/replay/src/exporter.h): the exporter
 watches the replay create each object and record each command, and asks these to spell them.
 
-Modelled on serialize.py, which walks the same members with the same count expressions and writes
+Modeled on serialize.py, which walks the same members with the same count expressions and writes
 JSON; here the walk writes designated initializers, so the output reads like the specification.
 
   vk_emit.gen.h / .cpp

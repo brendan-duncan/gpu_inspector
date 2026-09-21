@@ -301,7 +301,7 @@ export function instanceBounds(drawing: StructureDrawing): (Bounds | null)[] {
   return out;
 }
 
-/** A heat from 0 to 1 as a colour, from a cold blue through green and yellow to red. */
+/** A heat from 0 to 1 as a color, from a cold blue through green and yellow to red. */
 export function heatColor(t: number): [number, number, number] {
   const x = Math.max(0, Math.min(1, t));
   const stops: [number, number, number][] = [[0.15, 0.3, 0.75], [0.2, 0.75, 0.45], [0.95, 0.85, 0.2], [0.9, 0.2, 0.15]];
@@ -311,7 +311,7 @@ export function heatColor(t: number): [number, number, number] {
   return [0, 1, 2].map((k) => stops[i][k] + (stops[i + 1][k] - stops[i][k]) * u) as [number, number, number];
 }
 
-/** One colour per vertex of the drawing's triangles and of its lines, by the heat of the instance each came from. */
+/** One color per vertex of the drawing's triangles and of its lines, by the heat of the instance each came from. */
 export function heatColors(drawing: StructureDrawing, counts: number[]): { triangles: Float32Array; lines: Float32Array } {
   const most = Math.max(1, ...counts);
   const triangles = new Float32Array(drawing.triangles.length);

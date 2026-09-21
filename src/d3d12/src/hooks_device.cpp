@@ -1297,13 +1297,13 @@ void HookStateObject(ID3D12StateObject* stateObject) {
 }
 
 /**
- * A fence's event handle, noted so that a wait on it can be recognised as waiting for the GPU. The
+ * A fence's event handle, noted so that a wait on it can be recognized as waiting for the GPU. The
  * wait itself is a Win32 call and is timed there (cpu_timeline.h).
  */
 HRESULT STDMETHODCALLTYPE Hook_SetEventOnCompletion(ID3D12Fence1* This, UINT64 Value, HANDLE hEvent) {
     auto orig = Orig<PFN_ID3D12Fence1_SetEventOnCompletion>(This, slot::ID3D12Fence1_SetEventOnCompletion);
     HRESULT hr = orig(This, Value, hEvent);
-    // A null event means "block until signalled" inside this call, which the runtime does itself;
+    // A null event means "block until signaled" inside this call, which the runtime does itself;
     // there is no handle to watch for, so the wait is timed here instead.
     if (SUCCEEDED(hr) && hEvent) NoteFenceEvent(hEvent);
     return hr;

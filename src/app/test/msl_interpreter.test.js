@@ -215,8 +215,8 @@ test("without a quad, derivatives are zero rather than an error", () => {
     inputs: inputs({ varyings: { position: [0, 0, 0, 1], uv: [0.25, 0.25] } }),
   });
   const value = invocation.outputs()[0].value;
-  near(value[0], 0, "dfdx with no neighbours");
-  near(value[2], 0, "fwidth with no neighbours");
+  near(value[0], 0, "dfdx with no neighbors");
+  near(value[2], 0, "fwidth with no neighbors");
 });
 
 test("an uncaptured buffer is a warning, not a failure", () => {
