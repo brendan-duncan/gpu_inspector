@@ -11,7 +11,7 @@ Files that contain adapted code carry a header comment naming their origin.
 ## RenderDoc
 - Source: https://github.com/baldurk/renderdoc
 - License: MIT, Copyright (c) 2019-2025 Baldur Karlsson
-- Used for: Vulkan layer structure, format tables, SPIR-V tooling (planned).
+- Used for: Vulkan layer structure, format tables, SPIR-V tooling.
 
 ## GFXReconstruct
 - Source: https://github.com/LunarG/gfxreconstruct
