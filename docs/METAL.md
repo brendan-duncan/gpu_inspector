@@ -122,15 +122,23 @@ following the pixel, so it needs the application to still be running.
   ([a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame)) is
   Vulkan and Direct3D 12 only so far. The library already times the same categories, so what is missing is the
   per-frame ring and the message that carries it.
-- Depth attachments and sampled images are not read back.
+- Stencil attachments are not read back (color, depth and sampled textures are).
 - `mtlinsp_replay` does not replay acceleration structure builds or traces yet, so **Export to
   C++** on a ray tracing frame leaves them out.
 - Ray queries are not in the shader debugger: a kernel that traverses a scene can be stepped, but
   `intersector::intersect` is not followed into.
 - Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
-- No creation stack traces.
-- Shader editing does not apply: it is built around SPIR-V and its compilers, and Metal's shaders
-  are already source.
+- No **CPU sampling**: the other two backends sample every thread's call stack alongside the CPU
+  timeline, so a frame's time can be attributed to the functions that spent it rather than only to
+  the API calls the library times.
+- No device-loss report: Vulkan names the command the GPU was running when it stopped responding
+  (`VK_ERROR_DEVICE_LOST`) and Direct3D 12 reads the removal reason, so a hang on Metal says less
+  than one on either of the others.
+- Shader editing is not wired up. The usual reason given — that it is built around SPIR-V — is only
+  half of it: a Metal capture holds the Shading Language the application compiled, so recompiling an
+  edited copy is *easier* than on either of the other two. What is missing is the plumbing to swap
+  the recompiled function into the pipeline and re-run the frame, which on Metal means rebuilding
+  the pipeline state rather than patching a module.
 - Only Apple Silicon has been verified.
 
 ## If it does not work
